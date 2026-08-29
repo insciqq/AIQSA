@@ -42,6 +42,8 @@ import type {
 import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
 import { searchDraftHash } from "../../search/configuration";
 import type { ProviderPdfInputProbe } from "../../providers/pdfInputProbe";
+import type { AdminProviderDraftTester } from "./tester";
+import { approvedRerankerDeployments } from "./approvedRerankers";
 
 export class AdminProviderQuickSetupServiceError extends Error {
   readonly code: AdminProviderQuickSetupErrorCode;
@@ -114,6 +116,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
   pdfInputProbe: ProviderPdfInputProbe;
+  rerankerTester?: AdminProviderDraftTester;
   searchTester?: AdminProviderQuickSetupSearchTester;
   repository: AdminProviderQuickSetupRepository;
   stateTokenKey: () => Buffer;
@@ -358,6 +361,50 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           modelId: availableCandidate.modelId
         });
       }
+      const rerankerChecks: Array<
+        AdminProviderQuickSetupCommitPlan["rerankerChecks"][number]
+      > = [];
+      if (policy.provider === "openrouter" && input.rerankerTester) {
+        for (const deployment of approvedRerankerDeployments) {
+          try {
+            const outcome = await input.rerankerTester.test({
+              connection: policy.connection.configuration,
+              connectionDisplayName: policy.connection.displayName,
+              connectionId: policy.connection.id,
+              credentialId,
+              credentialVersionIdentity: versionId,
+              mode: "tiny_generation",
+              model: deployment.configuration,
+              modelDisplayName: deployment.displayName,
+              providerFamily: policy.provider,
+              providerModelId: deployment.providerModelId,
+              secret,
+              ...(inputValue.signal ? { signal: inputValue.signal } : {})
+            });
+            rerankerChecks.push({
+              evidence: outcome.evidence,
+              providerModelId: deployment.providerModelId,
+              status: outcome.status
+            });
+          } catch {
+            if (inputValue.signal?.aborted) {
+              throw new AdminProviderQuickSetupServiceError(
+                "provider_credential_test_failed"
+              );
+            }
+            rerankerChecks.push({
+              evidence: {
+                detail: "model_missing",
+                method: "tiny_generation",
+                selectedProviders: [],
+                upstreamModelId: deployment.configuration.upstreamModelId
+              },
+              providerModelId: deployment.providerModelId,
+              status: "unavailable"
+            });
+          }
+        }
+      }
       let search: AdminProviderQuickSetupCommitPlan["search"];
       if ((policy.provider === "anthropic" || policy.provider === "openai" ||
         policy.provider === "gemini") &&
@@ -427,6 +474,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         now: now(),
         preservedModels: inspection.preservedModels,
         provider: policy.provider,
+        rerankerChecks,
         ...(search ? { search } : {})
       });
       if (commit === "stale") {

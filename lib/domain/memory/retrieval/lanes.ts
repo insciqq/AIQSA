@@ -13,6 +13,9 @@ export type MemoryRetrievalLaneTask = Readonly<{
   executionId?: string;
   execute(): Promise<MemoryLaneResult>;
   lane: MemoryRetrievalLane;
+  /** Records a deadline settlement without granting cancellation authority to
+   * the candidate lane or exposing its in-flight database operation. */
+  onUnavailable?(): void;
 }>;
 
 export type MemoryRetrievalLaneLimitAllocation = Readonly<
@@ -73,7 +76,8 @@ export function allocateMemoryRetrievalLaneLimits(
 
 export async function executeMemoryRetrievalLaneTasks(
   tasks: readonly MemoryRetrievalLaneTask[],
-  parallelism = MEMORY_RETRIEVAL_MAX_PARALLEL_LANES
+  parallelism = MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
+  settleSignal?: AbortSignal
 ): Promise<readonly MemoryLaneResult[]> {
   if (
     !Number.isSafeInteger(parallelism) ||
@@ -89,13 +93,39 @@ export async function executeMemoryRetrievalLaneTasks(
   ) throw new Error("memory_retrieval_lane_contract_invalid");
   const results = new Array<MemoryLaneResult>(tasks.length);
   let next = 0;
+  const unavailable = (task: MemoryRetrievalLaneTask, index: number) => {
+    task.onUnavailable?.();
+    results[index] = { candidates: [], lane: task.lane };
+  };
   async function worker(): Promise<void> {
     while (next < tasks.length) {
       const index = next;
       next += 1;
       const task = tasks[index];
       if (!task) continue;
-      const result = await task.execute();
+      if (settleSignal?.aborted) {
+        unavailable(task, index);
+        continue;
+      }
+      const execution = task.execute();
+      let removeAbortListener: (() => void) | null = null;
+      const result = settleSignal
+        ? await Promise.race([
+            execution,
+            new Promise<null>((resolve) => {
+              const onAbort = () => resolve(null);
+              settleSignal.addEventListener("abort", onAbort, { once: true });
+              removeAbortListener = () => settleSignal.removeEventListener("abort", onAbort);
+            })
+          ]).finally(() => removeAbortListener?.())
+        : await execution;
+      if (result === null) {
+        // Prisma reads are side-effect free but not transport-cancellable. Keep
+        // the detached promise observed while settling the completed lanes.
+        void execution.catch(() => undefined);
+        unavailable(task, index);
+        continue;
+      }
       if (result.lane !== task.lane) throw new Error("memory_retrieval_lane_contract_invalid");
       results[index] = result;
     }

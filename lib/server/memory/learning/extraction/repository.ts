@@ -1428,8 +1428,15 @@ async function applyPlan(
     }
     if (receipt.outcome !== "PENDING") continue;
     const semanticDecision = decisions.get(candidate.candidateRef) ?? null;
-    if (!memorySemanticAuthorityAdmitsCandidate(candidate, semanticDecision) ||
-      (memoryCandidateRequiresSemanticAdjudication(candidate) &&
+    if (!memorySemanticAuthorityAdmitsCandidate(
+      candidate,
+      semanticDecision,
+      plan.input.contextRefs
+    ) ||
+      (memoryCandidateRequiresSemanticAdjudication(
+        candidate,
+        plan.input.contextRefs
+      ) &&
         semanticDecision === null)) {
       await rejectCandidate(
         tx,

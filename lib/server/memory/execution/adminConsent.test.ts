@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MemoryExecutionError } from "./errors";
 import {
   canonicalMemoryAdminDestinations,
+  currentMemoryAdminDestinations,
   decodeMemoryAdminDestinations,
   memoryAdminDestinationsFingerprint,
   requireAdminAcceptedMemoryDestination
@@ -45,7 +46,7 @@ describe("administrator-owned Memory egress consent", () => {
     const accepted = tx({
       acceptedAt: new Date("2026-08-11T10:00:00.000Z"),
       acceptedDestinations: [destination],
-      acceptedPolicyVersion: "memory-utility-egress-v2"
+      acceptedPolicyVersion: "memory-utility-egress-v3"
     });
 
     await expect(requireAdminAcceptedMemoryDestination(accepted, {
@@ -67,6 +68,24 @@ describe("administrator-owned Memory egress consent", () => {
     );
   });
 
+  it("includes every dedicated reranker route target in administrator consent", () => {
+    const destinations = currentMemoryAdminDestinations([{
+      destinations: [],
+      fingerprint: "f".repeat(64),
+      policyVersion: "memory-utility-egress-v3",
+      rerankerTargets: [
+        { destinationFingerprint: "a".repeat(64) },
+        { destinationFingerprint: "b".repeat(64) }
+      ] as ResolvedMemoryExecutionTarget[],
+      targets: new Map()
+    }]);
+
+    expect(destinations).toEqual([
+      { destinationFingerprint: "a".repeat(64), role: "MEMORY_RERANK" },
+      { destinationFingerprint: "b".repeat(64), role: "MEMORY_RERANK" }
+    ]);
+  });
+
   it("fails closed for missing, stale, or malformed installation evidence", async () => {
     for (const value of [
       null,
@@ -78,7 +97,7 @@ describe("administrator-owned Memory egress consent", () => {
       {
         acceptedAt: new Date(),
         acceptedDestinations: [{ ...destination, plaintext: "private" }],
-        acceptedPolicyVersion: "memory-utility-egress-v2"
+        acceptedPolicyVersion: "memory-utility-egress-v3"
       },
       {
         acceptedAt: new Date(),

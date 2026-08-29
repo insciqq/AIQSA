@@ -101,6 +101,7 @@ export type BindMemoryExecutionInput = Readonly<{
   ordinal: number;
   owner: MemoryExecutionOwner;
   role: MemoryExecutionRole;
+  targetProviderModelId?: string;
   versions: MemoryExecutionVersions;
 }>;
 
@@ -252,7 +253,11 @@ export function createPrismaMemoryExecutionAdmission(
         !isValidMemoryExecutionIdentifier(userId) ||
         !sha256.test(input.inputHash) ||
         !validOrdinal(input.ordinal) ||
-        !isMemoryExecutionRole(input.role)
+        !isMemoryExecutionRole(input.role) ||
+        (input.targetProviderModelId !== undefined && (
+          input.role !== "MEMORY_RERANK" ||
+          !isValidMemoryExecutionIdentifier(input.targetProviderModelId)
+        ))
       ) {
         return memoryExecutionFailure("memory_execution_input_invalid");
       }
@@ -264,6 +269,9 @@ export function createPrismaMemoryExecutionAdmission(
           dependencies,
           now,
           role: input.role,
+          ...(input.targetProviderModelId
+            ? { targetProviderModelId: input.targetProviderModelId }
+            : {}),
           userId,
           versions: input.versions
         });

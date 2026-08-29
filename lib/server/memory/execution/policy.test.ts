@@ -7,7 +7,10 @@ import type {
 } from "../../providerRuntime/admission";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
-import { resolveCurrentMemoryUtilityPolicy } from "./policy";
+import {
+  requireMemoryPolicyTarget,
+  resolveCurrentMemoryUtilityPolicy
+} from "./policy";
 
 function snapshot(defaultParams: Record<string, unknown>): ProviderExecutionSnapshot {
   return {
@@ -125,8 +128,16 @@ function systemRole(): ProviderAdmissionRole {
   };
 }
 
-function rerankerRole(): RerankerProviderAdmissionRole {
-  const admitted = executionSnapshot("reranker");
+function rerankerRole(
+  providerModelId = "reranker-model",
+  upstreamModelId = "qwen/qwen3-reranker-8b"
+): RerankerProviderAdmissionRole {
+  const base = executionSnapshot("reranker");
+  const admitted = {
+    ...base,
+    model: { ...base.model, upstreamModelId },
+    providerModelId
+  };
   return {
     authority: authority(admitted),
     configuration: admitted.model as ProviderModelConfiguration,
@@ -139,7 +150,7 @@ function rerankerRole(): RerankerProviderAdmissionRole {
 const policyDb = {} as Prisma.TransactionClient;
 
 describe("Memory dedicated reranker policy", () => {
-  it("binds reranking to the dedicated class while aggregation stays generative", async () => {
+  it("binds reranking to the dedicated class without an aggregation destination", async () => {
     const policy = await resolveCurrentMemoryUtilityPolicy(
       policyDb as never,
       "user-1",
@@ -165,8 +176,9 @@ describe("Memory dedicated reranker policy", () => {
 
     expect(policy.targets.get("MEMORY_RERANK")?.snapshot.model)
       .toMatchObject({ modelClass: "reranker" });
-    expect(policy.targets.get("MEMORY_AGGREGATE")?.snapshot.model)
-      .toMatchObject({ modelClass: "answer" });
+    expect(policy.targets.has("MEMORY_AGGREGATE")).toBe(false);
+    expect(policy.destinations.some(({ role }) => role === "MEMORY_AGGREGATE"))
+      .toBe(false);
     expect(policy.targets.get("MEMORY_RERANK")?.policyRevision).toBe(7);
   });
 
@@ -194,6 +206,49 @@ describe("Memory dedicated reranker policy", () => {
 
     expect(policy.targets.get("MEMORY_RERANK")?.snapshot.model)
       .toMatchObject({ modelClass: "answer" });
+  });
+
+  it("fingerprints and resolves every ordered dedicated fallback target", async () => {
+    const primary = rerankerRole("reranker-primary", "voyageai/rerank-2.5");
+    const fallback = rerankerRole("reranker-fallback", "cohere/rerank-4-pro");
+    const policy = await resolveCurrentMemoryUtilityPolicy(
+      policyDb as never,
+      "user-1",
+      { embeddingProviderModelId: null },
+      {
+        resolveRerankerRole: async () => ({
+          credentialScope: "installation",
+          ok: true,
+          policyVersion: 11,
+          providerModelId: "reranker-primary",
+          role: primary,
+          routes: [
+            { providerModelId: "reranker-primary", role: primary },
+            { providerModelId: "reranker-fallback", role: fallback }
+          ],
+          selectedProviderModelId: "reranker-primary"
+        }),
+        resolveSystemRole: async () => ({
+          credentialScope: "installation",
+          ok: true,
+          policyVersion: 11,
+          providerModelId: "answer-model",
+          reasoningEffort: null,
+          role: systemRole()
+        })
+      }
+    );
+
+    expect(policy.rerankerTargets?.map((target) =>
+      target.authority.providerModelId)).toEqual([
+      "reranker-primary",
+      "reranker-fallback"
+    ]);
+    expect(requireMemoryPolicyTarget(
+      policy,
+      "MEMORY_RERANK",
+      "reranker-fallback"
+    ).snapshot.model.upstreamModelId).toBe("cohere/rerank-4-pro");
   });
 
   it("does not substitute the system model for a configured broken reranker", async () => {
@@ -225,7 +280,6 @@ describe("Memory dedicated reranker policy", () => {
       role: "MEMORY_RERANK",
       selectedProviderModelId: "reranker-model"
     });
-    expect(policy.targets.get("MEMORY_AGGREGATE")?.snapshot.model)
-      .toMatchObject({ modelClass: "answer" });
+    expect(policy.targets.has("MEMORY_AGGREGATE")).toBe(false);
   });
 });

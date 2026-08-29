@@ -3,11 +3,9 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution";
 import type { PrismaMemoryExecutionService } from "../execution";
 import {
   createMemoryRunUtilityService,
-  MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS,
   memoryDedicatedRerankDocument,
-  MEMORY_AGGREGATION_MAX_ATTEMPTS,
-  MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS,
   MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
+  MEMORY_QUERY_EMBEDDING_VERSIONS,
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
   MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
@@ -19,10 +17,8 @@ import {
 import {
   memoryRunUtilityPromptCharacters,
   MemoryRunUtilityProviderCallError,
-  MEMORY_AGGREGATION_TOOL_NAME,
   MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
   MEMORY_RERANK_TOOL_NAME,
-  type MemoryAggregationUtilityProviderInput,
   type MemoryRerankUtilityProviderInput,
   type MemoryRunUtilityProviderInput,
   type MemoryRunUtilityProvider
@@ -40,6 +36,8 @@ import {
   type RerankRequest,
   type RerankResult
 } from "../../providers/rerank";
+import { RERANKER_ROUTE_POLICY_VERSION } from "../../../domain/rerankerModels";
+import { approvedRerankerDeployments } from "../../admin/providers/approvedRerankers";
 
 const profile: MemoryVectorProfile = Object.freeze({
   configurationFingerprint: "a".repeat(64),
@@ -69,12 +67,11 @@ const currentHistoryRerankCandidate = Object.freeze({
 function rerankInput(
   input: MemoryRunUtilityProviderInput
 ): MemoryRerankUtilityProviderInput {
-  if ("kind" in input) throw new Error("unexpected_aggregation_input");
   return input;
 }
 
 function snapshot(
-  role: "MEMORY_AGGREGATE" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
+  role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
 ): MemorySecretFreeExecutionSnapshot {
   const embedding = role === "MEMORY_QUERY_EMBED";
   return {
@@ -314,6 +311,149 @@ function dedicatedHarness(
 }
 
 describe("Memory run utility execution", () => {
+  it("binds query embedding to the active vector retrieval fingerprint", () => {
+    expect(MEMORY_QUERY_EMBEDDING_VERSIONS.retrievalConfigFingerprint)
+      .toBe(MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT);
+  });
+
+  it("retries the whole dedicated rerank on the next model without mixing batch scores", async () => {
+    const [voyage, cohere] = approvedRerankerDeployments;
+    if (!voyage || !cohere) throw new Error("approved reranker route missing");
+    const targetByBinding = new Map<string, string>();
+    const bind = vi.fn(async (_userId: string, input: {
+      ordinal: number;
+      targetProviderModelId?: string;
+    }) => {
+      const bindingId = `binding-${input.ordinal}`;
+      targetByBinding.set(bindingId, input.targetProviderModelId ?? "");
+      return { id: bindingId };
+    });
+    const start = vi.fn(async (_userId: string, bindingId: string) => {
+      const providerModelId = targetByBinding.get(bindingId)!;
+      const deployment = approvedRerankerDeployments.find(
+        (candidate) => candidate.providerModelId === providerModelId
+      )!;
+      const base = dedicatedRerankerSnapshot();
+      return {
+        bindingId,
+        snapshot: {
+          ...base,
+          destinationFingerprint: providerModelId.padEnd(64, "0").slice(0, 64),
+          executionTargetFingerprint: providerModelId.padEnd(64, "1").slice(0, 64),
+          providerExecutionSnapshot: {
+            ...base.providerExecutionSnapshot,
+            model: deployment.configuration,
+            modelDisplayName: deployment.displayName,
+            providerModelId
+          }
+        } as MemorySecretFreeExecutionSnapshot
+      };
+    });
+    const settle = vi.fn(async () => ({}));
+    const executionService = {
+      admission: { bind, start },
+      lifecycle: {
+        settle,
+        withAuthorizedResultCommit: vi.fn(async (
+          _userId: string,
+          _input: unknown,
+          apply: () => Promise<unknown>
+        ) => apply())
+      }
+    } as unknown as PrismaMemoryExecutionService;
+    const calls: Array<{ handles: string[]; providerModelId: string }> = [];
+    const rerankerRuntime = {
+      resolve: vi.fn(async (evidence: { providerModelId: string }) => ({
+        adapter: {
+          rerank: async (request: RerankRequest) => {
+            calls.push({
+              handles: request.documents.map(({ handle }) => handle),
+              providerModelId: evidence.providerModelId
+            });
+            if (
+              evidence.providerModelId === voyage.providerModelId &&
+              request.documents.some(({ handle }) =>
+                handle === `c${MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES - 1}`)
+            ) {
+              throw new RerankAdapterError("rerank_provider_http_error", {
+                httpStatus: 503
+              });
+            }
+            const relevanceScore = evidence.providerModelId === voyage.providerModelId
+              ? 0.2
+              : 0.9;
+            return {
+              model: approvedRerankerDeployments.find(
+                ({ providerModelId }) => providerModelId === evidence.providerModelId
+              )!.configuration.upstreamModelId,
+              provider: "test",
+              requestId: `request-${calls.length}`,
+              scores: request.documents.map((document, index) => ({
+                handle: document.handle,
+                index,
+                relevanceScore
+              })),
+              usage: { inputTokens: 10, searchUnits: 1, totalTokens: 10 }
+            };
+          }
+        }
+      }))
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider: { run: vi.fn() } as unknown as MemoryRunUtilityProvider,
+      rerankerRuntime: rerankerRuntime as never,
+      resolveDedicatedRerankRoute: vi.fn(async () => ({
+        policyVersion: RERANKER_ROUTE_POLICY_VERSION,
+        providerModelIds: [voyage.providerModelId, cohere.providerModelId]
+      })),
+      resolveRerankPath: vi.fn(async () => "DEDICATED" as const)
+    });
+
+    const result = await service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates: dedicatedCandidates(MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES)
+        .map((candidate) => ({
+          ...candidate,
+          text: candidate.text.padEnd(3_900, "x")
+        })),
+      profileRequested: false,
+      query: "release milestones"
+    });
+
+    expect(result).toMatchObject({
+      diagnostics: {
+        fallbackDepth: 1,
+        modelAttemptCount: 2,
+        routePolicyVersion: RERANKER_ROUTE_POLICY_VERSION
+      },
+      relevanceScoreFloor: null,
+      rerankerRoute: {
+        fallbackDepth: 1,
+        policyVersion: RERANKER_ROUTE_POLICY_VERSION,
+        providerModelId: cohere.providerModelId
+      },
+      status: "READY"
+    });
+    if (result.status !== "READY") throw new Error("rerank route failed");
+    expect(result.decisions).toHaveLength(
+      MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES
+    );
+    expect(result.decisions.every(({ relevanceScore }) => relevanceScore === 0.9))
+      .toBe(true);
+    const primaryCallCount = calls.filter(
+      ({ providerModelId }) => providerModelId === voyage.providerModelId
+    ).length;
+    const fallbackCallCount = calls.filter(
+      ({ providerModelId }) => providerModelId === cohere.providerModelId
+    ).length;
+    expect(primaryCallCount).toBeGreaterThan(1);
+    expect(fallbackCallCount).toBe(primaryCallCount);
+    expect(result.externalCallCount).toBe(calls.length);
+  });
+
   it.each([
     { ordinal: 1, purpose: "RETRIEVAL" as const },
     { ordinal: 3, purpose: "ACTION_TARGET" as const }
@@ -383,7 +523,7 @@ describe("Memory run utility execution", () => {
     expect(JSON.stringify(embed.mock.calls)).not.toContain("web search");
   });
 
-  it("retries one transport-uncertain query embedding against the same snapshot", async () => {
+  it("does not retry a transport-uncertain interactive query embedding", async () => {
     const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
       id: `embedding-binding-${input.ordinal}`
     }));
@@ -405,22 +545,8 @@ describe("Memory run utility execution", () => {
         ) => apply())
       }
     } as unknown as PrismaMemoryExecutionService;
-    let attempt = 0;
-    const vector = Array.from(
-      { length: 1_024 },
-      (_, index) => index === 0 ? 1 : 0
-    );
     const embed = vi.fn(async () => {
-      attempt += 1;
-      if (attempt === 1) {
-        throw new EmbeddingAdapterError("embedding_provider_request_failed");
-      }
-      return {
-        model: "embedding-upstream-1",
-        requestId: "embedding-response-retry",
-        usage: { inputTokens: 7, totalTokens: 7 },
-        vectors: [vector]
-      };
+      throw new EmbeddingAdapterError("embedding_provider_request_failed");
     });
     const service = createMemoryRunUtilityService({
       embeddingRuntime: {
@@ -437,15 +563,13 @@ describe("Memory run utility execution", () => {
     });
 
     expect(result).toMatchObject({
-      bindingId: "embedding-binding-2",
-      externalCallCount: 2,
-      status: "READY"
+      bindingId: "embedding-binding-1",
+      reason: "memory_query_embedding_outcome_unknown",
+      status: "UNAVAILABLE"
     });
-    expect(result.status === "READY" ? result.vector : []).toEqual(vector);
-    expect(embed).toHaveBeenCalledTimes(2);
-    expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1, 2]);
-    expect(settle).toHaveBeenNthCalledWith(
-      1,
+    expect(embed).toHaveBeenCalledOnce();
+    expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1]);
+    expect(settle).toHaveBeenCalledWith(
       "user-1",
       "embedding-binding-1",
       expect.objectContaining({
@@ -453,15 +577,9 @@ describe("Memory run utility execution", () => {
         state: "OUTCOME_UNKNOWN"
       })
     );
-    expect(settle).toHaveBeenNthCalledWith(
-      2,
-      "user-1",
-      "embedding-binding-2",
-      expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
-    );
   });
 
-  it("bounds a query-embedding attempt without consuming the role retry signal", async () => {
+  it("bounds one query-embedding request without starting a second request", async () => {
     vi.useFakeTimers();
     try {
       const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
@@ -487,26 +605,14 @@ describe("Memory run utility execution", () => {
       } as unknown as PrismaMemoryExecutionService;
       const roleController = new AbortController();
       const attemptSignals: AbortSignal[] = [];
-      const vector = Array.from(
-        { length: 1_024 },
-        (_, index) => index === 0 ? 1 : 0
-      );
       const embed = vi.fn(async (request: { signal?: AbortSignal }) => {
         const signal = request.signal!;
         attemptSignals.push(signal);
-        if (attemptSignals.length === 1) {
-          return new Promise<never>((_resolve, reject) => {
-            const rejectFromSignal = () => reject(signal.reason);
-            if (signal.aborted) rejectFromSignal();
-            else signal.addEventListener("abort", rejectFromSignal, { once: true });
-          });
-        }
-        return {
-          model: "embedding-upstream-1",
-          requestId: "embedding-timeout-retry-success",
-          usage: { inputTokens: 7, totalTokens: 7 },
-          vectors: [vector]
-        };
+        return new Promise<never>((_resolve, reject) => {
+          const rejectFromSignal = () => reject(signal.reason);
+          if (signal.aborted) rejectFromSignal();
+          else signal.addEventListener("abort", rejectFromSignal, { once: true });
+        });
       });
       const service = createMemoryRunUtilityService({
         embeddingRuntime: {
@@ -528,29 +634,21 @@ describe("Memory run utility execution", () => {
       const result = await pending;
 
       expect(result).toMatchObject({
-        bindingId: "embedding-binding-2",
-        externalCallCount: 2,
-        status: "READY"
+        bindingId: "embedding-binding-1",
+        reason: "memory_query_embedding_outcome_unknown",
+        status: "UNAVAILABLE"
       });
       expect(roleController.signal.aborted).toBe(false);
-      expect(attemptSignals).toHaveLength(2);
+      expect(attemptSignals).toHaveLength(1);
       expect(attemptSignals[0]?.aborted).toBe(true);
-      expect(attemptSignals[1]?.aborted).toBe(false);
-      expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1, 2]);
-      expect(settle).toHaveBeenNthCalledWith(
-        1,
+      expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1]);
+      expect(settle).toHaveBeenCalledWith(
         "user-1",
         "embedding-binding-1",
         expect.objectContaining({
           errorCode: "memory_query_embedding_attempt_timed_out",
           state: "OUTCOME_UNKNOWN"
         })
-      );
-      expect(settle).toHaveBeenNthCalledWith(
-        2,
-        "user-1",
-        "embedding-binding-2",
-        expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
       );
     } finally {
       vi.useRealTimers();
@@ -604,7 +702,7 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("retries one replay-safe transient query-embedding HTTP response", async () => {
+  it("does not retry a transient interactive query-embedding HTTP response", async () => {
     const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
       id: `embedding-binding-${input.ordinal}`
     }));
@@ -626,20 +724,10 @@ describe("Memory run utility execution", () => {
         ) => apply())
       }
     } as unknown as PrismaMemoryExecutionService;
-    const vector = Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0);
-    let attempt = 0;
     const embed = vi.fn(async () => {
-      if (++attempt === 1) {
-        throw new EmbeddingAdapterError("embedding_provider_http_error", {
-          httpStatus: 503
-        });
-      }
-      return {
-        model: "embedding-upstream-1",
-        requestId: "embedding-http-retry-success",
-        usage: { inputTokens: 7, totalTokens: 7 },
-        vectors: [vector]
-      };
+      throw new EmbeddingAdapterError("embedding_provider_http_error", {
+        httpStatus: 503
+      });
     });
     const service = createMemoryRunUtilityService({
       embeddingRuntime: {
@@ -654,14 +742,13 @@ describe("Memory run utility execution", () => {
       profile,
       query: "What did I say about release readiness?"
     })).resolves.toMatchObject({
-      bindingId: "embedding-binding-2",
-      externalCallCount: 2,
-      status: "READY"
+      bindingId: "embedding-binding-1",
+      reason: "memory_query_embedding_transient_http_failure",
+      status: "UNAVAILABLE"
     });
-    expect(embed).toHaveBeenCalledTimes(2);
-    expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1, 2]);
-    expect(settle).toHaveBeenNthCalledWith(
-      1,
+    expect(embed).toHaveBeenCalledOnce();
+    expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1]);
+    expect(settle).toHaveBeenCalledWith(
       "user-1",
       "embedding-binding-1",
       expect.objectContaining({
@@ -901,613 +988,6 @@ describe("Memory run utility execution", () => {
     expect(document).toContain("[support_2 raw_excerpt=true");
   });
 
-  it("globally groups grounded individual and aggregate quantities before a count", async () => {
-    const log: string[] = [];
-    const bound = execution(log);
-    const provider: MemoryRunUtilityProvider = {
-      run: vi.fn(async (
-        _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
-        input: Parameters<MemoryRunUtilityProvider["run"]>[1]
-      ) => {
-        expect(input).toMatchObject({ kind: "AGGREGATE", role: "MEMORY_AGGREGATE" });
-        expect("kind" in input ? input.evidence.map(({ handle }) => handle) : [])
-          .toEqual(["i0", "i1", "i2", "i3"]);
-        return {
-          providerResponseId: "response-aggregation",
-          toolCalls: [{
-            arguments: {
-              groups: [{
-                item_handles: ["i0", "i1"],
-                occurrence: "release Alpha",
-                quantity: 1,
-                quantity_evidence: "release Alpha",
-                role: "MEMBER"
-              }, {
-                item_handles: ["i2"],
-                occurrence: "two Beta releases",
-                quantity: 2,
-                quantity_evidence: "two Beta releases",
-                role: "MEMBER"
-              }, {
-                item_handles: ["i3"],
-                occurrence: "launch day",
-                quantity: 0,
-                quantity_evidence: null,
-                role: "BOUNDARY"
-              }],
-              operation: "COUNT",
-              resolution: "RESOLVED"
-            },
-            id: "call-aggregation",
-            name: MEMORY_AGGREGATION_TOOL_NAME
-          }],
-          usage: {
-            cachedInputTokens: 0,
-            inputTokens: 80,
-            outputTokens: 30,
-            reasoningTokens: 0,
-            totalTokens: 110
-          }
-        };
-      })
-    };
-    const service = createMemoryRunUtilityService({
-      embeddingRuntime: { resolve: vi.fn() } as never,
-      execution: bound.value,
-      provider
-    });
-
-    const result = await service.aggregate({
-      ...baseInput(),
-      evidence: [{
-        handle: "i0",
-        occurredFrom: "2026-01-03T00:00:00.000Z",
-        occurredTo: null,
-        sourceKind: "HISTORY",
-        text: "The user completed release Alpha."
-      }, {
-        handle: "i1",
-        occurredFrom: "2026-01-04T00:00:00.000Z",
-        occurredTo: null,
-        sourceKind: "HISTORY",
-        text: "A later chat also referenced release Alpha."
-      }, {
-        handle: "i2",
-        occurredFrom: "2026-01-08T00:00:00.000Z",
-        occurredTo: null,
-        sourceKind: "HISTORY",
-        text: "The user completed two Beta releases."
-      }, {
-        handle: "i3",
-        occurredFrom: "2026-01-10T00:00:00.000Z",
-        occurredTo: null,
-        sourceKind: "HISTORY",
-        text: "The user marked launch day."
-      }],
-      query: "How many releases were completed before launch day?"
-    });
-
-    expect(result).toEqual({
-      bindingId: "binding-MEMORY_AGGREGATE",
-      externalCallCount: 1,
-      plan: {
-        groups: [{
-          itemHandles: ["i0", "i1"],
-          occurrence: "release Alpha",
-          quantity: 1,
-          quantityEvidence: "release Alpha",
-          role: "MEMBER"
-        }, {
-          itemHandles: ["i2"],
-          occurrence: "two Beta releases",
-          quantity: 2,
-          quantityEvidence: "two Beta releases",
-          role: "MEMBER"
-        }, {
-          itemHandles: ["i3"],
-          occurrence: "launch day",
-          quantity: 0,
-          quantityEvidence: null,
-          role: "BOUNDARY"
-        }],
-        operation: "COUNT",
-        resolution: "RESOLVED"
-      },
-      status: "READY"
-    });
-    expect(bound.admission.bind).toHaveBeenCalledWith(
-      "user-1",
-      expect.objectContaining({ ordinal: 0, role: "MEMORY_AGGREGATE" })
-    );
-  });
-
-  it("partitions map work by the bounded repair prompt size", async () => {
-    const bound = execution([]);
-    const mapInputs: MemoryAggregationUtilityProviderInput[] = [];
-    const provider: MemoryRunUtilityProvider = {
-      run: vi.fn(async (
-        _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
-        input: Parameters<MemoryRunUtilityProvider["run"]>[1]
-      ) => {
-        if (!("kind" in input) || input.aggregationPhase !== "MAP") {
-          throw new Error("expected_map_aggregation_input");
-        }
-        mapInputs.push(input);
-        return {
-          providerResponseId: `response-map-${mapInputs.length}`,
-          toolCalls: [{
-            arguments: {
-              groups: [],
-              operation: "COUNT",
-              resolution: "PARTIAL"
-            },
-            id: `call-map-${mapInputs.length}`,
-            name: MEMORY_AGGREGATION_TOOL_NAME
-          }],
-          usage: {
-            cachedInputTokens: 0,
-            inputTokens: 40,
-            outputTokens: 20,
-            reasoningTokens: 0,
-            totalTokens: 60
-          }
-        };
-      })
-    };
-    const service = createMemoryRunUtilityService({
-      embeddingRuntime: { resolve: vi.fn() } as never,
-      execution: bound.value,
-      provider
-    });
-
-    const result = await service.aggregate({
-      ...baseInput(),
-      evidence: Array.from({ length: 20 }, (_, index) => ({
-        handle: `i${index}`,
-        occurredFrom: null,
-        occurredTo: null,
-        sourceKind: "HISTORY" as const,
-        text: `Bounded evidence ${index} ${"x".repeat(2_000)}`
-      })),
-      query: "How many matching events occurred?"
-    });
-
-    expect(result).toMatchObject({ status: "READY" });
-    expect(mapInputs.length).toBeGreaterThan(1);
-    expect(mapInputs.every((input) => memoryRunUtilityPromptCharacters({
-      ...input,
-      repairReason: "QUANTITY_MISMATCH"
-    }) <= MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS)).toBe(true);
-    expect(result.externalCallCount).toBe(mapInputs.length);
-  });
-
-  it("maps every oversized reader item and reduces the complete grounded set", async () => {
-    const log: string[] = [];
-    const bound = execution(log);
-    const mappedHandles: string[] = [];
-    const provider: MemoryRunUtilityProvider = {
-      run: vi.fn(async (
-        _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
-        input: Parameters<MemoryRunUtilityProvider["run"]>[1]
-      ) => {
-        if (!("kind" in input)) throw new Error("expected_aggregation_input");
-        if (input.aggregationPhase === "REDUCE") {
-          expect(input).toMatchObject({
-            completeEvidenceView: true,
-            kind: "AGGREGATE",
-            role: "MEMORY_AGGREGATE"
-          });
-          expect(input.evidence.map(({ handle }) => handle)).toEqual(["g0", "g1"]);
-          expect(input.evidence.every(({ text }) =>
-            text.includes("mapped_status=APPLICABLE") &&
-            !text.includes("mapped_resolution="))).toBe(true);
-          return {
-            providerResponseId: "response-reduced-aggregation",
-            toolCalls: [{
-              arguments: {
-                groups: [{
-                  item_handles: ["g0"],
-                  occurrence: "release Alpha",
-                  quantity: 1,
-                  quantity_evidence: "release Alpha",
-                  role: "MEMBER"
-                }, {
-                  item_handles: ["g1"],
-                  occurrence: "release Beta",
-                  quantity: 1,
-                  quantity_evidence: "release Beta",
-                  role: "MEMBER"
-                }],
-                operation: "COUNT",
-                resolution: "RESOLVED"
-              },
-              id: "call-reduced-aggregation",
-              name: MEMORY_AGGREGATION_TOOL_NAME
-            }],
-            usage: {
-              cachedInputTokens: 0,
-              inputTokens: 80,
-              outputTokens: 30,
-              reasoningTokens: 0,
-              totalTokens: 110
-            }
-          };
-        }
-        expect(input).toMatchObject({
-          completeEvidenceView: false,
-          kind: "AGGREGATE",
-          role: "MEMORY_AGGREGATE"
-        });
-        mappedHandles.push(...input.evidence.map(({ handle }) => handle));
-        const matching = input.evidence.find(({ text }) => text.includes("release "));
-        if (!matching) throw new Error("expected_matching_map_evidence");
-        const occurrence = matching.text.includes("Alpha")
-          ? "release Alpha"
-          : "release Beta";
-        return {
-          providerResponseId: `response-map-${matching.handle}`,
-          toolCalls: [{
-            arguments: {
-              groups: [{
-                item_handles: [matching.handle],
-                occurrence,
-                quantity: 1,
-                quantity_evidence: occurrence,
-                role: "MEMBER"
-              }],
-              operation: "COUNT",
-              resolution: "PARTIAL"
-            },
-            id: `call-map-${matching.handle}`,
-            name: MEMORY_AGGREGATION_TOOL_NAME
-          }],
-          usage: {
-            cachedInputTokens: 0,
-            inputTokens: 80,
-            outputTokens: 30,
-            reasoningTokens: 0,
-            totalTokens: 110
-          }
-        };
-      })
-    };
-    const service = createMemoryRunUtilityService({
-      embeddingRuntime: { resolve: vi.fn() } as never,
-      execution: bound.value,
-      provider
-    });
-
-    const result = await service.aggregate({
-      ...baseInput(),
-      evidence: Array.from({ length: MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS + 1 },
-        (_, index) => ({
-          handle: `i${index}`,
-          occurredFrom: null,
-          occurredTo: null,
-          sourceKind: "HISTORY" as const,
-          text: index === 0
-            ? "The user completed release Alpha."
-            : index === MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS
-              ? "The user completed release Beta."
-            : `Unrelated bounded evidence ${index}.`
-        })),
-      query: "How many releases were completed?"
-    });
-
-    expect(mappedHandles.sort()).toEqual(Array.from(
-      { length: MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS + 1 },
-      (_, index) => `i${index}`
-    ).sort());
-    expect(result).toMatchObject({
-      externalCallCount: 3,
-      plan: {
-        groups: [{ itemHandles: ["i0"] }, {
-          itemHandles: [`i${MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS}`]
-        }],
-        operation: "COUNT",
-        resolution: "RESOLVED"
-      },
-      status: "READY"
-    });
-    expect(bound.admission.bind.mock.calls.map((call) => call[1].ordinal).sort())
-      .toEqual([0, MEMORY_AGGREGATION_MAX_ATTEMPTS,
-        2 * MEMORY_AGGREGATION_MAX_ATTEMPTS]);
-  });
-
-  it("never reports a resolved aggregate when one evidence shard is unavailable", async () => {
-    const bound = execution([]);
-    const provider: MemoryRunUtilityProvider = {
-      run: vi.fn(async (
-        _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
-        input: Parameters<MemoryRunUtilityProvider["run"]>[1]
-      ) => {
-        if (!("kind" in input) || input.aggregationPhase !== "MAP") {
-          throw new Error("unexpected_aggregation_phase");
-        }
-        const matching = input.evidence.find(({ text }) => text.includes("release "));
-        if (matching?.text.includes("Beta")) {
-          throw new Error("injected_map_provider_failure");
-        }
-        return {
-          providerResponseId: "response-map-alpha",
-          toolCalls: [{
-            arguments: {
-              groups: [{
-                item_handles: ["i0"],
-                occurrence: "release Alpha",
-                quantity: 1,
-                quantity_evidence: "release Alpha",
-                role: "MEMBER"
-              }],
-              operation: "COUNT",
-              resolution: "PARTIAL"
-            },
-            id: "call-map-alpha",
-            name: MEMORY_AGGREGATION_TOOL_NAME
-          }],
-          usage: {
-            cachedInputTokens: 0,
-            inputTokens: 40,
-            outputTokens: 20,
-            reasoningTokens: 0,
-            totalTokens: 60
-          }
-        };
-      })
-    };
-    const service = createMemoryRunUtilityService({
-      embeddingRuntime: { resolve: vi.fn() } as never,
-      execution: bound.value,
-      provider
-    });
-
-    const result = await service.aggregate({
-      ...baseInput(),
-      evidence: Array.from({ length: MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS + 1 },
-        (_, index) => ({
-          handle: `i${index}`,
-          occurredFrom: null,
-          occurredTo: null,
-          sourceKind: "HISTORY" as const,
-          text: index === 0
-            ? "The user completed release Alpha."
-            : index === MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS
-              ? "The user completed release Beta."
-              : `Unrelated bounded evidence ${index}.`
-        })),
-      query: "How many releases were completed?"
-    });
-
-    expect(result).toEqual(expect.objectContaining({
-      externalCallCount: 1 + MEMORY_AGGREGATION_MAX_ATTEMPTS,
-      reason: "memory_run_utility_provider_failed",
-      status: "UNAVAILABLE"
-    }));
-    expect(provider.run).toHaveBeenCalledTimes(
-      1 + MEMORY_AGGREGATION_MAX_ATTEMPTS
-    );
-  });
-
-  it("rejects a quantity that conflicts with its exact evidence and retries only that output", async () => {
-    const executionService = {
-      admission: {
-        bind: vi.fn(async (_userId: string, input: { ordinal: number }) => ({
-          id: `binding-${input.ordinal}`
-        })),
-        start: vi.fn(async (_userId: string, bindingId: string) => ({
-          bindingId,
-          snapshot: snapshot("MEMORY_AGGREGATE")
-        }))
-      },
-      lifecycle: {
-        settle: vi.fn(async () => ({})),
-        withAuthorizedResultCommit: vi.fn(async (
-          _userId: string,
-          _input: unknown,
-          apply: () => Promise<unknown>
-        ) => apply())
-      }
-    } as unknown as PrismaMemoryExecutionService;
-    const provider: MemoryRunUtilityProvider = {
-      run: vi.fn(async () => ({
-        providerResponseId: "response-invalid",
-        toolCalls: [{
-          arguments: {
-            groups: [{
-              item_handles: ["i0"],
-              occurrence: "12 completed releases",
-              quantity: 7,
-              quantity_evidence: "12 completed releases",
-              role: "MEMBER"
-            }],
-            operation: "COUNT",
-            resolution: "RESOLVED"
-          },
-          id: "call-invalid",
-          name: MEMORY_AGGREGATION_TOOL_NAME
-        }],
-        usage: {
-          cachedInputTokens: 0,
-          inputTokens: 20,
-          outputTokens: 10,
-          reasoningTokens: 0,
-          totalTokens: 30
-        }
-      }))
-    };
-    const service = createMemoryRunUtilityService({
-      embeddingRuntime: { resolve: vi.fn() } as never,
-      execution: executionService,
-      provider
-    });
-
-    const result = await service.aggregate({
-      ...baseInput(),
-      evidence: [{
-        handle: "i0",
-        occurredFrom: null,
-        occurredTo: null,
-        sourceKind: "HISTORY",
-        text: "The user reported 12 completed releases."
-      }],
-      query: "How many releases were completed?"
-    });
-
-    expect(result).toMatchObject({
-      reason: "memory_aggregation_output_quantity_mismatch",
-      status: "UNAVAILABLE"
-    });
-    expect(provider.run).toHaveBeenCalledTimes(MEMORY_AGGREGATION_MAX_ATTEMPTS);
-    expect(provider.run).toHaveBeenNthCalledWith(
-      1,
-      expect.anything(),
-      expect.objectContaining({ repairReason: null }),
-      expect.anything()
-    );
-    expect(provider.run).toHaveBeenNthCalledWith(
-      2,
-      expect.anything(),
-      expect.objectContaining({ repairReason: "QUANTITY_MISMATCH" }),
-      expect.anything()
-    );
-    expect(provider.run).toHaveBeenNthCalledWith(
-      3,
-      expect.anything(),
-      expect.objectContaining({ repairReason: "QUANTITY_MISMATCH" }),
-      expect.anything()
-    );
-    expect(executionService.lifecycle.settle).toHaveBeenCalledTimes(
-      MEMORY_AGGREGATION_MAX_ATTEMPTS
-    );
-    expect(vi.mocked(executionService.lifecycle.settle).mock.calls.map((call) =>
-      call[2])).toEqual(Array.from(
-        { length: MEMORY_AGGREGATION_MAX_ATTEMPTS },
-        () => expect.objectContaining({
-          errorCode: "memory_aggregation_output_quantity_mismatch",
-          state: "FAILED"
-        })
-      ));
-    expect(executionService.admission.bind).toHaveBeenNthCalledWith(
-      1,
-      "user-1",
-      expect.objectContaining({ ordinal: 0, role: "MEMORY_AGGREGATE" })
-    );
-    expect(executionService.admission.bind).toHaveBeenNthCalledWith(
-      2,
-      "user-1",
-      expect.objectContaining({ ordinal: 1, role: "MEMORY_AGGREGATE" })
-    );
-    expect(executionService.admission.bind).toHaveBeenNthCalledWith(
-      3,
-      "user-1",
-      expect.objectContaining({ ordinal: 2, role: "MEMORY_AGGREGATE" })
-    );
-    const bindingInputs = vi.mocked(executionService.admission.bind).mock.calls
-      .map((call) => call[1]);
-    expect(bindingInputs[0]?.inputHash).not.toBe(bindingInputs[1]?.inputHash);
-    expect(bindingInputs[1]?.inputHash).toBe(bindingInputs[2]?.inputHash);
-  });
-
-  it("preserves validation feedback across an uncertain repair outcome", async () => {
-    const executionService = {
-      admission: {
-        bind: vi.fn(async (_userId: string, input: { ordinal: number }) => ({
-          id: `binding-${input.ordinal}`
-        })),
-        start: vi.fn(async (_userId: string, bindingId: string) => ({
-          bindingId,
-          snapshot: snapshot("MEMORY_AGGREGATE")
-        }))
-      },
-      lifecycle: {
-        settle: vi.fn(async () => ({})),
-        withAuthorizedResultCommit: vi.fn(async (
-          _userId: string,
-          _input: unknown,
-          apply: () => Promise<unknown>
-        ) => apply())
-      }
-    } as unknown as PrismaMemoryExecutionService;
-    let callCount = 0;
-    const provider: MemoryRunUtilityProvider = {
-      run: vi.fn(async () => {
-        callCount += 1;
-        if (callCount === 2) throw new MemoryRunUtilityProviderCallError(null);
-        const valid = callCount === 3;
-        return {
-          providerResponseId: `response-${callCount}`,
-          toolCalls: [{
-            arguments: {
-              groups: [{
-                item_handles: ["i0"],
-                occurrence: "12 completed releases",
-                quantity: valid ? 12 : 7,
-                quantity_evidence: "12 completed releases",
-                role: "MEMBER"
-              }],
-              operation: "COUNT",
-              resolution: "RESOLVED"
-            },
-            id: `call-${callCount}`,
-            name: MEMORY_AGGREGATION_TOOL_NAME
-          }],
-          usage: {
-            cachedInputTokens: 0,
-            inputTokens: 20,
-            outputTokens: 10,
-            reasoningTokens: 0,
-            totalTokens: 30
-          }
-        };
-      })
-    };
-    const service = createMemoryRunUtilityService({
-      embeddingRuntime: { resolve: vi.fn() } as never,
-      execution: executionService,
-      provider
-    });
-
-    const result = await service.aggregate({
-      ...baseInput(),
-      evidence: [{
-        handle: "i0",
-        occurredFrom: null,
-        occurredTo: null,
-        sourceKind: "HISTORY",
-        text: "The user reported 12 completed releases."
-      }],
-      query: "How many releases were completed?"
-    });
-
-    expect(result).toMatchObject({
-      externalCallCount: 3,
-      plan: { groups: [{ quantity: 12 }] },
-      status: "READY"
-    });
-    expect(vi.mocked(provider.run).mock.calls.map((call) =>
-      (call[1] as { repairReason: string | null }).repairReason)).toEqual([
-      null,
-      "QUANTITY_MISMATCH",
-      "QUANTITY_MISMATCH"
-    ]);
-    expect(vi.mocked(executionService.lifecycle.settle).mock.calls.map((call) =>
-      call[2])).toEqual([
-      expect.objectContaining({
-        errorCode: "memory_aggregation_output_quantity_mismatch",
-        state: "FAILED"
-      }),
-      expect.objectContaining({
-        errorCode: "memory_run_utility_outcome_unknown",
-        state: "OUTCOME_UNKNOWN"
-      }),
-      expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
-    ]);
-    const bindingInputs = vi.mocked(executionService.admission.bind).mock.calls
-      .map((call) => call[1]);
-    expect(bindingInputs.map(({ ordinal }) => ordinal)).toEqual([0, 1, 2]);
-    expect(bindingInputs[0]?.inputHash).not.toBe(bindingInputs[1]?.inputHash);
-    expect(bindingInputs[1]?.inputHash).toBe(bindingInputs[2]?.inputHash);
-  });
 
   it("reranks the full broad history pool in nine governed batches", async () => {
     const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
@@ -2871,6 +2351,32 @@ describe("Memory run utility execution", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not start a dedicated rerank retry after the caller's soft deadline", async () => {
+    const canRetry = vi.fn(() => false);
+    const harness = dedicatedHarness(async () => {
+      throw new RerankAdapterError("rerank_provider_request_failed");
+    });
+
+    await expect(harness.service.rerank({
+      ...baseInput(),
+      candidates: dedicatedCandidates(3),
+      canRetry,
+      profileRequested: false,
+      query: "Which release milestones did I discuss?"
+    })).resolves.toMatchObject({
+      bindingId: "binding-2",
+      diagnostics: {
+        fullFallbackUsed: true,
+        retryCount: 0
+      },
+      reason: "memory_reranker_outcome_unknown",
+      status: "UNAVAILABLE"
+    });
+    expect(canRetry).toHaveBeenCalledOnce();
+    expect(harness.rerank).toHaveBeenCalledOnce();
+    expect(harness.bind.mock.calls.map((call) => call[1].ordinal)).toEqual([2]);
   });
 
   it("cancels before dedicated provider I/O and returns full fallback evidence", async () => {

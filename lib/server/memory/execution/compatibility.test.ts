@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { MemoryExecutionError } from "./errors";
 import type { ResolvedMemoryExecutionTarget } from "./policy";
 import { resolveMemoryExecutionCompatibility } from "./compatibility";
-import { MEMORY_EXECUTION_ROLES, MEMORY_STRICT_OUTPUT_ROLES } from "./roles";
+import {
+  MEMORY_EXECUTABLE_ROLES,
+  MEMORY_EXECUTION_ROLES,
+  MEMORY_STRICT_OUTPUT_ROLES
+} from "./roles";
 
 const versions = {
   pipelineVersion: "memory-pipeline-v2",
@@ -75,8 +79,9 @@ describe("Memory execution compatibility", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_RERANK");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_AGGREGATE");
+    expect(MEMORY_EXECUTABLE_ROLES).not.toContain("MEMORY_AGGREGATE");
     expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_FACT_EXTRACT");
-    expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_AGGREGATE");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_AGGREGATE");
     expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_RERANK");
     expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_QUERY_EMBED");
   });

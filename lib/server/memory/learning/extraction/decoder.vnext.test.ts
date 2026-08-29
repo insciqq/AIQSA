@@ -21,7 +21,8 @@ function input(
     id: string;
     role: "assistant" | "user";
     text: string;
-  }>[] = []
+  }>[] = [],
+  languageCode: MemoryFactExtractionInput["messages"][number]["languageCode"] = "und"
 ): MemoryFactExtractionInput {
   const source = {
     activeLeafMessageId: "assistant-1",
@@ -52,7 +53,7 @@ function input(
       createdAt: "2026-08-25T10:00:00.000Z",
       evidenceEligible: true,
       id: source.sourceMessageId,
-      languageCode: "und",
+      languageCode,
       redactionSpans,
       role: "user",
       text,
@@ -176,13 +177,14 @@ function decode(
     id: string;
     role: "assistant" | "user";
     text: string;
-  }>[] = []
+  }>[] = [],
+  languageCode: MemoryFactExtractionInput["messages"][number]["languageCode"] = "und"
 ) {
   return decodeMemoryFactExtraction([{
     arguments: { observations },
     id: "call-1",
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
-  }], input(sourceText, contextRefs, redactionSpans, priorMessages));
+  }], input(sourceText, contextRefs, redactionSpans, priorMessages, languageCode));
 }
 
 describe("Memory v5 semantic-frame decoder", () => {
@@ -430,6 +432,40 @@ describe("Memory v5 semantic-frame decoder", () => {
       identityKind: "PROPOSITION",
       sensitivity: "NORMAL",
       statement: "The current user's spouse is Alex."
+    });
+  });
+
+  it("keeps a source-language profession as an open-world proposition", () => {
+    const quote = "Я работаю девопсом.";
+    const plan = decode(quote, [observation(quote, {
+      identity: {
+        dimension_key: null,
+        mode: "SLOT",
+        predicate_key: "employment_status",
+        subject: {
+          canonical_label: null,
+          entity_type: "PERSON_SELF",
+          qualifiers: { brand: null, model: null }
+        }
+      },
+      memory_type: "STATE",
+      statement: "Пользователь работает девопсом.",
+      value: { ...nullValue, role: "девопс", state: "current" }
+    })], [], [], [], "ru");
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]).toMatchObject({
+      category: "work",
+      displayText: "Пользователь работает девопсом.",
+      identityKind: "PROPOSITION",
+      languageCode: "ru",
+      predicateKey: null,
+      proposedValue: {
+        normalizedStatement: "пользователь работает девопсом.",
+        schema: "generic-fact-v1"
+      },
+      subjectKey: null
     });
   });
 

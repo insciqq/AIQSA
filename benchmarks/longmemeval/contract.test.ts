@@ -12,7 +12,7 @@ import {
   evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
   longMemEvalEmbeddingBatchSizeDistribution,
-  longMemEvalExpectedUtilityModelId,
+  longMemEvalExpectedUtilityModelIds,
   longMemEvalHybridRebuildFailed,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
@@ -204,23 +204,20 @@ describe("LongMemEval adapter contract", () => {
     })).toBe(false);
   });
 
-  it("routes utility-model evidence by role with an optional dedicated reranker", () => {
-    const expected = (logicalRole: string, rerankerModelId: string | null) =>
-      longMemEvalExpectedUtilityModelId({
+  it("accepts every model in the frozen reranker route for rerank evidence", () => {
+    const expected = (logicalRole: string, rerankerModelIds: readonly string[]) =>
+      longMemEvalExpectedUtilityModelIds({
         embeddingModelId: "embedding-model",
         logicalRole,
-        rerankerModelId,
+        rerankerModelIds,
         systemModelId: "system-model"
       });
-    expect(expected("MEMORY_DOCUMENT_EMBED", "reranker-model"))
-      .toBe("embedding-model");
-    expect(expected("MEMORY_QUERY_EMBED", "reranker-model"))
-      .toBe("embedding-model");
-    expect(expected("MEMORY_RERANK", "reranker-model"))
-      .toBe("reranker-model");
-    expect(expected("MEMORY_RERANK", null)).toBe("system-model");
-    expect(expected("MEMORY_HISTORY_CLASSIFY", "reranker-model"))
-      .toBe("system-model");
+    const route = ["voyage-reranker", "cohere-reranker", "qwen-reranker"];
+    expect(expected("MEMORY_DOCUMENT_EMBED", route)).toEqual(["embedding-model"]);
+    expect(expected("MEMORY_QUERY_EMBED", route)).toEqual(["embedding-model"]);
+    expect(expected("MEMORY_RERANK", route)).toEqual(route);
+    expect(expected("MEMORY_RERANK", [])).toEqual(["system-model"]);
+    expect(expected("MEMORY_HISTORY_CLASSIFY", route)).toEqual(["system-model"]);
   });
 
   it("decodes aligned official rows without changing their text", () => {
@@ -474,9 +471,18 @@ describe("LongMemEval adapter contract", () => {
       aggregationGuideFormat: "DETAILED",
       aggregationMemberCount: 4,
       aggregationOperation: "COUNT",
+      aggregationProviderCalls: 5,
+      aggregationProviderMs: 79_100,
       aggregationResolution: "RESOLVED",
-      aggregationState: "READY",
+      aggregationState: "READER_REQUIRED",
       budgetProfile: "COMPLEX",
+      cardinalityParserAcceptedCount: 3,
+      cardinalityParserReasonCounts: {
+        UNSUPPORTED_NUMBER_WORD: 1,
+        private_text: "hidden"
+      },
+      cardinalityParserRejectedCount: 1,
+      cardinalityParserVersion: "memory-cardinality-parser-v1",
       componentMetrics: {
         candidateCountsByLane: {
           FACT_EXACT: 4,
@@ -494,10 +500,19 @@ describe("LongMemEval adapter contract", () => {
         queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
         rawChunkExpansions: 8,
         rawRoundExpansions: 0,
+        rerankModelAttemptCount: 2,
+        rerankModelFallbackDepth: 1,
+        rerankRoutePolicyVersion: "openrouter-reranker-route-v1",
+        rerankScoreFloor: 0.01,
         rerankerFallbackUsed: true,
         safetyFindingCounts: { JSON_WEB_TOKEN: 1 },
         safetyMetricsState: "QUERY_ONLY_BASELINE",
         selectedSourceChats: 3,
+        sessionCompletionCandidateCount: 4,
+        sessionCompletionExpandedSourceChatCount: 2,
+        sessionCompletionPackedCount: 3,
+        sessionCompletionSelectedSourceChatCount: 2,
+        sessionCompletionState: "READY",
         temporalFilteredCandidateCount: 0,
         temporalParserConfidence: null,
         temporalParserState: "NOT_AVAILABLE",
@@ -509,24 +524,37 @@ describe("LongMemEval adapter contract", () => {
         utilityFailureReasonCounts: { memory_relevance_unavailable: 1 },
         version: "memory-retrieval-component-metrics-v1"
       },
+      controlMs: 1_200,
+      controlProviderCalls: 1,
+      deterministicAggregationMs: 4,
       hardCapTokens: 5_000,
       failureClass: "DATABASE",
       failureCode: "memory_expansion_database_p2010",
       itemCount: 5,
+      localRetrievalMs: 31,
+      memoryPrepareLatencyBucket: "GT_12S",
+      memoryPrepareMs: 80_500,
       omissionCounts: { history_limit: 2, unsafe: "secret text" },
       packedTokens: 2_300,
+      packerMs: 3,
       plan: {
         aggregationRequested: true,
         mode: "PAST_CHAT_SEARCH",
         normalizedQuery: "private query"
       },
       providerTokenLimit: 48_000,
+      queryEmbeddingMs: 800,
+      queryEmbeddingProviderCalls: 1,
       reason: "no_relevant_memory",
       relevanceAcceptedCount: 5,
       relevanceCandidateCount: 10,
       relevanceDecisionCounts: { NOT_RELEVANT: 5, SUPPORTING_CONTEXT: 5 },
       relevanceDecisions: [{ text: "private candidate" }],
       relevanceRejoinedCount: 5,
+      rejoinMs: 12,
+      rerankMs: 1_350,
+      rerankProviderCalls: 1,
+      snapshotMs: 20,
       targetTokens: 4_000
     })).toEqual({
       aggregationBoundaryCount: 1,
@@ -534,26 +562,41 @@ describe("LongMemEval adapter contract", () => {
       aggregationGuideFormat: "DETAILED",
       aggregationMemberCount: 4,
       aggregationOperation: "COUNT",
+      aggregationProviderCalls: 5,
+      aggregationProviderMs: 79_100,
       aggregationRequested: true,
       aggregationResolution: "RESOLVED",
-      aggregationState: "READY",
+      aggregationState: "READER_REQUIRED",
       budgetProfile: "COMPLEX",
       candidateCountsByLane: { FACT_EXACT: 4, HISTORY_RECALL_VECTOR: 6 },
+      cardinalityParserAcceptedCount: 3,
+      cardinalityParserReasonCounts: { UNSUPPORTED_NUMBER_WORD: 1 },
+      cardinalityParserRejectedCount: 1,
+      cardinalityParserVersion: "memory-cardinality-parser-v1",
       candidatesRetainedAfterRejoin: 4,
       candidatesRetainedAfterReranker: 5,
       candidatesSentToReranker: 10,
       componentMetricsVersion: "memory-retrieval-component-metrics-v1",
+      controlMs: 1_200,
+      controlProviderCalls: 1,
+      deterministicAggregationMs: 4,
       digestHits: 2,
       embeddingBatchSizeDistribution: { "1": 7 },
       failureClass: "DATABASE",
       failureCode: "memory_expansion_database_p2010",
       hardCapTokens: 5_000,
       itemCount: 5,
+      localRetrievalMs: 31,
+      memoryPrepareLatencyBucket: "GT_12S",
+      memoryPrepareMs: 80_500,
       mode: "PAST_CHAT_SEARCH",
       omissionCounts: { history_limit: 2 },
       packedTokens: 2_300,
+      packerMs: 3,
       plannerFallbackUsed: false,
       providerTokenLimit: 48_000,
+      queryEmbeddingMs: 800,
+      queryEmbeddingProviderCalls: 1,
       queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
       rawChunkExpansions: 8,
       rawRoundExpansions: 0,
@@ -562,10 +605,24 @@ describe("LongMemEval adapter contract", () => {
       relevanceCandidateCount: 10,
       relevanceDecisionCounts: { NOT_RELEVANT: 5, SUPPORTING_CONTEXT: 5 },
       relevanceRejoinedCount: 5,
+      rejoinMs: 12,
+      rerankMs: 1_350,
+      rerankModelAttemptCount: 2,
+      rerankModelFallbackDepth: 1,
+      rerankProviderCalls: 1,
+      rerankRoutePolicyVersion: "openrouter-reranker-route-v1",
+      rerankScoreFloor: 0.01,
       rerankerFallbackUsed: true,
       safetyFindingCounts: { JSON_WEB_TOKEN: 1 },
       safetyMetricsState: "QUERY_ONLY_BASELINE",
       selectedSourceChats: 3,
+      sessionCompletionCandidateCount: 4,
+      sessionCompletionExpandedSourceChatCount: 2,
+      sessionCompletionPackedCount: 3,
+      sessionCompletionSelectedSourceChatCount: 2,
+      sessionCompletionState: "READY",
+      snapshotMs: 20,
+      speculativeBaselineUsed: null,
       targetTokens: 4_000,
       temporalFilteredCandidateCount: 0,
       temporalParserConfidence: null,

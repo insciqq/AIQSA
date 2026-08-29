@@ -1,4 +1,5 @@
 export * from "./config";
+export * from "./cardinality";
 export * from "./contracts";
 export * from "./decay";
 export * from "./lanes";

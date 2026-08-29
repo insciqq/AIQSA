@@ -196,6 +196,10 @@ describe("administrator system model policy service", () => {
       policy: {
         reasoningEffort: "xhigh",
         rerankerModel: null,
+        rerankerRoute: {
+          entries: [],
+          policyVersion: "openrouter-reranker-route-v1"
+        },
         systemModel: {
           available: false,
           connectionDisplayName: "Answer provider",

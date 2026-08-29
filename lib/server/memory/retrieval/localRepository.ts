@@ -7,17 +7,20 @@ import {
   allocateMemoryRetrievalLaneLimits,
   executeMemoryRetrievalLaneTasks,
   fuseMemoryRetrievalCandidates,
+  MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS,
   MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS,
   MEMORY_CORE_MAX_FACTS,
   MEMORY_RETRIEVAL_BASELINE_FACT_EVIDENCE_ROOTS,
   MEMORY_RETRIEVAL_BASELINE_HISTORY_EVIDENCE_ROOTS,
   MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS,
   MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT,
+  MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER,
   MEMORY_RETRIEVAL_FUSION_VERSION,
   MEMORY_RETRIEVAL_LANE_WEIGHTS,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
   MEMORY_LEXICAL_QUERY_MAX_TERMS,
+  MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_RRF_K,
   MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
@@ -90,7 +93,8 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v23";
+  "memory-local-retrieval-repository-v27";
+export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -131,6 +135,7 @@ export type MemoryLocalRetrievalInput = Readonly<{
   chatId: string;
   now: Date;
   plan: MemoryRetrievalPlan;
+  settleSignal?: AbortSignal;
   userId: string;
   vector?: MemoryLocalVectorQuery;
 }>;
@@ -250,6 +255,20 @@ type CandidateRow = Readonly<{
   temperatureScore: number;
   validFrom: Date | null;
   validTo: Date | null;
+}>;
+
+type AggregationSessionRoundRow = Readonly<{
+  evidenceRootHash: string;
+  itemId: string;
+  languageCode: string;
+  occurredFrom: Date;
+  occurredTo: Date;
+  parentChunkId: string;
+  roundOrdinal: number;
+  safetyClass: "NORMAL" | "SENSITIVE";
+  sourceAssistantId: string | null;
+  sourceChatId: string;
+  sourceFolderId: string | null;
 }>;
 
 type CoreRow = CandidateRow & Readonly<{ safeText: string }>;
@@ -2887,7 +2906,12 @@ function localLexicalLanes(
       if (plan.recencyRequested) lanes.push("HISTORY_RECALL_RECENT");
     }
   }
-  return lanes;
+  const priority = new Map<MemoryRetrievalLane, number>(
+    MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.map((lane, index) => [lane, index])
+  );
+  return lanes.sort((left, right) =>
+    (priority.get(left) ?? Number.MAX_SAFE_INTEGER) -
+    (priority.get(right) ?? Number.MAX_SAFE_INTEGER));
 }
 
 function allocatedLimit(
@@ -2974,7 +2998,10 @@ function pushLexicalTasks(
           return { candidates: [], lane };
         }
       },
-      lane
+      lane,
+      onUnavailable() {
+        failures.push(lane);
+      }
     });
   }
   return {
@@ -3120,7 +3147,10 @@ function pushVectorTasks(
                   lane === "HISTORY_RECALL_VECTOR"
               });
       },
-      lane
+      lane,
+      onUnavailable() {
+        state = "DEGRADED";
+      }
     });
   }
   return { state: () => state };
@@ -3643,14 +3673,15 @@ function toolEventExpansionSql(
   `;
 }
 
-function legacyRoundExpansionSql(
+function rawRoundExpansionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)})
-    SELECT eligible."itemId", eligible."itemType",
+    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(snapshot, plan)})
+    SELECT DISTINCT ON (eligible."itemId")
+      eligible."itemId", eligible."itemType",
       CASE WHEN char_length(round."rawSafeText") <= 4000
         THEN round."rawSafeText"
         ELSE substring(round."rawSafeText" FROM 1 FOR 4000)
@@ -3663,9 +3694,8 @@ function legacyRoundExpansionSql(
     FROM eligible INNER JOIN "MemoryRecallRound" AS round
       ON round."userId" = ${snapshot.userId} AND round."id" = eligible."itemId"
     WHERE eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
-      AND eligible."matchedSegmentId" IS NULL
       AND eligible."itemId" IN (${valuesSql(ids)})
-    ORDER BY eligible."itemId"
+    ORDER BY eligible."itemId", eligible."matchedSegmentId" NULLS FIRST
   `;
 }
 
@@ -3896,6 +3926,147 @@ function aggregationDigestCandidatesSql(
   `;
 }
 
+/**
+ * Completes a reranker-selected session with a small chronological raw-round
+ * window. The source-session decision remains owned by retrieval + rerank;
+ * this query cannot introduce another chat and every returned round passes
+ * the same generation, deletion, suppression, branch, safety, and scope
+ * predicates as ordinary history retrieval.
+ */
+function aggregationSessionRoundCompletionSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  sourceChatIds: readonly string[]
+): Prisma.Sql {
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(snapshot, plan)}),
+    eligible_rounds AS MATERIALIZED (
+      SELECT DISTINCT eligible."itemId", eligible."sourceChatId"
+      FROM eligible
+      WHERE eligible."sourceChatId" IN (${valuesSql(sourceChatIds)})
+    ),
+    ranked_rounds AS (
+      SELECT memory_round."id" AS "itemId",
+        memory_round."parentChunkId",
+        memory_round."chatId" AS "sourceChatId",
+        memory_round."sourceFolderId",
+        memory_round."sourceAssistantId",
+        memory_round."evidenceRootHash",
+        memory_round."languageCode",
+        memory_round."occurredFrom",
+        memory_round."occurredTo",
+        memory_round."roundOrdinal",
+        memory_round."safetyClass"::text AS "safetyClass",
+        ROW_NUMBER() OVER (
+          PARTITION BY memory_round."chatId"
+          ORDER BY memory_round."roundOrdinal", memory_round."id"
+        ) AS "sourceOrdinal"
+      FROM eligible_rounds
+      INNER JOIN "MemoryRecallRound" AS memory_round
+        ON memory_round."userId" = ${snapshot.userId}
+        AND memory_round."id" = eligible_rounds."itemId"
+        AND memory_round."chatId" = eligible_rounds."sourceChatId"
+    )
+    SELECT "itemId", "parentChunkId", "sourceChatId", "sourceFolderId",
+      "sourceAssistantId", "evidenceRootHash", "languageCode", "occurredFrom",
+      "occurredTo", "roundOrdinal", "safetyClass"
+    FROM ranked_rounds
+    WHERE "sourceOrdinal" <= ${MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT}
+    ORDER BY "sourceChatId", "roundOrdinal", "itemId"
+  `;
+}
+
+export type MemoryAggregationSessionCompletion = Readonly<{
+  candidates: readonly MemoryRankedCandidate[];
+  sourceChatCount: number;
+}>;
+
+function decodeMemoryAggregationSessionCompletion(
+  rows: readonly AggregationSessionRoundRow[],
+  selectedSources: readonly MemoryRankedCandidate[]
+): MemoryAggregationSessionCompletion {
+  const selectedBySource = new Map<string, MemoryRankedCandidate>();
+  for (const selected of selectedSources) {
+    if (selected.itemType === "FACT_VERSION") continue;
+    const sourceChatId = selected.metadata.sourceChatId;
+    if (!sourceChatId || selectedBySource.has(sourceChatId)) continue;
+    selectedBySource.set(sourceChatId, selected);
+    if (selectedBySource.size >= MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS) break;
+  }
+  const sourceOrder = new Map([...selectedBySource.keys()].map((sourceChatId, index) =>
+    [sourceChatId, index]));
+  const seenItems = new Set<string>();
+  const countsBySource = new Map<string, number>();
+  const decoded: Array<Readonly<{
+    candidate: MemoryRankedCandidate;
+    roundOrdinal: number;
+  }>> = [];
+  for (const row of rows) {
+    const selected = selectedBySource.get(row.sourceChatId);
+    const sourceCount = countsBySource.get(row.sourceChatId) ?? 0;
+    if (
+      !selected || !validToken(row.itemId) || !validToken(row.parentChunkId) ||
+      !validToken(row.sourceChatId) ||
+      (row.sourceFolderId !== null && !validToken(row.sourceFolderId)) ||
+      (row.sourceAssistantId !== null && !validToken(row.sourceAssistantId)) ||
+      !fingerprintPattern.test(row.evidenceRootHash) ||
+      typeof row.languageCode !== "string" || row.languageCode.length < 1 ||
+      row.languageCode.length > 35 ||
+      !Number.isSafeInteger(row.roundOrdinal) || row.roundOrdinal < 0 ||
+      !validDate(row.occurredFrom) || !validDate(row.occurredTo) ||
+      row.occurredTo < row.occurredFrom ||
+      (row.safetyClass !== "NORMAL" && row.safetyClass !== "SENSITIVE") ||
+      seenItems.has(row.itemId) ||
+      sourceCount >= MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT
+    ) throw new Error("memory_aggregation_session_completion_result_invalid");
+    seenItems.add(row.itemId);
+    countsBySource.set(row.sourceChatId, sourceCount + 1);
+    const selectionReason = `${selected.selectionReason}+aggregation_session_completion`;
+    decoded.push({
+      candidate: {
+        ...selected,
+        entryId: null,
+        featureSnapshot: {
+          ...selected.featureSnapshot,
+          deterministicMatches: [],
+          directFactAuthority: false
+        },
+        itemId: row.itemId,
+        itemType: "RECALL_ROUND",
+        matchedSegmentId: null,
+        matchedSegmentPosition: null,
+        metadata: {
+          ...selected.metadata,
+          dedupeKey: `history:${row.evidenceRootHash}`,
+          evidenceRootHash: row.evidenceRootHash,
+          historySafetyClass: row.safetyClass,
+          languageCode: row.languageCode,
+          occurredFrom: row.occurredFrom,
+          occurredTo: row.occurredTo,
+          parentChunkId: row.parentChunkId,
+          sourceAssistantId: row.sourceAssistantId,
+          sourceAuthority: "PAST_CHAT",
+          sourceChatId: row.sourceChatId,
+          sourceFolderId: row.sourceFolderId
+        },
+        selectionReason: selectionReason.length <= 128
+          ? selectionReason
+          : "aggregation_session_completion"
+      },
+      roundOrdinal: row.roundOrdinal
+    });
+  }
+  decoded.sort((left, right) =>
+    (sourceOrder.get(left.candidate.metadata.sourceChatId!) ?? Number.MAX_SAFE_INTEGER) -
+      (sourceOrder.get(right.candidate.metadata.sourceChatId!) ?? Number.MAX_SAFE_INTEGER) ||
+    left.roundOrdinal - right.roundOrdinal ||
+    left.candidate.itemId.localeCompare(right.candidate.itemId));
+  return Object.freeze({
+    candidates: Object.freeze(decoded.map(({ candidate }) => candidate)),
+    sourceChatCount: selectedBySource.size
+  });
+}
+
 /** Replaces a session-navigation representative with the authoritative digest
  * anchor identity as one atomic item reference. Mixing a round itemType with a
  * chunk itemId makes the subsequent authoritative expansion query the wrong
@@ -4013,6 +4184,10 @@ function validBaselinePlan(
   snapshot: MemoryLocalRetrievalSnapshot
 ): boolean {
   const kinds = baseline.filters.sourceKinds;
+  const coveredKinds = new Set([
+    ...kinds,
+    ...enriched.filters.sourceKinds
+  ]);
   const facts = kinds.includes("FACT") || kinds.includes("EVENT");
   return validPlan(baseline) && !baseline.aggregationRequested &&
     !baseline.applyResponsePreferences && !baseline.includePatterns &&
@@ -4028,8 +4203,10 @@ function validBaselinePlan(
     baseline.filters.asOf === null && baseline.filters.from === null &&
     baseline.filters.to === null && baseline.filters.scopeType === null &&
     baseline.filters.scopeTargetId === null &&
-    (!snapshot.useMemoryFacts || kinds.includes("FACT") && kinds.includes("EVENT")) &&
-    (!snapshot.referenceChatHistory || kinds.includes("HISTORY"));
+    (!facts || snapshot.useMemoryFacts) &&
+    (!kinds.includes("HISTORY") || snapshot.referenceChatHistory) &&
+    (!snapshot.useMemoryFacts || coveredKinds.has("FACT") && coveredKinds.has("EVENT")) &&
+    (!snapshot.referenceChatHistory || coveredKinds.has("HISTORY"));
 }
 
 const emptySourceFamilyEvidence = Object.freeze({
@@ -4189,7 +4366,7 @@ function usesDigestOnlyProjection(candidate: MemoryRankedCandidate): boolean {
 }
 
 export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient = prisma) {
-  return Object.freeze({
+  const repository = {
     async expand(
       snapshot: MemoryLocalRetrievalSnapshot,
       plan: MemoryRetrievalPlan,
@@ -4233,7 +4410,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (toolEventIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
         toolEventExpansionSql(snapshot, plan, toolEventIds)));
       if (roundSelections.legacyIds.length > 0) {
-        queries.push(client.$queryRaw<ExpandedRow[]>(legacyRoundExpansionSql(
+        queries.push(client.$queryRaw<ExpandedRow[]>(rawRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.legacyIds
@@ -4286,7 +4463,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (toolEventIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
         toolEventExpansionSql(snapshot, plan, toolEventIds)));
       if (roundSelections.legacyIds.length > 0) {
-        initialQueries.push(client.$queryRaw<ExpandedRow[]>(legacyRoundExpansionSql(
+        initialQueries.push(client.$queryRaw<ExpandedRow[]>(rawRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.legacyIds
@@ -4355,6 +4532,40 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         return [projectMemoryAggregationDigestRepresentative(representative, row)];
       });
       return [...facts, ...history];
+    },
+
+    async completeAggregationSessionEvidence(
+      snapshot: MemoryLocalRetrievalSnapshot,
+      plan: MemoryRetrievalPlan,
+      selectedSources: readonly MemoryRankedCandidate[]
+    ): Promise<MemoryAggregationSessionCompletion> {
+      if (
+        snapshot.status !== "READY" ||
+        !plan.aggregationRequested || plan.mode !== "PAST_CHAT_SEARCH" ||
+        selectedSources.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+        new Set(selectedSources.map((candidate) =>
+          `${candidate.itemType}:${candidate.itemId}`)).size !== selectedSources.length ||
+        selectedSources.some((candidate) => !validToken(candidate.itemId))
+      ) throw new Error("memory_aggregation_session_completion_contract_invalid");
+      const sourceChatIds = [...new Set(selectedSources.flatMap((candidate) =>
+        candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
+          ? [candidate.metadata.sourceChatId]
+          : []))].slice(0, MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS);
+      if (sourceChatIds.length === 0) return Object.freeze({
+        candidates: Object.freeze([]),
+        sourceChatCount: 0
+      });
+      if (sourceChatIds.some((sourceChatId) => !validToken(sourceChatId))) {
+        throw new Error("memory_aggregation_session_completion_contract_invalid");
+      }
+      const rows = await client.$queryRaw<AggregationSessionRoundRow[]>(
+        aggregationSessionRoundCompletionSql(snapshot, plan, sourceChatIds)
+      );
+      if (rows.length > sourceChatIds.length *
+        MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT) {
+        throw new Error("memory_aggregation_session_completion_result_invalid");
+      }
+      return decodeMemoryAggregationSessionCompletion(rows, selectedSources);
     },
 
     snapshot(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalSnapshot> {
@@ -4438,7 +4649,11 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       }
       if (tasks.length === 0) return emptyResult(snapshot, core,
         input.vector ? "DISABLED" : "NOT_CONFIGURED");
-      const executed = await executeMemoryRetrievalLaneTasks(tasks);
+      const executed = await executeMemoryRetrievalLaneTasks(
+        tasks,
+        MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
+        input.settleSignal
+      );
       let baselineLaneResults = separateBaseline
         ? executed.slice(0, baselineTaskCount)
         : input.baselinePlan ? executed : [];
@@ -4528,6 +4743,34 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         vectorEvidence: distinctVectorEvidence,
         vectorState
       };
+    }
+  };
+  return Object.freeze({
+    ...repository,
+    /** Reader-first latency hedge. This deliberately executes only the
+     * deterministic original-query plan supplied by admission: no vector,
+     * planner rewrite, digest navigation, or provider-owned signal can delay
+     * the complete exact/FTS/trigram baseline. */
+    async retrieveSpeculativeBaseline(
+      input: MemoryLocalRetrievalInput,
+      parentSignal?: AbortSignal
+    ) {
+      const controller = new AbortController();
+      const forwardAbort = () => {
+        if (!controller.signal.aborted) controller.abort(parentSignal?.reason);
+      };
+      if (parentSignal?.aborted) forwardAbort();
+      else parentSignal?.addEventListener("abort", forwardAbort, { once: true });
+      const timeout = !controller.signal.aborted
+        ? setTimeout(() => controller.abort({ code: "memory_speculative_baseline_settle" }),
+            MEMORY_SPECULATIVE_BASELINE_SETTLE_MS)
+        : null;
+      try {
+        return await repository.retrieve({ ...input, settleSignal: controller.signal });
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        parentSignal?.removeEventListener("abort", forwardAbort);
+      }
     }
   });
 }

@@ -13,7 +13,10 @@ const connection = {
   responseTimeoutMs: 30_000
 };
 
-function rerankerModel() {
+function rerankerModel(
+  upstreamModelId = "qwen/qwen3-reranker-8b",
+  providers: readonly string[] = ["Together", "DeepInfra"]
+) {
   return normalizeProviderModelConfiguration({
     adapterKind: "openrouter_rerank",
     answerSelectable: false,
@@ -30,9 +33,9 @@ function rerankerModel() {
     modelClass: "reranker",
     openRouterRouting: {
       mode: "only_selected",
-      providers: ["Together", "DeepInfra"]
+      providers: [...providers]
     },
-    upstreamModelId: "qwen/qwen3-reranker-8b"
+    upstreamModelId
   });
 }
 
@@ -202,6 +205,47 @@ describe("OpenRouter reranker adapter", () => {
       model: "accounts/together/models/qwen3-reranker-8b",
       provider: "Together"
     });
+  });
+
+  it("accepts Cohere's exact allowlisted native Rerank 4 model identity", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      model: "rerank-v4.0-pro",
+      provider: "Cohere",
+      results: [{ index: 0, relevance_score: 0.8 }]
+    }));
+    const reranker = createOpenRouterRerankAdapter({
+      connection,
+      model: rerankerModel("cohere/rerank-4-pro", ["Cohere"]),
+      network: { fetchFn },
+      secret: "openrouter-secret"
+    });
+
+    await expect(reranker.rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({
+      model: "rerank-v4.0-pro",
+      provider: "Cohere"
+    });
+  });
+
+  it("rejects an allowlisted native model identity from a different provider", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      model: "rerank-v4.0-pro",
+      provider: "Together",
+      results: [{ index: 0, relevance_score: 0.8 }]
+    }));
+    const reranker = createOpenRouterRerankAdapter({
+      connection,
+      model: rerankerModel("cohere/rerank-4-pro", ["Together"]),
+      network: { fetchFn },
+      secret: "openrouter-secret"
+    });
+
+    await expect(reranker.rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_response_model_mismatch" });
   });
 
   it("rejects a response from a provider outside the governed routing roster", async () => {

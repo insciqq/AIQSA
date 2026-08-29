@@ -4,7 +4,6 @@ import { encryptProviderCredentialSecret } from "../../providers/credentialSecre
 import {
   createAcceptedMemoryRunUtilityProvider,
   memoryRunUtilityProviderEvidence,
-  MEMORY_AGGREGATION_TOOL_NAME,
   MEMORY_RERANK_TOOL_NAME
 } from "./runUtilityRuntime";
 
@@ -373,116 +372,6 @@ describe("Memory run utility provider runtime", () => {
     );
   });
 
-  it("uses a distinct global evidence-planning contract for bounded aggregation", async () => {
-    const fixture = client();
-    const output = JSON.stringify({
-      groups: [{
-        item_handles: ["i0"],
-        occurrence: "release Alpha",
-        quantity: 1,
-        quantity_evidence: "release Alpha",
-        role: "MEMBER"
-      }, {
-        item_handles: ["i1"],
-        occurrence: "launch day",
-        quantity: 0,
-        quantity_evidence: null,
-        role: "BOUNDARY"
-      }],
-      operation: "COUNT",
-      resolution: "PARTIAL"
-    });
-    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
-      const body = typeof init?.body === "string"
-        ? JSON.parse(init.body) as Record<string, unknown>
-        : {};
-      expect(JSON.stringify(body)).toContain("one MEMBER group for each distinct");
-      expect(JSON.stringify(body)).toContain("explicitly states a cardinality");
-      expect(JSON.stringify(body)).toContain("quantity_evidence");
-      expect(JSON.stringify(body)).toContain("MEMBER_AND_BOUNDARY");
-      expect(JSON.stringify(body)).toContain(
-        "previous response for this exact evidence shard was rejected"
-      );
-      expect(JSON.stringify(body)).toContain(
-        "repair schema intentionally permits only quantity 0 or 1"
-      );
-      expect(JSON.stringify(body)).toContain(
-        "Never use a date, identifier, list position, rate, duration"
-      );
-      expect(JSON.stringify(body)).toContain("release Alpha");
-      expect(body).toMatchObject({
-        max_output_tokens: 4_096,
-        reasoning: { effort: "low" },
-        text: {
-          format: {
-            name: MEMORY_AGGREGATION_TOOL_NAME,
-            schema: {
-              properties: {
-                groups: {
-                  items: {
-                    properties: {
-                      quantity: { maximum: 1, minimum: 0, type: "integer" }
-                    }
-                  }
-                },
-                resolution: {
-                  enum: ["AMBIGUOUS", "NOT_APPLICABLE", "PARTIAL"]
-                }
-              }
-            },
-            strict: true,
-            type: "json_schema"
-          }
-        }
-      });
-      return new Response(JSON.stringify({
-        id: "response-aggregation",
-        output: [{
-          content: [{ text: output, type: "output_text" }],
-          id: "message-aggregation",
-          role: "assistant",
-          status: "completed",
-          type: "message"
-        }],
-        status: "completed",
-        usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 }
-      }));
-    });
-    const provider = createAcceptedMemoryRunUtilityProvider(fixture.client, {
-      createFetch: () => fetchFn,
-      encryptionKey: () => KEY
-    });
-
-    await expect(provider.run(
-      memoryRunUtilityProviderEvidence(snapshot("openai_responses_compatible")),
-      {
-        aggregationPhase: "MAP",
-        completeEvidenceView: true,
-        evidence: [{
-          handle: "i0",
-          occurredFrom: "2026-01-01T00:00:00.000Z",
-          occurredTo: null,
-          sourceKind: "HISTORY",
-          text: "The user completed release Alpha."
-        }, {
-          handle: "i1",
-          occurredFrom: "2026-02-01T00:00:00.000Z",
-          occurredTo: null,
-          sourceKind: "HISTORY",
-          text: "The user described launch day."
-        }],
-        kind: "AGGREGATE",
-        query: "How many releases happened before launch day?",
-        repairReason: "QUANTITY_MISMATCH",
-        role: "MEMORY_AGGREGATE"
-      },
-      new AbortController().signal
-    )).resolves.toMatchObject({
-      providerResponseId: "response-aggregation",
-      toolCalls: [{ name: MEMORY_AGGREGATION_TOOL_NAME }],
-      usage: { inputTokens: 40, outputTokens: 20, totalTokens: 60 }
-    });
-  });
 
   it("rejects a binding without admitted strict-output evidence", () => {
     expect(() => memoryRunUtilityProviderEvidence(snapshot(

@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
+  fuseMemoryRetrievalCandidates,
   planMemoryRetrieval,
   type MemoryCandidateMetadata,
   type MemoryLaneCandidate,
@@ -163,13 +164,19 @@ function snapshotRow(overrides: Record<string, unknown> = {}) {
 
 function mockClient(
   row = snapshotRow(),
-  options: Readonly<{ failLaneQueries?: boolean }> = {}
+  options: Readonly<{
+    completionRows?: readonly Record<string, unknown>[];
+    expansionRows?: readonly Record<string, unknown>[];
+    failLaneQueries?: boolean;
+  }> = {}
 ) {
   const laneSql: string[] = [];
   const $queryRaw = vi.fn(async (query: { strings?: readonly string[] }) => {
     const sql = query.strings?.join("?") ?? "";
     if (sql.includes('owner."status"')) return [row];
     laneSql.push(sql);
+    if (sql.includes("ranked_rounds")) return options.completionRows ?? [];
+    if (sql.includes("RECALL_ROUND_RAW_SAFE_TEXT")) return options.expansionRows ?? [];
     if (options.failLaneQueries === true) {
       throw new Error("fts unavailable");
     }
@@ -190,6 +197,128 @@ function mockClient(
 }
 
 describe("local Memory retrieval repository", () => {
+  it("completes only a reranker-selected session with bounded authoritative rounds", async () => {
+    const plan = planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "What is the total distance across all trips?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const mocked = mockClient(snapshotRow(), {
+      completionRows: [{
+        evidenceRootHash: "a".repeat(64),
+        itemId: "round-1",
+        languageCode: "en",
+        occurredFrom: now,
+        occurredTo: new Date(now.getTime() + 60_000),
+        parentChunkId: "parent-1",
+        roundOrdinal: 0,
+        safetyClass: "NORMAL",
+        sourceAssistantId: null,
+        sourceChatId: "chat-selected",
+        sourceFolderId: null
+      }],
+      expansionRows: [{
+        itemId: "round-1",
+        itemType: "RECALL_ROUND",
+        occurredFrom: now,
+        occurredTo: new Date(now.getTime() + 60_000),
+        patternSupportingEvidence: [],
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        retrievalHint: null,
+        safeText: "User: The fourth trip covered a total of 1,200 miles.\n\nAssistant: Noted.",
+        sourceChatId: "chat-selected",
+        supportingEvidence: [],
+        supportingItemId: "parent-1"
+      }]
+    });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+    const selected = fuseMemoryRetrievalCandidates(plan, [{
+      candidates: [floorCandidate(
+        "selected",
+        "HISTORY_RECALL_FTS_SIMPLE",
+        "HISTORY",
+        1
+      )],
+      lane: "HISTORY_RECALL_FTS_SIMPLE"
+    }], now);
+
+    const completion = await repository.completeAggregationSessionEvidence(
+      snapshot,
+      plan,
+      selected
+    );
+
+    expect(completion.sourceChatCount).toBe(1);
+    expect(completion.candidates).toEqual([expect.objectContaining({
+      entryId: null,
+      itemId: "round-1",
+      itemType: "RECALL_ROUND",
+      matchedSegmentId: null,
+      metadata: expect.objectContaining({
+        evidenceRootHash: "a".repeat(64),
+        sourceChatId: "chat-selected"
+      }),
+      selectionReason: expect.stringContaining("aggregation_session_completion")
+    })]);
+    const expansions = await repository.expand(snapshot, plan, completion.candidates);
+    expect(expansions).toEqual([expect.objectContaining({
+      itemId: "round-1",
+      projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      safeText: expect.stringContaining("1,200 miles"),
+      sourceChatId: "chat-selected"
+    })]);
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain("ROW_NUMBER() OVER");
+    expect(sql).toContain('INNER JOIN "MemoryRecallRound" AS memory_round');
+    expect(sql).toContain("SELECT DISTINCT ON");
+    expect(sql).toContain('JOIN "MemoryRecallRoundSegment" AS segment');
+    expect(sql).toContain('FROM "MemorySuppression"');
+  });
+
+  it("accepts complementary fact baseline and aggregation-history plans", async () => {
+    const mocked = mockClient();
+    const query = "How far did I travel across all of my road trips?";
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+      assistantId: null,
+      baselinePlan: planMemoryRetrieval({
+        currentUserText: query,
+        filters: { sourceKinds: ["FACT", "EVENT"] },
+        now,
+        temporalIntent: "ANY"
+      }),
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: query,
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.lexicalState).toBe("READY");
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual(expect.arrayContaining([
+      "HISTORY_RECALL_EXACT",
+      "HISTORY_DIGEST_FTS_SIMPLE"
+    ]));
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain('FROM "MemoryFactVersion" AS version');
+    expect(sql).toContain('INNER JOIN "MemoryRecallChunk" AS chunk');
+  });
+
   it("recovers planner-excluded families through bounded original-query lanes", () => {
     const baselinePlan = planMemoryRetrieval({
       currentUserText: "What is my codename and where did we discuss it?",

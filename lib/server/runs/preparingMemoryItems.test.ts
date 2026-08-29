@@ -485,6 +485,8 @@ describe("preparing Memory item finalization", () => {
     });
     const sql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
     expect(sql).toContain("'RECALL_ROUND'::\"MemorySearchItemType\"");
+    expect(sql).toContain("'RECALL_ROUND_SEGMENT'::\"MemorySearchItemType\"");
+    expect(sql).toContain('FROM "MemoryRecallRoundSegment" AS authority_segment');
     expect(sql).toContain('round."contextualKeyPolicyVersion" =');
     expect(sql).toContain('parent."chunkingVersion" =');
     expect(sql).toContain('negative_feedback."recallRoundId" =');

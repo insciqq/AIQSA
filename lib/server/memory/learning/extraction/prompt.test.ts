@@ -16,7 +16,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v28");
+      .toBe("memory-fact-extraction-prompt-v29");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -38,6 +38,8 @@ describe("Memory semantic-frame extraction prompt", () => {
     for (const rule of [
       "zero-based exact occurrence index",
       "target_message is the only evidence",
+      "same language as target_message",
+      "never translate it into English",
       "exact evidence text must by itself entail the complete statement",
       "subject, semantic relation, object or value, recipient",
       "assistant-role context message is never user testimony",
@@ -89,6 +91,8 @@ describe("Memory semantic-frame extraction prompt", () => {
       "MEDIUM observation must use PROPOSITION identity",
       "cannot propose a SLOT, current-state change, or override",
       "named third party as a distinct PERSON entity with role SUBJECT",
+      "profession, employment role, or work identity remains eligible",
+      "cannot form an employment_status SLOT",
       "structured temporal normalization",
       "target_message.created_at in time_zone",
       "preserving the exact original wording",

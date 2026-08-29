@@ -14,6 +14,7 @@ import {
   deriveAdminProviderQuickSetupStateTokenKey
 } from "./quickSetupService";
 import { createProviderPdfInputProbe } from "../../providers/pdfInputProbe";
+import { createAdminProviderDraftTester } from "./tester";
 
 const repository = createPrismaAdminProviderQuickSetupRepository(prisma, {
   exposeFake: exposeFakeProvider()
@@ -22,6 +23,7 @@ const repository = createPrismaAdminProviderQuickSetupRepository(prisma, {
 export const adminProviderQuickSetupService = createAdminProviderQuickSetupService({
   credentialTester: createAdminProviderCredentialTester(),
   pdfInputProbe: createProviderPdfInputProbe(),
+  rerankerTester: createAdminProviderDraftTester(),
   repository,
   stateTokenKey: () => deriveAdminProviderQuickSetupStateTokenKey(
     getAuthConfig().sessionSecret

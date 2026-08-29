@@ -323,26 +323,41 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   aggregationGuideFormat: string | null;
   aggregationMemberCount: number | null;
   aggregationOperation: string | null;
+  aggregationProviderCalls: number | null;
+  aggregationProviderMs: number | null;
   aggregationRequested: boolean | null;
   aggregationResolution: string | null;
   aggregationState: string | null;
   budgetProfile: string | null;
   candidateCountsByLane: Readonly<Record<string, number>>;
+  cardinalityParserAcceptedCount: number | null;
+  cardinalityParserReasonCounts: Readonly<Record<string, number>>;
+  cardinalityParserRejectedCount: number | null;
+  cardinalityParserVersion: string | null;
   candidatesRetainedAfterRejoin: number | null;
   candidatesRetainedAfterReranker: number | null;
   candidatesSentToReranker: number | null;
   componentMetricsVersion: string | null;
+  controlMs: number | null;
+  controlProviderCalls: number | null;
+  deterministicAggregationMs: number | null;
   digestHits: number | null;
   embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
   failureClass: string | null;
   failureCode: string | null;
   hardCapTokens: number | null;
   itemCount: number | null;
+  localRetrievalMs: number | null;
+  memoryPrepareLatencyBucket: string | null;
+  memoryPrepareMs: number | null;
   mode: string | null;
   omissionCounts: Readonly<Record<string, number>>;
   packedTokens: number | null;
+  packerMs: number | null;
   plannerFallbackUsed: boolean | null;
   providerTokenLimit: number | null;
+  queryEmbeddingMs: number | null;
+  queryEmbeddingProviderCalls: number | null;
   queryVariantCounts: Readonly<Record<string, number>>;
   rawChunkExpansions: number | null;
   rawRoundExpansions: number | null;
@@ -351,10 +366,24 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   relevanceCandidateCount: number | null;
   relevanceDecisionCounts: Readonly<Record<string, number>>;
   relevanceRejoinedCount: number | null;
+  rejoinMs: number | null;
+  rerankMs: number | null;
+  rerankModelAttemptCount: number | null;
+  rerankModelFallbackDepth: number | null;
+  rerankProviderCalls: number | null;
+  rerankRoutePolicyVersion: string | null;
+  rerankScoreFloor: number | null;
   rerankerFallbackUsed: boolean | null;
   safetyFindingCounts: Readonly<Record<string, number>>;
   safetyMetricsState: string | null;
   selectedSourceChats: number | null;
+  sessionCompletionCandidateCount: number | null;
+  sessionCompletionExpandedSourceChatCount: number | null;
+  sessionCompletionPackedCount: number | null;
+  sessionCompletionSelectedSourceChatCount: number | null;
+  sessionCompletionState: string | null;
+  snapshotMs: number | null;
+  speculativeBaselineUsed: boolean | null;
   targetTokens: number | null;
   temporalFilteredCandidateCount: number | null;
   temporalParserConfidence: number | null;
@@ -407,20 +436,20 @@ export function longMemEvalEmbeddingBatchSizeDistribution(input: Readonly<{
   return Object.freeze(distribution);
 }
 
-export function longMemEvalExpectedUtilityModelId(input: Readonly<{
+export function longMemEvalExpectedUtilityModelIds(input: Readonly<{
   embeddingModelId: string;
   logicalRole: string;
-  rerankerModelId: string | null;
+  rerankerModelIds: readonly string[];
   systemModelId: string;
-}>): string {
+}>): readonly string[] {
   if (input.logicalRole === "MEMORY_DOCUMENT_EMBED" ||
     input.logicalRole === "MEMORY_QUERY_EMBED") {
-    return input.embeddingModelId;
+    return [input.embeddingModelId];
   }
-  if (input.logicalRole === "MEMORY_RERANK" && input.rerankerModelId) {
-    return input.rerankerModelId;
+  if (input.logicalRole === "MEMORY_RERANK" && input.rerankerModelIds.length > 0) {
+    return [...input.rerankerModelIds];
   }
-  return input.systemModelId;
+  return [input.systemModelId];
 }
 
 /** Runs bounded independent work concurrently while preserving input order.
@@ -548,6 +577,19 @@ function boundedConfidence(value: unknown): number | null {
     value >= 0 && value <= 1 ? value : null;
 }
 
+const memoryLatencyBuckets = new Set([
+  "LT_1S",
+  "1S_TO_3S",
+  "3S_TO_5S",
+  "5S_TO_8S",
+  "8S_TO_12S",
+  "GT_12S"
+]);
+
+function memoryLatencyBucket(value: unknown): string | null {
+  return typeof value === "string" && memoryLatencyBuckets.has(value) ? value : null;
+}
+
 /** Retains only aggregate, text-free retrieval evidence before the disposable
  * benchmark identity (and its private Memory rows) is deleted. */
 export function sanitizeLongMemEvalRetrievalAudit(
@@ -566,6 +608,8 @@ export function sanitizeLongMemEvalRetrievalAudit(
     aggregationGuideFormat: uppercaseCode(budget.aggregationGuideFormat),
     aggregationMemberCount: nonNegativeInteger(budget.aggregationMemberCount),
     aggregationOperation: uppercaseCode(budget.aggregationOperation),
+    aggregationProviderCalls: nonNegativeInteger(budget.aggregationProviderCalls),
+    aggregationProviderMs: nonNegativeInteger(budget.aggregationProviderMs),
     aggregationRequested: typeof plan.aggregationRequested === "boolean"
       ? plan.aggregationRequested
       : null,
@@ -573,12 +617,22 @@ export function sanitizeLongMemEvalRetrievalAudit(
     aggregationState: uppercaseCode(budget.aggregationState),
     budgetProfile: uppercaseCode(budget.budgetProfile),
     candidateCountsByLane: sanitizedCounts(component.candidateCountsByLane),
+    cardinalityParserAcceptedCount:
+      nonNegativeInteger(budget.cardinalityParserAcceptedCount),
+    cardinalityParserReasonCounts:
+      sanitizedCounts(budget.cardinalityParserReasonCounts),
+    cardinalityParserRejectedCount:
+      nonNegativeInteger(budget.cardinalityParserRejectedCount),
+    cardinalityParserVersion: versionCode(budget.cardinalityParserVersion),
     candidatesRetainedAfterRejoin:
       nonNegativeInteger(component.candidatesRetainedAfterRejoin),
     candidatesRetainedAfterReranker:
       nonNegativeInteger(component.candidatesRetainedAfterReranker),
     candidatesSentToReranker: nonNegativeInteger(component.candidatesSentToReranker),
     componentMetricsVersion: versionCode(component.version),
+    controlMs: nonNegativeInteger(budget.controlMs),
+    controlProviderCalls: nonNegativeInteger(budget.controlProviderCalls),
+    deterministicAggregationMs: nonNegativeInteger(budget.deterministicAggregationMs),
     digestHits: nonNegativeInteger(component.digestHits),
     embeddingBatchSizeDistribution:
       sanitizedCounts(component.embeddingBatchSizeDistribution),
@@ -589,13 +643,19 @@ export function sanitizeLongMemEvalRetrievalAudit(
       : null,
     hardCapTokens: nonNegativeInteger(budget.hardCapTokens),
     itemCount: nonNegativeInteger(budget.itemCount),
+    localRetrievalMs: nonNegativeInteger(budget.localRetrievalMs),
+    memoryPrepareLatencyBucket: memoryLatencyBucket(budget.memoryPrepareLatencyBucket),
+    memoryPrepareMs: nonNegativeInteger(budget.memoryPrepareMs),
     mode,
     omissionCounts: sanitizedCounts(budget.omissionCounts),
     packedTokens: nonNegativeInteger(budget.packedTokens),
+    packerMs: nonNegativeInteger(budget.packerMs),
     plannerFallbackUsed: typeof component.plannerFallbackUsed === "boolean"
       ? component.plannerFallbackUsed
       : null,
     providerTokenLimit: nonNegativeInteger(budget.providerTokenLimit),
+    queryEmbeddingMs: nonNegativeInteger(budget.queryEmbeddingMs),
+    queryEmbeddingProviderCalls: nonNegativeInteger(budget.queryEmbeddingProviderCalls),
     queryVariantCounts: sanitizedCounts(component.queryVariantCounts),
     rawChunkExpansions: nonNegativeInteger(component.rawChunkExpansions),
     rawRoundExpansions: nonNegativeInteger(component.rawRoundExpansions),
@@ -604,12 +664,32 @@ export function sanitizeLongMemEvalRetrievalAudit(
     relevanceCandidateCount: nonNegativeInteger(budget.relevanceCandidateCount),
     relevanceDecisionCounts: sanitizedCounts(budget.relevanceDecisionCounts),
     relevanceRejoinedCount: nonNegativeInteger(budget.relevanceRejoinedCount),
+    rejoinMs: nonNegativeInteger(budget.rejoinMs),
+    rerankMs: nonNegativeInteger(budget.rerankMs),
+    rerankModelAttemptCount: nonNegativeInteger(component.rerankModelAttemptCount),
+    rerankModelFallbackDepth: nonNegativeInteger(component.rerankModelFallbackDepth),
+    rerankProviderCalls: nonNegativeInteger(budget.rerankProviderCalls),
+    rerankRoutePolicyVersion: versionCode(component.rerankRoutePolicyVersion),
+    rerankScoreFloor: boundedConfidence(component.rerankScoreFloor),
     rerankerFallbackUsed: typeof component.rerankerFallbackUsed === "boolean"
       ? component.rerankerFallbackUsed
       : null,
     safetyFindingCounts: sanitizedCounts(component.safetyFindingCounts),
     safetyMetricsState: uppercaseCode(component.safetyMetricsState),
     selectedSourceChats: nonNegativeInteger(component.selectedSourceChats),
+    sessionCompletionCandidateCount:
+      nonNegativeInteger(component.sessionCompletionCandidateCount),
+    sessionCompletionExpandedSourceChatCount:
+      nonNegativeInteger(component.sessionCompletionExpandedSourceChatCount),
+    sessionCompletionPackedCount:
+      nonNegativeInteger(component.sessionCompletionPackedCount),
+    sessionCompletionSelectedSourceChatCount:
+      nonNegativeInteger(component.sessionCompletionSelectedSourceChatCount),
+    sessionCompletionState: uppercaseCode(component.sessionCompletionState),
+    snapshotMs: nonNegativeInteger(budget.snapshotMs),
+    speculativeBaselineUsed: typeof component.speculativeBaselineUsed === "boolean"
+      ? component.speculativeBaselineUsed
+      : null,
     targetTokens: nonNegativeInteger(budget.targetTokens),
     temporalFilteredCandidateCount:
       nonNegativeInteger(component.temporalFilteredCandidateCount),

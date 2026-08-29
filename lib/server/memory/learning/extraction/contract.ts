@@ -7,9 +7,9 @@ import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v7";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v10";
+  "memory-fact-extraction-policy-v11";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v28";
+  "memory-fact-extraction-prompt-v29";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =

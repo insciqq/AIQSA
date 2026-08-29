@@ -1298,11 +1298,11 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByText("Answer").parentElement).toHaveTextContent("Blocked");
     expect(screen.getByText("Embed").parentElement).toHaveTextContent("Blocked");
     expect(screen.getByText("Rerank").parentElement).toHaveTextContent("Allowed");
-    expect(screen.getByText(/Qwen3 Reranker 8B · Qualification default/u))
+    expect(screen.getByText(/Voyage Rerank 2.5 · Automatic default/u))
       .toBeVisible();
 
     fireEvent.click(screen.getByRole("button", {
-      name: "Add Qwen3 Reranker 8B reranker preset"
+      name: "Add Voyage Rerank 2.5 reranker preset"
     }));
     expect(view.actions.createModel).toHaveBeenCalledWith("connection-1", {
       configuration: {
@@ -1320,9 +1320,10 @@ describe("AdminProvidersSection", () => {
         defaultParams: {},
         modelClass: "reranker",
         openRouterRouting: { mode: "automatic", providers: [] },
-        upstreamModelId: "qwen/qwen3-reranker-8b"
+        responseTimeoutSeconds: 5,
+        upstreamModelId: "voyageai/rerank-2.5"
       },
-      displayName: "Qwen3 Reranker 8B"
+      displayName: "Voyage Rerank 2.5"
     });
   });
 

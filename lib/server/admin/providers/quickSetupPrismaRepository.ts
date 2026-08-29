@@ -34,6 +34,10 @@ import type {
   AdminProviderQuickSetupInspection,
   AdminProviderQuickSetupRepository
 } from "./quickSetupRepositoryContract";
+import {
+  approvedRerankerDeployments,
+  isApprovedRerankerProviderModelId
+} from "./approvedRerankers";
 
 type QuickSetupDb = Pick<
   Prisma.TransactionClient,
@@ -202,6 +206,7 @@ function modelColumns(configuration: ProviderModelConfiguration) {
     capabilities: json(configuration.capabilities),
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,
+    modelClass: configuration.modelClass,
     supportsNativeSearch: configuration.capabilities.nativeSearch,
     supportsPdf: configuration.capabilities.pdf,
     supportsReasoning: configuration.capabilities.reasoning,
@@ -575,7 +580,10 @@ async function loadQuickSetupState(
     candidate.id !== policy.connection.id ||
     candidate.enabled || candidate.activeVersion > 0 || candidate.credentials.length > 0 ||
     candidate.models.some((model) =>
-      model.enabled || model.activeVersion > 0 || model.activeCredentialChecks.length > 0 ||
+      (model.enabled && !(
+        isApprovedRerankerProviderModelId(model.id) &&
+        model.activeVersion === 0 && model.activeConfig === null
+      )) || model.activeVersion > 0 || model.activeCredentialChecks.length > 0 ||
       model.draftChecks.length > 0
     )
   ) && grants.length === 0;
@@ -756,6 +764,9 @@ export async function lockAdminProviderQuickSetupState(
   }
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "UserSettings" WHERE "userId" = ${plan.actor.userId} FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "SystemModelPolicy" WHERE "id" = 'installation' FOR UPDATE
   `);
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "AuthSession" WHERE "id" = ${plan.actor.sessionId} FOR UPDATE
@@ -1202,6 +1213,149 @@ async function eligibleProviderModelIds(
   return new Set(filterExposedProviderModels({ entitlements, models: available }).map(({ id }) => id));
 }
 
+function approvedRerankerCheckIsValid(
+  check: AdminProviderQuickSetupCommitPlan["rerankerChecks"][number],
+  deployment: (typeof approvedRerankerDeployments)[number]
+): boolean {
+  const evidence = check.evidence;
+  return check.providerModelId === deployment.providerModelId &&
+    (check.status === "available" || check.status === "unavailable") &&
+    evidence.upstreamModelId === deployment.configuration.upstreamModelId &&
+    (evidence.method === "tiny_generation" ||
+      evidence.method === "openrouter_account_catalog") &&
+    evidence.selectedProviders.length === 0 &&
+    (check.status === "available"
+      ? evidence.detail === "ok"
+      : evidence.detail !== "ok");
+}
+
+async function synchronizeApprovedQuickSetupRerankers(
+  tx: Prisma.TransactionClient,
+  plan: AdminProviderQuickSetupCommitPlan,
+  connectionVersion: number
+): Promise<boolean> {
+  if (plan.provider !== "openrouter") return plan.rerankerChecks.length === 0;
+  if (
+    plan.rerankerChecks.length !== approvedRerankerDeployments.length ||
+    !approvedRerankerDeployments.every((deployment, index) =>
+      approvedRerankerCheckIsValid(plan.rerankerChecks[index]!, deployment))
+  ) return false;
+
+  const availableIds: string[] = [];
+  for (const [index, deployment] of approvedRerankerDeployments.entries()) {
+    const check = plan.rerankerChecks[index]!;
+    const matches = await tx.providerModel.findMany({
+      where: {
+        OR: [
+          { id: deployment.providerModelId },
+          { templateKey: deployment.templateKey }
+        ]
+      }
+    });
+    if (matches.length > 1) return false;
+    const existing = matches[0] ?? null;
+    if (existing && (
+      existing.id !== deployment.providerModelId ||
+      existing.connectionId !== adminProviderQuickSetupPolicy("openrouter").connection.id ||
+      existing.provider !== "openrouter" ||
+      existing.templateKey !== deployment.templateKey ||
+      existing.draftVersion < 1 ||
+      (existing.activeConfig !== null && (
+        existing.activeVersion < 1 || existing.activatedAt === null
+      )) ||
+      !canonicalModelConfig(
+        existing.activeConfig ?? existing.draftConfig,
+        deployment.configuration
+      )
+    )) return false;
+
+    let modelVersion = 1;
+    if (!existing) {
+      await tx.providerModel.create({
+        data: {
+          activeConfig: json(deployment.configuration),
+          activeVersion: 1,
+          activatedAt: plan.now,
+          connectionId: adminProviderQuickSetupPolicy("openrouter").connection.id,
+          displayName: deployment.displayName,
+          draftConfig: json(deployment.configuration),
+          draftVersion: 1,
+          enabled: true,
+          id: deployment.providerModelId,
+          inputTokenPriceMicros: 0,
+          outputTokenPriceMicros: 0,
+          provider: "openrouter",
+          templateKey: deployment.templateKey,
+          ...modelColumns(deployment.configuration)
+        }
+      });
+    } else if (existing.activeConfig === null) {
+      modelVersion = existing.draftVersion;
+      await tx.providerModel.update({
+        data: {
+          activeConfig: json(deployment.configuration),
+          activeVersion: modelVersion,
+          activatedAt: plan.now,
+          displayName: deployment.displayName,
+          enabled: true,
+          ...modelColumns(deployment.configuration)
+        },
+        where: { id: deployment.providerModelId }
+      });
+    } else {
+      modelVersion = existing.activeVersion;
+      if (!existing.enabled) {
+        await tx.providerModel.update({
+          data: { enabled: true },
+          where: { id: deployment.providerModelId }
+        });
+      }
+    }
+
+    await tx.providerModelCredentialCheck.upsert({
+      create: {
+        checkedAt: plan.checkedAt,
+        connectionId: adminProviderQuickSetupPolicy("openrouter").connection.id,
+        connectionVersion,
+        credentialId: plan.credential.id,
+        credentialVersionId: plan.credential.versionId,
+        evidence: json(check.evidence),
+        modelVersion,
+        providerModelId: deployment.providerModelId,
+        status: check.status
+      },
+      update: {
+        checkedAt: plan.checkedAt,
+        evidence: json(check.evidence),
+        latestRefreshError: Prisma.DbNull,
+        refreshFailedAt: null,
+        status: check.status
+      },
+      where: {
+        providerModelId_credentialVersionId_connectionVersion_modelVersion: {
+          connectionVersion,
+          credentialVersionId: plan.credential.versionId,
+          modelVersion,
+          providerModelId: deployment.providerModelId
+        }
+      }
+    });
+    if (check.status === "available") availableIds.push(deployment.providerModelId);
+  }
+
+  if (availableIds[0]) {
+    await tx.systemModelPolicy.updateMany({
+      data: {
+        rerankerProviderModelId: availableIds[0],
+        updatedByUserId: plan.actor.userId,
+        version: { increment: 1 }
+      },
+      where: { id: "installation", rerankerProviderModelId: null }
+    });
+  }
+  return true;
+}
+
 async function applyQuickSetupPlan(
   tx: Prisma.TransactionClient,
   plan: AdminProviderQuickSetupCommitPlan,
@@ -1495,6 +1649,11 @@ async function applyQuickSetupPlan(
       where: { id: policy.connection.id }
     });
   }
+  if (!await synchronizeApprovedQuickSetupRerankers(
+    tx,
+    plan,
+    connectionVersion
+  )) return "advanced_required";
   for (const candidate of canonicalCandidates) {
     preservedTargets.set(candidate.modelId, {
       configuration: candidate.configuration,

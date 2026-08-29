@@ -165,6 +165,19 @@ describe("Memory learning provider runtime", () => {
       maxOutputTokens: 8_192,
       max_output_tokens: 8_192
     });
+    expect(applyMemoryLearningReasoningBudget(reasoningRuntime, {
+      ...strictRequest,
+      params: {
+        ...strictRequest.params,
+        maxOutputTokens: 1_024,
+        max_output_tokens: 1_024
+      }
+    }, {
+      reasoningToolOutputTokenFloor: 2_048
+    }).params).toMatchObject({
+      maxOutputTokens: 2_048,
+      max_output_tokens: 2_048
+    });
     expect(strictRequest.params).toMatchObject({
       maxOutputTokens: 2_400,
       max_output_tokens: 2_400
@@ -302,6 +315,54 @@ describe("Memory learning provider runtime", () => {
       usage: null
     });
     expect(callError).toHaveBeenCalledWith(null, expect.anything(), "UNKNOWN");
+  });
+
+  it("does not let a pending credential authority read extend cancellation", async () => {
+    const runtime = openAIResponsesSnapshot();
+    const fixture = client("bearer");
+    let releaseCredential!: (
+      rows: Awaited<ReturnType<typeof fixture.queryRaw>>
+    ) => void;
+    fixture.queryRaw.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCredential = resolve;
+    }));
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      throw new Error("provider_dispatch_must_not_start");
+    });
+    const run = createAcceptedMemoryLearningProvider(fixture.client, {
+      buildRequest: (accepted) => request(accepted),
+      callError: (usage, cause, classification) => Object.assign(
+        new Error("memory_provider_outcome_unknown", { cause }),
+        { classification, usage }
+      ),
+      createFetch: () => fetchFn,
+      encryptionKey: () => KEY,
+      invalidRuntimeError: "memory_runtime_invalid"
+    });
+    const controller = new AbortController();
+    const pending = run(evidence(runtime), undefined, controller.signal);
+    await vi.waitFor(() => expect(fixture.queryRaw).toHaveBeenCalledOnce());
+    controller.abort(new Error("interactive_budget_expired"));
+
+    const promptOutcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50))
+    ]);
+    releaseCredential([{
+      credentialId: "credential-1",
+      id: "credential-version-1",
+      revokedAt: null,
+      secretEnvelope: null,
+      testEvidence: { authenticationMode: "bearer" }
+    }]);
+    await expect(pending).rejects.toMatchObject({
+      classification: "UNKNOWN",
+      message: "memory_provider_outcome_unknown",
+      usage: null
+    });
+
+    expect(promptOutcome).toBe("rejected");
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it.each([

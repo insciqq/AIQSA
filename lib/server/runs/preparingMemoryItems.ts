@@ -1334,9 +1334,7 @@ async function resolveRoundRow(
     INNER JOIN "MemorySearchEntry" AS entry
       ON entry."userId" = round."userId"
       AND entry."indexGenerationId" = ${authority.indexGenerationId}
-      AND entry."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
       AND entry."recallRoundId" = round."id"
-      AND entry."safeContentHash" = round."contextualSearchHash"
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
       AND settings."referenceChatHistory" = TRUE
@@ -1348,7 +1346,9 @@ async function resolveRoundRow(
       AND ${compatibleActiveGenerationPredicate()}
       AND generation."roundProjectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
       AND generation."contextualKeyPolicyVersion" = ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
-      AND generation."roundSegmentProjectionVersion" IS NULL
+      AND (generation."roundSegmentProjectionVersion" IS NULL OR
+        generation."roundSegmentProjectionVersion" =
+          ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION})
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = round."userId" AND source_chat."id" = round."chatId"
       AND source_chat."projectId" IS NULL
@@ -1362,6 +1362,43 @@ async function resolveRoundRow(
       AND round."contextualKeyState" IN ('GENERATED', 'RAW_FALLBACK')
       AND round."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND round."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND (
+        generation."roundSegmentProjectionVersion" IS NULL
+        AND entry."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
+        AND entry."recallRoundSegmentId" IS NULL
+        AND entry."safeContentHash" = round."contextualSearchHash"
+        OR generation."roundSegmentProjectionVersion" =
+          ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+        AND entry."itemType" = 'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+        AND EXISTS (
+          SELECT 1
+          FROM "MemoryRecallRoundSegment" AS authority_segment
+          WHERE authority_segment."userId" = entry."userId"
+            AND authority_segment."id" = entry."recallRoundSegmentId"
+            AND authority_segment."roundId" = round."id"
+            AND entry."safeContentHash" = authority_segment."contextualSearchHash"
+            AND authority_segment."state" = 'ACTIVE'::"MemoryHistoryItemState"
+            AND authority_segment."projectionVersion" =
+              ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+            AND authority_segment."contextualKeyPolicyVersion" =
+              ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+            AND authority_segment."contextualKeyPolicyVersion" =
+              round."contextualKeyPolicyVersion"
+            AND authority_segment."supportingRoundIds" = round."supportingRoundIds"
+            AND authority_segment."contextualKeyState" IN ('GENERATED', 'RAW_FALLBACK')
+            AND (authority_segment."contextualKeyState" <> 'GENERATED'
+              OR round."contextualKeyState" = 'GENERATED')
+            AND authority_segment."sourceRevisionAtCreation" =
+              round."sourceRevisionAtCreation"
+            AND authority_segment."evidenceRootHash" = round."evidenceRootHash"
+            AND authority_segment."redactionState" <>
+              'EXCLUDED'::"MemoryRedactionState"
+            AND authority_segment."safetyClass" IN (
+              'NORMAL'::"MemoryDerivedSafetyClass",
+              'SENSITIVE'::"MemoryDerivedSafetyClass"
+            )
+        )
+      )
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"

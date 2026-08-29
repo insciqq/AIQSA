@@ -7,6 +7,10 @@ import {
   providerTemplateIds
 } from "@/lib/domain/providerTemplates";
 import {
+  automaticRerankerRoutePresets,
+  rerankerModelConfiguration
+} from "@/lib/domain/rerankerModels";
+import {
   builtInSearchDraft,
   normalizeSearchDraft,
   searchDraftHash
@@ -86,6 +90,19 @@ function fail(options: SynchronizeCodeOwnedCatalogOptions, message: string): nev
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 export function codeOwnedProviderModelDraftConfig(
@@ -261,6 +278,74 @@ async function synchronizeModels(
       where: { templateKey }
     });
     modelIds.set(templateKey, row.id);
+  }
+
+  const openRouterConnectionId = connectionIds.get("openrouter");
+  if (!openRouterConnectionId) {
+    fail(options, "Missing OpenRouter connection template identity.");
+  }
+  for (const preset of automaticRerankerRoutePresets) {
+    const templateKey = `openrouter:${preset.upstreamModelId}`;
+    const id = providerModelTemplateId(templateKey);
+    if (!id) fail(options, `Missing provider template identity: ${templateKey}.`);
+    const draftConfig = rerankerModelConfiguration(preset);
+    const existing = await client.providerModel.findUnique({
+      where: { templateKey }
+    });
+    if (!existing) {
+      await client.providerModel.create({
+        data: {
+          activeConfig: Prisma.DbNull,
+          activeVersion: 0,
+          activatedAt: null,
+          capabilities: json(draftConfig.capabilities),
+          connectionId: openRouterConnectionId,
+          defaultParams: json(draftConfig.defaultParams),
+          displayName: preset.displayName,
+          draftConfig: json(draftConfig),
+          draftVersion: 1,
+          enabled: true,
+          id,
+          inputTokenPriceMicros: 0,
+          modelClass: "reranker",
+          modelId: preset.upstreamModelId,
+          outputTokenPriceMicros: 0,
+          provider: "openrouter",
+          supportsNativeSearch: false,
+          supportsPdf: false,
+          supportsReasoning: false,
+          supportsVision: false,
+          templateKey
+        }
+      });
+      modelIds.set(templateKey, id);
+      continue;
+    }
+    if (
+      existing.id !== id ||
+      existing.connectionId !== openRouterConnectionId ||
+      existing.provider !== "openrouter"
+    ) {
+      fail(options, `Conflicting provider template identity: ${templateKey}.`);
+    }
+    if (existing.activeConfig === null && sameJson(existing.draftConfig, draftConfig)) {
+      await client.providerModel.update({
+        data: {
+          capabilities: json(draftConfig.capabilities),
+          defaultParams: json(draftConfig.defaultParams),
+          displayName: preset.displayName,
+          enabled: true,
+          modelClass: "reranker",
+          modelId: preset.upstreamModelId,
+          supportsNativeSearch: false,
+          supportsPdf: false,
+          supportsReasoning: false,
+          supportsVision: false
+        },
+        where: { id }
+      });
+    }
+    modelIds.set(templateKey, id);
   }
 
   return modelIds;

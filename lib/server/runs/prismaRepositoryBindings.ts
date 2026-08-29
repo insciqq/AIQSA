@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
   type PrismaClient
@@ -111,11 +111,17 @@ class SkillProvenanceSerializationError extends Error {
 }
 
 function isPrismaSerializationConflict(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError &&
-    (error.code === "P2034" ||
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === "P2034" ||
       (error.code === "P2010" &&
         isRecord(error.meta) &&
-        error.meta.code === "40001"));
+        (error.meta.code === "40001" || error.meta.code === "40P01"));
+  }
+  // Prisma createMany can surface rollback-safe PostgreSQL conflicts as an
+  // UnknownRequestError instead of P2010. Match the structured connector code,
+  // never arbitrary query text, so unrelated database failures still escape.
+  return error instanceof Prisma.PrismaClientUnknownRequestError &&
+    /PostgresError\s*\{\s*code:\s*"(?:40001|40P01)"/u.test(error.message);
 }
 
 /**
@@ -1244,7 +1250,14 @@ export class RunTransactionDeadlineError extends Error {
 export type RunTransactionOptions = Readonly<{
   clock?: () => number;
   deadlineAtMs?: number;
+  serializationRetryDelay?: (retryOrdinal: number) => Promise<void>;
 }>;
+
+async function waitForRunSerializationRetry(retryOrdinal: number): Promise<void> {
+  const ceiling = Math.min(100, 10 * (2 ** Math.max(0, retryOrdinal - 1)));
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, randomInt(1, ceiling + 1)));
+}
 
 function runTransactionRemainingMs(options: RunTransactionOptions): number | null {
   if (options.deadlineAtMs === undefined) return null;
@@ -1300,7 +1313,10 @@ export async function repeatableReadTransaction<Value>(
       const serializationConflict = assistantSerializationConflict || skillSerializationConflict ||
         isPrismaSerializationConflict(error);
       if (serializationConflict) {
-        if (attempt < 2) continue;
+        if (attempt < 2) {
+          await (options.serializationRetryDelay ?? waitForRunSerializationRetry)(attempt + 1);
+          continue;
+        }
         if (assistantSerializationConflict) throw new AssistantRunConflictError();
         if (skillSerializationConflict) throw new SkillRunConflictError();
         throw new ProviderAdmissionConflictError();

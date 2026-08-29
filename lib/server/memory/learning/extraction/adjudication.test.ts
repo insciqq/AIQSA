@@ -11,6 +11,7 @@ import {
   decodeStoredMemorySemanticAdjudication,
   encodeStoredMemorySemanticAdjudication,
   memoryCandidateRequiresSemanticAdjudication,
+  memoryPotentialDuplicateContext,
   memorySemanticAuthorityAdmitsCandidate,
   memorySemanticAdjudicationInput,
   memorySemanticAdjudicationPacketIsValid,
@@ -144,7 +145,7 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
 describe("batched Memory semantic adjudication", () => {
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v4");
+      .toBe("memory-semantic-adjudication-prompt-v5");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -155,6 +156,157 @@ describe("batched Memory semantic adjudication", () => {
       .toContain("complete proposed_statement must be entailed");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("item obtained for a distinct recipient");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("including a paraphrase");
+  });
+
+  it("routes plausible cross-key paraphrases through governed comparison", () => {
+    const paraphrase = candidate({
+      canonicalKey: "proposition:automatic-coffee",
+      displayText: "Пользователь любит кофе.",
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      modality: "PREFERENCE",
+      predicateKey: null,
+      proposedValue: {
+        normalizedStatement: "пользователь любит кофе.",
+        schema: "generic-fact-v1"
+      },
+      statement: "Пользователь любит кофе.",
+      subjectKey: null
+    });
+    const duplicatePlan = {
+      ...plan(paraphrase),
+      input: {
+        ...plan(paraphrase).input,
+        contextRefs: [{
+          ...plan(paraphrase).input.contextRefs[0]!,
+          text: "Я люблю кофе."
+        }]
+      }
+    };
+
+    expect(memoryPotentialDuplicateContext(
+      paraphrase.displayText,
+      duplicatePlan.input.contextRefs[0]!.text
+    )).toBe(true);
+    expect(memoryCandidateRequiresSemanticAdjudication(
+      paraphrase,
+      duplicatePlan.input.contextRefs
+    )).toBe(true);
+    expect(memorySemanticAdjudicationInput(duplicatePlan)?.candidateRefs)
+      .toEqual(["C1"]);
+  });
+
+  it("does not grant MESSAGE refs duplicate-target authority", () => {
+    const proposition = candidate({
+      canonicalKey: "proposition:automatic-coffee",
+      displayText: "Пользователь любит кофе.",
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      modality: "PREFERENCE",
+      predicateKey: null,
+      subjectKey: null
+    });
+    const context = [{
+      ...plan(proposition).input.contextRefs[0]!,
+      entityId: null,
+      kind: "MESSAGE" as const,
+      source: {
+        contentHash: "f".repeat(64),
+        factVersionId: null,
+        messageId: "older-message",
+        messageUpdatedAt: "2026-08-25T09:00:00.000Z",
+        projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
+      },
+      text: "Я люблю кофе."
+    }];
+    expect(memoryCandidateRequiresSemanticAdjudication(proposition, context))
+      .toBe(false);
+  });
+
+  it("compares explicit reminders with bounded facts even without lexical overlap", () => {
+    const reminder = candidate({
+      canonicalKey: "proposition:explicit-reminder",
+      displayText: "Пользователь предпочитает утренние пробежки.",
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      modality: "PREFERENCE",
+      predicateKey: null,
+      semanticFrame: {
+        ...candidate().semanticFrame,
+        memoryDirective: "EXPLICIT_REMEMBER",
+        speechAct: "COMMAND"
+      },
+      subjectKey: null
+    });
+    expect(memoryCandidateRequiresSemanticAdjudication(
+      reminder,
+      plan(reminder).input.contextRefs
+    )).toBe(true);
+  });
+
+  it("routes translations through bounded fact reconciliation without token overlap", () => {
+    const translated = candidate({
+      canonicalKey: "proposition:serbian-coffee",
+      displayText: "Корисник воли кафу.",
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      modality: "PREFERENCE",
+      predicateKey: null,
+      statement: "Корисник воли кафу.",
+      subjectKey: null
+    });
+    const context = [{
+      ...plan(translated).input.contextRefs[0]!,
+      text: "El usuario ama el café."
+    }];
+
+    expect(memoryPotentialDuplicateContext(translated.displayText, context[0]!.text))
+      .toBe(false);
+    expect(memoryCandidateRequiresSemanticAdjudication(translated, context))
+      .toBe(true);
+  });
+
+  it("reconciles a MEDIUM supporting proposition without granting mutation authority", () => {
+    const supporting = candidate({
+      canonicalKey: "proposition:supporting-coffee",
+      confidence: 0.6,
+      confidenceBand: "MEDIUM",
+      displayText: "Кофе сорта Кедровый Маяк мне нравится.",
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      modality: "PREFERENCE",
+      predicateKey: null,
+      proposedValue: {
+        normalizedStatement: "кофе сорта кедровый маяк мне нравится.",
+        schema: "generic-fact-v1"
+      },
+      statement: "Кофе сорта Кедровый Маяк мне нравится.",
+      subjectKey: null
+    });
+    const context = plan(supporting).input.contextRefs;
+    const reinforce = {
+      assertionStatus: "ASSERTED",
+      candidateRef: "C1",
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "REINFORCE",
+      reasonCode: "same_fact",
+      subjectScope: "CURRENT_USER",
+      targetRef: "F1",
+      temporalPerspective: "CURRENT"
+    } as const;
+
+    expect(memoryCandidateRequiresSemanticAdjudication(supporting, context)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(supporting, reinforce, context))
+      .toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(supporting, {
+      ...reinforce,
+      operation: "SUPERSEDE_TARGET"
+    }, context)).toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate(supporting, null, [])).toBe(true);
   });
 
   it("routes proposition STATE claims through statement-aware adjudication", () => {

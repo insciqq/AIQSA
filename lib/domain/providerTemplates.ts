@@ -21,8 +21,11 @@ export const providerModelTemplateIds = Object.freeze({
   "openai:gpt-5.6-sol": "00000000-0000-4000-8000-000000001203",
   "openai:gpt-5.6-terra": "00000000-0000-4000-8000-000000001204",
   "openrouter:anthropic/claude-opus-4.8": "00000000-0000-4000-8000-000000001207",
+  "openrouter:cohere/rerank-4-pro": "00000000-0000-4000-8000-000000001218",
   "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
   "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",
+  "openrouter:qwen/qwen3-reranker-8b": "00000000-0000-4000-8000-000000001219",
+  "openrouter:voyageai/rerank-2.5": "00000000-0000-4000-8000-000000001217",
   "openrouter:~google/gemini-pro-latest": "00000000-0000-4000-8000-000000001209"
 } as const);
 
