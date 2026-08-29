@@ -342,7 +342,9 @@ describe("local Memory retrieval repository", () => {
       ...sessionCandidate("round-1", "source-a", 0.8, {
         HISTORY_RECALL_VECTOR: 1
       }),
-      itemType: "RECALL_ROUND" as const
+      itemType: "RECALL_ROUND" as const,
+      matchedSegmentId: "round-1-middle",
+      matchedSegmentPosition: "MIDDLE" as const
     };
     const digestMetadata = {
       ...representative.metadata,
@@ -357,6 +359,8 @@ describe("local Memory retrieval repository", () => {
       entryId: null,
       itemId: "chunk-anchor-1",
       itemType: "RECALL_CHUNK",
+      matchedSegmentId: null,
+      matchedSegmentPosition: null,
       metadata: digestMetadata,
       selectionReason: expect.stringContaining("aggregation_session_digest")
     });

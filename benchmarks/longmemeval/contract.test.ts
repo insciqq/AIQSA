@@ -510,6 +510,8 @@ describe("LongMemEval adapter contract", () => {
         version: "memory-retrieval-component-metrics-v1"
       },
       hardCapTokens: 5_000,
+      failureClass: "DATABASE",
+      failureCode: "memory_expansion_database_p2010",
       itemCount: 5,
       omissionCounts: { history_limit: 2, unsafe: "secret text" },
       packedTokens: 2_300,
@@ -543,6 +545,8 @@ describe("LongMemEval adapter contract", () => {
       componentMetricsVersion: "memory-retrieval-component-metrics-v1",
       digestHits: 2,
       embeddingBatchSizeDistribution: { "1": 7 },
+      failureClass: "DATABASE",
+      failureCode: "memory_expansion_database_p2010",
       hardCapTokens: 5_000,
       itemCount: 5,
       mode: "PAST_CHAT_SEARCH",

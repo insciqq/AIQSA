@@ -61,6 +61,8 @@ import {
 } from "../memory/temporaryRetention";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
+import { isMemoryAggregationOutputFailureCode } from
+  "../memory/retrieval/aggregation";
 import {
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
   MEMORY_AGGREGATION_MAX_MAP_BATCHES,
@@ -1491,8 +1493,12 @@ export function validMemoryRetrievalExecutionSequence(
     (!present.has("MEMORY_QUERY_EMBED:4") ||
       present.has("MEMORY_QUERY_EMBED:3")) &&
     aggregationPrimaryOrdinals.every((primaryOrdinal) =>
-      !present.has(`MEMORY_AGGREGATE:${primaryOrdinal + 1}`) ||
-        present.has(`MEMORY_AGGREGATE:${primaryOrdinal}`))
+      Array.from(
+        { length: MEMORY_AGGREGATION_MAX_ATTEMPTS - 1 },
+        (_, index) => primaryOrdinal + index + 1
+      ).every((retryOrdinal) =>
+        !present.has(`MEMORY_AGGREGATE:${retryOrdinal}`) ||
+          present.has(`MEMORY_AGGREGATE:${retryOrdinal - 1}`)))
   );
 }
 
@@ -1537,6 +1543,13 @@ export function validMemoryRerankRetrySettlement(
     primary.errorCode === "memory_reranker_transient_http_failure" ||
     primary.errorCode === "rerank_response_invalid"
   );
+  const validAggregationPrimary = (
+    primary: Readonly<{
+      errorCode: string | null;
+      state: string;
+    }> | undefined
+  ) => validGenerativePrimary(primary) || primary?.state === "FAILED" &&
+    isMemoryAggregationOutputFailureCode(primary.errorCode);
   const rerankValid = rerankBatchPrimaryOrdinals.every((primaryOrdinal) =>
     Array.from(
       { length: MEMORY_RERANK_MAX_ATTEMPTS - 1 },
@@ -1551,16 +1564,20 @@ export function validMemoryRerankRetrySettlement(
         binding.ordinal === retryOrdinal - 1);
       return validRerankPrimary(previous);
     }));
-  const aggregationValid = aggregationPrimaryOrdinals.every((primaryOrdinal) => {
-    const retry = bindings.find((binding) =>
-      binding.logicalRole === "MEMORY_AGGREGATE" &&
-      binding.ordinal === primaryOrdinal + 1);
-    if (!retry) return true;
-    const primary = bindings.find((binding) =>
-      binding.logicalRole === "MEMORY_AGGREGATE" &&
-      binding.ordinal === primaryOrdinal);
-    return validGenerativePrimary(primary);
-  });
+  const aggregationValid = aggregationPrimaryOrdinals.every((primaryOrdinal) =>
+    Array.from(
+      { length: MEMORY_AGGREGATION_MAX_ATTEMPTS - 1 },
+      (_, index) => primaryOrdinal + index + 1
+    ).every((retryOrdinal) => {
+      const retry = bindings.find((binding) =>
+        binding.logicalRole === "MEMORY_AGGREGATE" &&
+        binding.ordinal === retryOrdinal);
+      if (!retry) return true;
+      const previous = bindings.find((binding) =>
+        binding.logicalRole === "MEMORY_AGGREGATE" &&
+        binding.ordinal === retryOrdinal - 1);
+      return validAggregationPrimary(previous);
+    }));
   const embeddingValid = [1, 3].every((primaryOrdinal) => {
     const retry = bindings.find((binding) =>
       binding.logicalRole === "MEMORY_QUERY_EMBED" &&

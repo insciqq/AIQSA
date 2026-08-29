@@ -390,7 +390,7 @@ describe("Memory run utility provider runtime", () => {
         role: "BOUNDARY"
       }],
       operation: "COUNT",
-      resolution: "RESOLVED"
+      resolution: "PARTIAL"
     });
     const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
       const body = typeof init?.body === "string"
@@ -400,12 +400,36 @@ describe("Memory run utility provider runtime", () => {
       expect(JSON.stringify(body)).toContain("explicitly states a cardinality");
       expect(JSON.stringify(body)).toContain("quantity_evidence");
       expect(JSON.stringify(body)).toContain("MEMBER_AND_BOUNDARY");
+      expect(JSON.stringify(body)).toContain(
+        "previous response for this exact evidence shard was rejected"
+      );
+      expect(JSON.stringify(body)).toContain(
+        "repair schema intentionally permits only quantity 0 or 1"
+      );
+      expect(JSON.stringify(body)).toContain(
+        "Never use a date, identifier, list position, rate, duration"
+      );
       expect(JSON.stringify(body)).toContain("release Alpha");
       expect(body).toMatchObject({
         max_output_tokens: 4_096,
+        reasoning: { effort: "low" },
         text: {
           format: {
             name: MEMORY_AGGREGATION_TOOL_NAME,
+            schema: {
+              properties: {
+                groups: {
+                  items: {
+                    properties: {
+                      quantity: { maximum: 1, minimum: 0, type: "integer" }
+                    }
+                  }
+                },
+                resolution: {
+                  enum: ["AMBIGUOUS", "NOT_APPLICABLE", "PARTIAL"]
+                }
+              }
+            },
             strict: true,
             type: "json_schema"
           }
@@ -449,6 +473,7 @@ describe("Memory run utility provider runtime", () => {
         }],
         kind: "AGGREGATE",
         query: "How many releases happened before launch day?",
+        repairReason: "QUANTITY_MISMATCH",
         role: "MEMORY_AGGREGATE"
       },
       new AbortController().signal

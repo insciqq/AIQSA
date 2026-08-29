@@ -1,6 +1,5 @@
 import { createReadStream } from "node:fs";
 import {
-  appendFile,
   mkdir,
   readFile,
   rename,
@@ -121,6 +120,15 @@ import {
 } from "./contract";
 import { redactLongMemEvalDebugArtifact } from "./debug";
 import {
+  createLongMemEvalCheckpointRun,
+  loadLongMemEvalCaseCheckpoints,
+  resumeLongMemEvalCheckpointRun,
+  writeLongMemEvalAnswersAtomic,
+  writeLongMemEvalCaseCheckpoint,
+  type LongMemEvalCaseCheckpoint,
+  type LongMemEvalCheckpointOutcome
+} from "./checkpoint";
+import {
   assertLongMemEvalQualificationDataset,
   decodeLongMemEvalQualificationManifestId,
   loadLongMemEvalQualificationManifest,
@@ -197,6 +205,9 @@ type CliOptions = Readonly<{
   profile: LongMemEvalProfile;
   qualificationManifestId: LongMemEvalQualificationManifestId | null;
   questionIds: readonly string[];
+  resume: boolean;
+  resumeCaseConcurrency: number | null;
+  retryUnhealthy: boolean;
   runTimeoutMs: number;
   sampleSize: number;
   seed: string | undefined;
@@ -334,6 +345,9 @@ function parseCli(argv: readonly string[]): CliOptions {
   let qualificationManifestId: LongMemEvalQualificationManifestId | null = null;
   let qualificationOverridePresent = false;
   const questionIds: string[] = [];
+  let resume = false;
+  let resumeCaseConcurrency: number | null = null;
+  let retryUnhealthy = false;
   let runTimeoutMinutes = 15;
   let sampleSize = 1;
   let seed: string | undefined;
@@ -393,6 +407,20 @@ function parseCli(argv: readonly string[]): CliOptions {
         questionIds.push(next.trim());
         index += 1;
         break;
+      case "--resume":
+        resume = true;
+        break;
+      case "--resume-case-concurrency":
+        resumeCaseConcurrency = boundedConcurrency(
+          next,
+          LONGMEMEVAL_MAX_CASE_CONCURRENCY,
+          "longmemeval_resume_case_concurrency_invalid"
+        );
+        index += 1;
+        break;
+      case "--retry-unhealthy":
+        retryUnhealthy = true;
+        break;
       case "--run-timeout-minutes":
         qualificationOverridePresent = true;
         runTimeoutMinutes = positiveInteger(next, "longmemeval_run_timeout_invalid");
@@ -431,6 +459,9 @@ function parseCli(argv: readonly string[]): CliOptions {
   if (qualificationManifestId && qualificationOverridePresent) {
     throw new Error("longmemeval_qualification_manifest_override_forbidden");
   }
+  if (!resume && (resumeCaseConcurrency !== null || retryUnhealthy)) {
+    throw new Error("longmemeval_resume_required");
+  }
   if (forceDreamDiagnostic && profile !== "product") {
     throw new Error("longmemeval_dream_diagnostic_requires_product_profile");
   }
@@ -444,6 +475,9 @@ function parseCli(argv: readonly string[]): CliOptions {
     profile,
     qualificationManifestId,
     questionIds: Object.freeze(questionIds),
+    resume,
+    resumeCaseConcurrency,
+    retryUnhealthy,
     runTimeoutMs: runTimeoutMinutes * 60_000,
     sampleSize,
     seed,
@@ -467,7 +501,7 @@ function applyQualificationManifest(
   }
   return Object.freeze({
     ...options,
-    caseConcurrency: manifest.runtime.caseConcurrency,
+    caseConcurrency: options.resumeCaseConcurrency ?? manifest.runtime.caseConcurrency,
     debugMemory: manifest.runtime.debugMemory,
     forceDreamDiagnostic: manifest.runtime.forceDreamDiagnostic,
     indexTimeoutMs: manifest.runtime.indexTimeoutMinutes * 60_000,
@@ -537,6 +571,54 @@ function safeFailureCode(error: unknown): string {
   return /^[A-Za-z0-9_:-]{1,160}$/u.test(message)
     ? message
     : "longmemeval_case_failed";
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeCheckpointCaseSummary(value: unknown): CaseSummary {
+  if (!isRecord(value) || !isRecord(value.answer) ||
+    typeof value.answer.memoryOutcome !== "string" ||
+    typeof value.questionId !== "string" || typeof value.questionType !== "string" ||
+    !isRecord(value.componentEvaluation) ||
+    !isRecord(value.embeddingBatchSizeDistribution) || !isRecord(value.history) ||
+    !isRecord(value.learning) || !isRecord(value.retrieval) ||
+    !Array.isArray(value.utilityExecutions)) {
+    throw new Error("longmemeval_checkpoint_summary_invalid");
+  }
+  return value as CaseSummary;
+}
+
+function decodeCheckpointCaseFailure(value: unknown): CaseFailure {
+  if (!isRecord(value) || typeof value.code !== "string" ||
+    !/^[A-Za-z0-9_:-]{1,160}$/u.test(value.code) ||
+    typeof value.questionId !== "string" || typeof value.questionType !== "string" ||
+    (value.diagnostics !== undefined && !isRecord(value.diagnostics))) {
+    throw new Error("longmemeval_checkpoint_failure_invalid");
+  }
+  return value as CaseFailure;
+}
+
+function checkpointOutcomeReason(summary: CaseSummary): string {
+  if (summary.answer.memoryOutcome === "USED") return "memory_used";
+  if (summary.retrieval.reason) return summary.retrieval.reason;
+  const outcome = summary.answer.memoryOutcome.toLowerCase();
+  return /^[a-z0-9_]{1,64}$/u.test(outcome)
+    ? `memory_outcome_${outcome}`
+    : "memory_outcome_unhealthy";
+}
+
+function checkpointFailureReason(failure: CaseFailure): string {
+  return failure.diagnostics?.primaryCode ?? failure.code;
+}
+
+function latestCheckpointOutcome(
+  checkpoint: LongMemEvalCaseCheckpoint<CaseSummary, CaseFailure>
+): LongMemEvalCheckpointOutcome<CaseSummary, CaseFailure> {
+  const latest = checkpoint.attempts.at(-1);
+  if (!latest) throw new Error("longmemeval_checkpoint_invalid");
+  return latest.outcome;
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -2637,6 +2719,39 @@ async function runCase(
   }
 }
 
+function buildCheckpointIdentity(input: Readonly<{
+  options: CliOptions;
+  roles: ProviderRoles;
+  selection: ReturnType<typeof selectLongMemEvalCases>;
+}>): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    benchmark: Object.freeze({
+      datasetSha256: LONGMEMEVAL_S_SHA256,
+      evaluatorSha256: LONGMEMEVAL_EVALUATOR_SHA256,
+      oracleSha256: LONGMEMEVAL_ORACLE_SHA256,
+      upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT
+    }),
+    profile: input.options.profile,
+    qualificationManifestId: input.options.qualificationManifestId,
+    runtime: Object.freeze({
+      debugMemory: input.options.debugMemory,
+      embeddingModel: qualificationEmbeddingModelId,
+      forceDreamDiagnostic: input.options.forceDreamDiagnostic,
+      indexTimeoutMs: input.options.indexTimeoutMs,
+      rerankerModel: input.roles.reranker?.upstreamModelId ?? null,
+      runTimeoutMs: input.options.runTimeoutMs,
+      systemModel: input.roles.system.upstreamModelId
+    }),
+    selection: Object.freeze({
+      cases: Object.freeze(input.selection.cases.map(({ questionId, questionType }) =>
+        Object.freeze({ questionId, questionType }))),
+      mode: input.selection.mode,
+      seed: input.selection.seed
+    }),
+    version: 1
+  });
+}
+
 async function main(): Promise<void> {
   loadEnvConfig(repositoryRoot, true, { error() {}, info() {} }, true);
   let options = parseCli(process.argv.slice(2));
@@ -2672,14 +2787,8 @@ async function main(): Promise<void> {
     assertLongMemEvalQualificationDataset(qualificationManifest, allCases);
   }
   await mkdir(resolve(benchmarkRoot, "results"), { mode: 0o700, recursive: true });
-  await mkdir(options.outputDirectory, { mode: 0o700, recursive: false });
-  const answersPath = resolve(options.outputDirectory, "answers.jsonl");
   const summaryPath = resolve(options.outputDirectory, "run-summary.json");
-  await writeFile(answersPath, "", { flag: "wx", mode: 0o600 });
-  const startedAt = new Date();
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
-  const summaries: CaseSummary[] = [];
-  const failures: CaseFailure[] = [];
   try {
     await assertDatabaseIdentity(prisma);
     const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
@@ -2690,19 +2799,65 @@ async function main(): Promise<void> {
         : { sampleSize: options.sampleSize }),
       ...(options.seed ? { seed: options.seed } : {})
     });
+    const checkpointIdentity = buildCheckpointIdentity({ options, roles, selection });
+    const checkpointManifest = options.resume
+      ? await resumeLongMemEvalCheckpointRun({
+          expectedIdentity: checkpointIdentity,
+          outputDirectory: options.outputDirectory
+        })
+      : await createLongMemEvalCheckpointRun({
+          identity: checkpointIdentity,
+          outputDirectory: options.outputDirectory
+        });
+    const startedAt = new Date(checkpointManifest.startedAt);
+    const loadedCheckpoints = await loadLongMemEvalCaseCheckpoints(
+      options.outputDirectory,
+      {
+        failure: decodeCheckpointCaseFailure,
+        summary: decodeCheckpointCaseSummary
+      }
+    );
+    const selectedById = new Map(selection.cases.map((entry) => [
+      entry.questionId,
+      entry
+    ]));
+    for (const checkpoint of loadedCheckpoints.values()) {
+      const selected = selectedById.get(checkpoint.questionId);
+      if (!selected || selected.questionType !== checkpoint.questionType) {
+        throw new Error("longmemeval_checkpoint_selection_mismatch");
+      }
+      for (const { outcome } of checkpoint.attempts) {
+        const terminal = outcome.status === "COMPLETE" ? outcome.summary : outcome.failure;
+        if (terminal.questionId !== checkpoint.questionId ||
+          terminal.questionType !== checkpoint.questionType) {
+          throw new Error("longmemeval_checkpoint_selection_mismatch");
+        }
+      }
+    }
+    const checkpoints = new Map(loadedCheckpoints);
+    const pendingCases = selection.cases.filter((entry) => {
+      const checkpoint = checkpoints.get(entry.questionId);
+      if (!checkpoint) return true;
+      if (!options.retryUnhealthy) return false;
+      const outcome = latestCheckpointOutcome(checkpoint);
+      return outcome.status === "FAILED" || outcome.summary.answer.memoryOutcome !== "USED";
+    });
     emit("benchmark_start", {
       caseConcurrency: options.caseConcurrency,
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
       forceDreamDiagnostic: options.forceDreamDiagnostic,
       profile: options.profile,
+      remainingCases: pendingCases.length,
+      resume: options.resume,
+      retryUnhealthy: options.retryUnhealthy,
       selectionMode: selection.mode,
       sessionConcurrency: options.sessionConcurrency,
       systemModel: roles.system.upstreamModelId,
       staleUsersRemoved
     });
-    const outcomes = await mapConcurrentOrdered(
-      selection.cases,
+    await mapConcurrentOrdered(
+      pendingCases,
       options.caseConcurrency,
       async (entry) => {
         emit("case_start", {
@@ -2712,15 +2867,15 @@ async function main(): Promise<void> {
           questionType: entry.questionType,
           sessions: entry.haystackSessions.length
         });
+        let outcome: LongMemEvalCheckpointOutcome<CaseSummary, CaseFailure>;
         try {
           const result = await runCase(prisma, baseUrl, roles, entry, options);
-          emit("case_complete", {
-            memoryItems: result.summary.answer.memoryItems,
-            memoryOutcome: result.summary.answer.memoryOutcome,
-            questionId: entry.questionId,
-            runTokens: result.summary.answer.totalTokens
+          outcome = Object.freeze({
+            hypothesis: result.hypothesis,
+            reason: checkpointOutcomeReason(result.summary),
+            status: "COMPLETE" as const,
+            summary: result.summary
           });
-          return Object.freeze({ entry, result, status: "COMPLETE" as const });
         } catch (error) {
           const failure = Object.freeze({
             code: safeFailureCode(error),
@@ -2730,22 +2885,72 @@ async function main(): Promise<void> {
             questionId: entry.questionId,
             questionType: entry.questionType
           });
-          emit("case_failed", failure);
-          return Object.freeze({ failure, status: "FAILED" as const });
+          outcome = Object.freeze({
+            failure,
+            reason: checkpointFailureReason(failure),
+            status: "FAILED" as const
+          });
         }
+        const checkpoint = await writeLongMemEvalCaseCheckpoint({
+          execution: {
+            caseConcurrency: options.caseConcurrency,
+            origin: "LIVE",
+            sessionConcurrency: options.sessionConcurrency
+          },
+          outcome,
+          outputDirectory: options.outputDirectory,
+          previous: checkpoints.get(entry.questionId),
+          questionId: entry.questionId,
+          questionType: entry.questionType
+        });
+        checkpoints.set(entry.questionId, checkpoint);
+        const checkpointAttempt = checkpoint.attempts.length;
+        if (outcome.status === "FAILED") {
+          emit("case_failed", { ...outcome.failure, checkpointAttempt });
+        } else {
+          emit("case_complete", {
+            checkpointAttempt,
+            memoryItems: outcome.summary.answer.memoryItems,
+            memoryOutcome: outcome.summary.answer.memoryOutcome,
+            questionId: entry.questionId,
+            reason: outcome.reason,
+            runTokens: outcome.summary.answer.totalTokens
+          });
+        }
+        return checkpointAttempt;
       }
     );
-    for (const outcome of outcomes) {
+    const authoritativeCheckpoints = await loadLongMemEvalCaseCheckpoints(
+      options.outputDirectory,
+      {
+        failure: decodeCheckpointCaseFailure,
+        summary: decodeCheckpointCaseSummary
+      }
+    );
+    const summaries: CaseSummary[] = [];
+    const failures: CaseFailure[] = [];
+    const answers: Readonly<{ hypothesis: string; questionId: string }>[] = [];
+    for (const entry of selection.cases) {
+      const checkpoint = authoritativeCheckpoints.get(entry.questionId);
+      if (!checkpoint || checkpoint.questionType !== entry.questionType) {
+        throw new Error("longmemeval_checkpoint_incomplete");
+      }
+      const outcome = latestCheckpointOutcome(checkpoint);
       if (outcome.status === "FAILED") {
         failures.push(outcome.failure);
-        continue;
+      } else {
+        summaries.push(outcome.summary);
+        answers.push({ hypothesis: outcome.hypothesis, questionId: entry.questionId });
       }
-      await appendFile(answersPath, `${JSON.stringify({
-        hypothesis: outcome.result.hypothesis,
-        question_id: outcome.entry.questionId
-      })}\n`, { encoding: "utf8", mode: 0o600 });
-      summaries.push(outcome.result.summary);
     }
+    await writeLongMemEvalAnswersAtomic(options.outputDirectory, answers);
+    const checkpointAttempts = [...authoritativeCheckpoints.values()]
+      .reduce((total, checkpoint) => total + checkpoint.attempts.length, 0);
+    const recoveredCases = [...authoritativeCheckpoints.values()]
+      .filter((checkpoint) => checkpoint.attempts.some(({ execution }) =>
+        execution.origin === "RECOVERED")).length;
+    const retriedCases = [...authoritativeCheckpoints.values()]
+      .filter(({ attempts }) => attempts.length > 1).length;
     const completedAt = new Date();
     const qualification = longMemEvalQualificationGate({
       executionFailures: failures.length,
@@ -2762,6 +2967,13 @@ async function main(): Promise<void> {
         upstreamModelId: roles.system.upstreamModelId
       },
       baseline: buildLongMemEvalBaselineManifest(selection),
+      checkpointing: {
+        attempts: checkpointAttempts,
+        recoveredCases,
+        resumed: options.resume,
+        retriedCases,
+        version: 1
+      },
       completedAt: completedAt.toISOString(),
       dataset: {
         cases: allCases.length,
@@ -2807,6 +3019,9 @@ async function main(): Promise<void> {
             appCommit: qualificationManifest.source.appCommit,
             id: qualificationManifest.id,
             questionIdDigest: qualificationManifest.selection.questionIdDigest,
+            runtimeOverride: options.resumeCaseConcurrency === null
+              ? null
+              : { caseConcurrency: options.caseConcurrency },
             version: qualificationManifest.version
           }
         : null,
@@ -2819,7 +3034,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 12,
+      version: 13,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: qualificationMemoryJobParallelism,

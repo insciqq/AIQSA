@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
 import { textMessageContent } from "../../../domain/content";
 import type {
   MemoryCandidateMetadata,
@@ -2336,6 +2337,59 @@ describe("Personal Memory v1 run admission", () => {
     expect(options.utilities.rerank).toHaveBeenCalledOnce();
   });
 
+  it("retains a safe internal expansion failure code without candidate text", async () => {
+    const local = repository({ candidates: [laneCandidate("past-chat")] });
+    vi.mocked(local.value.expand).mockRejectedValue(
+      new Error("memory_expansion_contract_invalid")
+    );
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      intentOptions({
+        memoryUseful: false,
+        pastChatsUseful: true,
+        retrievalMode: "PAST_CHAT_SEARCH"
+      })
+    ).retrieve(runInput("What did we discuss?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        failureClass: "INTERNAL",
+        failureCode: "memory_expansion_contract_invalid",
+        reason: "memory_expansion_unavailable"
+      },
+      items: [],
+      outcome: "FAILED_SAFE"
+    });
+  });
+
+  it("classifies expansion database failures without retaining database text", async () => {
+    const local = repository({ candidates: [laneCandidate("past-chat")] });
+    vi.mocked(local.value.expand).mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("private database detail", {
+        clientVersion: "test",
+        code: "P2010"
+      })
+    );
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      intentOptions({
+        memoryUseful: false,
+        pastChatsUseful: true,
+        retrievalMode: "PAST_CHAT_SEARCH"
+      })
+    ).retrieve(runInput("What did we discuss?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        failureClass: "DATABASE",
+        failureCode: "memory_expansion_database_p2010",
+        reason: "memory_expansion_unavailable"
+      },
+      outcome: "FAILED_SAFE"
+    });
+    expect(JSON.stringify(result.budgetSnapshot)).not.toContain("private database detail");
+  });
+
   it("clamps the prepared reader pack to the admitted model context envelope", async () => {
     const local = repository({ candidates: [laneCandidate("past-chat-bounded")] });
     const options = intentOptions({
@@ -2573,7 +2627,7 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "DEGRADED"
       });
       expect(receivedSignals[0]?.aborted).toBe(true);
-      expect(MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS).toBe(32_000);
+      expect(MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS).toBe(60_000);
     } finally {
       vi.useRealTimers();
     }
