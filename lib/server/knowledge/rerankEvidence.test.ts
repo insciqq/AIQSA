@@ -22,7 +22,7 @@ function completeEvidence(
     provider: "openrouter",
     providerModelId: "deployment-1",
     providerRequestId: "req-1",
-    rankingProfileVersion: 2,
+    rankingProfileVersion: 4,
     relevanceScores: [0.91, 0.4, 0.05],
     status: "complete",
     timedOut: false,

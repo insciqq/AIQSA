@@ -58,6 +58,14 @@ import {
   type KnowledgeRerankerBindingEvidenceV2
 } from "./rerankEvidence";
 import { decodeKnowledgeParentExpansionEvidence } from "./parentContextExpansion";
+import {
+  AIQSA_OPENSEARCH_VERSION,
+  KNOWLEDGE_SEARCH_ANALYZER_PROFILE,
+  KNOWLEDGE_SEARCH_BACKEND_KIND,
+  KNOWLEDGE_SEARCH_MAPPING_VERSION,
+  KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION
+} from "../search/opensearch/contract";
+import type { KnowledgeLexicalBackendEvidenceV1 } from "./searchRetrieval";
 
 function persistedContentMarker(version: KnowledgeResultVersion) {
   return Object.freeze({
@@ -73,6 +81,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key));
+}
+
+function decodeKnowledgeLexicalBackendEvidence(
+  value: unknown
+): KnowledgeLexicalBackendEvidenceV1 | null {
+  if (!isRecord(value) || !exactKeys(value, [
+    "analyzerProfile",
+    "backendKind",
+    "candidateCount",
+    "canonicalRejectionCount",
+    "durationMs",
+    "mappingVersion",
+    "openSearchVersion",
+    "physicalIndexVersion",
+    "projectionCompleteness",
+    "queryVariantCount",
+    "rankingProfileVersion",
+    "requestId",
+    "status",
+    "timedOut",
+    "version"
+  ]) || value.version !== 1 || value.backendKind !== KNOWLEDGE_SEARCH_BACKEND_KIND ||
+    value.openSearchVersion !== AIQSA_OPENSEARCH_VERSION ||
+    value.physicalIndexVersion !== KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION ||
+    value.mappingVersion !== KNOWLEDGE_SEARCH_MAPPING_VERSION ||
+    value.analyzerProfile !== KNOWLEDGE_SEARCH_ANALYZER_PROFILE ||
+    value.rankingProfileVersion !== 4 || value.status !== "complete" ||
+    value.projectionCompleteness !== "complete" || value.timedOut !== false ||
+    value.canonicalRejectionCount !== 0 ||
+    nonNegativeInteger(value.candidateCount) === null ||
+    nonNegativeInteger(value.durationMs) === null ||
+    !Number.isSafeInteger(value.queryVariantCount) || Number(value.queryVariantCount) < 1 ||
+    Number(value.queryVariantCount) > 2 ||
+    value.requestId !== null && !boundedString(value.requestId, 128)) return null;
+  return value as KnowledgeLexicalBackendEvidenceV1;
 }
 
 function isKnowledgeResultVersion(value: unknown): value is KnowledgeResultVersion {
@@ -248,7 +291,7 @@ const retrievalLanes = new Set<KnowledgeRetrievalLane>([
   "exact",
   "metadata",
   "neighbor",
-  "passage_lexical",
+  "passage_bm25",
   "passage_semantic",
   "section_lexical"
 ]);
@@ -1135,6 +1178,9 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     : version === KNOWLEDGE_RESULT_VERSION
       ? decodeDiscoveryEvidence(value.discovery) ?? null
       : null;
+  const lexicalBackend = value.lexicalBackend === undefined
+    ? undefined
+    : decodeKnowledgeLexicalBackendEvidence(value.lexicalBackend) ?? null;
   const scopeAliases = value.scopeAliases === undefined
     ? undefined
     : Array.isArray(value.scopeAliases) && value.scopeAliases.length <= 256
@@ -1178,7 +1224,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     : boundedString(value.failureCode, 128);
   if (
     bases.some((base) => base === null) || budget === null || operation === null || read === null ||
-    exact === null || discovery === null || value.structured !== undefined ||
+    exact === null || discovery === null || lexicalBackend === null || value.structured !== undefined ||
     value.visual !== undefined ||
     [read, exact, discovery].filter((entry) => entry !== undefined).length > 1 ||
     scopeAliases === null || scopeAliases?.some((alias) => alias === null) ||
@@ -1188,6 +1234,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     read !== undefined && (operation !== "read_source" || query !== read.locator) ||
     exact !== undefined && (operation !== "find_exact" || query !== exact.value) ||
     discovery !== undefined && (operation !== "discover_sources" || query !== discovery.query) ||
+    (operation === "automatic_search") !== (lexicalBackend !== undefined) ||
     embeddingExecutions.some((entry) => entry === null) ||
     results.some((result) => result === null) || candidateCount === null || candidateLimit === null ||
     candidateLimit < 1 || durationMs === null || invocationOrdinal === null || invocationOrdinal < 1 ||
@@ -1234,6 +1281,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     ...(failureCode ? { failureCode } : {}),
     fusion,
     invocationOrdinal,
+    ...(lexicalBackend ? { lexicalBackend } : {}),
     ...(operation ? { operation } : {}),
     outcome: decodedOutcome,
     ...(postRerankOrder !== undefined ? { postRerankOrder } : {}),

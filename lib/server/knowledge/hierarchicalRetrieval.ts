@@ -28,10 +28,8 @@ export type KnowledgeHierarchicalScope =
   | KnowledgeAdmittedRunHierarchicalScope
   | KnowledgeOwnerHierarchicalScope;
 
-export type KnowledgeLexicalTargetLevel = "document" | "passage" | "section";
+export type KnowledgeLexicalTargetLevel = "document" | "section";
 export type KnowledgeLexicalMatchedField =
-  | "body"
-  | "context"
   | "description"
   | "entities"
   | "filename"
@@ -123,10 +121,6 @@ export type KnowledgeHierarchicalRetrievalRepository = Readonly<{
     operation: KnowledgeExactOperation;
     query: string;
   }): Promise<KnowledgeExactSearchPage>;
-  searchPassages(input: KnowledgeHierarchicalScope & {
-    limit: number;
-    query: string;
-  }): Promise<readonly KnowledgeLexicalIndexHit[]>;
 }>;
 
 export type KnowledgeHierarchicalQueryErrorCode =

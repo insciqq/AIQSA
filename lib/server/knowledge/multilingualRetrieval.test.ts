@@ -46,11 +46,13 @@ async function capturedHybridSql(query: string): Promise<string> {
     $queryRaw: vi.fn(async (_statement: unknown) => [{
       candidates: [],
       scopes: [{
+        acceptedIndexArtifactIds: [],
         baseName: "Docs",
         bindingOrdinal: 0,
         eligibleRows: 0,
         indexGenerationId: "generation-0",
         knowledgeBaseId: "base-0",
+        projectionComplete: true,
         targetDimension: 1_024
       }]
     }])
@@ -157,7 +159,7 @@ describe("multilingual generic lexical path", () => {
   it("uses the same simple-config hierarchical lexical statement for every language", () => {
     const statements = MATRIX_QUERIES.map(([, query]) => sqlText(
       knowledgeHierarchicalLexicalSearchSql({
-        level: "passage",
+        level: "section",
         limit: 10,
         query,
         scope: { ownerUserId: "user-1", sourceArtifactIds: ["artifact-1"] }

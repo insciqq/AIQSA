@@ -70,6 +70,7 @@ services:
       AIQSA_KNOWLEDGE_MAX_PAGES: ${AIQSA_KNOWLEDGE_MAX_PAGES:-2000}
       AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS: ${AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS:-5000000}
       AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT: ${AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:-10000}
+      AIQSA_OPENSEARCH_URL: http://opensearch:9200
       AIQSA_PDF_EXTRACTION_TIMEOUT_MS: ${AIQSA_PDF_EXTRACTION_TIMEOUT_MS:-20000}
       AIQSA_PDF_MAX_PAGES: ${AIQSA_PDF_MAX_PAGES:-500}
       AIQSA_DOCLING_REQUEST_MAX_BYTES: ${AIQSA_DOCLING_REQUEST_MAX_BYTES:-}
@@ -114,6 +115,7 @@ services:
       - default
       - mcp-control
       - parser-control
+      - search-control
     volumes:
       - .:/app
       - /app/node_modules
@@ -125,6 +127,41 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      opensearch:
+        condition: service_healthy
+
+  knowledge-search-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    command: sh -c "npm run db:generate && npm run knowledge:search:worker"
+    environment:
+      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH: ${AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH:-1}
+      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS: ${AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS:-2000}
+      AIQSA_OPENSEARCH_URL: http://opensearch:9200
+      DATABASE_URL: postgresql://aiqsa:aiqsa-dev-password@postgres:5432/aiqsa?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: development
+    cpus: ${AIQSA_KNOWLEDGE_SEARCH_WORKER_CPU_LIMIT:-0.5}
+    depends_on:
+      app:
+        condition: service_started
+      opensearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_KNOWLEDGE_SEARCH_WORKER_MEMORY_LIMIT:-512m}
+    networks:
+      - default
+      - search-control
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - .:/app
+      - /app/node_modules
 
   docling:
     build:
@@ -221,7 +258,7 @@ services:
       - toolhive_dev_data:/var/lib/toolhive
 
   postgres:
-    image: ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee
+    image: pgvector/pgvector:0.8.6-pg18-trixie@sha256:78bf48b801e792f99e3ac62b5036fd3876e9be48afda16c1e331af1c75ceb2ff
     environment:
       POSTGRES_DB: aiqsa
       POSTGRES_PASSWORD: aiqsa-dev-password
@@ -234,7 +271,38 @@ services:
     ports:
       - "127.0.0.1:${AIQSA_DEV_POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_dev_data:/var/lib/postgresql/data
+      - postgres18_dev_data:/var/lib/postgresql
+
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0@sha256:bcc1797519726ceb6d651d4a3e60b7c30da91793914a8dfe75fd441d4f641509
+    environment:
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: ${AIQSA_OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+      bootstrap.memory_lock: "true"
+      discovery.type: single-node
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=2s' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    ports:
+      - "127.0.0.1:${AIQSA_DEV_OPENSEARCH_PORT:-19200}:9200"
+    cpus: ${AIQSA_OPENSEARCH_CPU_LIMIT:-1.0}
+    logging: *default-logging
+    mem_limit: ${AIQSA_OPENSEARCH_MEMORY_LIMIT:-1536m}
+    networks:
+      - search-control
+      - search-diagnostic
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ulimits:
+      memlock:
+        hard: -1
+        soft: -1
+    volumes:
+      - opensearch_dev_data:/usr/share/opensearch/data
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -273,8 +341,18 @@ networks:
     internal: true
   parser-control:
     internal: true
+  search-control:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_SEARCH_NETWORK_SUBNET:-192.168.64.0/24}
+  search-diagnostic:
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_SEARCH_DIAGNOSTIC_NETWORK_SUBNET:-192.168.66.0/24}
 
 volumes:
   minio_dev_data:
-  postgres_dev_data:
+  opensearch_dev_data:
+  postgres18_dev_data:
   toolhive_dev_data:

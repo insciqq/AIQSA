@@ -80,6 +80,10 @@ import {
   KNOWLEDGE_SEARCH_TOOL_NAME
 } from "./retrievalTypes";
 import { settleKnowledgeBudgetReservationReceipt } from "./knowledgeBudgetReservationRepository";
+import {
+  createKnowledgePassageBm25Search,
+  type KnowledgePassageBm25Search
+} from "./searchRetrieval";
 
 type RetrievalPrisma = Pick<
   PrismaClient,
@@ -395,7 +399,8 @@ export function createPrismaKnowledgeParentContextLoader(
 }
 
 export function createPrismaKnowledgeRetrievalStore(
-  client: RetrievalPrisma
+  client: RetrievalPrisma,
+  lexicalSearch: KnowledgePassageBm25Search = createKnowledgePassageBm25Search()
 ): KnowledgeRetrievalStore {
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
   const parentContextLoader = createPrismaKnowledgeParentContextLoader(client);
@@ -519,6 +524,7 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
         excludedContentHashes: input.excludedContentHashes,
+        lexicalSearch,
         // FR-14/FR-15: child-to-parent expansion applies only to automatic
         // search results; bounded exact reads and metadata discovery never
         // expand, and receipt replay short-circuits before this call.
@@ -536,6 +542,7 @@ export function createPrismaKnowledgeRetrievalStore(
         candidateCount: result.candidateCount,
         candidateCounts: result.candidateCounts,
         canonicalSourceProvenance: result.canonicalSourceProvenance,
+        lexicalBackendEvidence: result.lexicalBackendEvidence,
         passages: result.passages.map((passage): KnowledgeHybridPassage => ({
           annRank: passage.annRank,
           baseName: passage.baseName,
@@ -1129,6 +1136,7 @@ export function createPrismaKnowledgeRetrievalStore(
           failureCode: true,
           fusion: true,
           invocationOrdinal: true,
+          lexicalBackendEvidence: true,
           operation: true,
           outcome: true,
           providerText: true,
@@ -1205,6 +1213,9 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(receipt.failureCode ? { failureCode: receipt.failureCode } : {}),
         fusion: receipt.fusion,
         invocationOrdinal: receipt.invocationOrdinal,
+        ...(receipt.operation === "automatic_search"
+          ? { lexicalBackend: receipt.lexicalBackendEvidence }
+          : {}),
         operation: receipt.operation,
         outcome: receipt.outcome,
         providerText: receipt.providerText,
@@ -2144,6 +2155,9 @@ export function createPrismaKnowledgeRetrievalStore(
             fusion: evidence.fusion,
             id: knowledgeRunId,
             invocationOrdinal: evidence.invocationOrdinal,
+            lexicalBackendEvidence: evidence.operation === "automatic_search"
+              ? json(evidence.lexicalBackend)
+              : Prisma.DbNull,
             modelRunId: input.runId,
             modelRunToolCallId: input.modelRunToolCallId,
             ...(input.budgetReservation

@@ -21,11 +21,13 @@ type MockCoreClient = CoreClient & Readonly<{
 
 function scope(bindingOrdinal: number, baseName: string, knowledgeBaseId: string) {
   return {
+    acceptedIndexArtifactIds: [],
     baseName,
     bindingOrdinal,
     eligibleRows: 1,
     indexGenerationId: `generation-${bindingOrdinal}`,
     knowledgeBaseId,
+    projectionComplete: true,
     targetDimension: 1_024
   };
 }
@@ -54,7 +56,7 @@ function row(input: Readonly<{
     fileName: "shared-name.txt",
     headingPath: ["Policy"],
     knowledgeBaseId: "base-1",
-    lane: input.lane ?? "passage_lexical",
+    lane: input.lane ?? "passage_bm25",
     laneRank: input.laneRank ?? 1,
     layoutKind: "body",
     page: 1,

@@ -43,7 +43,7 @@ ToolHive environment values are plaintext in controller/Docker state even when A
 
 ## Deployment And Dependencies
 
-The persistent Compose installation binds the app to loopback by default; Postgres, object storage, parsers, and controllers have no host ports. Trusted LAN/VPN direct HTTP is supported with explicit peer admission and a confidentiality warning. Internet/TLS exposure keeps the app loopback-bound behind the supplied SSE/upload-aware proxy. Liveness is dependency-free; readiness fails closed for security contradictions and required data services while feature-local Memory/parser failures stay local.
+The persistent Compose installation binds the app to loopback by default; Postgres, OpenSearch, object storage, parsers, and controllers have no host ports. OpenSearch is an unauthenticated installation-internal process on the dedicated internal search-control network, reachable only by the app and its projection worker in the supported single-host topology; exposing it, sharing that network with untrusted workloads, or moving it off-host requires a new authenticated transport boundary. Trusted LAN/VPN direct HTTP is supported with explicit peer admission and a confidentiality warning. Internet/TLS exposure keeps the app loopback-bound behind the supplied SSE/upload-aware proxy. Liveness is dependency-free; readiness fails closed for security contradictions and required data services while feature-local Memory/parser failures stay local.
 
 The release image is digest-pinned and non-root. Migration/bootstrap, app, Memory worker, and maintenance roles have distinct commands/configuration. Backups quiesce all writers before copying. Restore runs only in the isolated no-port topology described by [Persistence](PERSISTENCE.md).
 

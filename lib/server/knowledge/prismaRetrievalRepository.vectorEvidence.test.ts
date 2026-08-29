@@ -21,6 +21,24 @@ const vectorSearchEvidence = [{
   targetDimension: 1_024 as const
 }];
 
+const lexicalBackendEvidence = {
+  analyzerProfile: "standard_v1",
+  backendKind: "opensearch_bm25_v1",
+  candidateCount: 0,
+  canonicalRejectionCount: 0,
+  durationMs: 0,
+  mappingVersion: 1,
+  openSearchVersion: "3.8.0",
+  physicalIndexVersion: 1,
+  projectionCompleteness: "complete",
+  queryVariantCount: 1,
+  rankingProfileVersion: 4,
+  requestId: null,
+  status: "complete",
+  timedOut: false,
+  version: 1
+} as const;
+
 describe("Prisma Knowledge vector evidence projection", () => {
   beforeEach(() => {
     vi.mocked(executeKnowledgeRetrievalCore).mockClear();
@@ -29,6 +47,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
       candidateCount: 0,
       candidateCounts: { 0: 0 },
       canonicalSourceProvenance: [],
+      lexicalBackendEvidence,
       passages: [],
       rankingEvidence: {} as never,
       vectorSearchEvidence
@@ -63,6 +82,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
       candidateCount: 1,
       candidateCounts: { 0: 1 },
       canonicalSourceProvenance: [],
+      lexicalBackendEvidence,
       passages: [{
         annRank: null,
         baseName: "Policies",
@@ -85,7 +105,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
         sectionId: "section-1",
         signals: [{
           exactKind: null,
-          lane: "passage_lexical",
+          lane: "passage_bm25",
           rank: 1,
           rawScore: 1,
           vectorDistance: null,

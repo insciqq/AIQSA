@@ -34,8 +34,6 @@ import type {
 type HierarchicalRetrievalClient = Pick<PrismaClient, "$queryRaw" | "$transaction">;
 
 const lexicalFields = new Set<KnowledgeLexicalMatchedField>([
-  "body",
-  "context",
   "description",
   "entities",
   "filename",
@@ -164,14 +162,12 @@ function indexedRowsSql(level: KnowledgeLexicalTargetLevel): Prisma.Sql {
       item."entitiesText" AS "entitiesField",
       item."description" AS "descriptionField",
       item."summary" AS "summaryField",
-      ''::text AS "contextField",
-      ''::text AS "bodyField",
       item."simpleSearchVector"
     FROM "KnowledgeArtifactDocumentIndex" AS item
     INNER JOIN authorized_artifacts AS authorized
       ON authorized."indexArtifactId" = item."indexArtifactId"
   `;
-  if (level === "section") return Prisma.sql`
+  return Prisma.sql`
     SELECT
       authorized."sourceArtifactId",
       item."indexArtifactId",
@@ -189,35 +185,8 @@ function indexedRowsSql(level: KnowledgeLexicalTargetLevel): Prisma.Sql {
       item."entitiesText" AS "entitiesField",
       item."sourceDescription" AS "descriptionField",
       item."summary" AS "summaryField",
-      ''::text AS "contextField",
-      ''::text AS "bodyField",
       item."simpleSearchVector"
     FROM "KnowledgeArtifactSectionIndex" AS item
-    INNER JOIN authorized_artifacts AS authorized
-      ON authorized."indexArtifactId" = item."indexArtifactId"
-  `;
-  return Prisma.sql`
-    SELECT
-      authorized."sourceArtifactId",
-      item."indexArtifactId",
-      item."id" AS "targetId",
-      COALESCE(NULLIF(item."headingPath"[cardinality(item."headingPath")], ''), item."fileName") AS "label",
-      item."page",
-      item."pageEnd",
-      item."text",
-      item."fileName" AS "filenameField",
-      item."sourceName" AS "sourceNameField",
-      item."documentTitle" AS "titleField",
-      item."headingText" AS "headingField",
-      item."tagsText" AS "tagsField",
-      ''::text AS "keywordsField",
-      ''::text AS "entitiesField",
-      item."sourceDescription" AS "descriptionField",
-      ''::text AS "summaryField",
-      item."contextPrefix" AS "contextField",
-      item."text" AS "bodyField",
-      item."simpleSearchVector"
-    FROM "KnowledgeArtifactPassageIndex" AS item
     INNER JOIN authorized_artifacts AS authorized
       ON authorized."indexArtifactId" = item."indexArtifactId"
   `;
@@ -239,9 +208,7 @@ function matchedFieldsSql(): Prisma.Sql {
     ["keywords", Prisma.sql`candidate."keywordsField"`],
     ["entities", Prisma.sql`candidate."entitiesField"`],
     ["description", Prisma.sql`candidate."descriptionField"`],
-    ["summary", Prisma.sql`candidate."summaryField"`],
-    ["context", Prisma.sql`candidate."contextField"`],
-    ["body", Prisma.sql`candidate."bodyField"`]
+    ["summary", Prisma.sql`candidate."summaryField"`]
   ];
   return Prisma.sql`array_remove(ARRAY[${Prisma.join(fields.map(([name, field]) =>
     Prisma.sql`CASE WHEN ${fieldMatches(field)} THEN ${name}::text ELSE NULL::text END`
@@ -932,8 +899,7 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
         (tx) => tx.$queryRaw<unknown[]>(sql)
       );
       return decodeExactPage(rows[0], { limit, offset, operation });
-    },
-    searchPassages: (input) => lexical("passage", input)
+    }
   };
 }
 

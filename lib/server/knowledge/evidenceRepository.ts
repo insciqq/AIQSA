@@ -124,7 +124,7 @@ const retrievalLanes = new Set<KnowledgeRetrievalLane>([
   "exact",
   "metadata",
   "neighbor",
-  "passage_lexical",
+  "passage_bm25",
   "passage_semantic",
   "section_lexical"
 ]);

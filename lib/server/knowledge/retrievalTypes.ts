@@ -16,6 +16,7 @@ import type { KnowledgeVisualAnalysisResult } from "./visualEvidence";
 import type { NormalizedReadSourceRequest } from "./readSourceLocator";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
+import type { KnowledgeLexicalBackendEvidenceV1 } from "./searchRetrieval";
 
 /** Server-only checkpoint operation. This name is never advertised to an
  * answer provider. */
@@ -360,6 +361,7 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   failureCode?: string;
   fusion: "none" | "rrf_k60" | "weighted_rrf_v2";
   invocationOrdinal: number;
+  lexicalBackend?: KnowledgeLexicalBackendEvidenceV1;
   operation?: KnowledgeOperationKind;
   outcome: KnowledgeRetrievalOutcome;
   /** Decode-only fields from accepted planner-era receipts. */
@@ -402,6 +404,7 @@ export type KnowledgeHybridSearchResult = Readonly<{
   candidateCount: number;
   candidateCounts: Readonly<Record<number, number>>;
   canonicalSourceProvenance?: readonly KnowledgeCanonicalSourceProvenance[];
+  lexicalBackendEvidence?: KnowledgeLexicalBackendEvidenceV1;
   passages: readonly KnowledgeHybridPassage[];
   rankingEvidence?: KnowledgeRankingEvidence;
   /** Present exactly when a hosted rerank stage ran for this operation. */

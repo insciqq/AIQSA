@@ -62,6 +62,12 @@ import type {
   KnowledgeParentExpansion,
   KnowledgeParentExpansionUnit
 } from "./retrievalTypes";
+import type { KnowledgeBm25Hit } from "../search/opensearch/contract";
+import {
+  createKnowledgePassageBm25Search,
+  KnowledgeLexicalBackendEvidenceV1,
+  KnowledgePassageBm25Search
+} from "./searchRetrieval";
 
 const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
 const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
@@ -93,11 +99,13 @@ export type KnowledgeRetrievalScopeFilter = Readonly<{
 }>;
 
 type ScopeRow = Readonly<{
+  acceptedIndexArtifactIds: readonly string[];
   baseName: string;
   bindingOrdinal: number;
   eligibleRows: number;
   indexGenerationId: string;
   knowledgeBaseId: string;
+  projectionComplete: boolean;
   targetDimension: number;
 }>;
 
@@ -107,6 +115,8 @@ type CandidateRow = Omit<KnowledgeRetrievalCandidate, "signals" | "sourceArtifac
   lane: KnowledgeRetrievalLane;
   laneRank: number;
   rawScore: number;
+  /** Present only on rows returned by canonical OpenSearch revalidation. */
+  searchIndexArtifactId: string | null;
   sourceArtifactId: string;
   vectorDistance: number | null;
   vectorMode: KnowledgeVectorSearchMode | null;
@@ -156,6 +166,7 @@ export type KnowledgeRetrievalCoreResult = Readonly<{
   candidateCount: number;
   candidateCounts: Readonly<Record<number, number>>;
   canonicalSourceProvenance: readonly KnowledgeCanonicalSourceProvenance[];
+  lexicalBackendEvidence: KnowledgeLexicalBackendEvidenceV1;
   passages: readonly KnowledgeRetrievalCorePassage[];
   rankingEvidence: KnowledgeRankingEvidence;
   rerankerBinding?: KnowledgeRerankerBindingEvidenceV2;
@@ -401,7 +412,6 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."contentHash",
       passage."sourceName",
       passage."text",
-      passage."simpleSearchVector",
       embedding."embeddingDimension",
       embedding."embedding"
     FROM canonical_binding_sources AS source_binding
@@ -453,6 +463,25 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
       binding."indexGenerationId",
       binding."targetDimension",
       binding."baseName",
+      COALESCE(
+        array_agg(DISTINCT passage."indexArtifactId" ORDER BY passage."indexArtifactId")
+          FILTER (WHERE passage."indexArtifactId" IS NOT NULL),
+        ARRAY[]::text[]
+      ) AS "acceptedIndexArtifactIds",
+      COALESCE(
+        bool_and(
+          COALESCE(
+            projection."backendKind" = 'opensearch_bm25_v1'
+            AND projection."mappingVersion" = 1
+            AND projection."state" = 'READY'::"KnowledgeSearchProjectionState"
+            AND projection."expectedPassageCount" = projection."indexedPassageCount"
+            AND projection."expectedPassageCount" > 0
+            AND projection."projectionFingerprint" ~ '^[0-9a-f]{64}$',
+            false
+          )
+        ) FILTER (WHERE passage."indexArtifactId" IS NOT NULL),
+        true
+      ) AS "projectionComplete",
       count(passage."chunkId") FILTER (
         WHERE passage."embedding" IS NOT NULL
           AND passage."embeddingDimension" = binding."targetDimension"
@@ -460,6 +489,8 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
     FROM bindings AS binding
     LEFT JOIN scoped_passages AS passage
       ON passage."bindingOrdinal" = binding."ordinal"
+    LEFT JOIN "KnowledgeSearchProjection" AS projection
+      ON projection."indexArtifactId" = passage."indexArtifactId"
     GROUP BY
       binding."ordinal",
       binding."knowledgeBaseId",
@@ -475,21 +506,29 @@ function decodeScope(value: unknown): ScopeRow | null {
   const bindingOrdinal = integer(value.bindingOrdinal);
   const eligibleRows = integer(value.eligibleRows);
   const targetDimension = integer(value.targetDimension);
+  const acceptedIndexArtifactIds = Array.isArray(value.acceptedIndexArtifactIds) &&
+    value.acceptedIndexArtifactIds.every((entry) => typeof entry === "string" && entry.length > 0)
+    ? [...new Set(value.acceptedIndexArtifactIds as string[])].sort()
+    : null;
   if (
     bindingOrdinal === null || bindingOrdinal < 0 ||
     bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
     eligibleRows === null || eligibleRows < 0 ||
     targetDimension !== 1_024 && targetDimension !== 1_536 ||
+    acceptedIndexArtifactIds === null ||
+    typeof value.projectionComplete !== "boolean" ||
     typeof value.baseName !== "string" || !value.baseName ||
     typeof value.indexGenerationId !== "string" || !value.indexGenerationId ||
     typeof value.knowledgeBaseId !== "string" || !value.knowledgeBaseId
   ) return null;
   return {
+    acceptedIndexArtifactIds,
     baseName: value.baseName,
     bindingOrdinal,
     eligibleRows,
     indexGenerationId: value.indexGenerationId,
     knowledgeBaseId: value.knowledgeBaseId,
+    projectionComplete: value.projectionComplete,
     targetDimension
   };
 }
@@ -675,8 +714,6 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
   const exactValuesSql = exactValues.length > 0
     ? Prisma.sql`ARRAY[${Prisma.join(exactValues)}]::text[]`
     : Prisma.sql`ARRAY[]::text[]`;
-  const passageRank = combinedLexicalRank("chunk", hasDistinctAnchor);
-  const passageMatch = combinedLexicalMatch("chunk", hasDistinctAnchor);
   const sectionRank = combinedLexicalRank("section", hasDistinctAnchor);
   const sectionMatch = combinedLexicalMatch("section", hasDistinctAnchor);
   const documentRank = combinedLexicalRank("document_index", hasDistinctAnchor);
@@ -700,14 +737,6 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       SELECT query_value."normalizedValue", query_value."queryOrdinal"::integer
       FROM unnest(${exactValuesSql}) WITH ORDINALITY
         AS query_value("normalizedValue", "queryOrdinal")
-    ),
-    passage_raw AS (
-      SELECT chunk.*, 'passage_lexical'::text AS lane,
-        ${passageRank}::double precision AS "rawScore",
-        NULL::text AS "exactKind"
-      FROM scoped_chunks AS chunk
-      CROSS JOIN query_terms
-      WHERE ${passageMatch}
     ),
     section_raw AS (
       SELECT chunk.*, 'section_lexical'::text AS lane,
@@ -830,8 +859,7 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
        AND exact_score."chunkId" = chunk."chunkId"
     ),
     lane_rows AS (
-      SELECT * FROM passage_raw
-      UNION ALL SELECT * FROM section_raw
+      SELECT * FROM section_raw
       UNION ALL SELECT * FROM document_raw
       UNION ALL SELECT * FROM metadata_raw
       UNION ALL SELECT * FROM exact_raw
@@ -842,7 +870,7 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       WHERE lane = 'exact'
         OR lane = 'metadata' AND "rawScore" >= ${KNOWLEDGE_METADATA_RELEVANCE_FLOOR}
         OR lane IN (
-          'document_lexical', 'passage_lexical', 'section_lexical'
+          'document_lexical', 'section_lexical'
         )
           ${input.relaxRelevanceFloors
             ? Prisma.empty
@@ -965,7 +993,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
             WHEN 'document_lexical' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.document_lexical}
             WHEN 'exact' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.exact}
             WHEN 'metadata' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.metadata}
-            WHEN 'passage_lexical' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.passage_lexical}
+            WHEN 'passage_bm25' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.passage_bm25}
             WHEN 'passage_semantic' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.passage_semantic}
             WHEN 'section_lexical' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.section_lexical}
             ELSE 0.0
@@ -1079,12 +1107,157 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
   `;
 }
 
+function knowledgeBm25RevalidationSql(input: Readonly<{
+  bindingOrdinals?: readonly number[];
+  hits: readonly KnowledgeBm25Hit[];
+  runId: string;
+  sourceIds?: readonly string[];
+  userId: string;
+}>): Prisma.Sql {
+  if (input.hits.length < 1 || input.hits.length > KNOWLEDGE_LANE_CANDIDATE_LIMIT) {
+    throw new Error("knowledge_bm25_hits_invalid");
+  }
+  const bindings = retrievalBindingsSql(input);
+  const scopedPassages = scopedPassagesSql();
+  const hits = Prisma.join(input.hits.map((hit) => Prisma.sql`(
+    ${hit.indexArtifactId},
+    ${hit.passageId},
+    ${hit.sourceVersionId},
+    ${hit.contentHash},
+    ${hit.rank},
+    ${hit.score}
+  )`));
+  return Prisma.sql`
+    WITH
+    bindings AS MATERIALIZED (${bindings}),
+    scoped_passages AS MATERIALIZED (${scopedPassages}),
+    bm25_hits(
+      "indexArtifactId",
+      "chunkId",
+      "sourceVersionId",
+      "contentHash",
+      "laneRank",
+      "rawScore"
+    ) AS MATERIALIZED (VALUES ${hits}),
+    matched AS MATERIALIZED (
+      SELECT
+        chunk."baseName",
+        chunk."bindingOrdinal",
+        chunk."contributingBindingOrdinals",
+        chunk."chunkId",
+        chunk."chunkIndex",
+        chunk."contentHash",
+        chunk."documentId",
+        chunk."documentVersionId",
+        chunk."documentVersionNumber",
+        chunk."documentContext",
+        chunk."fileName",
+        chunk."headingPath",
+        chunk."layoutKind",
+        chunk."knowledgeBaseId",
+        chunk."page",
+        chunk."sectionId",
+        chunk."sourceArtifactId",
+        hit."indexArtifactId" AS "searchIndexArtifactId",
+        chunk."sourceName",
+        chunk."text",
+        'passage_bm25'::text AS lane,
+        hit."laneRank"::integer AS "laneRank",
+        hit."rawScore"::double precision AS "rawScore",
+        NULL::text AS "exactKind",
+        NULL::double precision AS "vectorDistance",
+        NULL::text AS "vectorMode"
+      FROM bm25_hits AS hit
+      INNER JOIN scoped_passages AS chunk
+        ON chunk."indexArtifactId" = hit."indexArtifactId"
+       AND chunk."chunkId" = hit."chunkId"
+       AND chunk."documentVersionId" = hit."sourceVersionId"
+       AND chunk."contentHash" = hit."contentHash"
+    ),
+    ranked_neighbor_candidates AS (
+      SELECT
+        neighbor."baseName",
+        neighbor."bindingOrdinal",
+        neighbor."contributingBindingOrdinals",
+        neighbor."chunkId",
+        neighbor."chunkIndex",
+        neighbor."contentHash",
+        neighbor."documentId",
+        neighbor."documentVersionId",
+        neighbor."documentVersionNumber",
+        neighbor."documentContext",
+        neighbor."fileName",
+        neighbor."headingPath",
+        neighbor."layoutKind",
+        neighbor."knowledgeBaseId",
+        neighbor."page",
+        neighbor."sectionId",
+        neighbor."sourceArtifactId",
+        NULL::text AS "searchIndexArtifactId",
+        neighbor."sourceName",
+        neighbor."text",
+        'neighbor'::text AS lane,
+        row_number() OVER (
+          ORDER BY
+            anchor."laneRank",
+            abs(neighbor."chunkIndex" - source."chunkIndex"),
+            neighbor."chunkId"
+        )::integer AS "laneRank",
+        (1.0 / (
+          1 + anchor."laneRank" + abs(neighbor."chunkIndex" - source."chunkIndex")
+        ))::double precision AS "rawScore",
+        NULL::text AS "exactKind",
+        NULL::double precision AS "vectorDistance",
+        NULL::text AS "vectorMode"
+      FROM matched AS anchor
+      INNER JOIN scoped_passages AS source
+        ON source."bindingOrdinal" = anchor."bindingOrdinal"
+       AND source."chunkId" = anchor."chunkId"
+      INNER JOIN scoped_passages AS neighbor
+        ON neighbor."bindingOrdinal" = source."bindingOrdinal"
+       AND neighbor."indexArtifactId" = source."indexArtifactId"
+       AND neighbor."documentId" = source."documentId"
+       AND neighbor."documentVersionId" = source."documentVersionId"
+       AND neighbor."sourceArtifactId" = source."sourceArtifactId"
+       AND (
+         source."documentContext" IS NULL AND neighbor."documentContext" IS NULL
+           AND abs(neighbor."chunkIndex" - source."chunkIndex") =
+             ${KNOWLEDGE_LINEAR_CONTEXT_RADIUS}
+         OR source."documentContext"->'locator'->>'kind' = 'table_row'
+           AND neighbor."documentContext"->'locator'->>'kind' = 'table_row'
+           AND neighbor."documentContext"->'locator'->>'blockId' =
+             source."documentContext"->'locator'->>'blockId'
+           AND abs(
+             (neighbor."documentContext"->'locator'->>'rowIndex')::integer -
+             (source."documentContext"->'locator'->>'rowIndex')::integer
+           ) BETWEEN 1 AND ${KNOWLEDGE_TABLE_CONTEXT_ROW_RADIUS}
+         OR source."documentContext"->'locator'->>'rowId' IS NOT NULL
+           AND neighbor."documentContext"->'locator'->>'rowId' =
+             source."documentContext"->'locator'->>'rowId'
+           AND abs(neighbor."chunkIndex" - source."chunkIndex") =
+             ${KNOWLEDGE_LINEAR_CONTEXT_RADIUS}
+         OR source."documentContext"->'locator'->>'fieldGroupId' IS NOT NULL
+           AND neighbor."documentContext"->'locator'->>'fieldGroupId' =
+             source."documentContext"->'locator'->>'fieldGroupId'
+           AND abs(neighbor."chunkIndex" - source."chunkIndex") =
+             ${KNOWLEDGE_LINEAR_CONTEXT_RADIUS}
+       )
+    )
+    SELECT * FROM matched
+    UNION ALL
+    SELECT neighbor.*
+    FROM ranked_neighbor_candidates AS neighbor
+    WHERE neighbor."laneRank" <= ${KNOWLEDGE_SIGNAL_RANK_MAX}
+    ORDER BY "bindingOrdinal", lane, "laneRank", "chunkId"
+  `;
+}
+
 const lanes = new Set<KnowledgeRetrievalLane>([
   "document_lexical",
   "exact",
   "metadata",
   "neighbor",
-  "passage_lexical",
+  "passage_bm25",
   "passage_semantic",
   "section_lexical"
 ]);
@@ -1114,6 +1287,12 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
   const laneRank = integer(value.laneRank);
   const page = integer(value.page);
   const rawScore = finite(value.rawScore);
+  const searchIndexArtifactId = value.searchIndexArtifactId === undefined ||
+    value.searchIndexArtifactId === null
+    ? null
+    : typeof value.searchIndexArtifactId === "string" && value.searchIndexArtifactId.length > 0
+      ? value.searchIndexArtifactId
+      : undefined;
   const vectorDistance = value.vectorDistance === null ? null : finite(value.vectorDistance);
   const contributingBindingOrdinals = decodeContributingBindingOrdinals(
     value.contributingBindingOrdinals
@@ -1125,6 +1304,7 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     documentVersionNumber < 1 || laneRank === null || laneRank < 1 ||
     laneRank > KNOWLEDGE_SIGNAL_RANK_MAX ||
     page === null || page < 1 || rawScore === null ||
+    searchIndexArtifactId === undefined ||
     typeof value.lane !== "string" || !lanes.has(value.lane as KnowledgeRetrievalLane) ||
     !Array.isArray(value.headingPath) || value.headingPath.some((entry) => typeof entry !== "string") ||
     typeof value.baseName !== "string" || !value.baseName ||
@@ -1169,6 +1349,7 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     laneRank,
     page,
     rawScore,
+    searchIndexArtifactId,
     sectionId: value.sectionId as string | null,
     sourceArtifactId: value.sourceArtifactId,
     sourceName: value.sourceName,
@@ -1243,6 +1424,7 @@ function mergedCandidates(
       lane: _lane,
       laneRank: _laneRank,
       rawScore: _rawScore,
+      searchIndexArtifactId: _searchIndexArtifactId,
       vectorDistance: _vectorDistance,
       vectorMode: _vectorMode,
       ...candidate
@@ -1458,6 +1640,7 @@ export async function executeKnowledgeRetrievalCore(
     candidateLimit: number;
     bindingOrdinals?: readonly number[];
     excludedContentHashes: readonly string[];
+    lexicalSearch?: KnowledgePassageBm25Search;
     /** FR-14 canonical-section window loader; present only for automatic
      * search operations, so exact/metadata/read operations never expand. */
     parentContextLoader?: KnowledgeParentContextLoader;
@@ -1536,6 +1719,39 @@ export async function executeKnowledgeRetrievalCore(
       scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
   ) throw new Error("knowledge_retrieval_scope_invalid");
 
+  const acceptedIndexArtifactIds = [...new Set(acceptedScopes.flatMap((scope) =>
+    scope.acceptedIndexArtifactIds))].sort();
+  if (acceptedIndexArtifactIds.length > 0 &&
+    acceptedScopes.some((scope) => !scope.projectionComplete)) {
+    throw new Error("knowledge_search_projection_incomplete");
+  }
+  const bm25 = await (input.lexicalSearch ?? createKnowledgePassageBm25Search())({
+    indexArtifactIds: acceptedIndexArtifactIds,
+    ownerUserId: input.userId,
+    queryVariants: [input.anchorQuery ?? input.query, input.query],
+    ...(input.rerank?.signal ? { signal: input.rerank.signal } : {})
+  });
+  const bm25Rows = bm25.hits.length === 0
+    ? []
+    : decodeRows(await client.$queryRaw<unknown[]>(knowledgeBm25RevalidationSql({
+        ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+        hits: bm25.hits,
+        runId: input.runId,
+        ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+        userId: input.userId
+      })));
+  const revalidatedBm25Hits = new Set(bm25Rows
+    .filter((row) => row.lane === "passage_bm25")
+    .map((row) => JSON.stringify([
+      row.searchIndexArtifactId,
+      row.chunkId,
+      row.documentVersionId,
+      row.contentHash
+    ])));
+  if (revalidatedBm25Hits.size !== bm25.hits.length) {
+    throw new Error("knowledge_search_candidate_revalidation_failed");
+  }
+
   const byOrdinal = new Map(acceptedScopes.map((scope) => [scope.bindingOrdinal, scope]));
   const vectorByOrdinal = new Map(input.vectors.map((vector) => [vector.bindingOrdinal, vector]));
   for (const vector of input.vectors) {
@@ -1570,9 +1786,10 @@ export async function executeKnowledgeRetrievalCore(
   // Row-level relevance eligibility. When a hosted reranker is configured,
   // global absolute dense/lexical floors must not drop candidates before
   // reranking; the deterministic path keeps today's floors exactly.
+  const retrievedRows = Object.freeze([...envelope.candidates, ...bm25Rows]);
   const eligibleRows = rerankConfigured
-    ? envelope.candidates
-    : envelope.candidates.filter((candidate) =>
+    ? retrievedRows
+    : retrievedRows.filter((candidate) =>
       candidate.lane === "neighbor" || knowledgeCandidateSignalEligible({
         exactKind: candidate.exactKind,
         lane: candidate.lane,
@@ -1794,7 +2011,7 @@ export async function executeKnowledgeRetrievalCore(
       .filter((signal) => signal.lane === "passage_semantic")
       .sort((left, right) => left.rank - right.rank)[0] ?? null;
     const lexical = candidate.signals
-      .filter((signal) => signal.lane.endsWith("_lexical"))
+      .filter((signal) => signal.lane.endsWith("_lexical") || signal.lane === "passage_bm25")
       .sort((left, right) => left.rank - right.rank)[0] ?? null;
     const expansion = expansions?.get(candidate.chunkId);
     const expandedContext = expansion
@@ -1820,6 +2037,7 @@ export async function executeKnowledgeRetrievalCore(
     candidateCount: candidates.length,
     candidateCounts: Object.freeze(candidateCounts),
     canonicalSourceProvenance: Object.freeze(canonicalSourceProvenance),
+    lexicalBackendEvidence: bm25.evidence,
     passages: Object.freeze(passages),
     rankingEvidence,
     ...(rerankerBinding ? { rerankerBinding } : {}),

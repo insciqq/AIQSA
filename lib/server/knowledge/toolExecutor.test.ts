@@ -5,6 +5,7 @@ import type { ProviderRunRequest } from "../providers/types";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 import { decodeKnowledgeRetrievalEvidence } from "./toolResult";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import {
@@ -159,6 +160,7 @@ function lexicalSearchResult() {
     candidateCount: 1,
     candidateCounts: { 0: 1 },
     canonicalSourceProvenance: [],
+    lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture(),
     passages: [{
       annRank: null,
       baseName: "Base",
@@ -181,7 +183,7 @@ function lexicalSearchResult() {
       sectionId: "section-1",
       signalProvenance: [{
         exactKind: null,
-        lane: "passage_lexical" as const,
+        lane: "passage_bm25" as const,
         rank: 1,
         rawScore: 1,
         vectorDistance: null,
@@ -335,6 +337,7 @@ describe("Knowledge executor surface", () => {
       candidateCount: 1,
       candidateCounts: { 0: 1, 1: 0, 2: 0, 3: 0 },
       canonicalSourceProvenance: [],
+      lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture(),
       passages: [{
         annRank: 1,
         baseName: "Base",
@@ -870,6 +873,7 @@ describe("Knowledge executor surface", () => {
       candidateCount: 0,
       candidateCounts: { 0: 0 },
       canonicalSourceProvenance: [],
+      lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 0 }),
       passages: [],
       rankingEvidence: { candidateOrder: [], fusion: "weighted_rrf_v2" as const },
       vectorSearchEvidence: [{

@@ -7,8 +7,9 @@ state, PostgreSQL benchmark volumes, and run results stay in local ignored
 paths (`.data/`, `results/`, and the compose volumes) and are never committed.
 
 Two public suites run through the complete retrieval path — HTTP upload
-ingestion, chunking, indexing, query embedding, the configured installation
-reranker when available, and the single hybrid retrieval repository operation
+ingestion, chunking, PostgreSQL/pgvector indexing, the derived OpenSearch BM25
+projection, query embedding, the configured installation reranker when available,
+and the single hybrid retrieval repository operation
 of an accepted `search_knowledge` call — with no answer generation:
 
 - `RusBEIR / rus-SciFact / test` — the full official corpus (5,183 documents)
@@ -62,7 +63,7 @@ database identities — it never shares state with the default development
 installation):
 
 ```bash
-docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml up -d app
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml up -d app knowledge-search-worker
 ```
 
 Then configure the installation Knowledge profile (the embedding model used
@@ -71,6 +72,12 @@ this disposable stack through the ordinary Admin path. Knowledge base creation
 fails closed with `knowledge_temporarily_unavailable` until an index profile is
 active. Retrieval remains deterministic when the reranker role is empty and
 records fallback metrics when a configured reranker is unavailable.
+
+OpenSearch is not corpus authority and is not restored from a benchmark backup.
+After a PostgreSQL logical restore, rebuild only the derived projection with
+`npm run knowledge:search:rebuild` inside the isolated app topology and require
+`npm run knowledge:search:integrity` to report healthy before retrieval. This
+does not upload, parse, OCR, or re-embed any document.
 
 3. Ingest each suite through the product HTTP boundary. The acknowledgement
 environment variable and the CLI flag are deliberate guards for paid
