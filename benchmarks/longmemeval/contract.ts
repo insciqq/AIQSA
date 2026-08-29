@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve, sep } from "node:path";
+import type { MemoryRebuildStatus } from "../../lib/contracts/memory";
 
 export const LONGMEMEVAL_REPOSITORY_COMMIT =
   "9e0b455f4ef0e2ab8f2e582289761153549043fc";
@@ -31,6 +32,13 @@ export const LONGMEMEVAL_QUESTION_TYPES = [
 export type LongMemEvalProfile = (typeof LONGMEMEVAL_PROFILES)[number];
 export type LongMemEvalSystemModelId =
   (typeof LONGMEMEVAL_SYSTEM_MODEL_IDS)[number];
+
+export function longMemEvalHybridRebuildFailed(
+  state: MemoryRebuildStatus["state"] | null
+): boolean {
+  return state === null || state === "CANCELLED" || state === "FAILED" ||
+    state === "STALE";
+}
 
 export type LongMemEvalProfileManifest = Readonly<{
   automaticFactLearning: boolean;

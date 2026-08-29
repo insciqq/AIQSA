@@ -70,9 +70,15 @@ Download and verify the pinned upstream artifacts:
 ./benchmarks/longmemeval/download.sh
 ```
 
-Start the isolated stack and prepare the existing local development profile:
+Bootstrap the isolated database once, then start the long-lived app. The app
+generates the current Prisma client and deploys migrations on every start, but
+deliberately does not rerun seed: an app restart must preserve an in-flight
+benchmark user's non-empty Memory generation. The benchmark overlay also uses
+a bounded 4 GiB container with a 2.5 GiB Node old-space ceiling and restarts
+the same app automatically after an OOM/process exit.
 
 ```bash
+docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml run --rm -T app sh -c "npm run db:migrate:deploy && npm run db:seed"
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml up -d app
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts ensure
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
@@ -80,6 +86,11 @@ docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compos
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-embedding qwen/qwen3-embedding-8b
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker qwen/qwen3-reranker-8b
 ```
+
+Do not repeat the bootstrap command while benchmark users exist. Restart only
+the app with `docker compose -f docker-compose.dev.yml -f
+benchmarks/longmemeval/docker-compose.yml restart app`; its durable Memory jobs
+remain authoritative and are reclaimed only after their existing leases expire.
 
 Run one deterministically selected LongMemEval-S case. Both acknowledgements
 are deliberate guards for paid provider traffic and disposable state:
