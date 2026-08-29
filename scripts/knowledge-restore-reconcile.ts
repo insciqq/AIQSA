@@ -4,6 +4,7 @@ import {
   createPrismaRetentionRepository,
   drainDeletionObligations
 } from "../lib/server/retention/prune";
+import { resetKnowledgeSearchProjections } from "../lib/server/knowledge/searchProjection";
 
 const providerCredentialNames = [
   "ANTHROPIC_API_KEY",
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
   ) {
     throw new Error("knowledge_restore_reconciliation_pending");
   }
+  await resetKnowledgeSearchProjections(prisma);
   console.error("AIQSA Knowledge restore reconciliation passed.");
 }
 

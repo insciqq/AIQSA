@@ -1638,9 +1638,13 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         throw new Error("knowledge_hybrid_result_invalid");
       }
       const ranking = search.rankingEvidence;
+      const lexicalBackend = search.lexicalBackendEvidence;
       if (!ranking || ranking.fusion !== "weighted_rrf_v2" ||
         ranking.candidateOrder.length !== search.candidateCount ||
-        (search.candidateCount > 0 && search.passages.length === 0)) {
+        (search.candidateCount > 0 && search.passages.length === 0) ||
+        lexicalBackend?.backendKind !== "opensearch_bm25_v1" ||
+        lexicalBackend.rankingProfileVersion !== 4 ||
+        lexicalBackend.status !== "complete") {
         throw new Error("knowledge_hybrid_ranking_invalid");
       }
       const rerankerBinding: KnowledgeRerankerBindingEvidenceV2 | undefined =
@@ -1706,6 +1710,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             : {}),
         fusion: ranking.fusion,
         invocationOrdinal: budgetState.invocationOrdinal,
+        lexicalBackend,
         operation: request.operation,
         outcome: retrievalOutcome,
         query: request.query,

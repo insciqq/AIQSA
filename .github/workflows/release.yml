@@ -14,7 +14,7 @@ concurrency:
 env:
   IMAGE: ghcr.io/insciqq/aiqsa
   POSTGRES_IMAGE: ghcr.io/insciqq/aiqsa-postgres
-  POSTGRES_COMPONENT_TAG: 16.14-pgvector0.8.5
+  POSTGRES_COMPONENT_TAG: 18.6-pgvector0.8.6
 
 jobs:
   prepare:

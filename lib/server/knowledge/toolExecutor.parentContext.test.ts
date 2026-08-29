@@ -3,6 +3,7 @@ import { EmbeddingAdapterError } from "../providers/embeddings";
 import type { ProviderRunRequest } from "../providers/types";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import { renderKnowledgeParentExpansionUnits } from "./parentContextExpansion";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import {
   KNOWLEDGE_SEARCH_TOOL_NAME,
@@ -213,7 +214,7 @@ function passage(input: Readonly<{
     sectionId: "section-1",
     signalProvenance: [{
       exactKind: null,
-      lane: "passage_lexical" as const,
+      lane: "passage_bm25" as const,
       rank: 1,
       rawScore: 1,
       vectorDistance: null,
@@ -233,6 +234,9 @@ function searchResult(passages: readonly KnowledgeHybridPassage[]) {
     candidateCount: passages.length,
     candidateCounts: { 0: passages.length },
     canonicalSourceProvenance: [],
+    lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture({
+      candidateCount: passages.length
+    }),
     passages,
     rankingEvidence: {
       candidateOrder: passages.map((entry) => entry.chunkId),

@@ -5,6 +5,7 @@ import {
   KNOWLEDGE_SIGNAL_RANK_MAX,
   type KnowledgeRetrievalLane
 } from "./retrievalRanking";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 
 type CoreClient = Parameters<typeof executeKnowledgeRetrievalCore>[0];
 type MockCoreClient = CoreClient & Readonly<{
@@ -20,11 +21,13 @@ type MockCoreClient = CoreClient & Readonly<{
 
 function scope(bindingOrdinal: number, baseName: string, knowledgeBaseId: string) {
   return {
+    acceptedIndexArtifactIds: [],
     baseName,
     bindingOrdinal,
     eligibleRows: 1,
     indexGenerationId: `generation-${bindingOrdinal}`,
     knowledgeBaseId,
+    projectionComplete: true,
     targetDimension: 1_024
   };
 }
@@ -49,6 +52,7 @@ function row(input: Readonly<{
   text?: string;
   versionNumber?: number;
   rawScore?: number;
+  searchIndexArtifactId?: string;
   vectorDistance?: number;
 }>) {
   return {
@@ -66,11 +70,14 @@ function row(input: Readonly<{
     fileName: "shared-name.txt",
     headingPath: ["Policy"],
     knowledgeBaseId: input.knowledgeBaseId,
-    lane: input.lane ?? "passage_lexical",
+    lane: input.lane ?? "passage_bm25",
     laneRank: input.laneRank ?? 1,
     layoutKind: input.layoutKind ?? "body",
     page: 1,
     rawScore: input.rawScore ?? 1,
+    ...(input.searchIndexArtifactId
+      ? { searchIndexArtifactId: input.searchIndexArtifactId }
+      : {}),
     sectionId: "section-1",
     sourceArtifactId: input.artifactId,
     sourceName: input.sourceName ?? "Shared name",
@@ -118,6 +125,114 @@ async function execute(
 }
 
 describe("Prisma retrieval core canonical Source identity", () => {
+  it("uses only canonically revalidated OpenSearch identities for the BM25 lane", async () => {
+    const indexArtifactId = "hierarchy-1";
+    const contentHash = "b".repeat(64);
+    const admitted = {
+      ...scope(0, "Policies", "base-policies"),
+      acceptedIndexArtifactIds: [indexArtifactId]
+    };
+    const client = mockClient([admitted], []);
+    client.$queryRaw.mockReset()
+      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([row({
+        artifactId: "source-artifact-1",
+        baseName: "Policies",
+        bindingOrdinal: 0,
+        chunkId: "passage-1",
+        contentHash,
+        knowledgeBaseId: "base-policies",
+        searchIndexArtifactId: indexArtifactId,
+        sourceId: "source-1",
+        sourceVersionId: "source-version-1",
+        text: "Canonically revalidated BM25 evidence."
+      })]);
+    const lexicalSearch = vi.fn(async () => ({
+      evidence: knowledgeLexicalBackendEvidenceFixture(),
+      hits: [{
+        contentHash,
+        indexArtifactId,
+        passageId: "passage-1",
+        rank: 1,
+        score: 0.42,
+        sourceVersionId: "source-version-1"
+      }]
+    }));
+
+    const result = await execute(client, { lexicalSearch });
+
+    expect(lexicalSearch).toHaveBeenCalledOnce();
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(sqlText(client.$queryRaw.mock.calls[1]![0])).toContain(
+      'chunk."indexArtifactId" = hit."indexArtifactId"'
+    );
+    expect(result.passages).toMatchObject([{
+      chunkId: "passage-1",
+      signals: [{ lane: "passage_bm25", rank: 1 }]
+    }]);
+    expect(result.lexicalBackendEvidence.backendKind).toBe("opensearch_bm25_v1");
+  });
+
+  it("fails closed when the OpenSearch projection is incomplete", async () => {
+    const admitted = {
+      ...scope(0, "Policies", "base-policies"),
+      acceptedIndexArtifactIds: ["hierarchy-1"],
+      projectionComplete: false
+    };
+    const client = mockClient([admitted], []);
+    const lexicalSearch = vi.fn();
+
+    await expect(execute(client, { lexicalSearch })).rejects.toThrow(
+      "knowledge_search_projection_incomplete"
+    );
+    expect(lexicalSearch).not.toHaveBeenCalled();
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed on an unavailable OpenSearch request without a PostgreSQL lexical retry", async () => {
+    const admitted = {
+      ...scope(0, "Policies", "base-policies"),
+      acceptedIndexArtifactIds: ["hierarchy-1"]
+    };
+    const client = mockClient([admitted], []);
+    const lexicalSearch = vi.fn(async () => {
+      throw new Error("opensearch_connection_failed");
+    });
+
+    await expect(execute(client, { lexicalSearch })).rejects.toThrow(
+      "opensearch_connection_failed"
+    );
+    expect(lexicalSearch).toHaveBeenCalledOnce();
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when any OpenSearch identity misses canonical revalidation", async () => {
+    const admitted = {
+      ...scope(0, "Policies", "base-policies"),
+      acceptedIndexArtifactIds: ["hierarchy-1"]
+    };
+    const client = mockClient([admitted], []);
+    client.$queryRaw.mockReset()
+      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([]);
+    const lexicalSearch = vi.fn(async () => ({
+      evidence: knowledgeLexicalBackendEvidenceFixture(),
+      hits: [{
+        contentHash: "b".repeat(64),
+        indexArtifactId: "hierarchy-1",
+        passageId: "foreign-passage",
+        rank: 1,
+        score: 0.42,
+        sourceVersionId: "foreign-source-version"
+      }]
+    }));
+
+    await expect(execute(client, { lexicalSearch })).rejects.toThrow(
+      "knowledge_search_candidate_revalidation_failed"
+    );
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
   it("enforces fixed limits while treating a scope without vector rows as available lexical work", async () => {
     const admitted = scope(0, "Base A", "base-a");
     const client = mockClient([admitted], []);
@@ -295,7 +410,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
       bindingOrdinal: 0,
       chunkId: "chunk-x",
       knowledgeBaseId: "base-a",
-      signals: [{ lane: "passage_lexical", rank: 6 }]
+      signals: [{ lane: "passage_bm25", rank: 6 }]
     });
     expect(combined.passages[0]!.fusedScore).toBe(baseAOnly.passages[0]!.fusedScore);
     await expect(secondaryOnly).rejects.toThrow("knowledge_canonical_source_candidate_conflict");
@@ -522,7 +637,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
         chunkIndex: rowIndex,
         contentHash: String(rowIndex).repeat(64),
         documentContext: tableContext("table-a", rowIndex),
-        lane: rowIndex === 6 ? "passage_lexical" : "neighbor",
+        lane: rowIndex === 6 ? "passage_bm25" : "neighbor",
         laneRank: rowIndex === 6 ? 40 : 1,
         text: `Complete row ${rowIndex}.`
       })),

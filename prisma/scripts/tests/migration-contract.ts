@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "404a6e030efb43fc9c3140a42579433ac77ffc732f7cdd9d2846d1893c91bd9e";
+  "6a3168603e5e29cde4e27b17f4eee78896b03c579a6b1128a92014056cb28534";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -2239,6 +2239,51 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
   }
 }
 
+function runKnowledgeValidatorRestoreSafetyProof(database: string): void {
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_proc
+      WHERE proname = 'knowledge_document_context_valid'
+        AND provolatile = 'i'
+        AND proparallel = 'r'
+        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
+    `),
+    "1",
+    "H5 document context validator lacks its immutable restore-safe contract",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_proc
+      WHERE proname IN (
+          'knowledge_discovery_receipt_valid',
+          'knowledge_exact_receipt_valid'
+        )
+        AND provolatile = 'i'
+        AND proparallel = 'r'
+        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
+    `),
+    "2",
+    "H3 receipt validators lack their immutable restore-safe contracts",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_proc
+      WHERE proname IN (
+          'knowledge_structured_receipt_valid',
+          'knowledge_visual_receipt_valid'
+        )
+        AND provolatile = 'i'
+        AND proparallel = 's'
+        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
+    `),
+    "2",
+    "H3 auxiliary receipt validators lack restore-safe helper resolution",
+  );
+}
+
 function runKnowledgeH5DocumentContextMigrationProof(
   database: string,
   committed: readonly string[],
@@ -2259,17 +2304,6 @@ function runKnowledgeH5DocumentContextMigrationProof(
     `),
     "1",
     "H5 immutable passage context constraint is missing or unvalidated",
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname = 'knowledge_document_context_valid'
-        AND provolatile = 'i'
-        AND proparallel = 's';
-    `),
-    "1",
-    "H5 document context validator is not immutable and parallel-safe",
   );
   assert.equal(
     psqlScalar(database, `
@@ -4405,6 +4439,7 @@ function main(
   runKnowledgeReadReceiptMigrationProof(shadowDatabase, migrations);
   runKnowledgeH2DurableDispatchMigrationProof(shadowDatabase, migrations);
   runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, migrations);
+  runKnowledgeValidatorRestoreSafetyProof(databases[0]!);
   runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, migrations);
   runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
   runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);

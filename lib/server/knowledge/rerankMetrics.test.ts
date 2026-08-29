@@ -22,7 +22,7 @@ function evidence(
     provider: "openrouter",
     providerModelId: "deployment-1",
     providerRequestId: null,
-    rankingProfileVersion: 2,
+    rankingProfileVersion: 4,
     relevanceScores: [],
     status: "complete",
     timedOut: false,

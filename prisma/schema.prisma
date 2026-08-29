@@ -1121,6 +1121,16 @@ enum KnowledgeHierarchicalIndexState {
   failed
 }
 
+enum KnowledgeSearchProjectionState {
+  PENDING
+  BUILDING
+  READY
+  RETRY_WAIT
+  FAILED
+  DELETING
+  DELETED
+}
+
 enum KnowledgeExactEntryKind {
   date
   filename
@@ -1701,10 +1711,35 @@ model KnowledgeHierarchicalIndexArtifact {
   sectionIndexes   KnowledgeArtifactSectionIndex[]
   passageIndexes   KnowledgeArtifactPassageIndex[]
   exactEntries     KnowledgeArtifactExactEntry[]
+  searchProjection KnowledgeSearchProjection?
 
   @@unique([sourceArtifactId, schemaVersion], map: "KHI_source_artifact_version_key")
   @@index([sourceVersionId, sourceArtifactId], map: "KHI_source_version_artifact_idx")
   @@index([state, schemaVersion, createdAt], map: "KHI_state_version_created_idx")
+}
+
+model KnowledgeSearchProjection {
+  id                       String                         @id @default(uuid()) @db.Uuid
+  indexArtifactId          String                         @unique
+  backendKind              String                         @db.VarChar(32)
+  mappingVersion           Int
+  projectionFingerprint    String                         @db.Char(64)
+  state                    KnowledgeSearchProjectionState @default(PENDING)
+  expectedPassageCount     Int
+  indexedPassageCount      Int                            @default(0)
+  attemptCount             Int                            @default(0)
+  claimToken               String?                        @db.VarChar(128)
+  leaseExpiresAt           DateTime?
+  nextAttemptAt            DateTime                       @default(now())
+  lastErrorCode            String?                        @db.VarChar(64)
+  startedAt                DateTime?
+  readyAt                  DateTime?
+  deleteCompletedAt        DateTime?
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
+  indexArtifact            KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([state, nextAttemptAt, leaseExpiresAt, createdAt], map: "KnowledgeSearchProjection_queue_idx")
 }
 
 model KnowledgeArtifactDocumentIndex {
@@ -1794,7 +1829,6 @@ model KnowledgeArtifactPassageIndex {
   sourceBlockEnd      Int
   sourceBlockIds      String[]                           @default([])
   tokenCount          Int
-  simpleSearchVector  Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAPI_index_artifact_fkey")
   section             KnowledgeArtifactSectionIndex      @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageIndex_section_fkey")
@@ -2859,6 +2893,7 @@ model KnowledgeRun {
   durationMs          Int
   failureCode         String?                     @db.VarChar(128)
   budgetEvidence      Json                        @default("{}")
+  lexicalBackendEvidence Json?
   readReceipt         Json?
   receiptVersion      Int?
   budgetReservationId String?                     @unique

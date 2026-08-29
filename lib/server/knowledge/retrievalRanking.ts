@@ -15,12 +15,13 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
 /**
  * Versioned code-owned ranking profile. Version 2 widens the per-lane
  * candidate limit to 64 and introduces the hosted-rerank merged-pool caps.
- * Version 3 retains a bounded language-neutral token-coverage signal after
+ * Version 3 retained a bounded language-neutral token-coverage signal after
  * hosted reranking instead of allowing an uncalibrated provider score to
- * erase every first-stage lexical signal.
+ * erase every first-stage lexical signal. Version 4 replaces only the
+ * passage-level PostgreSQL lexical vote with the OpenSearch BM25 projection.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 3 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 4 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
@@ -40,7 +41,7 @@ export type KnowledgeRetrievalLane =
   | "exact"
   | "metadata"
   | "neighbor"
-  | "passage_lexical"
+  | "passage_bm25"
   | "passage_semantic"
   | "section_lexical";
 
@@ -122,7 +123,7 @@ export const KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS: Readonly<
   exact: 2.6,
   metadata: 1.2,
   neighbor: 0.25,
-  passage_lexical: 1.3,
+  passage_bm25: 1.3,
   passage_semantic: 1.15,
   section_lexical: 0.4
 });
@@ -147,9 +148,10 @@ export function knowledgeCandidateSignalEligible(signal: KnowledgeCandidateSigna
     case "exact":
       return true;
     case "document_lexical":
-    case "passage_lexical":
     case "section_lexical":
       return signal.rawScore >= KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR;
+    case "passage_bm25":
+      return signal.rawScore > 0;
     case "metadata":
       return signal.rawScore >= KNOWLEDGE_METADATA_RELEVANCE_FLOOR;
     case "passage_semantic":

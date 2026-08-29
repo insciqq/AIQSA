@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { KnowledgeParentContextError } from "./parentContextExpansion";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { createPrismaKnowledgeParentContextLoader } from "./prismaRetrievalRepository";
+import {
+  deleteKnowledgeSearchArtifacts,
+  runKnowledgeSearchProjectionPass
+} from "./searchProjection";
 
 const fingerprint = "f".repeat(64);
 
@@ -137,6 +142,15 @@ async function createFixture(): Promise<Fixture> {
       userMessageId: message.id
     },
     select: { id: true }
+  });
+  await prisma.knowledgeRunScope.create({
+    data: {
+      budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      modelRunId: run.id,
+      resolvedBaseCount: 0,
+      resolvedSourceCount: 1,
+      selection: { baseIds: [], mode: "explicit", sourceIds: [], version: 1 }
+    }
   });
   const profileBinding = await prisma.knowledgeRunProfileBinding.create({
     data: {
@@ -317,6 +331,8 @@ async function createFixture(): Promise<Fixture> {
     },
     where: { id: artifactId }
   });
+  const projection = await runKnowledgeSearchProjectionPass({ client: prisma, limit: 16 });
+  if (projection.projected < 1) throw new Error("knowledge_search_projection_fixture_failed");
   await prisma.knowledgeRunSourceBinding.create({
     data: {
       directSelected: true,
@@ -348,6 +364,7 @@ async function createFixture(): Promise<Fixture> {
 }
 
 async function cleanupFixture(fixture: Fixture): Promise<void> {
+  await deleteKnowledgeSearchArtifacts({ indexArtifactIds: [fixture.hierarchyId] });
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
     await tx.modelRun.deleteMany({ where: { id: fixture.runId } });

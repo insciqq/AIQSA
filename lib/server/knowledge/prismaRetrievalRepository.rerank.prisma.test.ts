@@ -12,6 +12,11 @@ import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository
 import { KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
 import { loadKnowledgeRerankOperationalMetrics } from "./rerankMetrics";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
+import {
+  deleteKnowledgeSearchArtifacts,
+  runKnowledgeSearchProjectionPass
+} from "./searchProjection";
 import {
   KNOWLEDGE_RESULT_VERSION,
   type KnowledgeRetrievalEvidence,
@@ -19,6 +24,7 @@ import {
 } from "./retrievalTypes";
 
 const vectorSpaceFingerprint = "e".repeat(64);
+const projectedHierarchyIds = new Set<string>();
 
 function basisVector(axis: number): number[] {
   return Array.from({ length: 1_024 }, (_, index) => index === axis ? 1 : 0);
@@ -122,6 +128,8 @@ type RunFixture = Readonly<{
   sourceVersionId: string;
   userId: string;
 }>;
+
+const runFixtures: RunFixture[] = [];
 
 async function createRunFixture(
   query: string,
@@ -233,7 +241,7 @@ async function createRunFixture(
       vectorSpaceFingerprint
     }
   });
-  return {
+  const fixture = {
     artifactId: artifact.id,
     chatId: chat.id,
     runId: run.id,
@@ -241,6 +249,8 @@ async function createRunFixture(
     sourceVersionId,
     userId
   };
+  runFixtures.push(fixture);
+  return fixture;
 }
 
 async function createSearchToolCall(runId: string, ordinal: number): Promise<string> {
@@ -286,7 +296,7 @@ function passage(fixture: RunFixture, text: string): KnowledgeRetrievedPassageEv
     sectionId: "section-1",
     signalProvenance: [{
       exactKind: null,
-      lane: "passage_lexical",
+      lane: "passage_bm25",
       rank: 1,
       rawScore: 1,
       vectorDistance: null,
@@ -319,7 +329,7 @@ function rerankerBinding(status: "complete" | "degraded") {
     provider: status === "complete" ? "openrouter" : null,
     providerModelId: "reranker-deployment-1",
     providerRequestId: status === "complete" ? "req-1" : null,
-    rankingProfileVersion: 2,
+    rankingProfileVersion: 4,
     relevanceScores: status === "complete" ? [0.91] : [],
     status,
     timedOut: status !== "complete",
@@ -378,6 +388,9 @@ function evidence(fixture: RunFixture, input: Readonly<{
     }],
     fusion: "weighted_rrf_v2",
     invocationOrdinal: input.invocationOrdinal,
+    lexicalBackend: knowledgeLexicalBackendEvidenceFixture({
+      candidateCount: input.binding?.inputCandidateCount ?? input.results.length
+    }),
     operation: "automatic_search",
     outcome: "complete",
     providerText: "pending",
@@ -392,6 +405,36 @@ function evidence(fixture: RunFixture, input: Readonly<{
 
 describe("Prisma Knowledge hosted rerank receipts", () => {
   afterAll(async () => {
+    if (projectedHierarchyIds.size > 0) {
+      await deleteKnowledgeSearchArtifacts({
+        indexArtifactIds: [...projectedHierarchyIds]
+      });
+    }
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+      await tx.modelRun.deleteMany({
+        where: { id: { in: runFixtures.map(({ runId }) => runId) } }
+      });
+      await tx.chat.deleteMany({
+        where: { id: { in: runFixtures.map(({ chatId }) => chatId) } }
+      });
+      await tx.knowledgeSourceIndexArtifact.deleteMany({
+        where: { id: { in: runFixtures.map(({ artifactId }) => artifactId) } }
+      });
+      await tx.knowledgeSource.updateMany({
+        data: { currentVersionId: null, pendingVersionId: null },
+        where: { id: { in: runFixtures.map(({ sourceId }) => sourceId) } }
+      });
+      await tx.knowledgeSourceVersion.deleteMany({
+        where: { id: { in: runFixtures.map(({ sourceVersionId }) => sourceVersionId) } }
+      });
+      await tx.knowledgeSource.deleteMany({
+        where: { id: { in: runFixtures.map(({ sourceId }) => sourceId) } }
+      });
+      await tx.user.deleteMany({
+        where: { id: { in: runFixtures.map(({ userId }) => userId) } }
+      });
+    });
     await prisma.$disconnect();
   });
 
@@ -414,9 +457,12 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
     expect(accepted?.results[0]).toMatchObject({ rerankScore: 0.91 });
 
     const stored = await prisma.knowledgeRun.findUnique({
-      select: { readReceipt: true },
+      select: { lexicalBackendEvidence: true, readReceipt: true },
       where: { modelRunToolCallId: toolCallId }
     });
+    expect(stored?.lexicalBackendEvidence).toEqual(
+      knowledgeLexicalBackendEvidenceFixture({ candidateCount: 1 })
+    );
     expect(stored?.readReceipt).toMatchObject({ rerankerBinding: { status: "complete" } });
 
     const replayed = await store.loadReceipt!({
@@ -530,6 +576,7 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
       [foreign, foreignPassage, 1]
     ] as const) {
       const hierarchyId = `knowledge-rerank-hierarchy-${snapshotOrdinal}-${suffix}`;
+      projectedHierarchyIds.add(hierarchyId);
       await prisma.knowledgeHierarchicalIndexArtifact.create({
         data: {
           derivationMode: "normalized_v2",
@@ -649,6 +696,8 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
         }
       });
     }
+    const projection = await runKnowledgeSearchProjectionPass({ client: prisma, limit: 16 });
+    if (projection.projected < 2) throw new Error("knowledge_search_projection_fixture_failed");
     const seen: string[][] = [];
     const executor = vi.fn<KnowledgeRerankExecutor>(async ({ candidates }) => {
       seen.push(candidates.map((candidate) => candidate.chunkId));

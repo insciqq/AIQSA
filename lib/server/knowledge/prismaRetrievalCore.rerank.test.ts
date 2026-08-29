@@ -34,11 +34,13 @@ const pin: KnowledgeRerankPin = Object.freeze({
 
 function scope(bindingOrdinal: number, baseName: string, knowledgeBaseId: string) {
   return {
+    acceptedIndexArtifactIds: [],
     baseName,
     bindingOrdinal,
     eligibleRows: 1,
     indexGenerationId: `generation-${bindingOrdinal}`,
     knowledgeBaseId,
+    projectionComplete: true,
     targetDimension: 1_024
   };
 }
@@ -71,7 +73,7 @@ function row(input: Readonly<{
     fileName: "shared.txt",
     headingPath: ["Раздел"],
     knowledgeBaseId: "base-a",
-    lane: input.lane ?? "passage_lexical",
+    lane: input.lane ?? "passage_bm25",
     laneRank: input.laneRank ?? 1,
     layoutKind: "body",
     page: 1,
@@ -146,7 +148,7 @@ function scoringExecutor(scoreByChunk: ReadonlyMap<string, number>) {
         provider: "openrouter",
         providerModelId: pin.providerModelId,
         providerRequestId: "req-1",
-        rankingProfileVersion: 2,
+        rankingProfileVersion: 4,
         relevanceScores: outputOrder.map((chunkId) => scoreByChunk.get(chunkId) ?? null),
         status: partial ? "partial" : "complete",
         timedOut: false,
@@ -230,6 +232,7 @@ describe("Prisma retrieval core hosted rerank stage", () => {
       row({ chunkId: "chunk-strong", laneRank: 1 }),
       row({
         chunkId: "chunk-weak-lexical",
+        lane: "document_lexical",
         laneRank: 2,
         rawScore: 0.01
       }),
@@ -290,7 +293,7 @@ describe("Prisma retrieval core hosted rerank stage", () => {
         provider: null,
         providerModelId: pin.providerModelId,
         providerRequestId: null,
-        rankingProfileVersion: 2,
+        rankingProfileVersion: 4,
         relevanceScores: [],
         status: "degraded",
         timedOut: true,

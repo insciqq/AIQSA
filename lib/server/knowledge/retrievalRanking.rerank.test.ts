@@ -52,16 +52,16 @@ function candidate(input: Readonly<{
     layoutKind: "body",
     page: 1,
     sectionId: null,
-    signals: input.signals ?? [signal("passage_lexical", 1)],
+    signals: input.signals ?? [signal("passage_bm25", 1)],
     sourceArtifactId: `artifact-${source}`,
     sourceName: source,
     text: input.text ?? `Evidence ${input.chunkId}`
   };
 }
 
-describe("Knowledge ranking profile v3", () => {
+describe("Knowledge ranking profile v4", () => {
   it("versions the widened candidate and rerank pool constants", () => {
-    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(3);
+    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(4);
     expect(KNOWLEDGE_LANE_CANDIDATE_LIMIT).toBe(64);
     expect(KNOWLEDGE_BROAD_RERANK_INPUT_MAX).toBe(96);
     expect(KNOWLEDGE_SCOPED_RERANK_INPUT_MAX).toBe(48);
@@ -92,7 +92,7 @@ describe("Pre-rerank pool selection", () => {
       bindingOrdinals: [0],
       candidates: Array.from({ length: 90 }, (_, index) => candidate({
         chunkId: `chunk-${String(index).padStart(2, "0")}`,
-        signals: [signal("passage_lexical", index + 1)]
+        signals: [signal("passage_bm25", index + 1)]
       })),
       maximum: KNOWLEDGE_SCOPED_RERANK_INPUT_MAX
     });
@@ -104,12 +104,12 @@ describe("Pre-rerank pool selection", () => {
     const dominant = Array.from({ length: 96 }, (_, index) => candidate({
       bindingOrdinal: 0,
       chunkId: `dominant-${String(index).padStart(2, "0")}`,
-      signals: [signal("passage_lexical", index + 1)]
+      signals: [signal("passage_bm25", index + 1)]
     }));
     const minority = Array.from({ length: 60 }, (_, index) => candidate({
       bindingOrdinal: 1,
       chunkId: `minority-${String(index).padStart(2, "0")}`,
-      signals: [signal("passage_lexical", index + 40)]
+      signals: [signal("passage_bm25", index + 40)]
     }));
     const pool = selectKnowledgePreRerankPool({
       bindingOrdinals: [0, 1],
@@ -129,7 +129,7 @@ describe("Pre-rerank pool selection", () => {
         candidate({
           chunkId: "chunk-b",
           contentHash: "same".repeat(16),
-          signals: [signal("passage_lexical", 9)]
+          signals: [signal("passage_bm25", 9)]
         }),
         candidate({ chunkId: "chunk-c", contentHash: "diff".repeat(16) })
       ],
@@ -147,7 +147,7 @@ describe("Pre-rerank pool selection", () => {
           chunkId: "dense-duplicate",
           contentHash,
           signals: [
-            signal("passage_lexical", 1),
+            signal("passage_bm25", 1),
             signal("passage_semantic", 1, { rawScore: 0.99, vectorDistance: 0.01 }),
             signal("metadata", 1)
           ]
@@ -165,8 +165,8 @@ describe("Pre-rerank pool selection", () => {
 
   it("returns the weighted RRF pre-order", () => {
     const first = candidate({ chunkId: "chunk-1", signals: [signal("exact", 1)] });
-    const second = candidate({ chunkId: "chunk-2", signals: [signal("passage_lexical", 1)] });
-    const third = candidate({ chunkId: "chunk-3", signals: [signal("passage_lexical", 5)] });
+    const second = candidate({ chunkId: "chunk-2", signals: [signal("passage_bm25", 1)] });
+    const third = candidate({ chunkId: "chunk-3", signals: [signal("passage_bm25", 5)] });
     const pool = selectKnowledgePreRerankPool({
       bindingOrdinals: [0],
       candidates: [third, first, second],
@@ -180,10 +180,10 @@ describe("Pre-rerank pool selection", () => {
 describe("Post-rerank final ranking", () => {
   it("ranks by rerank score, then exact signal, then fused RRF, then chunk id", () => {
     const pool = fuseKnowledgeCandidates([
-      candidate({ chunkId: "chunk-a", signals: [signal("passage_lexical", 1)] }),
+      candidate({ chunkId: "chunk-a", signals: [signal("passage_bm25", 1)] }),
       candidate({ chunkId: "chunk-b", signals: [signal("exact", 4)] }),
-      candidate({ chunkId: "chunk-c", signals: [signal("passage_lexical", 2)] }),
-      candidate({ chunkId: "chunk-d", signals: [signal("passage_lexical", 3)] })
+      candidate({ chunkId: "chunk-c", signals: [signal("passage_bm25", 2)] }),
+      candidate({ chunkId: "chunk-d", signals: [signal("passage_bm25", 3)] })
     ]);
     const ordered = orderRerankedKnowledgeCandidates({
       pool,
@@ -203,9 +203,9 @@ describe("Post-rerank final ranking", () => {
 
   it("appends provider-omitted candidates after scored ones in deterministic RRF order", () => {
     const pool = fuseKnowledgeCandidates([
-      candidate({ chunkId: "chunk-a", signals: [signal("passage_lexical", 1)] }),
-      candidate({ chunkId: "chunk-b", signals: [signal("passage_lexical", 2)] }),
-      candidate({ chunkId: "chunk-c", signals: [signal("passage_lexical", 3)] })
+      candidate({ chunkId: "chunk-a", signals: [signal("passage_bm25", 1)] }),
+      candidate({ chunkId: "chunk-b", signals: [signal("passage_bm25", 2)] }),
+      candidate({ chunkId: "chunk-c", signals: [signal("passage_bm25", 3)] })
     ]);
     const ordered = orderRerankedKnowledgeCandidates({
       pool,
@@ -220,7 +220,7 @@ describe("Post-rerank final ranking", () => {
     const pool = fuseKnowledgeCandidates(Array.from({ length: 20 }, (_, index) => candidate({
       chunkId: `chunk-${String(index).padStart(2, "0")}`,
       contentHash: index < 2 ? "dup".repeat(16) + "00" : `hash-${index}`,
-      signals: [signal("passage_lexical", index + 1)]
+      signals: [signal("passage_bm25", index + 1)]
     })));
     const ordered = orderRerankedKnowledgeCandidates({
       pool,

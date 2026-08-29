@@ -22,6 +22,7 @@ import {
 } from "./retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 
 const SOURCE_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -116,6 +117,7 @@ function evidence(results = 1): KnowledgeRetrievalEvidence {
     }],
     fusion: "weighted_rrf_v2",
     invocationOrdinal: 1,
+    lexicalBackend: knowledgeLexicalBackendEvidenceFixture({ candidateCount }),
     operation: "automatic_search",
     outcome: results === 0 ? "base_empty" : "complete",
     providerText: "pending",

@@ -12,6 +12,7 @@ import {
   settleKnowledgeGrounding
 } from "./evidenceRepository";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 import {
   KNOWLEDGE_RESULT_VERSION,
   type KnowledgeRetrievalEvidence,
@@ -237,6 +238,9 @@ function evidence(input: Readonly<{
     embeddingExecutions: [],
     fusion: "weighted_rrf_v2",
     invocationOrdinal: input.invocationOrdinal,
+    lexicalBackend: knowledgeLexicalBackendEvidenceFixture({
+      candidateCount: input.results.length
+    }),
     operation: "automatic_search",
     outcome: "complete",
     providerText: "pending",

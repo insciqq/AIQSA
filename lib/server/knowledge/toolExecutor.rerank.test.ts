@@ -17,6 +17,7 @@ import {
   type KnowledgeRerankPin
 } from "./rerankExecution";
 import { KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 import type { KnowledgeRerankerRoleResolution } from "./rerankerRuntime";
 import {
   decodeKnowledgeRetrievalEvidence,
@@ -132,6 +133,7 @@ function rerankedSearchResult(): KnowledgeHybridSearchResult {
     candidateCount: 1,
     candidateCounts: { 0: 1 },
     canonicalSourceProvenance: [],
+    lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture(),
     passages: [{
       annRank: 1,
       baseName: "Base",
@@ -154,7 +156,7 @@ function rerankedSearchResult(): KnowledgeHybridSearchResult {
       sectionId: "section-1",
       signalProvenance: [{
         exactKind: null,
-        lane: "passage_lexical" as const,
+        lane: "passage_bm25" as const,
         rank: 1,
         rawScore: 1,
         vectorDistance: null,
@@ -184,7 +186,7 @@ function rerankedSearchResult(): KnowledgeHybridSearchResult {
       provider: "openrouter",
       providerModelId: pin.providerModelId,
       providerRequestId: "req-7",
-      rankingProfileVersion: 2,
+      rankingProfileVersion: 4,
       relevanceScores: [0.93, 0.2],
       status: "complete" as const,
       timedOut: false,
