@@ -94,9 +94,9 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v37";
+  "memory-run-retrieval-admission-v38";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v12";
+  "memory-retrieval-component-metrics-v13";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -1116,6 +1116,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   sessionCompletionSelectedSourceChatCount: number;
   sessionCompletionState: "READY" | "SKIPPED" | "UNAVAILABLE";
   speculativeBaselineUsed: boolean;
+  speculativeHybridUsed: boolean;
   preparedTokens: number;
   querySafety: MemorySanitizedUtilityText;
   queryEmbedding: MemoryRunQueryEmbeddingResult | null;
@@ -1252,6 +1253,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
       input.sourceFamilyEvidence.plannerExcludedFamilyRecoveredCount,
     plannerFallbackUsed: input.plannerFallbackReason !== null,
     speculativeBaselineUsed: input.speculativeBaselineUsed,
+    speculativeHybridUsed: input.speculativeHybridUsed,
     plannerOnlyCandidateCount: input.sourceFamilyEvidence.plannerOnlyCandidateCount,
     plannerPreferredSourceKinds,
     queryVariantCounts: queryVariantCounts(input.plan),
@@ -2024,7 +2026,10 @@ export function createMemoryRunRetrievalService(
         options
       );
       const speculativeBaselineController = new AbortController();
+      const speculativeHybridController = new AbortController();
       let speculativeBaselinePromise: Promise<MemoryLocalRetrievalResult | null> =
+        Promise.resolve(null);
+      let speculativeHybridPromise: Promise<MemoryLocalRetrievalResult | null> =
         Promise.resolve(null);
       try {
       const signal = deadline.signal;
@@ -2193,6 +2198,7 @@ export function createMemoryRunRetrievalService(
         snapshot,
         timings
       });
+      let settledControl: MemoryControlResult | null = null;
       const controlPromise = (async (): Promise<MemoryControlResult> => {
         const refs = await controlRefsPromise;
         if (controlCache.control) return controlCache.control;
@@ -2219,7 +2225,37 @@ export function createMemoryRunRetrievalService(
               reason: "memory_action_intent_unavailable",
               status: "UNAVAILABLE" as const
             })));
-      })();
+      })().then((result) => {
+        settledControl = result;
+        return result;
+      });
+      if (typeof repository.retrieveSpeculativeHybrid === "function") {
+        speculativeHybridPromise = queryEmbeddingPromise.then((embedding) => {
+          if (embedding?.status !== "READY" || settledControl?.status === "READY" ||
+            !deadline.canStartOptional()) return null;
+          return timings.measure("localRetrievalMs", () =>
+            runBoundedMemoryRead(
+              deadline,
+              MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+              (retrievalSignal) => abortableRead(
+                repository.retrieveSpeculativeHybrid!({
+                  assistantId: input.expected.assistantId,
+                  chatId: input.chatId,
+                  now: input.now,
+                  plan: baselineReadPlan,
+                  userId: input.userId,
+                  vector: {
+                    minimumScore: MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
+                    profile: embedding.profile,
+                    vector: embedding.vector
+                  }
+                }, retrievalSignal),
+                retrievalSignal
+              ),
+              speculativeHybridController.signal
+            ));
+        }).catch(() => null);
+      }
       const [controlRefs, queryEmbedding, control] = await Promise.all([
         controlRefsPromise,
         queryEmbeddingPromise,
@@ -2434,12 +2470,21 @@ export function createMemoryRunRetrievalService(
 
       let local: MemoryLocalRetrievalResult;
       let speculativeBaselineUsed = false;
+      let speculativeHybridUsed = false;
       try {
-        const speculativeBaseline = broadPlannerFallback || plan === baselineReadPlan
+        const speculationUsable = broadPlannerFallback || plan === baselineReadPlan;
+        const speculativeHybrid = speculationUsable
+          ? await speculativeHybridPromise
+          : null;
+        const speculativeBaseline = speculationUsable && !speculativeHybrid
           ? await speculativeBaselinePromise
           : null;
         speculativeBaselineController.abort({ code: "memory_speculation_settled" });
-        if (speculativeBaseline) {
+        speculativeHybridController.abort({ code: "memory_speculation_settled" });
+        if (speculativeHybrid) {
+          local = speculativeHybrid;
+          speculativeHybridUsed = true;
+        } else if (speculativeBaseline) {
           local = speculativeBaseline;
           speculativeBaselineUsed = true;
         } else {
@@ -2803,7 +2848,7 @@ export function createMemoryRunRetrievalService(
         queryEmbedding,
         dynamicAllowed,
         plan.profileRequested,
-        speculativeBaselineUsed,
+        speculativeBaselineUsed || speculativeHybridUsed,
         admittedSourceKinds
       );
       const pack = timings.measureSync("packerMs", () => packMemoryPersonalContext({
@@ -2852,6 +2897,7 @@ export function createMemoryRunRetrievalService(
           sessionCompletionSelectedSourceChatCount: sessionCompletion.sourceChatCount,
           sessionCompletionState,
           speculativeBaselineUsed,
+          speculativeHybridUsed,
           preparedTokens,
           querySafety,
           queryEmbedding,
@@ -2884,6 +2930,7 @@ export function createMemoryRunRetrievalService(
         plan: planEvidence(plan),
         plannerFallbackReason,
         speculativeBaselineUsed,
+        speculativeHybridUsed,
         providerTokenLimit: pack.providerTokenLimit,
         querySafetyVersion: querySafety.version,
         ...relevanceEvidence(
@@ -2933,6 +2980,9 @@ export function createMemoryRunRetrievalService(
       } finally {
         if (!speculativeBaselineController.signal.aborted) {
           speculativeBaselineController.abort({ code: "memory_speculation_cancelled" });
+        }
+        if (!speculativeHybridController.signal.aborted) {
+          speculativeHybridController.abort({ code: "memory_speculation_cancelled" });
         }
         deadline.dispose();
       }

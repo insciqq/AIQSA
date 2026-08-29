@@ -13,7 +13,8 @@ import {
 } from "./contract";
 
 export const LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS = [
-  "fu09-blind-50-v1"
+  "fu09-blind-50-v1",
+  "fu2-reader-first-blind-50-v1"
 ] as const;
 
 export type LongMemEvalQualificationManifestId =
@@ -29,7 +30,23 @@ const categoryCountsSchema = z.object({
   "temporal-reasoning": z.number().int().nonnegative()
 }).strict();
 
-const manifestSchema = z.object({
+const selectionSchema = z.object({
+  algorithm: z.literal("sha256(seed\\0questionType\\0questionId)"),
+  cases: z.array(z.object({
+    questionId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/u),
+    questionType: z.enum(LONGMEMEVAL_QUESTION_TYPES)
+  }).strict()).length(50),
+  categoryPopulation: categoryCountsSchema,
+  priorRunExclusion: z.object({
+    count: z.literal(11),
+    questionIdDigest: sha256Schema
+  }).strict(),
+  questionIdDigest: sha256Schema,
+  quotas: categoryCountsSchema,
+  seed: z.literal("aiqsa-memory-followup-fu09-blind-50-v1")
+}).strict();
+
+const legacyManifestSchema = z.object({
   id: z.literal("fu09-blind-50-v1"),
   profile: z.literal("official"),
   runtime: z.object({
@@ -57,21 +74,7 @@ const manifestSchema = z.object({
       perUser: z.literal(4)
     }).strict()
   }).strict(),
-  selection: z.object({
-    algorithm: z.literal("sha256(seed\\0questionType\\0questionId)"),
-    cases: z.array(z.object({
-      questionId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/u),
-      questionType: z.enum(LONGMEMEVAL_QUESTION_TYPES)
-    }).strict()).length(50),
-    categoryPopulation: categoryCountsSchema,
-    priorRunExclusion: z.object({
-      count: z.literal(11),
-      questionIdDigest: sha256Schema
-    }).strict(),
-    questionIdDigest: sha256Schema,
-    quotas: categoryCountsSchema,
-    seed: z.literal("aiqsa-memory-followup-fu09-blind-50-v1")
-  }).strict(),
+  selection: selectionSchema,
   source: z.object({
     appCommit: z.literal("85e5b9db9c2ee1835b8e9cc14246b9dbb1587256"),
     datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
@@ -81,6 +84,64 @@ const manifestSchema = z.object({
   }).strict(),
   version: z.literal(1)
 }).strict();
+
+const readerFirstManifestSchema = z.object({
+  id: z.literal("fu2-reader-first-blind-50-v1"),
+  profile: z.literal("official"),
+  runtime: z.object({
+    caseConcurrency: z.literal(2),
+    debugMemory: z.literal(false),
+    embedding: z.object({
+      provider: z.literal("OpenRouter"),
+      upstreamModelId: z.literal("qwen/qwen3-embedding-8b")
+    }).strict(),
+    forceDreamDiagnostic: z.literal(false),
+    indexTimeoutMinutes: z.literal(45),
+    reranker: z.object({
+      policyVersion: z.literal("openrouter-reranker-route-v1"),
+      provider: z.literal("OpenRouter"),
+      route: z.tuple([
+        z.object({
+          relevanceScoreFloor: z.null(),
+          upstreamModelId: z.literal("voyageai/rerank-2.5")
+        }).strict(),
+        z.object({
+          relevanceScoreFloor: z.null(),
+          upstreamModelId: z.literal("cohere/rerank-4-pro")
+        }).strict(),
+        z.object({
+          relevanceScoreFloor: z.literal(0.01),
+          upstreamModelId: z.literal("qwen/qwen3-reranker-8b")
+        }).strict()
+      ])
+    }).strict(),
+    runTimeoutMinutes: z.literal(15),
+    sessionConcurrency: z.literal(16),
+    systemModel: z.object({
+      provider: z.literal("codex-lb"),
+      reasoningEffort: z.literal("medium"),
+      upstreamModelId: z.literal("gpt-5.6-luna")
+    }).strict(),
+    workerConcurrency: z.object({
+      global: z.literal(8),
+      perUser: z.literal(4)
+    }).strict()
+  }).strict(),
+  selection: selectionSchema,
+  source: z.object({
+    appCommit: z.literal("b0a8f387962592fd70d8a23dd18b31b04a12f8be"),
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict(),
+  version: z.literal(1)
+}).strict();
+
+const manifestSchema = z.discriminatedUnion("id", [
+  legacyManifestSchema,
+  readerFirstManifestSchema
+]);
 
 export type LongMemEvalQualificationManifest = Readonly<
   z.infer<typeof manifestSchema>
