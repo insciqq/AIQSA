@@ -192,10 +192,12 @@ function classifiedFallbackCode(error: unknown): string | null {
 
 /**
  * Creates the single hosted rerank execution for one Knowledge retrieval
- * operation. At most one provider request is made per invocation; zero or one
- * unique candidate skips the provider entirely; every classified provider
- * failure degrades to the deterministic weighted RRF fallback, while
- * database, authority, invariant, and cancellation failures propagate.
+ * operation. At most one adapter operation is made per invocation; its
+ * transport may bounded-retry transient failures inside this same deadline.
+ * Zero or one unique candidate skips the provider entirely; every classified
+ * terminal provider failure degrades to the deterministic weighted RRF
+ * fallback, while database, authority, invariant, and cancellation failures
+ * propagate.
  */
 export function createKnowledgeRerankStage(input: Readonly<{
   adapter: RerankAdapter;

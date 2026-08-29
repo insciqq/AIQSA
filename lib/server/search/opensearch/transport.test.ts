@@ -286,6 +286,7 @@ describe("AIQSA OpenSearch transport", () => {
     const lines = fetch.mock.calls[0]![1].body.trim().split("\n");
     const query = JSON.parse(lines[1]);
     expect(query.size).toBe(64);
+    expect(query.timeout).toBe("10000ms");
     expect(query.query.bool.filter).toEqual([
       { term: { owner_user_id: "owner-1" } },
       { terms: { index_artifact_id: ["hierarchy-1"] } },
