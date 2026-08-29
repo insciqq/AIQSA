@@ -16,7 +16,7 @@ export const KNOWLEDGE_BENCHMARK_POSTGRES_PORT = 55447;
 export const KNOWLEDGE_BENCHMARK_MAX_CONCURRENCY = 16;
 /** Version of the deterministic benchmark document formatter below. Part of
  * every frozen run manifest and cache key. */
-export const KNOWLEDGE_BENCHMARK_DOC_FORMAT_VERSION = 2;
+export const KNOWLEDGE_BENCHMARK_DOC_FORMAT_VERSION = 3;
 
 /** Deterministic encoding-artifact hygiene applied uniformly to every
  * benchmark document body/title: the official corpora carry occasional
@@ -53,6 +53,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function requiredString(value: unknown, code: string): string {
   if (typeof value !== "string" || value.length === 0 ||
     value.includes("\u0000")) {
+    throw new Error(code);
+  }
+  return value;
+}
+
+function sourceString(value: unknown, code: string): string {
+  if (typeof value !== "string" || value.includes("\u0000")) {
     throw new Error(code);
   }
   return value;
@@ -98,6 +105,7 @@ export type KnowledgeManifestSource = Readonly<{
 export type KnowledgeSuiteManifest = Readonly<{
   dataset: string;
   expectedCorpusDocumentCount: number | null;
+  expectedExcludedQueryCount: number;
   expectedQueryCount: number;
   family: string;
   licenseNote: string;
@@ -166,6 +174,11 @@ function decodeSuiteManifest(
     Number(value.expectedQueryCount) < 1) {
     throw new Error(code);
   }
+  if (!Number.isSafeInteger(value.expectedExcludedQueryCount) ||
+    Number(value.expectedExcludedQueryCount) < 0 ||
+    Number(value.expectedExcludedQueryCount) >= Number(value.expectedQueryCount)) {
+    throw new Error(code);
+  }
   if (!Array.isArray(value.sources) || value.sources.length === 0) {
     throw new Error(code);
   }
@@ -174,6 +187,7 @@ function decodeSuiteManifest(
     expectedCorpusDocumentCount: expectedCorpusDocumentCount === null
       ? null
       : Number(expectedCorpusDocumentCount),
+    expectedExcludedQueryCount: Number(value.expectedExcludedQueryCount),
     expectedQueryCount: Number(value.expectedQueryCount),
     family: requiredString(value.family, code),
     licenseNote: requiredString(value.licenseNote, code),
@@ -229,6 +243,18 @@ export type KnowledgeBenchmarkQuery = Readonly<{
   relevant: Readonly<Record<string, number>>;
   text: string;
 }>;
+
+/** Product upload client ids are transport identities, not display names.
+ * Keep them on the already-bounded official public id so a Unicode semantic
+ * filename remains valid without lossy transliteration. */
+export function knowledgeBenchmarkUploadClientId(
+  document: KnowledgeBenchmarkDocument
+): string {
+  if (!officialIdPattern.test(document.officialId)) {
+    throw new Error("knowledge_benchmark_upload_client_id_invalid");
+  }
+  return document.officialId;
+}
 
 function officialId(value: unknown, code: string): string {
   const id = requiredString(value, code);
@@ -302,7 +328,7 @@ export type KnowledgeQrelRow = Readonly<{
 
 export function parseQrelsTsv(text: string): readonly KnowledgeQrelRow[] {
   const code = "knowledge_benchmark_qrels_invalid";
-  const lines = text.split("\n").filter((line) => line.length > 0);
+  const lines = text.split(/\r?\n/u).filter((line) => line.length > 0);
   if (lines[0] !== "query-id\tcorpus-id\tscore") throw new Error(code);
   const rows = lines.slice(1).map((line) => {
     const parts = line.split("\t");
@@ -358,25 +384,116 @@ export function decodeRusScifactQueries(
 }
 
 export type ConvFinQaRow = Readonly<{
+  companyCik: number;
+  companyDateAdded: string;
+  companyFounded: string;
+  companyHeadquarters: string;
+  companyIndustry: string;
+  companyName: string;
+  companySector: string;
+  companySymbol: string;
   context: string;
   contextId: string;
+  fileName: string;
   id: string;
+  pageNumber: string;
   question: string;
+  reportYear: string;
 }>;
+
+const convFinQaMetadataFields = [
+  ["company_name", "companyName"],
+  ["company_symbol", "companySymbol"],
+  ["report_year", "reportYear"],
+  ["page_number", "pageNumber"],
+  ["file_name", "fileName"],
+  ["company_sector", "companySector"],
+  ["company_industry", "companyIndustry"],
+  ["company_headquarters", "companyHeadquarters"],
+  ["company_date_added", "companyDateAdded"],
+  ["company_founded", "companyFounded"]
+] as const;
+
+function convFinQaMetadataString(value: unknown, code: string): string {
+  const normalized = sanitizeBenchmarkText(requiredString(value, code)).trim();
+  if (normalized.length === 0 || normalized.includes("\n") ||
+    normalized.includes("\r")) {
+    throw new Error(code);
+  }
+  return normalized;
+}
+
+function convFinQaUploadFileName(row: ConvFinQaRow): string {
+  const sourceStem = row.fileName.replace(/\.pdf$/iu, "").replaceAll("/", "-");
+  const semanticStem = [
+    row.companyName,
+    row.companySymbol,
+    row.reportYear,
+    sourceStem
+  ].join("-").normalize("NFKC")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-|-$/gu, "");
+  if (semanticStem.length === 0 || semanticStem.length > 200) {
+    throw new Error("knowledge_benchmark_convfinqa_metadata_invalid");
+  }
+  return `convfinqa-${semanticStem}.md`;
+}
+
+function convFinQaStableMetadata(row: ConvFinQaRow): Readonly<Record<string, string>> {
+  return Object.freeze({
+    company_cik: String(row.companyCik),
+    ...Object.fromEntries(convFinQaMetadataFields.map(([sourceKey, rowKey]) =>
+      [sourceKey, row[rowKey]]))
+  });
+}
+
+function convFinQaMarkdown(row: ConvFinQaRow): string {
+  const suffix = Object.entries(convFinQaStableMetadata(row))
+    .map(([key, value]) => `- ${key}: ${value}`)
+    .join("\n");
+  return `${row.context}\n\n${suffix}\n`;
+}
+
+function decodeConvFinQaSourceRow(value: unknown): ConvFinQaRow {
+  const code = "knowledge_benchmark_convfinqa_row_invalid";
+  if (!isRecord(value)) throw new Error(code);
+  const companyCik = value.company_cik;
+  if (!Number.isSafeInteger(companyCik) || Number(companyCik) < 0) {
+    throw new Error(code);
+  }
+  return Object.freeze({
+    companyCik: Number(companyCik),
+    companyDateAdded: convFinQaMetadataString(value.company_date_added, code),
+    companyFounded: convFinQaMetadataString(value.company_founded, code),
+    companyHeadquarters: convFinQaMetadataString(value.company_headquarters, code),
+    companyIndustry: convFinQaMetadataString(value.company_industry, code),
+    companyName: convFinQaMetadataString(value.company_name, code),
+    companySector: convFinQaMetadataString(value.company_sector, code),
+    companySymbol: convFinQaMetadataString(value.company_symbol, code),
+    context: sanitizeBenchmarkText(requiredString(value.context, code)),
+    contextId: officialId(value.context_id, code),
+    fileName: convFinQaMetadataString(value.file_name, code),
+    id: officialId(value.id, code),
+    pageNumber: convFinQaMetadataString(value.page_number, code),
+    // The pinned official artifact contains five rows whose question is the
+    // empty string. They still contribute their complete context to the
+    // corpus, but are not scoreable retrieval queries.
+    question: sourceString(value.question, code),
+    reportYear: convFinQaMetadataString(value.report_year, code)
+  });
+}
 
 /** Official T²-RAGBench ConvFinQA turn_0 row. The `context` field already
  * contains pre-text, the Markdown table, and post-text joined in official
  * order; it is kept byte-for-byte as the document body and tables are never
  * re-derived. */
 export function decodeConvFinQaRow(value: unknown): ConvFinQaRow {
-  const code = "knowledge_benchmark_convfinqa_row_invalid";
-  if (!isRecord(value)) throw new Error(code);
-  return Object.freeze({
-    context: sanitizeBenchmarkText(requiredString(value.context, code)),
-    contextId: officialId(value.context_id, code),
-    id: officialId(value.id, code),
-    question: requiredString(value.question, code)
-  });
+  const row = decodeConvFinQaSourceRow(value);
+  if (row.question.trim().length === 0) {
+    throw new Error("knowledge_benchmark_convfinqa_row_invalid");
+  }
+  return row;
 }
 
 /** Corpus construction per the official rule: deduplicate ONLY by the official
@@ -385,26 +502,35 @@ export function decodeConvFinQaRow(value: unknown): ConvFinQaRow {
 export function decodeConvFinQaCorpus(
   rows: readonly unknown[]
 ): readonly KnowledgeBenchmarkDocument[] {
-  const contexts = new Map<string, string>();
+  const contexts = new Map<string, ConvFinQaRow>();
   for (const value of rows) {
-    const row = decodeConvFinQaRow(value);
+    const row = decodeConvFinQaSourceRow(value);
     const existing = contexts.get(row.contextId);
     if (existing === undefined) {
-      contexts.set(row.contextId, row.context);
-    } else if (existing !== row.context) {
+      contexts.set(row.contextId, row);
+    } else if (existing.context !== row.context) {
       throw new Error("knowledge_benchmark_convfinqa_context_conflict");
+    } else if (canonicalJson(convFinQaStableMetadata(existing)) !==
+      canonicalJson(convFinQaStableMetadata(row))) {
+      throw new Error("knowledge_benchmark_convfinqa_metadata_conflict");
     }
   }
   if (contexts.size === 0) {
     throw new Error("knowledge_benchmark_convfinqa_corpus_empty");
   }
-  return Object.freeze([...contexts.keys()].sort().map((contextId) =>
-    Object.freeze({
-      fileName: knowledgeBenchmarkFileName("t2ragbench-convfinqa", contextId),
-      markdown: `${contexts.get(contextId)!}\n`,
+  const documents = [...contexts.keys()].sort().map((contextId) => {
+    const row = contexts.get(contextId)!;
+    return Object.freeze({
+      fileName: convFinQaUploadFileName(row),
+      markdown: convFinQaMarkdown(row),
       officialId: contextId,
       suiteId: "t2ragbench-convfinqa" as const
-    })));
+    });
+  });
+  if (new Set(documents.map(({ fileName }) => fileName)).size !== documents.length) {
+    throw new Error("knowledge_benchmark_convfinqa_filename_conflict");
+  }
+  return Object.freeze(documents);
 }
 
 /** Queries: the full official turn_0 split; the relevant document of a query
@@ -412,15 +538,69 @@ export function decodeConvFinQaCorpus(
 export function decodeConvFinQaQueries(
   rows: readonly unknown[]
 ): readonly KnowledgeBenchmarkQuery[] {
-  const decoded = rows.map(decodeConvFinQaRow);
+  const decoded = rows.map(decodeConvFinQaSourceRow);
   if (new Set(decoded.map(({ id }) => id)).size !== decoded.length) {
     throw new Error("knowledge_benchmark_convfinqa_query_duplicate_id");
   }
-  return Object.freeze(decoded.map((row) => Object.freeze({
+  return Object.freeze(decoded
+    .filter(({ question }) => question.trim().length > 0)
+    .map((row) => Object.freeze({
     officialId: row.id,
     relevant: Object.freeze({ [row.contextId]: 1 }),
     text: row.question
   })));
+}
+
+/** Selects an exact non-scoreable diagnostic subset without changing the
+ * official query contract. Repeated ids are rejected so a retry batch cannot
+ * silently overweight one failure, and caller order is retained for an
+ * operator-readable audit ranking. */
+export function selectKnowledgeBenchmarkQueries(
+  queries: readonly KnowledgeBenchmarkQuery[],
+  queryIds: readonly string[],
+  queryLimit: number | undefined
+): readonly KnowledgeBenchmarkQuery[] {
+  if (queryIds.length > 0 && queryLimit !== undefined) {
+    throw new Error("knowledge_benchmark_query_selection_ambiguous");
+  }
+  if (new Set(queryIds).size !== queryIds.length) {
+    throw new Error("knowledge_benchmark_query_id_duplicate");
+  }
+  if (queryIds.length === 0) {
+    return Object.freeze(queryLimit === undefined
+      ? [...queries]
+      : queries.slice(0, queryLimit));
+  }
+  const byId = new Map(queries.map((query) => [query.officialId, query]));
+  return Object.freeze(queryIds.map((queryId) => {
+    const query = byId.get(queryId);
+    if (!query) throw new Error("knowledge_benchmark_query_id_not_found");
+    return query;
+  }));
+}
+
+/** Stable identity of the exact scoreable query set. It prevents two runs
+ * over the same corpus revision from becoming comparable if query admission
+ * or relevance labels differ. */
+export function knowledgeQuerySetContentSha256(
+  queries: readonly KnowledgeBenchmarkQuery[]
+): string {
+  if (queries.length === 0 ||
+    new Set(queries.map(({ officialId }) => officialId)).size !== queries.length) {
+    throw new Error("knowledge_benchmark_query_set_invalid");
+  }
+  const hash = createHash("sha256");
+  for (const query of [...queries].sort((left, right) =>
+    left.officialId < right.officialId ? -1 :
+      left.officialId > right.officialId ? 1 : 0)) {
+    hash.update(query.officialId, "utf8");
+    hash.update("\u0000", "utf8");
+    hash.update(query.text, "utf8");
+    hash.update("\u0000", "utf8");
+    hash.update(canonicalJson(query.relevant), "utf8");
+    hash.update("\u0000", "utf8");
+  }
+  return hash.digest("hex");
 }
 
 /** Deterministic content hash of a normalized corpus, independent of input
@@ -461,8 +641,11 @@ export type KnowledgeFrozenRunManifest = Readonly<{
   embeddingDimension: number;
   embeddingFormatterVersion: string;
   embeddingModelId: string;
+  excludedQueryCount: number;
   indexProfile: string;
+  queryCount: number;
   queryInstructionVersion: string;
+  querySetContentSha256: string;
   querySplit: string;
   rankingProfile: string;
   rerankerModelId: string | null;
@@ -515,13 +698,21 @@ export function decodeKnowledgeFrozenRunManifest(
     value.corpusContentSha256,
     frozenManifestCode
   );
-  if (!sha256Pattern.test(corpusContentSha256)) {
+  const querySetContentSha256 = requiredString(
+    value.querySetContentSha256,
+    frozenManifestCode
+  );
+  if (!sha256Pattern.test(corpusContentSha256) ||
+    !sha256Pattern.test(querySetContentSha256)) {
     throw new Error(frozenManifestCode);
   }
   if (!Number.isSafeInteger(value.embeddingDimension) ||
     Number(value.embeddingDimension) < 1 ||
     !Number.isSafeInteger(value.docFormatVersion) ||
-    Number(value.docFormatVersion) < 1) {
+    Number(value.docFormatVersion) < 1 ||
+    !Number.isSafeInteger(value.queryCount) || Number(value.queryCount) < 1 ||
+    !Number.isSafeInteger(value.excludedQueryCount) ||
+    Number(value.excludedQueryCount) < 0) {
     throw new Error(frozenManifestCode);
   }
   const rerankerModelId = value.rerankerModelId;
@@ -542,11 +733,14 @@ export function decodeKnowledgeFrozenRunManifest(
       frozenManifestCode
     ),
     embeddingModelId: requiredString(value.embeddingModelId, frozenManifestCode),
+    excludedQueryCount: Number(value.excludedQueryCount),
     indexProfile: requiredString(value.indexProfile, frozenManifestCode),
+    queryCount: Number(value.queryCount),
     queryInstructionVersion: requiredString(
       value.queryInstructionVersion,
       frozenManifestCode
     ),
+    querySetContentSha256,
     querySplit: requiredString(value.querySplit, frozenManifestCode),
     rankingProfile: requiredString(value.rankingProfile, frozenManifestCode),
     rerankerModelId: rerankerModelId as string | null,
@@ -568,6 +762,9 @@ export function knowledgeDatasetFingerprint(
     corpusContentSha256: manifest.corpusContentSha256,
     datasetSources: manifest.datasetSources,
     docFormatVersion: manifest.docFormatVersion,
+    excludedQueryCount: manifest.excludedQueryCount,
+    queryCount: manifest.queryCount,
+    querySetContentSha256: manifest.querySetContentSha256,
     querySplit: manifest.querySplit,
     suiteId: manifest.suiteId
   }));
@@ -1257,6 +1454,57 @@ export async function mapConcurrentOrdered<T, R>(
   ));
   if (failed) throw firstError;
   return Object.freeze(results);
+}
+
+export type KnowledgeBenchmarkRequestPacer = Readonly<{
+  /** Waits until the next globally admitted query start. */
+  admit(): Promise<void>;
+  /** Pushes the next admission into the future after a provider capacity signal. */
+  defer(milliseconds: number): void;
+}>;
+
+/**
+ * Serializes benchmark query admissions and keeps their starts separated.
+ * Scheduling waits live outside per-query retrieval timing and never retry a
+ * product operation. A 429 can defer future independent queries without
+ * changing the already-settled deterministic fallback for the failed query.
+ */
+export function createKnowledgeBenchmarkRequestPacer(input: Readonly<{
+  intervalMs: number;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}>): KnowledgeBenchmarkRequestPacer {
+  if (!Number.isSafeInteger(input.intervalMs) || input.intervalMs < 0 ||
+    input.intervalMs > 600_000) {
+    throw new Error("knowledge_benchmark_request_interval_invalid");
+  }
+  const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? ((milliseconds: number) =>
+    new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds)));
+  let nextAdmissionAt = 0;
+  let admissionTail = Promise.resolve();
+  const admit = (): Promise<void> => {
+    const admission = admissionTail.then(async () => {
+      while (true) {
+        const waitMs = Math.max(0, nextAdmissionAt - now());
+        if (waitMs === 0) break;
+        await sleep(waitMs);
+      }
+      nextAdmissionAt = now() + input.intervalMs;
+    });
+    admissionTail = admission.catch(() => undefined);
+    return admission;
+  };
+  return Object.freeze({
+    admit,
+    defer(milliseconds: number): void {
+      if (!Number.isSafeInteger(milliseconds) || milliseconds < 0 ||
+        milliseconds > 3_600_000) {
+        throw new Error("knowledge_benchmark_rate_limit_cooldown_invalid");
+      }
+      nextAdmissionAt = Math.max(nextAdmissionAt, now() + milliseconds);
+    }
+  });
 }
 
 /** Explicit paid-work acknowledgement: any command that can trigger paid

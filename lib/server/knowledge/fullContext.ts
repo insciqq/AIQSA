@@ -26,6 +26,7 @@ import {
   knowledgeSelectorEvidenceFromManifest
 } from "./answerGroundingV5";
 import { KNOWLEDGE_TABLE_CONTEXT_ROW_RADIUS } from "./parentContextExpansion";
+import { KNOWLEDGE_SCOPE_MAX_SOURCES } from "./retrievalTypes";
 
 export const KNOWLEDGE_ANSWER_ROUTE_RAG = "rag_v1" as const;
 export const KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT = "full_context_v1" as const;
@@ -435,6 +436,7 @@ export function knowledgeAdmissionMayFitFullContext(
 ): boolean {
   const policy = plan.answerPolicy ?? DEFAULT_KNOWLEDGE_ANSWER_POLICY;
   return Number.isSafeInteger(contextWindow) && Number(contextWindow) > 0 &&
+    (plan.sources?.length ?? 0) <= KNOWLEDGE_SCOPE_MAX_SOURCES &&
     approximateDocumentTokens(plan) <= Math.floor(
       Number(contextWindow) * policy.fullContextThresholdBasisPoints / 10_000
     );

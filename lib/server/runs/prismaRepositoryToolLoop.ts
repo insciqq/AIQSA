@@ -19,7 +19,9 @@ import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
 import {
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   KNOWLEDGE_SCOPE_MAX_SOURCES,
-  KNOWLEDGE_FOCUSED_OPERATION_NAME
+  KNOWLEDGE_FOCUSED_OPERATION_NAME,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
 } from "../knowledge/retrievalTypes";
 import { decodeKnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
 import type {
@@ -1161,7 +1163,8 @@ export function createPrismaRunToolLoopOperations(
               budgetPolicy: true,
               exclusions: true,
               resolvedSourceCount: true,
-              selection: true
+              selection: true,
+              sourceBindingStrategy: true
             }
           },
           projectRunBinding: {
@@ -1197,10 +1200,22 @@ export function createPrismaRunToolLoopOperations(
       const exclusions = run.knowledgeRunScope
         ? recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions)
         : null;
+      const sourceBindingStrategy = run.knowledgeRunScope?.sourceBindingStrategy ===
+        KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+        ? KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+        : run.knowledgeRunScope?.sourceBindingStrategy ===
+            KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
+          ? KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
+          : null;
       if (run.knowledgeRunScope && (!selection?.ok || !budgetPolicy || !exclusions ||
+        !sourceBindingStrategy ||
         !Number.isSafeInteger(run.knowledgeRunScope.resolvedSourceCount) ||
         run.knowledgeRunScope.resolvedSourceCount < 0 ||
-        run.knowledgeRunScope.resolvedSourceCount > KNOWLEDGE_SCOPE_MAX_SOURCES ||
+        (sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+          ? run.knowledgeRunScope.resolvedSourceCount > KNOWLEDGE_SCOPE_MAX_SOURCES
+          : sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
+            ? run.knowledgeRunScope.resolvedSourceCount <= KNOWLEDGE_SCOPE_MAX_SOURCES
+            : true) ||
         run.knowledgeRunBindings.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
         run.knowledgeRunBindings.some((binding, index) =>
           binding.ordinal !== index || !/^[0-9a-f]{64}$/u.test(
@@ -1233,7 +1248,8 @@ export function createPrismaRunToolLoopOperations(
                 budgetPolicy,
                 exclusions,
                 knowledgePlan: selection.plan,
-                resolvedSourceCount: run.knowledgeRunScope.resolvedSourceCount
+                resolvedSourceCount: run.knowledgeRunScope.resolvedSourceCount,
+                sourceBindingStrategy: sourceBindingStrategy!
               }
             }
           : {}),
@@ -1338,7 +1354,8 @@ export function createPrismaRunToolLoopOperations(
               exclusions: true,
               resolvedBaseCount: true,
               resolvedSourceCount: true,
-              selection: true
+              selection: true,
+              sourceBindingStrategy: true
             }
           },
           knowledgeRunSourceBindings: {
@@ -1363,9 +1380,30 @@ export function createPrismaRunToolLoopOperations(
       if (!run?.knowledgeRunScope) return null;
       const selection = decodeKnowledgePlan(run.knowledgeRunScope.selection);
       const exclusions = recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions);
+      const sourceBindingStrategy = run.knowledgeRunScope.sourceBindingStrategy ===
+        KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+        ? KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+        : run.knowledgeRunScope.sourceBindingStrategy ===
+            KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
+          ? KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
+          : null;
+      const eagerSourceBindings = sourceBindingStrategy ===
+        KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER;
+      const disclosedSourceBindings = sourceBindingStrategy ===
+        KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED;
       if (!selection.ok || !exclusions ||
+        !Number.isSafeInteger(run.knowledgeRunScope.resolvedSourceCount) ||
+        run.knowledgeRunScope.resolvedSourceCount < 1 ||
         run.knowledgeRunBindings.length !== run.knowledgeRunScope.resolvedBaseCount ||
-        run.knowledgeRunSourceBindings.length !== run.knowledgeRunScope.resolvedSourceCount ||
+        (!eagerSourceBindings && !disclosedSourceBindings) ||
+        (eagerSourceBindings && (
+          run.knowledgeRunScope.resolvedSourceCount > KNOWLEDGE_SCOPE_MAX_SOURCES ||
+          run.knowledgeRunSourceBindings.length !== run.knowledgeRunScope.resolvedSourceCount
+        )) ||
+        (disclosedSourceBindings && (
+          run.knowledgeRunScope.resolvedSourceCount <= KNOWLEDGE_SCOPE_MAX_SOURCES ||
+          run.knowledgeRunSourceBindings.length > run.knowledgeRunScope.resolvedSourceCount
+        )) ||
         run.knowledgeRunBindings.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
         run.knowledgeRunSourceBindings.length > KNOWLEDGE_SCOPE_MAX_SOURCES ||
         run.knowledgeRunBindings.some((binding, ordinal) =>
@@ -1430,6 +1468,8 @@ export function createPrismaRunToolLoopOperations(
         exclusions: Object.freeze([...exclusions]),
         knowledgePlan: selection.plan,
         profiles: Object.freeze(profiles),
+        resolvedSourceCount: run.knowledgeRunScope.resolvedSourceCount,
+        sourceBindingStrategy: sourceBindingStrategy!,
         sources: Object.freeze(sources.filter((source): source is NonNullable<
           typeof source
         > => source !== null))

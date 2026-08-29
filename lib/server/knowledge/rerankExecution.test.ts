@@ -246,16 +246,13 @@ describe("Knowledge rerank execution stage", () => {
 
   it("degrades on classified provider failures and malformed responses", async () => {
     for (const code of [
-      "rerank_provider_http_error",
       "rerank_provider_request_failed",
       "rerank_response_invalid",
       "rerank_response_model_mismatch"
     ] as const) {
       const stage = createKnowledgeRerankStage({
         adapter: fakeAdapter(async () => {
-          throw new RerankAdapterError(code, code === "rerank_provider_http_error"
-            ? { httpStatus: 429 }
-            : {});
+          throw new RerankAdapterError(code);
         }),
         pin,
         query: "q"
@@ -265,6 +262,36 @@ describe("Knowledge rerank execution stage", () => {
       expect(result.scores.size).toBe(0);
       expect(result.evidence.fallbackReason).toBe(code);
       expect(result.evidence.timedOut).toBe(false);
+      expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
+    }
+  });
+
+  it("records a content-free HTTP failure class without provider response data", async () => {
+    for (const [httpStatus, fallbackReason] of [
+      [429, "rerank_provider_rate_limited"],
+      [408, "rerank_provider_request_timeout"],
+      [503, "rerank_provider_server_error"],
+      [400, "rerank_provider_request_rejected"],
+      [null, "rerank_provider_http_error"]
+    ] as const) {
+      const stage = createKnowledgeRerankStage({
+        adapter: fakeAdapter(async () => {
+          throw new RerankAdapterError("rerank_provider_http_error", {
+            ...(httpStatus === null ? {} : { httpStatus })
+          });
+        }),
+        pin,
+        query: "q"
+      });
+      const result = await stage({
+        candidates: [candidate("chunk-a"), candidate("chunk-b")]
+      });
+      expect(result.status).toBe("degraded");
+      expect(result.evidence).toMatchObject({
+        fallbackReason,
+        status: "degraded",
+        timedOut: false
+      });
       expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
     }
   });

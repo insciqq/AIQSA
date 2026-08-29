@@ -17,6 +17,7 @@ import {
   decodeConvFinQaCorpus,
   decodeKnowledgeBenchmarkManifest,
   decodeRusScifactCorpus,
+  knowledgeBenchmarkUploadClientId,
   knowledgeCorpusContentSha256,
   mapConcurrentOrdered,
   parseJsonLines,
@@ -44,6 +45,7 @@ const INGEST_STATE_SCHEMA_VERSION = 1;
 type CliOptions = Readonly<{
   batchSize: number | undefined;
   recoverBatchId: string | undefined;
+  replaceSourceIds: readonly string[];
   reprocessSourceId: string | undefined;
   settleTimeoutMs: number;
   suiteId: KnowledgeSuiteId;
@@ -87,6 +89,7 @@ function parseCli(argv: readonly string[]): CliOptions {
   let suiteId: KnowledgeSuiteId | undefined;
   let batchSize: number | undefined;
   let recoverBatchId: string | undefined;
+  const replaceSourceIds: string[] = [];
   let reprocessSourceId: string | undefined;
   let settleTimeoutMinutes = 240;
   let uploadConcurrency = 4;
@@ -125,6 +128,14 @@ function parseCli(argv: readonly string[]): CliOptions {
         reprocessSourceId = next;
         index += 1;
         break;
+      case "--replace-source":
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+          .test(next ?? "")) {
+          throw new Error("knowledge_benchmark_source_id_invalid");
+        }
+        replaceSourceIds.push(next!);
+        index += 1;
+        break;
       case "--recover-batch":
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
           .test(next ?? "")) {
@@ -161,9 +172,14 @@ function parseCli(argv: readonly string[]): CliOptions {
     throw new Error("knowledge_benchmark_paid_confirmation_required");
   }
   if (!suiteId) throw new Error("knowledge_benchmark_suite_required");
+  if ([recoverBatchId, replaceSourceIds.length > 0, reprocessSourceId]
+    .filter(Boolean).length > 1) {
+    throw new Error("knowledge_benchmark_recovery_mode_ambiguous");
+  }
   return Object.freeze({
     batchSize,
     recoverBatchId,
+    replaceSourceIds: Object.freeze([...new Set(replaceSourceIds)]),
     reprocessSourceId,
     settleTimeoutMs: settleTimeoutMinutes * 60_000,
     suiteId,
@@ -414,6 +430,46 @@ async function apiRequest(
   }
 }
 
+async function replaceSourceBytes(
+  baseUrl: URL,
+  cookie: string,
+  sourceId: string,
+  document: KnowledgeBenchmarkDocument
+): Promise<void> {
+  const form = new FormData();
+  form.set("file", new File([document.markdown], document.fileName, {
+    type: "text/markdown"
+  }));
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(new URL(
+      `/api/me/knowledge-sources/${encodeURIComponent(sourceId)}/versions`,
+      baseUrl
+    ), {
+      body: form,
+      cache: "no-store",
+      headers: requestHeaders(baseUrl, cookie),
+      method: "POST",
+      redirect: "error"
+    });
+    if (response.status === 429 && attempt < 60) {
+      await response.arrayBuffer().catch(() => null);
+      await sleep(1_000);
+      continue;
+    }
+    if ([500, 502, 503, 504].includes(response.status) && attempt < 6) {
+      await response.arrayBuffer().catch(() => null);
+      await sleep(500 * 2 ** attempt);
+      continue;
+    }
+    const parsed = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      throw new Error(`knowledge_benchmark_replace_rejected:${
+        sanitizedErrorCode(parsed, response.status)}`);
+    }
+    return;
+  }
+}
+
 async function uploadItemBytes(
   baseUrl: URL,
   cookie: string,
@@ -521,8 +577,12 @@ async function ingestBatch(
     membershipHash.update("\u0000", "utf8");
   }
   const clientBatchId = `kbbench-${membershipHash.digest("hex").slice(0, 40)}`;
-  const bytesByFileName = new Map(documents.map((document) => [
-    document.fileName,
+  const documentsByClientId = new Map(documents.map((document) => [
+    knowledgeBenchmarkUploadClientId(document),
+    document
+  ]));
+  const bytesByClientId = new Map(documents.map((document) => [
+    knowledgeBenchmarkUploadClientId(document),
     Buffer.from(document.markdown, "utf8")
   ]));
   const created = decodeBatch(await apiRequest(
@@ -532,15 +592,19 @@ async function ingestBatch(
     `/api/me/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-batches`,
     {
       clientBatchId,
-      files: documents.map((document) => ({
-        byteSize: bytesByFileName.get(document.fileName)!.byteLength,
-        checksumHint: createHash("sha256")
-          .update(bytesByFileName.get(document.fileName)!)
-          .digest("hex"),
-        clientFileId: document.fileName,
-        fileName: document.fileName,
-        mimeType: "text/markdown"
-      }))
+      files: documents.map((document) => {
+        const clientFileId = knowledgeBenchmarkUploadClientId(document);
+        const bytes = bytesByClientId.get(clientFileId)!;
+        return {
+          byteSize: bytes.byteLength,
+          checksumHint: createHash("sha256")
+            .update(bytes)
+            .digest("hex"),
+          clientFileId,
+          fileName: document.fileName,
+          mimeType: "text/markdown"
+        };
+      })
     }
   ));
   const itemPath = (itemId: string): string =>
@@ -580,7 +644,7 @@ async function ingestBatch(
           baseUrl,
           cookie,
           current.transport.uploadUrl,
-          bytesByFileName.get(current.clientFileId)!
+          bytesByClientId.get(current.clientFileId)!
         );
       }
       await apiRequest(
@@ -656,15 +720,20 @@ async function ingestBatch(
     const usable = [...settled, ...recovered];
     if (usable.length === batch.items.length) {
       const recoveredIds = new Set(recovered.map(({ id }) => id));
-      return new Map(usable.map((item) => [
-        item.clientFileId,
-        Object.freeze({
-          officialId: documents.find(({ fileName }) =>
-            fileName === item.clientFileId)!.officialId,
-          sourceId: item.sourceId!,
-          state: recoveredIds.has(item.id) ? "reused" : item.state
-        })
-      ]));
+      return new Map(usable.map((item) => {
+        const document = documentsByClientId.get(item.clientFileId);
+        if (!document) {
+          throw new Error("knowledge_benchmark_upload_client_id_unknown");
+        }
+        return [
+          document.fileName,
+          Object.freeze({
+            officialId: document.officialId,
+            sourceId: item.sourceId!,
+            state: recoveredIds.has(item.id) ? "reused" : item.state
+          })
+        ] as const;
+      }));
     }
     if (Date.now() >= deadline) {
       throw new Error("knowledge_benchmark_settle_timeout");
@@ -856,6 +925,36 @@ async function main(): Promise<void> {
         )}/reprocess`
       );
       emit("source_reprocess_accepted", { sourceId: options.reprocessSourceId });
+      return;
+    }
+    if (options.replaceSourceIds.length > 0) {
+      const replacements = options.replaceSourceIds.map((sourceId) => {
+        const fileNames = new Set(Object.entries(state.documents)
+          .filter(([, document]) => document.sourceId === sourceId)
+          .map(([fileName]) => fileName));
+        const documents = corpus.filter(({ fileName }) => fileNames.has(fileName));
+        if (documents.length === 0) {
+          throw new Error("knowledge_benchmark_source_mapping_missing");
+        }
+        const contentHashes = new Set(documents.map(({ markdown }) =>
+          createHash("sha256").update(markdown, "utf8").digest("hex")));
+        if (contentHashes.size !== 1) {
+          throw new Error("knowledge_benchmark_source_mapping_ambiguous");
+        }
+        return Object.freeze({ documents, sourceId });
+      });
+      await mapConcurrentOrdered(
+        replacements,
+        options.uploadConcurrency,
+        async ({ documents, sourceId }) => {
+          await replaceSourceBytes(baseUrl, cookie, sourceId, documents[0]!);
+          emit("source_replace_accepted", {
+            mappedDocuments: documents.length,
+            sourceId
+          });
+        }
+      );
+      emit("sources_replace_accepted", { sources: replacements.length });
       return;
     }
     if (!state.knowledgeBaseId) {

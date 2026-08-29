@@ -173,6 +173,11 @@ export type KnowledgeRetrievalStore = Readonly<{
     runId: string;
     userId: string;
   }>): Promise<readonly KnowledgeScopeAlias[]>;
+  materializeScopeAliases?(input: Readonly<{
+    runId: string;
+    sourceProvenance: readonly KnowledgeCanonicalSourceProvenance[];
+    userId: string;
+  }>): Promise<void>;
   readSource?(input: Readonly<{
     binding: KnowledgeAcceptedBinding;
     read: NormalizedReadSourceRequest;
@@ -706,11 +711,33 @@ function operationRequestInput(input: Readonly<{
       filteredSourceIds && !filteredSourceIds.has(alias.sourceId)) return [];
     return [alias.sourceId];
   }))].sort();
-  if (resolvedSourceIds.length < 1) return null;
+  const canUseBaseSnapshots = input.request.operation === "automatic_search" &&
+    !input.filter.sourceIds &&
+    input.bindings.every((binding) => binding.executionScope === "base" &&
+      Boolean(binding.knowledgeBaseSnapshotId)) &&
+    input.request.sourceAliases.every((alias) => alias.startsWith("B"));
+  const scope = canUseBaseSnapshots
+    ? Object.freeze({
+        bindings: Object.freeze([...input.bindings]
+          .sort((left, right) => left.ordinal - right.ordinal)
+          .map((binding) => Object.freeze({
+            bindingOrdinal: binding.ordinal,
+            knowledgeBaseId: binding.knowledgeBaseId,
+            knowledgeBaseSnapshotId: binding.knowledgeBaseSnapshotId
+          }))),
+        kind: "base_snapshots" as const
+      })
+    : resolvedSourceIds.length > 0 || input.request.operation === "discover_sources"
+      ? Object.freeze({
+          kind: "sources" as const,
+          sourceIds: Object.freeze(resolvedSourceIds)
+        })
+      : null;
+  if (!scope) return null;
   const common = Object.freeze({
     operation: input.request.operation,
     profileRevisionId: profileRevisionIds[0]!,
-    resolvedSourceIds,
+    scope,
     sourceAliases: [...input.request.sourceAliases]
   });
   switch (input.request.operation) {
@@ -1146,7 +1173,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       const startedAt = monotonicNow();
       const bindings = await input.store.loadBindings({ runId, userId: context.userId });
       if (!validBindings(bindings)) return errorResult(call, "knowledge_run_binding_unavailable");
-      const aliases = input.store.loadScopeAliases
+      let aliases = input.store.loadScopeAliases
         ? await input.store.loadScopeAliases({ runId, userId: context.userId })
         : [];
       const filter = aliasFilter(request.sourceAliases, aliases, request.operation);
@@ -1628,6 +1655,15 @@ export function createKnowledgeToolExecutor(input: Readonly<{
               : search.rerankerBinding;
       if (rerankResolution?.kind === "ready" && !rerankerBinding) {
         throw new Error("knowledge_reranker_evidence_missing");
+      }
+      if (search.canonicalSourceProvenance?.length &&
+        input.store.materializeScopeAliases && input.store.loadScopeAliases) {
+        await input.store.materializeScopeAliases({
+          runId,
+          sourceProvenance: search.canonicalSourceProvenance,
+          userId: context.userId
+        });
+        aliases = await input.store.loadScopeAliases({ runId, userId: context.userId });
       }
       const remainingRetrievedTokens = Math.max(
         1,

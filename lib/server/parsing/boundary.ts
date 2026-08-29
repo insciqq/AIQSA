@@ -22,6 +22,7 @@ import {
   PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
   supplementImageHeavyPdfOcr
 } from "./ocrSupplement";
+import { parseInlineMarkdownBlocks } from "./inlineMarkdown";
 import { resolveDocumentParserRoute } from "./routing";
 import { parseSpreadsheetDocument } from "./spreadsheet";
 import type {
@@ -60,8 +61,10 @@ function inlineDocument(
     ...(maxChars === undefined ? {} : { maxChars }),
     mimeType: mediaType
   });
-  const blocks: ParsedDocumentBlock[] = extracted.text
-    ? [Object.freeze({
+  const blocks: readonly ParsedDocumentBlock[] = extracted.text
+    ? extracted.kind === "markdown"
+      ? parseInlineMarkdownBlocks(extracted.text)
+      : [Object.freeze({
         assetIds: Object.freeze([]),
         boundingBoxes: Object.freeze([]),
         headingPath: Object.freeze([]),
@@ -78,7 +81,7 @@ function inlineDocument(
           : extracted.kind === "json"
             ? "code"
             : "paragraph"
-      })]
+        })]
     : [];
 
   const status = extracted.truncated ? "partial" : "complete";

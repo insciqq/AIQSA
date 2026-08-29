@@ -5,6 +5,7 @@ import type { NormalizedRunRequest } from "../providers/types";
 import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { KnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
 import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
+import type { KnowledgeSourceBindingStrategy } from "../knowledge/retrievalTypes";
 
 export type ToolLoopJsonValue =
   | boolean
@@ -81,6 +82,7 @@ export type KnowledgeRunRecoveryScope = Readonly<{
   knowledgePlan: KnowledgePlan;
   /** Present for H2 scopes. Undefined is reserved for historical fixtures. */
   resolvedSourceCount?: number;
+  sourceBindingStrategy?: KnowledgeSourceBindingStrategy;
 }>;
 
 export type CheckpointedToolLoopRun = Readonly<{

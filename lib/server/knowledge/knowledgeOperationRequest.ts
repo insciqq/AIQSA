@@ -15,11 +15,14 @@ import {
   type KnowledgeSourceDiscoveryRequest
 } from "./retrievalTypes";
 
-export const KNOWLEDGE_OPERATION_REQUEST_VERSION = 2 as const;
+export const KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION = 2 as const;
+export const KNOWLEDGE_OPERATION_REQUEST_VERSION = 3 as const;
 export const KNOWLEDGE_OPERATION_REQUEST_MAX_SOURCES = 1_024;
+export const KNOWLEDGE_OPERATION_REQUEST_MAX_BINDINGS = 128;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const BASE_SNAPSHOT_ID = /^kbs_[0-9a-f]{40}$/u;
 const SOURCE_ALIAS = /^[BS][1-9]\d{0,2}$/u;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
 const CURSOR = /^[A-Za-z0-9][A-Za-z0-9._~:/+-]{0,511}$/u;
@@ -39,7 +42,7 @@ export type KnowledgeOperationRequestEnvelopeV2 = Readonly<{
   resolvedSourceIds: readonly string[];
   sourceAliases: readonly string[];
   subqueryOrdinal: number;
-  version: typeof KNOWLEDGE_OPERATION_REQUEST_VERSION;
+  version: typeof KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION;
 }>;
 
 export type KnowledgeFocusedOperationRequestV2 = KnowledgeOperationRequestEnvelopeV2 &
@@ -64,10 +67,65 @@ export type KnowledgeOperationRequestV2 =
   | KnowledgeSearchOperationRequestV2
   | KnowledgeReadSourceOperationRequestV2;
 
-export type KnowledgeOperationTargetingV2 = Pick<
-  KnowledgeOperationRequestV2,
-  "operation" | "resolvedSourceIds"
->;
+export type KnowledgeOperationBaseSnapshotScopeV3 = Readonly<{
+  bindings: readonly Readonly<{
+    bindingOrdinal: number;
+    knowledgeBaseId: string;
+    knowledgeBaseSnapshotId: string;
+  }>[];
+  kind: "base_snapshots";
+}>;
+
+export type KnowledgeOperationSourceScopeV3 = Readonly<{
+  kind: "sources";
+  sourceIds: readonly string[];
+}>;
+
+export type KnowledgeOperationScopeV3 =
+  | KnowledgeOperationBaseSnapshotScopeV3
+  | KnowledgeOperationSourceScopeV3;
+
+export type KnowledgeOperationRequestEnvelopeV3 = Readonly<{
+  idempotencyKey: string;
+  operation: KnowledgeOperationKind;
+  originalQuery: Readonly<{ reference: string; sha256: string }>;
+  phaseOrdinal: number;
+  profileRevisionId: string;
+  profileRevisionNumber: number;
+  reservationId: string;
+  scope: KnowledgeOperationScopeV3;
+  sourceAliases: readonly string[];
+  subqueryOrdinal: number;
+  version: typeof KNOWLEDGE_OPERATION_REQUEST_VERSION;
+}>;
+
+export type KnowledgeFocusedOperationRequestV3 = KnowledgeOperationRequestEnvelopeV3 &
+  Readonly<{ focused: KnowledgeFocusedRequestV1; operation: "automatic_search" }>;
+
+export type KnowledgeSearchOperationRequestV3 = KnowledgeOperationRequestEnvelopeV3 &
+  Readonly<{ operation: "automatic_search"; query: string }>;
+
+export type KnowledgeFindExactOperationRequestV3 = KnowledgeOperationRequestEnvelopeV3 &
+  Readonly<{ exact: KnowledgeExactSearchRequest; operation: "find_exact" }>;
+
+export type KnowledgeReadSourceOperationRequestV3 = KnowledgeOperationRequestEnvelopeV3 &
+  Readonly<{ operation: "read_source"; read: NormalizedReadSourceRequest }>;
+
+export type KnowledgeDiscoverSourcesOperationRequestV3 = KnowledgeOperationRequestEnvelopeV3 &
+  Readonly<{ discovery: KnowledgeSourceDiscoveryRequest; operation: "discover_sources" }>;
+
+export type KnowledgeOperationRequestV3 =
+  | KnowledgeDiscoverSourcesOperationRequestV3
+  | KnowledgeFindExactOperationRequestV3
+  | KnowledgeFocusedOperationRequestV3
+  | KnowledgeSearchOperationRequestV3
+  | KnowledgeReadSourceOperationRequestV3;
+
+export type KnowledgeOperationRequest = KnowledgeOperationRequestV2 | KnowledgeOperationRequestV3;
+
+export type KnowledgeOperationTargeting =
+  | Pick<KnowledgeOperationRequestV2, "operation" | "resolvedSourceIds" | "version">
+  | Pick<KnowledgeOperationRequestV3, "operation" | "scope" | "version">;
 
 const envelopeKeys = [
   "idempotencyKey",
@@ -78,6 +136,20 @@ const envelopeKeys = [
   "profileRevisionNumber",
   "reservationId",
   "resolvedSourceIds",
+  "sourceAliases",
+  "subqueryOrdinal",
+  "version"
+] as const;
+
+const envelopeKeysV3 = [
+  "idempotencyKey",
+  "operation",
+  "originalQuery",
+  "phaseOrdinal",
+  "profileRevisionId",
+  "profileRevisionNumber",
+  "reservationId",
+  "scope",
   "sourceAliases",
   "subqueryOrdinal",
   "version"
@@ -118,7 +190,7 @@ function orderedUniqueStrings(
 }
 
 function decodeEnvelope(value: Record<string, unknown>): KnowledgeOperationRequestEnvelopeV2 | null {
-  if (value.version !== KNOWLEDGE_OPERATION_REQUEST_VERSION ||
+  if (value.version !== KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION ||
     typeof value.operation !== "string" ||
     !integer(value.phaseOrdinal, 0, 63) ||
     !integer(value.subqueryOrdinal, 0, 127) ||
@@ -154,6 +226,91 @@ function decodeEnvelope(value: Record<string, unknown>): KnowledgeOperationReque
     profileRevisionNumber: Number(value.profileRevisionNumber),
     reservationId: value.reservationId,
     resolvedSourceIds,
+    sourceAliases,
+    subqueryOrdinal: Number(value.subqueryOrdinal),
+    version: KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION
+  });
+}
+
+function decodeScopeV3(value: unknown): KnowledgeOperationScopeV3 | null {
+  if (!record(value) || typeof value.kind !== "string") return null;
+  if (value.kind === "sources") {
+    if (!exactKeys(value, ["kind", "sourceIds"])) return null;
+    const sourceIds = orderedUniqueStrings(
+      value.sourceIds,
+      KNOWLEDGE_OPERATION_REQUEST_MAX_SOURCES,
+      (entry) => typeof entry === "string" && UUID.test(entry) ? entry : null
+    );
+    return sourceIds ? Object.freeze({ kind: "sources", sourceIds }) : null;
+  }
+  if (value.kind !== "base_snapshots" || !exactKeys(value, ["bindings", "kind"]) ||
+    !Array.isArray(value.bindings) || value.bindings.length < 1 ||
+    value.bindings.length > KNOWLEDGE_OPERATION_REQUEST_MAX_BINDINGS) return null;
+  const bindings: Array<KnowledgeOperationBaseSnapshotScopeV3["bindings"][number]> = [];
+  for (const entry of value.bindings) {
+    if (!record(entry) || !exactKeys(entry, [
+      "bindingOrdinal", "knowledgeBaseId", "knowledgeBaseSnapshotId"
+    ]) || !integer(entry.bindingOrdinal, 0, KNOWLEDGE_OPERATION_REQUEST_MAX_BINDINGS - 1) ||
+      typeof entry.knowledgeBaseId !== "string" || !UUID.test(entry.knowledgeBaseId) ||
+      typeof entry.knowledgeBaseSnapshotId !== "string" ||
+      !BASE_SNAPSHOT_ID.test(entry.knowledgeBaseSnapshotId)) return null;
+    bindings.push(Object.freeze({
+      bindingOrdinal: Number(entry.bindingOrdinal),
+      knowledgeBaseId: entry.knowledgeBaseId,
+      knowledgeBaseSnapshotId: entry.knowledgeBaseSnapshotId
+    }));
+  }
+  if (bindings.some((binding, index) => index > 0 &&
+    binding.bindingOrdinal <= bindings[index - 1]!.bindingOrdinal) ||
+    new Set(bindings.map((binding) => binding.knowledgeBaseId)).size !== bindings.length ||
+    new Set(bindings.map((binding) => binding.knowledgeBaseSnapshotId)).size !== bindings.length) {
+    return null;
+  }
+  return Object.freeze({ bindings: Object.freeze(bindings), kind: "base_snapshots" });
+}
+
+function decodeEnvelopeV3(
+  value: Record<string, unknown>
+): KnowledgeOperationRequestEnvelopeV3 | null {
+  if (value.version !== KNOWLEDGE_OPERATION_REQUEST_VERSION ||
+    typeof value.operation !== "string" ||
+    !integer(value.phaseOrdinal, 0, 63) ||
+    !integer(value.subqueryOrdinal, 0, 127) ||
+    !integer(value.profileRevisionNumber, 1, 2_147_483_647) ||
+    typeof value.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(value.idempotencyKey) ||
+    typeof value.profileRevisionId !== "string" || !UUID.test(value.profileRevisionId) ||
+    typeof value.reservationId !== "string" || !UUID.test(value.reservationId) ||
+    !record(value.originalQuery) || !exactKeys(value.originalQuery, ["reference", "sha256"]) ||
+    !canonicalText(value.originalQuery.reference, 512) ||
+    typeof value.originalQuery.sha256 !== "string" || !SHA256.test(value.originalQuery.sha256)) {
+    return null;
+  }
+  const scope = decodeScopeV3(value.scope);
+  const sourceAliases = orderedUniqueStrings(
+    value.sourceAliases,
+    KNOWLEDGE_OPERATION_REQUEST_MAX_SOURCES,
+    (entry) => typeof entry === "string" && SOURCE_ALIAS.test(entry) ? entry : null
+  );
+  if (!scope || !sourceAliases ||
+    scope.kind === "base_snapshots" && sourceAliases.some((alias) => {
+      if (!alias.startsWith("B")) return true;
+      const ordinal = Number(alias.slice(1)) - 1;
+      return !scope.bindings.some((binding) => binding.bindingOrdinal === ordinal);
+    })) {
+    return null;
+  }
+  return Object.freeze({
+    idempotencyKey: value.idempotencyKey,
+    operation: value.operation as KnowledgeOperationKind,
+    originalQuery: Object.freeze({
+      reference: value.originalQuery.reference as string,
+      sha256: value.originalQuery.sha256
+    }),
+    phaseOrdinal: Number(value.phaseOrdinal),
+    profileRevisionId: value.profileRevisionId,
+    profileRevisionNumber: Number(value.profileRevisionNumber),
+    reservationId: value.reservationId,
+    scope,
     sourceAliases,
     subqueryOrdinal: Number(value.subqueryOrdinal),
     version: KNOWLEDGE_OPERATION_REQUEST_VERSION
@@ -270,16 +427,87 @@ export function decodeKnowledgeOperationRequestV2(value: unknown): KnowledgeOper
   }
 }
 
+export function decodeKnowledgeOperationRequestV3(value: unknown): KnowledgeOperationRequestV3 | null {
+  if (!record(value) || typeof value.operation !== "string") return null;
+  let variantKey: "discovery" | "exact" | "focused" | "query" | "read" | undefined;
+  if (value.operation === "automatic_search") {
+    variantKey = Object.hasOwn(value, "query") ? "query" : "focused";
+  } else {
+    variantKey = ({
+      discover_sources: "discovery",
+      find_exact: "exact",
+      read_source: "read"
+    } as const)[value.operation as Exclude<KnowledgeOperationKind, "automatic_search">];
+  }
+  if (!variantKey || !exactKeys(value, [...envelopeKeysV3, variantKey])) return null;
+  const envelope = decodeEnvelopeV3(value);
+  if (!envelope) return null;
+  switch (value.operation) {
+    case "automatic_search": {
+      if (variantKey === "query") {
+        const query = canonicalText(value.query, KNOWLEDGE_QUERY_MAX_CHARACTERS);
+        return query && (envelope.scope.kind === "base_snapshots" ||
+          envelope.scope.sourceIds.length > 0)
+          ? Object.freeze({ ...envelope, operation: "automatic_search", query })
+          : null;
+      }
+      const focused = decodeKnowledgeFocusedRequest(value.focused);
+      return focused && envelope.phaseOrdinal === 0 && envelope.subqueryOrdinal === 0 &&
+        envelope.sourceAliases.length === 0 &&
+        (envelope.scope.kind === "base_snapshots" || envelope.scope.sourceIds.length > 0)
+        ? Object.freeze({ ...envelope, focused, operation: "automatic_search" })
+        : null;
+    }
+    case "find_exact": {
+      const exact = decodeExact(value.exact);
+      return exact && envelope.scope.kind === "sources" && envelope.scope.sourceIds.length > 0
+        ? Object.freeze({ ...envelope, exact, operation: "find_exact" })
+        : null;
+    }
+    case "read_source": {
+      const read = decodeRead(value.read);
+      return read && envelope.scope.kind === "sources" &&
+        envelope.sourceAliases.length === 1 &&
+        envelope.sourceAliases[0]!.startsWith("S") && envelope.scope.sourceIds.length === 1
+        ? Object.freeze({ ...envelope, operation: "read_source", read })
+        : null;
+    }
+    case "discover_sources": {
+      const discovery = decodeDiscovery(value.discovery);
+      return discovery && envelope.scope.kind === "sources" &&
+        envelope.sourceAliases.length === 0
+        ? Object.freeze({ ...envelope, discovery, operation: "discover_sources" })
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
+export function decodeKnowledgeOperationRequest(value: unknown): KnowledgeOperationRequest | null {
+  return decodeKnowledgeOperationRequestV3(value) ?? decodeKnowledgeOperationRequestV2(value);
+}
+
 export function createKnowledgeOperationRequestV2(value: unknown): KnowledgeOperationRequestV2 {
   const decoded = decodeKnowledgeOperationRequestV2(value);
   if (!decoded) throw new Error("knowledge_operation_request_v2_invalid");
   return decoded;
 }
 
+export function createKnowledgeOperationRequestV3(value: unknown): KnowledgeOperationRequestV3 {
+  const decoded = decodeKnowledgeOperationRequestV3(value);
+  if (!decoded) throw new Error("knowledge_operation_request_v3_invalid");
+  return decoded;
+}
+
 export function knowledgeOperationTargetSourceIds(
-  request: KnowledgeOperationTargetingV2
+  request: KnowledgeOperationTargeting
 ): readonly string[] {
-  return request.operation === "discover_sources" ? [] : request.resolvedSourceIds;
+  if (request.operation === "discover_sources") return [];
+  if (request.version === KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION) {
+    return request.resolvedSourceIds ?? [];
+  }
+  return request.scope?.kind === "sources" ? request.scope.sourceIds : [];
 }
 
 function canonicalJsonValue(value: unknown): unknown {
@@ -295,5 +523,27 @@ export function canonicalKnowledgeOperationRequestV2(value: unknown): string {
 export function hashKnowledgeOperationRequestV2(value: unknown): string {
   return createHash("sha256")
     .update(canonicalKnowledgeOperationRequestV2(value), "utf8")
+    .digest("hex");
+}
+
+export function canonicalKnowledgeOperationRequestV3(value: unknown): string {
+  return JSON.stringify(canonicalJsonValue(createKnowledgeOperationRequestV3(value)));
+}
+
+export function hashKnowledgeOperationRequestV3(value: unknown): string {
+  return createHash("sha256")
+    .update(canonicalKnowledgeOperationRequestV3(value), "utf8")
+    .digest("hex");
+}
+
+export function canonicalKnowledgeOperationRequest(value: unknown): string {
+  const decoded = decodeKnowledgeOperationRequest(value);
+  if (!decoded) throw new Error("knowledge_operation_request_invalid");
+  return JSON.stringify(canonicalJsonValue(decoded));
+}
+
+export function hashKnowledgeOperationRequest(value: unknown): string {
+  return createHash("sha256")
+    .update(canonicalKnowledgeOperationRequest(value), "utf8")
     .digest("hex");
 }

@@ -217,6 +217,75 @@ describe("accepted Knowledge Source snapshot binding", () => {
     );
   });
 
+  it("freezes a large whole-Base scope without eagerly persisting every Source", async () => {
+    const legacy = plan();
+    const profile = canonicalProfile(legacy);
+    const sources = Array.from({ length: 1_000 }, (_, ordinal) => ({
+      approxTokens: 100,
+      authority: { knowledgeBaseIds: ["base-1"], owner: false, projectId: null },
+      baseProvenance: [{ indexGenerationId: "generation-1", knowledgeBaseId: "base-1" }],
+      directSelected: false,
+      ordinal,
+      privateLabels: {
+        fileName: `source-${ordinal}.md`,
+        sourceName: `Source ${ordinal}`
+      },
+      passageCount: 1,
+      profileOrdinal: 0,
+      profileRevisionId: profile.profileRevisionId,
+      selectionProvenance: ["base" as const],
+      sourceAlias: `S${ordinal + 1}`,
+      sourceArtifactId: `artifact-${ordinal}`,
+      sourceId: `source-${ordinal}`,
+      sourceVersionId: `source-version-${ordinal}`,
+      sourceVersionNumber: 1
+    }));
+    const accepted: KnowledgeRunAdmissionPlan = {
+      ...legacy,
+      profiles: [profile],
+      resolvedSourceCount: sources.length,
+      sources
+    };
+    mocks.loadKnowledgeRunAdmissionPlan.mockResolvedValue(accepted);
+    mocks.sameKnowledgeRunAdmissionPlan.mockReturnValue(true);
+    mocks.materializeKnowledgeBaseSnapshot.mockResolvedValue({
+      evidenceFingerprint: "b".repeat(64),
+      readySourceCount: sources.length,
+      snapshotId: "snapshot-1",
+      sourceCount: sources.length,
+      sourceRevision: 3
+    });
+    const sourceCreate = vi.fn(async () => ({}));
+    const scopeCreate = vi.fn(async () => ({}));
+    const tx = {
+      $queryRaw: vi.fn(async () => [{
+        indexGenerationId: "generation-1",
+        ownerUserId: "owner-1",
+        profileRevisionId: "profile-revision-1"
+      }]),
+      knowledgeRunBinding: { create: vi.fn(async () => ({})) },
+      knowledgeRetrievalSession: { create: vi.fn(async () => ({})) },
+      knowledgeRunProfileBinding: { create: vi.fn(async () => ({})) },
+      knowledgeRunScope: { create: scopeCreate },
+      knowledgeRunSourceBinding: { create: sourceCreate }
+    } as unknown as Prisma.TransactionClient;
+
+    await insertAcceptedKnowledgeRunBindings(tx, {
+      plan: accepted,
+      runId: "run-1",
+      userId: "owner-1"
+    });
+
+    expect(scopeCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        resolvedSourceCount: 1_000,
+        sourceBindingStrategy: "disclosed_v1"
+      })
+    });
+    expect(sourceCreate).not.toHaveBeenCalled();
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
   it("links a legacy Base binding to the exact locked profile revision and runtime", async () => {
     const legacy = plan();
     const accepted: KnowledgeRunAdmissionPlan = {
