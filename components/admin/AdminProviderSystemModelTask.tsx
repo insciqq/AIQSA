@@ -232,7 +232,9 @@ export function AdminProviderSystemModelTask({
               <p>
                 Memory reranker: {catalog.policy.rerankerModel
                   ? deploymentLabel(catalog.policy.rerankerModel)
-                  : "System model compatibility path"}.
+                  : catalog.policy.systemModel
+                    ? `System Model fallback · ${deploymentLabel(catalog.policy.systemModel)}`
+                    : "Unavailable · no dedicated reranker or System Model"}.
               </p>
               {catalog.policy.systemModel ? (
                 <>
@@ -269,15 +271,33 @@ export function AdminProviderSystemModelTask({
                 </>
               ) : null}
               {catalog.policy.rerankerModel ? (
-                <p className={catalog.policy.rerankerModel.available ? "text-ink-secondary" : "text-caution"}>
-                  Reranker status: {catalog.policy.rerankerModel.available ? "Available" : "Unavailable"}.
-                  {!catalog.policy.rerankerModel.available
-                    ? " RRF remains available, but this selected deployment is never replaced automatically."
-                    : ""}
-                </p>
+                <>
+                  <p className={catalog.policy.rerankerModel.available ||
+                    catalog.policy.rerankerRoute?.entries.slice(1).some(({ available }) => available)
+                    ? "text-ink-secondary"
+                    : "text-caution"}>
+                    Reranker status: {catalog.policy.rerankerModel.available
+                      ? "Primary available."
+                      : catalog.policy.rerankerRoute?.entries.slice(1)
+                        .some(({ available }) => available)
+                        ? "Primary unavailable; an ordered fallback is available."
+                        : "Unavailable; fused local RRF remains available."}
+                  </p>
+                  {catalog.policy.rerankerRoute?.entries.length ? (
+                    <p className="text-ink-muted">
+                      Atomic route: {catalog.policy.rerankerRoute.entries.map((entry) =>
+                        `${entry.position + 1}. ${entry.displayName} · ${entry.available
+                          ? "available"
+                          : "unavailable"} · floor ${entry.relevanceScoreFloor ?? "off"}`
+                      ).join(" → ")}. A successful fallback is informational and does not degrade Memory evidence.
+                    </p>
+                  ) : null}
+                </>
               ) : (
                 <p className="text-caution">
-                  Memory relevance still uses the versioned generative compatibility path until a dedicated reranker is selected.
+                  Configuration warning: {catalog.policy.systemModel
+                    ? `Memory uses ${deploymentLabel(catalog.policy.systemModel)} through the slower generative compatibility path until a dedicated reranker is selected. Successful fallback runs are not marked degraded.`
+                    : "Semantic Memory sorting is unavailable until a dedicated reranker or System Model is selected. Fused local ranking remains available."}
                 </p>
               )}
               <p>Policy version: {catalog.policy.version}.</p>
@@ -343,7 +363,7 @@ export function AdminProviderSystemModelTask({
                 onChange={(event) => setSelectedRerankerId(event.currentTarget.value)}
                 value={selectedRerankerId}
               >
-                <option value="">Use versioned System Model compatibility path</option>
+                <option value="">Use System Model fallback (slower compatibility path)</option>
                 {catalog.policy.rerankerModel &&
                   !catalog.rerankerCandidates.some((candidate) =>
                     candidate.id === catalog.policy.rerankerModel?.id) ? (
@@ -394,7 +414,7 @@ export function AdminProviderSystemModelTask({
                 )}
                 type="button"
               >
-                Use compatibility reranker
+                Use System Model fallback
               </button>
             </div>
           </div>

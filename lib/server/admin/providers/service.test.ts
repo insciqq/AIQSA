@@ -23,6 +23,7 @@ import { createOpenRouterDiscoveryClient } from "../../providers/openRouterDisco
 import type { AdminProviderCredentialTester } from "./credentialTester";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
+import { approvedRerankerDeployments } from "./approvedRerankers";
 
 const KEY = Buffer.alloc(32, 19);
 const NOW = new Date("2026-07-23T12:00:00.000Z");
@@ -191,6 +192,7 @@ function activationCandidate(): ProviderActivationCandidate {
   return {
     connection: {
       configuration: storedConnectionConfiguration,
+      displayName: "Compatible gateway",
       draftVersion: 3,
       family: "openai_compatible",
       id: "connection-1"
@@ -227,9 +229,15 @@ function activationCandidate(): ProviderActivationCandidate {
     ],
     draftChecks: [],
     models: [
-      { configuration: modelConfiguration, draftVersion: 4, id: "model-1" },
+      {
+        configuration: modelConfiguration,
+        displayName: "Vendor Model",
+        draftVersion: 4,
+        id: "model-1"
+      },
       {
         configuration: { ...modelConfiguration, upstreamModelId: "vendor/model-two" },
+        displayName: "Vendor Model Two",
         draftVersion: 5,
         id: "model-2"
       }
@@ -285,7 +293,12 @@ function rerankerActivationCandidate(): ProviderActivationCandidate {
       providerModelId: "reranker-1",
       status: "available"
     }],
-    models: [{ configuration, draftVersion: 4, id: "reranker-1" }]
+    models: [{
+      configuration,
+      displayName: "Qwen3 Reranker 8B",
+      draftVersion: 4,
+      id: "reranker-1"
+    }]
   };
 }
 
@@ -721,6 +734,55 @@ describe("admin provider service", () => {
         credentialId: "credential-active",
         providerModelId: "reranker-1",
         status: "available"
+      })
+    ]);
+  });
+
+  it("does not block provider activation when an automatic fallback probe is unavailable", async () => {
+    const deployment = approvedRerankerDeployments[0]!;
+    const base = rerankerActivationCandidate();
+    const candidate: ProviderActivationCandidate = {
+      ...base,
+      draftChecks: [],
+      models: [{
+        configuration: deployment.configuration,
+        displayName: deployment.displayName,
+        draftVersion: 4,
+        id: deployment.providerModelId
+      }]
+    };
+    const activateConnectionCas = vi.fn<AdminProviderRepository["activateConnectionCas"]>(
+      async () => "updated"
+    );
+    const providers = service(
+      repository({
+        activateConnectionCas,
+        async loadActivationCandidate() { return candidate; }
+      }),
+      tester(vi.fn(async () => {
+        throw new Error("temporary endpoint failure");
+      })),
+      [],
+      credentialTester(async () => ({
+        method: "models_catalog",
+        modelIds: [deployment.configuration.upstreamModelId],
+        modelIdsByClass: {
+          answer: [],
+          embedding: [],
+          reranker: [deployment.configuration.upstreamModelId]
+        }
+      }))
+    );
+
+    await expect(providers.activateConnection({
+      confirmUnavailable: false,
+      connectionId: "connection-1",
+      enableConnection: true
+    })).resolves.toMatchObject({ activatedModelCount: 1 });
+    expect(activateConnectionCas.mock.calls[0]?.[0].checks).toEqual([
+      expect.objectContaining({
+        providerModelId: deployment.providerModelId,
+        status: "unavailable"
       })
     ]);
   });

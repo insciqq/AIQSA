@@ -56,7 +56,6 @@ import {
   resolveCurrentMemoryUtilityPolicy
 } from "../memory/execution/policy";
 import {
-  MEMORY_AGGREGATION_VERSIONS,
   MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION
 } from "../memory/retrieval/runUtilities";
 import { createPrismaLocalMemoryRetrievalRepository } from "../memory/retrieval/localRepository";
@@ -96,6 +95,14 @@ const queryEmbeddingVersions = Object.freeze({
   promptVersion: "memory-query-embedding-prompt-v1",
   retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   schemaVersion: "memory-query-embedding-result-v1"
+});
+
+const legacyAggregationV12Versions = Object.freeze({
+  pipelineVersion: "memory-evidence-aggregation-v12",
+  policyVersion: "memory-evidence-aggregation-policy-v12",
+  promptVersion: "memory-evidence-aggregation-prompt-v8",
+  retrievalConfigFingerprint: "9".repeat(64),
+  schemaVersion: "memory-evidence-aggregation-result-v2"
 });
 
 const currentCoreRetrievalFeature = Object.freeze({
@@ -2415,12 +2422,12 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("admits bounded aggregation map and reduce executions before Phase B", async () => {
+  it("keeps a historical v12 aggregation binding readable but rejects it from a new reader-first attempt", async () => {
     await withPreparingUser(async ({ userId }) => {
       const fixture = await createPreparingEmbeddingAuthority(userId);
       try {
         const chat = await prisma.chat.create({
-          data: { title: "Qualified aggregation map reduce", userId }
+          data: { title: "Historical aggregation binding", userId }
         });
         const request = normalizedRequest(chat.id, "Relate two historical events.");
         const repository = createPrismaRunRepository(prisma, {
@@ -2444,52 +2451,81 @@ describe("PREPARING run orchestration", () => {
           userId
         })).resolves.toBe(true);
 
-        const execution = createPrismaMemoryExecutionService(
-          fixture.authority,
-          prisma
-        );
-        const bindingIds: string[] = [];
-        for (const [index, ordinal] of [0, 2, 4].entries()) {
-          const binding = await execution.admission.bind(userId, {
-            inputHash: String(index + 2).repeat(64),
-            ordinal,
-            owner: {
-              retrievalAttemptId: admitted.attemptId,
-              type: "RETRIEVAL_ATTEMPT"
-            },
-            role: "MEMORY_AGGREGATE",
-            versions: MEMORY_AGGREGATION_VERSIONS
-          });
-          bindingIds.push(binding.id);
-          await execution.admission.start(userId, binding.id);
-          await execution.lifecycle.settle(userId, binding.id, {
-            acceptedOutputHash: String(index + 5).repeat(64),
-            errorCode: null,
-            providerResponseId: `preparing-aggregation-response-${index}`,
-            state: "SUCCEEDED",
-            usage: {
+        const completedAt = new Date();
+        const binding = await prisma.$transaction(async (tx) => {
+          const created = await tx.memoryExecutionBinding.create({
+            data: {
+              acceptedOutputHash: "5".repeat(64),
               cachedInputTokens: 0,
-              completeness: "COMPLETE",
-              estimatedCostMicros: null,
+              completedAt,
+              createdAt: new Date(completedAt.getTime() - 2),
+              destinationFingerprint: "6".repeat(64),
+              inputHash: "2".repeat(64),
               inputTokens: 10,
+              logicalRole: "MEMORY_AGGREGATE",
+              ordinal: 0,
               outputTokens: 5,
+              ownerType: "RETRIEVAL_ATTEMPT",
+              pipelineVersion: legacyAggregationV12Versions.pipelineVersion,
+              policyVersion: legacyAggregationV12Versions.policyVersion,
+              promptVersion: legacyAggregationV12Versions.promptVersion,
+              providerId: "historical-provider",
               reasoningTokens: 0,
-              totalTokens: 15
+              recoverableUntil: completedAt,
+              relationsDetachedAt: completedAt,
+              retrievalAttemptId: admitted.attemptId,
+              schemaVersion: legacyAggregationV12Versions.schemaVersion,
+              secretFreeExecutionSnapshot: {
+                historical: true,
+                version: 12
+              },
+              startedAt: new Date(completedAt.getTime() - 1),
+              state: "SUCCEEDED",
+              totalTokens: 15,
+              usageCompleteness: "COMPLETE",
+              userId
             }
           });
-        }
+          await tx.usageEvent.create({
+            data: {
+              cachedInputTokens: 0,
+              inputTokens: 10,
+              memoryExecutionBindingId: created.id,
+              modelId: "historical-model",
+              outputTokens: 5,
+              provider: "historical-provider",
+              providerModelId: "historical-model",
+              reasoningTokens: 0,
+              totalTokens: 15,
+              userId
+            }
+          });
+          return created;
+        });
+
+        const stored = await prisma.memoryExecutionBinding.findUniqueOrThrow({
+          where: { id: binding.id }
+        });
+        expect(stored).toMatchObject({
+          logicalRole: "MEMORY_AGGREGATE",
+          pipelineVersion: "memory-evidence-aggregation-v12",
+          state: "SUCCEEDED"
+        });
 
         await expect(repository.completePreparingRunAttempt({
           attemptId: admitted.attemptId,
           result: {
             budgetSnapshot: {
+              aggregationPolicyVersion: "memory-reader-aggregation-policy-v14",
+              aggregationProviderCalls: 0,
+              aggregationState: "READER_REQUIRED",
               itemCount: 0,
               plan: {
                 aggregationRequested: true,
                 profileRequested: false
               },
-              schemaVersion: 1,
-              utilityEgressMode: "CONSENTED_EXTERNAL"
+              schemaVersion: 2,
+              utilityEgressMode: "LOCAL_ONLY"
             },
             items: [],
             outcome: "EMPTY",
@@ -2497,53 +2533,14 @@ describe("PREPARING run orchestration", () => {
           },
           runId: admitted.runId,
           userId
-        })).resolves.toBe(true);
-        await expect(repository.finalizePreparingRun({
-          attemptId: admitted.attemptId,
-          normalizedRequest: request,
-          providerRequestPreview: {},
-          runId: admitted.runId,
-          userId
-        })).resolves.toBe(true);
-
-        const [attempt, bindings, usageCount] = await Promise.all([
-          prisma.memoryRetrievalAttempt.findUniqueOrThrow({
-            where: { id: admitted.attemptId }
-          }),
-          prisma.memoryExecutionBinding.findMany({
-            orderBy: { ordinal: "asc" },
-            where: { id: { in: bindingIds } }
-          }),
-          prisma.usageEvent.count({
-            where: { memoryExecutionBindingId: { in: bindingIds }, userId }
-          })
-        ]);
-        expect(attempt).toMatchObject({
-          externalRolesUsed: [
-            "MEMORY_AGGREGATE",
-            "MEMORY_AGGREGATE",
-            "MEMORY_AGGREGATE"
-          ],
-          state: "CONSUMED",
-          utilityEgressMode: "CONSENTED_EXTERNAL"
-        });
-        expect(bindings.map(({ logicalRole, ordinal, state }) => ({
-          logicalRole,
-          ordinal,
-          state
-        }))).toEqual([
-          { logicalRole: "MEMORY_AGGREGATE", ordinal: 0, state: "SUCCEEDED" },
-          { logicalRole: "MEMORY_AGGREGATE", ordinal: 2, state: "SUCCEEDED" },
-          { logicalRole: "MEMORY_AGGREGATE", ordinal: 4, state: "SUCCEEDED" }
-        ]);
-        expect(usageCount).toBe(3);
+        })).rejects.toThrow("memory_attempt_execution_invalid");
       } finally {
         await fixture.cleanup();
       }
     });
   });
 
-  it("degrades to the deterministic local read without System Model control", async () => {
+  it("keeps a complete deterministic local read healthy without System Model control", async () => {
     await withPreparingUser(async ({ userId }) => {
       await createPrismaMemorySettingsRepository(prisma).patch(userId, {
         expectedMemoryRevision: 0,
@@ -2639,12 +2636,11 @@ describe("PREPARING run orchestration", () => {
         acceptedUtilityEgressFingerprint: null,
         boundedSafeQuerySnapshot: "My preferred editor is Vim.",
         externalRolesUsed: [],
-        outcome: "DEGRADED",
+        outcome: "USED",
         state: "CONSUMED",
         utilityEgressMode: "LOCAL_ONLY"
       });
       expect(attempt.budgetSnapshot).toMatchObject({
-        degradationCode: "memory_action_intent_unavailable",
         plan: {
           originalQueryHash: memorySha256("My preferred editor is Vim."),
           semanticQueryVariants: [{
@@ -2658,9 +2654,10 @@ describe("PREPARING run orchestration", () => {
         },
         plannerFallbackReason: "memory_action_intent_unavailable"
       });
+      expect(attempt.budgetSnapshot).not.toHaveProperty("degradationCode");
       expect(binding).toMatchObject({
         boundedSafeQuerySnapshot: "My preferred editor is Vim.",
-        outcome: "DEGRADED",
+        outcome: "USED",
         retrievalAttemptId: attempt.id
       });
       expect(items).toHaveLength(1);
@@ -2672,10 +2669,13 @@ describe("PREPARING run orchestration", () => {
         userId,
         userMessageId: created.userMessageId
       });
-      expect(chatUpdate?.messages.find(({ id }) => id === created.assistantMessageId)
-        ?.artifactSummary).toMatchObject({
-        memoryStatus: "LIMITED"
+      const assistantArtifact = chatUpdate?.messages.find(
+        ({ id }) => id === created.assistantMessageId
+      )?.artifactSummary;
+      expect(assistantArtifact).toMatchObject({
+        memorySources: [expect.objectContaining({ sourceType: "SAVED_MEMORY" })]
       });
+      expect(assistantArtifact).not.toHaveProperty("memoryStatus");
 
       const frozenBudgetSnapshot = attempt.budgetSnapshot;
       await expect(repository.recoverPreparingRun({
@@ -2691,7 +2691,7 @@ describe("PREPARING run orchestration", () => {
       ]);
       expect(recoveredAttempt).toMatchObject({
         boundedSafeQuerySnapshot: "My preferred editor is Vim.",
-        outcome: "DEGRADED",
+        outcome: "USED",
         state: "CONSUMED"
       });
       expect(recoveredAttempt.budgetSnapshot).toEqual(frozenBudgetSnapshot);

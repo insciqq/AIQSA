@@ -14,6 +14,16 @@ export const MEMORY_EXECUTION_ROLES = [
 
 export type MemoryExecutionRole = (typeof MEMORY_EXECUTION_ROLES)[number];
 
+// Kept in the stored-role vocabulary so immutable v12 snapshots remain
+// decodable. Retired roles never receive a current policy destination, so
+// admission cannot create or resume their provider work.
+export const MEMORY_RETIRED_EXECUTION_ROLES = [
+  "MEMORY_AGGREGATE"
+] as const satisfies readonly MemoryExecutionRole[];
+
+export const MEMORY_EXECUTABLE_ROLES = MEMORY_EXECUTION_ROLES.filter((role) =>
+  !MEMORY_RETIRED_EXECUTION_ROLES.some((retired) => retired === role));
+
 /**
  * Retired role vocabulary kept only for decoding/terminalising pre-v1 rows.
  * It is deliberately not part of MEMORY_EXECUTION_ROLES, policy destinations,
@@ -33,8 +43,7 @@ export const MEMORY_STRICT_OUTPUT_ROLES = [
   "MEMORY_RECLASSIFY",
   "MEMORY_FACT_EXTRACT",
   "MEMORY_CONSOLIDATE",
-  "MEMORY_SYNTHESIZE",
-  "MEMORY_AGGREGATE"
+  "MEMORY_SYNTHESIZE"
 ] as const satisfies readonly MemoryExecutionRole[];
 
 export function isMemoryExecutionRole(value: unknown): value is MemoryExecutionRole {

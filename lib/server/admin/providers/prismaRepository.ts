@@ -36,6 +36,7 @@ import {
   detachExpiredMemoryExecutionBindings,
   type MemoryExecutionDetachTarget
 } from "../../memory/execution/lifecycle";
+import { approvedRerankerDeployments } from "./approvedRerankers";
 
 class ProviderActivationStaleError extends Error {}
 
@@ -1109,13 +1110,19 @@ export function createPrismaAdminProviderRepository(
 
     async loadActivationCandidate(connectionId) {
       const connection = await prisma.providerConnection.findUnique({
-        select: { draftConfig: true, draftVersion: true, family: true, id: true },
+        select: {
+          displayName: true,
+          draftConfig: true,
+          draftVersion: true,
+          family: true,
+          id: true
+        },
         where: { id: connectionId }
       });
       if (!connection || connection.family === "fake") return null;
       const [models, referencedCredentialIds] = await Promise.all([
         prisma.providerModel.findMany({
-          select: { draftConfig: true, draftVersion: true, id: true },
+          select: { displayName: true, draftConfig: true, draftVersion: true, id: true },
           where: { connectionId, enabled: true },
           orderBy: { id: "asc" }
         }),
@@ -1177,6 +1184,7 @@ export function createPrismaAdminProviderRepository(
       return {
         connection: {
           configuration: connection.draftConfig,
+          displayName: connection.displayName,
           draftVersion: connection.draftVersion,
           family: connection.family,
           id: connection.id
@@ -1201,6 +1209,7 @@ export function createPrismaAdminProviderRepository(
         }),
         models: models.map((model) => ({
           configuration: model.draftConfig,
+          displayName: model.displayName,
           draftVersion: model.draftVersion,
           id: model.id
         }))
@@ -1429,6 +1438,7 @@ export function createPrismaAdminProviderRepository(
         return await repeatableRead(prisma, async (tx) => {
         const connection = await tx.providerConnection.findUnique({
           select: {
+            defaultCredentialId: true,
             displayName: true,
             draftConfig: true,
             draftVersion: true,
@@ -1639,6 +1649,22 @@ export function createPrismaAdminProviderRepository(
             status: check.status
           }))
         });
+        const automaticPrimary = input.connection.enable && connection.defaultCredentialId
+          ? approvedRerankerDeployments.find((deployment) => checks.some((check) =>
+              check.credentialId === connection.defaultCredentialId &&
+              check.providerModelId === deployment.providerModelId &&
+              check.status === "available"
+            ))
+          : undefined;
+        if (automaticPrimary) {
+          await tx.systemModelPolicy.updateMany({
+            data: {
+              rerankerProviderModelId: automaticPrimary.providerModelId,
+              version: { increment: 1 }
+            },
+            where: { id: "installation", rerankerProviderModelId: null }
+          });
+        }
           await cleanupProviderReferences(tx, { connectionId: input.connection.id }, input.now);
           return "updated" as const;
         });

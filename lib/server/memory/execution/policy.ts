@@ -23,12 +23,12 @@ import { memoryExecutionSha256 } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
 import type { MemoryEgressConsentMode } from "./consentMode";
 import {
-  MEMORY_EXECUTION_ROLES,
+  MEMORY_EXECUTABLE_ROLES,
   isMemoryEmbeddingRole,
   type MemoryExecutionRole
 } from "./roles";
 
-export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v2";
+export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v3";
 
 type MemoryPolicyPrisma = AdmissionPrisma & Pick<
   Prisma.TransactionClient,
@@ -80,6 +80,7 @@ export type ResolvedMemoryUtilityPolicy = Readonly<{
   destinations: readonly MemoryPolicyDestination[];
   fingerprint: string;
   policyVersion: typeof MEMORY_UTILITY_EGRESS_POLICY_VERSION;
+  rerankerTargets?: readonly ResolvedMemoryExecutionTarget[];
   targets: ReadonlyMap<MemoryExecutionRole, ResolvedMemoryExecutionTarget>;
 }>;
 
@@ -254,7 +255,8 @@ export async function resolveCurrentMemoryUtilityPolicy(
   }
 
   const targets = new Map<MemoryExecutionRole, ResolvedMemoryExecutionTarget>();
-  const destinations: MemoryPolicyDestination[] = MEMORY_EXECUTION_ROLES.map((role) => {
+  let rerankerTargets: readonly ResolvedMemoryExecutionTarget[] = Object.freeze([]);
+  const destinations: MemoryPolicyDestination[] = MEMORY_EXECUTABLE_ROLES.map((role) => {
     if (isMemoryEmbeddingRole(role)) {
       const target = embedding ? targetFor(role, embedding, null) : null;
       if (target) {
@@ -274,14 +276,22 @@ export async function resolveCurrentMemoryUtilityPolicy(
     }
 
     if (role === "MEMORY_RERANK") {
-      const dedicatedTarget = rerankerResolution.ok
-        ? targetFor(
-            role,
-            rerankerResolution.role,
-            rerankerResolution.policyVersion
-          )
-        : null;
+      const dedicatedTargets = rerankerResolution.ok
+        ? (rerankerResolution.routes ?? [{
+            providerModelId: rerankerResolution.providerModelId,
+            role: rerankerResolution.role
+          }]).flatMap((route) => {
+            const target = targetFor(
+              role,
+              route.role,
+              rerankerResolution.policyVersion
+            );
+            return target ? [target] : [];
+          })
+        : [];
+      const dedicatedTarget = dedicatedTargets[0] ?? null;
       if (dedicatedTarget) {
+        rerankerTargets = Object.freeze(dedicatedTargets);
         targets.set(role, dedicatedTarget);
         return { kind: "AVAILABLE" as const, role, target: dedicatedTarget };
       }
@@ -307,6 +317,7 @@ export async function resolveCurrentMemoryUtilityPolicy(
           )
         : null;
       if (compatibilityTarget) {
+        rerankerTargets = Object.freeze([compatibilityTarget]);
         targets.set(role, compatibilityTarget);
         return { kind: "AVAILABLE" as const, role, target: compatibilityTarget };
       }
@@ -351,21 +362,33 @@ export async function resolveCurrentMemoryUtilityPolicy(
         role: destination.role
       }
     : destination);
+  const safeRerankerRoute = rerankerTargets.map((target) => ({
+    destinationFingerprint: target.destinationFingerprint,
+    providerModelId: target.authority.providerModelId
+  }));
   return Object.freeze({
     destinations: Object.freeze(destinations),
     fingerprint: memoryExecutionSha256({
       destinations: safeDestinations,
-      policyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+      policyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+      rerankerRoute: safeRerankerRoute
     }),
     policyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+    rerankerTargets,
     targets,
   });
 }
 
 export function requireMemoryPolicyTarget(
   policy: ResolvedMemoryUtilityPolicy,
-  role: MemoryExecutionRole
+  role: MemoryExecutionRole,
+  providerModelId?: string
 ): ResolvedMemoryExecutionTarget {
+  if (role === "MEMORY_RERANK" && providerModelId !== undefined) {
+    return (policy.rerankerTargets ?? []).find(
+      (target) => target.authority.providerModelId === providerModelId
+    ) ?? memoryExecutionFailure("memory_execution_target_unavailable");
+  }
   return policy.targets.get(role) ??
     memoryExecutionFailure("memory_execution_target_unavailable");
 }

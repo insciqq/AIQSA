@@ -15,6 +15,11 @@ import {
 } from "./modelPolicyService";
 import { structuredOutputVerificationStatus } from "../../providers/structuredOutputEvidence";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+import { RERANKER_ROUTE_POLICY_VERSION } from "../../../domain/rerankerModels";
+import {
+  approvedRerankerDeploymentByProviderModelId,
+  approvedRerankerDeployments
+} from "./approvedRerankers";
 
 type SystemModelRow = AdminAnswerModelRow & {
   activeCredentialChecks: Array<{
@@ -224,11 +229,42 @@ export function createAdminSystemModelPolicyService(
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const models = rows as SystemModelRow[];
+      const typedRerankerRows = rerankerRows as AdminAnswerModelRow[];
+      const selectedRerankerId = policy.rerankerProviderModelId;
+      const routeIds = selectedRerankerId
+        ? approvedRerankerDeploymentByProviderModelId(selectedRerankerId)
+          ? [
+              selectedRerankerId,
+              ...approvedRerankerDeployments
+                .map(({ providerModelId }) => providerModelId)
+                .filter((providerModelId) => providerModelId !== selectedRerankerId)
+            ]
+          : [selectedRerankerId]
+        : [];
+      const availableRerankerIds = new Set(rerankerResolution.ok
+        ? (rerankerResolution.routes ?? [{
+            providerModelId: rerankerResolution.providerModelId,
+            role: rerankerResolution.role
+          }]).map(({ providerModelId }) => providerModelId)
+        : []);
+      const rerankerRoute = routeIds.flatMap((providerModelId, position) => {
+        const row = typedRerankerRows.find(({ id }) => id === providerModelId);
+        if (!row) return [];
+        return [{
+          ...serializeRerankerModel(row),
+          available: availableRerankerIds.has(providerModelId),
+          position,
+          relevanceScoreFloor:
+            approvedRerankerDeploymentByProviderModelId(providerModelId)
+              ?.preset.relevanceScoreFloor ?? null,
+          role: position === 0 ? "primary" as const : "fallback" as const
+        }];
+      });
       return {
         candidates: models
           .filter(adminAnswerModelAvailable)
           .map(serializeSystemModel),
-        rerankerCandidates: (rerankerRows as AdminAnswerModelRow[])
+        rerankerCandidates: typedRerankerRows
           .filter(rerankerModelAvailable)
           .map(serializeRerankerModel),
         policy: {
@@ -238,12 +274,16 @@ export function createAdminSystemModelPolicyService(
                 ...serializeRerankerModel(
                   policy.rerankerProviderModel as AdminAnswerModelRow
                 ),
-                available: rerankerResolution.ok &&
-                  rerankerResolution.providerModelId ===
-                    policy.rerankerProviderModelId &&
+                available: availableRerankerIds.has(
+                  policy.rerankerProviderModelId as string
+                ) && rerankerResolution.ok &&
                   rerankerResolution.policyVersion === policy.version
               }
             : null,
+          rerankerRoute: {
+            entries: rerankerRoute,
+            policyVersion: RERANKER_ROUTE_POLICY_VERSION
+          },
           systemModel: policy.providerModel
             ? {
                 ...serializeSystemModel(

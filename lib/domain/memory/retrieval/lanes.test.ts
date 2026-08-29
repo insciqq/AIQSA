@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER,
+  MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   type MemoryRetrievalLane
 } from "./config";
@@ -27,8 +28,36 @@ describe("Memory retrieval lane scheduler", () => {
     };
     await expect(executeMemoryRetrievalLaneTasks([task, task])).rejects
       .toThrow("memory_retrieval_lane_contract_invalid");
-    await expect(executeMemoryRetrievalLaneTasks([task], 5)).rejects
+    await expect(executeMemoryRetrievalLaneTasks(
+      [task],
+      MEMORY_RETRIEVAL_MAX_PARALLEL_LANES + 1
+    )).rejects
       .toThrow("memory_retrieval_lane_contract_invalid");
+  });
+
+  it("starts one bounded wave of independent lanes", async () => {
+    const active = { current: 0, maximum: 0 };
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const lanes = MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.slice(
+      0,
+      MEMORY_RETRIEVAL_MAX_PARALLEL_LANES
+    );
+    const pending = executeMemoryRetrievalLaneTasks(lanes.map((lane) => ({
+      async execute() {
+        active.current += 1;
+        active.maximum = Math.max(active.maximum, active.current);
+        await gate;
+        active.current -= 1;
+        return { candidates: [], lane };
+      },
+      lane
+    })));
+
+    await vi.waitFor(() => expect(active.maximum)
+      .toBe(MEMORY_RETRIEVAL_MAX_PARALLEL_LANES));
+    release?.();
+    await expect(pending).resolves.toHaveLength(MEMORY_RETRIEVAL_MAX_PARALLEL_LANES);
   });
 
   it("shares one concurrency cap across baseline and enriched executions", async () => {
@@ -50,6 +79,37 @@ describe("Memory retrieval lane scheduler", () => {
       task("ENRICHED:FACT_EXACT")
     ], 1)).resolves.toHaveLength(2);
     expect(active.maximum).toBe(1);
+  });
+
+  it("settles completed lanes and marks only unfinished lanes unavailable", async () => {
+    const controller = new AbortController();
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    let fastCompleted = false;
+    const unavailable = vi.fn();
+    const pending = executeMemoryRetrievalLaneTasks([{
+      async execute() {
+        fastCompleted = true;
+        return { candidates: [], lane: "FACT_EXACT" as const };
+      },
+      lane: "FACT_EXACT" as const
+    }, {
+      async execute() {
+        await slowGate;
+        return { candidates: [], lane: "HISTORY_RECALL_FTS_SIMPLE" as const };
+      },
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const,
+      onUnavailable: unavailable
+    }], 2, controller.signal);
+
+    await vi.waitFor(() => expect(fastCompleted).toBe(true));
+    controller.abort({ code: "test_settle" });
+    await expect(pending).resolves.toEqual([
+      { candidates: [], lane: "FACT_EXACT" },
+      { candidates: [], lane: "HISTORY_RECALL_FTS_SIMPLE" }
+    ]);
+    expect(unavailable).toHaveBeenCalledOnce();
+    releaseSlow?.();
   });
 
   it("allocates all configured lanes under the shared candidate ceiling", () => {

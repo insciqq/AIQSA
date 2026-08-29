@@ -113,7 +113,8 @@ function reasoningEnabled(
  * limits the uplift, and no provider or model name participates. */
 export function applyMemoryLearningReasoningBudget(
   snapshot: ProviderExecutionSnapshot,
-  request: ProviderRunRequest
+  request: ProviderRunRequest,
+  options: Readonly<{ reasoningToolOutputTokenFloor?: number }> = {}
 ): ProviderRunRequest {
   const strictSingleTool = request.toolChoice === "required" &&
     request.tools?.length === 1 && request.tools[0]?.strict === true;
@@ -121,6 +122,12 @@ export function applyMemoryLearningReasoningBudget(
   if (!strictSingleTool || requested === undefined ||
     !reasoningEnabled(snapshot, request)) return request;
 
+  const requestedFloor = options.reasoningToolOutputTokenFloor ??
+    MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR;
+  if (!Number.isSafeInteger(requestedFloor) || requestedFloor < 1 ||
+    requestedFloor > MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR) {
+    throw new Error("memory_reasoning_tool_budget_invalid");
+  }
   const configuredLimit = maxOutputTokensFromParams(snapshot.model.defaultParams);
   const capabilityLimit = snapshot.model.capabilities.defaultMaxOutputTokens;
   const limits = [configuredLimit, capabilityLimit].filter(
@@ -129,8 +136,8 @@ export function applyMemoryLearningReasoningBudget(
   );
   const ceiling = limits.length > 0 ? Math.min(...limits) : null;
   const reasoningFloor = ceiling === null
-    ? MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR
-    : Math.min(MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR, ceiling);
+    ? requestedFloor
+    : Math.min(requestedFloor, ceiling);
   const adjusted = Math.max(requested, reasoningFloor);
   if (adjusted === requested) return request;
   return {
@@ -152,6 +159,40 @@ function boundedProviderResponseId(value: string | undefined): string | null {
     /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,255}$/u.test(value)
     ? value
     : null;
+}
+
+function memoryProviderAbortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
+/**
+ * Credential reauthorization is read-only but may wait for a database
+ * connection or row lock. It must not extend an already-expired interactive
+ * provider budget. The underlying transaction is still observed to terminal
+ * settlement, while the caller is released immediately and therefore cannot
+ * dispatch provider I/O after cancellation.
+ */
+function awaitMemoryProviderAuthority<T>(
+  operation: Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(memoryProviderAbortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: (value: T | unknown) => void, value: T | unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, memoryProviderAbortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => finish(resolve as (value: T | unknown) => void, value),
+      (error) => finish(reject, error)
+    );
+    if (signal.aborted) onAbort();
+  });
 }
 
 function classifyProviderFailure(
@@ -238,6 +279,7 @@ export function createAcceptedMemoryLearningProvider<
     createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
     encryptionKey?: () => Buffer;
     invalidRuntimeError: string;
+    reasoningToolOutputTokenFloor?: number;
     validate?(
       evidence: Evidence,
       snapshot: ProviderExecutionSnapshot,
@@ -252,6 +294,7 @@ export function createAcceptedMemoryLearningProvider<
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
 
   return async (evidence, request, signal) => {
+    if (signal.aborted) throw memoryProviderAbortReason(signal);
     const snapshot = normalizeProviderExecutionSnapshot(evidence.executionSnapshot);
     if (
       snapshot.connectionId !== evidence.connectionId ||
@@ -268,7 +311,7 @@ export function createAcceptedMemoryLearningProvider<
 
     const authenticationMode = providerAuthenticationMode(snapshot.connection);
     const lockCredential = async (expectNoAuth: boolean): Promise<string | null> =>
-      client.$transaction(async (tx) => {
+      awaitMemoryProviderAuthority(client.$transaction(async (tx) => {
         const rows = await tx.$queryRaw<LockedCredentialVersion[]>(Prisma.sql`
           SELECT "credentialId", "id", "revokedAt", "secretEnvelope", "testEvidence"
           FROM "ProviderCredentialVersion"
@@ -294,7 +337,7 @@ export function createAcceptedMemoryLearningProvider<
               key: encryptionKey(),
               valueId: version.id
             });
-      });
+      }), signal);
     const baseFetch = input.createFetch?.(snapshot.connection) ??
       createProviderSafeFetch({ configuration: snapshot.connection });
     let observedSuccessfulHttpResponse = false;
@@ -341,7 +384,12 @@ export function createAcceptedMemoryLearningProvider<
     }
     const providerRequest = applyMemoryLearningReasoningBudget(
       snapshot,
-      input.buildRequest(snapshot, request)
+      input.buildRequest(snapshot, request),
+      {
+        ...(input.reasoningToolOutputTokenFloor === undefined
+          ? {}
+          : { reasoningToolOutputTokenFloor: input.reasoningToolOutputTokenFloor })
+      }
     );
     const result = await collectProviderResult(
       runtime.adapter.stream(providerRequest, { signal }),

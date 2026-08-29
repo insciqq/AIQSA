@@ -54,12 +54,17 @@ export async function resolveCurrentMemoryExecutionAuthority(
     dependencies: MemoryExecutionAuthorityDependencies;
     now: Date;
     role: MemoryExecutionRole;
+    targetProviderModelId?: string;
     userId: string;
     versions: MemoryExecutionVersions;
   }>
 ): Promise<CurrentMemoryExecutionAuthority> {
   const policy = await resolveCurrentMemoryUtilityPolicy(tx, input.userId, settings);
-  const target = requireMemoryPolicyTarget(policy, input.role);
+  const target = requireMemoryPolicyTarget(
+    policy,
+    input.role,
+    input.targetProviderModelId
+  );
   const consentMode = input.dependencies.egressConsentMode ??
     resolveMemoryEgressConsentMode();
   if (consentMode === "ADMIN") {
@@ -102,6 +107,12 @@ export async function reauthorizeStoredMemoryExecution(
     dependencies: input.dependencies,
     now: input.now,
     role: input.snapshot.logicalRole,
+    ...(input.snapshot.logicalRole === "MEMORY_RERANK"
+      ? {
+          targetProviderModelId:
+            input.snapshot.providerExecutionSnapshot.providerModelId
+        }
+      : {}),
     userId: input.userId,
     versions: {
       pipelineVersion: requirement.pipelineVersion,

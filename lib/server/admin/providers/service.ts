@@ -52,6 +52,7 @@ import type {
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
+import { isApprovedRerankerProviderModelId } from "./approvedRerankers";
 
 const MAX_NAME_LENGTH = 160;
 
@@ -797,6 +798,8 @@ export function createAdminProviderService(input: Readonly<{
         checkedAt: Date;
         credential: ProviderActivationCandidate["credentials"][number];
         outcome: AdminProviderCredentialTestOutcome;
+        secret: ProviderCredentialSource;
+        source: ProviderCredentialSecretSource;
       }> = [];
       for (const credential of candidate.credentials) {
         const source: ProviderCredentialSecretSource = credential.draftSecretEnvelope !== null
@@ -810,6 +813,7 @@ export function createAdminProviderService(input: Readonly<{
               kind: "active",
               versionId: credential.activeVersion!.id
             };
+        const secret = credentialSecretSource(credential.id, source);
         try {
           testedCredentials.push({
             checkedAt: now(),
@@ -819,9 +823,11 @@ export function createAdminProviderService(input: Readonly<{
               family: candidate.connection.family,
               modelClasses: [...new Set(models.map(({ configuration }) =>
                 configuration.modelClass))],
-              secret: credentialSecretSource(credential.id, source),
+              secret,
               signal: value.signal
-            })
+            }),
+            secret,
+            source
           });
         } catch {
           throw new AdminProviderServiceError("provider_credential_test_failed", [credential.id]);
@@ -867,13 +873,14 @@ export function createAdminProviderService(input: Readonly<{
         };
       });
 
-      const checks: StoredProviderDraftCheck[] = models.flatMap((model) =>
-        testedCredentials.map(({ checkedAt, credential, outcome }) => {
+      const checks: StoredProviderDraftCheck[] = [];
+      for (const model of models) {
+        for (const { checkedAt, credential, outcome, secret, source } of testedCredentials) {
           const write = credentials.find(({ id }) => id === credential.id)!;
           const catalogAvailable = (
             outcome.modelIdsByClass?.[model.configuration.modelClass] ?? outcome.modelIds
           ).includes(model.configuration.upstreamModelId);
-          const directRerankerAvailable = model.configuration.modelClass === "reranker" &&
+          const storedDirectRerankerAvailable = model.configuration.modelClass === "reranker" &&
             candidate.draftChecks.some((check) =>
               check.status === "available" &&
               check.connectionDraftVersion === candidate.connection.draftVersion &&
@@ -890,21 +897,54 @@ export function createAdminProviderService(input: Readonly<{
               (check.evidence.method === "tiny_generation" ||
                 check.evidence.method === "openrouter_account_catalog")
             );
-          const available = catalogAvailable || directRerankerAvailable;
+          let directOutcome: AdminProviderDraftTestOutcome | null = null;
+          if (model.configuration.modelClass === "reranker") {
+            try {
+              directOutcome = await input.tester.test({
+                connection,
+                connectionDisplayName: candidate.connection.displayName,
+                connectionId: candidate.connection.id,
+                credentialId: credential.id,
+                credentialVersionIdentity: secretValueId(source),
+                mode: "tiny_generation",
+                model: model.configuration,
+                modelDisplayName: model.displayName,
+                providerFamily: candidate.connection.family,
+                providerModelId: model.id,
+                secret,
+                signal: value.signal
+              });
+            } catch {
+              if (value.signal?.aborted) {
+                throw new AdminProviderServiceError("provider_credential_test_failed");
+              }
+              directOutcome = null;
+            }
+          }
+          const directRerankerAvailable = directOutcome
+            ? directOutcome.status === "available"
+            : storedDirectRerankerAvailable;
+          const available = model.configuration.modelClass === "reranker"
+            ? directRerankerAvailable
+            : catalogAvailable;
           const credentialDraftVersion = write.kind === "draft" ? write.draftVersion : null;
           const credentialVersionId = write.kind === "active" ? write.versionId : null;
-          return {
+          checks.push({
             checkedAt,
             connectionDraftVersion: candidate.connection.draftVersion,
             credentialDraftVersion,
             credentialId: credential.id,
             credentialVersionId,
-            evidence: {
-              detail: available ? "ok" as const : "model_missing" as const,
-              method: "models_catalog" as const,
-              selectedProviders: model.configuration.openRouterRouting?.providers ?? [],
-              upstreamModelId: model.configuration.upstreamModelId
-            },
+            evidence: directOutcome
+              ? validateEvidence(directOutcome, "tiny_generation", model.configuration)
+              : {
+                  detail: available ? "ok" as const : "model_missing" as const,
+                  method: storedDirectRerankerAvailable
+                    ? "tiny_generation" as const
+                    : "models_catalog" as const,
+                  selectedProviders: model.configuration.openRouterRouting?.providers ?? [],
+                  upstreamModelId: model.configuration.upstreamModelId
+                },
             fingerprint: activationFingerprint({
               connectionId: candidate.connection.id,
               connectionVersion: candidate.connection.draftVersion,
@@ -917,11 +957,13 @@ export function createAdminProviderService(input: Readonly<{
             modelDraftVersion: model.draftVersion,
             providerModelId: model.id,
             status: available ? "available" as const : "unavailable" as const
-          };
-        })
-      );
+          });
+        }
+      }
       const unavailable = checks
-        .filter(({ status }) => status === "unavailable")
+        .filter(({ providerModelId, status }) =>
+          status === "unavailable" &&
+          !isApprovedRerankerProviderModelId(providerModelId))
         .map((check) => `${check.providerModelId}:${check.credentialId}`);
       if (unavailable.length && !value.confirmUnavailable) {
         throw new AdminProviderServiceError(

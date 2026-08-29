@@ -18,6 +18,7 @@ import {
   createAdminProviderQuickSetupService,
   deriveAdminProviderQuickSetupStateTokenKey
 } from "./quickSetupService";
+import { approvedRerankerDeployments } from "./approvedRerankers";
 
 const actor = { sessionId: "session-admin", userId: "admin" };
 const checkedAt = new Date("2026-07-26T10:00:00.000Z");
@@ -52,6 +53,7 @@ function fixture(input: {
   inspections?: Partial<Record<AdminProviderQuickSetupProviderId, AdminProviderQuickSetupInspection>>;
   modelIds?: string[];
   pdfProbeResults?: Record<string, "failed" | "throw" | "verified">;
+  rerankerOutcomes?: Record<string, "available" | "throw" | "unavailable">;
   repositoryCommit?: AdminProviderQuickSetupRepository["commit"];
   searchOutcome?: { normalizedSourceCount: number; status: "available" | "unavailable" };
   searchThrows?: boolean;
@@ -105,6 +107,21 @@ function fixture(input: {
           probeInput.model.upstreamModelId
         );
   });
+  const rerankerTest = vi.fn(async (probe: {
+    model: { upstreamModelId: string };
+  }) => {
+    const status = input.rerankerOutcomes?.[probe.model.upstreamModelId] ?? "available";
+    if (status === "throw") throw new Error("private reranker probe failure");
+    return {
+      evidence: {
+        detail: status === "available" ? "ok" as const : "model_missing" as const,
+        method: "tiny_generation" as const,
+        selectedProviders: [],
+        upstreamModelId: probe.model.upstreamModelId
+      },
+      status
+    };
+  });
   let nextId = 0;
   const service = createAdminProviderQuickSetupService({
     credentialTester: { test },
@@ -112,13 +129,26 @@ function fixture(input: {
     idFactory: () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`,
     now: () => checkedAt,
     pdfInputProbe: { probe: pdfInputProbe },
+    ...(input.rerankerOutcomes
+      ? { rerankerTester: { test: rerankerTest as never } }
+      : {}),
     repository,
     ...(input.searchOutcome || input.searchThrows
       ? { searchTester: { test: searchTest } }
       : {}),
     stateTokenKey: () => stateTokenKey
   });
-  return { commit, inspections, order, pdfInputProbe, repository, searchTest, service, test };
+  return {
+    commit,
+    inspections,
+    order,
+    pdfInputProbe,
+    repository,
+    rerankerTest,
+    searchTest,
+    service,
+    test
+  };
 }
 
 async function expectedState(
@@ -204,6 +234,38 @@ describe("provider Quick setup service", () => {
     expect(value.order).toEqual(["network", "pdf", "commit"]);
     expect(JSON.stringify(value.commit.mock.calls[0][0])).not.toContain("sk-one-use");
     expect(JSON.stringify(result)).not.toContain("sk-one-use");
+  });
+
+  it("probes and commits the complete approved OpenRouter reranker route", async () => {
+    const value = fixture({
+      modelIds: ["anthropic/claude-opus-4.8"],
+      rerankerOutcomes: {
+        "cohere/rerank-4-pro": "available",
+        "qwen/qwen3-reranker-8b": "unavailable",
+        "voyageai/rerank-2.5": "available"
+      }
+    });
+
+    await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openrouter"),
+        provider: "openrouter",
+        secret: "sk-reranker-bootstrap"
+      }
+    });
+
+    const plan = value.commit.mock.calls[0][0];
+    expect(value.rerankerTest).toHaveBeenCalledTimes(3);
+    expect(plan.rerankerChecks).toEqual(approvedRerankerDeployments.map(
+      (deployment) => expect.objectContaining({
+        providerModelId: deployment.providerModelId,
+        status: deployment.configuration.upstreamModelId.includes("qwen/")
+          ? "unavailable"
+          : "available"
+      })
+    ));
+    expect(JSON.stringify(plan.rerankerChecks)).not.toContain("sk-reranker-bootstrap");
   });
 
   it("passes every catalog-visible known candidate to the commit and Ready result", async () => {

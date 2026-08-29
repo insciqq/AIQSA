@@ -65,13 +65,18 @@ export function canonicalMemoryAdminDestinations(
 export function currentMemoryAdminDestinations(
   policies: readonly ResolvedMemoryUtilityPolicy[]
 ): MemoryAdminAcceptedDestination[] {
-  return canonicalMemoryAdminDestinations(policies.flatMap((policy) =>
-    policy.destinations.flatMap((destination) => destination.kind === "AVAILABLE"
+  return canonicalMemoryAdminDestinations(policies.flatMap((policy) => [
+    ...policy.destinations.flatMap((destination) => destination.kind === "AVAILABLE"
       ? [{
           destinationFingerprint: destination.target.destinationFingerprint,
           role: destination.role
         }]
-      : [])));
+      : []),
+    ...(policy.rerankerTargets ?? []).map((target) => ({
+      destinationFingerprint: target.destinationFingerprint,
+      role: "MEMORY_RERANK" as const
+    }))
+  ]));
 }
 
 export function decodeMemoryAdminDestinations(

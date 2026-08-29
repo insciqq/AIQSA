@@ -106,7 +106,7 @@ describe("Prisma Memory history purge", () => {
         }
       });
       const preparedContext = `Relevant prior conversation:\n${safeText}`;
-      const attempt = await prisma.$transaction(async (tx) => {
+      const { attempt, binding } = await prisma.$transaction(async (tx) => {
         const value = await tx.memoryRetrievalAttempt.create({
           data: {
             admissionKind: "NORMAL_SEND",
@@ -133,7 +133,7 @@ describe("Prisma Memory history purge", () => {
             utilityEgressMode: "LOCAL_ONLY"
           }
         });
-        await tx.modelRunMemoryBinding.create({
+        const createdBinding = await tx.modelRunMemoryBinding.create({
           data: {
             contextTextHash: memorySha256(preparedContext),
             contextTokenCount: 8,
@@ -151,7 +151,7 @@ describe("Prisma Memory history purge", () => {
             userId
           }
         });
-        return value;
+        return { attempt: value, binding: createdBinding };
       });
       await prisma.memoryRetrievalAttemptItem.create({
         data: {
@@ -172,6 +172,89 @@ describe("Prisma Memory history purge", () => {
           textHash: memorySha256(safeText),
           userId,
           versionSnapshot: {}
+        }
+      });
+      const roundText = "User: History source fixture.";
+      const round = await prisma.memoryRecallRound.create({
+        data: {
+          branchGeneration: 0,
+          chatId: chat.id,
+          contentHash: memorySha256(roundText),
+          contextualKeyPolicyVersion: "history-purge-fixture-v1",
+          contextualKeyState: "RAW_FALLBACK",
+          contextualNarrativeText: roundText,
+          contextualSearchHash: memorySha256(roundText),
+          contextualSearchText: roundText,
+          evidenceRootHash: memorySha256({ messageId: userMessage.id }),
+          groupKind: "STANDALONE",
+          id: randomUUID(),
+          invalidatedAt: new Date("2026-08-20T10:01:30.000Z"),
+          languageCode: "en",
+          occurredFrom: new Date("2026-08-20T10:00:00.000Z"),
+          occurredTo: new Date("2026-08-20T10:00:00.000Z"),
+          parentChunkId: chunk.id,
+          projectionVersion: "history-purge-fixture-v1",
+          rawSafeText: roundText,
+          redactionState: "NOT_NEEDED",
+          roundOrdinal: 0,
+          safetyClass: "NORMAL",
+          sourceProjectionVersion: "memory-history-source-projection-v3",
+          sourceRevisionAtCreation: 0,
+          state: "INVALIDATED",
+          userId
+        }
+      });
+      const segment = await prisma.memoryRecallRoundSegment.create({
+        data: {
+          approxTokens: 6,
+          chatId: chat.id,
+          contextualKeyPolicyVersion: "history-purge-fixture-v1",
+          contextualKeyState: "RAW_FALLBACK",
+          contextualNarrativeText: "",
+          contextualSearchHash: memorySha256(roundText),
+          contextualSearchText: roundText,
+          evidenceRootHash: round.evidenceRootHash,
+          id: randomUUID(),
+          invalidatedAt: new Date("2026-08-20T10:01:30.000Z"),
+          languageCode: "en",
+          occurredFrom: round.occurredFrom,
+          occurredTo: round.occurredTo,
+          position: "SINGLE",
+          projectionVersion: "history-purge-segment-fixture-v1",
+          rawEndOffsetUtf16: roundText.length,
+          rawSafeText: roundText,
+          rawSafeTextHash: memorySha256(roundText),
+          rawStartOffsetUtf16: 0,
+          redactionState: "NOT_NEEDED",
+          roundId: round.id,
+          safetyClass: "NORMAL",
+          segmentOrdinal: 0,
+          sourceRevisionAtCreation: 0,
+          state: "INVALIDATED",
+          userId
+        }
+      });
+      const frozenItem = await prisma.modelRunMemoryItem.create({
+        data: {
+          bindingId: binding.id,
+          exactItemId: round.id,
+          featureSnapshot: {},
+          finalScore: 0.9,
+          includedText: roundText,
+          includedTextHash: memorySha256(roundText),
+          itemStateAtAdmission: "ACTIVE",
+          itemType: "RECALL_ROUND",
+          laneRanks: {},
+          ordinal: 0,
+          recallRoundId: round.id,
+          recallRoundSegmentId: segment.id,
+          selectionReason: "history-purge-fixture",
+          sourceBranchGenerationSnapshot: 0,
+          sourceChatIdSnapshot: chat.id,
+          sourceContentHashSnapshot: round.contentHash,
+          sourceMessageIdsSnapshot: [userMessage.id],
+          sourceRevisionSnapshot: 0,
+          userId
         }
       });
 
@@ -198,6 +281,12 @@ describe("Prisma Memory history purge", () => {
       await expect(prisma.memoryRecallChunk.count({
         where: { id: chunk.id }
       })).resolves.toBe(0);
+      await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
+        where: { id: frozenItem.id }
+      })).resolves.toMatchObject({
+        recallRoundId: null,
+        recallRoundSegmentId: null
+      });
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });
     }

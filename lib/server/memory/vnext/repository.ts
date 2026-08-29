@@ -50,6 +50,12 @@ type StoredVersion = Readonly<{
   validTo: Date | null;
 }>;
 
+type LockedReinforcementTarget = Readonly<{
+  factId: string;
+  lastConfirmedAt: Date | null;
+  versionId: string;
+}>;
+
 type ExactEvidence = ReturnType<typeof exactEvidence>[number];
 
 export type MemoryVNextCommitResult = Readonly<{
@@ -284,6 +290,96 @@ async function attachEvidence(
     }
   });
   return id;
+}
+
+async function lockedReinforcementTarget(
+  tx: MemoryTransaction,
+  userId: string,
+  scopeId: string,
+  versionId: string,
+  now: Date
+): Promise<LockedReinforcementTarget | null> {
+  const rows = await tx.$queryRaw<LockedReinforcementTarget[]>(Prisma.sql`
+    SELECT fact."id" AS "factId", fact."lastConfirmedAt",
+      version."id" AS "versionId"
+    FROM "MemoryFactVersion" AS version
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId"
+      AND fact."id" = version."factId"
+      AND fact."scopeId" = ${scopeId}
+      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND fact."movedToFactId" IS NULL
+      AND fact."currentVersionId" = version."id"
+    WHERE version."userId" = ${userId}
+      AND version."id" = ${versionId}
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND version."systemTo" IS NULL
+      AND version."displayText" IS NOT NULL
+      AND version."contentPurgedAt" IS NULL
+      AND version."safetyClassificationState" =
+        'CLASSIFIED'::"MemorySafetyClassificationState"
+      AND version."sensitivityClass" IN (
+        'NORMAL'::"MemorySensitivityClass",
+        'SENSITIVE'::"MemorySensitivityClass"
+      )
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
+      AND ${memoryExactVNextDirectAuthorityPredicate(userId)}
+    FOR UPDATE OF fact, version
+  `);
+  return rows[0] ?? null;
+}
+
+async function reinforceTarget(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  claim: MemoryJobClaim,
+  plan: MemoryFactExtractionPlan,
+  candidate: MemoryExtractedCandidate,
+  evidence: ExactEvidence,
+  bindingId: string,
+  now: Date,
+  target: LockedReinforcementTarget
+): Promise<MemoryVNextCommitResult> {
+  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
+  await createEvent(
+    tx,
+    claim,
+    candidate,
+    target.factId,
+    target.versionId,
+    bindingId,
+    "REINFORCE"
+  );
+  const evidenceId = await attachEvidence(
+    tx,
+    settings.userId,
+    target.versionId,
+    plan.input,
+    evidence
+  );
+  await persistMemoryCandidateEntities(tx, {
+    candidate,
+    evidenceId,
+    factVersionId: target.versionId,
+    userId: settings.userId
+  });
+  await tx.memoryFact.update({
+    data: {
+      lastConfirmedAt: new Date(Math.max(
+        target.lastConfirmedAt?.getTime() ?? -1,
+        evidence.observedAt.getTime()
+      ))
+    },
+    where: { id: target.factId, userId: settings.userId }
+  });
+  await ensureClassifiedSearchEntry(
+    tx,
+    settings,
+    target.versionId,
+    bindingId,
+    now
+  );
+  return { attachedEvidence: 1, createdVersions: 0 };
 }
 
 async function insertVersion(
@@ -739,6 +835,37 @@ async function createObservation(
   }
 
   const scope = await ensureGlobalMemoryScope(tx, settings);
+  if (semanticAdjudication?.operation === "REINFORCE" &&
+    semanticAdjudication.resolvedTargetVersionId !== null) {
+    const target = await lockedReinforcementTarget(
+      tx,
+      settings.userId,
+      scope.id,
+      semanticAdjudication.resolvedTargetVersionId,
+      now
+    );
+    if (!target) return { attachedEvidence: 0, createdVersions: 0 };
+    return reinforceTarget(
+      tx,
+      settings,
+      claim,
+      plan,
+      candidate,
+      evidence[0]!,
+      bindingId,
+      now,
+      target
+    );
+  }
+  // A proposition with a model-selected target may only converge through the
+  // revalidated reinforcement path above. Other pointer operations belong to
+  // SLOT relation resolution and must not fall through into a second active
+  // proposition when the target semantics or representation are uncertain.
+  if (candidate.identityKind === "PROPOSITION" &&
+    semanticAdjudication !== null &&
+    semanticAdjudication.resolvedTargetVersionId !== null) {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
   const fact = await lockedFact(
     tx,
     settings.userId,
@@ -863,46 +990,21 @@ async function createObservation(
       !explicitTargetMatch && !concurrentSameValue) {
       return { attachedEvidence: 0, createdVersions: 0 };
     }
-    await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
-    await createEvent(
-      tx,
-      claim,
-      candidate,
-      fact.id,
-      active.id,
-      bindingId,
-      "REINFORCE"
-    );
-    const evidenceId = await attachEvidence(
-      tx,
-      settings.userId,
-      active.id,
-      plan.input,
-      evidence[0]!
-    );
-    await persistMemoryCandidateEntities(tx, {
-      candidate,
-      evidenceId,
-      factVersionId: active.id,
-      userId: settings.userId
-    });
-    await tx.memoryFact.update({
-      data: {
-        lastConfirmedAt: new Date(Math.max(
-          fact.lastConfirmedAt?.getTime() ?? -1,
-          evidence[0]!.observedAt.getTime()
-        ))
-      },
-      where: { id: fact.id }
-    });
-    await ensureClassifiedSearchEntry(
+    return reinforceTarget(
       tx,
       settings,
-      active.id,
+      claim,
+      plan,
+      candidate,
+      evidence[0]!,
       bindingId,
-      now
+      now,
+      {
+        factId: fact.id,
+        lastConfirmedAt: fact.lastConfirmedAt,
+        versionId: active.id
+      }
     );
-    return { attachedEvidence: 1, createdVersions: 0 };
   }
 
   if (candidate.identityKind !== "SLOT") {

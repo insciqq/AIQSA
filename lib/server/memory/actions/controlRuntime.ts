@@ -36,16 +36,20 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v17";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v22";
+export const MEMORY_CONTROL_REASONING_EFFORT = "low" as const;
+export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v17",
-  promptVersion: "memory-control-prompt-v23",
+  policyVersion: "memory-control-policy-v22",
+  promptVersion: "memory-control-prompt-v25",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 15
+    reasoningEffort: MEMORY_CONTROL_REASONING_EFFORT,
+    reasoningOutputTokenFloor: MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
+    version: 20
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
@@ -146,6 +150,13 @@ function providerRequest(
     request.maxOutputTokens ?? 1_024,
     model.capabilities.defaultMaxOutputTokens ?? 1_024
   );
+  const configuredReasoning = typeof model.defaultParams.reasoning === "object" &&
+    model.defaultParams.reasoning !== null &&
+    !Array.isArray(model.defaultParams.reasoning)
+    ? model.defaultParams.reasoning as Readonly<Record<string, unknown>>
+    : {};
+  const lowReasoningSupported = model.capabilities.reasoning === true &&
+    model.capabilities.reasoningEfforts?.includes(MEMORY_CONTROL_REASONING_EFFORT) === true;
   return {
     attachmentIds: [],
     attachments: [],
@@ -160,6 +171,13 @@ function providerRequest(
       ...model.defaultParams,
       ...(model.adapterKind === "openrouter_chat_completions"
         ? { reasoning: { enabled: false, exclude: true } }
+        : lowReasoningSupported
+          ? {
+              reasoning: {
+                ...configuredReasoning,
+                effort: MEMORY_CONTROL_REASONING_EFFORT
+              }
+            }
         : {}),
       background: false,
       maxOutputTokens,
@@ -204,6 +222,46 @@ function safeNullableControlText(value: string | null): string | null {
   if (value === null) return null;
   const projected = sanitizeMemoryUtilityText(value);
   return projected.eligible && projected.safeText ? projected.safeText : null;
+}
+
+function controlAbortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
+/** MEMORY_CONTROL is side-effect-free provider inference. Once its caller
+ * cancels, discard any late provider result and terminalize the governed
+ * binding instead of allowing a non-cooperative transport to consume the
+ * remainder of the interactive admission deadline. */
+function awaitControlProviderResult<T>(
+  operation: Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(controlAbortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(controlAbortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+    if (signal.aborted) onAbort();
+  });
 }
 
 /** Treat provider output as another untrusted egress source. A model can echo
@@ -374,9 +432,12 @@ export function createMemoryControlService(input: Readonly<{
           !started.snapshot.requiresStrictStructuredOutput) {
           throw new Error("memory_control_binding_invalid");
         }
-        const result = await input.provider.run(
-          providerEvidence(started.snapshot),
-          buildMemoryActionIntentRequest(safeContext),
+        const result = await awaitControlProviderResult(
+          input.provider.run(
+            providerEvidence(started.snapshot),
+            buildMemoryActionIntentRequest(safeContext),
+            requestInput.signal
+          ),
           requestInput.signal
         );
         const decodedIntent = decodeProviderResult(result);
@@ -429,8 +490,9 @@ export function createMemoryControlService(input: Readonly<{
         const providerFailure = error instanceof MemoryControlProviderCallError
           ? error
           : null;
-        const errorCode = providerFailure?.message ??
-          "memory_action_intent_unavailable";
+        const errorCode = requestInput.signal.aborted
+          ? "memory_action_intent_outcome_unknown"
+          : providerFailure?.message ?? "memory_action_intent_unavailable";
         if (bindingId) {
           await input.execution.lifecycle.settle(requestInput.userId, bindingId, {
             acceptedOutputHash: null,
@@ -469,7 +531,8 @@ export function createAcceptedMemoryControlProvider(
       classification,
       usage
     }),
-    invalidRuntimeError: "memory_control_runtime_invalid"
+    invalidRuntimeError: "memory_control_runtime_invalid",
+    reasoningToolOutputTokenFloor: MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR
   });
   return Object.freeze({ run });
 }

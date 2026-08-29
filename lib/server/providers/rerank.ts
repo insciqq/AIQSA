@@ -103,6 +103,19 @@ type RerankNetworkOptions = Readonly<{
   responseMaxBytes?: number;
 }>;
 
+const OPENROUTER_NATIVE_RERANK_MODEL_ALIASES: Readonly<
+  Record<string, Readonly<{ models: readonly string[]; provider: string }>>
+> = Object.freeze({
+  "cohere/rerank-4-fast": Object.freeze({
+    models: Object.freeze(["rerank-v4.0-fast"]),
+    provider: "cohere"
+  }),
+  "cohere/rerank-4-pro": Object.freeze({
+    models: Object.freeze(["rerank-v4.0-pro"]),
+    provider: "cohere"
+  })
+});
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -178,6 +191,11 @@ function responseModelMatches(
   const normalizedExpected = expected.toLocaleLowerCase("und");
   const expectedSlug = normalizedExpected.split("/").at(-1);
   if (normalizedActual === normalizedExpected || normalizedActual === expectedSlug) {
+    return true;
+  }
+  const alias = OPENROUTER_NATIVE_RERANK_MODEL_ALIASES[normalizedExpected];
+  if (alias && provider?.toLocaleLowerCase("und") === alias.provider &&
+    alias.models.includes(normalizedActual)) {
     return true;
   }
   const providerNativeParts = normalizedActual.split("/");

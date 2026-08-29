@@ -32,7 +32,7 @@ function policy(suffix = "a"): ResolvedMemoryUtilityPolicy {
   return {
     destinations,
     fingerprint: "f".repeat(64),
-    policyVersion: "memory-utility-egress-v2",
+    policyVersion: "memory-utility-egress-v3",
     targets: new Map(destinations.map((entry) => [entry.role, entry.target]))
   };
 }

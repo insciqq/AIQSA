@@ -488,7 +488,10 @@ function groundIdentity(
     }
   } else if (identity.predicateKey === "employment_status") {
     if (!supported(supports, ["ORGANIZATION"], identity.dimensionKey)) {
-      fail("memory_fact_employment_identity_unsupported");
+      // A profession or role without a named employer lacks the organization
+      // dimension required by the mutable SLOT but remains a valid open-world
+      // direct-user proposition.
+      return { ...identity, dimensionKey: null };
     }
   } else if (identity.predicateKey === "goal_status" ||
     identity.predicateKey === "project_status") {

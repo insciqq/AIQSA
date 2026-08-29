@@ -37,6 +37,32 @@ afterEach(() => {
 });
 
 describe("administrator provider system model task", () => {
+  it("names the selected System Model when it is the reranker fallback", async () => {
+    const fallback = {
+      ...catalog,
+      candidates: [candidate],
+      policy: {
+        ...catalog.policy,
+        reasoningEffort: "medium",
+        systemModel: { ...candidate, available: true }
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ systemModelPolicy: fallback }), { status: 200 })
+    ));
+
+    render(<AdminProviderSystemModelTask active />);
+
+    expect(await screen.findByText(
+      /Memory reranker: System Model fallback · Provider A \/ Model A/u
+    )).toBeVisible();
+    expect(screen.getByText(
+      /Configuration warning: Memory uses Provider A \/ Model A through the slower generative compatibility path/u
+    )).toBeVisible();
+    expect(screen.getByText(/Successful fallback runs are not marked degraded/u))
+      .toBeVisible();
+  });
+
   it("selects a dedicated Memory reranker independently from the system model", async () => {
     const initial = {
       ...catalog,
@@ -75,6 +101,56 @@ describe("administrator provider system model task", () => {
       reasoningEffort: null,
       rerankerProviderModelId: "reranker-a"
     });
+  });
+
+  it("shows an ordered healthy fallback without presenting Memory as degraded", async () => {
+    const voyage = {
+      ...rerankerCandidate,
+      displayName: "Voyage Rerank 2.5",
+      id: "reranker-voyage"
+    };
+    const cohere = {
+      ...rerankerCandidate,
+      displayName: "Cohere Rerank 4 Pro",
+      id: "reranker-cohere"
+    };
+    const value = {
+      ...catalog,
+      rerankerCandidates: [voyage, cohere],
+      policy: {
+        ...catalog.policy,
+        rerankerModel: { ...voyage, available: false },
+        rerankerRoute: {
+          entries: [{
+            ...voyage,
+            available: false,
+            position: 0,
+            relevanceScoreFloor: null,
+            role: "primary"
+          }, {
+            ...cohere,
+            available: true,
+            position: 1,
+            relevanceScoreFloor: null,
+            role: "fallback"
+          }],
+          policyVersion: "openrouter-reranker-route-v1"
+        }
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ systemModelPolicy: value }), { status: 200 })
+    ));
+
+    render(<AdminProviderSystemModelTask active />);
+
+    expect(await screen.findByText(
+      /Primary unavailable; an ordered fallback is available/u
+    )).toBeVisible();
+    expect(screen.getByText(
+      /1\. Voyage Rerank 2\.5 · unavailable · floor off → 2\. Cohere Rerank 4 Pro · available · floor off/u
+    )).toBeVisible();
+    expect(screen.getByText(/does not degrade Memory evidence/u)).toBeVisible();
   });
 
   it("saves one exact deployment with the observed policy version", async () => {

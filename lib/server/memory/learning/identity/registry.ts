@@ -116,17 +116,21 @@ function component(namespace: string, value: string | null): string {
   return normalizeMemoryIdentityComponent(namespace, value) ?? invalid();
 }
 
-function proposition(statement: string, memoryType: string): ResolvedMemoryIdentity {
+function proposition(
+  statement: string,
+  memoryType: string,
+  categoryOverride?: ResolvedMemoryIdentity["category"]
+): ResolvedMemoryIdentity {
   const canonicalKey = memoryPropositionCanonicalKey(statement) ?? invalid();
   const normalizedStatement = normalizeMemoryProposition(statement) ?? invalid();
-  const category = memoryType === "PREFERENCE"
+  const category = categoryOverride ?? (memoryType === "PREFERENCE"
     ? "preferences"
     : memoryType === "CONSTRAINT" || memoryType === "HABIT" ||
         memoryType === "WORKFLOW"
       ? "constraints_routines"
       : memoryType === "INTENTION" || memoryType === "PLAN"
         ? "goals"
-        : "other";
+        : "other");
   return {
     canonicalKey,
     category,
@@ -261,13 +265,18 @@ export function resolveMemoryIdentity(input: Readonly<{
   }
 
   if (predicate === "employment_status") {
+    const employmentFallback = () => proposition(
+      input.statement,
+      input.memoryType,
+      "work"
+    );
     if (input.identity.subject.entityType !== "PERSON_SELF" ||
       value.state === null || !employmentStates.has(value.state) ||
-      !onlyFields(value, ["role", "state"])) return fallback();
+      !onlyFields(value, ["role", "state"])) return employmentFallback();
     const organization = input.identity.dimensionKey === null
       ? null
       : component("employment-organization", input.identity.dimensionKey);
-    if (!organization) return fallback();
+    if (!organization) return employmentFallback();
     return slotResult({
       category: "work",
       dimensionKey: `organization:${organization}`,

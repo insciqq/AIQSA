@@ -1,11 +1,16 @@
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v34";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v47";
 export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v15";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v20";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v22";
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;
 export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 160;
 export const MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES = 400;
-export const MEMORY_RETRIEVAL_MAX_PARALLEL_LANES = 4;
+// Each lane is an independent, bounded read against the same stable snapshot.
+// Sixteen workers keep the bounded multilingual exact/FTS/trigram/vector set
+// in one SQL wave on the qualification topology. PostgreSQL/Prisma retain the
+// installation-level connection ceiling; candidate limits, fusion, and source
+// diversity are unchanged.
+export const MEMORY_RETRIEVAL_MAX_PARALLEL_LANES = 16;
 export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 100;
 export const MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES = 250;
 export const MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES = 60;
@@ -23,10 +28,11 @@ export const MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT = 5;
 // bounded nearest eligible candidates reach an optional ordering model; only
 // server-side authority and lifecycle fences control admission.
 export const MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR = -1;
-// Compatibility reranking is an ordering feature, not an admission gate. A
-// calibrated optional junk floor may be introduced later, but is deliberately
-// disabled until fixed-sample evidence supports one.
-export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR: number | null = null;
+// A complete reranker decision set may reject only the model's near-zero junk
+// tail. This floor is intentionally conservative: broad candidate generation
+// still reaches the reranker, exact deterministic anchors remain admissible,
+// and an unavailable or structurally incomplete rerank keeps the full RRF set.
+export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR: number | null = 0.01;
 export const MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER = 0.5;
 export const MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER = 0.65;
 

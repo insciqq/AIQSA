@@ -614,6 +614,29 @@ async function settleAttemptItems(
   `);
 }
 
+export async function detachFrozenMemoryRoundTargets(
+  tx: MemoryTransaction,
+  userId: string,
+  roundIds: readonly string[]
+): Promise<void> {
+  if (roundIds.length === 0) return;
+  // The round and segment foreign keys are independent. Letting PostgreSQL
+  // process their ON DELETE actions in an implementation-defined order can
+  // temporarily leave a segment reference without its required round and trip
+  // the immediate ModelRunMemoryItem shape check. Clear the composite target
+  // in one guarded row update before deleting either source projection.
+  await tx.modelRunMemoryItem.updateMany({
+    data: {
+      recallRoundId: null,
+      recallRoundSegmentId: null
+    },
+    where: {
+      recallRoundId: { in: [...roundIds] },
+      userId
+    }
+  });
+}
+
 async function receiptSelectionPredicates(
   tx: MemoryTransaction,
   userId: string,
@@ -813,6 +836,7 @@ export async function purgeMemoryHistorySelection(
       ids.digestIds.length === 0 && ids.roundIds.length === 0 &&
       ids.toolEventIds.length === 0) break;
     await settleAttemptItems(tx, userId, ids);
+    await detachFrozenMemoryRoundTargets(tx, userId, ids.roundIds);
     await tx.memorySearchEntry.deleteMany({
       where: {
         OR: [

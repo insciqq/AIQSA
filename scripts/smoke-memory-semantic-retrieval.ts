@@ -26,6 +26,12 @@ import {
 import { decodeRunOutcomeResponse } from "../lib/contracts/runs";
 import { prisma } from "../lib/server/prisma";
 import { getSecretEncryptionKey } from "../lib/server/secrets/envelope";
+import { resolveCurrentMemoryUtilityPolicy } from
+  "../lib/server/memory/execution/policy";
+import { approvedRerankerDeployments } from
+  "../lib/server/admin/providers/approvedRerankers";
+import { RERANKER_ROUTE_POLICY_VERSION } from
+  "../lib/domain/rerankerModels";
 import {
   MemorySemanticSmokePreflightError,
   createMemorySemanticSmokeScenarioLedger,
@@ -42,6 +48,10 @@ const POLL_INTERVAL_MS = 2_000;
 const MAX_REBUILD_ACTIONS = 1;
 const MAX_CHAT_RUNS = 13;
 const RECOVER_LATEST = process.argv.includes("--recover-latest");
+const DEFECT_REGRESSIONS = process.argv.includes("--defect-regressions");
+const RERANKER_ROUTE_REGRESSION = process.argv.includes(
+  "--reranker-route-regression"
+);
 
 type SmokeStage =
   | "answer_recall"
@@ -375,7 +385,8 @@ async function loadChat(chatId: string): Promise<ChatDetailWire> {
 async function sourceRun(
   title: string,
   messageText: string,
-  answer: MemorySemanticSmokeTarget
+  answer: MemorySemanticSmokeTarget,
+  options: Readonly<{ excludeFromMemory?: boolean }> = {}
 ): Promise<SourceRun> {
   if (chatRunCount >= MAX_CHAT_RUNS) {
     fail("chat_run", "memory_smoke_run_bound_exhausted");
@@ -383,6 +394,7 @@ async function sourceRun(
   chatRunCount += 1;
   const chat = await createChat(title);
   createdSmokeChats.push(chat);
+  if (options.excludeFromMemory) await excludeChatFromMemory(chat.id);
   await sendMessage("chat_run", chat, messageText, answer);
   const settled = await poll("chat_run", async () => {
     const current = await loadChat(chat.id);
@@ -777,6 +789,334 @@ async function cleanupSmokeState(
   return owned.length;
 }
 
+type SourceFactSnapshot = Readonly<{
+  category: string;
+  displayText: string;
+  factId: string;
+  factVersionId: string;
+  identityKind: string | null;
+  predicateKey: string | null;
+}>;
+
+async function sourceFactSnapshots(source: SourceRun): Promise<SourceFactSnapshot[]> {
+  const evidence = await prisma.memoryEvidence.findMany({
+    distinct: ["factVersionId"],
+    select: { factVersionId: true },
+    where: {
+      chatId: source.chat.id,
+      messageId: source.userMessage.id,
+      sourceRole: "user",
+      sourceType: "MESSAGE",
+      stance: "SUPPORTS",
+      userId: authenticatedUserId
+    }
+  });
+  const versions = await prisma.memoryFactVersion.findMany({
+    select: { category: true, displayText: true, factId: true, id: true },
+    where: {
+      contentPurgedAt: null,
+      id: { in: evidence.map(({ factVersionId }) => factVersionId) },
+      state: "ACTIVE",
+      userId: authenticatedUserId
+    }
+  });
+  const facts = await prisma.memoryFact.findMany({
+    select: {
+      currentVersionId: true,
+      id: true,
+      identityKind: true,
+      predicateKey: true,
+      state: true
+    },
+    where: {
+      id: { in: versions.map(({ factId }) => factId) },
+      state: "ACTIVE",
+      userId: authenticatedUserId
+    }
+  });
+  return versions.flatMap((version) => {
+    const fact = facts.find(({ id }) => id === version.factId);
+    return fact?.currentVersionId === version.id && version.displayText
+      ? [{
+          category: version.category,
+          displayText: version.displayText,
+          factId: version.factId,
+          factVersionId: version.id,
+          identityKind: fact.identityKind,
+          predicateKey: fact.predicateKey
+        }]
+      : [];
+  });
+}
+
+async function waitForSourceFacts(
+  source: SourceRun,
+  minimum: number
+): Promise<SourceFactSnapshot[]> {
+  return poll("automatic_learning", async () => {
+    const jobs = await verifier.sourceJobStateCounts({
+      chatId: source.chat.id,
+      userId: authenticatedUserId
+    });
+    if (jobs.unsuccessfulTerminal > 0) {
+      fail("automatic_learning", "memory_smoke_source_job_failed");
+    }
+    if (jobs.total < 1 || jobs.active > 0) return null;
+    const snapshots = await sourceFactSnapshots(source);
+    if (snapshots.length < minimum) {
+      fail("automatic_learning", "memory_smoke_expected_fact_missing");
+    }
+    return snapshots;
+  });
+}
+
+async function runLiveDefectRegressions(
+  answer: MemorySemanticSmokeTarget
+): Promise<void> {
+  const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
+    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
+    .join("");
+  const sources: AutomaticFactSource[] = [];
+  let primaryError: unknown = null;
+  let cleanupError: unknown = null;
+  let checkedFacts = 0;
+
+  try {
+    const firstStartedAt = new Date();
+    const first = await sourceRun(
+      `Memory defect regression source ${marker}`,
+      `Меня зовут Дима-${marker}. Я люблю кофе сорта «Кедровый Маяк-${marker}». Я работаю девопсом. Люблю вайбкодить.`,
+      answer
+    );
+    sources.push({
+      chatId: first.chat.id,
+      messageId: first.userMessage.id,
+      notBefore: firstStartedAt
+    });
+    const firstFacts = await waitForSourceFacts(first, 3);
+    const name = firstFacts.find(({ displayText }) => /дима/iu.test(displayText));
+    const coffee = firstFacts.find(({ displayText }) => /коф/iu.test(displayText) &&
+      displayText.includes(marker));
+    const profession = firstFacts.find(({ displayText }) =>
+      /девопс|devops/iu.test(displayText));
+    if (!name || !coffee || !profession) {
+      fail("automatic_learning", "memory_smoke_expected_fact_missing");
+    }
+    if ([name, coffee, profession].some(({ displayText }) =>
+      !/\p{Script=Cyrillic}/u.test(displayText) ||
+      /\b(?:the )?user\b/iu.test(displayText))) {
+      fail("automatic_learning", "memory_smoke_source_language_failed");
+    }
+    if (profession.identityKind !== "PROPOSITION" || profession.predicateKey !== null) {
+      fail("automatic_learning", "memory_smoke_open_world_profession_failed");
+    }
+
+    const secondStartedAt = new Date();
+    const second = await sourceRun(
+      `Memory defect regression duplicate ${marker}`,
+      `Кофе сорта «Кедровый Маяк-${marker}» мне нравится.`,
+      answer
+    );
+    sources.push({
+      chatId: second.chat.id,
+      messageId: second.userMessage.id,
+      notBefore: secondStartedAt
+    });
+    const secondFacts = await waitForSourceFacts(second, 1);
+    const execution = await prisma.memoryFactExtractionExecution.findFirst({
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+      where: {
+        sourceMessageId: second.userMessage.id,
+        userId: authenticatedUserId
+      }
+    });
+    const receipts = execution
+      ? await prisma.memoryFactExtractionCandidateReceipt.findMany({
+          select: { outcome: true, resultingFactVersionId: true },
+          where: { extractionExecutionId: execution.id, userId: authenticatedUserId }
+        })
+      : [];
+    const evidenceCount = await prisma.memoryEvidence.count({
+      where: {
+        factVersionId: coffee.factVersionId,
+        sourceRole: "user",
+        sourceType: "MESSAGE",
+        stance: "SUPPORTS",
+        userId: authenticatedUserId
+      }
+    });
+    if (!secondFacts.some(({ factVersionId }) =>
+      factVersionId === coffee.factVersionId) ||
+      !receipts.some((receipt) => receipt.outcome === "REINFORCED" &&
+        receipt.resultingFactVersionId === coffee.factVersionId) ||
+      evidenceCount < 2) {
+      fail("automatic_learning", "memory_smoke_duplicate_reinforcement_failed");
+    }
+    checkedFacts = 3;
+  } catch (error) {
+    primaryError = error;
+  }
+
+  try {
+    await authenticate();
+    await cleanupSmokeState(marker, new Set(), sources);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (cleanupError) fail("automatic_learning", "memory_smoke_cleanup_failed");
+  if (primaryError) throw primaryError;
+  console.log(JSON.stringify({
+    checkedFacts,
+    duplicateOutcome: "REINFORCED",
+    openWorldProfession: true,
+    sanitizedAggregatesOnly: true,
+    sourceLanguagePreserved: true,
+    status: "complete"
+  }, null, 2));
+}
+
+async function runLiveRerankerRouteRegression(
+  answer: MemorySemanticSmokeTarget
+): Promise<void> {
+  const primary = approvedRerankerDeployments.find(({ preset }) => preset.default);
+  if (!primary) fail("capability_preflight", "memory_smoke_reranker_route_invalid");
+  const run = await sourceRun(
+    "Memory reranker route regression",
+    "Что я говорил о своей любви к кофе?",
+    answer,
+    { excludeFromMemory: true }
+  );
+  const attempt = await prisma.memoryRetrievalAttempt.findFirst({
+    orderBy: { attemptOrdinal: "desc" },
+    select: {
+      budgetSnapshot: true,
+      degradationCode: true,
+      id: true,
+      outcome: true,
+      state: true
+    },
+    where: {
+      modelRunId: run.modelRunId,
+      state: "CONSUMED",
+      userId: authenticatedUserId
+    }
+  });
+  if (!attempt || attempt.outcome !== "USED" || attempt.degradationCode !== null) {
+    fail("vector_recall", "memory_smoke_reranker_route_unhealthy");
+  }
+  const budget = record(attempt.budgetSnapshot) ? attempt.budgetSnapshot : {};
+  const component = record(budget.componentMetrics) ? budget.componentMetrics : {};
+  const [items, rerankerBindings] = await Promise.all([
+    prisma.memoryRetrievalAttemptItem.findMany({
+      select: { exactSafeText: true },
+      where: { attemptId: attempt.id, userId: authenticatedUserId }
+    }),
+    prisma.memoryExecutionBinding.findMany({
+      orderBy: { ordinal: "asc" },
+      select: { providerModelId: true, state: true },
+      where: {
+        logicalRole: "MEMORY_RERANK",
+        retrievalAttemptId: attempt.id,
+        userId: authenticatedUserId
+      }
+    })
+  ]);
+  const medical = /(?:медицин|давлен|холест|пациент|аллерг|medical|blood\s+pressure|cholesterol)/iu;
+  const coffee = /(?:коф|coffee)/iu;
+  const answerText = textFromContent(run.assistant.content);
+  const successfulBindings = rerankerBindings.filter(({ state }) => state === "SUCCEEDED");
+  const memoryPrepareMs = typeof budget.memoryPrepareMs === "number"
+    ? budget.memoryPrepareMs
+    : null;
+  const rerankMs = typeof budget.rerankMs === "number" ? budget.rerankMs : null;
+  const modelAttemptCount = typeof component.rerankModelAttemptCount === "number"
+    ? component.rerankModelAttemptCount
+    : null;
+  const fallbackDepth = typeof component.rerankModelFallbackDepth === "number"
+    ? component.rerankModelFallbackDepth
+    : null;
+  const rerankProviderCalls = typeof budget.rerankProviderCalls === "number"
+    ? budget.rerankProviderCalls
+    : null;
+  const routePolicyVersion = typeof component.rerankRoutePolicyVersion === "string"
+    ? component.rerankRoutePolicyVersion
+    : null;
+  const medicalSourceCount = items.filter(({ exactSafeText }) =>
+    medical.test(exactSafeText)).length;
+  const coffeeSourceCount = items.filter(({ exactSafeText }) =>
+    coffee.test(exactSafeText)).length;
+  if (successfulBindings.length !== 1 ||
+    successfulBindings[0]?.providerModelId !== primary.providerModelId ||
+    modelAttemptCount !== 1 || fallbackDepth !== 0 || rerankProviderCalls !== 1 ||
+    routePolicyVersion !== RERANKER_ROUTE_POLICY_VERSION ||
+    component.rerankScoreFloor !== null ||
+    component.rerankFullFallbackUsed !== false ||
+    memoryPrepareMs === null || memoryPrepareMs > 12_000 || rerankMs === null ||
+    medicalSourceCount !== 0 || medical.test(answerText) ||
+    coffeeSourceCount < 1 || !coffee.test(answerText)) {
+    fail("vector_recall", "memory_smoke_reranker_route_regression_failed");
+  }
+  console.log(JSON.stringify({
+    answerCoffeeReference: true,
+    answerMedicalReferences: 0,
+    fallbackDepth,
+    memoryOutcome: attempt.outcome,
+    memoryPrepareMs,
+    modelAttemptCount,
+    packedCoffeeSources: coffeeSourceCount,
+    packedMedicalSources: medicalSourceCount,
+    rerankMs,
+    rerankProviderCalls,
+    reranker: primary.preset.upstreamModelId,
+    routePolicyVersion,
+    sanitizedAggregatesOnly: true,
+    status: "complete"
+  }, null, 2));
+}
+
+async function defectRegressionTarget(): Promise<MemorySemanticSmokeTarget> {
+  const settings = await prisma.userMemorySettings.findUnique({
+    select: {
+      embeddingProviderModelId: true,
+      learnAutomatically: true,
+      referenceChatHistory: true,
+      useMemoryFacts: true
+    },
+    where: { userId: authenticatedUserId }
+  });
+  if (!settings || !settings.useMemoryFacts || !settings.learnAutomatically ||
+    !settings.referenceChatHistory) {
+    fail("capability_preflight", "memory_smoke_settings_disabled");
+  }
+  const policy = await resolveCurrentMemoryUtilityPolicy(
+    prisma,
+    authenticatedUserId,
+    settings
+  );
+  const roles = [
+    "MEMORY_CONTROL",
+    "MEMORY_STATEMENT_CLASSIFY",
+    "MEMORY_HISTORY_CLASSIFY",
+    "MEMORY_FACT_EXTRACT"
+  ] as const;
+  const targets = roles.map((role) => policy.targets.get(role));
+  const first = targets[0];
+  if (!first || targets.some((target) => !target ||
+    target.authority.connectionId !== first.authority.connectionId ||
+    target.authority.credentialId !== first.authority.credentialId ||
+    target.authority.credentialVersionId !== first.authority.credentialVersionId ||
+    target.authority.providerModelId !== first.authority.providerModelId) ||
+    first.snapshot.model.capabilities.structuredOutput !== true ||
+    first.snapshot.model.capabilities.toolCalling !== true) {
+    fail("capability_preflight", "memory_smoke_system_model_unavailable");
+  }
+  return {
+    connectionId: first.authority.connectionId,
+    modelId: first.authority.providerModelId
+  };
+}
+
 async function recoverLatestSmokeState(): Promise<void> {
   const rootPrefix = "Memory smoke vector source ";
   const root = await prisma.chat.findFirst({
@@ -874,11 +1214,13 @@ async function main(): Promise<void> {
   }
   let answer: MemorySemanticSmokeTarget;
   try {
-    answer = await preflightPrismaMemorySemanticSmoke(
-      prisma,
-      authenticatedUserId,
-      encryptionKey
-    );
+    answer = DEFECT_REGRESSIONS || RERANKER_ROUTE_REGRESSION
+      ? await defectRegressionTarget()
+      : await preflightPrismaMemorySemanticSmoke(
+          prisma,
+          authenticatedUserId,
+          encryptionKey
+        );
   } catch (error) {
     if (error instanceof MemorySemanticSmokePreflightError) {
       return fail("capability_preflight", error.code);
@@ -888,6 +1230,14 @@ async function main(): Promise<void> {
 
   const rebuildActions = await ensureAdminMemoryReady(initialStatus, settings);
   assertConsumerSettingsReady(await consumerSettings());
+  if (DEFECT_REGRESSIONS) {
+    await runLiveDefectRegressions(answer);
+    return;
+  }
+  if (RERANKER_ROUTE_REGRESSION) {
+    await runLiveRerankerRouteRegression(answer);
+    return;
+  }
   const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
     .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
     .join("");

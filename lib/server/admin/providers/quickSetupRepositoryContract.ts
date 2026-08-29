@@ -68,6 +68,11 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
   now: Date;
   preservedModels: AdminProviderQuickSetupInspection["preservedModels"];
   provider: AdminProviderQuickSetupProviderId;
+  rerankerChecks: ReadonlyArray<Readonly<{
+    evidence: AdminProviderTestEvidence;
+    providerModelId: string;
+    status: "available" | "unavailable";
+  }>>;
   search?: Readonly<{
     draft: AdminSearchDraft;
     draftHash: string;

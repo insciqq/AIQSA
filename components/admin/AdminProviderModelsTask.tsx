@@ -25,6 +25,7 @@ import {
   type EmbeddingModelPreset
 } from "@/lib/domain/embeddingModels";
 import {
+  adminRerankerModelConfiguration,
   rerankerPresetsForFamily,
   type RerankerModelPreset
 } from "@/lib/domain/rerankerModels";
@@ -113,23 +114,7 @@ export function AdminProviderModelsTask({
       return;
     }
     void controller.actions.createModel(connection.id, {
-      configuration: {
-        adapterKind: "openrouter_rerank",
-        answerSelectable: false,
-        capabilities: {
-          nativePdfInput: false,
-          nativeSearch: false,
-          pdf: false,
-          reasoning: false,
-          streaming: false,
-          toolCalling: false,
-          vision: false
-        },
-        defaultParams: {},
-        modelClass: "reranker",
-        openRouterRouting: { mode: "automatic", providers: [] },
-        upstreamModelId: preset.upstreamModelId
-      },
+      configuration: adminRerankerModelConfiguration(preset),
       displayName: preset.displayName
     });
   }
@@ -235,7 +220,7 @@ export function AdminProviderModelsTask({
                   <div className="flex min-w-0 flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between" key={preset.id}>
                     <div className="min-w-0">
                       <p className="break-words text-sm font-medium text-ink">
-                        {preset.displayName}{preset.default ? " · Qualification default" : ""}
+                        {preset.displayName}{preset.default ? " · Automatic default" : ""}
                       </p>
                       <p className="mt-1 font-mono text-metadata text-proof">Dedicated reranker · ordered numeric scores</p>
                       <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{preset.description}</p>

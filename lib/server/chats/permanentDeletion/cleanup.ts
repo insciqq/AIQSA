@@ -11,6 +11,7 @@ import {
   inspectMemoryFeedbackPermanentChat,
   purgeMemoryFeedbackPermanentChat
 } from "../../memory/review/purge";
+import { detachFrozenMemoryRoundTargets } from "../../memory/history/purge";
 import { loadMemorySuppressionKeyring } from "../../memory/suppressionKeyring";
 import { PERMANENT_CHAT_DELETION_TARGET_TYPE } from "./contract";
 
@@ -580,6 +581,7 @@ async function applyAggregateDeletion(
     runIds: ids.runIds
   });
   await settleDestinationAttemptItems(tx, claim, ids);
+  await detachFrozenMemoryRoundTargets(tx, claim.userId, ids.roundIds);
 
   if (ids.chunkIds.length > 0 || ids.roundIds.length > 0) {
     await tx.memorySearchEntry.deleteMany({

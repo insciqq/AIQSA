@@ -157,7 +157,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v20");
+    expect(pack.packerVersion).toBe("memory-context-packer-v22");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -786,10 +786,12 @@ describe("Personal Memory context pack", () => {
       hardCapTokens: 32_000,
       targetTokens: 24_000
     });
-    expect(pack.text).toContain("Combine every relevant listed event");
+    expect(pack.text).toContain("internally enumerate every candidate occurrence");
     expect(pack.text).toContain(
-      "Keep set members, temporal boundaries, and supporting facts distinct"
+      "Count only distinct members"
     );
+    expect(pack.text).toContain("Never derive a total from the query");
+    expect(pack.text).toContain("state the uncertainty");
     expect(pack.text).not.toContain("Do not count the boundary event itself");
     expect(pack.text).not.toContain("chat-0");
   });

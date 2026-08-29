@@ -35,14 +35,20 @@ import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES,
-  MEMORY_RETRIEVAL_PIPELINE_VERSION,
-  MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR
+  MEMORY_RETRIEVAL_PIPELINE_VERSION
 } from "../../lib/domain/memory/retrieval/config";
+import { RERANKER_ROUTE_POLICY_VERSION } from
+  "../../lib/domain/rerankerModels";
 import { createAdminMemoryEgressService } from
   "../../lib/server/admin/memory/egressService";
+import {
+  approvedRerankerDeploymentByProviderModelId,
+  approvedRerankerDeployments
+} from "../../lib/server/admin/providers/approvedRerankers";
 import { createPrismaAuthSessionStore } from "../../lib/server/auth/prismaSessions";
 import { createAuthSession } from "../../lib/server/auth/requestAuth";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
@@ -58,6 +64,8 @@ import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION } from
   "../../lib/server/memory/learning/extraction/contract";
 import { createPrismaMemorySettingsRepository } from
   "../../lib/server/memory/persistence/settings";
+import { createRerankerModelRoleResolver } from
+  "../../lib/server/providerRuntime/rerankerModelRole";
 import { createPrismaMemoryRebuildRepository } from
   "../../lib/server/memory/rebuild/repository";
 import { createMemoryRebuildService } from
@@ -99,7 +107,7 @@ import {
   decodeLongMemEvalSystemModelId,
   evaluateLongMemEvalComponentMetrics,
   longMemEvalEmbeddingBatchSizeDistribution,
-  longMemEvalExpectedUtilityModelId,
+  longMemEvalExpectedUtilityModelIds,
   longMemEvalHybridRebuildFailed,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
@@ -148,7 +156,12 @@ const defaultQualificationSystemModelId = "gpt-5.6-luna" satisfies
   LongMemEvalSystemModelId;
 const qualificationSystemReasoningEffort = "medium";
 const qualificationEmbeddingModelId = "qwen/qwen3-embedding-8b";
-const qualificationRerankerModelId = "qwen/qwen3-reranker-8b";
+const legacyQualificationRerankerModelId = "qwen/qwen3-reranker-8b";
+const qualificationPrimaryRerankerDeployment = (() => {
+  const deployment = approvedRerankerDeployments.find(({ preset }) => preset.default);
+  if (!deployment) throw new Error("longmemeval_primary_reranker_missing");
+  return deployment;
+})();
 const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
 const qualificationMemoryJobParallelism = 8;
 const qualificationMemoryJobPerUserParallelism = 4;
@@ -165,10 +178,11 @@ const activeMemoryRetrievalConfigurationBase = Object.freeze({
   contextPackerVersion: MEMORY_CONTEXT_PACKER_VERSION,
   fusionVersion: MEMORY_RETRIEVAL_FUSION_VERSION,
   laneLimits: MEMORY_RETRIEVAL_LANE_LIMITS,
+  maxParallelLanes: MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   pipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
   pastChatContextHardCapTokens: MEMORY_CONTEXT_PAST_CHAT_HARD_CAP_TOKENS,
   pastChatContextTargetTokens: MEMORY_CONTEXT_PAST_CHAT_TARGET_TOKENS,
-  rerankerScoreFloor: MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR,
+  rerankerRoutePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
   simpleContextHardCapTokens: MEMORY_CONTEXT_HARD_CAP_TOKENS,
   simpleContextTargetTokens: MEMORY_CONTEXT_TARGET_TOKENS,
   targetedContextHardCapTokens: MEMORY_CONTEXT_PAST_CHAT_HARD_CAP_TOKENS,
@@ -215,8 +229,15 @@ type CliOptions = Readonly<{
   systemModelId: LongMemEvalSystemModelId;
 }>;
 
+type BenchmarkRerankerRole = Readonly<{
+  id: string;
+  relevanceScoreFloor: number | null;
+  upstreamModelId: string;
+}>;
+
 type ProviderRoles = Readonly<{
-  reranker: Readonly<{ id: string; upstreamModelId: string }> | null;
+  reranker: BenchmarkRerankerRole;
+  rerankerRoute: readonly BenchmarkRerankerRole[];
   system: Readonly<{
     connectionId: string;
     credentialId: string;
@@ -491,7 +512,7 @@ function applyQualificationManifest(
   manifest: LongMemEvalQualificationManifest
 ): CliOptions {
   if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
-    manifest.runtime.reranker.upstreamModelId !== qualificationRerankerModelId ||
+    manifest.runtime.reranker.upstreamModelId !== legacyQualificationRerankerModelId ||
     manifest.runtime.systemModel.reasoningEffort !==
       qualificationSystemReasoningEffort ||
     manifest.runtime.workerConcurrency.global !== qualificationMemoryJobParallelism ||
@@ -761,7 +782,8 @@ async function resolveProviderRoles(
   prisma: PrismaClient,
   systemModelId: LongMemEvalSystemModelId
 ): Promise<ProviderRoles> {
-  const [systemModels, rerankerModels, systemPolicy, memorySettings] =
+  const rerankerResolver = createRerankerModelRoleResolver(prisma);
+  const [systemModels, systemPolicy, memorySettings, rerankerResolution] =
     await Promise.all([
     prisma.providerModel.findMany({
       select: {
@@ -785,17 +807,6 @@ async function resolveProviderRoles(
         modelId: systemModelId
       }
     }),
-    prisma.providerModel.findMany({
-      select: { id: true, modelId: true },
-      where: {
-        activeConfig: { not: Prisma.DbNull },
-        activeVersion: { gt: 0 },
-        connection: { enabled: true, family: "openrouter" },
-        enabled: true,
-        modelClass: "reranker",
-        modelId: qualificationRerankerModelId
-      }
-    }),
     prisma.systemModelPolicy.findUnique({
       select: {
         providerModelId: true,
@@ -807,7 +818,8 @@ async function resolveProviderRoles(
     prisma.userMemorySettings.findUnique({
       select: { embeddingProviderModelId: true },
       where: { userId: qualificationOperatorUserId }
-    })
+    }),
+    rerankerResolver.resolve()
   ]);
   const qwen = memorySettings?.embeddingProviderModelId
     ? await prisma.providerModel.findUnique({
@@ -826,9 +838,6 @@ async function resolveProviderRoles(
     : null;
   const system = systemModels[0];
   const systemCredential = system?.connection.defaultCredential;
-  const reranker = systemPolicy?.rerankerProviderModelId
-    ? rerankerModels.find(({ id }) => id === systemPolicy.rerankerProviderModelId) ?? null
-    : null;
   if (systemModels.length !== 1 || !system || !systemCredential?.enabled ||
     !systemCredential.activeVersionId || !qwen?.activeConfig ||
     qwen.activeVersion < 1 || !qwen.enabled || !qwen.connection.enabled ||
@@ -836,9 +845,36 @@ async function resolveProviderRoles(
     qwen.modelId !== qualificationEmbeddingModelId ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
     systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort ||
-    (systemPolicy.rerankerProviderModelId !== null && !reranker)) {
+    systemPolicy.rerankerProviderModelId !==
+      qualificationPrimaryRerankerDeployment.providerModelId ||
+    !rerankerResolution.ok ||
+    rerankerResolution.selectedProviderModelId !==
+      qualificationPrimaryRerankerDeployment.providerModelId) {
     throw new Error("longmemeval_provider_roles_invalid");
   }
+  const resolvedRerankerRoutes = rerankerResolution.routes ?? [{
+    providerModelId: rerankerResolution.providerModelId,
+    role: rerankerResolution.role
+  }];
+  let previousRoutePosition = -1;
+  const rerankerRoute = resolvedRerankerRoutes.map(({ providerModelId, role }) => {
+    const deployment = approvedRerankerDeploymentByProviderModelId(providerModelId);
+    const routePosition = approvedRerankerDeployments.findIndex(
+      (candidate) => candidate.providerModelId === providerModelId
+    );
+    if (!deployment || routePosition <= previousRoutePosition ||
+      role.configuration.upstreamModelId !== deployment.preset.upstreamModelId) {
+      throw new Error("longmemeval_reranker_route_invalid");
+    }
+    previousRoutePosition = routePosition;
+    return Object.freeze({
+      id: providerModelId,
+      relevanceScoreFloor: deployment.preset.relevanceScoreFloor,
+      upstreamModelId: deployment.preset.upstreamModelId
+    });
+  });
+  const reranker = rerankerRoute[0];
+  if (!reranker) throw new Error("longmemeval_reranker_route_invalid");
   const egress = await createAdminMemoryEgressService(prisma, {
     consentMode: "ADMIN"
   }).get();
@@ -847,13 +883,12 @@ async function resolveProviderRoles(
     .map(({ id }) => id));
   if (egress.reviewRequired || !destinations.has("system_model") ||
     !destinations.has("embedding") ||
-    (reranker !== null && !destinations.has("remote_reranker"))) {
+    !destinations.has("remote_reranker")) {
     throw new Error("longmemeval_memory_egress_not_ready");
   }
   return Object.freeze({
-    reranker: reranker
-      ? Object.freeze({ id: reranker.id, upstreamModelId: reranker.modelId })
-      : null,
+    reranker,
+    rerankerRoute: Object.freeze(rerankerRoute),
     system: Object.freeze({
       connectionId: system.connectionId,
       credentialId: systemCredential.id,
@@ -2456,13 +2491,14 @@ async function assertExecutionModels(
   });
   const successful = executions.filter(({ state }) => state === "SUCCEEDED");
   for (const execution of successful) {
-    const expectedModelId = longMemEvalExpectedUtilityModelId({
+    const expectedModelIds = longMemEvalExpectedUtilityModelIds({
       embeddingModelId: roles.qwen.id,
       logicalRole: execution.logicalRole,
-      rerankerModelId: roles.reranker?.id ?? null,
+      rerankerModelIds: roles.rerankerRoute.map(({ id }) => id),
       systemModelId: roles.system.id
     });
-    if (execution.providerModelId !== expectedModelId) {
+    if (!execution.providerModelId ||
+      !expectedModelIds.includes(execution.providerModelId)) {
       throw new Error("longmemeval_utility_model_mismatch");
     }
   }
@@ -2738,7 +2774,13 @@ function buildCheckpointIdentity(input: Readonly<{
       embeddingModel: qualificationEmbeddingModelId,
       forceDreamDiagnostic: input.options.forceDreamDiagnostic,
       indexTimeoutMs: input.options.indexTimeoutMs,
-      rerankerModel: input.roles.reranker?.upstreamModelId ?? null,
+      rerankerRoute: Object.freeze(input.roles.rerankerRoute.map((role) =>
+        Object.freeze({
+          providerModelId: role.id,
+          relevanceScoreFloor: role.relevanceScoreFloor,
+          upstreamModelId: role.upstreamModelId
+        }))),
+      rerankerRoutePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
       runTimeoutMs: input.options.runTimeoutMs,
       systemModel: input.roles.system.upstreamModelId
     }),
@@ -2748,7 +2790,7 @@ function buildCheckpointIdentity(input: Readonly<{
       mode: input.selection.mode,
       seed: input.selection.seed
     }),
-    version: 1
+    version: 2
   });
 }
 
@@ -2959,7 +3001,11 @@ async function main(): Promise<void> {
     await writeJsonAtomic(summaryPath, {
       activeMemoryRetrievalConfiguration: {
         ...activeMemoryRetrievalConfigurationBase,
-        automaticFactLearning: options.profile === "product"
+        automaticFactLearning: options.profile === "product",
+        rerankerRoute: roles.rerankerRoute.map((role) => ({
+          relevanceScoreFloor: role.relevanceScoreFloor,
+          upstreamModelId: role.upstreamModelId
+        }))
       },
       answerModel: {
         provider: "codex-lb",
@@ -3002,17 +3048,17 @@ async function main(): Promise<void> {
         provider: "OpenRouter",
         upstreamModelId: qualificationEmbeddingModelId
       },
-      memoryRerankerModel: roles.reranker
-        ? {
-            mode: "dedicated",
-            provider: "OpenRouter",
-            upstreamModelId: roles.reranker.upstreamModelId
-          }
-        : {
-            mode: "system_model_compatibility",
-            provider: "codex-lb",
-            upstreamModelId: roles.system.upstreamModelId
-          },
+      memoryRerankerModel: {
+        mode: "dedicated_ordered_fallback",
+        provider: "OpenRouter",
+        route: roles.rerankerRoute.map((role, position) => ({
+          position,
+          relevanceScoreFloor: role.relevanceScoreFloor,
+          upstreamModelId: role.upstreamModelId
+        })),
+        routePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
+        upstreamModelId: roles.reranker.upstreamModelId
+      },
       profile: longMemEvalProfileManifest(options.profile),
       qualificationManifest: qualificationManifest
         ? {

@@ -2,10 +2,14 @@ import type { ModelToolCall } from "../../../tools/types";
 import type { RunTool } from "../../../tools/types";
 import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from
   "../../../../contracts/memory";
-import { memorySha256 } from "../../persistence/lexical";
+import {
+  memorySha256,
+  normalizeMemorySearchText
+} from "../../persistence/lexical";
 import type { MemoryExecutionVersions } from "../../execution";
 import {
   type MemoryExtractedCandidate,
+  type MemoryFactContextRef,
   type MemoryFactExtractionPlan,
   type MemorySemanticAdjudication,
   type MemorySemanticFrame
@@ -14,9 +18,9 @@ import {
 export const MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION =
   "memory-semantic-adjudication-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION =
-  "memory-semantic-adjudication-policy-v2";
+  "memory-semantic-adjudication-policy-v5";
 export const MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION =
-  "memory-semantic-adjudication-prompt-v4";
+  "memory-semantic-adjudication-prompt-v5";
 export const MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION =
   "memory-semantic-adjudication-schema-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME =
@@ -30,8 +34,8 @@ export const MEMORY_SEMANTIC_ADJUDICATION_VERSIONS: MemoryExecutionVersions =
     retrievalConfigFingerprint: memorySha256({
       maxCandidates: 4,
       maxContextRefs: 8,
-      source: "bounded-context-one-direct-user-target",
-      version: 3
+      source: "bounded-context-one-direct-user-target-with-confidence-tier-convergence",
+      version: 6
     }),
     schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION
   });
@@ -189,12 +193,58 @@ function criticalUnknown(candidate: MemoryExtractedCandidate): boolean {
     frame.memoryDirective === "UNKNOWN";
 }
 
+function characterTrigrams(value: string): ReadonlySet<string> {
+  const characters = [...normalizeMemorySearchText(value)];
+  if (characters.length < 3) return new Set(characters.length ? [characters.join("")] : []);
+  return new Set(Array.from(
+    { length: characters.length - 2 },
+    (_unused, index) => characters.slice(index, index + 3).join("")
+  ));
+}
+
+/** Candidate generation only: lexical overlap may request the governed
+ * semantic comparison, but never grants duplicate or mutation authority. */
+export function memoryPotentialDuplicateContext(
+  statement: string,
+  contextText: string
+): boolean {
+  const normalizedStatement = normalizeMemorySearchText(statement);
+  const normalizedContext = normalizeMemorySearchText(contextText);
+  if (!normalizedStatement || !normalizedContext) return false;
+  if (normalizedStatement === normalizedContext) return true;
+  const shorter = normalizedStatement.length <= normalizedContext.length
+    ? normalizedStatement
+    : normalizedContext;
+  const longer = shorter === normalizedStatement
+    ? normalizedContext
+    : normalizedStatement;
+  if (shorter.length >= 4 && longer.includes(shorter)) return true;
+  const statementTrigrams = characterTrigrams(normalizedStatement);
+  const contextTrigrams = characterTrigrams(normalizedContext);
+  if (statementTrigrams.size === 0 || contextTrigrams.size === 0) return false;
+  let overlap = 0;
+  for (const trigram of statementTrigrams) {
+    if (contextTrigrams.has(trigram)) overlap += 1;
+  }
+  return (2 * overlap) / (statementTrigrams.size + contextTrigrams.size) >= 0.18;
+}
+
 /** Conservative superset: all SLOT observations are adjudicated because only
  * apply-time state can prove whether they would create or move a pointer. */
 export function memoryCandidateRequiresSemanticAdjudication(
-  candidate: MemoryExtractedCandidate
+  candidate: MemoryExtractedCandidate,
+  contextRefs: readonly MemoryFactContextRef[] = []
 ): boolean {
-  if (candidate.confidenceBand === "MEDIUM") return false;
+  const factContexts = contextRefs.filter(({ kind }) => kind === "FACT_VERSION");
+  if (candidate.confidenceBand === "MEDIUM") {
+    return candidate.identityKind === "PROPOSITION" && factContexts.length > 0;
+  }
+  const duplicateComparisonRequired = factContexts.length > 0 && (
+    candidate.semanticFrame.memoryDirective === "EXPLICIT_REMEMBER" ||
+    candidate.identityKind === "PROPOSITION" ||
+    factContexts.some((context) =>
+      memoryPotentialDuplicateContext(candidate.displayText, context.text))
+  );
   return candidate.identityKind === "SLOT" || candidate.modality === "STATE" ||
     candidate.correction === true ||
     candidate.dependencies.length > 0 ||
@@ -202,22 +252,36 @@ export function memoryCandidateRequiresSemanticAdjudication(
       entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS") ||
     candidate.expirationIntent !== "NONE" ||
     candidate.semanticFrame.changeIntent !== "NONE" ||
-    criticalUnknown(candidate);
+    criticalUnknown(candidate) || duplicateComparisonRequired;
 }
 
 export function memorySemanticAuthorityAdmitsCandidate(
   candidate: MemoryExtractedCandidate,
-  decision: MemorySemanticAdjudication | null
+  decision: MemorySemanticAdjudication | null,
+  contextRefs: readonly MemoryFactContextRef[] = []
 ): boolean {
   const frame = candidate.semanticFrame;
   if (candidate.confidenceBand === "MEDIUM") {
-    return candidate.confidence === MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE &&
+    const baseAdmitted =
+      candidate.confidence === MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE &&
       candidate.identityKind === "PROPOSITION" && !candidate.coreEligible &&
       candidate.coreSalience === "NONE" && candidate.correction !== true &&
       frame.speechAct === "ASSERTION" && frame.assertionStatus === "ASSERTED" &&
       frame.subjectScope === "CURRENT_USER" && frame.polarity === "AFFIRMED" &&
       frame.temporalPerspective !== "UNKNOWN" && frame.changeIntent === "NONE" &&
-      frame.memoryDirective === "NONE" && decision === null;
+      frame.memoryDirective === "NONE";
+    if (!baseAdmitted) return false;
+    const requiresAdjudication = memoryCandidateRequiresSemanticAdjudication(
+      candidate,
+      contextRefs
+    );
+    if (!requiresAdjudication) return decision === null;
+    return decision !== null && decision.entailment === "ENTAILED" &&
+      decision.confidenceBand === "HIGH" &&
+      decision.subjectScope === "CURRENT_USER" &&
+      decision.assertionStatus === "ASSERTED" &&
+      decision.temporalPerspective !== "UNKNOWN" &&
+      (decision.operation === "NO_RELATION" || decision.operation === "REINFORCE");
   }
   if (candidate.confidenceBand !== "HIGH" || candidate.confidence !== 1) {
     return false;
@@ -233,7 +297,10 @@ export function memorySemanticAuthorityAdmitsCandidate(
     )) || (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION")) {
     return false;
   }
-  const requiresAdjudication = memoryCandidateRequiresSemanticAdjudication(candidate);
+  const requiresAdjudication = memoryCandidateRequiresSemanticAdjudication(
+    candidate,
+    contextRefs
+  );
   const subjectScope = requiresAdjudication
     ? decision?.subjectScope
     : candidate.semanticFrame.subjectScope;
@@ -262,7 +329,10 @@ export function memorySemanticAdjudicationInput(
   plan: MemoryFactExtractionPlan
 ): MemorySemanticAdjudicationInput | null {
   const candidateRefs = plan.candidates
-    .filter(memoryCandidateRequiresSemanticAdjudication)
+    .filter((candidate) => memoryCandidateRequiresSemanticAdjudication(
+      candidate,
+      plan.input.contextRefs
+    ))
     .map(({ candidateRef }) => candidateRef);
   if (candidateRefs.length === 0) return null;
   const inputHash = memorySha256({
@@ -542,6 +612,8 @@ export const MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT = [
   "Do not turn participation in a purchase, transfer, gift, recommendation, or setup into CURRENT_USER ownership. An item obtained for a distinct recipient is not thereby owned or kept by the current user.",
   "Questions, conditions, hypotheses, quotations, assistant claims, third-party claims, and ambiguous ownership are not current-user hard facts.",
   "Choose SUPERSEDE_TARGET only for an explicit current state change allowed by the supplied transition vocabulary; choose REINFORCE only for the same supported value.",
+  "Before NO_RELATION, compare the proposed statement with every FACT_VERSION context ref. For the same durable fact, including a paraphrase, grammatical-person rewrite, translation, or compatible representation, choose REINFORCE and copy that FACT_VERSION ref as target_ref.",
+  "Never use a MESSAGE context ref as target_ref. Different polarity, subject, object, material qualifier, temporal scope, or preference value is not a duplicate. If several FACT_VERSION refs are equally plausible canonical targets, return AMBIGUOUS rather than choosing one.",
   "reason_code is a bounded label, never an explanation."
 ].join("\n");
 

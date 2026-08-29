@@ -102,6 +102,7 @@ export type StoredProviderDraftCheck = Readonly<{
 export type ProviderActivationCandidate = Readonly<{
   connection: {
     configuration: unknown;
+    displayName: string;
     draftVersion: number;
     family: string;
     id: string;
@@ -120,6 +121,7 @@ export type ProviderActivationCandidate = Readonly<{
   draftChecks: readonly StoredProviderDraftCheck[];
   models: ReadonlyArray<{
     configuration: unknown;
+    displayName: string;
     draftVersion: number;
     id: string;
   }>;

@@ -7,7 +7,7 @@ import {
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v10" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v11" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -264,12 +264,10 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
   additionalProperties: false,
   properties: {
     action: {
-      description: "Use NONE for ordinary answers, including a broad personal-profile inventory. LIST is only explicit Saved Memories management, never an answer about what is known about the user.",
       enum: [...MEMORY_ACTION_INTENT_ACTIONS],
       type: "string"
     },
     aggregationRequested: {
-      description: "True only when the answer requires collecting, counting, comparing, ordering, or otherwise combining evidence from multiple separate prior chats or events.",
       type: "boolean"
     },
     applyResponsePreferences: { type: "boolean" },
@@ -310,16 +308,13 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     },
     memoryUseful: { type: "boolean" },
     patternExclusionRequested: {
-      description: "True only when the current user explicitly asks this answer to exclude inferred or recurring Memory. It is an opt-out signal and never grants retrieval authority.",
       type: "boolean"
     },
     pastChatsUseful: { type: "boolean" },
     profileRequested: {
-      description: "True only for a broad answer summarizing everything Personal Memory knows about the user; it requires action NONE, memoryUseful true, and recencyRequested false.",
       type: "boolean"
     },
     queryDecompositions: {
-      description: "Zero to two standalone retrieval subqueries for distinct evidence facets in a genuinely multi-part answer request. They supplement, never replace, queryText and the original user query.",
       items: {
         maxLength: MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH,
         minLength: 1,
@@ -329,7 +324,6 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       type: "array"
     },
     queryText: {
-      description: "A concise non-null semantic query whenever a NONE answer enables any retrieval control, including profileRequested.",
       maxLength: MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH,
       minLength: 1,
       type: ["string", "null"]

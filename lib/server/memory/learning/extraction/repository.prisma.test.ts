@@ -25,13 +25,20 @@ import {
   withLockedMemoryTransaction
 } from "../../persistence/transaction";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../../retrieval/vector";
-import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../../safetyLite";
+import {
+  memorySafetyLiteFactClassification,
+  MEMORY_SAFETY_LITE_POLICY_VERSION
+} from "../../safetyLite";
 import { defaultMemorySourceMutationHooks } from "../../sourceHooks";
 import {
   applyMemorySourceMutations,
   lockMemorySourceChat
 } from "../../sourceState";
 import { MemorySuppressionKeyring } from "../../suppressionKeyring";
+import {
+  MEMORY_EXPLICIT_PIPELINE_VERSION,
+  MEMORY_EXPLICIT_SOURCE_PROJECTION_VERSION
+} from "../../explicit/service";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
@@ -333,6 +340,174 @@ function extractionPlan(
     id: `fact-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
   }], input);
+}
+
+function preferencePlan(
+  input: MemoryFactExtractionInput,
+  quote: string,
+  statement: string,
+  explicitReminder = false,
+  confidenceBand: "HIGH" | "MEDIUM" = "HIGH"
+): MemoryFactExtractionPlan {
+  return decodeMemoryFactExtraction([{
+    arguments: {
+      observations: [{
+        candidate_ref: `C-${memorySha256({ quote, statement }).slice(0, 16)}`,
+        confidence_band: confidenceBand,
+        dependency_refs: [],
+        entities: [],
+        evidence: exactTextRef(quote),
+        future_useful: true,
+        identity: {
+          dimension_key: null,
+          mode: "PROPOSITION",
+          predicate_key: null,
+          subject: {
+            canonical_label: null,
+            entity_type: "NONE",
+            qualifiers: { brand: null, model: null }
+          }
+        },
+        memory_type: "PREFERENCE",
+        reason_code: "durable_direct_preference",
+        semantic_frame: {
+          assertion_status: "ASSERTED",
+          change_intent: "NONE",
+          memory_directive: explicitReminder ? "EXPLICIT_REMEMBER" : "NONE",
+          polarity: "AFFIRMED",
+          speech_act: explicitReminder ? "COMMAND" : "ASSERTION",
+          subject_scope: "CURRENT_USER",
+          temporal_perspective: "CURRENT"
+        },
+        sensitivity: "NORMAL",
+        statement,
+        temporal: {
+          expiration_intent: "NONE",
+          normalization: { kind: "NONE" },
+          perspective: "CURRENT",
+          raw_expression: null
+        },
+        temporary: false,
+        value: emptyObservationValue
+      }]
+    },
+    id: `fact-call-${randomUUID()}`,
+    name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+  }], input);
+}
+
+async function createExplicitPreferenceFact(
+  userId: string,
+  statement: string,
+  observedAt: Date
+): Promise<Readonly<{ factId: string; versionId: string }>> {
+  const scope = await prisma.memoryScope.create({
+    data: { scopeType: "GLOBAL_USER", userId }
+  });
+  const factId = randomUUID();
+  const versionId = randomUUID();
+  const eventId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryFact.create({
+      data: {
+        canonicalKey: `custom.${memorySha256({
+          normalizedStatement: normalizeMemorySearchText(statement),
+          version: "memory-explicit-custom-key-v1"
+        }).slice(0, 48)}`,
+        category: "preferences",
+        id: factId,
+        lastConfirmedAt: observedAt,
+        scopeId: scope.id,
+        state: "ORPHANED",
+        userId
+      }
+    });
+    await tx.memoryEvent.create({
+      data: {
+        actorType: "USER",
+        actorUserId: userId,
+        factId,
+        factVersionId: versionId,
+        id: eventId,
+        operation: "EXPLICIT_SAVE",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.create({
+      data: {
+        category: "preferences",
+        confidence: 1,
+        createdByEventId: eventId,
+        directness: "DIRECT",
+        displayText: statement,
+        factId,
+        id: versionId,
+        importance: 1,
+        languageCode: "und",
+        modality: "PREFERENCE",
+        normalizedSearchText: normalizeMemorySearchText(statement),
+        pipelineVersion: MEMORY_EXPLICIT_PIPELINE_VERSION,
+        ...memorySafetyLiteFactClassification(observedAt),
+        sensitivityClass: "NORMAL",
+        sourceMode: "EXPLICIT",
+        state: "ACTIVE",
+        structuredValue: {
+          kind: "explicit_statement",
+          statement
+        },
+        userId
+      }
+    });
+    await tx.memoryEvidence.create({
+      data: {
+        factVersionId: versionId,
+        memoryEventId: eventId,
+        observedAt,
+        safeExcerpt: statement,
+        safeSourceHash: memorySha256(statement),
+        safetyClass: "NORMAL",
+        sourceProjectionVersion: MEMORY_EXPLICIT_SOURCE_PROJECTION_VERSION,
+        sourceType: "EXPLICIT_ACTION",
+        stance: "SUPPORTS",
+        userId
+      }
+    });
+    await tx.memoryFact.update({
+      data: { currentVersionId: versionId, state: "ACTIVE" },
+      where: { id: factId }
+    });
+  });
+  return { factId, versionId };
+}
+
+function reinforcementPacket(
+  plan: MemoryFactExtractionPlan,
+  targetVersionId: string
+): MemorySemanticAdjudicationPacket {
+  const input = memorySemanticAdjudicationInput(plan);
+  const candidate = plan.candidates[0];
+  const target = plan.input.contextRefs.find(({ source }) =>
+    source.factVersionId === targetVersionId);
+  if (!input || !candidate || !target) {
+    throw new Error("memory_duplicate_test_context_missing");
+  }
+  const decisions: MemorySemanticAdjudication[] = [{
+    assertionStatus: "ASSERTED",
+    candidateRef: candidate.candidateRef,
+    confidenceBand: "HIGH",
+    entailment: "ENTAILED",
+    entityRef: null,
+    operation: "REINFORCE",
+    reasonCode: "semantic_duplicate",
+    subjectScope: "CURRENT_USER",
+    targetRef: target.ref,
+    temporalPerspective: candidate.semanticFrame.temporalPerspective
+  }];
+  return {
+    decisions,
+    inputHash: input.inputHash,
+    outputHash: memorySemanticAdjudicationOutputHash(input.inputHash, decisions)
+  };
 }
 
 function contextualProductPlan(
@@ -645,9 +820,11 @@ async function semanticAdjudicationForPlan(
       AND version."systemTo" IS NULL
   `);
   const decisions: MemorySemanticAdjudication[] = [];
-  for (const candidate of plan.candidates.filter(
-    memoryCandidateRequiresSemanticAdjudication
-  )) {
+  for (const candidate of plan.candidates.filter((candidate) =>
+    memoryCandidateRequiresSemanticAdjudication(
+      candidate,
+      plan.input.contextRefs
+    ))) {
     const current = active.find(({ canonicalKey }) =>
       canonicalKey === candidate.canonicalKey) ??
       (candidate.predicateKey === "product_status"
@@ -696,9 +873,12 @@ async function applyPlan(
   claim: MemoryJobClaim,
   plan: MemoryFactExtractionPlan,
   bindingId: string,
-  now = new Date()
+  now = new Date(),
+  adjudicationOverride?: MemorySemanticAdjudicationPacket | null
 ) {
-  const adjudication = await semanticAdjudicationForPlan(userId, plan);
+  const adjudication = adjudicationOverride === undefined
+    ? await semanticAdjudicationForPlan(userId, plan)
+    : adjudicationOverride;
   await stagePlanOnly(userId, claim, plan, bindingId, now);
   return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
     repository().apply(
@@ -2447,6 +2627,178 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await expect(prisma.memoryEvent.count({
         where: { factVersionId: versionId, operation: "REINFORCE", userId }
       })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("converges an automatic paraphrase on an explicit fact across canonical keys", async () => {
+    const userId = await createOwner("explicit-semantic-duplicate");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Explicit semantic duplicate", userId }
+      });
+      const quote = "Запомни, что я люблю кофе.";
+      const turn = await createTurn({
+        assistantText: "Запомнил.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-23T11:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: quote
+      });
+      await settleChat(userId, chat.id, turn);
+      const explicit = await createExplicitPreferenceFact(
+        userId,
+        "Я люблю кофе.",
+        turn.userMessage.createdAt
+      );
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const source = await prepare(claim);
+      expect(source.contextRefs.some(({ source }) =>
+        source.factVersionId === explicit.versionId)).toBe(true);
+      const plan = preferencePlan(
+        source,
+        quote,
+        "Пользователь любит кофе.",
+        true
+      );
+      const explicitFact = await prisma.memoryFact.findUniqueOrThrow({
+        select: { canonicalKey: true },
+        where: { id: explicit.factId }
+      });
+      expect(plan.candidates[0]?.canonicalKey).not.toBe(explicitFact.canonicalKey);
+      const bindingId = await createSucceededBinding(
+        userId,
+        claim,
+        source.inputHash,
+        plan.outputHash
+      );
+      await expect(applyPlan(
+        userId,
+        claim,
+        plan,
+        bindingId,
+        new Date("2026-08-23T11:01:00.000Z"),
+        reinforcementPacket(plan, explicit.versionId)
+      )).resolves.toBe("APPLIED");
+
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryFactVersion.findMany({ where: { userId } }))
+        .resolves.toMatchObject([{
+          id: explicit.versionId,
+          sourceMode: "EXPLICIT",
+          state: "ACTIVE"
+        }]);
+      await expect(prisma.memoryEvidence.count({
+        where: { factVersionId: explicit.versionId, userId }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        select: { outcome: true },
+        where: { userId }
+      })).resolves.toEqual([{ outcome: "REINFORCED" }]);
+      await expect(prisma.memoryEvent.count({
+        where: {
+          factVersionId: explicit.versionId,
+          operation: "REINFORCE",
+          userId
+        }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("converges paraphrased automatic observations across canonical keys", async () => {
+    const userId = await createOwner("automatic-semantic-duplicate");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Automatic semantic duplicate", userId }
+      });
+      const first = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-23T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I prefer coffee."
+      });
+      await settleChat(userId, chat.id, first);
+      const firstClaim = await claimFactJob(userId, first.userMessage.id);
+      const firstInput = await prepare(firstClaim);
+      const firstPlan = preferencePlan(
+        firstInput,
+        "I prefer coffee.",
+        "The user prefers coffee."
+      );
+      const firstBinding = await createSucceededBinding(
+        userId,
+        firstClaim,
+        firstInput.inputHash,
+        firstPlan.outputHash
+      );
+      await expect(applyPlan(
+        userId,
+        firstClaim,
+        firstPlan,
+        firstBinding,
+        new Date("2026-08-23T12:00:30.000Z")
+      )).resolves.toBe("APPLIED");
+      const firstVersion = await prisma.memoryFactVersion.findFirstOrThrow({
+        where: { userId }
+      });
+
+      const second = await createTurn({
+        assistantText: "Got it.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-23T12:01:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: "Coffee is something I like."
+      });
+      await settleChat(userId, chat.id, second);
+      const secondClaim = await claimFactJob(userId, second.userMessage.id);
+      const secondInput = await prepare(secondClaim);
+      expect(secondInput.contextRefs.some(({ source }) =>
+        source.factVersionId === firstVersion.id)).toBe(true);
+      const secondPlan = preferencePlan(
+        secondInput,
+        "Coffee is something I like.",
+        "The user likes coffee.",
+        false,
+        "MEDIUM"
+      );
+      expect(secondPlan.candidates[0]?.canonicalKey)
+        .not.toBe(firstPlan.candidates[0]?.canonicalKey);
+      const secondBinding = await createSucceededBinding(
+        userId,
+        secondClaim,
+        secondInput.inputHash,
+        secondPlan.outputHash
+      );
+      await expect(applyPlan(
+        userId,
+        secondClaim,
+        secondPlan,
+        secondBinding,
+        new Date("2026-08-23T12:01:30.000Z"),
+        reinforcementPacket(secondPlan, firstVersion.id)
+      )).resolves.toBe("APPLIED");
+
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryFactVersion.count({ where: { userId } }))
+        .resolves.toBe(1);
+      await expect(prisma.memoryEvidence.count({
+        where: { factVersionId: firstVersion.id, userId }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { outcome: true },
+        where: { userId }
+      })).resolves.toEqual([
+        { outcome: "APPLIED" },
+        { outcome: "REINFORCED" }
+      ]);
     } finally {
       await cleanupOwner(userId);
     }

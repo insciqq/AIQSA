@@ -60,8 +60,12 @@ const patternPreamble =
   "source_authority derived_pattern is a cautious derived tendency, never a hard current fact. Use it only with its attached direct supports; a newer contradictory user_saved or learned_from_user fact wins.";
 
 export const MEMORY_CONTEXT_AGGREGATION_GUIDANCE = [
-  "This request needs evidence from multiple independent sources. Combine every relevant listed event before counting, comparing, ordering, or concluding that the history is incomplete.",
-  "Keep set members, temporal boundaries, and supporting facts distinct. A later bounded evidence plan may replace this generic guidance."
+  "READER-FIRST MEMORY AGGREGATION — reason only from the bounded evidence below.",
+  "Identify the requested predicate, set, or relation. Inspect every evidence item and internally enumerate every candidate occurrence before counting, comparing, ordering, or concluding that the history is incomplete.",
+  "Classify occurrences as members, temporal boundaries, supporting context, or exclusions. Count only distinct members.",
+  "Merge duplicate descriptions only when the evidence supports that they describe the same real-world occurrence; do not merge distinct occurrences merely because they share a date, type, or source.",
+  "Use an explicit aggregate cardinality only when exact evidence states it. Never derive a total from the query or count a date, identifier, ordinal, rate, duration, list position, or version number.",
+  "If completeness or overlap is not supported by the evidence, state the uncertainty instead of inventing an exact total."
 ].join("\n");
 
 type SectionedItem = Readonly<{

@@ -5,6 +5,8 @@ import {
 } from "../../../contracts/memoryActionIntent";
 import {
   MEMORY_CONTROL_PIPELINE_VERSION,
+  MEMORY_CONTROL_REASONING_EFFORT,
+  MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
   MEMORY_CONTROL_VERSIONS,
   MEMORY_READ_ONLY_CONTROL_REUSE_VERSION,
   MemoryControlProviderCallError,
@@ -12,6 +14,7 @@ import {
   createMemoryReadOnlyControlReuseProof,
   decodeMemoryReadOnlyControlReuseProof
 } from "./controlRuntime";
+import type { MemoryLearningProviderResult } from "../learning/providerRuntime";
 
 const profileIntent: MemoryActionIntent = {
   action: "NONE",
@@ -46,12 +49,14 @@ const profileIntent: MemoryActionIntent = {
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v17");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v22");
+    expect(MEMORY_CONTROL_REASONING_EFFORT).toBe("low");
+    expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v17",
-      policyVersion: "memory-control-policy-v17",
-      promptVersion: "memory-control-prompt-v23",
-      schemaVersion: "memory-action-intent-v10"
+      pipelineVersion: "memory-control-v22",
+      policyVersion: "memory-control-policy-v22",
+      promptVersion: "memory-control-prompt-v25",
+      schemaVersion: "memory-action-intent-v11"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(7);
   });
@@ -201,6 +206,94 @@ describe("Memory control runtime contract", () => {
       );
     }
   );
+
+  it("cancels the binding promptly and discards a late provider result", async () => {
+    let releaseProvider!: (value: MemoryLearningProviderResult) => void;
+    const run = vi.fn(() => new Promise<MemoryLearningProviderResult>((resolve) => {
+      releaseProvider = resolve;
+    }));
+    const settle = vi.fn(async () => undefined);
+    const withAuthorizedResultCommit = vi.fn();
+    const service = createMemoryControlService({
+      execution: {
+        admission: {
+          bind: vi.fn(async () => ({ id: "control-binding" })),
+          start: vi.fn(async () => ({
+            bindingId: "control-binding",
+            snapshot: {
+              logicalRole: "MEMORY_CONTROL",
+              providerExecutionSnapshot: {
+                connectionId: "connection-1",
+                credentialId: "credential-1",
+                credentialVersionId: "credential-version-1",
+                providerModelId: "model-1"
+              },
+              requiresStrictStructuredOutput: true
+            }
+          }))
+        },
+        lifecycle: { settle, withAuthorizedResultCommit }
+      } as never,
+      provider: { run }
+    });
+    const controller = new AbortController();
+    const pending = service.decide({
+      attemptId: "attempt-1",
+      context: {
+        capabilities: {
+          automaticLearning: true,
+          historyRecall: true,
+          memoryEnabled: true
+        },
+        currentUserMessage: "What are my current preferences?"
+      },
+      signal: controller.signal,
+      userId: "user-1"
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    controller.abort(new Error("interactive_budget_expired"));
+
+    const promptOutcome = await Promise.race([
+      pending.then((value) => ({ kind: "result" as const, value })),
+      new Promise<{ kind: "pending" }>((resolve) =>
+        setTimeout(() => resolve({ kind: "pending" }), 50))
+    ]);
+    releaseProvider({
+      providerResponseId: "late-response",
+      toolCalls: [{
+        arguments: profileIntent,
+        id: "late-call",
+        name: MEMORY_ACTION_INTENT_NAME
+      }],
+      usage: {
+        cachedInputTokens: 0,
+        inputTokens: 10,
+        outputTokens: 5,
+        reasoningTokens: 0,
+        totalTokens: 15
+      }
+    });
+    await Promise.resolve();
+
+    expect(promptOutcome).toMatchObject({
+      kind: "result",
+      value: {
+        bindingId: "control-binding",
+        reason: "memory_action_intent_outcome_unknown",
+        status: "UNAVAILABLE"
+      }
+    });
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith(
+      "user-1",
+      "control-binding",
+      expect.objectContaining({
+        errorCode: "memory_action_intent_outcome_unknown",
+        state: "CANCELLED"
+      })
+    );
+    expect(withAuthorizedResultCommit).not.toHaveBeenCalled();
+  });
 
   it("redacts recognized secrets in provider output before binding the intent", async () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";

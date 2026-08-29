@@ -8,11 +8,22 @@ export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
 
 export type AdminRerankerModelCandidate = AdminModelDefaultCandidate;
 
+export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
+  available: boolean;
+  position: number;
+  relevanceScoreFloor: number | null;
+  role: "fallback" | "primary";
+};
+
 export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
   rerankerCandidates: AdminRerankerModelCandidate[];
   policy: {
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
+    rerankerRoute?: {
+      entries: AdminRerankerRouteEntry[];
+      policyVersion: "openrouter-reranker-route-v1";
+    };
     reasoningEffort: string | null;
     systemModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     updatedAt: string;
@@ -67,11 +78,25 @@ export function decodeAdminSystemModelPolicyResponse(
   const reasoningEffort = policy.reasoningEffort;
   const systemModel = policy.systemModel;
   const rerankerModel = policy.rerankerModel;
+  const rerankerRoute = policy.rerankerRoute;
   const updatedBy = policy.updatedBy;
   if ((systemModel !== null && (!record(systemModel) || !candidate(systemModel) ||
       typeof (systemModel as Record<string, unknown>).available !== "boolean")) ||
     (rerankerModel !== null && (!record(rerankerModel) || !baseCandidate(rerankerModel) ||
       typeof (rerankerModel as Record<string, unknown>).available !== "boolean")) ||
+    (rerankerRoute !== undefined && (!record(rerankerRoute) ||
+      rerankerRoute.policyVersion !== "openrouter-reranker-route-v1" ||
+      !Array.isArray(rerankerRoute.entries) ||
+      rerankerRoute.entries.length > 3 ||
+      !rerankerRoute.entries.every((entry, index) =>
+        record(entry) && baseCandidate(entry) &&
+        typeof entry.available === "boolean" &&
+        entry.position === index &&
+        entry.role === (index === 0 ? "primary" : "fallback") &&
+        (entry.relevanceScoreFloor === null ||
+          typeof entry.relevanceScoreFloor === "number" &&
+          Number.isFinite(entry.relevanceScoreFloor) &&
+          entry.relevanceScoreFloor >= 0 && entry.relevanceScoreFloor <= 1)))) ||
     (systemModel === null && reasoningEffort !== null) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
@@ -87,6 +112,11 @@ export function decodeAdminSystemModelPolicyResponse(
         reasoningEffort: reasoningEffort as string | null,
         rerankerModel: rerankerModel as
           (AdminRerankerModelCandidate & { available: boolean }) | null,
+        ...(rerankerRoute === undefined ? {} : {
+          rerankerRoute: rerankerRoute as NonNullable<
+            AdminSystemModelPolicyCatalog["policy"]["rerankerRoute"]
+          >
+        }),
         systemModel: systemModel as
           (AdminSystemModelCandidate & { available: boolean }) | null,
         updatedAt: policy.updatedAt,
