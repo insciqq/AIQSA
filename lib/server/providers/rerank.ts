@@ -20,6 +20,13 @@ import {
   type ProviderCredentialSource
 } from "./providerCredentialSource";
 import { createProviderSafeFetch } from "./providerSafeFetch";
+import {
+  executeWithProviderRetry,
+  isRetryableProviderHttpStatus,
+  isRetryableProviderNetworkError,
+  type ProviderRetryDecision,
+  type ProviderRetryOptions
+} from "./providerRetry";
 import { parseRetryAfterMs } from "../retryAfter";
 
 export const MAX_RERANK_DOCUMENTS = 96;
@@ -100,7 +107,23 @@ export class RerankAdapterError extends Error {
 type RerankNetworkOptions = Readonly<{
   fetchFn?: typeof fetch;
   responseMaxBytes?: number;
+  retry?: ProviderRetryOptions;
 }>;
+
+function rerankRetryDecision(
+  error: unknown,
+  signal: AbortSignal
+): ProviderRetryDecision | null {
+  if (signal.aborted || error instanceof ProviderResponseTooLargeError ||
+    isProviderDeadlineExceededError(error)) return null;
+  if (error instanceof RerankAdapterError) {
+    return error.code === "rerank_provider_http_error" &&
+      isRetryableProviderHttpStatus(error.httpStatus)
+      ? { retryAfterMs: error.retryAfterMs }
+      : null;
+  }
+  return isRetryableProviderNetworkError(error) ? { retryAfterMs: null } : null;
+}
 
 /**
  * "lenient" (default) keeps the valid unique in-range subset of returned
@@ -321,43 +344,50 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
           input.secret,
           "rerank_provider_request_failed"
         );
-        const response = await fetchFn(providerRequestEndpoint(
-          connection,
-          "openrouter_rerank"
-        ), {
-          body: serialized,
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${secret}`,
-            "content-type": "application/json"
+        return await executeWithProviderRetry({
+          operation: async () => {
+            const response = await fetchFn(providerRequestEndpoint(
+              connection,
+              "openrouter_rerank"
+            ), {
+              body: serialized,
+              headers: {
+                accept: "application/json",
+                authorization: `Bearer ${secret}`,
+                "content-type": "application/json"
+              },
+              method: "POST",
+              redirect: "error",
+              signal: timeout.signal
+            });
+            const text = await readBoundedResponseText(response, {
+              maxBytes: responseMaxBytes,
+              signal: timeout.signal
+            });
+            if (!response.ok) {
+              throw new RerankAdapterError("rerank_provider_http_error", {
+                httpStatus: response.status,
+                retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
+              });
+            }
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(text) as unknown;
+            } catch {
+              throw new RerankAdapterError("rerank_response_invalid");
+            }
+            return responseBody(
+              parsed,
+              documents,
+              model,
+              boundedIdentifier(response.headers.get("x-request-id")),
+              validation
+            );
           },
-          method: "POST",
-          redirect: "error",
+          options: input.network?.retry,
+          shouldRetry: (error) => rerankRetryDecision(error, timeout.signal),
           signal: timeout.signal
         });
-        const text = await readBoundedResponseText(response, {
-          maxBytes: responseMaxBytes,
-          signal: timeout.signal
-        });
-        if (!response.ok) {
-          throw new RerankAdapterError("rerank_provider_http_error", {
-            httpStatus: response.status,
-            retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
-          });
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(text) as unknown;
-        } catch {
-          throw new RerankAdapterError("rerank_response_invalid");
-        }
-        return responseBody(
-          parsed,
-          documents,
-          model,
-          boundedIdentifier(response.headers.get("x-request-id")),
-          validation
-        );
       } catch (error) {
         if (error instanceof RerankAdapterError) throw error;
         if (error instanceof ProviderResponseTooLargeError) {

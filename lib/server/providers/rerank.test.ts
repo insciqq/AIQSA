@@ -68,7 +68,11 @@ function adapter(fetchFn: typeof fetch, responseMaxBytes?: number) {
   return createOpenRouterRerankAdapter({
     connection,
     model: rerankerModel(),
-    network: { fetchFn, ...(responseMaxBytes ? { responseMaxBytes } : {}) },
+    network: {
+      fetchFn,
+      ...(responseMaxBytes ? { responseMaxBytes } : {}),
+      retry: { sleep: async () => undefined }
+    },
     secret: "openrouter-secret"
   });
 }
@@ -77,7 +81,7 @@ function strictAdapter(fetchFn: typeof fetch) {
   return createOpenRouterRerankAdapter({
     connection,
     model: rerankerModel(),
-    network: { fetchFn },
+    network: { fetchFn, retry: { sleep: async () => undefined } },
     secret: "openrouter-secret",
     validation: "strict"
   });
@@ -214,7 +218,7 @@ describe("OpenRouter reranker adapter", () => {
     })).rejects.toMatchObject({ code: "rerank_response_model_mismatch" });
   });
 
-  it("does not retry or enable provider fallback after an upstream failure", async () => {
+  it("bounds transient retries and never enables provider fallback", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", {
       headers: { "retry-after": "2" },
       status: 503
@@ -227,9 +231,11 @@ describe("OpenRouter reranker adapter", () => {
       httpStatus: 503,
       retryAfterMs: 2_000
     });
-    expect(fetchFn).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)))
-      .toMatchObject({ provider: { allow_fallbacks: false } });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    for (const call of fetchFn.mock.calls) {
+      expect(JSON.parse(String(call[1]?.body)))
+        .toMatchObject({ provider: { allow_fallbacks: false } });
+    }
   });
 
   it("bounds document count and the full serialized request before network I/O", async () => {
@@ -312,7 +318,36 @@ describe("OpenRouter reranker adapter", () => {
     }
   );
 
-  it("surfaces 429 with its retry-after hint without retrying", async () => {
+  it("retries 429 with its Retry-After hint and succeeds on the same route", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("limited", {
+        headers: { "retry-after": "7" },
+        status: 429
+      }))
+      .mockResolvedValueOnce(response({
+        results: [{ index: 0, relevance_score: 0.5 }]
+      }));
+    const reranker = createOpenRouterRerankAdapter({
+      connection,
+      model: rerankerModel(),
+      network: { fetchFn, retry: { sleep } },
+      secret: "openrouter-secret"
+    });
+
+    await expect(reranker.rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({ scores: [{ handle: "c0", index: 0 }] });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(7_000, expect.any(AbortSignal));
+    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://openrouter.ai/api/v1/rerank",
+      "https://openrouter.ai/api/v1/rerank"
+    ]);
+  });
+
+  it("surfaces 429 after bounded retries are exhausted", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response("limited", {
       headers: { "retry-after": "7" },
       status: 429
@@ -325,7 +360,7 @@ describe("OpenRouter reranker adapter", () => {
       httpStatus: 429,
       retryAfterMs: 7_000
     });
-    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(fetchFn).toHaveBeenCalledTimes(4);
   });
 
   it("falls back to the response header request ID when the body has none", async () => {
@@ -390,10 +425,10 @@ describe("OpenRouter reranker adapter", () => {
       code: "rerank_provider_http_error",
       httpStatus: 500
     });
-    expect(fetchFn).toHaveBeenCalledOnce();
-    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual([
-      "https://openrouter.ai/api/v1/rerank"
-    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual(
+      Array.from({ length: 4 }, () => "https://openrouter.ai/api/v1/rerank")
+    );
   });
 
   it("rejects malformed usage without fabricating accounting", async () => {

@@ -16,7 +16,7 @@ import {
 } from "./contract";
 
 const HEALTH_TIMEOUT_MS = 3_000;
-const SEARCH_TIMEOUT_MS = 3_000;
+const SEARCH_TIMEOUT_MS = 10_000;
 const WRITE_TIMEOUT_MS = 30_000;
 const SMALL_RESPONSE_MAX_BYTES = 1024 * 1024;
 const BULK_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
@@ -711,7 +711,7 @@ export class AiqsaOpenSearchTransport {
           }
         },
         size: KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT,
-        timeout: "3s",
+        timeout: `${SEARCH_TIMEOUT_MS}ms`,
         track_total_hits: false
       })
     ]);
