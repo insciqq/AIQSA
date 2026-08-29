@@ -144,6 +144,21 @@ can be diagnosed without retaining private Memory text. Every summary records
 the fixed pre-SOTA baseline configuration and the active versioned retrieval
 configuration for comparison.
 
+Each terminal case is first written atomically to its private mode-`0600`
+`case-checkpoints/QUESTION_ID.json` journal. A retry appends another attempt
+with its bounded reason code and effective case/session concurrency instead of
+overwriting the earlier diagnosis. Only after the checkpoint is durable does
+the runner emit `case_complete` or `case_failed`; at batch completion it rebuilds
+`answers.jsonl` in frozen selection order from the latest attempt for each case.
+Resume an interrupted run with the identical selection, semantic runtime, and
+output directory by adding `--resume`. Terminal cases are skipped by default;
+add `--retry-unhealthy` to rerun only execution failures and completed non-`USED`
+Memory outcomes while retaining every prior attempt. For an explicitly internal,
+non-leaderboard resume, `--resume-case-concurrency N` may change only independent
+case scheduling; the override is recorded in the summary and every attempt.
+These resume controls do not weaken the paid/disposable guards or permit any
+other qualification-manifest override.
+
 To verify the selected OpenRouter embedding deployment accepts a ten-input
 batch without exposing input or vector content, run the guarded capability
 probe against the disposable stack:

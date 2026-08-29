@@ -334,6 +334,8 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   componentMetricsVersion: string | null;
   digestHits: number | null;
   embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
+  failureClass: string | null;
+  failureCode: string | null;
   hardCapTokens: number | null;
   itemCount: number | null;
   mode: string | null;
@@ -580,6 +582,11 @@ export function sanitizeLongMemEvalRetrievalAudit(
     digestHits: nonNegativeInteger(component.digestHits),
     embeddingBatchSizeDistribution:
       sanitizedCounts(component.embeddingBatchSizeDistribution),
+    failureClass: uppercaseCode(budget.failureClass),
+    failureCode: typeof budget.failureCode === "string" &&
+      /^memory_[a-z0-9_]{1,96}$/u.test(budget.failureCode)
+      ? budget.failureCode
+      : null,
     hardCapTokens: nonNegativeInteger(budget.hardCapTokens),
     itemCount: nonNegativeInteger(budget.itemCount),
     mode,

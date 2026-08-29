@@ -65,10 +65,13 @@ import {
 } from "./runUtilityRuntime";
 import { sanitizeMemoryUtilityText } from "./querySafety";
 import {
+  isMemoryAggregationOutputFailureCode,
   MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY,
   MEMORY_AGGREGATION_OPERATIONS,
+  MEMORY_AGGREGATION_OUTPUT_FAILURE_CODES,
   MEMORY_AGGREGATION_RESOLUTIONS,
   MEMORY_AGGREGATION_ROLES,
+  type MemoryAggregationOutputFailureCode,
   type MemoryAggregationPlan
 } from "./aggregation";
 
@@ -77,7 +80,7 @@ export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v26";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
-  "memory-evidence-aggregation-v7";
+  "memory-evidence-aggregation-v12";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 2;
 // Remote embedding engines commonly reserve a 30-second request window. The
 // enclosing optional-role signal remains authoritative and clamps this window
@@ -94,18 +97,19 @@ export const MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES =
 export const MEMORY_RERANK_AGGREGATION_MAX_BATCHES = Math.ceil(
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES / MEMORY_RERANK_AGGREGATION_BATCH_SIZE
 );
-export const MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES = 3;
+export const MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES = 4;
 export const MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES = 16 * 1024;
 export const MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS =
   MEMORY_RERANK_TARGETED_MAX_CANDIDATES * 4_000;
 export const MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS =
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES * 4_000;
-export const MEMORY_AGGREGATION_MAX_ATTEMPTS = 2;
-export const MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS = 24;
+export const MEMORY_AGGREGATION_MAX_ATTEMPTS = 3;
+export const MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS = 10;
 export const MEMORY_AGGREGATION_MAX_INPUT_EVIDENCE_ITEMS =
   MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS;
 export const MEMORY_AGGREGATION_MAX_MAP_BATCHES = 4;
-export const MEMORY_AGGREGATION_MAX_PARALLEL_MAP_BATCHES = 3;
+export const MEMORY_AGGREGATION_MAX_PARALLEL_MAP_BATCHES = 4;
+export const MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS = 36_000;
 export const MEMORY_AGGREGATION_MAX_REDUCTION_GROUPS = 60;
 export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 0;
 
@@ -163,8 +167,8 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
 
 export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_AGGREGATION_PIPELINE_VERSION,
-  policyVersion: "memory-evidence-aggregation-policy-v7",
-  promptVersion: "memory-evidence-aggregation-prompt-v6",
+  policyVersion: "memory-evidence-aggregation-policy-v12",
+  promptVersion: "memory-evidence-aggregation-prompt-v8",
   retrievalConfigFingerprint: memoryExecutionSha256({
     completeEvidenceView: "bounded_map_reduce_all_reader_items",
     exactOccurrenceGrounding: true,
@@ -173,6 +177,7 @@ export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freez
     maxEvidenceItems: MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS,
     maxInputEvidenceItems: MEMORY_AGGREGATION_MAX_INPUT_EVIDENCE_ITEMS,
     maxMapBatches: MEMORY_AGGREGATION_MAX_MAP_BATCHES,
+    mapMaxPromptCharacters: MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS,
     maxParallelMapBatches: MEMORY_AGGREGATION_MAX_PARALLEL_MAP_BATCHES,
     maxReductionGroups: MEMORY_AGGREGATION_MAX_REDUCTION_GROUPS,
     maxOutputTokens: 4_096,
@@ -184,8 +189,13 @@ export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freez
     serverComputedMemberCount: "sum_grounded_quantities",
     toolObservationContract: "separate_lower_authority_source_kind",
     transientReadOnlyRetry:
-      "one_fresh_binding_same_snapshot_after_transport_uncertainty",
-    version: 7
+      "up_to_two_fresh_bindings_same_snapshot_with_persistent_validation_feedback",
+    validationFailureCodes: MEMORY_AGGREGATION_OUTPUT_FAILURE_CODES,
+    validationRepairReasons: ["QUANTITY_MISMATCH"],
+    validationRepairConstraint:
+      "quantity_zero_or_one_non_resolved_grounded_occurrences",
+    validationRepairReasoningEffort: "low",
+    version: 12
   }),
   schemaVersion: "memory-evidence-aggregation-result-v2"
 });
@@ -371,6 +381,19 @@ const retryableTextUtilityReasons = new Set([
   "memory_run_utility_provider_failed"
 ]);
 
+function retryableTextUtilityReason(reason: string): boolean {
+  return retryableTextUtilityReasons.has(reason) ||
+    isMemoryAggregationOutputFailureCode(reason);
+}
+
+function aggregationRepairReason(
+  reason: string
+): MemoryAggregationUtilityProviderInput["repairReason"] {
+  return reason === "memory_aggregation_output_quantity_mismatch"
+    ? "QUANTITY_MISMATCH"
+    : null;
+}
+
 const retryableDedicatedRerankReasons = new Set([
   "memory_run_utility_output_invalid",
   "memory_reranker_outcome_unknown",
@@ -532,7 +555,8 @@ type UtilityProviderToolCalls = Awaited<
 function aggregationProviderInput(
   input: AggregationInput,
   completeEvidenceView: boolean,
-  aggregationPhase: MemoryAggregationUtilityProviderInput["aggregationPhase"]
+  aggregationPhase: MemoryAggregationUtilityProviderInput["aggregationPhase"],
+  repairReason: MemoryAggregationUtilityProviderInput["repairReason"] = null
 ): MemoryAggregationUtilityProviderInput {
   return {
     aggregationPhase,
@@ -540,6 +564,7 @@ function aggregationProviderInput(
     evidence: input.evidence,
     kind: "AGGREGATE",
     query: input.query,
+    repairReason,
     role: "MEMORY_AGGREGATE"
   };
 }
@@ -559,8 +584,11 @@ function partitionAggregationProviderInputs(
     const proposedInput = { ...input, evidence: proposed };
     const withinItemLimit = proposed.length <= MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS;
     const withinPromptLimit = memoryRunUtilityPromptCharacters(
-      aggregationProviderInput(proposedInput, false, "MAP")
-    ) <= MEMORY_RERANK_MAX_PROMPT_CHARACTERS;
+      aggregationProviderInput(proposedInput, false, "MAP", "QUANTITY_MISMATCH")
+    ) <= Math.min(
+      MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS,
+      MEMORY_RERANK_MAX_PROMPT_CHARACTERS
+    );
     if (withinItemLimit && withinPromptLimit) {
       current = proposed;
       continue;
@@ -571,8 +599,12 @@ function partitionAggregationProviderInputs(
     if (memoryRunUtilityPromptCharacters(aggregationProviderInput(
       { ...input, evidence: current },
       false,
-      "MAP"
-    )) > MEMORY_RERANK_MAX_PROMPT_CHARACTERS) return null;
+      "MAP",
+      "QUANTITY_MISMATCH"
+    )) > Math.min(
+      MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS,
+      MEMORY_RERANK_MAX_PROMPT_CHARACTERS
+    )) return null;
   }
   if (current.length > 0) batches.push(current);
   if (batches.length < 1 || batches.length > MEMORY_AGGREGATION_MAX_MAP_BATCHES) {
@@ -1035,95 +1067,151 @@ function decodeDedicatedRerank(
     : null;
 }
 
+type MemoryTextUtilityDecodeResult<T> = Readonly<{
+  errorCode: string | null;
+  output: T | null;
+}>;
+
+function invalidAggregationOutput(
+  errorCode: MemoryAggregationOutputFailureCode
+): MemoryTextUtilityDecodeResult<MemoryAggregationPlan> {
+  return { errorCode, output: null };
+}
+
+function decodedTextUtilityOutput<T>(
+  output: T | null
+): MemoryTextUtilityDecodeResult<T> {
+  return {
+    errorCode: output === null ? "memory_run_utility_output_invalid" : null,
+    output
+  };
+}
+
 function decodeAggregation(
   calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"],
   evidence: MemoryAggregationUtilityProviderInput["evidence"]
-): MemoryAggregationPlan | null {
+): MemoryTextUtilityDecodeResult<MemoryAggregationPlan> {
   const call = calls?.[0];
   if (
     calls?.length !== 1 ||
     call?.name !== MEMORY_AGGREGATION_TOOL_NAME ||
     !isRecord(call.arguments) ||
-    !exactKeys(call.arguments, ["groups", "operation", "resolution"]) ||
-    !Array.isArray(call.arguments.groups) ||
-    call.arguments.groups.length > 30 ||
-    typeof call.arguments.operation !== "string" ||
+    !exactKeys(call.arguments, ["groups", "operation", "resolution"])
+  ) return invalidAggregationOutput("memory_aggregation_output_envelope_invalid");
+  if (!Array.isArray(call.arguments.groups) ||
+    call.arguments.groups.length > 30) {
+    return invalidAggregationOutput("memory_aggregation_output_groups_invalid");
+  }
+  if (typeof call.arguments.operation !== "string" ||
     !MEMORY_AGGREGATION_OPERATIONS.some((value) =>
-      value === call.arguments.operation) ||
-    typeof call.arguments.resolution !== "string" ||
+      value === call.arguments.operation)) {
+    return invalidAggregationOutput("memory_aggregation_output_operation_invalid");
+  }
+  if (typeof call.arguments.resolution !== "string" ||
     !MEMORY_AGGREGATION_RESOLUTIONS.some((value) =>
-      value === call.arguments.resolution)
-  ) return null;
+      value === call.arguments.resolution)) {
+    return invalidAggregationOutput("memory_aggregation_output_resolution_invalid");
+  }
   if (call.arguments.resolution === "NOT_APPLICABLE" &&
-    call.arguments.groups.length !== 0) return null;
+    call.arguments.groups.length !== 0) {
+    return invalidAggregationOutput("memory_aggregation_output_resolution_invalid");
+  }
   if (call.arguments.resolution === "RESOLVED" &&
-    call.arguments.groups.length === 0) return null;
+    call.arguments.groups.length === 0) {
+    return invalidAggregationOutput("memory_aggregation_output_resolution_invalid");
+  }
 
   const byHandle = new Map(evidence.map((item) => [item.handle, item]));
   const seenGroups = new Set<string>();
   const groups: MemoryAggregationPlan["groups"][number][] = [];
   for (const value of call.arguments.groups) {
-    if (
-      !isRecord(value) ||
-      !exactKeys(value, [
+    if (!isRecord(value) || !exactKeys(value, [
         "item_handles",
         "occurrence",
         "quantity",
         "quantity_evidence",
         "role"
-      ]) ||
-      !Array.isArray(value.item_handles) ||
+      ])) {
+      return invalidAggregationOutput("memory_aggregation_output_group_shape_invalid");
+    }
+    if (!Array.isArray(value.item_handles) ||
       value.item_handles.length < 1 ||
       value.item_handles.length > 8 ||
       value.item_handles.some((handle) => typeof handle !== "string") ||
-      new Set(value.item_handles).size !== value.item_handles.length ||
-      typeof value.occurrence !== "string" ||
+      new Set(value.item_handles).size !== value.item_handles.length) {
+      return invalidAggregationOutput("memory_aggregation_output_handles_invalid");
+    }
+    if (typeof value.occurrence !== "string" ||
       value.occurrence.length < 1 ||
       value.occurrence.length > 256 ||
       value.occurrence !== value.occurrence.trim() ||
       value.occurrence.includes("\u0000") ||
-      /[\r\n]/u.test(value.occurrence) ||
-      typeof value.quantity !== "number" ||
+      /[\r\n]/u.test(value.occurrence)) {
+      return invalidAggregationOutput("memory_aggregation_output_occurrence_invalid");
+    }
+    if (typeof value.quantity !== "number" ||
       !Number.isSafeInteger(value.quantity) ||
       value.quantity < 0 ||
-      value.quantity > MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY ||
-      value.quantity_evidence !== null && (
+      value.quantity > MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY) {
+      return invalidAggregationOutput("memory_aggregation_output_quantity_invalid");
+    }
+    if (value.quantity_evidence !== null && (
         typeof value.quantity_evidence !== "string" ||
         value.quantity_evidence.length < 1 ||
         value.quantity_evidence.length > 256 ||
         value.quantity_evidence !== value.quantity_evidence.trim() ||
         value.quantity_evidence.includes("\u0000") ||
         /[\r\n]/u.test(value.quantity_evidence)
-      ) ||
-      typeof value.role !== "string" ||
-      !MEMORY_AGGREGATION_ROLES.some((role) => role === value.role)
-    ) return null;
+      )) {
+      return invalidAggregationOutput(
+        "memory_aggregation_output_quantity_evidence_invalid"
+      );
+    }
+    if (typeof value.role !== "string" ||
+      !MEMORY_AGGREGATION_ROLES.some((role) => role === value.role)) {
+      return invalidAggregationOutput("memory_aggregation_output_role_invalid");
+    }
     const occurrence = value.occurrence;
     const items = value.item_handles.map((handle) => byHandle.get(handle));
     const member = value.role === "MEMBER" || value.role === "MEMBER_AND_BOUNDARY";
     const quantityEvidence = value.quantity_evidence;
+    if (items.some((item) => !item)) {
+      return invalidAggregationOutput("memory_aggregation_output_handle_unknown");
+    }
     if (
-      items.some((item) => !item) ||
       member !== (value.quantity > 0) ||
-      member !== (quantityEvidence !== null) ||
-      call.arguments.operation !== "COUNT" && member && value.quantity !== 1 ||
-      !items.some((item) => item!.text.includes(occurrence) && (
-        quantityEvidence === null || item!.text.includes(quantityEvidence)
-      ))
-    ) return null;
+      member !== (quantityEvidence !== null)
+    ) {
+      return invalidAggregationOutput("memory_aggregation_output_member_contract_invalid");
+    }
+    if (call.arguments.operation !== "COUNT" && member && value.quantity !== 1) {
+      return invalidAggregationOutput("memory_aggregation_output_quantity_invalid");
+    }
+    const occurrenceItems = items.filter((item) => item!.text.includes(occurrence));
+    if (occurrenceItems.length === 0) {
+      return invalidAggregationOutput("memory_aggregation_output_occurrence_ungrounded");
+    }
+    if (quantityEvidence !== null &&
+      !occurrenceItems.some((item) => item!.text.includes(quantityEvidence))) {
+      return invalidAggregationOutput(
+        "memory_aggregation_output_quantity_evidence_ungrounded"
+      );
+    }
     if (value.quantity > 1 && quantityEvidence !== null) {
       const explicitIntegers = [...quantityEvidence.matchAll(/\d+/gu)]
         .map((match) => Number(match[0]))
         .filter(Number.isSafeInteger);
       if (explicitIntegers.length > 0 && !explicitIntegers.includes(value.quantity)) {
-        return null;
+        return invalidAggregationOutput("memory_aggregation_output_quantity_mismatch");
       }
     }
     const itemHandles = [...value.item_handles].sort((left, right) =>
       left.localeCompare(right));
     const groupKey = `${value.role}:${occurrence.normalize("NFKC")
       .toLocaleLowerCase("und")}:${itemHandles.join(",")}`;
-    if (seenGroups.has(groupKey)) return null;
+    if (seenGroups.has(groupKey)) {
+      return invalidAggregationOutput("memory_aggregation_output_duplicate_group");
+    }
     seenGroups.add(groupKey);
     groups.push({
       itemHandles,
@@ -1134,13 +1222,20 @@ function decodeAggregation(
     });
   }
   const totalQuantity = groups.reduce((total, group) => total + group.quantity, 0);
-  if (!Number.isSafeInteger(totalQuantity)) return null;
+  if (!Number.isSafeInteger(totalQuantity)) {
+    return invalidAggregationOutput("memory_aggregation_output_quantity_invalid");
+  }
   if (call.arguments.operation === "COUNT" &&
-    call.arguments.resolution === "RESOLVED" && totalQuantity < 1) return null;
+    call.arguments.resolution === "RESOLVED" && totalQuantity < 1) {
+    return invalidAggregationOutput("memory_aggregation_output_resolution_invalid");
+  }
   return {
-    groups,
-    operation: call.arguments.operation as MemoryAggregationPlan["operation"],
-    resolution: call.arguments.resolution as MemoryAggregationPlan["resolution"]
+    errorCode: null,
+    output: {
+      groups,
+      operation: call.arguments.operation as MemoryAggregationPlan["operation"],
+      resolution: call.arguments.resolution as MemoryAggregationPlan["resolution"]
+    }
   };
 }
 
@@ -1211,7 +1306,13 @@ function aggregationReductionInput(
   });
   const reductionInput = { ...input, evidence };
   const request = aggregationProviderInput(reductionInput, true, "REDUCE");
-  if (memoryRunUtilityPromptCharacters(request) >
+  const repairRequest = aggregationProviderInput(
+    reductionInput,
+    true,
+    "REDUCE",
+    "QUANTITY_MISMATCH"
+  );
+  if (memoryRunUtilityPromptCharacters(repairRequest) >
     MEMORY_RERANK_MAX_PROMPT_CHARACTERS) return null;
   return Object.freeze({ input: reductionInput, mapped, request });
 }
@@ -1321,7 +1422,7 @@ async function runTextUtility<T>(
   expectedSnapshotHash: string | null,
   decode: (
     calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"]
-  ) => T | null
+  ) => MemoryTextUtilityDecodeResult<T>
 ): Promise<
   | Readonly<MemoryRunUtilityUnavailable & { snapshotHash?: string }>
   | Readonly<{
@@ -1387,12 +1488,17 @@ async function runTextUtility<T>(
       snapshotHash
     };
   }
-  const output = decode(result.toolCalls);
-  if (!output) {
+  const decoded = decode(result.toolCalls);
+  const output = decoded.output;
+  if (output === null) {
+    const errorCode = decoded.errorCode === "memory_run_utility_output_invalid" ||
+      isMemoryAggregationOutputFailureCode(decoded.errorCode)
+      ? decoded.errorCode
+      : "memory_run_utility_output_invalid";
     try {
       await deps.execution.lifecycle.settle(input.userId, started.bindingId, {
         acceptedOutputHash: null,
-        errorCode: "memory_run_utility_output_invalid",
+        errorCode,
         providerResponseId: result.providerResponseId,
         state: "FAILED",
         usage: providerUsage(result.usage)
@@ -1405,7 +1511,7 @@ async function runTextUtility<T>(
       };
     }
     return {
-      ...unavailable("memory_run_utility_output_invalid", started.bindingId),
+      ...unavailable(errorCode, started.bindingId),
       externalCallCount: 1,
       snapshotHash
     };
@@ -1874,7 +1980,9 @@ export function createMemoryRunUtilityService(
         ordinal: number,
         inputHash: string,
         expectedSnapshotHash: string | null,
-        decode: (calls: UtilityProviderToolCalls) => MemoryAggregationPlan | null
+        decode: (
+          calls: UtilityProviderToolCalls
+        ) => MemoryTextUtilityDecodeResult<MemoryAggregationPlan>
       ) => {
         let result = await runTextUtility(
           deps,
@@ -1888,21 +1996,39 @@ export function createMemoryRunUtilityService(
           decode
         );
         let externalCallCount = result.externalCallCount ?? 0;
-        if (
+        const retrySnapshotHash = expectedSnapshotHash ?? result.snapshotHash;
+        let activeRepairReason = request.repairReason;
+        for (
+          let retryIndex = 1;
+          retryIndex < MEMORY_AGGREGATION_MAX_ATTEMPTS &&
           result.status !== "READY" &&
-          retryableTextUtilityReasons.has(result.reason) &&
-          result.snapshotHash !== undefined &&
-          !utilityInput.signal.aborted
+          retryableTextUtilityReason(result.reason) &&
+          retrySnapshotHash !== undefined &&
+          !utilityInput.signal.aborted;
+          retryIndex += 1
         ) {
+          activeRepairReason = aggregationRepairReason(result.reason) ??
+            activeRepairReason;
+          const retryRequest = activeRepairReason === null
+            ? request
+            : { ...request, repairReason: activeRepairReason };
+          const retryInputHash = activeRepairReason === null
+            ? inputHash
+            : memoryExecutionSha256({
+                domain: "aiqsa.memory.evidence-aggregation-repair-input",
+                inputHash,
+                repairReason: activeRepairReason,
+                version: 1
+              });
           const retry = await runTextUtility(
             deps,
             utilityInput,
-            request,
+            retryRequest,
             "MEMORY_AGGREGATE",
-            ordinal + 1,
+            ordinal + retryIndex,
             MEMORY_AGGREGATION_VERSIONS,
-            inputHash,
-            result.snapshotHash,
+            retryInputHash,
+            retrySnapshotHash,
             decode
           );
           externalCallCount += retry.externalCallCount ?? 0;
@@ -1939,10 +2065,11 @@ export function createMemoryRunUtilityService(
             inputHash,
             null,
             (calls) => {
-              const plan = decodeAggregation(calls, batch.input.evidence);
-              return plan && !completeEvidenceView && plan.resolution === "RESOLVED"
-                ? { ...plan, resolution: "PARTIAL" }
-                : plan;
+              const decoded = decodeAggregation(calls, batch.input.evidence);
+              return decoded.output && !completeEvidenceView &&
+                decoded.output.resolution === "RESOLVED"
+                ? { ...decoded, output: { ...decoded.output, resolution: "PARTIAL" } }
+                : decoded;
             }
           );
         }
@@ -2031,10 +2158,17 @@ export function createMemoryRunUtilityService(
         reductionInputHash,
         readyMaps[0]!.snapshotHash,
         (calls) => {
-          const plan = decodeAggregation(calls, reduction.input.evidence);
-          return plan
-            ? expandReducedAggregationPlan(plan, reduction.mapped, safeInput.evidence)
-            : null;
+          const decoded = decodeAggregation(calls, reduction.input.evidence);
+          return decoded.output
+            ? {
+                ...decoded,
+                output: expandReducedAggregationPlan(
+                  decoded.output,
+                  reduction.mapped,
+                  safeInput.evidence
+                )
+              }
+            : decoded;
         }
       );
       const externalCallCount = mapExternalCallCount + reduced.externalCallCount;
@@ -2267,7 +2401,7 @@ export function createMemoryRunUtilityService(
             rerankVersions,
             inputHash,
             null,
-            (calls) => decodeRerank(calls, batchHandles)
+            (calls) => decodedTextUtilityOutput(decodeRerank(calls, batchHandles))
           );
           let externalCallCount = result.externalCallCount ?? 0;
           let invalidResponseCount = result.status === "UNAVAILABLE" &&
@@ -2280,7 +2414,7 @@ export function createMemoryRunUtilityService(
           // policy drift, and a second failure remain terminal degradation.
           if (
             result.status !== "READY" &&
-            retryableTextUtilityReasons.has(result.reason) &&
+            retryableTextUtilityReason(result.reason) &&
             result.snapshotHash !== undefined &&
             !safeInput.signal.aborted
           ) {
@@ -2293,7 +2427,7 @@ export function createMemoryRunUtilityService(
               rerankVersions,
               inputHash,
               result.snapshotHash,
-              (calls) => decodeRerank(calls, batchHandles)
+              (calls) => decodedTextUtilityOutput(decodeRerank(calls, batchHandles))
             );
             externalCallCount += retry.externalCallCount ?? 0;
             invalidResponseCount += retry.status === "UNAVAILABLE" &&

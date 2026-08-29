@@ -3,6 +3,7 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution";
 import type { PrismaMemoryExecutionService } from "../execution";
 import {
   createMemoryRunUtilityService,
+  MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS,
   memoryDedicatedRerankDocument,
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
   MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS,
@@ -10,6 +11,7 @@ import {
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
   MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
+  MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES,
   MEMORY_RERANK_MAX_ATTEMPTS,
   MEMORY_RERANK_TARGETED_MAX_CANDIDATES,
   type MemoryRunUtilityService
@@ -20,6 +22,7 @@ import {
   MEMORY_AGGREGATION_TOOL_NAME,
   MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
   MEMORY_RERANK_TOOL_NAME,
+  type MemoryAggregationUtilityProviderInput,
   type MemoryRerankUtilityProviderInput,
   type MemoryRunUtilityProviderInput,
   type MemoryRunUtilityProvider
@@ -1018,6 +1021,66 @@ describe("Memory run utility execution", () => {
     );
   });
 
+  it("partitions map work by the bounded repair prompt size", async () => {
+    const bound = execution([]);
+    const mapInputs: MemoryAggregationUtilityProviderInput[] = [];
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async (
+        _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
+        input: Parameters<MemoryRunUtilityProvider["run"]>[1]
+      ) => {
+        if (!("kind" in input) || input.aggregationPhase !== "MAP") {
+          throw new Error("expected_map_aggregation_input");
+        }
+        mapInputs.push(input);
+        return {
+          providerResponseId: `response-map-${mapInputs.length}`,
+          toolCalls: [{
+            arguments: {
+              groups: [],
+              operation: "COUNT",
+              resolution: "PARTIAL"
+            },
+            id: `call-map-${mapInputs.length}`,
+            name: MEMORY_AGGREGATION_TOOL_NAME
+          }],
+          usage: {
+            cachedInputTokens: 0,
+            inputTokens: 40,
+            outputTokens: 20,
+            reasoningTokens: 0,
+            totalTokens: 60
+          }
+        };
+      })
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider
+    });
+
+    const result = await service.aggregate({
+      ...baseInput(),
+      evidence: Array.from({ length: 20 }, (_, index) => ({
+        handle: `i${index}`,
+        occurredFrom: null,
+        occurredTo: null,
+        sourceKind: "HISTORY" as const,
+        text: `Bounded evidence ${index} ${"x".repeat(2_000)}`
+      })),
+      query: "How many matching events occurred?"
+    });
+
+    expect(result).toMatchObject({ status: "READY" });
+    expect(mapInputs.length).toBeGreaterThan(1);
+    expect(mapInputs.every((input) => memoryRunUtilityPromptCharacters({
+      ...input,
+      repairReason: "QUANTITY_MISMATCH"
+    }) <= MEMORY_AGGREGATION_MAP_MAX_PROMPT_CHARACTERS)).toBe(true);
+    expect(result.externalCallCount).toBe(mapInputs.length);
+  });
+
   it("maps every oversized reader item and reduces the complete grounded set", async () => {
     const log: string[] = [];
     const bound = execution(log);
@@ -1147,7 +1210,8 @@ describe("Memory run utility execution", () => {
       status: "READY"
     });
     expect(bound.admission.bind.mock.calls.map((call) => call[1].ordinal).sort())
-      .toEqual([0, 2, 4]);
+      .toEqual([0, MEMORY_AGGREGATION_MAX_ATTEMPTS,
+        2 * MEMORY_AGGREGATION_MAX_ATTEMPTS]);
   });
 
   it("never reports a resolved aggregate when one evidence shard is unavailable", async () => {
@@ -1215,11 +1279,13 @@ describe("Memory run utility execution", () => {
     });
 
     expect(result).toEqual(expect.objectContaining({
-      externalCallCount: 3,
+      externalCallCount: 1 + MEMORY_AGGREGATION_MAX_ATTEMPTS,
       reason: "memory_run_utility_provider_failed",
       status: "UNAVAILABLE"
     }));
-    expect(provider.run).toHaveBeenCalledTimes(3);
+    expect(provider.run).toHaveBeenCalledTimes(
+      1 + MEMORY_AGGREGATION_MAX_ATTEMPTS
+    );
   });
 
   it("rejects a quantity that conflicts with its exact evidence and retries only that output", async () => {
@@ -1288,10 +1354,39 @@ describe("Memory run utility execution", () => {
     });
 
     expect(result).toMatchObject({
-      reason: "memory_run_utility_output_invalid",
+      reason: "memory_aggregation_output_quantity_mismatch",
       status: "UNAVAILABLE"
     });
     expect(provider.run).toHaveBeenCalledTimes(MEMORY_AGGREGATION_MAX_ATTEMPTS);
+    expect(provider.run).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ repairReason: null }),
+      expect.anything()
+    );
+    expect(provider.run).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ repairReason: "QUANTITY_MISMATCH" }),
+      expect.anything()
+    );
+    expect(provider.run).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      expect.objectContaining({ repairReason: "QUANTITY_MISMATCH" }),
+      expect.anything()
+    );
+    expect(executionService.lifecycle.settle).toHaveBeenCalledTimes(
+      MEMORY_AGGREGATION_MAX_ATTEMPTS
+    );
+    expect(vi.mocked(executionService.lifecycle.settle).mock.calls.map((call) =>
+      call[2])).toEqual(Array.from(
+        { length: MEMORY_AGGREGATION_MAX_ATTEMPTS },
+        () => expect.objectContaining({
+          errorCode: "memory_aggregation_output_quantity_mismatch",
+          state: "FAILED"
+        })
+      ));
     expect(executionService.admission.bind).toHaveBeenNthCalledWith(
       1,
       "user-1",
@@ -1302,6 +1397,116 @@ describe("Memory run utility execution", () => {
       "user-1",
       expect.objectContaining({ ordinal: 1, role: "MEMORY_AGGREGATE" })
     );
+    expect(executionService.admission.bind).toHaveBeenNthCalledWith(
+      3,
+      "user-1",
+      expect.objectContaining({ ordinal: 2, role: "MEMORY_AGGREGATE" })
+    );
+    const bindingInputs = vi.mocked(executionService.admission.bind).mock.calls
+      .map((call) => call[1]);
+    expect(bindingInputs[0]?.inputHash).not.toBe(bindingInputs[1]?.inputHash);
+    expect(bindingInputs[1]?.inputHash).toBe(bindingInputs[2]?.inputHash);
+  });
+
+  it("preserves validation feedback across an uncertain repair outcome", async () => {
+    const executionService = {
+      admission: {
+        bind: vi.fn(async (_userId: string, input: { ordinal: number }) => ({
+          id: `binding-${input.ordinal}`
+        })),
+        start: vi.fn(async (_userId: string, bindingId: string) => ({
+          bindingId,
+          snapshot: snapshot("MEMORY_AGGREGATE")
+        }))
+      },
+      lifecycle: {
+        settle: vi.fn(async () => ({})),
+        withAuthorizedResultCommit: vi.fn(async (
+          _userId: string,
+          _input: unknown,
+          apply: () => Promise<unknown>
+        ) => apply())
+      }
+    } as unknown as PrismaMemoryExecutionService;
+    let callCount = 0;
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async () => {
+        callCount += 1;
+        if (callCount === 2) throw new MemoryRunUtilityProviderCallError(null);
+        const valid = callCount === 3;
+        return {
+          providerResponseId: `response-${callCount}`,
+          toolCalls: [{
+            arguments: {
+              groups: [{
+                item_handles: ["i0"],
+                occurrence: "12 completed releases",
+                quantity: valid ? 12 : 7,
+                quantity_evidence: "12 completed releases",
+                role: "MEMBER"
+              }],
+              operation: "COUNT",
+              resolution: "RESOLVED"
+            },
+            id: `call-${callCount}`,
+            name: MEMORY_AGGREGATION_TOOL_NAME
+          }],
+          usage: {
+            cachedInputTokens: 0,
+            inputTokens: 20,
+            outputTokens: 10,
+            reasoningTokens: 0,
+            totalTokens: 30
+          }
+        };
+      })
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider
+    });
+
+    const result = await service.aggregate({
+      ...baseInput(),
+      evidence: [{
+        handle: "i0",
+        occurredFrom: null,
+        occurredTo: null,
+        sourceKind: "HISTORY",
+        text: "The user reported 12 completed releases."
+      }],
+      query: "How many releases were completed?"
+    });
+
+    expect(result).toMatchObject({
+      externalCallCount: 3,
+      plan: { groups: [{ quantity: 12 }] },
+      status: "READY"
+    });
+    expect(vi.mocked(provider.run).mock.calls.map((call) =>
+      (call[1] as { repairReason: string | null }).repairReason)).toEqual([
+      null,
+      "QUANTITY_MISMATCH",
+      "QUANTITY_MISMATCH"
+    ]);
+    expect(vi.mocked(executionService.lifecycle.settle).mock.calls.map((call) =>
+      call[2])).toEqual([
+      expect.objectContaining({
+        errorCode: "memory_aggregation_output_quantity_mismatch",
+        state: "FAILED"
+      }),
+      expect.objectContaining({
+        errorCode: "memory_run_utility_outcome_unknown",
+        state: "OUTCOME_UNKNOWN"
+      }),
+      expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
+    ]);
+    const bindingInputs = vi.mocked(executionService.admission.bind).mock.calls
+      .map((call) => call[1]);
+    expect(bindingInputs.map(({ ordinal }) => ordinal)).toEqual([0, 1, 2]);
+    expect(bindingInputs[0]?.inputHash).not.toBe(bindingInputs[1]?.inputHash);
+    expect(bindingInputs[1]?.inputHash).toBe(bindingInputs[2]?.inputHash);
   });
 
   it("reranks the full broad history pool in nine governed batches", async () => {
@@ -1406,7 +1611,7 @@ describe("Memory run utility execution", () => {
         { length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES },
         (_, index) => 2 + index * MEMORY_RERANK_MAX_ATTEMPTS
       ));
-    expect(peak).toBe(3);
+    expect(peak).toBe(MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES);
   });
 
   it("reranks the widened targeted pool in bounded governed batches", async () => {

@@ -3915,6 +3915,8 @@ export function projectMemoryAggregationDigestRepresentative(
     entryId: null,
     itemId: digest.itemId,
     itemType: digest.itemType,
+    matchedSegmentId: null,
+    matchedSegmentPosition: null,
     metadata: digest.metadata,
     selectionReason: `${representative.selectionReason}+aggregation_session_digest`
   };

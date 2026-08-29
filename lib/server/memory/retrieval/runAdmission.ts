@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { MemoryActionFeedback } from "../../../contracts/memoryClient";
 import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
@@ -72,7 +72,6 @@ import {
 } from "./localRepository";
 import {
   createPrismaMemoryRunUtilityService,
-  MEMORY_AGGREGATION_MAX_ATTEMPTS,
   MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
   MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS,
   MEMORY_RERANK_MAX_ATTEMPTS,
@@ -96,7 +95,7 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v24";
+  "memory-run-retrieval-admission-v25";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v7";
 
@@ -105,6 +104,45 @@ export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 const MEMORY_ADMISSION_DEADLINE_REASON = Object.freeze({
   code: "memory_admission_deadline_exceeded"
 });
+const safeInternalMemoryFailure = /^memory_[a-z0-9_]{1,96}$/u;
+
+type MemoryExpansionFailure = Readonly<{
+  failureClass: "ABORTED" | "DATABASE" | "INTERNAL" | "UNKNOWN";
+  failureCode: string;
+}>;
+
+function classifyMemoryExpansionFailure(error: unknown): MemoryExpansionFailure {
+  if (error instanceof Error && safeInternalMemoryFailure.test(error.message)) {
+    return Object.freeze({ failureClass: "INTERNAL", failureCode: error.message });
+  }
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    const code = error.code.toLowerCase();
+    return Object.freeze({
+      failureClass: "DATABASE",
+      failureCode: /^p[0-9]{4}$/u.test(code)
+        ? `memory_expansion_database_${code}`
+        : "memory_expansion_database_failed"
+    });
+  }
+  if (error instanceof Prisma.PrismaClientUnknownRequestError ||
+    error instanceof Prisma.PrismaClientValidationError ||
+    error instanceof Prisma.PrismaClientInitializationError) {
+    return Object.freeze({
+      failureClass: "DATABASE",
+      failureCode: "memory_expansion_database_failed"
+    });
+  }
+  if (error instanceof Error && error.name === "AbortError") {
+    return Object.freeze({
+      failureClass: "ABORTED",
+      failureCode: "memory_expansion_aborted"
+    });
+  }
+  return Object.freeze({
+    failureClass: "UNKNOWN",
+    failureCode: "memory_expansion_failed"
+  });
+}
 
 export type MemoryRunRetrievalExpectedSnapshot = Readonly<{
   activeIndexGenerationId: string | null;
@@ -516,9 +554,7 @@ type OptionalMemoryUtilityRole = "CONTROL" | "QUERY_EMBED" | "RERANK" | "AGGREGA
 
 const MEMORY_OPTIONAL_PROVIDER_ATTEMPT_WINDOW_MS = 8_000;
 export const MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS =
-  MEMORY_OPTIONAL_PROVIDER_ATTEMPT_WINDOW_MS *
-  MEMORY_AGGREGATION_MAX_ATTEMPTS *
-  2;
+  MEMORY_ADMISSION_MAX_TIMEOUT_MS / 2;
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS =
   MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS *
   MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS;
@@ -529,9 +565,9 @@ export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS =
 
 const optionalUtilityBudget = Object.freeze({
   // Aggregation has two sequential provider phases (bounded parallel maps,
-  // then reduce), and each phase owns one safe read-only retry. Preserve the
-  // old per-attempt window while keeping the entire chain under the one
-  // admission deadline.
+  // then reduce). An administrator-selected extended SLA grants the chain at
+  // most the same half-share as control; the default 30-second admission still
+  // clamps it to 15 seconds through remainingFraction.
   AGGREGATE: {
     maximumMs: MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS,
     remainingFraction: 0.5
@@ -2071,7 +2107,7 @@ export function createMemoryRunRetrievalService(
         !coreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
       let dynamicCandidates: readonly MemoryRankedCandidate[] = dynamicFused;
       let navigationExpanded: readonly MemoryExpandedCandidate[] = [];
-      let expansionFailed = false;
+      let expansionFailure: MemoryExpansionFailure | null = null;
       if (dynamicFused.length > 0) {
         try {
           dynamicCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
@@ -2093,14 +2129,14 @@ export function createMemoryRunRetrievalService(
               signal
             );
           }
-        } catch {
+        } catch (error) {
           if (deadline.expired()) {
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
               result: queryEmbedding,
               role: "MEMORY_QUERY_EMBED"
             }]);
           }
-          expansionFailed = true;
+          expansionFailure ??= classifyMemoryExpansionFailure(error);
         }
       }
       // The exact direct query was locally redacted before control. Every
@@ -2177,14 +2213,14 @@ export function createMemoryRunRetrievalService(
             }),
             signal
           );
-        } catch {
+        } catch (error) {
           if (deadline.expired()) {
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
               { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
               { result: relevance, role: "MEMORY_RERANK" }
             ]);
           }
-          expansionFailed = true;
+          expansionFailure ??= classifyMemoryExpansionFailure(error);
         }
       }
       const rejoinedByKey = new Map(rejoined.map((candidate) => [
@@ -2246,11 +2282,13 @@ export function createMemoryRunRetrievalService(
         !selectedCoreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
       const dynamicExpanded = rejoined.filter((candidate) =>
         selectedKeys.has(`${candidate.itemType}:${candidate.itemId}`));
-      if (expansionFailed) {
+      if (expansionFailure) {
         return emptyAttempt(input.expected, "FAILED_SAFE", "memory_expansion_unavailable",
           plan.originalSanitizedQuery, {
             ...actionEvidence,
             candidateCount: relevanceInput.length,
+            failureClass: expansionFailure.failureClass,
+            failureCode: expansionFailure.failureCode,
             ...relevanceEvidence(relevanceInput, relevance, relevant.length, 0),
             lexicalFailures: local.lexicalFailures,
             lexicalState: local.lexicalState,

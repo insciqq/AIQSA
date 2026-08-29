@@ -28,11 +28,42 @@ export const MEMORY_AGGREGATION_ROLES = [
 
 export const MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY = 1_000_000;
 
+export const MEMORY_AGGREGATION_OUTPUT_FAILURE_CODES = [
+  "memory_aggregation_output_duplicate_group",
+  "memory_aggregation_output_envelope_invalid",
+  "memory_aggregation_output_group_shape_invalid",
+  "memory_aggregation_output_groups_invalid",
+  "memory_aggregation_output_handle_unknown",
+  "memory_aggregation_output_handles_invalid",
+  "memory_aggregation_output_member_contract_invalid",
+  "memory_aggregation_output_occurrence_invalid",
+  "memory_aggregation_output_occurrence_ungrounded",
+  "memory_aggregation_output_operation_invalid",
+  "memory_aggregation_output_quantity_evidence_invalid",
+  "memory_aggregation_output_quantity_evidence_ungrounded",
+  "memory_aggregation_output_quantity_invalid",
+  "memory_aggregation_output_quantity_mismatch",
+  "memory_aggregation_output_resolution_invalid",
+  "memory_aggregation_output_role_invalid"
+] as const;
+
 export type MemoryAggregationOperation =
   (typeof MEMORY_AGGREGATION_OPERATIONS)[number];
 export type MemoryAggregationResolution =
   (typeof MEMORY_AGGREGATION_RESOLUTIONS)[number];
 export type MemoryAggregationRole = (typeof MEMORY_AGGREGATION_ROLES)[number];
+export type MemoryAggregationOutputFailureCode =
+  (typeof MEMORY_AGGREGATION_OUTPUT_FAILURE_CODES)[number];
+
+const aggregationOutputFailureCodes = new Set<string>(
+  MEMORY_AGGREGATION_OUTPUT_FAILURE_CODES
+);
+
+export function isMemoryAggregationOutputFailureCode(
+  value: unknown
+): value is MemoryAggregationOutputFailureCode {
+  return typeof value === "string" && aggregationOutputFailureCodes.has(value);
+}
 
 export type MemoryAggregationGroup = Readonly<{
   itemHandles: readonly string[];
