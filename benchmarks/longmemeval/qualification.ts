@@ -73,7 +73,7 @@ const manifestSchema = z.object({
     seed: z.literal("aiqsa-memory-followup-fu09-blind-50-v1")
   }).strict(),
   source: z.object({
-    appCommit: z.literal("d4392f47a6658976dcf51c14c22c6fde518c4ecc"),
+    appCommit: z.literal("85e5b9db9c2ee1835b8e9cc14246b9dbb1587256"),
     datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
     evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
     oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
