@@ -23,6 +23,22 @@ completed-source lifecycle as an ordinary chat. Every official turn remains
 byte-for-byte unchanged, and the summary records the number of such envelopes.
 The final question is submitted through AIQSA's normal HTTP run-admission path.
 
+Official-profile replays keep a crash-safe prepared-case snapshot in this
+disposable benchmark database. Its identity covers the exact source sessions,
+applied schema migrations, import/history projection contracts, and governed
+System Model used to derive history, while deliberately excluding reader,
+packer, retrieval, and reranker versions. A reader-only diagnostic therefore
+reuses the unchanged indexed sources; a history-contract change builds a new
+snapshot, and an embedding-pin change re-embeds it without re-importing source
+chats. A PostgreSQL advisory lock serializes each snapshot lifecycle. Every
+reuse validates the complete imported message graph, provenance, READY history
+checkpoints, current hybrid generation, and quiescent prior queries before
+admission. Question chats remain `EXCLUDED`: their terminal run and immutable
+usage receipts are retained for accounting but cannot become Memory sources,
+and a fresh auth session is removed after every attempt. Product and forced
+Dream diagnostics continue to use disposable one-run users because those
+profiles intentionally mutate learned state.
+
 The non-comparable `product` profile replays those same unchanged sessions
 through the ordinary persisted-chat settlement lifecycle. It enables automatic
 fact learning and forward-only Dream synthesis, waits for every expected fact
