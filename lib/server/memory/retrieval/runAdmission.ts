@@ -28,6 +28,7 @@ import {
   type MemoryCoreCandidate,
   type MemoryExpandedCandidate,
   type MemoryRankedCandidate,
+  type MemoryRetrievalLane,
   type MemoryRetrievalPlan,
   type MemoryRetrievalPlanBundle,
   type MemorySourceFamilyHardExclusionReason
@@ -94,7 +95,7 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v40";
+  "memory-run-retrieval-admission-v44";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v14";
 
@@ -1955,6 +1956,93 @@ function boundedSelectionReason(base: string, suffix: string): string {
   return reason.length <= 128 ? reason : suffix;
 }
 
+function speculativeSparseCoverageComplete(
+  result: MemoryLocalRetrievalResult,
+  enabledSourceKinds: readonly ("EVENT" | "FACT" | "HISTORY")[]
+): boolean {
+  const failed = new Set(result.lexicalFailures);
+  const completed = new Set(result.laneResults
+    .filter(({ candidates }) => candidates.length > 0)
+    .map(({ lane }) => lane)
+    .filter((lane) => !failed.has(lane)));
+  const factsCovered = !enabledSourceKinds.some((kind) =>
+    kind === "FACT" || kind === "EVENT") || [...completed].some((lane) =>
+    lane.startsWith("FACT_") && lane !== "FACT_VECTOR");
+  const historyCovered = !enabledSourceKinds.includes("HISTORY") ||
+    [...completed].some((lane) => lane.startsWith("HISTORY_") &&
+      lane !== "HISTORY_RECALL_VECTOR");
+  return factsCovered && historyCovered;
+}
+
+function speculativeReadUsable(
+  result: MemoryLocalRetrievalResult,
+  enabledSourceKinds: readonly ("EVENT" | "FACT" | "HISTORY")[]
+): boolean {
+  // READY is also the authoritative healthy-empty signal: every scheduled
+  // lexical lane settled even when no candidate happened to match.
+  if (result.lexicalState === "READY" ||
+    speculativeSparseCoverageComplete(result, enabledSourceKinds)) return true;
+  const vectorLanes = new Set(result.laneResults.map(({ lane }) => lane));
+  const vectorCoverage = result.vectorState === "READY" &&
+    (!enabledSourceKinds.some((kind) => kind === "FACT" || kind === "EVENT") ||
+      vectorLanes.has("FACT_VECTOR")) &&
+    (!enabledSourceKinds.includes("HISTORY") ||
+      vectorLanes.has("HISTORY_RECALL_VECTOR"));
+  return vectorCoverage && result.laneResults.some(({ candidates }) =>
+    candidates.length > 0);
+}
+
+function healthRelevantLexicalFailures(
+  result: MemoryLocalRetrievalResult,
+  enabledSourceKinds: readonly ("EVENT" | "FACT" | "HISTORY")[]
+): readonly MemoryRetrievalLane[] {
+  const failed = new Set(result.lexicalFailures);
+  const sourceFamilyEnabled = (lane: MemoryRetrievalLane) =>
+    enabledSourceKinds.length === 0 || (lane.startsWith("FACT_")
+      ? enabledSourceKinds.some((kind) => kind === "FACT" || kind === "EVENT")
+      : enabledSourceKinds.includes("HISTORY"));
+  const primarySparseLane = (lane: MemoryRetrievalLane) =>
+    lane === "FACT_ENTITY" || lane === "HISTORY_DIGEST_FTS_SIMPLE" ||
+    lane === "HISTORY_INTRA_CHAT_RAW" || lane.endsWith("_EXACT") ||
+    lane.includes("_FTS_");
+  const primarySparseSettled = (fallbackLane: MemoryRetrievalLane) => {
+    const factFamily = fallbackLane === "FACT_TRIGRAM";
+    return result.laneResults.some(({ lane }) =>
+      !failed.has(lane) && primarySparseLane(lane) &&
+      (factFamily ? lane.startsWith("FACT_") : lane.startsWith("HISTORY_")));
+  };
+  return result.lexicalFailures.filter((lane) =>
+    sourceFamilyEnabled(lane) &&
+    (!(lane === "FACT_TRIGRAM" || lane === "HISTORY_RECALL_TRIGRAM") ||
+      !primarySparseSettled(lane)));
+}
+
+function mergeSpeculativeRetrieval(
+  sparse: MemoryLocalRetrievalResult | null,
+  dense: MemoryLocalRetrievalResult | null
+): MemoryLocalRetrievalResult | null {
+  const vectorLane = (lane: string) =>
+    lane === "FACT_VECTOR" || lane === "HISTORY_RECALL_VECTOR";
+  if (!sparse || !dense || sparse.snapshot !== dense.snapshot ||
+    dense.core.length > 0 || dense.lexicalState !== "DISABLED" ||
+    dense.lexicalFailures.length > 0 ||
+    sparse.laneResults.some(({ lane }) => vectorLane(lane)) ||
+    dense.laneResults.some(({ lane }) => !vectorLane(lane))) return null;
+  return Object.freeze({
+    core: sparse.core,
+    ...(sparse.digestEvidence ? { digestEvidence: sparse.digestEvidence } : {}),
+    laneResults: Object.freeze([...sparse.laneResults, ...dense.laneResults]),
+    lexicalFailures: sparse.lexicalFailures,
+    lexicalState: sparse.lexicalState,
+    snapshot: sparse.snapshot,
+    ...(sparse.sourceFamilyEvidence
+      ? { sourceFamilyEvidence: sparse.sourceFamilyEvidence }
+      : {}),
+    vectorEvidence: dense.vectorEvidence,
+    vectorState: dense.vectorState
+  });
+}
+
 function degradationFor(
   result: MemoryLocalRetrievalResult,
   queryEmbedding: MemoryRunQueryEmbeddingResult | null,
@@ -1964,21 +2052,12 @@ function degradationFor(
   enabledSourceKinds: readonly ("EVENT" | "FACT" | "HISTORY")[] = []
 ): string | null {
   if (!dynamicAllowed) return null;
-  if (speculativeBaselineUsed) {
-    const failed = new Set(result.lexicalFailures);
-    const completed = new Set(result.laneResults
-      .map(({ lane }) => lane)
-      .filter((lane) => !failed.has(lane)));
-    const factsCovered = !enabledSourceKinds.some((kind) =>
-      kind === "FACT" || kind === "EVENT") || [...completed].some((lane) =>
-      lane.startsWith("FACT_") && lane !== "FACT_VECTOR");
-    const historyCovered = !enabledSourceKinds.includes("HISTORY") ||
-      [...completed].some((lane) => lane.startsWith("HISTORY_") &&
-        lane !== "HISTORY_RECALL_VECTOR");
-    if (factsCovered && historyCovered) return null;
-  }
-  if (result.lexicalState === "FAILED" || result.lexicalState === "DEGRADED") {
-    const families = new Set(result.lexicalFailures.map((lane) =>
+  if (speculativeBaselineUsed &&
+    speculativeSparseCoverageComplete(result, enabledSourceKinds)) return null;
+  const lexicalFailures = healthRelevantLexicalFailures(result, enabledSourceKinds);
+  if (lexicalFailures.length > 0 &&
+    (result.lexicalState === "FAILED" || result.lexicalState === "DEGRADED")) {
+    const families = new Set(lexicalFailures.map((lane) =>
       lane === "FACT_ENTITY" ? "entity" :
         lane.includes("_FTS_") || lane.endsWith("_TRIGRAM") ? "fts"
         : lane.endsWith("_EXACT") ? "exact" : "recent"));
@@ -2028,10 +2107,10 @@ export function createMemoryRunRetrievalService(
         options
       );
       const speculativeBaselineController = new AbortController();
-      const speculativeHybridController = new AbortController();
+      const speculativeDenseController = new AbortController();
       let speculativeBaselinePromise: Promise<MemoryLocalRetrievalResult | null> =
         Promise.resolve(null);
-      let speculativeHybridPromise: Promise<MemoryLocalRetrievalResult | null> =
+      let speculativeDensePromise: Promise<MemoryLocalRetrievalResult | null> =
         Promise.resolve(null);
       try {
       const signal = deadline.signal;
@@ -2229,15 +2308,15 @@ export function createMemoryRunRetrievalService(
         settledControl = result;
         return result;
       });
-      if (typeof repository.retrieveSpeculativeHybrid === "function") {
-        speculativeHybridPromise = queryEmbeddingPromise.then((embedding) => {
+      if (typeof repository.retrieveSpeculativeDense === "function") {
+        speculativeDensePromise = queryEmbeddingPromise.then((embedding) => {
           if (embedding?.status !== "READY" || settledControl?.status === "READY" ||
             !deadline.canStartOptional()) return null;
           return timings.measure("localRetrievalMs", () =>
             runBoundedMemoryRead(
               deadline,
               MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-              (retrievalSignal) => repository.retrieveSpeculativeHybrid!({
+              (retrievalSignal) => repository.retrieveSpeculativeDense!({
                   assistantId: input.expected.assistantId,
                   chatId: input.chatId,
                   now: input.now,
@@ -2250,7 +2329,7 @@ export function createMemoryRunRetrievalService(
                     vector: embedding.vector
                   }
                 }, retrievalSignal),
-              speculativeHybridController.signal
+              speculativeDenseController.signal
             ));
         }).catch(() => null);
       }
@@ -2478,18 +2557,29 @@ export function createMemoryRunRetrievalService(
         // the authoritative fail-soft path.
         const broadLexicalFallbackRequired = broadPlannerFallback &&
           queryEmbedding?.status !== "READY";
-        const speculativeHybrid = speculationUsable
-          ? await speculativeHybridPromise
-          : null;
-        const speculativeBaseline = speculationUsable && !speculativeHybrid
-          ? await speculativeBaselinePromise
-          : null;
+        const [speculativeBaseline, speculativeDense] = speculationUsable
+          ? await Promise.all([speculativeBaselinePromise, speculativeDensePromise])
+          : [null, null];
+        const speculativeHybrid = mergeSpeculativeRetrieval(
+          speculativeBaseline,
+          speculativeDense
+        );
+        const speculativeHybridUsable = speculativeHybrid !== null &&
+          speculativeReadUsable(
+            speculativeHybrid,
+            baselineReadPlan.filters.sourceKinds
+          );
+        const speculativeBaselineUsable = speculativeBaseline !== null &&
+          speculativeReadUsable(
+            speculativeBaseline,
+            baselineReadPlan.filters.sourceKinds
+          );
         speculativeBaselineController.abort({ code: "memory_speculation_settled" });
-        speculativeHybridController.abort({ code: "memory_speculation_settled" });
-        if (speculativeHybrid) {
+        speculativeDenseController.abort({ code: "memory_speculation_settled" });
+        if (speculativeHybridUsable) {
           local = speculativeHybrid;
           speculativeHybridUsed = true;
-        } else if (speculativeBaseline && !broadLexicalFallbackRequired) {
+        } else if (speculativeBaselineUsable && !broadLexicalFallbackRequired) {
           local = speculativeBaseline;
           speculativeBaselineUsed = true;
         } else {
@@ -2688,51 +2778,57 @@ export function createMemoryRunRetrievalService(
           // authoritative expansion as an ordinary retrieval hit. Its failure
           // never hides the admitted anchors.
           const [expandedResult, completionResult] = await timings.measure("rejoinMs", () =>
-            runBoundedMemoryRead(
-              deadline,
-              MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-              (rejoinSignal) => abortableRead(Promise.all([
-                expandWithSourceFamilyPlans({
+            Promise.all([
+              runBoundedMemoryRead(
+                deadline,
+                MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+                (rejoinSignal) => abortableRead(expandWithSourceFamilyPlans({
                   candidates: rejoinCandidates,
                   navigation: false,
                   plans,
                   repository,
                   snapshot: local.snapshot
-                }).then(
-                  (value) => ({ error: null, value }),
-                  (error: unknown) => ({ error, value: [] as readonly MemoryExpandedCandidate[] })
-                ),
-                sessionCompletionEnabled
-                  ? (async () => {
-                      try {
-                        const value = await repository.completeAggregationSessionEvidence(
-                          local.snapshot,
-                          plan,
-                          relevant
-                        );
-                        const expansions = await expandWithSourceFamilyPlans({
-                          candidates: value.candidates,
-                          navigation: false,
-                          plans,
-                          repository,
-                          snapshot: local.snapshot
-                        });
-                        return { error: null, expansions, value };
-                      } catch (error) {
-                        return {
-                          error,
-                          expansions: [] as readonly MemoryExpandedCandidate[],
-                          value: sessionCompletion
-                        };
-                      }
-                    })()
-                  : Promise.resolve({
-                      error: null,
+                }), rejoinSignal)
+              ).then(
+                (value) => ({ error: null, value }),
+                (error: unknown) => ({
+                  error,
+                  value: [] as readonly MemoryExpandedCandidate[]
+                })
+              ),
+              sessionCompletionEnabled
+                ? runBoundedMemoryRead(
+                    deadline,
+                    MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+                    (completionSignal) => abortableRead((async () => {
+                      const value = await repository.completeAggregationSessionEvidence(
+                        local.snapshot,
+                        plan,
+                        relevant
+                      );
+                      const expansions = await expandWithSourceFamilyPlans({
+                        candidates: value.candidates,
+                        navigation: false,
+                        plans,
+                        repository,
+                        snapshot: local.snapshot
+                      });
+                      return { expansions, value };
+                    })(), completionSignal)
+                  ).then(
+                    ({ expansions, value }) => ({ error: null, expansions, value }),
+                    (error: unknown) => ({
+                      error,
                       expansions: [] as readonly MemoryExpandedCandidate[],
                       value: sessionCompletion
                     })
-              ]), rejoinSignal)
-            ));
+                  )
+                : Promise.resolve({
+                    error: null,
+                    expansions: [] as readonly MemoryExpandedCandidate[],
+                    value: sessionCompletion
+                  })
+            ]));
           if (expandedResult.error) throw expandedResult.error;
           rejoined = expandedResult.value;
           if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
@@ -2991,8 +3087,8 @@ export function createMemoryRunRetrievalService(
         if (!speculativeBaselineController.signal.aborted) {
           speculativeBaselineController.abort({ code: "memory_speculation_cancelled" });
         }
-        if (!speculativeHybridController.signal.aborted) {
-          speculativeHybridController.abort({ code: "memory_speculation_cancelled" });
+        if (!speculativeDenseController.signal.aborted) {
+          speculativeDenseController.abort({ code: "memory_speculation_cancelled" });
         }
         deadline.dispose();
       }

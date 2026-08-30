@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   memoryDestructiveSourceCutoff,
+  memoryHistoryChunkSourceAuthorityPredicate,
+  memoryHistoryRoundSourceAuthorityPredicate,
   memorySourceIsInsidePause,
   type MemoryPauseIntervalSnapshot
 } from "./pauseIntervals";
@@ -53,5 +55,26 @@ describe("Memory pause intervals", () => {
     expect(memoryDestructiveSourceCutoff([
       { explicitOverrideAllowed: true, sourceCreatedAtCutoff: newer }
     ])).toBeNull();
+  });
+
+  it.each([
+    ["chunk", memoryHistoryChunkSourceAuthorityPredicate()],
+    ["round", memoryHistoryRoundSourceAuthorityPredicate()]
+  ])("uses indexed exact source freshness proof for %s projections", (_kind, sql) => {
+    const text = sql.strings.join("?");
+
+    expect(text).toContain("AND NOT EXISTS (\n      SELECT 1");
+    expect(text).toContain("AND NOT EXISTS (\n          SELECT 1");
+    expect(text).toContain(
+      'INNER JOIN "ChatMemoryCheckpointMessage" AS authority_checkpoint_message'
+    );
+    expect(text).toContain(
+      'authority_source_message."updatedAt" =\n              authority_source_map."sourceMessageUpdatedAt"'
+    );
+    expect(text).toContain(
+      'authority_checkpoint_message."sourceMessageUpdatedAt" =\n              authority_source_map."sourceMessageUpdatedAt"'
+    );
+    expect(text).not.toContain('authority_source_message."updatedAt" <>');
+    expect(text).not.toContain("LEFT JOIN");
   });
 });
