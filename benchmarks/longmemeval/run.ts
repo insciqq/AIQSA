@@ -163,6 +163,7 @@ import {
   type LongMemEvalSystemModelId
 } from "./contract";
 import { redactLongMemEvalDebugArtifact } from "./debug";
+import { withLongMemEvalIdentitySetupRetry } from "./identitySetupRetry";
 import {
   createLongMemEvalCheckpointRun,
   loadLongMemEvalCaseCheckpoints,
@@ -1039,7 +1040,7 @@ async function createBenchmarkIdentity(
   });
   if (!fullAccess) throw new Error("longmemeval_full_access_group_missing");
   const userId = randomUUID();
-  await prisma.$transaction(async (tx) => {
+  await withLongMemEvalIdentitySetupRetry(() => prisma.$transaction(async (tx) => {
     await tx.user.create({
       data: {
         displayName: persistentIdentity?.displayName ?? `LongMemEval ${questionId}`,
@@ -1065,18 +1066,20 @@ async function createBenchmarkIdentity(
         userId
       }
     });
-  });
+  }));
   const settingsRepository = createPrismaMemorySettingsRepository(prisma);
-  const settings = await settingsRepository.get(userId);
-  const configured = await settingsRepository.patch(userId, {
-    decayEnabled: false,
-    embeddingDeploymentId: roles.qwen.id,
-    expectedMemoryRevision: settings.memoryRevision,
-    expectedSettingsRevision: settings.settingsRevision,
-    learnAutomatically: profile === "product",
-    referenceChatHistory: true,
-    synthesisEnabled: profile === "product",
-    useMemoryFacts: true
+  const configured = await withLongMemEvalIdentitySetupRetry(async () => {
+    const settings = await settingsRepository.get(userId);
+    return settingsRepository.patch(userId, {
+      decayEnabled: false,
+      embeddingDeploymentId: roles.qwen.id,
+      expectedMemoryRevision: settings.memoryRevision,
+      expectedSettingsRevision: settings.settingsRevision,
+      learnAutomatically: profile === "product",
+      referenceChatHistory: true,
+      synthesisEnabled: profile === "product",
+      useMemoryFacts: true
+    });
   });
   if (configured.embeddingProviderModelId !== roles.qwen.id ||
     configured.learnAutomatically !== (profile === "product") ||
@@ -1085,11 +1088,11 @@ async function createBenchmarkIdentity(
     !configured.useMemoryFacts) {
     throw new Error("longmemeval_memory_settings_invalid");
   }
-  const session = await createAuthSession({
+  const session = await withLongMemEvalIdentitySetupRetry(() => createAuthSession({
     secureCookie: false,
     sessions: createPrismaAuthSessionStore(prisma),
     userId
-  });
+  }));
   return Object.freeze({
     cookie: session.cookie.split(";", 1)[0]!,
     sessionId: session.sessionId,
