@@ -2887,7 +2887,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(local.projectAggregationSessions).toHaveBeenCalledOnce();
     expect(result).toMatchObject({
       budgetSnapshot: {
-        aggregationPolicyVersion: "memory-reader-aggregation-policy-v14",
+        aggregationPolicyVersion: "memory-reader-aggregation-policy-v15",
         aggregationProviderCalls: 0,
         aggregationReaderFallbackUsed: true,
         aggregationState: "READER_REQUIRED",
@@ -2897,9 +2897,15 @@ describe("Personal Memory v1 run admission", () => {
     });
     expect(result.items).toHaveLength(5);
     expect(result.preparedContext?.text).toContain(
-      "internally enumerate every candidate occurrence"
+      "scan the entire block through its final item"
     );
-    expect(result.preparedContext?.text).toContain("Count only distinct members");
+    expect(result.preparedContext?.text).toContain("Count only distinct completed members");
+    expect(result.preparedContext?.text).toContain(
+      "places its completion inside the requested interval"
+    );
+    expect(result.preparedContext?.text).toContain(
+      "Propagate those semantics through arithmetic"
+    );
     expect(result.preparedContext?.text).not.toContain("distinct_members=");
     expect(result.budgetSnapshot.utilityExecutions).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "MEMORY_AGGREGATE" })])

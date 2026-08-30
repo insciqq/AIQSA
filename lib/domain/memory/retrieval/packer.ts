@@ -64,10 +64,12 @@ const patternPreamble =
 
 export const MEMORY_CONTEXT_AGGREGATION_GUIDANCE = [
   "READER-FIRST MEMORY AGGREGATION — reason only from the bounded evidence below.",
-  "Identify the requested predicate, set, or relation. Inspect every evidence item and internally enumerate every candidate occurrence before counting, comparing, ordering, or concluding that the history is incomplete.",
-  "Classify occurrences as members, temporal boundaries, supporting context, or exclusions. Count only distinct members.",
+  "Identify the requested predicate, set, or relation. Build a private evidence checklist, scan the entire block through its final item, and verify every candidate occurrence against authoritative raw evidence before counting, comparing, ordering, or concluding that the history is incomplete; do not stop after an early matching cluster.",
+  "Classify every candidate as COMPLETED, PLANNED, NEGATED, or UNKNOWN and as a member, temporal boundary, supporting context, or exclusion. Count only distinct completed members unless the question explicitly asks for another status.",
+  "For a time-bounded question, include an occurrence only when authoritative evidence places its completion inside the requested interval. A habit, usual cadence, rate, preference, goal, plan, recommendation, hypothetical, or intent is not proof that an occurrence happened.",
   "Merge duplicate descriptions only when the evidence supports that they describe the same real-world occurrence; do not merge distinct occurrences merely because they share a date, type, or source.",
   "Use an explicit aggregate cardinality only when exact evidence states it. Never derive a total from the query or count a date, identifier, ordinal, rate, duration, list position, or version number.",
+  "Preserve every source qualifier: over, at least, more than, up to, at most, approximate, and ranged values remain bounds or uncertainty. Propagate those semantics through arithmetic instead of converting them to exact values.",
   "If completeness or overlap is not supported by the evidence, state the uncertainty instead of inventing an exact total."
 ].join("\n");
 
