@@ -1,4 +1,4 @@
-export type ProviderId = "fake" | "openai" | "anthropic" | "gemini" | "openrouter";
+export type ProviderId = "fake" | "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter";
 export type ReasoningEffort = string;
 export type OpenAIReasoningEffort = string;
 export type OpenAIReasoningMode = "pro" | "standard";
@@ -82,6 +82,15 @@ export type GeminiInteractionsParams = {
   stream: boolean;
 };
 
+export type DeepSeekResponsesParams = {
+  maxOutputTokens: number;
+  reasoning: {
+    effort: ReasoningEffort;
+  };
+  stream: boolean;
+  temperature: number;
+};
+
 export type FakeProviderParams = {
   deterministic: boolean;
   latencyMs: number;
@@ -132,6 +141,34 @@ export function defaultGeminiInteractionsParams(): GeminiInteractionsParams {
       effort: "medium"
     },
     stream: true
+  };
+}
+
+export function defaultDeepSeekResponsesParams(): DeepSeekResponsesParams {
+  return {
+    maxOutputTokens: 32_768,
+    reasoning: {
+      effort: "high"
+    },
+    stream: true,
+    temperature: 1
+  };
+}
+
+export function normalizeDeepSeekResponsesParams(
+  params: Partial<DeepSeekResponsesParams> & Record<string, unknown> = {}
+): DeepSeekResponsesParams {
+  const defaults = defaultDeepSeekResponsesParams();
+  const reasoning: Record<string, unknown> = isRecord(params.reasoning)
+    ? params.reasoning
+    : {};
+  return {
+    maxOutputTokens: maxOutputTokensFromParams(params) ?? defaults.maxOutputTokens,
+    reasoning: {
+      effort: stringValue(reasoning.effort, defaults.reasoning.effort)
+    },
+    stream: booleanValue(params.stream, defaults.stream),
+    temperature: numberValue(params.temperature, defaults.temperature)
   };
 }
 

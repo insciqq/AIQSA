@@ -49,6 +49,7 @@ export const MAX_PROVIDER_RESPONSE_TIMEOUT_MS = 900_000;
 
 export const providerAdapterKinds = [
   "anthropic_messages",
+  "deepseek_responses_native",
   "gemini_interactions_native",
   "openai_chat_completions_compatible",
   "openai_responses_compatible",
@@ -61,6 +62,7 @@ export const providerAdapterKinds = [
 export type ProviderAdapterKind = (typeof providerAdapterKinds)[number];
 export type ProviderFamily =
   | "anthropic"
+  | "deepseek"
   | "gemini"
   | "openai"
   | "openai_compatible"

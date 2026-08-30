@@ -47,6 +47,8 @@
     "security:deps": "npm audit --audit-level=high",
     "smoke:anthropic": "tsx scripts/smoke-anthropic-messages.ts",
     "smoke:custom-openai-compatible": "tsx scripts/smoke-custom-openai-compatible.ts",
+    "smoke:deepseek": "tsx scripts/smoke-deepseek-responses.ts",
+    "smoke:deepseek-browser-paid": "node scripts/smoke-deepseek-browser-paid.cjs",
     "smoke:openai": "tsx scripts/smoke-openai-responses.ts",
     "smoke:gemini": "tsx scripts/smoke-gemini-interactions.ts",
     "smoke:memory-semantic": "tsx scripts/smoke-memory-semantic-retrieval.ts",

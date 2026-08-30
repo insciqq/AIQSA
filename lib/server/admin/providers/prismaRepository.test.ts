@@ -193,7 +193,7 @@ describe("Prisma admin provider repository", () => {
     expect(db.providerConnection.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         family: {
-          in: ["anthropic", "gemini", "openai", "openai_compatible", "openrouter"]
+          in: ["anthropic", "deepseek", "gemini", "openai", "openai_compatible", "openrouter"]
         }
       }
     }));

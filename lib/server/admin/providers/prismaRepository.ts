@@ -88,6 +88,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
 function family(value: string): AdminProviderConnection["family"] {
   if (
     value === "anthropic" ||
+    value === "deepseek" ||
     value === "fake" ||
     value === "gemini" ||
     value === "openai" ||
@@ -381,10 +382,11 @@ type ProviderSearchPolicy = Readonly<{
   displayName: string;
   description: string;
   hostedId: string;
-  hostedKind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search";
+  hostedKind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search";
   hostedStrategyId: string;
   modelAdapterKind:
     | "anthropic_messages"
+    | "deepseek_responses_native"
     | "gemini_interactions_native"
     | "openai_responses_compatible"
     | "openai_responses_native";
@@ -392,8 +394,8 @@ type ProviderSearchPolicy = Readonly<{
   optionKind: "gemini_google_search" | "web_search";
   optionRowId: string;
   optionTemplateKey: string | null;
-  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search";
-  provider: "anthropic" | "gemini" | "openai" | "openai_compatible";
+  protocol: "anthropic_web_search" | "deepseek_responses_web_search" | "gemini_google_search" | "openai_responses_web_search";
+  provider: "anthropic" | "deepseek" | "gemini" | "openai" | "openai_compatible";
 }>;
 
 function providerSearchPolicy(connection: Readonly<{
@@ -418,6 +420,24 @@ function providerSearchPolicy(connection: Readonly<{
       optionTemplateKey: "search:anthropic",
       protocol: "anthropic_web_search",
       provider: "anthropic"
+    };
+  }
+  if (connection.family === "deepseek" && connection.templateKey === "deepseek") {
+    return {
+      clientId: `deepseek-search-client:${connection.id}`,
+      clientKind: "provider_model_web_search",
+      description: "Web search provided by DeepSeek. Source URLs are not returned by the provider.",
+      displayName: "DeepSeek Search",
+      hostedId: "deepseek-native-web-search",
+      hostedKind: "deepseek_native_web_search",
+      hostedStrategyId: "deepseek-native-web-search",
+      modelAdapterKind: "deepseek_responses_native",
+      optionId: "deepseek-native-web-search",
+      optionKind: "web_search",
+      optionRowId: "00000000-0000-4000-8000-000000001406",
+      optionTemplateKey: "search:deepseek",
+      protocol: "deepseek_responses_web_search",
+      provider: "deepseek"
     };
   }
   if (connection.family === "openai" && connection.templateKey === "openai") {
@@ -482,7 +502,7 @@ async function publishProviderSearchRoute(
     draft: AdminSearchDraft;
     evidence: Record<string, unknown>;
     existing: null | Readonly<{ draft: unknown; id: string }>;
-    kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
+    kind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
     modelId: string | null;
     now: Date;
     option: Readonly<{ description: string; displayName: string; id: string }>;
@@ -761,7 +781,7 @@ export function createPrismaAdminProviderRepository(
           orderBy: { createdAt: "asc" },
           where: {
             family: {
-              in: ["anthropic", "gemini", "openai", "openai_compatible", "openrouter"]
+              in: ["anthropic", "deepseek", "gemini", "openai", "openai_compatible", "openrouter"]
             }
           }
         }),

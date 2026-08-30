@@ -2,6 +2,7 @@ export const ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS = [
   "openai",
   "anthropic",
   "gemini",
+  "deepseek",
   "openrouter"
 ] as const;
 

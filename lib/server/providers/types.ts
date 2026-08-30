@@ -187,6 +187,14 @@ export type ProviderSearchPolicy =
       maxOutputTokens: number;
       modelCapabilities: ProviderModelCapabilities;
       modelId: string;
+      provider: "deepseek";
+      reasoningPolicy: ProviderSearchReasoningPolicy;
+      strategyId: "deepseek-responses-web-search";
+    }>
+  | Readonly<{
+      maxOutputTokens: number;
+      modelCapabilities: ProviderModelCapabilities;
+      modelId: string;
       provider: "openai" | "openai_compatible";
       reasoningPolicy: ProviderSearchReasoningPolicy;
       strategyId: "openai-responses-web-search";
@@ -268,6 +276,9 @@ export type ProviderSearchResult = {
   findings: string;
   providerResponseId?: string;
   requestPreview: Record<string, unknown>;
+  /** Omitted by legacy/test adapters means normal source attribution. Only
+   * the dedicated DeepSeek adapter may emit `provider_unavailable`. */
+  sourceAttribution?: "available" | "provider_unavailable";
   sources: readonly SearchSource[];
   usage: ModelRunUsage;
 };

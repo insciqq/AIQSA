@@ -1,5 +1,10 @@
 import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import { createAnthropicMessagesSearchAdapter } from "./anthropicMessagesSearch";
+import {
+  createDeepSeekResponsesAdapter,
+  createFetchDeepSeekResponsesClient
+} from "./deepSeekResponses";
+import { createDeepSeekResponsesSearchAdapter } from "./deepSeekResponsesSearch";
 import { createCompatibleResponsesAdapter } from "./compatibleResponses";
 import { createFakeProviderAdapter } from "./fakeProvider";
 import {
@@ -42,6 +47,7 @@ import {
 } from "./providerCredentialSource";
 import {
   anthropicMessagesToolBridge,
+  deepSeekResponsesToolBridge,
   geminiInteractionsToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
@@ -50,6 +56,7 @@ import {
 } from "../tools/bridges";
 import type { ProviderToolBridge } from "../tools/types";
 import {
+  createDeepSeekResponsesStructuredOutputAdapter,
   createOpenAIResponsesStructuredOutputAdapter,
   createOpenRouterStructuredOutputAdapter,
   type ProviderStructuredOutputAdapter
@@ -157,6 +164,12 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   if (
     (model.adapterKind === "gemini_interactions_native") !==
     (value.providerFamily === "gemini")
+  ) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+  if (
+    (model.adapterKind === "deepseek_responses_native") !==
+    (value.providerFamily === "deepseek")
   ) {
     throw new Error("provider_execution_snapshot_invalid");
   }
@@ -315,6 +328,25 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
   const baseUrl = snapshot.connection.apiRoot;
 
   switch (snapshot.model.adapterKind) {
+    case "deepseek_responses_native": {
+      const client = createFetchDeepSeekResponsesClient({
+        apiKey: clientSecret,
+        apiRoot: baseUrl,
+        defaultTimeoutMs: responseTimeoutMs,
+        fetchFn
+      });
+      return {
+        adapter: createDeepSeekResponsesAdapter({ client }),
+        ...(snapshot.model.capabilities.nativeSearch
+          ? { searchAdapter: createDeepSeekResponsesSearchAdapter({ client }) }
+          : {}),
+        structuredOutputAdapter: createDeepSeekResponsesStructuredOutputAdapter({
+          client,
+          model: snapshot.model
+        }),
+        toolBridge: deepSeekResponsesToolBridge
+      };
+    }
     case "gemini_interactions_native": {
       const client = createFetchGeminiInteractionsClient({
         apiKey: clientSecret,

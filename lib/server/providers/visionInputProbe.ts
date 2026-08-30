@@ -30,7 +30,8 @@ function fixture(): Promise<Buffer> {
 
 function request(snapshot: ProviderExecutionSnapshot, image: Buffer): ProviderRunRequest {
   const responsesAdapter = snapshot.model.adapterKind === "openai_responses_native" ||
-    snapshot.model.adapterKind === "openai_responses_compatible";
+    snapshot.model.adapterKind === "openai_responses_compatible" ||
+    snapshot.model.adapterKind === "deepseek_responses_native";
   return {
     attachmentIds: ["vision-input-probe"],
     attachments: [{

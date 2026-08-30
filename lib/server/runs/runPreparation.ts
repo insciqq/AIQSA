@@ -112,6 +112,7 @@ const zeroEmittedPdfTextUnavailableMessage =
   "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
 
 function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
+  if (providerFamily === "deepseek") return "deepseek";
   if (providerFamily === "gemini") return "gemini";
   if (adapterKind === "anthropic_messages") return "anthropic";
   if (adapterKind === "openrouter_chat_completions") return "openrouter";
