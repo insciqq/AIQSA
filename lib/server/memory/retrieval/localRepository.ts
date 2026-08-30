@@ -93,7 +93,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v28";
+  "memory-local-retrieval-repository-v29";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
@@ -3291,6 +3291,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
   retrievalInput: MemoryLocalRetrievalInput;
   snapshot: MemoryLocalRetrievalSnapshot;
   laneResults: readonly MemoryLaneResult[];
+  settleSignal?: AbortSignal;
   vectorEvidence: MemoryVectorLaneEvidence[];
 }>): Promise<MemoryDigestIntraChatStageResult> {
   const digestResult = input.laneResults.find(({ lane }) =>
@@ -3445,7 +3446,11 @@ async function executeDigestIntraChatStage(input: Readonly<{
     });
   }
 
-  const stageResults = await executeMemoryRetrievalLaneTasks(tasks);
+  const stageResults = await executeMemoryRetrievalLaneTasks(
+    tasks,
+    MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
+    input.settleSignal
+  );
   const selectedRaw = selectMemoryIntraChatRawCandidates({
     laneResults: stageResults,
     perChatLimit,
@@ -4668,6 +4673,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           client,
           laneResults: baselineLaneResults,
           retrievalInput: { ...input, plan: separateBaseline },
+          settleSignal: input.settleSignal,
           snapshot,
           vectorEvidence
         });
@@ -4682,6 +4688,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         client,
         laneResults: enrichedLaneResults,
         retrievalInput: input,
+        settleSignal: input.settleSignal,
         snapshot,
         vectorEvidence
       });
