@@ -15,7 +15,9 @@ import {
 export const LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS = [
   "fu09-blind-50-v1",
   "fu2-reader-first-blind-50-v1",
-  "fu2-reader-first-blind-50-v2"
+  "fu2-reader-first-blind-50-v2",
+  "fu2-reader-first-blind-50-v3",
+  "fu2-reader-first-blind-50-v4"
 ] as const;
 
 export type LongMemEvalQualificationManifestId =
@@ -150,10 +152,34 @@ const readerFirstManifestV2Schema = readerFirstManifestV1Schema.extend({
   }).strict()
 }).strict();
 
+const readerFirstManifestV3Schema = readerFirstManifestV1Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v3"),
+  source: z.object({
+    appCommit: z.literal("657656595d83959c78f0e7d17a682d5de495c748"),
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV4Schema = readerFirstManifestV1Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v4"),
+  source: z.object({
+    appCommit: z.literal("55dfa93dfb25502503c7b327c451799f28bb8ddd"),
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
 const manifestSchema = z.discriminatedUnion("id", [
   legacyManifestSchema,
   readerFirstManifestV1Schema,
-  readerFirstManifestV2Schema
+  readerFirstManifestV2Schema,
+  readerFirstManifestV3Schema,
+  readerFirstManifestV4Schema
 ]);
 
 export type LongMemEvalQualificationManifest = Readonly<

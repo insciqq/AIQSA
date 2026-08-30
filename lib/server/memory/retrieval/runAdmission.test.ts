@@ -30,6 +30,7 @@ import {
   createMemoryRunRetrievalService,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
   MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+  MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
   MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
   mergeMemoryAggregationSessionCompletion,
@@ -851,6 +852,51 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "DEGRADED"
       });
       expect(local.retrieve).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses a cooperatively settled local pack at the child deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("deadline-partial-local")] });
+      const originalRetrieve = local.retrieve.getMockImplementation()!;
+      const retrievalSignals: AbortSignal[] = [];
+      local.retrieve.mockImplementation(async (input) => {
+        const signal = (input as { settleSignal?: AbortSignal }).settleSignal;
+        if (!signal) throw new Error("memory_local_settle_signal_missing");
+        retrievalSignals.push(signal);
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true }));
+        }
+        return originalRetrieve(input);
+      });
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...retrievalOptions([]),
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        monotonicClock: Date.now
+      }).retrieve(runInput("What do I prefer?"))
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+
+      await vi.advanceTimersByTimeAsync(MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
+
+      expect(retrievalSignals).toHaveLength(1);
+      expect(retrievalSignals[0]?.aborted).toBe(true);
+      expect(result).toMatchObject({
+        items: [{ exactItemId: "deadline-partial-local" }],
+        outcome: "USED"
+      });
     } finally {
       vi.useRealTimers();
     }
