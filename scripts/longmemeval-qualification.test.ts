@@ -29,12 +29,13 @@ describe("LongMemEval frozen qualification manifest", () => {
   });
 
   it("freezes the reader-first reranker route and case concurrency two", async () => {
-    const [legacy, first, second, prior, manifest] = await Promise.all([
+    const [legacy, first, second, third, prior, manifest] = await Promise.all([
       loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v2"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v3"),
-      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v4")
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v4"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v5")
     ]);
 
     expect(manifest.runtime.caseConcurrency).toBe(2);
@@ -60,9 +61,10 @@ describe("LongMemEval frozen qualification manifest", () => {
     expect(manifest.selection).toEqual(legacy.selection);
     expect(manifest.selection).toEqual(first.selection);
     expect(manifest.selection).toEqual(second.selection);
+    expect(manifest.selection).toEqual(third.selection);
     expect(manifest.selection).toEqual(prior.selection);
     expect(manifest.source.appCommit)
-      .toBe("55dfa93dfb25502503c7b327c451799f28bb8ddd");
+      .toBe("54051d7bb6e7b961a3882463bf0a47963fd20e5b");
   });
 
   it("binds every selected id to its frozen upstream category", async () => {
@@ -86,9 +88,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first reranker route drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v4"
+      "fu2-reader-first-blind-50-v5"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v4") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v5") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {
