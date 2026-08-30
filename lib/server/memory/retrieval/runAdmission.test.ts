@@ -263,6 +263,7 @@ function snapshot(activeIndexGenerationId: string | null) {
 
 function repository(options: Readonly<{
   activeIndexGenerationId?: string | null;
+  aggregationCandidates?: readonly MemoryLaneCandidate[];
   candidates?: readonly MemoryLaneCandidate[];
   completion?: MemoryAggregationSessionCompletion;
   core?: readonly MemoryCoreCandidate[];
@@ -286,9 +287,10 @@ function repository(options: Readonly<{
   };
   const candidates = options.candidates ?? [];
   const retrieve = vi.fn(async (_input: { plan: MemoryRetrievalPlan; vector?: unknown }) => {
-    const selectedCandidates = _input.vector && options.hybridCandidates
-      ? options.hybridCandidates
-      : candidates;
+    const selectedCandidates = _input.plan.aggregationRequested &&
+      options.aggregationCandidates
+      ? options.aggregationCandidates
+      : _input.vector && options.hybridCandidates ? options.hybridCandidates : candidates;
     return ({
     core: options.core ?? [],
     laneResults: [...new Set(selectedCandidates.map(({ lane }) => lane))].map((lane) => ({
@@ -2240,23 +2242,44 @@ describe("Personal Memory v1 run admission", () => {
     expect(actionExecutor.execute).not.toHaveBeenCalled();
   });
 
-  it("hedges control with a complete lexical baseline and keeps that pack healthy", async () => {
+  it("uses the broad lexical plan when control and query embedding are unavailable", async () => {
+    const narrowFact = {
+      ...factLaneCandidate("narrow-speculative-fact", 0.9),
+      lane: "FACT_FTS_SIMPLE" as const
+    };
+    const narrowHistory = {
+      ...laneCandidate("narrow-speculative-history"),
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+    };
+    const broadFact = {
+      ...factLaneCandidate("broad-fallback-fact", 0.9),
+      lane: "FACT_FTS_SIMPLE" as const
+    };
+    const broadHistory = {
+      ...laneCandidate("broad-fallback-history"),
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+    };
     const local = repository({
-      candidates: [{
-        ...factLaneCandidate("speculative-fact-evidence", 0.9),
-        lane: "FACT_FTS_SIMPLE"
-      }, {
-        ...laneCandidate("speculative-history-evidence"),
-        lane: "HISTORY_RECALL_FTS_SIMPLE"
-      }],
+      aggregationCandidates: [broadFact, broadHistory],
+      candidates: [narrowFact, narrowHistory],
       speculativeBaseline: true
     });
+    const base = retrievalOptions(["c0", "c1"]);
     let resolveControl: ((value: MemoryControlResult) => void) | undefined;
     const controlResult = new Promise<MemoryControlResult>((resolve) => {
       resolveControl = resolve;
     });
     const pending = createMemoryRunRetrievalService(local.value, {
-      control: { decide: vi.fn(() => controlResult) }
+      ...base,
+      control: { decide: vi.fn(() => controlResult) },
+      utilities: {
+        ...base.utilities,
+        embedQuery: vi.fn(async () => ({
+          bindingId: "binding-embedding-unavailable",
+          reason: "memory_query_embedding_unavailable",
+          status: "UNAVAILABLE" as const
+        }))
+      }
     }).retrieve(runInput("What did I decide across my earlier chats?"));
 
     await vi.waitFor(() => expect(local.retrieveSpeculativeBaseline).toHaveBeenCalledOnce());
@@ -2268,19 +2291,32 @@ describe("Personal Memory v1 run admission", () => {
 
     expect(result).toMatchObject({
       budgetSnapshot: {
+        broadLexicalFallbackUsed: true,
         componentMetrics: {
+          broadLexicalFallbackUsed: true,
           plannerFallbackUsed: true,
-          speculativeBaselineUsed: true
+          speculativeBaselineUsed: false,
+          speculativeHybridUsed: false
         },
-        speculativeBaselineUsed: true
+        speculativeBaselineUsed: false,
+        speculativeHybridUsed: false
       },
       outcome: "USED"
     });
     expect(result.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ exactItemId: "speculative-fact-evidence" }),
-      expect.objectContaining({ exactItemId: "speculative-history-evidence" })
+      expect.objectContaining({ exactItemId: "broad-fallback-fact" }),
+      expect.objectContaining({ exactItemId: "broad-fallback-history" })
     ]));
-    expect(local.retrieve).toHaveBeenCalledOnce();
+    expect(result.items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ exactItemId: "narrow-speculative-fact" }),
+      expect.objectContaining({ exactItemId: "narrow-speculative-history" })
+    ]));
+    expect(local.retrieveSpeculativeBaseline).toHaveBeenCalledOnce();
+    expect(local.retrieve).toHaveBeenCalledTimes(2);
+    expect(local.retrieve).toHaveBeenLastCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({ aggregationRequested: true })
+    }));
+    expect(local.retrieve.mock.lastCall?.[0].vector).toBeUndefined();
   });
 
   it("keeps a ready dense lane when System-Model control falls back", async () => {
@@ -2326,9 +2362,11 @@ describe("Personal Memory v1 run admission", () => {
     expect(result).toMatchObject({
       budgetSnapshot: {
         componentMetrics: {
+          broadLexicalFallbackUsed: false,
           speculativeBaselineUsed: false,
           speculativeHybridUsed: true
         },
+        broadLexicalFallbackUsed: false,
         speculativeBaselineUsed: false,
         speculativeHybridUsed: true
       },
@@ -2337,6 +2375,8 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ exactItemId: "prior-dense-evidence" })
     ]));
+    expect(local.retrieve.mock.calls.every(([input]) =>
+      !input.plan.aggregationRequested)).toBe(true);
   });
 
   it("treats invalid control output as mutation NONE plus broad local read", async () => {
@@ -3094,7 +3134,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v13"
+        version: "memory-retrieval-component-metrics-v14"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
