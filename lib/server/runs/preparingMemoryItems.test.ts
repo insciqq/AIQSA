@@ -508,6 +508,85 @@ describe("preparing Memory item finalization", () => {
     )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
   });
 
+  it("rejoins a packed raw segment with canonical boundary whitespace", async () => {
+    const exactSafeText = "User: We selected cedar.\n\nAssistant: Acknowledged.";
+    const rawSafeText = `${exactSafeText} `;
+    const row = {
+      branchGeneration: 5,
+      chatId: "source-chat",
+      contentHash: "c".repeat(64),
+      contextualKeyPolicyVersion: "memory-contextual-narrative-key-v1",
+      contextualKeyState: "RAW_FALLBACK",
+      contextualNarrativeText: "",
+      evidenceRootHash: "e".repeat(64),
+      languageCode: "en",
+      parentChunkId: "parent-chunk-1",
+      parentRawSafeText: rawSafeText,
+      projectionVersion: "memory-recall-round-projection-v1",
+      rawEndOffsetUtf16: rawSafeText.length,
+      rawSafeTextHash: memorySha256(rawSafeText),
+      rawStartOffsetUtf16: 0,
+      redactionState: "NOT_NEEDED",
+      safeText: rawSafeText,
+      safetyClass: "NORMAL",
+      segmentId: "segment-1",
+      segmentPosition: 0,
+      segmentProjectionVersion: "memory-recall-round-segment-v1",
+      segmentSourceRevision: 9,
+      sourceAssistantId: null,
+      sourceFolderId: null,
+      sourceRevision: 9,
+      state: "ACTIVE",
+      supportingRoundIds: []
+    };
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [row]);
+    const tx = {
+      $queryRaw,
+      memoryRecallRoundSegmentMessage: {
+        findMany: vi.fn(async () => [
+          { messageId: "source-user" },
+          { messageId: "source-assistant" }
+        ])
+      }
+    } as unknown as Prisma.TransactionClient;
+    const input = {
+      exactItemId: "round-1",
+      exactSafeText,
+      featureSnapshot: {
+        aggregationRequested: false,
+        contextualRetrievalHintHash: null,
+        contextualSupportingEvidenceHashes: [],
+        contextualSupportingRoundIds: [],
+        retrievalMode: "PAST_CHAT_SEARCH"
+      },
+      finalScore: 0.9,
+      itemType: "RECALL_ROUND" as const,
+      projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" as const,
+      recallRoundId: "round-1",
+      recallRoundSegmentId: "segment-1",
+      selectionReason: "history_recall_vector",
+      supportingItemId: "parent-chunk-1"
+    };
+
+    await expect(resolvePreparingMemoryItem(
+      tx,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What did we select?",
+      input
+    )).resolves.toMatchObject({
+      exactSafeText,
+      recallRoundId: "round-1",
+      recallRoundSegmentId: "segment-1",
+      sourceMessageIdsSnapshot: ["source-user", "source-assistant"]
+    });
+    await expect(resolvePreparingMemoryItem(
+      tx,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What did we select?",
+      { ...input, exactSafeText: exactSafeText.slice(0, -1) }
+    )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
+  });
+
   it("rejoins an authorized overview, aggregation, or derived targeted digest", async () => {
     const digestText = "Summary: Cedar was selected for the deployment.";
     const digestMessageIds = Array.from(

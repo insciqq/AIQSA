@@ -14,7 +14,8 @@ import {
 
 export const LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS = [
   "fu09-blind-50-v1",
-  "fu2-reader-first-blind-50-v1"
+  "fu2-reader-first-blind-50-v1",
+  "fu2-reader-first-blind-50-v2"
 ] as const;
 
 export type LongMemEvalQualificationManifestId =
@@ -85,7 +86,7 @@ const legacyManifestSchema = z.object({
   version: z.literal(1)
 }).strict();
 
-const readerFirstManifestSchema = z.object({
+const readerFirstManifestV1Schema = z.object({
   id: z.literal("fu2-reader-first-blind-50-v1"),
   profile: z.literal("official"),
   runtime: z.object({
@@ -138,9 +139,21 @@ const readerFirstManifestSchema = z.object({
   version: z.literal(1)
 }).strict();
 
+const readerFirstManifestV2Schema = readerFirstManifestV1Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v2"),
+  source: z.object({
+    appCommit: z.literal("0f57ee307de10173b291984c58dc02b8b48580fe"),
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
 const manifestSchema = z.discriminatedUnion("id", [
   legacyManifestSchema,
-  readerFirstManifestSchema
+  readerFirstManifestV1Schema,
+  readerFirstManifestV2Schema
 ]);
 
 export type LongMemEvalQualificationManifest = Readonly<

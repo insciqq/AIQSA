@@ -105,14 +105,15 @@ npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE --sample-size 1
 ```
 
 FU-09's original content-free selection remains frozen as the provenance-only
-`qualifications/fu09-blind-50-v1.json`. The current reader-first qualification
-is `qualifications/fu2-reader-first-blind-50-v1.json`: it reuses those exact 50
+`qualifications/fu09-blind-50-v1.json`. Reader-first `v1` preserves the first
+four-case diagnostic slice before the hybrid control-fallback fix. The current
+qualification is `qualifications/fu2-reader-first-blind-50-v2.json`: it reuses the exact 50
 case IDs across all six upstream categories while freezing Luna, the official
 profile, the ordered three-model reranker route and per-model floors, case
 concurrency two, session concurrency sixteen, and all other runtime bounds.
-Run it with `--qualification-manifest fu2-reader-first-blind-50-v1`; selection
-or runtime override flags are rejected when the manifest is present. The old
-single-Qwen runtime manifest fails closed under the new route. The
+Run it with `--qualification-manifest fu2-reader-first-blind-50-v2`; selection
+or runtime override flags are rejected when the manifest is present. Both the
+old single-Qwen runtime manifest and reader-first `v1` fail closed for new runs. The
 paid/disposable guards remain mandatory and no manifest authorizes provider
 traffic by itself.
 

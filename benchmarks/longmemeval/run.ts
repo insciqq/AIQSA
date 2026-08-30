@@ -522,7 +522,7 @@ function applyQualificationManifest(
     upstreamModelId: preset.upstreamModelId
   }));
   if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
-    manifest.id !== "fu2-reader-first-blind-50-v1" ||
+    manifest.id !== "fu2-reader-first-blind-50-v2" ||
     manifest.runtime.reranker.policyVersion !== RERANKER_ROUTE_POLICY_VERSION ||
     !qualificationRerankerRoutesMatch(manifestRoute, activeRoute) ||
     manifest.runtime.systemModel.reasoningEffort !==

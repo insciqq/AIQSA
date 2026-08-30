@@ -173,15 +173,23 @@ function compactSafeText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/gu, " ").trim();
 }
 
+export function canonicalMemoryPackedSafeText(
+  itemType: MemoryRankedCandidate["itemType"],
+  safeText: string
+): string {
+  // Recall chunks carry canonical speaker and message boundaries. Preserve
+  // their internal shape; boundary whitespace is not part of the packed
+  // projection. Only atomic facts are compacted to one line.
+  return itemType !== "FACT_VERSION"
+    ? safeText.trim()
+    : compactSafeText(safeText);
+}
+
 function packedSafeText(
   candidate: MemoryRankedCandidate,
   expansion: MemoryExpandedCandidate
 ): string {
-  // Recall chunks carry canonical speaker and message boundaries. Preserve
-  // them verbatim; only atomic facts are compacted to one line.
-  return candidate.itemType !== "FACT_VERSION"
-    ? expansion.safeText.trim()
-    : compactSafeText(expansion.safeText);
+  return canonicalMemoryPackedSafeText(candidate.itemType, expansion.safeText);
 }
 
 function documentDate(
