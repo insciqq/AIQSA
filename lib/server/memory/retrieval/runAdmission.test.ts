@@ -1067,7 +1067,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("does not start reranking after the eight-second soft deadline", async () => {
+  it("does not start reranking after the ten-second soft deadline", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -1092,7 +1092,7 @@ describe("Personal Memory v1 run admission", () => {
       const control = {
         decide: vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) =>
           new Promise<Awaited<ReturnType<MemoryControlService["decide"]>>>((resolve) => {
-            setTimeout(() => void originalControl(input).then(resolve), 5_900);
+            setTimeout(() => void originalControl(input).then(resolve), 7_900);
           }))
       };
       let settled = false;
@@ -1108,7 +1108,7 @@ describe("Personal Memory v1 run admission", () => {
           return result;
         });
 
-      await vi.advanceTimersByTimeAsync(8_099);
+      await vi.advanceTimersByTimeAsync(10_099);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const result = await pending;
@@ -1223,7 +1223,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("caps control at six seconds despite a longer outer deadline", async () => {
+  it("caps control at eight seconds despite a longer outer deadline", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -1296,7 +1296,7 @@ describe("Personal Memory v1 run admission", () => {
         },
         outcome: "EMPTY"
       });
-      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(6_000);
+      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(8_000);
     } finally {
       vi.useRealTimers();
     }

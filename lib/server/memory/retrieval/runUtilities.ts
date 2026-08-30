@@ -71,7 +71,7 @@ import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerM
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v8";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v29";
+  "memory-multilingual-relevance-v30";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 1;
 // Remote embedding engines commonly reserve a 30-second request window. The
 // enclosing optional-role signal remains authoritative and clamps this window
@@ -146,8 +146,8 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     nearZeroAdmissionGate: "complete_coverage_only_with_exact_profile_exemptions",
     transientReadOnlyRetry:
       "one_fresh_binding_same_snapshot_only_before_interactive_soft_deadline",
-    interactiveSoftDeadlineMs: 8_000,
-    interactiveHardDeadlineMs: 12_000,
+    interactiveSoftDeadlineMs: 10_000,
+    interactiveHardDeadlineMs: 14_000,
     logicalOperationCount: 1,
     dedicatedRerankerAdapter: "openrouter-rerank-v2",
     dedicatedRerankerRoutePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
@@ -157,7 +157,7 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     toolObservationContract: "source=tool_observation,speaker=tool,authority=supporting",
     dedicatedWireEnvelopeReserveBytes: MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES,
     generativeCompatibilityPath: "structured-output-v19",
-    version: 29
+    version: 30
   }),
   schemaVersion: "memory-relevance-result-v7"
 });
