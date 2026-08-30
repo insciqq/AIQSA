@@ -123,6 +123,8 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
   switch (model.adapterKind) {
     case "anthropic_messages":
       return "anthropic";
+    case "deepseek_responses_native":
+      return "deepseek";
     case "gemini_interactions_native":
       return "gemini";
     case "openai_chat_completions_compatible":
@@ -148,6 +150,7 @@ function validateFamily(family: string, model: ProviderModelConfiguration): void
 function realProviderFamily(value: string): AdminProviderFamily {
   if (
     value === "anthropic" ||
+    value === "deepseek" ||
     value === "gemini" ||
     value === "openai" ||
     value === "openai_compatible" ||

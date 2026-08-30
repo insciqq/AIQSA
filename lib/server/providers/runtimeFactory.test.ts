@@ -8,6 +8,7 @@ import {
 } from "./runtimeFactory";
 
 const runtimeAdapterKinds = [
+  "deepseek_responses_native",
   "gemini_interactions_native",
   "openai_responses_native",
   "openai_responses_compatible",
@@ -29,6 +30,8 @@ function snapshot(
 ): ProviderExecutionSnapshot {
   const providerFamily = adapterKind === "gemini_interactions_native"
     ? "gemini"
+    : adapterKind === "deepseek_responses_native"
+      ? "deepseek"
     : adapterKind === "openai_responses_native"
     ? "openai"
     : adapterKind === "anthropic_messages"
@@ -119,6 +122,7 @@ describe("provider runtime factory", () => {
     expect(runtime.adapter).toBeDefined();
     expect(Boolean(runtime.searchAdapter)).toBe(adapterKind === "openrouter_chat_completions");
     expect(Boolean(runtime.structuredOutputAdapter)).toBe([
+      "deepseek_responses_native",
       "openai_responses_native",
       "openai_responses_compatible",
       "openrouter_chat_completions"
@@ -280,6 +284,7 @@ describe("provider runtime factory", () => {
 
   it.each([
     "anthropic_messages",
+    "deepseek_responses_native",
     "gemini_interactions_native",
     "openai_responses_native",
     "openai_responses_compatible"
@@ -380,6 +385,16 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_execution_snapshot_invalid");
     expect(() => normalizeProviderExecutionSnapshot({
       ...snapshot("openai_chat_completions_compatible"),
+      providerFamily: "openai"
+    })).toThrow("provider_execution_snapshot_invalid");
+    const deepseek = snapshot("deepseek_responses_native");
+    expect(createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: deepseek
+    }).toolBridge?.provider).toBe("deepseek");
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...deepseek,
       providerFamily: "openai"
     })).toThrow("provider_execution_snapshot_invalid");
   });

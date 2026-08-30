@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
+  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
 } from "../../../domain/search";
@@ -61,6 +62,7 @@ function fixture(input: {
   const order: string[] = [];
   const inspections = {
     anthropic: inspection("anthropic"),
+    deepseek: inspection("deepseek"),
     gemini: inspection("gemini"),
     openai: inspection("openai"),
     openrouter: inspection("openrouter"),
@@ -378,6 +380,64 @@ describe("provider Quick setup service", () => {
     });
   });
 
+  it("bootstraps every official DeepSeek model, including vision and Search", async () => {
+    const value = fixture({
+      modelIds: [
+        "deepseek-v4-flash-vision-exp",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "remote-unknown"
+      ]
+    });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "deepseek"),
+        provider: "deepseek",
+        secret: "deepseek-one-use"
+      }
+    });
+
+    const plan = value.commit.mock.calls[0][0];
+    expect(plan.candidates.map(({ candidateId, configuration }) => ({
+      candidateId,
+      upstreamModelId: configuration.upstreamModelId,
+      vision: configuration.capabilities.vision
+    }))).toEqual([
+      { candidateId: "p6-d1", upstreamModelId: "deepseek-v4-pro", vision: false },
+      { candidateId: "p6-d2", upstreamModelId: "deepseek-v4-flash", vision: false },
+      {
+        candidateId: "p6-d3",
+        upstreamModelId: "deepseek-v4-flash-vision-exp",
+        vision: true
+      }
+    ]);
+    expect(value.pdfInputProbe).not.toHaveBeenCalled();
+    expect(plan.search).toMatchObject({
+      draft: {
+        protocol: "deepseek_responses_web_search",
+        providerModelId: plan.candidate.modelId
+      },
+      evidence: {
+        normalizedSourceCount: 0,
+        status: "available"
+      },
+      integrationId: DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID
+    });
+    expect(result).toMatchObject({
+      model: { displayName: "DeepSeek V4 Pro" },
+      models: [
+        { displayName: "DeepSeek V4 Pro" },
+        { displayName: "DeepSeek V4 Flash" },
+        { displayName: "DeepSeek V4 Flash Vision (Experimental)" }
+      ],
+      outcome: "ready",
+      provider: "deepseek",
+      search: { displayName: "DeepSeek Search", status: "ready" }
+    });
+    expect(JSON.stringify(plan)).not.toContain("deepseek-one-use");
+  });
+
   it("plans OpenAI Search from declared capability without a Search probe", async () => {
     const value = fixture({
       modelIds: ["gpt-5.6-terra"],
@@ -526,7 +586,7 @@ describe("provider Quick setup service", () => {
         { candidateId: "p2-o3" }
       ],
       outcome: "selection_required",
-      policyVersion: 5
+      policyVersion: 6
     });
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).not.toHaveBeenCalled();
@@ -542,7 +602,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 5 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 6 }
       }
     });
     expect(result.outcome).toBe("ready");

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anthropicMessagesToolBridge,
+  deepSeekResponsesToolBridge,
   geminiInteractionsToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
@@ -52,6 +53,23 @@ const mcpTool: RunTool = {
 };
 
 describe("provider tool bridges", () => {
+  it("preserves full DeepSeek function schemas while omitting only unsupported strict", () => {
+    const serialized = deepSeekResponsesToolBridge.serializeTool(searchTool);
+    expect(serialized).toEqual({
+      provider: "deepseek",
+      tool: {
+        description: searchTool.description,
+        name: searchTool.name,
+        parameters: searchTool.inputSchema,
+        type: "function"
+      }
+    });
+    expect(deepSeekResponsesToolBridge.supportsToolCalling({
+      modelId: "deepseek-v4-pro",
+      provider: "deepseek"
+    })).toBe(true);
+  });
+
   it("selects the explicit compatible wire protocol without treating it as OpenRouter", () => {
     const input = { modelId: "deployment-1", provider: "openai_compatible" };
 

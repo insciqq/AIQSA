@@ -85,7 +85,7 @@ export type AdminSearchProviderModelOption = {
   id: string;
   responseTimeoutSeconds?: number;
   searchReasoningSupported: boolean;
-  searchKind: "anthropic_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
+  searchKind: "anthropic_web_search" | "deepseek_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -133,6 +133,7 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
     ) &&
     (value.protocol === "anthropic_web_search" ||
+      value.protocol === "deepseek_responses_web_search" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
@@ -163,6 +164,7 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
     (value.method === "configuration" || value.method === "provider_search") &&
     Number.isSafeInteger(value.normalizedSourceCount) &&
     (value.protocol === "anthropic_web_search" ||
+      value.protocol === "deepseek_responses_web_search" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
@@ -207,6 +209,7 @@ function providerModel(value: unknown): boolean {
       boundedInteger(value.responseTimeoutSeconds, 5, 900)) &&
     typeof value.searchReasoningSupported === "boolean" &&
     (value.searchKind === "anthropic_web_search" ||
+      value.searchKind === "deepseek_web_search" ||
       value.searchKind === "gemini_google_search" ||
       value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }

@@ -169,7 +169,8 @@ function snapshot(value: unknown): AdminProviderQuickSetupSnapshot | null {
     !exactKeys(value, ["configuredConnections", "providers", "suggestedProvider"]) ||
     (value.suggestedProvider !== null && !providerId(value.suggestedProvider)) ||
     !Array.isArray(value.configuredConnections) || value.configuredConnections.length > 128 ||
-    !Array.isArray(value.providers) || value.providers.length !== 4) {
+    !Array.isArray(value.providers) ||
+    value.providers.length !== ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.length) {
     return null;
   }
   const configuredConnections = value.configuredConnections.map(configuredConnection);
@@ -180,7 +181,7 @@ function snapshot(value: unknown): AdminProviderQuickSetupSnapshot | null {
   if (providers.some((entry) => entry === null)) return null;
   const ids = providers.map((entry) => entry!.provider);
   if (new Set(ids).size !== providers.length ||
-    !["openai", "anthropic", "gemini", "openrouter"].every(
+    !ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.every(
       (id) => ids.includes(id as AdminProviderQuickSetupId)
     )) {
     return null;

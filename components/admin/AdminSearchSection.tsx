@@ -320,6 +320,8 @@ function draftForModel(
         ? "gemini_google_search"
         : model.searchKind === "anthropic_web_search"
           ? "anthropic_web_search"
+        : model.searchKind === "deepseek_web_search"
+          ? "deepseek_responses_web_search"
       : "openai_responses_web_search",
     providerModelId: model.id,
     queryMaxCharacters: current?.queryMaxCharacters ?? 500,
@@ -628,7 +630,8 @@ function SearchFormFields({
   const options = providerModels.filter((model) =>
     (!sourceConnectionId || model.connectionId === sourceConnectionId) &&
     (!kind || kind === model.searchKind ||
-      (kind === "web_search" && model.searchKind === "anthropic_web_search")));
+      (kind === "web_search" && (model.searchKind === "anthropic_web_search" ||
+        model.searchKind === "deepseek_web_search"))));
   const selectedModel = providerModels.find((model) => model.id === form.draft.providerModelId);
   const selectedModelTimeoutSeconds = selectedModel?.responseTimeoutSeconds ?? 300;
   const executionValidation = searchExecutionValidation(form);
@@ -737,6 +740,7 @@ function SearchFormFields({
               ) : null}
             </label>
             {(form.draft.protocol === "anthropic_web_search" ||
+              form.draft.protocol === "deepseek_responses_web_search" ||
               form.draft.protocol === "openai_responses_web_search") &&
             selectedModel?.searchReasoningSupported ? (
               <label>
@@ -755,6 +759,7 @@ function SearchFormFields({
                 <span className={helpText}>Lower effort keeps the Search step focused; the service default leaves the choice to the selected Search model.</span>
               </label>
             ) : (form.draft.protocol === "anthropic_web_search" ||
+              form.draft.protocol === "deepseek_responses_web_search" ||
               form.draft.protocol === "openai_responses_web_search") && selectedModel ? (
               <div className="border-l-2 border-trace-strong pl-3 text-xs leading-5 text-ink-muted">
                 Search reasoning is not configurable for this model. AIQSA uses the service default.

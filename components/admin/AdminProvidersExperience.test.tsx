@@ -18,7 +18,7 @@ const connections = vi.hoisted(() => ({
   props: null as null | {
     active: boolean;
     entryConnectionId?: string | null;
-    entryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
+    entryProvider?: "anthropic" | "deepseek" | "gemini" | "openai" | "openrouter" | null;
     onMutationCommitted?(): void | Promise<unknown>;
   }
 }));
@@ -47,7 +47,7 @@ vi.mock("./AdminProvidersSection", async () => {
     AdminProvidersSection: (props: typeof connections.props extends infer _Ignored ? {
       active: boolean;
       entryConnectionId?: string | null;
-      entryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
+      entryProvider?: "anthropic" | "deepseek" | "gemini" | "openai" | "openrouter" | null;
       onMutationCommitted?(): void | Promise<unknown>;
     } : never) => {
       const [draft, setDraft] = React.useState("");
@@ -74,18 +74,20 @@ vi.mock("./AdminProvidersSection", async () => {
 });
 
 function provider(
-  id: "anthropic" | "gemini" | "openai" | "openrouter",
+  id: "anthropic" | "deepseek" | "gemini" | "openai" | "openrouter",
   state: "advanced_required" | "disabled" | "needs_attention" | "not_configured" | "ready" = "not_configured",
   modelName?: string
 ) {
   const names = {
     anthropic: "Anthropic",
+    deepseek: "DeepSeek",
     gemini: "Gemini",
     openai: "OpenAI",
     openrouter: "OpenRouter"
   };
   const models = {
     anthropic: "Claude Opus 5",
+    deepseek: "DeepSeek V4 Pro",
     gemini: "Gemini 3.6 Flash",
     openai: "GPT-5.6 Terra",
     openrouter: "Claude Opus 4.8"
@@ -102,6 +104,7 @@ function provider(
 
 function snapshot(options: {
   anthropic?: Parameters<typeof provider>[1];
+  deepseek?: Parameters<typeof provider>[1];
   gemini?: Parameters<typeof provider>[1];
   openai?: Parameters<typeof provider>[1];
   openrouter?: Parameters<typeof provider>[1];
@@ -112,13 +115,14 @@ function snapshot(options: {
     family: string;
     id: string;
   }>;
-  suggestedProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
+  suggestedProvider?: "anthropic" | "deepseek" | "gemini" | "openai" | "openrouter" | null;
 } = {}) {
   return {
     configuredConnections: options.configuredConnections ?? [],
     providers: [
       provider("openai", options.openai),
       provider("anthropic", options.anthropic),
+      provider("deepseek", options.deepseek),
       provider("gemini", options.gemini),
       provider("openrouter", options.openrouter)
     ],

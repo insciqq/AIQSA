@@ -1,5 +1,6 @@
 export const providerTemplateIds = Object.freeze({
   anthropicConnection: "00000000-0000-4000-8000-000000001103",
+  deepSeekConnection: "00000000-0000-4000-8000-000000001106",
   fakeConnection: "00000000-0000-4000-8000-000000001101",
   fakeModel: "00000000-0000-4000-8000-000000001201",
   geminiConnection: "00000000-0000-4000-8000-000000001105",
@@ -11,6 +12,9 @@ export const providerModelTemplateIds = Object.freeze({
   "anthropic:claude-opus-5": "00000000-0000-4000-8000-000000001211",
   "anthropic:claude-opus-4-8": "00000000-0000-4000-8000-000000001206",
   "anthropic:claude-sonnet-5": "00000000-0000-4000-8000-000000001212",
+  "deepseek:deepseek-v4-flash": "00000000-0000-4000-8000-000000001220",
+  "deepseek:deepseek-v4-pro": "00000000-0000-4000-8000-000000001221",
+  "deepseek:deepseek-v4-flash-vision-exp": "00000000-0000-4000-8000-000000001222",
   "fake:fake-qsa": providerTemplateIds.fakeModel,
   "gemini:gemini-3.1-pro-preview": "00000000-0000-4000-8000-000000001216",
   "gemini:gemini-3.5-flash": "00000000-0000-4000-8000-000000001214",
@@ -85,6 +89,18 @@ export const providerConnectionTemplates = Object.freeze([
     family: "gemini",
     id: providerTemplateIds.geminiConnection,
     templateKey: "gemini"
+  }),
+  Object.freeze({
+    config: Object.freeze({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.deepseek.com",
+      authenticationMode: "bearer" as const,
+      responseTimeoutMs: 300_000
+    }),
+    displayName: "DeepSeek",
+    family: "deepseek",
+    id: providerTemplateIds.deepSeekConnection,
+    templateKey: "deepseek"
   }),
   Object.freeze({
     config: Object.freeze({

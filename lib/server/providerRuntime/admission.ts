@@ -796,6 +796,11 @@ function hostedRouteCompatible(
       answer.snapshot.providerFamily === "anthropic" &&
       answer.snapshot.model.adapterKind === "anthropic_messages";
   }
+  if (route.draft.protocol === "deepseek_responses_web_search") {
+    return option.kind === "web_search" &&
+      answer.snapshot.providerFamily === "deepseek" &&
+      answer.snapshot.model.adapterKind === "deepseek_responses_native";
+  }
   return option.kind === "web_search" &&
     route.draft.protocol === "openai_responses_web_search" &&
     (answer.snapshot.model.adapterKind === "openai_responses_native" ||
@@ -818,6 +823,7 @@ function clientRouteCompatible(
   }
   if (option.kind === "web_search") {
     return route.draft.protocol === "anthropic_web_search" ||
+      route.draft.protocol === "deepseek_responses_web_search" ||
       route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
@@ -834,6 +840,7 @@ function routeBelongsToOption(
 ): boolean {
   if (option.kind === "web_search") {
     return route.draft.protocol === "anthropic_web_search" ||
+      route.draft.protocol === "deepseek_responses_web_search" ||
       route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
@@ -846,7 +853,8 @@ function routeBelongsToOption(
 
 function hostedRouteSupportsClientTools(candidate: ResolvedSearchRouteCandidate): boolean {
   return candidate.route.draft.adapterKind === "answer_provider_hosted" &&
-    candidate.route.draft.protocol === "openai_responses_web_search";
+    (candidate.route.draft.protocol === "deepseek_responses_web_search" ||
+      candidate.route.draft.protocol === "openai_responses_web_search");
 }
 
 function validCompleteRouteAssignment(input: Readonly<{

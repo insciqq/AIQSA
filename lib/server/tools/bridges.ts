@@ -55,7 +55,7 @@ function suppliedProviderMessages(value: unknown): unknown[] | null {
 
 function usesHostedSearchRoute(
   request: ProviderRunRequest,
-  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search"
+  protocol: "anthropic_web_search" | "deepseek_responses_web_search" | "gemini_google_search" | "openai_responses_web_search"
 ): boolean {
   return request.searchPlan.options.some((option) =>
     option.adapterKind === "answer_provider_hosted" && option.protocol === protocol);
@@ -76,6 +76,18 @@ function openAIFunctionTool(tool: RunTool): SerializedProviderTool {
       name: tool.name,
       parameters: tool.inputSchema,
       ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
+      type: "function"
+    }
+  };
+}
+
+function deepSeekFunctionTool(tool: RunTool): SerializedProviderTool {
+  return {
+    provider: "deepseek",
+    tool: {
+      description: tool.description,
+      name: tool.name,
+      parameters: tool.inputSchema,
       type: "function"
     }
   };
@@ -174,6 +186,25 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
   serializeTool: openAIFunctionTool,
   supportsToolCalling(input) {
     return input.provider === "openai";
+  }
+};
+
+/** DeepSeek implements the Responses function-call wire shape, but rejects
+ * OpenAI's `strict` member. Keep this as a dedicated bridge so schemas and
+ * descriptions remain intact while only that unsupported field is omitted. */
+export const deepSeekResponsesToolBridge: ProviderToolBridge = {
+  appendToolResult: openAIResponsesToolBridge.appendToolResult,
+  parseToolCalls: openAIResponsesToolBridge.parseToolCalls,
+  provider: "deepseek",
+  serializeAssistantToolCalls: openAIResponsesToolBridge.serializeAssistantToolCalls,
+  serializeHostedTools(request) {
+    return usesHostedSearchRoute(request, "deepseek_responses_web_search")
+      ? [{ type: "web_search" }]
+      : [];
+  },
+  serializeTool: deepSeekFunctionTool,
+  supportsToolCalling(input) {
+    return input.provider === "deepseek";
   }
 };
 
@@ -393,6 +424,7 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
 
 export const providerToolBridges = {
   anthropic: anthropicMessagesToolBridge,
+  deepseek: deepSeekResponsesToolBridge,
   gemini: geminiInteractionsToolBridge,
   openai: openAIResponsesToolBridge,
   openrouter: openRouterChatToolBridge

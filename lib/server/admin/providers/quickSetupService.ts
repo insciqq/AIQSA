@@ -19,6 +19,7 @@ import {
 } from "../../../contracts/adminSearch";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
+  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
 } from "../../../domain/search";
@@ -406,10 +407,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         }
       }
       let search: AdminProviderQuickSetupCommitPlan["search"];
-      if ((policy.provider === "anthropic" || policy.provider === "openai" ||
+      if ((policy.provider === "anthropic" || policy.provider === "deepseek" || policy.provider === "openai" ||
         policy.provider === "gemini") &&
         candidate.configuration.capabilities.nativeSearch) {
         const anthropic = policy.provider === "anthropic";
+        const deepseek = policy.provider === "deepseek";
         const gemini = policy.provider === "gemini";
         const draft: AdminSearchDraft = {
           adapterKind: "provider_model_client",
@@ -419,6 +421,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
           protocol: anthropic
             ? "anthropic_web_search"
+            : deepseek
+              ? "deepseek_responses_web_search"
             : gemini
               ? "gemini_google_search"
               : "openai_responses_web_search",
@@ -441,6 +445,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           grantId: idFactory(),
           integrationId: anthropic
             ? ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID
+            : deepseek
+              ? DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID
             : gemini
               ? GEMINI_PROVIDER_SEARCH_INTEGRATION_ID
               : OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -503,6 +509,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           ? {
               displayName: policy.provider === "anthropic"
                 ? "Anthropic Search"
+                : policy.provider === "deepseek"
+                  ? "DeepSeek Search"
                 : policy.provider === "gemini"
                   ? "Google Search"
                   : "OpenAI Search",

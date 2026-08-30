@@ -48,6 +48,14 @@ const builtInSearchOptions = Object.freeze({
     sourceConnectionId: providerTemplateIds.anthropicConnection,
     templateKey: "search:anthropic"
   }),
+  "deepseek-native-web-search": Object.freeze({
+    description: "Web search provided by DeepSeek. Source URLs are not returned by the provider.",
+    displayName: "DeepSeek Search",
+    id: "00000000-0000-4000-8000-000000001406",
+    kind: "web_search",
+    sourceConnectionId: providerTemplateIds.deepSeekConnection,
+    templateKey: "search:deepseek"
+  }),
   "gemini-google-search": Object.freeze({
     description: "Google Search grounding for eligible Gemini models.",
     displayName: "Google Search",
@@ -110,6 +118,7 @@ export function codeOwnedProviderModelDraftConfig(
 ) {
   const adapterKind = {
     anthropic: "anthropic_messages",
+    deepseek: "deepseek_responses_native",
     fake: "fake",
     gemini: "gemini_interactions_native",
     openai: "openai_responses_native",

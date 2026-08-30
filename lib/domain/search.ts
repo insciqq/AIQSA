@@ -8,6 +8,8 @@ export const OPENAI_PROVIDER_SEARCH_INTEGRATION_ID = "system-openai-provider-web
 export const OPENAI_PROVIDER_SEARCH_STRATEGY_ID = "openai-provider-web-search";
 export const GEMINI_PROVIDER_SEARCH_INTEGRATION_ID = "system-gemini-google-search-client";
 export const GEMINI_PROVIDER_SEARCH_STRATEGY_ID = "gemini-google-search-client";
+export const DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID = "system-deepseek-provider-web-search";
+export const DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID = "deepseek-provider-web-search";
 
 export const searchPlanModes = ["all_selected", "model_choice"] as const;
 export type SearchPlanMode = (typeof searchPlanModes)[number];
@@ -23,6 +25,7 @@ export type SearchCredentialMode = (typeof searchCredentialModes)[number];
 
 export const searchProtocols = [
   "anthropic_web_search",
+  "deepseek_responses_web_search",
   "gemini_google_search",
   "openai_responses_web_search",
   "openrouter_perplexity_chat"

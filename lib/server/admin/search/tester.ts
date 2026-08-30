@@ -60,6 +60,17 @@ export function adminSearchProviderPolicy(input: Readonly<{
       strategyId: "openai-responses-web-search"
     };
   }
+  if (input.draft.protocol === "deepseek_responses_web_search") {
+    if (input.provider !== "deepseek") throw new Error("search_protocol_not_supported");
+    return {
+      maxOutputTokens: input.draft.maxOutputTokens,
+      modelCapabilities: input.capabilities,
+      modelId: input.modelId,
+      provider: "deepseek",
+      reasoningPolicy: input.draft.reasoningPolicy,
+      strategyId: "deepseek-responses-web-search"
+    };
+  }
   if (input.draft.protocol === "gemini_google_search" && input.provider === "gemini") {
     return {
       maxOutputTokens: input.draft.maxOutputTokens,
@@ -152,13 +163,17 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         timeoutMs: draft.timeoutMs
       });
       const normalizedSourceCount = Math.min(result.sources.length, draft.maxResults);
+      const providerSourcesUnavailable = draft.protocol === "deepseek_responses_web_search" &&
+        result.sourceAttribution === "provider_unavailable";
 
       return {
         method: "provider_search",
         normalizedSourceCount,
         probeBinding: role.authority,
         protocol: draft.protocol,
-        status: normalizedSourceCount > 0 ? "available" : "unavailable"
+        status: normalizedSourceCount > 0 || providerSourcesUnavailable
+          ? "available"
+          : "unavailable"
       };
     }
   };

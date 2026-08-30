@@ -111,6 +111,7 @@ function runtime(input: Readonly<{
   onOptions?(options: ProviderSearchOptions | undefined): void;
   onRequest?(request: ProviderSearchRequest): void;
   responseTimeoutMs?: number;
+  sourceAttribution?: "available" | "provider_unavailable";
   sources?: readonly SearchSource[];
   sourceUrl?: string;
 }> = {}): ProviderRuntimeBinding {
@@ -142,6 +143,7 @@ function runtime(input: Readonly<{
           },
           findings: input.findings ?? `Finding from ${modelId}`,
           requestPreview: { queryCharacters: request.query.length },
+          ...(input.sourceAttribution ? { sourceAttribution: input.sourceAttribution } : {}),
           sources: input.sources ?? [{
             rank: 1,
             title: `Source ${modelId}`,
@@ -480,6 +482,59 @@ describe("Search plan tool router", () => {
       })
     ]);
     expect(JSON.stringify(result)).not.toContain("javascript:");
+  });
+
+  it("accepts source-less evidence only for the dedicated DeepSeek protocol", async () => {
+    const selected = option("deepseek-source-less", {
+      protocol: "deepseek_responses_web_search",
+      provider: "deepseek"
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: {
+        "deepseek-source-less": runtime({
+          sourceAttribution: "provider_unavailable",
+          sources: []
+        })
+      }
+    });
+    if (!router) throw new Error("expected Search router");
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    expect(result.status).toBe("complete");
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("provider_sources_unavailable")
+    });
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({
+        provider: "deepseek",
+        protocol: "deepseek_responses_web_search",
+        sourceAttribution: "provider_unavailable",
+        sources: [],
+        status: "complete",
+        warning: "provider_sources_unavailable"
+      })
+    ]);
+
+    const wrongProvider = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [option("wrong-provider")] },
+      runtimes: {
+        "wrong-provider": runtime({
+          sourceAttribution: "provider_unavailable",
+          sources: []
+        })
+      }
+    })!;
+    const rejected = await wrongProvider.execute(
+      call(wrongProvider.tools[0]!.name),
+      answerRequest()
+    );
+    expect(searchExecutionsFromToolResult(rejected)).toEqual([
+      expect.objectContaining({
+        failure: { code: "search_sources_invalid" },
+        status: "error"
+      })
+    ]);
   });
 
   it("retains provider usage when multibyte findings exceed the per-engine byte limit", async () => {

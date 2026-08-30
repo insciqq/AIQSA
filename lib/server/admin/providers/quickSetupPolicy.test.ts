@@ -6,8 +6,8 @@ import {
 } from "./quickSetupPolicy";
 
 describe("provider Quick setup policy", () => {
-  it("keeps the v5 current-model candidates, defaults, and recommendations explicit", () => {
-    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(5);
+  it("keeps the current-model candidates, defaults, and recommendations explicit", () => {
+    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(6);
     expect(adminProviderQuickSetupPolicy("openai").connection.configuration.responseTimeoutMs)
       .toBe(300_000);
     expect(adminProviderQuickSetupPolicy("openai").candidates.map((candidate) => ({
@@ -39,6 +39,19 @@ describe("provider Quick setup policy", () => {
     ]);
     expect(adminProviderQuickSetupPolicy("openrouter").candidates.map(({ candidateId }) =>
       candidateId)).toEqual(["p1-r1", "p1-r2", "p1-r3"]);
+    expect(adminProviderQuickSetupPolicy("deepseek").candidates.map((candidate) => ({
+      id: candidate.candidateId,
+      recommended: candidate.recommended,
+      templateKey: candidate.templateKey
+    }))).toEqual([
+      { id: "p6-d1", recommended: true, templateKey: "deepseek:deepseek-v4-pro" },
+      { id: "p6-d2", recommended: false, templateKey: "deepseek:deepseek-v4-flash" },
+      {
+        id: "p6-d3",
+        recommended: false,
+        templateKey: "deepseek:deepseek-v4-flash-vision-exp"
+      }
+    ]);
     expect(adminProviderQuickSetupPolicy("openrouter").candidates.some(
       ({ templateKey }) => templateKey.includes("perplexity/sonar-pro-search")
     )).toBe(false);
@@ -75,12 +88,12 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["google/gemini-3.5-flash"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 5 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 6 }
     }).kind).toBe("selected");
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["other"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 5 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 6 }
     })).toEqual({ kind: "selection_invalid" });
   });
 });

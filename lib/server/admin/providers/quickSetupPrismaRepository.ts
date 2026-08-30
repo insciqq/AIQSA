@@ -3,6 +3,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
+  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
+  DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -67,6 +69,8 @@ class QuickSetupCatalogUnavailableError extends Error {}
 const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
 const ANTHROPIC_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001405";
 const ANTHROPIC_SEARCH_OPTION_ID = "anthropic-web-search";
+const DEEPSEEK_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001406";
+const DEEPSEEK_SEARCH_OPTION_ID = "deepseek-native-web-search";
 const OPENAI_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001402";
 const OPENAI_SEARCH_OPTION_ID = "openai-native-web-search";
 const OPENAI_SEARCH_OPTION_TEMPLATE_KEY = "search:openai";
@@ -81,14 +85,14 @@ type QuickSetupSearchSpec = Readonly<{
   description: string;
   displayName: string;
   fallbackId: string;
-  hostedKind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search";
+  hostedKind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search";
   integrationId: string;
   optionDatabaseId: string;
   optionId: string;
   optionKind: "gemini_google_search" | "web_search";
   optionTemplateKey: string;
-  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search";
-  provider: "anthropic" | "gemini" | "openai";
+  protocol: "anthropic_web_search" | "deepseek_responses_web_search" | "gemini_google_search" | "openai_responses_web_search";
+  provider: "anthropic" | "deepseek" | "gemini" | "openai";
   strategyId: string;
 }>;
 
@@ -110,6 +114,23 @@ function quickSetupSearchSpec(
       protocol: "anthropic_web_search",
       provider: "anthropic",
       strategyId: ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID
+    };
+  }
+  if (provider === "deepseek") {
+    return {
+      clientKind: "provider_model_web_search",
+      description: "Web search provided by DeepSeek. Source URLs are not returned by the provider.",
+      displayName: "DeepSeek Search",
+      fallbackId: `deepseek-search-client:${adminProviderQuickSetupPolicy("deepseek").connection.id}`,
+      hostedKind: "deepseek_native_web_search",
+      integrationId: DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
+      optionDatabaseId: DEEPSEEK_SEARCH_OPTION_DATABASE_ID,
+      optionId: DEEPSEEK_SEARCH_OPTION_ID,
+      optionKind: "web_search",
+      optionTemplateKey: "search:deepseek",
+      protocol: "deepseek_responses_web_search",
+      provider: "deepseek",
+      strategyId: DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID
     };
   }
   if (provider === "openai") {
@@ -222,7 +243,7 @@ async function loadQuickSetupState(
   db: QuickSetupDb,
   input: AdminProviderQuickSetupActor & Readonly<{
     now: Date;
-    provider: "anthropic" | "gemini" | "openai" | "openrouter";
+    provider: "anthropic" | "deepseek" | "gemini" | "openai" | "openrouter";
   }>
 ) {
   const policy = adminProviderQuickSetupPolicy(input.provider);
@@ -836,6 +857,8 @@ export async function lockAdminProviderQuickSetupState(
        )
        OR (${plan.provider === "anthropic"} AND
          grant_row."searchStrategy" = ${ANTHROPIC_SEARCH_OPTION_ID})
+       OR (${plan.provider === "deepseek"} AND
+         grant_row."searchStrategy" = ${DEEPSEEK_SEARCH_OPTION_ID})
        OR (${plan.provider === "openai"} AND
          grant_row."searchStrategy" = ${OPENAI_SEARCH_OPTION_ID})
        OR (${plan.provider === "gemini"} AND
