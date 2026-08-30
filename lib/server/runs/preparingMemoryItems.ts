@@ -310,7 +310,10 @@ function patternSupportingEvidenceSnapshot(
   const value = feature?.patternSupportingEvidence;
   if (value === undefined) return Object.freeze([]);
   if (!Array.isArray(value) || value.length > MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_pattern_support_invalid",
+      false
+    );
   }
   const decoded = value.flatMap((entry) => {
     const item = record(entry);
@@ -342,7 +345,10 @@ function patternSupportingEvidenceSnapshot(
   if (decoded.length !== value.length ||
     new Set(decoded.map(({ factVersionId }) => factVersionId)).size !== decoded.length ||
     new Set(decoded.map(({ sourceRootHash }) => sourceRootHash)).size !== decoded.length) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_pattern_support_invalid",
+      false
+    );
   }
   return Object.freeze(decoded);
 }
@@ -391,12 +397,18 @@ function itemProjection(input: MemoryPreparingItemInput): Readonly<{
     kind !== "RECALL_ROUND_RAW_SAFE_TEXT" &&
     kind !== "TOOL_EVENT_SAFE_TEXT"
   ) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_projection_invalid",
+      false
+    );
   }
   if (supportingItemId !== null && supportingItemId !== undefined &&
     (typeof supportingItemId !== "string" || supportingItemId.length === 0 ||
       supportingItemId.length > 256)) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_supporting_invalid",
+      false
+    );
   }
   return { kind, supportingItemId: supportingItemId ?? null };
 }
@@ -454,7 +466,10 @@ function factRetrievalContract(
     !core && mode === "HISTORY_OVERVIEW" ||
     historical && mode !== "HISTORICAL_MEMORY" ||
     includePatterns && mode !== "TARGETED_CURRENT"
-  ) throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+  ) throw new MemoryPreparingRunConflictError(
+    "memory_attempt_item_fact_retrieval_invalid",
+    false
+  );
   return { historical, includePatterns, mode };
 }
 
@@ -532,7 +547,10 @@ async function resolveFact(
 ): Promise<ResolvedPreparingMemoryItem> {
   const projection = itemProjection(input);
   if (projection.kind !== "FACT_DISPLAY_TEXT" || projection.supportingItemId !== null) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_fact_projection_invalid",
+      false
+    );
   }
   const feature = record(input.featureSnapshot);
   const patternSupports = patternSupportingEvidenceSnapshot(feature);
@@ -541,7 +559,10 @@ async function resolveFact(
   const direct = !core && feature?.directFactAuthority === true;
   if (!core && feature?.directFactAuthority !== true &&
     feature?.directFactAuthority !== false) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_fact_authority_invalid",
+      false
+    );
   }
   if (!core && !direct && !authority.indexGenerationId) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
@@ -704,11 +725,17 @@ async function resolveFact(
   }
   if (row.modality === "PATTERN") {
     if (patternSupports.length < MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_pattern_support_invalid",
+        false
+      );
     }
   }
   else if (patternSupports.length > 0) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_pattern_support_invalid",
+      false
+    );
   }
   const messageEvidence = row.sourceMode === "AUTOMATIC" && row.modality !== "PATTERN"
     ? await tx.$queryRaw<FactMessageEvidenceRow[]>(Prisma.sql`
@@ -1209,7 +1236,9 @@ async function resolveChunk(
   const targetedDerivedDigest = retrievalMode === "PAST_CHAT_SEARCH" &&
     feature?.aggregationRequested === false && feature.derived === true &&
     feature.evidenceType === "derived_session_synopsis" &&
-    feature.retrievalReason === "fused" && feature.sourceAuthority === "past_chat" &&
+    (feature.retrievalReason === "fused" ||
+      feature.retrievalReason === "semantic_sort") &&
+    feature.sourceAuthority === "past_chat" &&
     feature.speakerScope === "derived" && laneRankKeys.length === 1 &&
     laneRankKeys[0] === "HISTORY_DIGEST_FTS_SIMPLE";
   const digestMode = retrievalMode === "HISTORY_OVERVIEW" ||
@@ -1217,7 +1246,10 @@ async function resolveChunk(
     targetedDerivedDigest;
   if (projection.kind === "CHAT_DIGEST_SAFE_TEXT") {
     if (projection.supportingItemId === null || !digestMode) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_digest_mode_invalid",
+        false
+      );
     }
     const row = await resolveDigestRow(
       tx,
@@ -1275,7 +1307,10 @@ async function resolveChunk(
   }
   if (projection.kind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" ||
     projection.supportingItemId !== null) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_chunk_projection_invalid",
+      false
+    );
   }
   const row = await resolveChunkRow(tx, authority, input.recallChunkId);
   if (!row || !exactTextContainsProjection(input.exactSafeText, row.safeText)) {
@@ -1589,7 +1624,10 @@ function contextualDependencySnapshot(
     roundIds.some((id) => typeof id !== "string" || !hashPattern.test(id)) ||
     evidenceHashes.some((hash) => typeof hash !== "string" || !hashPattern.test(hash)) ||
     retrievalHintHash === null && roundIds.length > 0) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_contextual_dependency_invalid",
+      false
+    );
   }
   return {
     evidenceHashes: evidenceHashes as string[],
@@ -1708,7 +1746,10 @@ async function resolveRound(
     (segmentId === null && projection.kind !== "RECALL_ROUND_RAW_SAFE_TEXT") ||
     (segmentId !== null &&
       projection.kind !== "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT")) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_round_projection_invalid",
+      false
+    );
   }
   const row = segmentId
     ? await resolveRoundSegmentRow(tx, authority, input.recallRoundId, segmentId)
@@ -1900,7 +1941,10 @@ async function resolveToolEvent(
   const projection = itemProjection(input);
   if (projection.kind !== "TOOL_EVENT_SAFE_TEXT" ||
     projection.supportingItemId !== null) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_tool_projection_invalid",
+      false
+    );
   }
   const row = await resolveToolEventRow(tx, authority, input.toolEventId);
   if (!row || input.exactSafeText !==
@@ -1959,7 +2003,7 @@ export async function resolvePreparingMemoryItem(
 ): Promise<ResolvedPreparingMemoryItem> {
   const target = memoryPreparingItemTarget(input);
   if (!target) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_target_invalid", false);
   }
   if (target.itemType === "FACT_VERSION" && target.factVersionId) {
     return resolveFact(tx, authority, {
@@ -1992,7 +2036,7 @@ export async function resolvePreparingMemoryItem(
       toolEventId: target.toolEventId
     });
   }
-  throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+  throw new MemoryPreparingRunConflictError("memory_attempt_item_target_invalid", false);
 }
 
 export function samePreparingMemoryItemSnapshot(

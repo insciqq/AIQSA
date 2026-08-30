@@ -157,7 +157,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v22");
+    expect(pack.packerVersion).toBe("memory-context-packer-v23");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -246,11 +246,52 @@ describe("Personal Memory context pack", () => {
     expect(missingParent.omissionCounts.unsafe_expansion_shape).toBe(1);
   });
 
+  it("quarantines a round whose projection disagrees with its segment identity", () => {
+    const base = ranked("round-contract", true);
+    const rawCandidate: MemoryRankedCandidate = {
+      ...base,
+      itemType: "RECALL_ROUND",
+      metadata: {
+        ...base.metadata,
+        evidenceRootHash: "a".repeat(64),
+        parentChunkId: "parent-contract"
+      }
+    };
+    const rawExpansion: MemoryExpandedCandidate = {
+      ...expansion("round-contract", true, "User: Contract evidence."),
+      itemType: "RECALL_ROUND",
+      projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      supportingItemId: "parent-contract"
+    };
+    const missingSegment = packMemoryPersonalContext({
+      expanded: [{
+        ...rawExpansion,
+        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT"
+      }],
+      plan: pastChatPlan,
+      ranked: [rawCandidate]
+    });
+    const unexpectedSegment = packMemoryPersonalContext({
+      expanded: [rawExpansion],
+      plan: pastChatPlan,
+      ranked: [{
+        ...rawCandidate,
+        matchedSegmentId: "segment-contract",
+        matchedSegmentPosition: "MIDDLE"
+      }]
+    });
+
+    expect(missingSegment.items).toEqual([]);
+    expect(missingSegment.omissionCounts.preparing_projection_contract).toBe(1);
+    expect(unexpectedSegment.items).toEqual([]);
+    expect(unexpectedSegment.omissionCounts.preparing_projection_contract).toBe(1);
+  });
+
   it("marks a digest-only targeted hit as a non-exact derived session synopsis", () => {
     const candidate: MemoryRankedCandidate = {
       ...ranked("digest-anchor", true),
       laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 },
-      selectionReason: "history_digest_fts_simple"
+      selectionReason: "history_digest_fts_simple+semantic_sort.score_only"
     };
     const digestText = "Summary: Cedar was discussed during the rollout chat.";
     const pack = packMemoryPersonalContext({
@@ -284,6 +325,8 @@ describe("Personal Memory context pack", () => {
     const candidate: MemoryRankedCandidate = {
       ...base,
       itemType: "RECALL_ROUND",
+      matchedSegmentId: "segment-context",
+      matchedSegmentPosition: "MIDDLE",
       metadata: {
         ...base.metadata,
         evidenceRootHash: "b".repeat(64),
@@ -299,7 +342,7 @@ describe("Personal Memory context pack", () => {
         projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
         retrievalHint: "Мария выбрала стол у окна.",
         supportingEvidence: [{
-          itemId: "round-prior",
+          itemId: "e".repeat(64),
           occurredFrom: new Date("2026-08-12T10:00:00.000Z"),
           occurredTo: new Date("2026-08-12T10:01:00.000Z"),
           safeText: priorRaw,
@@ -314,7 +357,7 @@ describe("Personal Memory context pack", () => {
     expect(pack.items[0]).toMatchObject({
       exactSafeText: currentRaw,
       retrievalHint: "Мария выбрала стол у окна.",
-      supportingEvidence: [{ itemId: "round-prior", rawSafeText: priorRaw }]
+      supportingEvidence: [{ itemId: "e".repeat(64), rawSafeText: priorRaw }]
     });
     expect(renderedEvidence(pack)).toMatchObject([{
       raw_safe_evidence: currentRaw,
@@ -325,7 +368,7 @@ describe("Personal Memory context pack", () => {
       },
       supporting_authoritative_evidence: [{ raw_safe_evidence: priorRaw }]
     }]);
-    expect(pack.text).not.toContain("round-prior");
+    expect(pack.text).not.toContain("e".repeat(64));
     expect(pack.text).toContain("raw authoritative evidence wins");
   });
 
@@ -335,6 +378,8 @@ describe("Personal Memory context pack", () => {
       return {
         ...base,
         itemType: "RECALL_ROUND" as const,
+        matchedSegmentId: `segment-${id}`,
+        matchedSegmentPosition: "MIDDLE" as const,
         metadata: {
           ...base.metadata,
           evidenceRootHash,
@@ -353,7 +398,7 @@ describe("Personal Memory context pack", () => {
       projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" as const,
       retrievalHint: `Context ${index}`,
       supportingEvidence: [{
-        itemId: "round-prior",
+        itemId: "e".repeat(64),
         occurredFrom: new Date("2026-08-12T10:00:00.000Z"),
         occurredTo: new Date("2026-08-12T10:01:00.000Z"),
         safeText: priorRaw,

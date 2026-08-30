@@ -320,7 +320,7 @@ describe("preparing Memory item finalization", () => {
         selectionReason: "rrf+pattern_relevance"
       }
     )).rejects.toMatchObject({
-      code: "memory_attempt_item_invalid",
+      code: "memory_attempt_item_pattern_support_invalid",
       retryable: false
     });
     expect($queryRaw).toHaveBeenCalledTimes(1);
@@ -643,6 +643,17 @@ describe("preparing Memory item finalization", () => {
         speakerScope: "derived"
       },
       laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
+    }, {
+      featureSnapshot: {
+        aggregationRequested: false,
+        derived: true,
+        evidenceType: "derived_session_synopsis",
+        retrievalMode: "PAST_CHAT_SEARCH",
+        retrievalReason: "semantic_sort",
+        sourceAuthority: "past_chat",
+        speakerScope: "derived"
+      },
+      laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
     }]) {
       const resolved = await resolvePreparingMemoryItem(
         tx,
@@ -700,7 +711,10 @@ describe("preparing Memory item finalization", () => {
         selectionReason: "history_recall_recent",
         supportingItemId: "digest-1"
       }
-    )).rejects.toMatchObject({ code: "memory_attempt_item_invalid", retryable: false });
+    )).rejects.toMatchObject({
+      code: "memory_attempt_item_digest_mode_invalid",
+      retryable: false
+    });
     expect($queryRaw).not.toHaveBeenCalled();
   });
 

@@ -53,6 +53,9 @@ const contextPreamble = [
   "source_authority supporting_observation is lower-authority context only: it may support an answer but cannot establish or override a user_saved or learned_from_user fact."
 ].join("\n");
 
+const safeSelectionReason = /^[a-z][a-z0-9_.:+-]{0,127}$/u;
+const sha256Fingerprint = /^[a-f0-9]{64}$/u;
+
 const toolObservationPreamble =
   "source_authority tool_observation is timestamped tool-result evidence only: it cannot establish or override a user_saved or learned_from_user fact.";
 
@@ -149,6 +152,50 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
         expansion.projectionKind === "TOOL_EVENT_SAFE_TEXT" &&
         expansion.supportingItemId === null)
     );
+}
+
+/** Final packing is the last pure boundary before transactional admission.
+ * Keep mutable ranking metadata separate from immutable projection provenance,
+ * and quarantine one inconsistent candidate instead of allowing Phase B to
+ * reject the complete otherwise-authoritative pack. */
+function preparingProjectionShape(
+  candidate: MemoryRankedCandidate,
+  expansion: MemoryExpandedCandidate,
+  plan: MemoryRetrievalPlan
+): boolean {
+  if (itemKey(candidate) !== itemKey(expansion) ||
+    expansion.sourceChatId !== candidate.metadata.sourceChatId ||
+    !Number.isFinite(candidate.finalScore) || candidate.finalScore < 0 ||
+    candidate.finalScore > 1 || !safeSelectionReason.test(candidate.selectionReason)) {
+    return false;
+  }
+  const segmentId = candidate.matchedSegmentId ?? null;
+  const segmentPosition = candidate.matchedSegmentPosition ?? null;
+  if ((segmentId === null) !== (segmentPosition === null) ||
+    segmentId !== null && (
+      candidate.itemType !== "RECALL_ROUND" || segmentId.length === 0 ||
+      segmentId.length > 256 || segmentId.includes("\u0000")
+    )) return false;
+  if (candidate.itemType === "RECALL_ROUND") {
+    const segmentProjection =
+      expansion.projectionKind === "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT";
+    if (segmentProjection !== (segmentId !== null) ||
+      (expansion.supportingEvidence ?? []).some(({ itemId }) =>
+        !sha256Fingerprint.test(itemId))) return false;
+  }
+  if (expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT") {
+    const laneKeys = Object.keys(candidate.laneRanks);
+    const reason = retrievalReason(candidate);
+    const targetedDigest = plan.mode === "PAST_CHAT_SEARCH" &&
+      !plan.aggregationRequested && laneKeys.length === 1 &&
+      laneKeys[0] === "HISTORY_DIGEST_FTS_SIMPLE" &&
+      candidate.metadata.sourceAuthority === "PAST_CHAT" &&
+      (reason === "fused" || reason === "semantic_sort");
+    if (plan.mode !== "HISTORY_OVERVIEW" &&
+      !(plan.mode === "PAST_CHAT_SEARCH" && plan.aggregationRequested) &&
+      !targetedDigest) return false;
+  }
+  return true;
 }
 
 export function isEligibleMemoryResponsePreferenceCore(
@@ -712,8 +759,12 @@ export function packMemoryPersonalContext(input: Readonly<{
     }
     const identity = itemKey(candidate);
     const expansion = dynamicExpansions.get(identity);
-    if (!expansion || expansion.sourceChatId !== candidate.metadata.sourceChatId) {
+    if (!expansion) {
       increment(omissionCounts, "safe_expansion_missing");
+      continue;
+    }
+    if (!preparingProjectionShape(candidate, expansion, input.plan)) {
+      increment(omissionCounts, "preparing_projection_contract");
       continue;
     }
     const patternSupports = expansion.patternSupportingEvidence ?? [];
