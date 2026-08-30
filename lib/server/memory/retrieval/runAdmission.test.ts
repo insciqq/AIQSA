@@ -275,7 +275,7 @@ function repository(options: Readonly<{
     ranked: readonly MemoryRankedCandidate[]
   ) => readonly MemoryRankedCandidate[];
   speculativeBaseline?: boolean;
-  speculativeHybrid?: boolean;
+  speculativeDense?: boolean;
   vectorState?: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
 }> = {}) {
   const activeIndexGenerationId = options.activeIndexGenerationId === undefined
@@ -320,8 +320,18 @@ function repository(options: Readonly<{
         vectorState: "NOT_CONFIGURED" as const
       }))
     : null;
-  const retrieveSpeculativeHybrid = options.speculativeHybrid
-    ? vi.fn(async (input: { plan: MemoryRetrievalPlan; vector: unknown }) => retrieve(input))
+  const retrieveSpeculativeDense = options.speculativeDense
+    ? vi.fn(async (input: { plan: MemoryRetrievalPlan; vector: unknown }) => {
+        const result = await retrieve(input);
+        return {
+          ...result,
+          core: [],
+          laneResults: result.laneResults.filter(({ lane }) =>
+            lane === "FACT_VECTOR" || lane === "HISTORY_RECALL_VECTOR"),
+          lexicalFailures: [],
+          lexicalState: "DISABLED" as const
+        };
+      })
     : null;
   const expand = vi.fn(async (
     _snapshot: unknown,
@@ -377,7 +387,7 @@ function repository(options: Readonly<{
     projectAggregationSessions,
     retrieve,
     ...(retrieveSpeculativeBaseline ? { retrieveSpeculativeBaseline } : {}),
-    ...(retrieveSpeculativeHybrid ? { retrieveSpeculativeHybrid } : {}),
+    ...(retrieveSpeculativeDense ? { retrieveSpeculativeDense } : {}),
     snapshot: vi.fn(async () => state)
   } as unknown as PrismaLocalMemoryRetrievalRepository;
   return {
@@ -386,7 +396,8 @@ function repository(options: Readonly<{
     projectAggregationSessions,
     retrieve,
     retrieveSpeculativeBaseline,
-    retrieveSpeculativeHybrid,
+    retrieveSpeculativeDense,
+    state,
     value
   };
 }
@@ -2332,7 +2343,7 @@ describe("Personal Memory v1 run admission", () => {
       candidates: [lexical],
       hybridCandidates: [lexical, priorDense],
       speculativeBaseline: true,
-      speculativeHybrid: true
+      speculativeDense: true
     });
     const base = retrievalOptions(["c0", "c1"]);
     let resolveControl: ((value: MemoryControlResult) => void) | undefined;
@@ -2347,15 +2358,15 @@ describe("Personal Memory v1 run admission", () => {
     }).retrieve(runInput("How did my routine change over time?"));
 
     await vi.waitFor(() => expect(local.retrieveSpeculativeBaseline).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(local.retrieveSpeculativeHybrid).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(local.retrieveSpeculativeDense).toHaveBeenCalledOnce());
     resolveControl?.({
       reason: "memory_action_intent_unavailable",
       status: "UNAVAILABLE"
     });
     const result = await pending;
 
-    expect(local.retrieveSpeculativeHybrid).toHaveBeenCalledOnce();
-    expect(local.retrieveSpeculativeHybrid).toHaveBeenCalledWith(
+    expect(local.retrieveSpeculativeDense).toHaveBeenCalledOnce();
+    expect(local.retrieveSpeculativeDense).toHaveBeenCalledWith(
       expect.objectContaining({ vector: expect.objectContaining({ vector: expect.any(Array) }) }),
       expect.any(AbortSignal)
     );
@@ -2377,6 +2388,131 @@ describe("Personal Memory v1 run admission", () => {
     ]));
     expect(local.retrieve.mock.calls.every(([input]) =>
       !input.plan.aggregationRequested)).toBe(true);
+  });
+
+  it("keeps a completed primary lane healthy when only fuzzy recovery expires", async () => {
+    const lexical = {
+      ...laneCandidate("history-primary-evidence"),
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+    };
+    const dense = {
+      ...laneCandidate("history-dense-evidence"),
+      lane: "HISTORY_RECALL_VECTOR" as const
+    };
+    const local = repository({
+      candidates: [lexical],
+      hybridCandidates: [dense],
+      speculativeBaseline: true,
+      speculativeDense: true
+    });
+    local.retrieveSpeculativeBaseline?.mockResolvedValueOnce({
+      core: [],
+      laneResults: [
+        { candidates: [], lane: "FACT_FTS_SIMPLE" },
+        { candidates: [lexical], lane: "HISTORY_RECALL_FTS_SIMPLE" },
+        { candidates: [], lane: "FACT_TRIGRAM" }
+      ],
+      lexicalFailures: ["FACT_TRIGRAM"],
+      lexicalState: "DEGRADED",
+      snapshot: local.state,
+      vectorEvidence: [],
+      vectorState: "NOT_CONFIGURED"
+    });
+    local.retrieveSpeculativeDense?.mockResolvedValueOnce({
+      core: [],
+      laneResults: [
+        { candidates: [], lane: "FACT_VECTOR" },
+        { candidates: [dense], lane: "HISTORY_RECALL_VECTOR" }
+      ],
+      lexicalFailures: [],
+      lexicalState: "DISABLED",
+      snapshot: local.state,
+      vectorEvidence: [],
+      vectorState: "READY"
+    });
+    const base = retrievalOptions(["c0", "c1"]);
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      control: {
+        decide: vi.fn(async () => ({
+          reason: "memory_action_intent_unavailable",
+          status: "UNAVAILABLE" as const
+        }))
+      }
+    }).retrieve(runInput("How did my routine change over time?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        lexicalFailures: ["FACT_TRIGRAM"],
+        lexicalState: "DEGRADED",
+        speculativeHybridUsed: true
+      },
+      outcome: "USED"
+    });
+    expect(local.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("retries the full hybrid read when a speculative source family is unavailable", async () => {
+    const recovered = {
+      ...laneCandidate("full-read-recovered-history"),
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+    };
+    const local = repository({
+      aggregationCandidates: [recovered],
+      candidates: [],
+      speculativeBaseline: true,
+      speculativeDense: true
+    });
+    local.retrieveSpeculativeBaseline?.mockResolvedValueOnce({
+      core: [],
+      laneResults: [
+        { candidates: [], lane: "FACT_FTS_SIMPLE" },
+        { candidates: [], lane: "HISTORY_RECALL_FTS_SIMPLE" }
+      ],
+      lexicalFailures: ["FACT_FTS_SIMPLE", "HISTORY_RECALL_FTS_SIMPLE"],
+      lexicalState: "FAILED",
+      snapshot: local.state,
+      vectorEvidence: [],
+      vectorState: "NOT_CONFIGURED"
+    });
+    const base = retrievalOptions(["c0"]);
+    let resolveControl: ((value: MemoryControlResult) => void) | undefined;
+    const controlResult = new Promise<MemoryControlResult>((resolve) => {
+      resolveControl = resolve;
+    });
+    const pending = createMemoryRunRetrievalService(local.value, {
+      ...base,
+      control: { decide: vi.fn(() => controlResult) }
+    }).retrieve(runInput("How long did my move take?"));
+
+    await vi.waitFor(() => expect(local.retrieveSpeculativeDense).toHaveBeenCalledOnce());
+    resolveControl?.({
+      reason: "memory_action_intent_unavailable",
+      status: "UNAVAILABLE"
+    });
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        broadLexicalFallbackUsed: false,
+        componentMetrics: {
+          broadLexicalFallbackUsed: false,
+          speculativeBaselineUsed: false,
+          speculativeHybridUsed: false
+        },
+        speculativeBaselineUsed: false,
+        speculativeHybridUsed: false
+      },
+      outcome: "USED"
+    });
+    expect(result.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ exactItemId: "full-read-recovered-history" })
+    ]));
+    expect(local.retrieve.mock.lastCall?.[0]).toMatchObject({
+      plan: { aggregationRequested: true },
+      vector: { vector: expect.any(Array) }
+    });
   });
 
   it("treats invalid control output as mutation NONE plus broad local read", async () => {
@@ -3043,6 +3179,44 @@ describe("Personal Memory v1 run admission", () => {
       outcome: "USED"
     });
     expect(result.preparedContext?.text).toContain("relevant round text completed-round");
+  });
+
+  it("keeps admitted anchors when optional source completion exhausts its budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const local = repository({
+        candidates: [laneCandidate("query-anchor")],
+        completion: { candidates: [], sourceChatCount: 0 }
+      });
+      local.completeAggregationSessionEvidence?.mockImplementation(
+        () => new Promise<MemoryAggregationSessionCompletion>(() => undefined)
+      );
+      const options = intentOptions({
+        aggregationRequested: true,
+        memoryUseful: false,
+        pastChatsUseful: true,
+        retrievalMode: "PAST_CHAT_SEARCH",
+        temporalIntent: "ANY"
+      });
+
+      const pending = createMemoryRunRetrievalService(local.value, options)
+        .retrieve(runInput("What happened across my earlier chats?"));
+      await vi.waitFor(() =>
+        expect(local.completeAggregationSessionEvidence).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS + 1);
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        budgetSnapshot: {
+          componentMetrics: { sessionCompletionState: "UNAVAILABLE" }
+        },
+        items: [expect.objectContaining({ exactItemId: "query-anchor" })],
+        outcome: "USED"
+      });
+      expect(result).not.toHaveProperty("degradationCode");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses the broad reader plan when control violates planner semantics", async () => {

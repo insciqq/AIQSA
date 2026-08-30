@@ -20,7 +20,8 @@ import {
   projectMemoryAggregationDigestRepresentative,
   selectMemoryAggregationSessionRepresentatives,
   selectMemoryIntraChatRawCandidates,
-  selectMemorySourceDiverseLaneCandidates
+  selectMemorySourceDiverseLaneCandidates,
+  shouldRunMemoryTrigramFallback
 } from "./localRepository";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
@@ -168,6 +169,7 @@ function mockClient(
     completionRows?: readonly Record<string, unknown>[];
     expansionRows?: readonly Record<string, unknown>[];
     failLaneQueries?: boolean;
+    vectorHits?: readonly Record<string, unknown>[];
   }> = {}
 ) {
   const laneSql: string[] = [];
@@ -183,7 +185,15 @@ function mockClient(
     return [];
   });
   const client = {
-    $transaction: vi.fn(async () => { throw new Error("vector unavailable"); }),
+    $transaction: vi.fn(async () => {
+      if (!options.vectorHits) throw new Error("vector unavailable");
+      return {
+        hits: options.vectorHits,
+        lanes: [],
+        profile: {},
+        status: "READY"
+      };
+    }),
     $queryRaw,
     memoryEntityAlias: { findFirst: vi.fn(async () => {
       if (options.failLaneQueries === true) throw new Error("entity lookup unavailable");
@@ -197,6 +207,27 @@ function mockClient(
 }
 
 describe("local Memory retrieval repository", () => {
+  it("runs fuzzy trigram recovery only when query-matched primary recall is empty", () => {
+    const digest = floorCandidate(
+      "digest-primary",
+      "HISTORY_DIGEST_FTS_SIMPLE",
+      "HISTORY",
+      1
+    );
+    expect(shouldRunMemoryTrigramFallback("HISTORY_RECALL_TRIGRAM", [{
+      candidates: [digest],
+      lane: "HISTORY_DIGEST_FTS_SIMPLE"
+    }])).toBe(false);
+    expect(shouldRunMemoryTrigramFallback("HISTORY_RECALL_TRIGRAM", [{
+      candidates: [floorCandidate("fact-primary", "FACT_FTS_SIMPLE", "FACT", 1)],
+      lane: "FACT_FTS_SIMPLE"
+    }])).toBe(true);
+    expect(shouldRunMemoryTrigramFallback("FACT_TRIGRAM", [{
+      candidates: [],
+      lane: "FACT_FTS_SIMPLE"
+    }])).toBe(true);
+  });
+
   it("completes only a reranker-selected session with bounded authoritative rounds", async () => {
     const plan = planMemoryRetrieval({
       aggregationRequested: true,
@@ -283,6 +314,11 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain("SELECT DISTINCT ON");
     expect(sql).toContain('JOIN "MemoryRecallRoundSegment" AS segment');
     expect(sql).toContain('FROM "MemorySuppression"');
+    const completionSql = mocked.laneSql.find((query) => query.includes("ranked_rounds"));
+    expect(completionSql).toBeDefined();
+    expect(completionSql).toContain('AND (source_chat."id" IN (?))');
+    expect(completionSql!.indexOf('source_chat."id" IN (?)'))
+      .toBeLessThan(completionSql!.indexOf("eligible_rounds AS MATERIALIZED"));
   });
 
   it("accepts complementary fact baseline and aggregation-history plans", async () => {
@@ -511,6 +547,38 @@ describe("local Memory retrieval repository", () => {
     expect(selected[0]!.finalScore).toBeCloseTo(0.43);
   });
 
+  it("pushes selected aggregation sessions into digest authority reads", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "How long did the move take?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const retrieved = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+    mocked.laneSql.length = 0;
+
+    await repository.projectAggregationSessions(retrieved.snapshot, plan, [
+      sessionCandidate("round-selected", "source-selected", 0.9, {
+        HISTORY_RECALL_VECTOR: 1
+      })
+    ]);
+
+    expect(mocked.laneSql).toHaveLength(1);
+    expect(mocked.laneSql[0]).toContain('AND (digest."chatId" IN (?))');
+    expect(mocked.laneSql[0]!.indexOf('digest."chatId" IN (?)'))
+      .toBeLessThan(mocked.laneSql[0]!.indexOf('digest."state" ='));
+  });
+
   it("emits tenant-first authoritative FTS SQL without selecting raw message content", async () => {
     const mocked = mockClient();
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
@@ -550,7 +618,7 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('JOIN "MemoryRecallRoundSegment" AS segment');
     expect(sql).toContain('entry."recallRoundSegmentId"');
     expect(sql).toContain('segment."projectionVersion" =');
-    expect(sql).toContain('authority_source_message."updatedAt" <>');
+    expect(sql).toContain('authority_source_message."updatedAt" =');
     expect(sql).toContain(
       '"ChatMemoryCheckpointMessage" AS authority_checkpoint_message'
     );
@@ -565,6 +633,13 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('"MemorySourceBarrier"');
     expect(sql).toContain("plainto_tsquery('simple'");
     expect(sql).toContain("unnest(");
+    expect(sql).toContain("candidate_matches AS MATERIALIZED");
+    expect(sql).toContain("bounded_entry_matches AS MATERIALIZED");
+    expect(sql).toContain("matching_entries AS MATERIALIZED");
+    expect(sql).toContain('entry."id" IN (');
+    expect(sql).toContain(
+      'term_match."entryId" = eligible."entryId"'
+    );
     expect(sql).toContain('PARTITION BY matched_variants."variantOrdinal"');
     expect(sql).toContain('eligible."rankWithinVariant"');
     expect(sql).toContain('matched_variants."maximumMatchedTermLength" DESC');
@@ -846,6 +921,7 @@ describe("local Memory retrieval repository", () => {
     }]);
     const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
       .strings?.join("?") ?? "";
+    expect(expansionSql).toContain('AND (entry."recallRoundId" IN (?))');
     expect(expansionSql).toContain('round."rawSafeText"');
     expect(expansionSql).toContain('round."parentChunkId" AS "supportingItemId"');
     expect(expansionSql).not.toContain('round."contextualNarrativeText" AS "safeText"');
@@ -964,6 +1040,9 @@ describe("local Memory retrieval repository", () => {
     }])).resolves.toEqual([expansion]);
     const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
       .strings?.join("?") ?? "";
+    expect(expansionSql).toContain(
+      '(entry."recallRoundId", entry."recallRoundSegmentId") IN ('
+    );
     expect(expansionSql).toContain('segment."rawSafeText" AS "safeText"');
     expect(expansionSql).toContain('selected."segmentId" = eligible."matchedSegmentId"');
     expect(expansionSql).toContain('segment."id" = eligible."matchedSegmentId"');
@@ -989,6 +1068,11 @@ describe("local Memory retrieval repository", () => {
         "FACT_FTS_ENGLISH", "FACT_TRIGRAM"
       ]);
       expect(mocked.laneSql.length).toBeGreaterThan(0);
+      const trigramSql = mocked.laneSql.find((sql) =>
+        sql.includes("aiqsa_memory_retrieval_lane:FACT_TRIGRAM"));
+      expect(trigramSql).toBeDefined();
+      expect(trigramSql!.split("query_terms AS")[0])
+        .not.toContain("aiqsa_memory_transliterate_ru(");
     }
   });
 
@@ -1153,13 +1237,27 @@ describe("local Memory retrieval repository", () => {
     expect(sql).not.toContain('digest."safeDigestText"');
     expect(sql).not.toContain('chunk."safeProjectedText"');
     expect(sql).not.toContain('message."content"');
+    const exactSql = mocked.laneSql.find((query) => query.includes("'EXACT_TEXT'::text"));
+    expect(exactSql).toBeDefined();
+    expect(exactSql!.trimStart().startsWith(
+      "/* aiqsa_memory_retrieval_lane:HISTORY_RECALL_EXACT */"
+    )).toBe(true);
+    expect(exactSql!.match(/entry\."normalizedSearchText" = \?/gu)).toHaveLength(3);
   });
 
   it("keeps the raw history vector lane available for multi-chat aggregation", async () => {
     const mocked = mockClient(snapshotRow({
       generationIndexMode: "HYBRID",
       generationPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
-    }));
+    }), {
+      vectorHits: [{
+        distance: 0.1,
+        entryId: "entry-vector-1",
+        itemId: "chunk-vector-1",
+        itemType: "RECALL_CHUNK",
+        score: 0.9
+      }]
+    });
     const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
       assistantId: null,
       chatId: "chat-1",
@@ -1197,7 +1295,75 @@ describe("local Memory retrieval repository", () => {
       "HISTORY_RECALL_TRIGRAM",
       "HISTORY_RECALL_VECTOR"
     ]);
-    expect(result.vectorState).toBe("DEGRADED");
+    expect(result.vectorState).toBe("READY");
+    const vectorSql = mocked.laneSql.find((query) =>
+      query.includes('CASE eligible."entryId"'));
+    expect(vectorSql).toBeDefined();
+    expect(vectorSql!.match(/entry\."id" IN \(\?\)/gu)).toHaveLength(3);
+  });
+
+  it("executes no sparse SQL in the speculative dense branch", async () => {
+    const mocked = mockClient(snapshotRow({
+      generationIndexMode: "HYBRID",
+      generationPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+    }), {
+      vectorHits: [{
+        distance: 0.1,
+        entryId: "entry-vector-1",
+        itemId: "chunk-vector-1",
+        itemType: "RECALL_CHUNK",
+        score: 0.9
+      }]
+    });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "Which deployment rehearsals did I complete?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+
+    const result = await repository.retrieveSpeculativeDense({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      sourceSnapshot: snapshot,
+      userId: "user-1",
+      vector: {
+        minimumScore: 0.4,
+        profile: {
+          configurationFingerprint: "c".repeat(64),
+          connectionId: "connection-1",
+          dimension: 1_024,
+          generationId: "generation-1",
+          minimumSimilarity: 0.55,
+          providerModelId: "model-1",
+          retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
+          vectorSpaceFingerprint: "d".repeat(64)
+        },
+        vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0)
+      }
+    });
+
+    expect(result.lexicalState).toBe("DISABLED");
+    expect(result.vectorState).toBe("READY");
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual([
+      "HISTORY_RECALL_VECTOR"
+    ]);
+    expect(mocked.laneSql).toHaveLength(1);
+    expect(mocked.laneSql[0]).toContain(
+      "aiqsa_memory_retrieval_lane:HISTORY_RECALL_VECTOR"
+    );
   });
 
   it("loads query-independent response preferences only when the plan admits them", async () => {

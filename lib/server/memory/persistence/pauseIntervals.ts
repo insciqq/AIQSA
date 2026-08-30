@@ -98,23 +98,24 @@ function memoryHistorySourceAuthorityPredicate(
     AND NOT EXISTS (
       SELECT 1
       FROM ${sourceMap} AS authority_source_map
-      LEFT JOIN "Message" AS authority_source_message
-        ON authority_source_message."chatId" = authority_source_map."chatId"
-        AND authority_source_message."id" = authority_source_map."messageId"
-      LEFT JOIN "ChatMemoryCheckpointMessage" AS authority_checkpoint_message
-        ON authority_checkpoint_message."userId" = authority_source_map."userId"
-        AND authority_checkpoint_message."chatId" = authority_source_map."chatId"
-        AND authority_checkpoint_message."messageId" = authority_source_map."messageId"
       WHERE authority_source_map."userId" = ${source}."userId"
         AND authority_source_map."chatId" = ${source}."chatId"
         AND authority_source_map.${sourceMapId} = ${source}."id"
-        AND (
-          authority_source_message."id" IS NULL
-          OR authority_source_message."updatedAt" <>
-            authority_source_map."sourceMessageUpdatedAt"
-          OR authority_checkpoint_message."messageId" IS NULL
-          OR authority_checkpoint_message."sourceMessageUpdatedAt" <>
-            authority_source_map."sourceMessageUpdatedAt"
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "Message" AS authority_source_message
+          INNER JOIN "ChatMemoryCheckpointMessage" AS authority_checkpoint_message
+            ON authority_checkpoint_message."userId" = authority_source_map."userId"
+            AND authority_checkpoint_message."chatId" =
+              authority_source_map."chatId"
+            AND authority_checkpoint_message."messageId" =
+              authority_source_map."messageId"
+            AND authority_checkpoint_message."sourceMessageUpdatedAt" =
+              authority_source_map."sourceMessageUpdatedAt"
+          WHERE authority_source_message."chatId" = authority_source_map."chatId"
+            AND authority_source_message."id" = authority_source_map."messageId"
+            AND authority_source_message."updatedAt" =
+              authority_source_map."sourceMessageUpdatedAt"
         )
     )
     AND (

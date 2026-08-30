@@ -93,8 +93,17 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v30";
+  "memory-local-retrieval-repository-v39";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
+const MEMORY_TRIGRAM_FALLBACK_MAX_TERMS = 8;
+const MEMORY_TRIGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
+const MEMORY_FTS_AUTHORITY_PREFILTER_MAX_PER_VARIANT = 500;
+const memoryCyrillicTerm = /\p{Script=Cyrillic}/u;
+
+const denseOnlyRetrieval = Symbol("memory-dense-only-retrieval");
+type MemoryLocalRetrievalInternalInput = MemoryLocalRetrievalInput & Readonly<{
+  [denseOnlyRetrieval]?: true;
+}>;
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -1382,7 +1391,8 @@ async function loadCore(
 
 function historyDigestEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
 ): Prisma.Sql {
   if (!snapshot.historySuppressionIdentitySnapshot) {
     throw new Error("memory_retrieval_snapshot_invalid");
@@ -1440,6 +1450,7 @@ function historyDigestEligibleSelect(
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = digest."userId" AND checkpoint."chatId" = digest."chatId"
     WHERE digest."userId" = ${snapshot.userId}
+      AND (${candidatePredicate})
       AND digest."state" = 'ACTIVE'::"MemoryHistoryItemState"
       AND digest."pipelineVersion" = ${MEMORY_CHAT_DIGEST_PIPELINE_VERSION}
       AND digest."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
@@ -2062,19 +2073,24 @@ function historyEligibleSelect(
     if (sourceChatIds) throw new Error("memory_retrieval_source_chat_filter_invalid");
     return historyDigestEligibleSelect(snapshot, plan);
   }
+  const boundedCandidatePredicate = sourceChatIds
+    ? Prisma.sql`(${candidatePredicate}) AND source_chat."id" IN (${valuesSql(
+        sourceChatIds
+      )})`
+    : candidatePredicate;
   const projection = Prisma.sql`
     SELECT * FROM (${historyChunkEligibleSelect(
       snapshot,
       plan,
-      candidatePredicate
+      boundedCandidatePredicate
     )} UNION ALL ${historyRoundEligibleSelect(
       snapshot,
       plan,
-      candidatePredicate
+      boundedCandidatePredicate
     )} UNION ALL ${toolEventEligibleSelect(
       snapshot,
       plan,
-      candidatePredicate
+      boundedCandidatePredicate
     )}) AS history_projection
   `;
   return sourceChatIds
@@ -2253,7 +2269,12 @@ function exactSql(
         "DIRECT",
         Prisma.sql`version."normalizedSearchText" = ${plan.normalizedExactQuery}`
       )
-    : historyEligibleSelect(snapshot, plan, Prisma.sql`TRUE`, sourceChatIds);
+    : historyEligibleSelect(
+        snapshot,
+        plan,
+        Prisma.sql`entry."normalizedSearchText" = ${plan.normalizedExactQuery}`,
+        sourceChatIds
+      );
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
     SELECT ${candidateColumns(
@@ -2469,12 +2490,13 @@ function memorySemanticLexicalTermVariants(
     ? plan.semanticQueryVariants.map(({ text }) => text)
     : plan.lexicalQuery ? [plan.lexicalQuery] : [];
   const maximumTerms = kind === "TRIGRAM"
-    ? MEMORY_TRIGRAM_QUERY_MAX_TERMS
+    ? Math.min(MEMORY_TRIGRAM_QUERY_MAX_TERMS, MEMORY_TRIGRAM_FALLBACK_MAX_TERMS)
     : MEMORY_LEXICAL_QUERY_MAX_TERMS;
   const candidates = texts.map((text, variantOrdinal) => {
     const analysis = analyzeMemoryLexicalQuery(text);
     const terms = kind === "TRIGRAM"
-      ? analysis.trigramTerms
+      ? distinctiveFtsTerms(analysis.trigramTerms)
+          .slice(0, MEMORY_TRIGRAM_FALLBACK_MAX_TERMS_PER_VARIANT)
       : distinctiveFtsTerms(kind === "SIMPLE"
           ? analysis.simpleTerms
           : kind === "ENGLISH" ? analysis.englishTerms : analysis.russianTerms);
@@ -2517,7 +2539,6 @@ function memorySemanticLexicalTermVariants(
 
 type MemoryFtsLaneSettings = Readonly<{
   configuration: Prisma.Sql;
-  eligibleVector: Prisma.Sql;
   entryVector: Prisma.Sql;
   termVariants: readonly Readonly<{ term: string; variantOrdinal: number }>[];
 }>;
@@ -2530,7 +2551,6 @@ function ftsLaneSettings(
   if (lane === "FACT_FTS_SIMPLE" || lane === "HISTORY_RECALL_FTS_SIMPLE") {
     return {
       configuration: Prisma.sql`'simple'::regconfig`,
-      eligibleVector: Prisma.sql`eligible."searchVectorSimple"`,
       entryVector: Prisma.sql`entry."searchVectorSimple"`,
       termVariants: memorySemanticLexicalTermVariants(plan, "SIMPLE")
     };
@@ -2538,7 +2558,6 @@ function ftsLaneSettings(
   if (lane === "FACT_FTS_ENGLISH" || lane === "HISTORY_RECALL_FTS_ENGLISH") {
     return {
       configuration: Prisma.sql`'english'::regconfig`,
-      eligibleVector: Prisma.sql`eligible."searchVectorEnglish"`,
       entryVector: Prisma.sql`entry."searchVectorEnglish"`,
       termVariants: memorySemanticLexicalTermVariants(plan, "ENGLISH")
     };
@@ -2546,7 +2565,6 @@ function ftsLaneSettings(
   if (lane === "FACT_FTS_RUSSIAN" || lane === "HISTORY_RECALL_FTS_RUSSIAN") {
     return {
       configuration: Prisma.sql`'russian'::regconfig`,
-      eligibleVector: Prisma.sql`eligible."searchVectorRussian"`,
       entryVector: Prisma.sql`entry."searchVectorRussian"`,
       termVariants: memorySemanticLexicalTermVariants(plan, "RUSSIAN")
     };
@@ -2562,20 +2580,57 @@ function ftsSql(
   limit: number,
   sourceChatIds?: readonly string[]
 ): Prisma.Sql {
+  if (!snapshot.activeGenerationId) throw new Error("memory_retrieval_snapshot_invalid");
   const settings = ftsLaneSettings(plan, lane);
   const terms = settings.termVariants.map(({ term }) => term);
   const variantOrdinals = settings.termVariants.map(({ variantOrdinal }) =>
     variantOrdinal);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
-  const candidatePredicate = Prisma.sql`(${Prisma.join(terms.map((term) => Prisma.sql`
-    ${settings.entryVector} @@ plainto_tsquery(${settings.configuration}, ${term})
-  `), " OR ")})`;
+  const itemTypePredicate = itemType === "FACT_VERSION"
+    ? Prisma.sql`entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"`
+    : Prisma.sql`entry."itemType" IN (
+        'RECALL_CHUNK'::"MemorySearchItemType",
+        'RECALL_ROUND'::"MemorySearchItemType",
+        'RECALL_ROUND_SEGMENT'::"MemorySearchItemType",
+        'TOOL_EVENT'::"MemorySearchItemType"
+      )`;
+  const sourcePredicate = !sourceChatIds
+    ? Prisma.sql`TRUE`
+    : Prisma.sql`(
+        (entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType" AND EXISTS (
+          SELECT 1 FROM "MemoryRecallChunk" AS candidate_chunk
+          WHERE candidate_chunk."userId" = entry."userId"
+            AND candidate_chunk."id" = entry."recallChunkId"
+            AND candidate_chunk."chatId" IN (${valuesSql(sourceChatIds)})
+        )) OR
+        (entry."itemType" IN (
+          'RECALL_ROUND'::"MemorySearchItemType",
+          'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+        ) AND EXISTS (
+          SELECT 1 FROM "MemoryRecallRound" AS candidate_round
+          WHERE candidate_round."userId" = entry."userId"
+            AND candidate_round."id" = entry."recallRoundId"
+            AND candidate_round."chatId" IN (${valuesSql(sourceChatIds)})
+        )) OR
+        (entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType" AND EXISTS (
+          SELECT 1 FROM "MemoryToolEvent" AS candidate_tool_event
+          WHERE candidate_tool_event."userId" = entry."userId"
+            AND candidate_tool_event."id" = entry."toolEventId"
+            AND candidate_tool_event."chatId" IN (${valuesSql(sourceChatIds)})
+        ))
+      )`;
+  const perVariantCandidateLimit = Math.min(
+    MEMORY_FTS_AUTHORITY_PREFILTER_MAX_PER_VARIANT,
+    limit * 2
+  );
+  const candidatePredicate = Prisma.sql`entry."id" IN (
+    SELECT matching_entries."entryId" FROM matching_entries
+  )`;
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
     : historyEligibleSelect(snapshot, plan, candidatePredicate, sourceChatIds);
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${eligible}),
-    query_terms AS MATERIALIZED (
+    WITH query_terms AS MATERIALIZED (
       SELECT DISTINCT term, "variantOrdinal",
         char_length(term)::integer AS "termLength",
         plainto_tsquery(${settings.configuration}, term) AS query
@@ -2583,22 +2638,50 @@ function ftsSql(
         AS terms(term, "variantOrdinal")
       WHERE plainto_tsquery(${settings.configuration}, term) <> ''::tsquery
     ),
+    candidate_matches AS MATERIALIZED (
+      SELECT entry."id" AS "entryId", query_terms."variantOrdinal",
+        COUNT(*)::integer AS "matchedTermCount",
+        COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+          "maximumMatchedTermLength",
+        COALESCE(SUM(ts_rank_cd(${settings.entryVector}, query_terms.query)),
+          0.0)::double precision AS "rankScore"
+      FROM "MemorySearchEntry" AS entry
+      INNER JOIN query_terms
+        ON ${settings.entryVector} @@ query_terms.query
+      WHERE entry."userId" = ${snapshot.userId}
+        AND entry."indexGenerationId" = ${snapshot.activeGenerationId}
+        AND ${itemTypePredicate}
+        AND ${sourcePredicate}
+      GROUP BY entry."id", query_terms."variantOrdinal"
+    ),
+    ranked_entry_matches AS MATERIALIZED (
+      SELECT candidate_matches.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY candidate_matches."variantOrdinal"
+          ORDER BY candidate_matches."maximumMatchedTermLength" DESC,
+            candidate_matches."matchedTermCount" DESC,
+            candidate_matches."rankScore" DESC,
+            candidate_matches."entryId"
+        )::integer AS "candidateRankWithinVariant"
+      FROM candidate_matches
+    ),
+    bounded_entry_matches AS MATERIALIZED (
+      SELECT * FROM ranked_entry_matches
+      WHERE ranked_entry_matches."candidateRankWithinVariant" <=
+        ${perVariantCandidateLimit}
+    ),
+    matching_entries AS MATERIALIZED (
+      SELECT DISTINCT bounded_entry_matches."entryId"
+      FROM bounded_entry_matches
+    ),
+    eligible AS MATERIALIZED (${eligible}),
     matched_variants AS MATERIALIZED (
       SELECT eligible.*, term_match."variantOrdinal",
         term_match."matchedTermCount", term_match."maximumMatchedTermLength",
         term_match."rankScore"
       FROM eligible
-      CROSS JOIN LATERAL (
-        SELECT query_terms."variantOrdinal",
-          COUNT(*)::integer AS "matchedTermCount",
-          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
-            "maximumMatchedTermLength",
-          COALESCE(SUM(ts_rank_cd(${settings.eligibleVector}, query_terms.query)),
-            0.0)::double precision AS "rankScore"
-        FROM query_terms
-        WHERE ${settings.eligibleVector} @@ query_terms.query
-        GROUP BY query_terms."variantOrdinal"
-      ) AS term_match
+      INNER JOIN bounded_entry_matches AS term_match
+        ON term_match."entryId" = eligible."entryId"
     ),
     ranked_variants AS MATERIALIZED (
       SELECT matched_variants.*,
@@ -2640,7 +2723,10 @@ function trigramSql(
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const indexedMatches = terms.flatMap((term) => [
     Prisma.sql`${term} <% entry."trigramSearchText"`,
-    Prisma.sql`aiqsa_memory_transliterate_ru(${term}) <% entry."trigramSearchText"`
+    ...(memoryCyrillicTerm.test(term)
+      ? [Prisma.sql`aiqsa_memory_transliterate_ru(${term}) <%
+          entry."trigramSearchText"`]
+      : [])
   ]);
   const candidatePredicate = Prisma.sql`(${Prisma.join(indexedMatches, " OR ")})`;
   const eligible = itemType === "FACT_VERSION"
@@ -2804,7 +2890,11 @@ async function queryLane(
     sourceDiversity?: boolean;
   }> = {}
 ): Promise<MemoryLaneResult> {
-  const rows = await client.$queryRaw<CandidateRow[]>(sql);
+  const taggedSql = Prisma.sql`
+    /* aiqsa_memory_retrieval_lane:${Prisma.raw(lane)} */
+    ${sql}
+  `;
+  const rows = await client.$queryRaw<CandidateRow[]>(taggedSql);
   const maximumRows = options.maximumRows ?? limit;
   if (!Number.isSafeInteger(maximumRows) || maximumRows < limit ||
     maximumRows > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
@@ -2962,18 +3052,58 @@ function laneSql(
   throw new Error("memory_retrieval_lane_contract_invalid");
 }
 
+type MemoryRetrievalLaneTask =
+  Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number];
+
+function queryMatchedPrimaryLane(lane: MemoryRetrievalLane): boolean {
+  return lane === "FACT_ENTITY" || lane === "HISTORY_DIGEST_FTS_SIMPLE" ||
+    lane === "HISTORY_INTRA_CHAT_RAW" || lane.endsWith("_EXACT") ||
+    lane.includes("_FTS_") || lane.endsWith("_VECTOR");
+}
+
+/** Fuzzy text recovery is a bounded fallback, not an always-on peer of the
+ * exact, FTS, digest, and dense retrievers. A primary candidate in the same
+ * source family proves that the query already has a query-matched route. */
+export function shouldRunMemoryTrigramFallback(
+  lane: MemoryRetrievalLane,
+  laneResults: readonly MemoryLaneResult[]
+): boolean {
+  if (lane !== "FACT_TRIGRAM" && lane !== "HISTORY_RECALL_TRIGRAM") {
+    throw new Error("memory_trigram_fallback_lane_invalid");
+  }
+  const factFamily = lane === "FACT_TRIGRAM";
+  return !laneResults.some((result) =>
+    result.candidates.length > 0 && queryMatchedPrimaryLane(result.lane) &&
+    (factFamily ? result.lane.startsWith("FACT_") :
+      result.lane.startsWith("HISTORY_")));
+}
+
+const memoryExecutionLanePriority = new Map<MemoryRetrievalLane, number>(
+  MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.map((lane, index) => [lane, index])
+);
+
+function orderedExecutionLaneResults(
+  laneResults: readonly MemoryLaneResult[]
+): readonly MemoryLaneResult[] {
+  return [...laneResults].sort((left, right) =>
+    (memoryExecutionLanePriority.get(left.lane) ?? Number.MAX_SAFE_INTEGER) -
+    (memoryExecutionLanePriority.get(right.lane) ?? Number.MAX_SAFE_INTEGER));
+}
+
 function pushLexicalTasks(
-  tasks: Array<Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number]>,
+  tasks: MemoryRetrievalLaneTask[],
   client: PrismaClient,
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   allocation: MemoryRetrievalLaneLimitAllocation,
   executionTier: "BASELINE" | "ENRICHED" = "ENRICHED"
 ): Readonly<{
+  deferredTasks: readonly MemoryRetrievalLaneTask[];
   failures(): readonly MemoryRetrievalLane[];
   state(): MemoryLocalRetrievalResult["lexicalState"];
 }> {
   const failures: MemoryRetrievalLane[] = [];
+  const deferredTasks: MemoryRetrievalLaneTask[] = [];
   const lanes = localLexicalLanes(snapshot, plan);
   for (const lane of lanes) {
     const limit = allocatedLimit(allocation, lane, plan.aggregationRequested);
@@ -2983,7 +3113,7 @@ function pushLexicalTasks(
       ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
       : limit;
     const sql = laneSql(snapshot, plan, lane, queryLimit);
-    tasks.push({
+    const task: MemoryRetrievalLaneTask = {
       executionId: `${executionTier}:${lane}`,
       async execute() {
         try {
@@ -3004,9 +3134,15 @@ function pushLexicalTasks(
       onUnavailable() {
         failures.push(lane);
       }
-    });
+    };
+    if (lane === "FACT_TRIGRAM" || lane === "HISTORY_RECALL_TRIGRAM") {
+      deferredTasks.push(task);
+    } else {
+      tasks.push(task);
+    }
   }
   return {
+    deferredTasks: Object.freeze(deferredTasks),
     failures: () => [...failures].sort((left, right) => left.localeCompare(right)),
     state: () => lanes.length === 0 ? "DISABLED" : failures.length === 0 ? "READY"
       : failures.length === lanes.length ? "FAILED" : "DEGRADED"
@@ -3034,7 +3170,12 @@ function vectorMetadataSql(
         "INDEXED",
         Prisma.sql`entry."id" IN (${valuesSql(hits.map((hit) => hit.entryId))})`
       )
-    : historyEligibleSelect(snapshot, plan, Prisma.sql`TRUE`, sourceChatIds);
+    : historyEligibleSelect(
+        snapshot,
+        plan,
+        Prisma.sql`entry."id" IN (${valuesSql(hits.map((hit) => hit.entryId))})`,
+        sourceChatIds
+      );
   const score = vectorScoreSql(hits);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
@@ -3331,7 +3472,8 @@ async function executeDigestIntraChatStage(input: Readonly<{
     MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
     rawLimit * 2
   );
-  const tasks: Array<Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number]> = [];
+  const tasks: MemoryRetrievalLaneTask[] = [];
+  const deferredTrigramTasks: MemoryRetrievalLaneTask[] = [];
   const lexicalFailures: MemoryRetrievalLane[] = [];
   const lexicalLanes = localLexicalLanes(
     input.snapshot,
@@ -3339,7 +3481,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
   ).filter((lane) => lane.startsWith("HISTORY_RECALL_") &&
     lane !== "HISTORY_RECALL_RECENT");
   for (const lane of lexicalLanes) {
-    tasks.push({
+    const task: MemoryRetrievalLaneTask = {
       executionId: `INTRA_CHAT:${lane}`,
       async execute() {
         try {
@@ -3361,8 +3503,13 @@ async function executeDigestIntraChatStage(input: Readonly<{
           return { candidates: [], lane };
         }
       },
-      lane
-    });
+      lane,
+      onUnavailable() {
+        lexicalFailures.push(lane);
+      }
+    };
+    if (lane === "HISTORY_RECALL_TRIGRAM") deferredTrigramTasks.push(task);
+    else tasks.push(task);
   }
 
   let vectorState: MemoryLocalRetrievalResult["vectorState"] =
@@ -3448,11 +3595,32 @@ async function executeDigestIntraChatStage(input: Readonly<{
     });
   }
 
-  const stageResults = await executeMemoryRetrievalLaneTasks(
+  const primaryStageResults = await executeMemoryRetrievalLaneTasks(
     tasks,
     MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
     input.settleSignal
   );
+  const runnableTrigramTasks = deferredTrigramTasks.filter((task) =>
+    shouldRunMemoryTrigramFallback(task.lane, primaryStageResults));
+  const trigramResults = runnableTrigramTasks.length > 0
+    ? await executeMemoryRetrievalLaneTasks(
+        runnableTrigramTasks,
+        MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
+        input.settleSignal
+      )
+    : [];
+  const trigramByExecutionId = new Map(runnableTrigramTasks.map((task, index) => [
+    task.executionId!,
+    trigramResults[index]!
+  ]));
+  const stageResults = orderedExecutionLaneResults([
+    ...primaryStageResults,
+    ...deferredTrigramTasks.map((task) =>
+      trigramByExecutionId.get(task.executionId!) ?? {
+        candidates: [],
+        lane: task.lane
+      })
+  ]);
   const selectedRaw = selectMemoryIntraChatRawCandidates({
     laneResults: stageResults,
     perChatLimit,
@@ -3497,9 +3665,10 @@ async function executeDigestIntraChatStage(input: Readonly<{
       lane: "HISTORY_INTRA_CHAT_RAW"
     });
   }
+  const distinctLexicalFailures = [...new Set(lexicalFailures)];
   const lexicalState: MemoryLocalRetrievalResult["lexicalState"] =
-    lexicalFailures.length === 0 ? "READY"
-      : lexicalFailures.length === lexicalLanes.length ? "FAILED" : "DEGRADED";
+    distinctLexicalFailures.length === 0 ? "READY"
+      : distinctLexicalFailures.length === lexicalLanes.length ? "FAILED" : "DEGRADED";
   return {
     digestEvidence: Object.freeze({
       digestOnlyChatCount: retainedDigests.length,
@@ -3510,7 +3679,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
       selectedChatCount: selectedSourceChatIds.length
     }),
     laneResults: Object.freeze(laneResults),
-    lexicalFailures: Object.freeze(lexicalFailures),
+    lexicalFailures: Object.freeze(distinctLexicalFailures),
     lexicalState,
     vectorState
   };
@@ -3642,7 +3811,11 @@ function chunkExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)})
+    WITH eligible AS MATERIALIZED (${historyEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`entry."recallChunkId" IN (${valuesSql(ids)})`
+    )})
     SELECT eligible."itemId", eligible."itemType", chunk."safeProjectedText" AS "safeText",
       'RECALL_CHUNK_SAFE_PROJECTED_TEXT'::text AS "projectionKind",
       chunk."chatId" AS "sourceChatId", NULL::text AS "supportingItemId",
@@ -3661,7 +3834,11 @@ function toolEventExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)})
+    WITH eligible AS MATERIALIZED (${historyEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`entry."toolEventId" IN (${valuesSql(ids)})`
+    )})
     SELECT eligible."itemId", eligible."itemType",
       tool_event."safeProjectedText" AS "safeText",
       'TOOL_EVENT_SAFE_TEXT'::text AS "projectionKind",
@@ -3686,7 +3863,11 @@ function rawRoundExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(snapshot, plan)})
+    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`entry."recallRoundId" IN (${valuesSql(ids)})`
+    )})
     SELECT DISTINCT ON (eligible."itemId")
       eligible."itemId", eligible."itemType",
       CASE WHEN char_length(round."rawSafeText") <= 4000
@@ -3714,7 +3895,14 @@ function segmentRoundExpansionSql(
   selections: readonly RoundSegmentSelection[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)}),
+    WITH eligible AS MATERIALIZED (${historyEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`(entry."recallRoundId", entry."recallRoundSegmentId") IN (
+        ${Prisma.join(selections.map(({ itemId, segmentId }) =>
+          Prisma.sql`(${itemId}, ${segmentId})`))}
+      )`
+    )}),
     selected("itemId", "segmentId") AS (VALUES ${Prisma.join(
       selections.map(({ itemId, segmentId }) => Prisma.sql`(${itemId}, ${segmentId})`)
     )})
@@ -3838,7 +4026,11 @@ function digestExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)})
+    WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`chunk."id" IN (${valuesSql(ids)})`
+    )})
     SELECT eligible."itemId", eligible."itemType",
       digest."safeDigestText" AS "safeText",
       'CHAT_DIGEST_SAFE_TEXT'::text AS "projectionKind",
@@ -3925,7 +4117,11 @@ function aggregationDigestCandidatesSql(
   sourceChatIds: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)})
+    WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`digest."chatId" IN (${valuesSql(sourceChatIds)})`
+    )})
     SELECT ${candidateColumns(Prisma.sql`0.0::double precision`)}
     FROM eligible
     WHERE eligible."sourceChatId" IN (${valuesSql(sourceChatIds)})
@@ -3946,7 +4142,11 @@ function aggregationSessionRoundCompletionSql(
   sourceChatIds: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(snapshot, plan)}),
+    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`source_chat."id" IN (${valuesSql(sourceChatIds)})`
+    )}),
     eligible_rounds AS MATERIALIZED (
       SELECT DISTINCT eligible."itemId", eligible."sourceChatId"
       FROM eligible
@@ -4615,6 +4815,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
 
     async retrieve(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalResult> {
       if (!validPlan(input.plan)) throw new Error("memory_retrieval_plan_invalid");
+      const denseOnly = (input as MemoryLocalRetrievalInternalInput)[denseOnlyRetrieval] === true;
+      if (denseOnly && (!input.vector || input.baselinePlan)) {
+        throw new Error("memory_dense_retrieval_contract_invalid");
+      }
       const snapshot = input.sourceSnapshot ?? await loadSnapshot(client, input);
       if (input.sourceSnapshot) {
         if (!issuedSnapshots.has(snapshot) || snapshot.userId !== input.userId ||
@@ -4630,7 +4834,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         throw new Error("memory_retrieval_baseline_plan_invalid");
       }
       if (snapshot.status !== "READY") return emptyResult(snapshot);
-      const core = input.plan.applyResponsePreferences
+      const core = !denseOnly && input.plan.applyResponsePreferences
         ? await settleMemoryLocalRead(
             input.settleSignal,
             () => loadCore(client, snapshot),
@@ -4644,8 +4848,11 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const vectorEvidence: MemoryVectorLaneEvidence[] = [];
       const lexicalExecutions: Array<ReturnType<typeof pushLexicalTasks>> = [];
       const vectorExecutions: Array<ReturnType<typeof pushVectorTasks>> = [];
+      let baselineLexicalExecution: ReturnType<typeof pushLexicalTasks> | null = null;
+      let enrichedLexicalExecution: ReturnType<typeof pushLexicalTasks> | null = null;
       let baselineTaskCount = 0;
-      const separateBaseline = input.baselinePlan && input.baselinePlan !== input.plan
+      const separateBaseline = !denseOnly && input.baselinePlan &&
+        input.baselinePlan !== input.plan
         ? input.baselinePlan
         : null;
       if (separateBaseline) {
@@ -4655,14 +4862,15 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         const baselineEnabled = [...baselineLexicalLanes, ...baselineVectorLanes];
         if (baselineEnabled.length > 0) {
           const baselineAllocation = allocateMemoryRetrievalLaneLimits(baselineEnabled);
-          lexicalExecutions.push(pushLexicalTasks(
+          baselineLexicalExecution = pushLexicalTasks(
             tasks,
             client,
             snapshot,
             separateBaseline,
             baselineAllocation,
             "BASELINE"
-          ));
+          );
+          lexicalExecutions.push(baselineLexicalExecution);
           vectorExecutions.push(pushVectorTasks(
             tasks,
             client,
@@ -4675,7 +4883,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         }
         baselineTaskCount = tasks.length;
       }
-      const enrichedLexicalLanes = localLexicalLanes(snapshot, input.plan);
+      const enrichedLexicalLanes = denseOnly ? [] : localLexicalLanes(snapshot, input.plan);
       const enrichedVectorLanes = localVectorLanes(snapshot, input);
       const enrichedEnabled = [...enrichedLexicalLanes, ...enrichedVectorLanes];
       if (enrichedEnabled.length > 0) {
@@ -4683,14 +4891,17 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           enrichedEnabled,
           input.plan.aggregationRequested
         );
-        lexicalExecutions.push(pushLexicalTasks(
-          tasks,
-          client,
-          snapshot,
-          input.plan,
-          enrichedAllocation,
-          "ENRICHED"
-        ));
+        if (enrichedLexicalLanes.length > 0) {
+          enrichedLexicalExecution = pushLexicalTasks(
+            tasks,
+            client,
+            snapshot,
+            input.plan,
+            enrichedAllocation,
+            "ENRICHED"
+          );
+          lexicalExecutions.push(enrichedLexicalExecution);
+        }
         vectorExecutions.push(pushVectorTasks(
           tasks,
           client,
@@ -4714,6 +4925,53 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       let enrichedLaneResults = separateBaseline
         ? executed.slice(baselineTaskCount)
         : executed;
+      const deferredStages = [
+        ...(separateBaseline && baselineLexicalExecution
+          ? [{
+              execution: baselineLexicalExecution,
+              laneResults: baselineLaneResults
+            }]
+          : []),
+        ...(enrichedLexicalExecution
+          ? [{
+              execution: enrichedLexicalExecution,
+              laneResults: enrichedLaneResults
+            }]
+          : [])
+      ];
+      const runnableDeferredTasks = deferredStages.flatMap(({ execution, laneResults }) =>
+        execution.deferredTasks.filter((task) =>
+          shouldRunMemoryTrigramFallback(task.lane, laneResults)));
+      const deferredResults = runnableDeferredTasks.length > 0
+        ? await executeMemoryRetrievalLaneTasks(
+            runnableDeferredTasks,
+            MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
+            input.settleSignal
+          )
+        : [];
+      const deferredByExecutionId = new Map(runnableDeferredTasks.map((task, index) => [
+        task.executionId!,
+        deferredResults[index]!
+      ]));
+      const withDeferredResults = (
+        execution: ReturnType<typeof pushLexicalTasks> | null,
+        laneResults: readonly MemoryLaneResult[]
+      ) => orderedExecutionLaneResults([
+        ...laneResults,
+        ...(execution?.deferredTasks.map((task) =>
+          deferredByExecutionId.get(task.executionId!) ?? {
+            candidates: [],
+            lane: task.lane
+          }) ?? [])
+      ]);
+      baselineLaneResults = withDeferredResults(
+        baselineLexicalExecution,
+        baselineLaneResults
+      );
+      enrichedLaneResults = withDeferredResults(
+        enrichedLexicalExecution,
+        enrichedLaneResults
+      );
       const stageLexicalStates: MemoryLocalRetrievalResult["lexicalState"][] = [];
       const stageVectorStates: MemoryLocalRetrievalResult["vectorState"][] = [];
       const stageLexicalFailures: MemoryRetrievalLane[] = [];
@@ -4803,7 +5061,8 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
   };
   const retrieveSpeculatively = async (
     input: MemoryLocalRetrievalInput,
-    parentSignal?: AbortSignal
+    parentSignal?: AbortSignal,
+    denseOnly = false
   ): Promise<MemoryLocalRetrievalResult> => {
     const controller = new AbortController();
     const forwardAbort = () => {
@@ -4816,7 +5075,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           MEMORY_SPECULATIVE_BASELINE_SETTLE_MS)
       : null;
     try {
-      return await repository.retrieve({ ...input, settleSignal: controller.signal });
+      const retrievalInput: MemoryLocalRetrievalInternalInput = denseOnly
+        ? { ...input, [denseOnlyRetrieval]: true, settleSignal: controller.signal }
+        : { ...input, settleSignal: controller.signal };
+      return await repository.retrieve(retrievalInput);
     } finally {
       if (timeout) clearTimeout(timeout);
       parentSignal?.removeEventListener("abort", forwardAbort);
@@ -4834,15 +5096,15 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
     ) {
       return retrieveSpeculatively(input, parentSignal);
     },
-    /** Once the original-query embedding is already ready, hedge the same
-     * deterministic reader plan with its dense lanes. Provider work remains
-     * outside the repository; this method only owns bounded local settlement. */
-    async retrieveSpeculativeHybrid(
+    /** Once the original-query embedding is ready, execute only its dense
+     * lanes. Admission joins this result with the already-running lexical
+     * baseline, so one hedge never duplicates non-cancellable sparse SQL. */
+    async retrieveSpeculativeDense(
       input: MemoryLocalRetrievalInput,
       parentSignal?: AbortSignal
     ) {
-      if (!input.vector) throw new Error("memory_speculative_hybrid_vector_missing");
-      return retrieveSpeculatively(input, parentSignal);
+      if (!input.vector) throw new Error("memory_speculative_dense_vector_missing");
+      return retrieveSpeculatively(input, parentSignal, true);
     }
   });
 }
