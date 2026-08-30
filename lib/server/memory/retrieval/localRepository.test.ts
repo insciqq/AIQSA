@@ -620,6 +620,66 @@ describe("local Memory retrieval repository", () => {
     expect(sql).not.toContain('digest."safeDigestText" AS "safeText"');
   });
 
+  it("settles digest expansion at the reader deadline without discarding ready navigation", async () => {
+    const mocked = mockClient();
+    const digestMetadata = floorMetadata("digest-ready", "HISTORY");
+    const digestRow = {
+      ...digestMetadata,
+      deterministicMatch: null,
+      displayText: null,
+      entryId: "entry-digest-ready",
+      itemId: "digest-ready",
+      itemType: "RECALL_CHUNK",
+      matchedSegmentId: null,
+      matchedSegmentPosition: null,
+      parentChunkId: null,
+      rawScore: 1,
+      safeContentHash: null,
+      sourceChatId: "source-chat-ready",
+      structuredValue: null
+    };
+    let digestReady = false;
+    mocked.$queryRaw.mockImplementation(async (query: { strings?: readonly string[] }) => {
+      const sql = query.strings?.join("?") ?? "";
+      if (sql.includes('owner."status"')) return [snapshotRow()];
+      if (sql.includes("digest_navigation")) {
+        digestReady = true;
+        return [digestRow];
+      }
+      if (digestReady) return new Promise<never>(() => undefined);
+      return [];
+    });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const controller = new AbortController();
+    const pending = repository.retrieveSpeculativeBaseline({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "Where did we discuss the migration?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    }, controller.signal);
+
+    await vi.waitFor(() => expect(digestReady).toBe(true));
+    controller.abort({ code: "test_reader_deadline" });
+    const result = await Promise.race([
+      pending,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 250))
+    ]);
+
+    expect(result).not.toBe("timeout");
+    if (result === "timeout") throw new Error("memory_reader_settlement_timed_out");
+    expect(result.laneResults).toEqual(expect.arrayContaining([{
+      candidates: [expect.objectContaining({ itemId: "digest-ready" })],
+      lane: "HISTORY_DIGEST_FTS_SIMPLE"
+    }]));
+  });
+
   it("routes tool observations through the episodic history family only", async () => {
     const historyMock = mockClient();
     const historyResult = await createPrismaLocalMemoryRetrievalRepository(
