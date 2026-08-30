@@ -337,10 +337,20 @@ services:
     restart: "no"
 
 networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_DEFAULT_NETWORK_SUBNET:-192.168.72.0/24}
   mcp-control:
     internal: true
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_MCP_NETWORK_SUBNET:-192.168.73.0/24}
   parser-control:
     internal: true
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_PARSER_NETWORK_SUBNET:-192.168.74.0/24}
   search-control:
     internal: true
     ipam:
