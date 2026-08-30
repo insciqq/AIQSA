@@ -2219,7 +2219,10 @@ async function loadAndValidatePreparingAttemptItems(
       finalScore < 0 ||
       finalScore > 1
     ) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_persisted_shape_invalid",
+        false
+      );
     }
     const common = {
       exactItemId: item.exactItemId,
@@ -2279,7 +2282,10 @@ async function loadAndValidatePreparingAttemptItems(
         toolEventId: item.toolEventId
       };
     } else {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_persisted_target_invalid",
+        false
+      );
     }
     const resolved = await resolvePreparingMemoryItem(tx, {
       assistantId: input.attempt.assistantIdSnapshot,

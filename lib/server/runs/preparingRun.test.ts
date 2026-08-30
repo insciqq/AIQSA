@@ -116,6 +116,14 @@ describe("Memory preparing context ceiling", () => {
       ...accepted,
       items: [{ ...accepted.items[0]!, exactSafeText: `${maximum}x` }],
       preparedContext: { approxTokens: 1_024, text: `${maximum}x` }
-    })).toThrow(MemoryPreparingRunConflictError);
+    })).toThrowError("memory_attempt_item_text_invalid");
+  });
+
+  it("reports a content-free reason for a duplicate candidate", () => {
+    const accepted = usedAttempt("COMPLEX", 1_024, 32_000);
+    expect(() => validateMemoryPreparingAttemptResult({
+      ...accepted,
+      items: [accepted.items[0]!, accepted.items[0]!]
+    })).toThrowError("memory_attempt_item_duplicate");
   });
 });

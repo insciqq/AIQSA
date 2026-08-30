@@ -472,34 +472,58 @@ export function validateMemoryPreparingAttemptResult(
   for (const item of items) {
     const target = memoryPreparingItemTarget(item);
     const identity = target ? `${target.itemType}:${target.exactItemId}` : "";
-    if (
-      !target ||
-      item.exactSafeText.length === 0 ||
-      item.exactSafeText.length > MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS ||
-      !safeSelectionReason.test(item.selectionReason) ||
-      !Number.isFinite(item.finalScore) ||
-      item.finalScore < 0 ||
-      item.finalScore > 1 ||
-      seenItems.has(identity) ||
-      (item.projectionKind !== undefined &&
-        item.projectionKind !== "CHAT_DIGEST_SAFE_TEXT" &&
-        item.projectionKind !== "FACT_DISPLAY_TEXT" &&
-        item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
-        item.projectionKind !== "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" &&
-        item.projectionKind !== "RECALL_ROUND_RAW_SAFE_TEXT" &&
-        item.projectionKind !== "TOOL_EVENT_SAFE_TEXT") ||
-      (item.supportingItemId !== undefined && item.supportingItemId !== null &&
-        (item.supportingItemId.length === 0 || item.supportingItemId.length > 256)) ||
-      (item.laneRanks !== undefined && (
-        !isRecord(item.laneRanks) ||
-        !boundedJson(item.laneRanks, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES)
-      )) ||
-      (item.featureSnapshot !== undefined && (
-        !isRecord(item.featureSnapshot) ||
-        !boundedJson(item.featureSnapshot, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES)
-      ))
-    ) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    if (!target) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_target_invalid", false);
+    }
+    if (item.exactSafeText.length === 0 ||
+      item.exactSafeText.length > MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_text_invalid", false);
+    }
+    if (!safeSelectionReason.test(item.selectionReason)) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_reason_invalid", false);
+    }
+    if (!Number.isFinite(item.finalScore) || item.finalScore < 0 || item.finalScore > 1) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_score_invalid", false);
+    }
+    if (seenItems.has(identity)) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_duplicate", false);
+    }
+    if (item.projectionKind !== undefined &&
+      item.projectionKind !== "CHAT_DIGEST_SAFE_TEXT" &&
+      item.projectionKind !== "FACT_DISPLAY_TEXT" &&
+      item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
+      item.projectionKind !== "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" &&
+      item.projectionKind !== "RECALL_ROUND_RAW_SAFE_TEXT" &&
+      item.projectionKind !== "TOOL_EVENT_SAFE_TEXT") {
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_projection_invalid",
+        false
+      );
+    }
+    if (item.supportingItemId !== undefined && item.supportingItemId !== null &&
+      (item.supportingItemId.length === 0 || item.supportingItemId.length > 256)) {
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_supporting_invalid",
+        false
+      );
+    }
+    if (item.laneRanks !== undefined && (
+      !isRecord(item.laneRanks) ||
+      !boundedJson(item.laneRanks, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES)
+    )) {
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_lane_ranks_invalid",
+        false
+      );
+    }
+    if (item.featureSnapshot !== undefined && (
+      !isRecord(item.featureSnapshot) ||
+      !boundedJson(item.featureSnapshot, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES)
+    )) {
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_item_feature_snapshot_invalid",
+        false
+      );
     }
     seenItems.add(identity);
   }
