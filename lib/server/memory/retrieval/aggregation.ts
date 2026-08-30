@@ -48,7 +48,7 @@ export const MEMORY_AGGREGATION_OVERLAP_RESOLUTIONS = [
 ] as const;
 
 export const MEMORY_AGGREGATION_POLICY_VERSION =
-  "memory-reader-aggregation-policy-v14";
+  "memory-reader-aggregation-policy-v15";
 
 export type MemoryAggregationOperation =
   (typeof MEMORY_AGGREGATION_OPERATIONS)[number];
