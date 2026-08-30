@@ -90,8 +90,8 @@ import type {
   KnowledgeProviderDispatchLifecycle
 } from "../knowledge/providerDispatchLifecycle";
 import {
-  executeKnowledgeAnswerGroundingV5,
-  type KnowledgeAnswerOperationExecutionV5
+  executeKnowledgeAnswerGroundingV8,
+  type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
 import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -1266,7 +1266,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function executeKnowledgeStructuredOutput(
         operation: ProviderStructuredOutputRequest
-      ): Promise<KnowledgeAnswerOperationExecutionV5> {
+      ): Promise<KnowledgeAnswerOperationExecutionV8> {
         const dispatchRequest = providerNeutralKnowledgeRequest(operation);
         const operationSignal = AbortSignal.any([
           signal,
@@ -1360,8 +1360,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         routeInstruction?: string;
       }>): Promise<Readonly<{
         contracts: Readonly<{
-          draftContractVersion: 5;
-          selectorContractVersion: 3;
+          draftContractVersion: 20;
+          selectorContractVersion: 16;
         }>;
         result: ProviderRunResult & { usageAttributions: RunUsageAttribution[] };
       }>> {
@@ -1381,7 +1381,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const reasoningEffort = typeof normalizedRequest.params.reasoningEffort === "string"
           ? normalizedRequest.params.reasoningEffort
           : null;
-        const operationResult = await executeKnowledgeAnswerGroundingV5({
+        const operationResult = await executeKnowledgeAnswerGroundingV8({
           authorize: authorizeKnowledgeAnswerOperation,
           draft: inputRequest.dispatchDraft,
           ...(inputRequest.evidenceBindings
@@ -1409,6 +1409,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             ? "native_strict"
             : "provider_neutral_json"
         });
+        if (operationResult.contracts.draftContractVersion !== 20 ||
+          operationResult.contracts.selectorContractVersion !== 16) {
+          throw new RunPipelineError(
+            "knowledge_answer_contract_conflict",
+            "The current Knowledge answer run returned an unexpected contract pair"
+          );
+        }
         const usageAttributions = operationResult.operations.map((operation) => ({
           modelId: normalizedRequest.modelId,
           provider: normalizedRequest.provider,
@@ -1427,8 +1434,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           result: {
             finalText: "",
             finalProviderResponsePreview: {
-              draftContractVersion: 5,
-              selectorContractVersion: 3,
+              draftContractVersion: 20,
+              selectorContractVersion: 16,
               structuredKnowledgeAnswer: true
             },
             ...((operationResult.operations.at(-1)?.providerResponseId ??

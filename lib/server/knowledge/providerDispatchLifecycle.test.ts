@@ -163,19 +163,19 @@ describe("Knowledge provider dispatch lifecycle", () => {
     });
     const manifest = draft();
     const acceptedRequest = {
-      contractVersion: 5,
+      contractVersion: 7,
       evidenceReceiptHash: manifest.manifestHash,
-      operation: "knowledge_answer_draft_v5",
+      operation: "knowledge_answer_draft_v7",
       version: 1
     } as const;
     const prepared = await lifecycle.prepare({
       acceptedRequest,
-      contractVersion: 5,
+      contractVersion: 7,
       draft: manifest,
       evidenceReceiptHash: manifest.manifestHash,
       modelRunId: "run-1",
       ordinal: 1,
-      purpose: "knowledge_answer_draft_v5",
+      purpose: "knowledge_answer_draft_v7",
       requestPreview: acceptedRequest,
       roundIndex: 0
     });
@@ -188,10 +188,10 @@ describe("Knowledge provider dispatch lifecycle", () => {
 
     expect(persistence.reserve).toHaveBeenCalledWith(expect.objectContaining({
       acceptedRequest,
-      contractVersion: 5,
+      contractVersion: 7,
       evidenceReceiptHash: manifest.manifestHash,
       providerBindingKey: "answer",
-      purpose: "knowledge_answer_draft_v5"
+      purpose: "knowledge_answer_draft_v7"
     }));
     expect(persistence.settle).toHaveBeenCalledWith(expect.objectContaining({
       acceptedResult: { kind: "draft_malformed" },

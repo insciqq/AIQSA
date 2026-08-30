@@ -141,6 +141,30 @@ function providerResult(overrides: Partial<ProviderRunResult> = {}): ProviderRun
   };
 }
 
+function plannedCoverageOutput(description = "The requested answer.") {
+  return {
+    dimensions: [{ description, id: "D1" }],
+    version: 1
+  } as const;
+}
+
+function plannedDraftOutput(text: string) {
+  return {
+    claims: [{ citationHints: ["K1"], text }],
+    version: 1
+  } as const;
+}
+
+function plannedSelectorOutput() {
+  return {
+    claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+    extractIds: [],
+    insufficientReason: "not_applicable",
+    version: 1
+  } as const;
+}
+
 function projectAdmission(): ProjectRunAdmission {
   return {
     accessRevision: 3,
@@ -689,8 +713,8 @@ function fullContextKnowledgePreparedData(): MaterializedPreparedRunData {
     knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan),
     prompt: {
       ...prepared.normalizedRequest.prompt,
-      knowledgeAnswerDraftContract: 5,
-      knowledgeGroundedSelectorContract: 3
+      knowledgeAnswerDraftContract: 8,
+      knowledgeGroundedSelectorContract: 6
     }
   };
   return {
@@ -2452,17 +2476,10 @@ describe("run execution", () => {
       providerCallCount += 1;
       providerRequests.push(request);
       const providerText = JSON.stringify(providerCallCount === 1
-        ? {
-            blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-            claims: [{ citationHints: ["K1"], id: "C1", text: "Supported answer" }],
-            version: 1
-          }
-        : {
-            claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-            decision: "select_claims",
-            requestCoverage: "complete",
-            version: 1
-          });
+        ? plannedCoverageOutput()
+        : providerCallCount === 2
+          ? plannedDraftOutput("Supported answer")
+          : plannedSelectorOutput());
       yield { data: { delta: providerText }, type: "token" };
       return providerResult({ finalText: providerText });
     });
@@ -2482,15 +2499,18 @@ describe("run execution", () => {
       name: KNOWLEDGE_FOCUSED_OPERATION_NAME
     });
     expect(repository.failedRuns).toEqual([]);
-    expect(providerCallCount).toBe(2);
-    expect(providerRequests).toHaveLength(2);
+    expect(providerCallCount).toBe(3);
+    expect(providerRequests).toHaveLength(3);
     expect(providerRequests.every((request) => request.tools === undefined &&
       request.toolChoice === "none" && request.context === undefined)).toBe(true);
     expect(providerRequests[0]?.prompt.system).toContain(
-      '<aiqsa_knowledge_answer_draft_contract version="5">'
+      '<aiqsa_knowledge_coverage_planner_contract version="20">'
     );
     expect(providerRequests[1]?.prompt.system).toContain(
-      '<aiqsa_knowledge_grounded_selector_contract version="3">'
+      '<aiqsa_knowledge_answer_draft_contract version="20">'
+    );
+    expect(providerRequests[2]?.prompt.system).toContain(
+      '<aiqsa_knowledge_grounded_selector_contract version="16">'
     );
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
@@ -2507,10 +2527,12 @@ describe("run execution", () => {
     }]);
     expect(body).not.toContain("\"decision\":\"select_claims\"");
     expect(dispatch.prepare.mock.calls.map(([call]) => call.purpose)).toEqual([
-      "knowledge_answer_draft_v5",
-      "knowledge_grounded_selector_v3"
+      "knowledge_coverage_planner_v20",
+      "knowledge_answer_draft_v20",
+      "knowledge_grounded_selector_v16"
     ]);
     expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2526,21 +2548,10 @@ describe("run execution", () => {
     const adapter = createAdapter(async function* (request) {
       requests.push(request);
       const providerText = JSON.stringify(requests.length === 1
-        ? {
-            blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-            claims: [{
-              citationHints: ["K1"],
-              id: "C1",
-              text: "Total cholesterol is 5.3 mmol/L"
-            }],
-            version: 1
-          }
-        : {
-            claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-            decision: "select_claims",
-            requestCoverage: "complete",
-            version: 1
-          });
+        ? plannedCoverageOutput()
+        : requests.length === 2
+          ? plannedDraftOutput("Total cholesterol is 5.3 mmol/L")
+          : plannedSelectorOutput());
       yield { data: { delta: providerText }, type: "token" };
       return providerResult({ finalText: providerText });
     });
@@ -2553,7 +2564,7 @@ describe("run execution", () => {
     })).text();
     const events = parseSse(body);
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
     expect(requests.every((request) => request.tools === undefined &&
       request.toolChoice === "none" && request.context === undefined)).toBe(true);
     expect(dispatch.prepare).toHaveBeenCalledWith(expect.objectContaining({
@@ -2570,6 +2581,7 @@ describe("run execution", () => {
     }]);
     expect(body).not.toContain("\"decision\":\"select_claims\"");
     expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2707,6 +2719,9 @@ describe("run execution", () => {
     let providerCallCount = 0;
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
+      if (providerCallCount === 1) {
+        return providerResult({ finalText: JSON.stringify(plannedCoverageOutput()) });
+      }
       throw new Error("private_provider_failure");
     });
 
@@ -2719,7 +2734,7 @@ describe("run execution", () => {
     })).text();
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(providerCallCount).toBe(2);
+    expect(providerCallCount).toBe(3);
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
@@ -2732,6 +2747,7 @@ describe("run execution", () => {
     ]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain("private_provider_failure");
     expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2786,6 +2802,9 @@ describe("run execution", () => {
     let providerCallCount = 0;
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
+      if (providerCallCount === 1) {
+        return providerResult({ finalText: JSON.stringify(plannedCoverageOutput()) });
+      }
       const timeout = new Error("local_answer_deadline");
       timeout.name = "AbortError";
       throw timeout;
@@ -2799,7 +2818,7 @@ describe("run execution", () => {
       repository: repository.repository
     })).text();
 
-    expect(providerCallCount).toBe(2);
+    expect(providerCallCount).toBe(3);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
       expect.objectContaining({
@@ -2810,6 +2829,7 @@ describe("run execution", () => {
       })
     ]);
     expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2836,7 +2856,13 @@ describe("run execution", () => {
     let providerCallCount = 0;
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
-      return providerResult({ finalText: providerText });
+      return providerResult({
+        finalText: JSON.stringify(providerCallCount === 1
+          ? plannedCoverageOutput()
+          : providerCallCount === 2
+            ? plannedDraftOutput(providerText)
+            : plannedSelectorOutput())
+      });
     });
 
     await createRunExecutionResponse(executionInput({
@@ -2848,7 +2874,7 @@ describe("run execution", () => {
     })).text();
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(providerCallCount).toBe(2);
+    expect(providerCallCount).toBe(3);
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
@@ -2857,6 +2883,7 @@ describe("run execution", () => {
       })
     ]);
     expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2894,21 +2921,10 @@ describe("run execution", () => {
       }
       return providerResult({
         finalText: JSON.stringify(providerRequests.length === 3
-          ? {
-              blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-              claims: [{
-                citationHints: ["K1"],
-                id: "C1",
-                text: "Combined answer"
-              }],
-              version: 1
-            }
-          : {
-              claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-              decision: "select_claims",
-              requestCoverage: "complete",
-              version: 1
-            })
+          ? plannedCoverageOutput()
+          : providerRequests.length === 4
+            ? plannedDraftOutput("Combined answer")
+            : plannedSelectorOutput())
       });
     });
     const searchAdapter: ProviderSearchAdapter = {
@@ -2944,7 +2960,7 @@ describe("run execution", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(repository.searchRuns).toHaveLength(1);
-    expect(providerRequests).toHaveLength(4);
+    expect(providerRequests).toHaveLength(5);
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(4);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain(
       "Bounded private passage"
@@ -2989,21 +3005,10 @@ describe("run execution", () => {
       }
       return providerResult({
         finalText: JSON.stringify(providerRequests.length === 4
-          ? {
-              blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-              claims: [{
-                citationHints: ["K1"],
-                id: "C1",
-                text: "Sequential answer"
-              }],
-              version: 1
-            }
-          : {
-              claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-              decision: "select_claims",
-              requestCoverage: "complete",
-              version: 1
-            })
+          ? plannedCoverageOutput()
+          : providerRequests.length === 5
+            ? plannedDraftOutput("Sequential answer")
+            : plannedSelectorOutput())
       });
     });
     const searchAdapter: ProviderSearchAdapter = {
@@ -3035,7 +3040,7 @@ describe("run execution", () => {
       searchAdapter
     })).text();
 
-    expect(providerRequests).toHaveLength(5);
+    expect(providerRequests).toHaveLength(6);
     expect(repository.searchRuns).toHaveLength(1);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toEqual([]);

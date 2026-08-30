@@ -278,6 +278,22 @@ describe("Knowledge chunk profiles", () => {
       .toBe(true);
   });
 
+  it("advances a chunk-boundary search that probes inside a surrogate pair", () => {
+    // Five UTF-16 code units make the binary-search midpoint land between the
+    // two code units of the final mathematical symbol. The safe boundary may
+    // move left, but the raw probe must still advance on the next iteration.
+    const text = "1A\u2003\u{1D54F}";
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, text)]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.text).toBe(text);
+  });
+
   it("keeps table rows intact and carries exact block provenance", () => {
     const cells = Array.from({ length: 40 }, (_, row) => [
       { column: 0, columnSpan: 1, row, rowSpan: 1, text: `row-${row}` },

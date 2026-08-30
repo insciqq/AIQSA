@@ -194,17 +194,18 @@ function splitTextByTokens(text: string): Array<{ text: string; tokenCount: numb
     let high = Math.min(text.length, start + KNOWLEDGE_CHUNK_MAX_CHARS);
     let acceptedEnd = start;
     while (low <= high) {
-      const midpoint = codePointSafeEnd(text, Math.floor((low + high) / 2));
+      const probe = Math.floor((low + high) / 2);
+      const midpoint = codePointSafeEnd(text, probe);
       if (midpoint <= start) {
-        low += 1;
+        low = probe + 1;
         continue;
       }
       const candidate = text.slice(start, midpoint);
       if (legacyKnowledgeTokenCount(candidate) <= KNOWLEDGE_CHUNK_MAX_TOKENS) {
         acceptedEnd = midpoint;
-        low = midpoint + 1;
+        low = probe + 1;
       } else {
-        high = midpoint - 1;
+        high = probe - 1;
       }
     }
     if (acceptedEnd <= start) throw new KnowledgeChunkingError("chunking_failed");
@@ -501,17 +502,18 @@ function splitProjectionPayload(
     );
     let acceptedEnd = start;
     while (low <= high) {
-      const midpoint = codePointSafeEnd(payload, Math.floor((low + high) / 2));
+      const probe = Math.floor((low + high) / 2);
+      const midpoint = codePointSafeEnd(payload, probe);
       if (midpoint <= start) {
-        low += 1;
+        low = probe + 1;
         continue;
       }
       const candidate = `${prefix}${payload.slice(start, midpoint).trim()}`;
       if (boundedChunkText(candidate, currentSizing)) {
         acceptedEnd = midpoint;
-        low = midpoint + 1;
+        low = probe + 1;
       } else {
-        high = midpoint - 1;
+        high = probe - 1;
       }
     }
     if (acceptedEnd <= start) throw new KnowledgeChunkingError("chunking_failed");
@@ -1279,18 +1281,19 @@ function contextPrefix(
   let high = value.length;
   let acceptedEnd = 0;
   while (low <= high) {
-    const midpoint = codePointSafeEnd(value, Math.floor((low + high) / 2));
+    const probe = Math.floor((low + high) / 2);
+    const midpoint = codePointSafeEnd(value, probe);
     if (midpoint < 1) {
-      low += 1;
+      low = probe + 1;
       continue;
     }
     const candidate = value.slice(0, midpoint).trimEnd();
     if (candidate && sizedTokenCount(candidate) <=
       KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS) {
       acceptedEnd = midpoint;
-      low = midpoint + 1;
+      low = probe + 1;
     } else {
-      high = midpoint - 1;
+      high = probe - 1;
     }
   }
   if (acceptedEnd < 1) throw new KnowledgeChunkingError("chunking_failed");
@@ -1353,16 +1356,17 @@ function fitCurrentEmbeddingSegments(
     let high = Math.min(segment.text.length, start + KNOWLEDGE_CHUNK_MAX_CHARS);
     let acceptedEnd = start;
     while (low <= high) {
-      const midpoint = codePointSafeEnd(segment.text, Math.floor((low + high) / 2));
+      const probe = Math.floor((low + high) / 2);
+      const midpoint = codePointSafeEnd(segment.text, probe);
       if (midpoint <= start) {
-        low += 1;
+        low = probe + 1;
         continue;
       }
       if (currentEmbeddingInputFits(prefix, segment.text.slice(start, midpoint))) {
         acceptedEnd = midpoint;
-        low = midpoint + 1;
+        low = probe + 1;
       } else {
-        high = midpoint - 1;
+        high = probe - 1;
       }
     }
     if (acceptedEnd <= start) throw new KnowledgeChunkingError("chunking_failed");

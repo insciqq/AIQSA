@@ -172,6 +172,9 @@ describe("Knowledge normalized document", () => {
     expect(() => encodeKnowledgeNormalizedDocument(parsed({
       blocks: [parsedBlock({ headingPath: [], page: 2, pageEnd: 2, text: "outside" })]
     }), config)).toThrowError(expect.objectContaining({ code: "parser_rejected" }));
+    expect(() => encodeKnowledgeNormalizedDocument(parsed({
+      blocks: [parsedBlock({ headingPath: [undefined] as unknown as readonly string[] })]
+    }), config)).toThrowError(expect.objectContaining({ code: "parser_rejected" }));
   });
 
   it("fails closed on page, text, and serialized-object limits", () => {

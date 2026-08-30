@@ -215,6 +215,9 @@ function normalizedText(value: string, maxLength = Number.MAX_SAFE_INTEGER): str
 }
 
 function normalizedHeadingPath(values: readonly string[]): readonly string[] {
+  if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
   return Object.freeze(values.slice(0, 16).map((value) =>
     normalizedText(value.replace(/[\u0000-\u001f\u007f]/gu, " "), 256).replace(/\s+/gu, " ")
   ).filter(Boolean));

@@ -205,7 +205,7 @@ function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer
     grounding: {
       contradictedClaimCount: 0,
       draftClaimCount: 1,
-      draftContractVersion: 5 as const,
+      draftContractVersion: 11 as const,
       draftHash: "a".repeat(64),
       draftOperationId: "draft-operation-1",
       durations: { draftMs: 10, selectorMs: 8 },
@@ -220,7 +220,7 @@ function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer
       providerRequestIds: { draft: "provider-draft-1", selector: "provider-selector-1" },
       receiptHash: "b".repeat(64),
       requestCoverage: "complete" as const,
-      selectorContractVersion: 3 as const,
+      selectorContractVersion: 7 as const,
       selectorHash: "e".repeat(64),
       selectorOperationId: "selector-operation-1",
       sessionId: "evidence-session-1",
@@ -1620,19 +1620,26 @@ describe("run recovery", () => {
               ...providerResult,
               finalText: requests.length === 1
                 ? JSON.stringify({
-                    blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-                    claims: [{ citationHints: ["K1"], id: "C1", text: "Recovered focused evidence" }],
+                    dimensions: [{ description: "The requested answer.", id: "D1" }],
                     version: 1
                   })
-                : JSON.stringify({
-                    claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-                    decision: "select_claims",
-                    requestCoverage: "complete",
+                : requests.length === 2
+                ? JSON.stringify({
+                    claims: [{ citationHints: ["K1"], text: "Recovered focused evidence" }],
                     version: 1
-                  }),
-              providerResponseId: requests.length === 1
-                ? "response-recovered-draft"
-                : "response-recovered-selector"
+                  })
+                  : JSON.stringify({
+                      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+                      coverage: [{
+                        id: "D1",
+                        status: "covered",
+                        supportIds: ["C1"]
+                      }],
+                      extractIds: [],
+                      insufficientReason: "not_applicable",
+                      version: 1
+                    }),
+              providerResponseId: `response-recovered-${requests.length}`
             };
           }
         }
@@ -1667,16 +1674,20 @@ describe("run recovery", () => {
           "2 selected Knowledge resource(s) were unavailable; do not claim complete coverage."
       })
     }));
-    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
     expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      contractVersion: 5,
-      purpose: "knowledge_answer_draft_v5"
+      contractVersion: 20,
+      purpose: "knowledge_coverage_planner_v20"
     }));
     expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      contractVersion: 3,
-      purpose: "knowledge_grounded_selector_v3"
+      contractVersion: 20,
+      purpose: "knowledge_answer_draft_v20"
     }));
-    expect(requests).toHaveLength(2);
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      contractVersion: 16,
+      purpose: "knowledge_grounded_selector_v16"
+    }));
+    expect(requests).toHaveLength(3);
     expect(requests.every((request) => request.toolChoice === "none" && !request.tools)).toBe(true);
     expect(requests.every((request) => request.prompt.knowledgeAnswerContract === undefined))
       .toBe(true);
@@ -1751,16 +1762,25 @@ describe("run recovery", () => {
               ...providerResult,
               finalText: requests.length === 1
                 ? JSON.stringify({
-                    blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-                    claims: [{ citationHints: ["K1"], id: "C1", text: "Recovered full-context evidence" }],
+                    dimensions: [{ description: "The requested answer.", id: "D1" }],
                     version: 1
                   })
-                : JSON.stringify({
-                    claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-                    decision: "select_claims",
-                    requestCoverage: "complete",
+                : requests.length === 2
+                ? JSON.stringify({
+                    claims: [{ citationHints: ["K1"], text: "Recovered full-context evidence" }],
                     version: 1
                   })
+                  : JSON.stringify({
+                      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+                      coverage: [{
+                        id: "D1",
+                        status: "covered",
+                        supportIds: ["C1"]
+                      }],
+                      extractIds: [],
+                      insufficientReason: "not_applicable",
+                      version: 1
+                    })
             };
           }
         }
@@ -1769,14 +1789,14 @@ describe("run recovery", () => {
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(requests).toHaveLength(2);
-    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
+    expect(requests).toHaveLength(3);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
     expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
       evidenceBindings: [{
         dispatchEvidenceId: "full-context-evidence-1:result:1",
         evidenceItemId: "evidence-item-1"
       }],
-      purpose: "knowledge_answer_draft_v5"
+      purpose: "knowledge_coverage_planner_v20"
     }));
     expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
     expect(harness.state.failed).toEqual([]);
@@ -2129,18 +2149,26 @@ describe("run recovery", () => {
           async *stream(request) {
             requests.push(request);
             if (request.tools?.length) return providerResult;
+            const answerOperationOrdinal = requests.filter(
+              (candidate) => !candidate.tools?.length
+            ).length;
             return {
               ...providerResult,
-              finalText: requests.filter((candidate) => !candidate.tools?.length).length === 1
+              finalText: answerOperationOrdinal === 1
                 ? JSON.stringify({
-                    blocks: [{ claimIds: ["C1"], type: "paragraph" }],
-                    claims: [{ citationHints: ["K1"], id: "C1", text: "Recovered focused evidence" }],
+                    dimensions: [{ description: "The requested answer.", id: "D1" }],
+                    version: 1
+                  })
+                : answerOperationOrdinal === 2
+                ? JSON.stringify({
+                    claims: [{ citationHints: ["K1"], text: "Recovered focused evidence" }],
                     version: 1
                   })
                 : JSON.stringify({
                     claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-                    decision: "select_claims",
-                    requestCoverage: "complete",
+                    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+                    extractIds: [],
+                    insufficientReason: "not_applicable",
                     version: 1
                   })
             };
@@ -2172,8 +2200,8 @@ describe("run recovery", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(harness.state.failed).toEqual([]);
     expect(harness.state.completed).toMatchObject({ finalText: "Recovered answer" });
-    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
-    expect(requests).toHaveLength(3);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
+    expect(requests).toHaveLength(4);
     expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain(
       "Recovered focused evidence"
     );

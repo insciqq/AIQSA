@@ -99,7 +99,9 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
-    $queryRaw: vi.fn(async () => [{ candidates: [...rows], scopes: [...scopes] }]),
+    $queryRaw: vi.fn()
+      .mockResolvedValueOnce([...scopes])
+      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
     vectors
   } as unknown as MockCoreClient;
 }
@@ -134,6 +136,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     };
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
+      .mockResolvedValueOnce([admitted])
       .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
       .mockResolvedValueOnce([row({
         artifactId: "source-artifact-1",
@@ -162,8 +165,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const result = await execute(client, { lexicalSearch });
 
     expect(lexicalSearch).toHaveBeenCalledOnce();
-    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
-    expect(sqlText(client.$queryRaw.mock.calls[1]![0])).toContain(
+    expect(client.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(sqlText(client.$queryRaw.mock.calls[2]![0])).toContain(
       'chunk."indexArtifactId" = hit."indexArtifactId"'
     );
     expect(result.passages).toMatchObject([{
@@ -186,7 +189,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
       "knowledge_search_projection_incomplete"
     );
     expect(lexicalSearch).not.toHaveBeenCalled();
-    expect(client.$queryRaw).toHaveBeenCalledOnce();
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed on an unavailable OpenSearch request without a PostgreSQL lexical retry", async () => {
@@ -203,7 +206,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
       "opensearch_connection_failed"
     );
     expect(lexicalSearch).toHaveBeenCalledOnce();
-    expect(client.$queryRaw).toHaveBeenCalledOnce();
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed when any OpenSearch identity misses canonical revalidation", async () => {
@@ -213,6 +216,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     };
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
+      .mockResolvedValueOnce([admitted])
       .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
       .mockResolvedValueOnce([]);
     const lexicalSearch = vi.fn(async () => ({
@@ -230,7 +234,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     await expect(execute(client, { lexicalSearch })).rejects.toThrow(
       "knowledge_search_candidate_revalidation_failed"
     );
-    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(client.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
   it("enforces fixed limits while treating a scope without vector rows as available lexical work", async () => {
@@ -274,8 +278,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
       vectors: []
     });
 
-    expect(client.$queryRaw).toHaveBeenCalledOnce();
-    const query = client.$queryRaw.mock.calls[0]![0] as {
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    const query = client.$queryRaw.mock.calls[1]![0] as {
       strings: readonly string[];
       values: readonly unknown[];
     };
@@ -298,6 +302,36 @@ describe("Prisma retrieval core canonical Source identity", () => {
       candidateCount: 0,
       mode: "unavailable"
     }]);
+  });
+
+  it("prefilters ANN by canonically accepted artifact ids before payload hydration", async () => {
+    const admitted = {
+      ...scope(0, "Policies", "base-policies"),
+      acceptedIndexArtifactIds: ["hierarchy-allowed-1", "hierarchy-allowed-2"]
+    };
+    const client = mockClient([admitted], []);
+
+    await execute(client, {
+      lexicalSearch: async () => ({
+        evidence: knowledgeLexicalBackendEvidenceFixture(),
+        hits: []
+      })
+    });
+
+    const candidateQuery = client.$queryRaw.mock.calls[1]![0] as {
+      strings: readonly string[];
+      values: readonly unknown[];
+    };
+    const candidateSql = sqlText(candidateQuery);
+    expect(candidateSql).toContain(
+      'FROM "KnowledgeArtifactPassageEmbedding" AS embedding'
+    );
+    expect(candidateSql).toContain('embedding."indexArtifactId" = ANY(');
+    expect(candidateSql).not.toContain("FROM scoped_passages AS scoped");
+    expect(candidateQuery.values).toEqual(expect.arrayContaining([
+      "hierarchy-allowed-1",
+      "hierarchy-allowed-2"
+    ]));
   });
 
   it("filters a weak nearest neighbor before fusion and returns an empty ranking", async () => {
@@ -495,8 +529,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
 
     expect(result.passages[0]!.documentContext).toEqual(documentContext);
     expect(result.passages[0]!.layoutKind).toBe("table_row");
-    expect(client.$queryRaw).toHaveBeenCalledOnce();
-    const neighborSql = sqlText(client.$queryRaw.mock.calls[0]![0]);
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    const neighborSql = sqlText(client.$queryRaw.mock.calls[1]![0]);
     // One generic language-neutral lexical configuration only (FR-9).
     expect(neighborSql).toContain("websearch_to_tsquery('simple'::regconfig");
     expect(neighborSql).not.toContain("'english'::regconfig");
@@ -521,7 +555,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     );
     expect(neighborSql).toContain('FROM ranked_neighbor_candidates AS neighbor');
     expect(neighborSql).toContain('WHERE neighbor."laneRank" <=');
-    expect((client.$queryRaw.mock.calls[0]![0] as { values: readonly unknown[] }).values)
+    expect((client.$queryRaw.mock.calls[1]![0] as { values: readonly unknown[] }).values)
       .toContain(KNOWLEDGE_SIGNAL_RANK_MAX);
   });
 
@@ -754,7 +788,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
 
     const result = await execute(client);
 
-    expect(client.$queryRaw).toHaveBeenCalledOnce();
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
     expect(result.candidateCount).toBe(64);
     expect(result.candidateCounts).toEqual({ 0: 64 });
     expect(result.passages).toHaveLength(8);

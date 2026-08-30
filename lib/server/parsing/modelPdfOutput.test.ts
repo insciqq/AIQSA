@@ -103,6 +103,45 @@ describe("model PDF transcription contract", () => {
       .toEqual(["Alpha", "Expiry", "2040-01-15"]);
   });
 
+  it("collapses skipped Markdown heading levels without sparse heading paths", () => {
+    const pages = decodeModelPdfBatchOutput({
+      mode: "system_model_vision",
+      pageEnd: 1,
+      pageStart: 1,
+      text: [
+        modelPdfPageStartMarker(1),
+        "### Standalone section",
+        "First paragraph",
+        "##### Nested section",
+        "Nested paragraph",
+        "## Replacement section",
+        "Replacement paragraph",
+        modelPdfPageEndMarker(1)
+      ].join("\n")
+    });
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 100,
+      maxCharacters: 10_000,
+      mode: "system_model_vision",
+      pageCount: 1,
+      pages
+    });
+
+    expect(document.blocks.map(({ headingPath, text }) => ({ headingPath, text }))).toEqual([
+      { headingPath: [], text: "Standalone section" },
+      { headingPath: ["Standalone section"], text: "First paragraph" },
+      { headingPath: ["Standalone section"], text: "Nested section" },
+      {
+        headingPath: ["Standalone section", "Nested section"],
+        text: "Nested paragraph"
+      },
+      { headingPath: [], text: "Replacement section" },
+      { headingPath: ["Replacement section"], text: "Replacement paragraph" }
+    ]);
+    expect(document.blocks.every(({ headingPath }) =>
+      headingPath.every((value) => typeof value === "string"))).toBe(true);
+  });
+
   it("decodes explicit logical-record continuation cells into vertical spans", () => {
     const pages = decodeModelPdfBatchOutput({
       mode: "system_model_vision",

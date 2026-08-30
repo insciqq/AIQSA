@@ -68,19 +68,22 @@ import type {
   PreparedKnowledgeProviderDispatch
 } from "../knowledge/providerDispatchLifecycle";
 import {
-  executeKnowledgeAnswerGroundingV5,
+  executeKnowledgeAnswerGroundingV8,
   KnowledgeAnswerOperationDeferredError,
-  type KnowledgeAnswerOperationExecutionOptionsV5,
-  type KnowledgeAnswerOperationExecutionV5
+  type KnowledgeAnswerOperationExecutionOptionsV8,
+  type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
 import {
-  decodeKnowledgeAnswerDraftPromptV5,
+  decodeKnowledgeAnswerDraftPrompt,
   decodeKnowledgeAnswerOperationRequestSnapshotV1,
-  KNOWLEDGE_ANSWER_DRAFT_OPERATION,
+  knowledgeAnswerContractPairForDraftOperation,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
+  KNOWLEDGE_COVERAGE_PLANNER_OPERATION,
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
-  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
+  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
+  type KnowledgeAnswerContractPair
 } from "../knowledge/answerGroundingV5";
 import {
   type KnowledgeRunAdmissionAuthorizationSnapshot,
@@ -2917,20 +2920,26 @@ async function recoverKnowledgeAnswerGroundingV5(
     );
   }
   let seed: KnowledgeAnswerGroundingRecoverySeed;
+  let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
   if (input.draftDispatch) {
-    if (input.draftDispatch.attempt.purpose !== KNOWLEDGE_ANSWER_DRAFT_OPERATION ||
-      input.draftDispatch.attempt.ordinal !== 1 ||
+    const acceptedPair = knowledgeAnswerContractPairForDraftOperation(
+      input.draftDispatch.attempt.purpose
+    );
+    if (!acceptedPair ||
+      input.draftDispatch.attempt.ordinal !==
+        (acceptedPair.coveragePlannerOperation ? 2 : 1) ||
       input.draftDispatch.attempt.providerBindingKey !== "answer") {
       throw new ToolLoopRecoveryError(
         "knowledge_answer_v5_unavailable",
         "The saved Knowledge answer operation cannot be recovered."
       );
     }
+    contractPair = acceptedPair;
     const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV1(
       input.draftDispatch.attempt.acceptedRequest
     );
     const prompt = draftRequest
-      ? decodeKnowledgeAnswerDraftPromptV5(draftRequest, input.draftDispatch.draft)
+      ? decodeKnowledgeAnswerDraftPrompt(draftRequest, input.draftDispatch.draft)
       : null;
     if (!draftRequest || !prompt) {
       throw new ToolLoopRecoveryError(
@@ -3048,8 +3057,8 @@ async function recoverKnowledgeAnswerGroundingV5(
   };
   const execute = async (
     operation: ProviderStructuredOutputRequest,
-    options: KnowledgeAnswerOperationExecutionOptionsV5
-  ): Promise<KnowledgeAnswerOperationExecutionV5> => {
+    options: KnowledgeAnswerOperationExecutionOptionsV8
+  ): Promise<KnowledgeAnswerOperationExecutionV8> => {
     const operationSignal = AbortSignal.any([
       input.signal,
       AbortSignal.timeout(120_000)
@@ -3122,8 +3131,9 @@ async function recoverKnowledgeAnswerGroundingV5(
       usage: normalizeTokenUsage(next.value.usage)
     });
   };
-  const operationResult = await executeKnowledgeAnswerGroundingV5({
+  const operationResult = await executeKnowledgeAnswerGroundingV8({
     authorize,
+    contractPair,
     draft: seed.draft,
     ...(seed.evidenceBindings?.length
       ? { evidenceBindings: seed.evidenceBindings }
@@ -3136,10 +3146,19 @@ async function recoverKnowledgeAnswerGroundingV5(
     lifecycle: deps.knowledgeProviderDispatch,
     modelRunId: input.runId,
     reasoningEffort: seed.reasoningEffort,
-    recoveryProviderResponseIds: input.control.providerResponseId
+        recoveryProviderResponseIds: input.control.providerResponseId
       ? {
-          knowledge_answer_draft_v5: input.control.providerResponseId,
-          knowledge_grounded_selector_v3: input.control.providerResponseId
+          ...(contractPair.coveragePlannerOperation
+            ? { [contractPair.coveragePlannerOperation]: input.control.providerResponseId }
+            : {}),
+          [contractPair.draftOperation]: input.control.providerResponseId,
+          [contractPair.selectorOperation]: input.control.providerResponseId,
+          ...(contractPair.supplementalDraftOperation
+            ? { [contractPair.supplementalDraftOperation]: input.control.providerResponseId }
+            : {}),
+          ...(contractPair.finalSelectorOperation
+            ? { [contractPair.finalSelectorOperation]: input.control.providerResponseId }
+            : {})
         }
       : undefined,
     request: seed.request,
@@ -3213,7 +3232,15 @@ async function refreshProviderRunOnceRegistered(
         modelRunId: runId,
         ordinal: 1
       });
-      if (draftDispatch?.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION) {
+      if (draftDispatch?.attempt.purpose === KNOWLEDGE_COVERAGE_PLANNER_OPERATION) {
+        draftDispatch = await deps.knowledgeProviderDispatch.inspect({
+          modelRunId: runId,
+          ordinal: 2
+        });
+      }
+      if (draftDispatch && knowledgeAnswerContractPairForDraftOperation(
+        draftDispatch.attempt.purpose
+      )) {
         await recoverKnowledgeAnswerGroundingV5(deps, {
           control,
           draftDispatch,
@@ -3293,7 +3320,7 @@ async function refreshProviderRunOnceRegistered(
       if (existingAttempt) {
         throw new ToolLoopRecoveryError(
           "knowledge_answer_contract_failed",
-          "The saved Knowledge operation is not a recoverable Draft V5 attempt."
+          "The saved Knowledge operation is not a recoverable versioned Draft attempt."
         );
       }
       const contextWindow = acceptedRequest.modelCapabilities.contextWindow;

@@ -514,6 +514,7 @@ describe("Prisma Knowledge Source Library", () => {
       where: { id: artifact.id }
     })).resolves.toMatchObject({
       errorCode: null,
+      processingGeneration: 1,
       processingStage: "queued",
       state: "pending"
     });
@@ -539,6 +540,7 @@ describe("Prisma Knowledge Source Library", () => {
       errorCode: null,
       normalizedTextByteSize: 2_048,
       normalizedTextChecksum: normalizedChecksum,
+      processingGeneration: 1,
       processingStage: "chunking",
       state: "pending"
     });

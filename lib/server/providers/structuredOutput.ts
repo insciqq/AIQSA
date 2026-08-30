@@ -106,25 +106,32 @@ function scalarConstKey(value: unknown): string | null {
 }
 
 /** `oneOf` and `anyOf` are equivalent only when at most one branch can match.
- * Prove that property here from a shared required scalar discriminator before
- * projecting into the provider subset; otherwise fail closed. */
+ * Prove that property here from the tuple of shared required scalar const
+ * properties before projecting into the provider subset; otherwise fail
+ * closed. A single discriminator is the common case, while contracts such as
+ * `(decision, coverage)` require the joint tuple to distinguish every branch. */
 function hasExclusiveConstDiscriminator(branches: readonly unknown[]): boolean {
   if (branches.length < 2 || !branches.every(isRecord)) return false;
   const records = branches as readonly Record<string, unknown>[];
   const firstProperties = records[0]?.properties;
   if (!isRecord(firstProperties)) return false;
-  return Object.keys(firstProperties).some((propertyName) => {
-    const values = records.map((branch) => {
+  const discriminatorProperties = Object.keys(firstProperties).filter((propertyName) =>
+    records.every((branch) => {
       if (!Array.isArray(branch.required) ||
         !branch.required.includes(propertyName) ||
-        !isRecord(branch.properties)) return null;
+        !isRecord(branch.properties)) return false;
       const property = branch.properties[propertyName];
-      if (!isRecord(property) || !Object.hasOwn(property, "const")) return null;
-      return scalarConstKey(property.const);
-    });
-    return values.every((value): value is string => value !== null) &&
-      new Set(values).size === records.length;
-  });
+      return isRecord(property) && Object.hasOwn(property, "const") &&
+        scalarConstKey(property.const) !== null;
+    })
+  ).sort();
+  if (discriminatorProperties.length === 0) return false;
+  const signatures = records.map((branch) => discriminatorProperties.map((propertyName) => {
+    const properties = branch.properties as Record<string, unknown>;
+    const property = properties[propertyName] as Record<string, unknown>;
+    return `${propertyName}:${scalarConstKey(property.const)!}`;
+  }).join("\u0000"));
+  return new Set(signatures).size === records.length;
 }
 
 /** Project the provider-neutral schema into the portable strict-schema wire

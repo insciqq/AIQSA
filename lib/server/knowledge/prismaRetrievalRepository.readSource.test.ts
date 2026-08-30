@@ -16,6 +16,7 @@ import { normalizeReadSourceRequest } from "./readSourceLocator";
 import { decodeKnowledgeRetrievalEvidence, knowledgeToolResultText } from "./toolResult";
 import { chunkKnowledgeDocument } from "./chunking";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 
 const binding = {
   baseContentRevision: 1,
@@ -377,6 +378,7 @@ function fourBindingAutomaticEvidence(): KnowledgeRetrievalEvidence {
     embeddingExecutions,
     fusion: "weighted_rrf_v2",
     invocationOrdinal: 1,
+    lexicalBackend: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 1 }),
     operation: "automatic_search",
     providerText: "pending",
     query: "four binding retrieval",
@@ -1289,6 +1291,7 @@ describe("Prisma Knowledge deterministic source read", () => {
           failureCode: null,
           fusion: evidence.fusion,
           invocationOrdinal: evidence.invocationOrdinal,
+          lexicalBackendEvidence: evidence.lexicalBackend,
           operation: evidence.operation,
           outcome: evidence.outcome,
           providerText: evidence.providerText,

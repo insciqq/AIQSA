@@ -42,20 +42,20 @@ function sqlText(value: unknown): string {
 }
 
 async function capturedHybridSql(query: string): Promise<string> {
+  const scopes = [{
+    acceptedIndexArtifactIds: [],
+    baseName: "Docs",
+    bindingOrdinal: 0,
+    eligibleRows: 0,
+    indexGenerationId: "generation-0",
+    knowledgeBaseId: "base-0",
+    projectionComplete: true,
+    targetDimension: 1_024
+  }];
   const client = {
-    $queryRaw: vi.fn(async (_statement: unknown) => [{
-      candidates: [],
-      scopes: [{
-        acceptedIndexArtifactIds: [],
-        baseName: "Docs",
-        bindingOrdinal: 0,
-        eligibleRows: 0,
-        indexGenerationId: "generation-0",
-        knowledgeBaseId: "base-0",
-        projectionComplete: true,
-        targetDimension: 1_024
-      }]
-    }])
+    $queryRaw: vi.fn()
+      .mockResolvedValueOnce(scopes)
+      .mockResolvedValueOnce([{ candidates: [], scopes }])
   };
   await executeKnowledgeRetrievalCore(client as never, {
     candidateLimit: 64,
@@ -66,8 +66,8 @@ async function capturedHybridSql(query: string): Promise<string> {
     userId: "user-1",
     vectors: []
   });
-  expect(client.$queryRaw).toHaveBeenCalledOnce();
-  return sqlText(client.$queryRaw.mock.calls[0]![0]);
+  expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+  return sqlText(client.$queryRaw.mock.calls[1]![0]);
 }
 
 function block(

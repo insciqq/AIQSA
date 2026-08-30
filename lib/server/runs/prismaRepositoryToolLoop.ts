@@ -431,6 +431,7 @@ const normalizedRequestKeys = new Set([
   "content",
   "context",
   "knowledgeAnswering",
+  "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
   "knowledgePlan",
   "memoryActionTools",
@@ -728,6 +729,8 @@ function decodeProviderDispatchRecoveryRequest(
     !isRecord(value.content) || !onlyKnownKeys(value.content, new Set(["blocks"])) ||
     !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
+    value.knowledgeEvidencePackingVersion !== undefined &&
+      value.knowledgeEvidencePackingVersion !== 2 ||
     !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
@@ -737,9 +740,11 @@ function decodeProviderDispatchRecoveryRequest(
     value.prompt.knowledgeAnswerContract !== undefined &&
       value.prompt.knowledgeAnswerContract !== 1 ||
     value.prompt.knowledgeAnswerDraftContract !== undefined &&
-      value.prompt.knowledgeAnswerDraftContract !== 5 ||
+      value.prompt.knowledgeAnswerDraftContract !== 7 &&
+      value.prompt.knowledgeAnswerDraftContract !== 8 ||
     value.prompt.knowledgeGroundedSelectorContract !== undefined &&
-      value.prompt.knowledgeGroundedSelectorContract !== 3 ||
+      value.prompt.knowledgeGroundedSelectorContract !== 5 &&
+      value.prompt.knowledgeGroundedSelectorContract !== 6 ||
     value.prompt.memoryActionAnswerResult !== undefined &&
       decodeMemoryActionAnswerResult(value.prompt.memoryActionAnswerResult) === null ||
     !validSearchPlan(value.searchPlan) || !validMcpSnapshot(value.mcp) ||
@@ -752,8 +757,10 @@ function decodeProviderDispatchRecoveryRequest(
       value.prompt.baseline.timeZoneSource !== "utc_fallback"))) return null;
   const legacyKnowledgeAnswerContract = value.prompt.knowledgeAnswerContract === 1;
   const currentKnowledgeAnswerContract =
-    value.prompt.knowledgeAnswerDraftContract === 5 &&
-    value.prompt.knowledgeGroundedSelectorContract === 3;
+    value.prompt.knowledgeAnswerDraftContract === 8 &&
+      value.prompt.knowledgeGroundedSelectorContract === 6 ||
+    value.prompt.knowledgeAnswerDraftContract === 7 &&
+      value.prompt.knowledgeGroundedSelectorContract === 5;
   const partialCurrentKnowledgeAnswerContract =
     value.prompt.knowledgeAnswerDraftContract !== undefined ||
     value.prompt.knowledgeGroundedSelectorContract !== undefined;

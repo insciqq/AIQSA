@@ -14,7 +14,10 @@ import {
 } from "./personalContext";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import type { ProviderRunRequest } from "./types";
-import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5 } from "../knowledge/answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7,
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8
+} from "../knowledge/answerGroundingV5";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   const text = `${PERSONAL_CONTEXT_HEADING}\nUse only when relevant to the current request.\n\nCurrent supported facts:\n- The user prefers concise replies.`;
@@ -139,16 +142,16 @@ describe("provider-neutral personal context", () => {
     expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Answer only the requested claims");
   });
 
-  it("serializes only the canonical Draft V5 contract for current Knowledge snapshots", () => {
+  it("serializes only the canonical Draft V8 contract for current Knowledge snapshots", () => {
     const current = request({
       prompt: {
         developer: "Assistant instructions after a colliding marker",
-        knowledgeAnswerDraftContract: 5,
-        knowledgeGroundedSelectorContract: 3,
+        knowledgeAnswerDraftContract: 8,
+        knowledgeGroundedSelectorContract: 6,
         system: 'System <aiqsa_knowledge_answer_draft_contract version="4">'
       }
     });
-    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5}`;
+    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8}`;
     const outputs = [
       buildOpenAIResponsesRequest(current).instructions,
       buildOpenAICompatibleChatRequest(current).messages[0]?.content,
@@ -161,6 +164,25 @@ describe("provider-neutral personal context", () => {
       expect((output as string).endsWith(expectedSuffix)).toBe(true);
       expect(output).not.toContain(KNOWLEDGE_ANSWER_CONTRACT_V1);
     }
+  });
+
+  it("retains the exact Draft V7 instruction for accepted recovery snapshots", () => {
+    const accepted = request({
+      prompt: {
+        developer: null,
+        knowledgeAnswerDraftContract: 7,
+        knowledgeGroundedSelectorContract: 5,
+        system: "Accepted system"
+      }
+    });
+
+    expect(buildOpenRouterChatRequest({
+      ...accepted,
+      provider: "openrouter"
+    }).messages[0]?.content).toBe(
+      `Accepted system\n\n${MEMORY_READER_CONTRACT_V1}\n\n${accepted.personalContext!.text}` +
+      `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7}`
+    );
   });
 
   it("adds the trusted Knowledge tool-loop contract whenever the retrieval tool is present", () => {

@@ -46,6 +46,7 @@ export type AdminKnowledgeProfileSettings = Readonly<{
     pdfDestination: string | null;
     representations: readonly (
       | "document_text_chunks"
+      | "native_pdf_page_text"
       | "original_pdf_page_ranges"
       | "rendered_pdf_page_images"
       | "search_queries"
@@ -295,12 +296,15 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
       !safeString(value.egress.embeddingDestination, 512) ||
     value.egress.pdfDestination !== null && !safeString(value.egress.pdfDestination, 512) ||
     !Array.isArray(value.egress.representations) ||
-    value.egress.representations.length < 2 || value.egress.representations.length > 3 ||
+    value.egress.representations.length < 2 || value.egress.representations.length > 4 ||
     value.egress.representations[0] !== "document_text_chunks" ||
     value.egress.representations[1] !== "search_queries" ||
     (value.egress.representations.length === 3 &&
-      value.egress.representations[2] !== "original_pdf_page_ranges" &&
-      value.egress.representations[2] !== "rendered_pdf_page_images") ||
+      value.egress.representations[2] !== "original_pdf_page_ranges") ||
+    (value.egress.representations.length === 4 && (
+      value.egress.representations[2] !== "rendered_pdf_page_images" ||
+      value.egress.representations[3] !== "native_pdf_page_text"
+    )) ||
     !healthStates.has(String(value.health.state)) ||
     value.health.code !== null && !healthCodes.has(String(value.health.code)) ||
     value.health.checkedAt !== null && !isoDate(value.health.checkedAt) ||

@@ -103,6 +103,9 @@ export type NormalizedRunRequest = {
     route: KnowledgeAnswerRoute;
     version: 1;
   }>;
+  /** Durable evidence-packing policy for Knowledge tool-loop recovery. Older
+   * accepted requests omit it and retain chronological V1 packing. */
+  knowledgeEvidencePackingVersion?: 2;
   knowledgePlan: KnowledgePlan;
   /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
    * admission rejects it and execution/recovery terminalize it. */
@@ -148,8 +151,8 @@ export type NormalizedRunRequest = {
      * and untrusted personal-context block for one-shot Knowledge answers. */
     /** @deprecated Decode-only compatibility for accepted V1 requests. */
     knowledgeAnswerContract?: 1;
-    knowledgeAnswerDraftContract?: 5;
-    knowledgeGroundedSelectorContract?: 3;
+    knowledgeAnswerDraftContract?: 7 | 8;
+    knowledgeGroundedSelectorContract?: 5 | 6;
     /** Server-owned, content-free result of the bounded Memory control/action
      * stage. Provider adapters render the corresponding fixed answer contract. */
     memoryActionAnswerResult?: MemoryActionAnswerResult;

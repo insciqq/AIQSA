@@ -2,14 +2,12 @@ import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from "../../domain/usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
+import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 
 type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
   Pick<RunRepository, "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5">;
 
-export type KnowledgeAnswerFinalizationContracts = Readonly<{
-  draftContractVersion: 5;
-  selectorContractVersion: 3;
-}>;
+export type KnowledgeAnswerFinalizationContracts = KnowledgeAnswerContractVersions;
 
 export type RunCompletionFinalizationResult =
   | Readonly<{

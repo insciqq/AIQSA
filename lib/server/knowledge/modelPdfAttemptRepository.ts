@@ -18,6 +18,7 @@ export type KnowledgeModelPdfAttemptIdentity = Readonly<{
   mode: PdfModelProcessingMode;
   pageEnd: number;
   pageStart: number;
+  processingGeneration: number;
   requestDigest: string;
   sourceVersionId: string;
 }>;
@@ -38,6 +39,7 @@ function exactAttempt(
     mode: string;
     pageEnd: number;
     pageStart: number;
+    processingGeneration: number;
     requestDigest: string;
     sourceArtifactId: string;
     sourceVersionId: string;
@@ -48,6 +50,7 @@ function exactAttempt(
     attempt.sourceVersionId === input.sourceVersionId &&
     attempt.batchIndex === input.batchIndex && attempt.mode === input.mode &&
     attempt.pageStart === input.pageStart && attempt.pageEnd === input.pageEnd &&
+    attempt.processingGeneration === input.processingGeneration &&
     attempt.requestDigest.trim() === input.requestDigest;
 }
 
@@ -85,6 +88,7 @@ function settledBatch(
     mode: string;
     pageEnd: number;
     pageStart: number;
+    processingGeneration: number;
     requestDigest: string;
     resultChecksum: string | null;
     resultText: string | null;
@@ -105,6 +109,7 @@ function settledBatch(
     mode: attempt.mode as PdfModelProcessingMode,
     pageEnd: attempt.pageEnd,
     pageStart: attempt.pageStart,
+    processingGeneration: attempt.processingGeneration,
     requestDigest: attempt.requestDigest.trim(),
     resultText: attempt.resultText,
     sourceVersionId: attempt.sourceVersionId,
@@ -132,6 +137,7 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
           mode: input.mode,
           pageEnd: input.pageEnd,
           pageStart: input.pageStart,
+          processingGeneration: input.processingGeneration,
           requestDigest: input.requestDigest,
           sourceArtifactId: input.artifactId,
           sourceVersionId: input.sourceVersionId,
@@ -148,10 +154,25 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
       | { batch: SettledKnowledgeModelPdfBatch; kind: "settled" }
     >> {
       const reservation = await prisma.$transaction(async (tx) => {
+        const settled = await tx.knowledgePdfProcessingAttempt.findFirst({
+          orderBy: { processingGeneration: "desc" },
+          where: {
+            batchIndex: input.batchIndex,
+            mode: input.mode,
+            pageEnd: input.pageEnd,
+            pageStart: input.pageStart,
+            requestDigest: input.requestDigest,
+            sourceArtifactId: input.artifactId,
+            sourceVersionId: input.sourceVersionId,
+            state: "settled"
+          }
+        });
+        if (settled) return { batch: settledBatch(settled), kind: "settled" as const };
         let attempt = await tx.knowledgePdfProcessingAttempt.findUnique({
           where: {
-            sourceArtifactId_batchIndex: {
+            sourceArtifactId_processingGeneration_batchIndex: {
               batchIndex: input.batchIndex,
+              processingGeneration: input.processingGeneration,
               sourceArtifactId: input.artifactId
             }
           }
@@ -162,6 +183,7 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
             mode: input.mode,
             pageEnd: input.pageEnd,
             pageStart: input.pageStart,
+            processingGeneration: input.processingGeneration,
             requestDigest: input.requestDigest,
             sourceArtifactId: input.artifactId,
             sourceVersionId: input.sourceVersionId,
@@ -231,6 +253,7 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
               mode: input.mode,
               pageEnd: input.pageEnd,
               pageStart: input.pageStart,
+              processingGeneration: input.processingGeneration,
               requestDigest: input.requestDigest,
               sourceArtifactId: input.artifactId,
               sourceVersionId: input.sourceVersionId,

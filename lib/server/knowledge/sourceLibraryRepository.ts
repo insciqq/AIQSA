@@ -946,6 +946,7 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
             normalizedTextByteSize: true,
             normalizedTextChecksum: true,
             normalizedTextStorageKey: true,
+            processingGeneration: true,
             profileRevisionId: true,
             state: true
           },
@@ -973,6 +974,9 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
                   sourceId,
                   sourceVersionId
                 }),
+              ...(!normalizedAvailable
+                ? { processingGeneration: { increment: 1 } }
+                : {}),
               processingStage: normalizedAvailable ? "chunking" : "queued",
               processingStartedAt: null,
               readyAt: null,

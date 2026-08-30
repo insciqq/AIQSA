@@ -104,6 +104,51 @@ type RetrievalPrisma = Pick<
   | "modelRunToolCall"
 > & AcceptedEmbeddingRuntimeStore;
 
+const KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS = 30_000;
+const KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS = 5_000;
+const KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS = 35_000;
+
+function retrievalQueryTimedOut(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && (
+    error.code === "P2028" ||
+    error.code === "P2010" && record(error.meta) && error.meta.code === "57014"
+  );
+}
+
+/**
+ * A Prisma AbortSignal cannot cancel an in-flight raw PostgreSQL statement.
+ * Run each retrieval statement in its own short transaction so the server-side
+ * deadline is installed before the expensive statement begins. Keeping this
+ * wrapper at the query boundary also avoids holding a transaction open while
+ * OpenSearch or the hosted reranker runs.
+ */
+function boundedRetrievalCoreClient(
+  client: Pick<RetrievalPrisma, "$transaction">
+): Parameters<typeof executeKnowledgeRetrievalCore>[0] {
+  return {
+    async $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> {
+      try {
+        return await client.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT set_config(
+            'statement_timeout',
+            ${String(KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS)},
+            true
+          )`;
+          return tx.$queryRaw<T>(query);
+        }, {
+          maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,
+          timeout: KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS
+        });
+      } catch (error) {
+        if (retrievalQueryTimedOut(error)) {
+          throw new Error("knowledge_retrieval_query_timed_out", { cause: error });
+        }
+        throw error;
+      }
+    }
+  };
+}
+
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
@@ -356,6 +401,7 @@ export function createPrismaKnowledgeParentContextLoader(
         indexArtifactId: true,
         layoutKind: true,
         ordinal: true,
+        page: true,
         sectionId: true,
         text: true
       },
@@ -388,6 +434,7 @@ export function createPrismaKnowledgeParentContextLoader(
           layoutKind:
             passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext) ?? "body",
           ordinal: row.ordinal,
+          page: row.page,
           sectionId: row.sectionId,
           text: row.text
         });
@@ -404,6 +451,7 @@ export function createPrismaKnowledgeRetrievalStore(
 ): KnowledgeRetrievalStore {
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
   const parentContextLoader = createPrismaKnowledgeParentContextLoader(client);
+  const retrievalCoreClient = boundedRetrievalCoreClient(client);
   return {
     async budgetState(input): Promise<KnowledgeBudgetState | null> {
       const expectedToolNames = Prisma.sql`ARRAY[${Prisma.join(
@@ -519,7 +567,7 @@ export function createPrismaKnowledgeRetrievalStore(
           (counts.get(entry.bindingOrdinal) ?? 0) + 1
         ), new Map<number, number>()).values()].some((count) => count > 2)
       ) throw new Error("knowledge_query_vector_invalid");
-      const result = await executeKnowledgeRetrievalCore(client, {
+      const result = await executeKnowledgeRetrievalCore(retrievalCoreClient, {
         ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,

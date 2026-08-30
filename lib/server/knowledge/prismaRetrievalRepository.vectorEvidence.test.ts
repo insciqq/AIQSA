@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
 import type { KnowledgeOperationKind } from "./knowledgeBudget";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
@@ -136,5 +137,53 @@ describe("Prisma Knowledge vector evidence projection", () => {
     expect(result.passages[0]?.expandedContext).toBe(
       "Next complete row in the same table:\nRelated row."
     );
+  });
+
+  it("installs the PostgreSQL statement deadline before each retrieval query", async () => {
+    const executeRaw = vi.fn(async () => 1);
+    const queryRaw = vi.fn(async () => []);
+    const transaction = vi.fn(async (
+      operation: (tx: Readonly<{
+        $executeRaw: typeof executeRaw;
+        $queryRaw: typeof queryRaw;
+      }>) => Promise<unknown>
+    ) => operation({ $executeRaw: executeRaw, $queryRaw: queryRaw }));
+    vi.mocked(executeKnowledgeRetrievalCore).mockImplementationOnce(async (coreClient) => {
+      await coreClient.$queryRaw(Prisma.sql`SELECT 1`);
+      return {
+        bindingCount: 1,
+        candidateCount: 0,
+        candidateCounts: { 0: 0 },
+        canonicalSourceProvenance: [],
+        lexicalBackendEvidence,
+        passages: [],
+        rankingEvidence: {} as never,
+        vectorSearchEvidence
+      };
+    });
+    const store = createPrismaKnowledgeRetrievalStore({ $transaction: transaction } as never);
+
+    await store.hybridSearch({
+      candidateLimit: 8,
+      excludedContentHashes: [],
+      operation: "automatic_search",
+      query: "bounded retrieval",
+      resultLimit: 4,
+      runId: "run-1",
+      userId: "user-1",
+      vectors: []
+    });
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: 5_000,
+      timeout: 35_000
+    });
+    expect(executeRaw).toHaveBeenCalledOnce();
+    const [timeoutStrings, ...timeoutValues] = executeRaw.mock.calls[0]!;
+    expect(Array.from(timeoutStrings as TemplateStringsArray).join("?"))
+      .toContain("statement_timeout");
+    expect(timeoutValues).toContain("30000");
+    expect(executeRaw.mock.invocationCallOrder[0])
+      .toBeLessThan(queryRaw.mock.invocationCallOrder[0]!);
   });
 });

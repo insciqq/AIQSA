@@ -352,6 +352,42 @@ describe("provider dispatch recovery request loading", () => {
     });
   });
 
+  it("recovers historical chronological and current rank-interleaved evidence policies", async () => {
+    for (const [packingVersion, accepted] of [
+      [undefined, true],
+      [2, true],
+      [1, false],
+      [3, false]
+    ] as const) {
+      const request = {
+        ...normalizedRequest,
+        ...(packingVersion === undefined ? {} : {
+          knowledgeEvidencePackingVersion: packingVersion
+        })
+      };
+      const operations = createPrismaRunToolLoopOperations({
+        modelRun: {
+          findUnique: vi.fn(async () => ({
+            chat: { projectId: null, userId: "owner-one" },
+            chatId: "chat-one",
+            modelId: "model-one",
+            normalizedRequest: request,
+            provider: "provider-one"
+          }))
+        }
+      } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+      const loaded = operations.loadProviderDispatchRecoveryRequest!({
+        runId: "run-one",
+        userId: "owner-one"
+      });
+
+      if (accepted) await expect(loaded).resolves.toEqual(request);
+      else await expect(loaded).rejects.toThrow(
+        "provider_dispatch_recovery_request_invalid_in_storage"
+      );
+    }
+  });
+
   it("round-trips a frozen full-context request with its exact evidence envelope", async () => {
     const evidenceBlock = JSON.stringify({
       citation: "[K1]",

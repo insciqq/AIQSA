@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import { KNOWLEDGE_EMBEDDING_BATCH_SIZE, type KnowledgeChunkPlanEntry } from "./chunking";
-import { buildAndPersistKnowledgeHierarchicalIndex } from "./hierarchicalIndexRepository";
+import {
+  buildAndPersistKnowledgeHierarchicalIndex,
+  KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
+  KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS
+} from "./hierarchicalIndexRepository";
 import type { StoredKnowledgeNormalizedDocument } from "./normalizedDocument";
 import type {
   KnowledgeEmbeddingBatchWrite,
@@ -41,6 +45,7 @@ type SourceClaimRow = Readonly<{
   pdfProcessingMode: "local" | "system_model_direct_pdf" | "system_model_vision";
   pdfSystemModelPolicyVersion: number | null;
   pdfSystemModelSnapshot: Prisma.JsonValue | null;
+  processingGeneration: number;
   profileExecutionAuthority: "installation" | "legacy_user";
   profileRevisionId: string;
   sourceId: string;
@@ -90,6 +95,7 @@ function artifactPin(row: SourceClaimRow): KnowledgeSourceArtifactPinRecord {
     pdfProcessingMode: row.pdfProcessingMode,
     pdfSystemModelPolicyVersion: row.pdfSystemModelPolicyVersion,
     pdfSystemModelSnapshot: row.pdfSystemModelSnapshot,
+    processingGeneration: row.processingGeneration,
     profileExecutionAuthority: row.profileExecutionAuthority,
     profileRevisionId: row.profileRevisionId,
     targetDimension: row.targetDimension,
@@ -308,6 +314,7 @@ async function claimForOwner(
       claimed."normalizedTextByteSize",
       claimed."normalizedTextChecksum",
       claimed."chunkCount",
+      claimed."processingGeneration",
       version."id" AS "sourceVersionId",
       version."sourceId",
       version."ownerUserId",
@@ -845,6 +852,9 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           sourceVersionId: artifact.sourceVersionId
         });
         return true;
+      }, {
+        maxWait: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
+        timeout: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS
       });
     },
 

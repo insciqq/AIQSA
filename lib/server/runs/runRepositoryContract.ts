@@ -25,6 +25,7 @@ import type {
   KnowledgeFullContextDispatchRecovery,
   KnowledgeRunFinalizationEnvelope
 } from "../knowledge/evidenceRepository";
+import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   SearchAdapterKind,
@@ -494,11 +495,9 @@ export type RunRepository = {
     userId: string;
   }>): Promise<KnowledgeRunFinalizationEnvelope | null>;
   groundKnowledgeAnswerV5?(input: Readonly<{
-    draftContractVersion: 5;
     runId: string;
-    selectorContractVersion: 3;
     userId: string;
-  }>): Promise<KnowledgeRunFinalizationEnvelope>;
+  }> & KnowledgeAnswerContractVersions): Promise<KnowledgeRunFinalizationEnvelope>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -596,7 +595,7 @@ export type RunRepository = {
     sources: readonly KnowledgeRunAdmissionSource[]
   ): Promise<readonly KnowledgeFullContextPassage[] | null>;
   /** Purpose-bound recovery loader for a full-context manifest accepted into
-   * the evidence session before any Draft V5 provider operation exists. */
+   * the evidence session before any current Draft provider operation exists. */
   loadKnowledgeFullContextDispatchRecovery?(input: {
     maximumTokens: number;
     modelId: string;

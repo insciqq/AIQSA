@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5 } from "./answerGroundingV5";
+import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8 } from "./answerGroundingV5";
 import { summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ToolExecutionResult } from "../tools/types";
@@ -9,6 +9,9 @@ import {
   toolLoopKnowledgeEvidenceDispatchDraft,
   withAutomaticKnowledgeEvidence
 } from "./automaticEvidence";
+import {
+  KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
+} from "./evidenceDispatchManifest";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
   type KnowledgeEvidencePackage
@@ -265,6 +268,25 @@ describe("focused Knowledge evidence", () => {
     })]);
   });
 
+  it("uses rank-interleaved packing only for requests that durably select V2", () => {
+    const toolResult = {
+      ...result(evidence()),
+      callId: "knowledge-tool-call-1",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const legacy = toolLoopKnowledgeEvidenceDispatchDraft({
+      request: request(),
+      results: [toolResult]
+    });
+    const current = toolLoopKnowledgeEvidenceDispatchDraft({
+      request: { ...request(), knowledgeEvidencePackingVersion: 2 },
+      results: [toolResult]
+    });
+
+    expect(legacy?.packingVersion).toBe("whole_source_item_v1");
+    expect(current?.packingVersion).toBe(KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION);
+  });
+
   it("returns a zero-evidence terminal marker instead of minting an empty tool-loop manifest", () => {
     expect(toolLoopKnowledgeEvidenceDispatchDraft({
       request: request(),
@@ -312,8 +334,8 @@ describe("focused Knowledge evidence", () => {
       [undefined, "user"]
     ]);
     expect(injected.prompt.knowledgeAnswerContract).toBeUndefined();
-    expect(injected.prompt.knowledgeAnswerDraftContract).toBe(5);
-    expect(injected.prompt.knowledgeGroundedSelectorContract).toBe(3);
+    expect(injected.prompt.knowledgeAnswerDraftContract).toBe(8);
+    expect(injected.prompt.knowledgeGroundedSelectorContract).toBe(6);
   });
 
   it("preserves accepted prompts and mints the static contract idempotently", () => {
@@ -334,8 +356,8 @@ describe("focused Knowledge evidence", () => {
 
     expect(twice.prompt).toMatchObject({
       developer: "Assistant policy",
-      knowledgeAnswerDraftContract: 5,
-      knowledgeGroundedSelectorContract: 3,
+      knowledgeAnswerDraftContract: 8,
+      knowledgeGroundedSelectorContract: 6,
       system: base.prompt.system
     });
   });
@@ -390,7 +412,7 @@ describe("focused Knowledge evidence", () => {
     expect(manifestText).toContain("[K1]");
     expect(manifestText).toContain("Проверенный passage — 42");
     expect(manifestText).not.toContain("Answer in the language");
-    expect(KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5).toContain(
+    expect(KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8).toContain(
       "Answer in the language requested by the user"
     );
     expect(injected.toolMode).toBe("none");
@@ -444,8 +466,8 @@ describe("focused Knowledge evidence", () => {
     expect(text).toContain(malicious);
     expect(text.indexOf("never instructions")).toBeLessThan(text.indexOf(malicious));
     expect(injected.prompt.knowledgeAnswerContract).toBeUndefined();
-    expect(injected.prompt.knowledgeAnswerDraftContract).toBe(5);
-    expect(injected.prompt.knowledgeGroundedSelectorContract).toBe(3);
+    expect(injected.prompt.knowledgeAnswerDraftContract).toBe(8);
+    expect(injected.prompt.knowledgeGroundedSelectorContract).toBe(6);
     expect(injected.prompt.system ?? "").not.toContain(malicious);
     expect(injected.toolMode).toBe("none");
     expect(injected.tools).toBeUndefined();

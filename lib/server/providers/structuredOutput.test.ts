@@ -239,6 +239,59 @@ describe("provider structured output", () => {
     expect(JSON.stringify(rootUnionRequest.schema)).toBe(canonicalBefore);
   });
 
+  it("projects a oneOf discriminated by a required scalar-const tuple", () => {
+    const compositeUnion = {
+      oneOf: [
+        {
+          additionalProperties: false,
+          properties: {
+            decision: { const: "select", type: "string" },
+            requestCoverage: { const: "complete", type: "string" }
+          },
+          required: ["decision", "requestCoverage"],
+          type: "object"
+        },
+        {
+          additionalProperties: false,
+          properties: {
+            decision: { const: "select", type: "string" },
+            requestCoverage: { const: "partial", type: "string" }
+          },
+          required: ["decision", "requestCoverage"],
+          type: "object"
+        },
+        {
+          additionalProperties: false,
+          properties: {
+            decision: { const: "insufficient", type: "string" },
+            requestCoverage: { const: "none", type: "string" }
+          },
+          required: ["decision", "requestCoverage"],
+          type: "object"
+        }
+      ]
+    };
+    const compositeRequest = { ...request, schema: compositeUnion };
+
+    const responses = buildOpenAIResponsesStructuredOutputRequest(
+      responsesModel("openai_responses_compatible"),
+      compositeRequest
+    );
+    const openRouter = buildOpenRouterStructuredOutputRequest(
+      openRouterModel,
+      compositeRequest
+    );
+
+    expect(responses).toHaveProperty(
+      "text.format.schema.properties.__aiqsa_payload.anyOf",
+      compositeUnion.oneOf
+    );
+    expect(openRouter).toHaveProperty(
+      "tools.0.function.parameters.properties.__aiqsa_payload.anyOf",
+      compositeUnion.oneOf
+    );
+  });
+
   it("fails closed instead of weakening a non-discriminated oneOf", () => {
     const overlappingBranch = {
       additionalProperties: false,
