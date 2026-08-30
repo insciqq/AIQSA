@@ -1632,6 +1632,7 @@ model KnowledgeSourceIndexArtifact {
   id                       String                                  @id @default(uuid())
   sourceVersionId          String
   profileRevisionId        String
+  processingGeneration     Int                                     @default(0)
   state                    KnowledgeSourceArtifactState            @default(pending)
   processingStage          KnowledgeSourceArtifactProcessingStage?
   normalizedTextStorageKey String?
@@ -1669,6 +1670,7 @@ model KnowledgePdfProcessingAttempt {
   id               String                             @id @default(uuid())
   sourceArtifactId String
   sourceVersionId  String
+  processingGeneration Int                            @default(0)
   batchIndex       Int
   mode             KnowledgePdfProcessingMode
   pageStart        Int
@@ -1685,7 +1687,7 @@ model KnowledgePdfProcessingAttempt {
   sourceArtifact   KnowledgeSourceIndexArtifact       @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgePdfAttempt_source_artifact_fkey")
   usageEvent       UsageEvent?
 
-  @@unique([sourceArtifactId, batchIndex])
+  @@unique([sourceArtifactId, processingGeneration, batchIndex], map: "KnowledgePdfAttempt_artifact_generation_batch_key")
   @@index([sourceVersionId, sourceArtifactId], map: "KnowledgePdfAttempt_source_artifact_idx")
   @@index([state, updatedAt])
 }
@@ -3031,7 +3033,7 @@ model KnowledgeProviderAttempt {
   providerBindingKey  String                             @default("answer")
   ordinal             Int
   roundIndex          Int
-  purpose             String                             @default("answer") @db.VarChar(32)
+  purpose             String                             @default("answer") @db.VarChar(64)
   idempotencyKey      String                             @db.VarChar(128)
   checkpointHash      String                             @db.Char(64)
   requestHash         String                             @db.Char(64)

@@ -17,7 +17,14 @@ import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifes
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import { knowledgeSelectorEvidenceFromManifest } from "./answerGroundingV5";
 import { knowledgeFullContextDispatchPresentation } from "./fullContext";
-import { groundKnowledgeAnswer, groundSettledKnowledgeAnswerV5 } from "./grounding";
+import {
+  groundKnowledgeAnswer,
+  groundSettledKnowledgeAnswerV5,
+  groundSettledKnowledgeAnswerV11,
+  groundSettledKnowledgeAnswerV14,
+  groundSettledKnowledgeAnswerV15,
+  groundSettledKnowledgeAnswerV16
+} from "./grounding";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
   KNOWLEDGE_RESULT_VERSION,
@@ -1175,6 +1182,10 @@ describe("Knowledge Evidence v2 repository projection", () => {
       totalTokens: 14
     };
     const grounding = groundSettledKnowledgeAnswerV5({
+      contracts: {
+        draftContractVersion: 11,
+        selectorContractVersion: 7
+      },
       draft: {
         claimCount: 1,
         durationMs: 12,
@@ -1245,9 +1256,9 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(create).toHaveBeenCalledOnce();
     const storedEvidence = (existing as { evidence?: unknown } | null)?.evidence;
     expect(storedEvidence).toMatchObject({
-      draftContractVersion: 5,
+      draftContractVersion: 11,
       evidenceReceiptHash: "c".repeat(64),
-      selectorContractVersion: 3,
+      selectorContractVersion: 7,
       version: 7
     });
     expect(JSON.stringify(storedEvidence)).not.toContain("finalText");
@@ -1262,6 +1273,208 @@ describe("Knowledge Evidence v2 repository projection", () => {
     };
     await expect(settleKnowledgeGrounding(transaction as never, { grounding }))
       .rejects.toThrow("knowledge_grounding_result_conflict");
+
+    existing = null;
+    create.mockClear();
+    const groundingV11 = groundSettledKnowledgeAnswerV11({
+      contracts: { draftContractVersion: 15, selectorContractVersion: 11 },
+      draftClaimCount: 1,
+      drafts: [{
+        claimCount: 1,
+        durationMs: 12,
+        hash: "d".repeat(64),
+        operationId: "draft-operation-v15",
+        providerRequestId: "draft-response-v15",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "e".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "f".repeat(64),
+        operationId: "selector-operation-v11",
+        providerRequestId: "selector-response-v11",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Atlas retains completed exports for 30 days. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV11
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      draftContractVersion: 15,
+      selectorContractVersion: 11,
+      selectorValidationRepairApplied: false,
+      version: 11
+    });
+
+    existing = null;
+    create.mockClear();
+    const groundingV14 = groundSettledKnowledgeAnswerV14({
+      contracts: { draftContractVersion: 18, selectorContractVersion: 14 },
+      draftClaimCount: 2,
+      drafts: [{
+        claimCount: 2,
+        durationMs: 12,
+        hash: "1".repeat(64),
+        operationId: "draft-operation-v18",
+        providerRequestId: "draft-response-v18",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "2".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "3".repeat(64),
+        operationId: "selector-operation-v14",
+        providerRequestId: "selector-response-v14",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both co-equal results are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV14
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      draftContractVersion: 18,
+      selectorContractVersion: 14,
+      selectorValidationRepairApplied: false,
+      version: 14
+    });
+
+    existing = null;
+    create.mockClear();
+    const groundingV15 = groundSettledKnowledgeAnswerV15({
+      contracts: { draftContractVersion: 19, selectorContractVersion: 15 },
+      draftClaimCount: 2,
+      drafts: [{
+        claimCount: 2,
+        durationMs: 12,
+        hash: "4".repeat(64),
+        operationId: "draft-operation-v19",
+        providerRequestId: "draft-response-v19",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "5".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "6".repeat(64),
+        operationId: "selector-operation-v15",
+        providerRequestId: "selector-response-v15",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both phased results are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV15
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      draftContractVersion: 19,
+      selectorContractVersion: 15,
+      selectorValidationRepairApplied: false,
+      version: 15
+    });
+
+    existing = null;
+    create.mockClear();
+    const groundingV16 = groundSettledKnowledgeAnswerV16({
+      contracts: { draftContractVersion: 20, selectorContractVersion: 16 },
+      coveragePlanner: {
+        claimCount: null,
+        durationMs: 4,
+        hash: "7".repeat(64),
+        operationId: "coverage-planner-operation-v20",
+        providerRequestId: "coverage-planner-response-v20",
+        role: "planner",
+        usage
+      },
+      draftClaimCount: 2,
+      drafts: [{
+        claimCount: 2,
+        durationMs: 12,
+        hash: "8".repeat(64),
+        operationId: "draft-operation-v20",
+        providerRequestId: "draft-response-v20",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "9".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "a".repeat(64),
+        operationId: "selector-operation-v16",
+        providerRequestId: "selector-response-v16",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both planned results are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV16
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      coveragePlanner: { claimCount: null, role: "planner" },
+      draftContractVersion: 20,
+      selectorContractVersion: 16,
+      selectorValidationRepairApplied: false,
+      version: 16
+    });
   });
 
 });

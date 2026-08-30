@@ -1,7 +1,5 @@
 import { Prisma } from "@prisma/client";
-import {
-  MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION
-} from "../parsing/pdfGeometry";
+import { MODEL_PDF_ADAPTIVE_HYBRID_PROFILE_VERSION } from "../parsing/adaptivePdf";
 import {
   loadEmbeddingProviderRole,
   loadProjectEmbeddingProviderRole,
@@ -20,10 +18,10 @@ import {
 } from "./indexProfile";
 
 export const KNOWLEDGE_INDEX_PROFILE_ID = "installation";
-export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v6";
-export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 4 as const;
+export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v7";
+export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 5 as const;
 export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION =
-  MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION;
+  MODEL_PDF_ADAPTIVE_HYBRID_PROFILE_VERSION;
 
 export type KnowledgePdfProcessingMode =
   | "local"
@@ -110,11 +108,10 @@ function profileOperationRoles(
   ];
   if (input.pdfProcessingMode !== "local" && input.pdfSystemModelProviderModelId) {
     roles.push(Object.freeze({
-      allowedRepresentations: Object.freeze([
-        input.pdfProcessingMode === "system_model_direct_pdf"
-          ? "pdf_page_ranges"
-          : "rendered_pdf_page_images"
-      ]),
+      allowedRepresentations: Object.freeze(input.pdfProcessingMode ===
+        "system_model_direct_pdf"
+        ? ["pdf_page_ranges"]
+        : ["rendered_pdf_page_images", "native_pdf_page_text"]),
       dataProcessingDisclosure: "profile_activation",
       fallback: "unavailable",
       logging: "content_free",
@@ -125,7 +122,7 @@ function profileOperationRoles(
       operation: "pdf_transcription",
       profileRevision: "owning_revision",
       providerModelId: input.pdfSystemModelProviderModelId,
-      rawPrivateText: input.pdfProcessingMode === "system_model_direct_pdf",
+      rawPrivateText: true,
       retention: "provider_policy",
       timeoutMs: 300_000
     }));
@@ -150,7 +147,7 @@ export function knowledgeProfileConfiguration(
       Prisma.InputJsonArray,
     pdfProcessingMode,
     rolePolicyVersion: KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION,
-    schemaVersion: 6
+    schemaVersion: 7
   };
 }
 

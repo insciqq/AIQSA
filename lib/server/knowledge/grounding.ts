@@ -5,15 +5,24 @@ import {
   type KnowledgeEvidencePackage
 } from "./evidencePackage";
 import {
-  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION,
-  KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION,
+  knowledgeAnswerContractPairForVersions,
+  type KnowledgeAnswerContractVersions,
   type KnowledgeAnswerFallbackReason,
   type KnowledgeAnswerSettlementV5
 } from "./answerGroundingV5";
 import type { KnowledgeProviderAttemptUsage } from "./evidenceDispatchRepository";
 
 export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
-export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION = 7 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7 = 7 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V8 = 8 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V9 = 9 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V10 = 10 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V11 = 11 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V12 = 12 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V13 = 13 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V14 = 14 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V15 = 15 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION = 16 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -28,7 +37,7 @@ export type LegacyKnowledgeGroundingResult = Readonly<{
 export type KnowledgeGroundingEvidenceV7 = Readonly<{
   contradictedClaimCount: number;
   draftClaimCount: number;
-  draftContractVersion: typeof KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION;
+  draftContractVersion: KnowledgeAnswerContractVersions["draftContractVersion"];
   draftHash: string;
   draftOperationId: string;
   durations: Readonly<{
@@ -49,7 +58,7 @@ export type KnowledgeGroundingEvidenceV7 = Readonly<{
   }>;
   receiptHash: string;
   requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
-  selectorContractVersion: typeof KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION;
+  selectorContractVersion: KnowledgeAnswerContractVersions["selectorContractVersion"];
   selectorHash: string;
   selectorOperationId: string;
   sessionId: string;
@@ -59,12 +68,269 @@ export type KnowledgeGroundingEvidenceV7 = Readonly<{
     draft: KnowledgeProviderAttemptUsage;
     selector: KnowledgeProviderAttemptUsage;
   }>;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV8 = Readonly<{
+  claimCount: number | null;
+  durationMs: number;
+  hash: string;
+  operationId: string;
+  providerRequestId: string | null;
+  role: "final" | "initial" | "planner" | "primary" | "repair" | "supplement";
+  usage: KnowledgeProviderAttemptUsage;
+}>;
+
+export type KnowledgeGroundingEvidenceV8 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 12;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 8;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V8;
+}>;
+
+export type KnowledgeGroundingEvidenceV9 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 13;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 9;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V9;
+}>;
+
+export type KnowledgeGroundingEvidenceV10 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 14;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 10;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V10;
+}>;
+
+export type KnowledgeGroundingEvidenceV11 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 15;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 11;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  selectorValidationRepairApplied: boolean;
+  selectorValidationRepairCompleted: boolean;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V11;
+}>;
+
+export type KnowledgeGroundingEvidenceV12 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 16;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 12;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  selectorValidationRepairApplied: boolean;
+  selectorValidationRepairCompleted: boolean;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V12;
+}>;
+
+export type KnowledgeGroundingEvidenceV13 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 17;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 13;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  selectorValidationRepairApplied: boolean;
+  selectorValidationRepairCompleted: boolean;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V13;
+}>;
+
+export type KnowledgeGroundingEvidenceV14 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 18;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 14;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  selectorValidationRepairApplied: boolean;
+  selectorValidationRepairCompleted: boolean;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V14;
+}>;
+
+export type KnowledgeGroundingEvidenceV15 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  draftClaimCount: number;
+  draftContractVersion: 19;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 15;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  selectorValidationRepairApplied: boolean;
+  selectorValidationRepairCompleted: boolean;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V15;
+}>;
+
+export type KnowledgeGroundingEvidenceV16 = Readonly<{
+  adaptiveCorrectionApplied: boolean;
+  contradictedClaimCount: number;
+  correctionCompleted: boolean;
+  coveragePlanner: KnowledgeGroundingOperationEvidenceV8;
+  draftClaimCount: number;
+  draftContractVersion: 20;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: 16;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  selectorValidationRepairApplied: boolean;
+  selectorValidationRepairCompleted: boolean;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION;
 }>;
 
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
-  | KnowledgeGroundingEvidenceV7;
+  | KnowledgeGroundingEvidenceV7
+  | KnowledgeGroundingEvidenceV8
+  | KnowledgeGroundingEvidenceV9
+  | KnowledgeGroundingEvidenceV10
+  | KnowledgeGroundingEvidenceV11
+  | KnowledgeGroundingEvidenceV12
+  | KnowledgeGroundingEvidenceV13
+  | KnowledgeGroundingEvidenceV14
+  | KnowledgeGroundingEvidenceV15
+  | KnowledgeGroundingEvidenceV16;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -107,8 +373,9 @@ function validDuration(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 24 * 60 * 60 * 1_000;
 }
 
-/** Content-free V7 evidence for the server-settled Draft V5 / Selector V3 path. */
+/** Content-free V7 evidence format for a server-settled version-paired path. */
 export function groundSettledKnowledgeAnswerV5(input: Readonly<{
+  contracts: KnowledgeAnswerContractVersions;
   draft: Readonly<{
     claimCount: number;
     durationMs: number;
@@ -129,7 +396,8 @@ export function groundSettledKnowledgeAnswerV5(input: Readonly<{
   settlement: KnowledgeAnswerSettlementV5;
 }>): KnowledgeGroundingEvidenceV7 {
   const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
-  if (!validOperationId(input.draft.operationId) ||
+  if (!knowledgeAnswerContractPairForVersions(input.contracts) ||
+    !validOperationId(input.draft.operationId) ||
     !validOperationId(input.selector.operationId) ||
     !/^[0-9a-f]{64}$/u.test(input.draft.hash) ||
     !/^[0-9a-f]{64}$/u.test(input.selector.hash) ||
@@ -144,7 +412,7 @@ export function groundSettledKnowledgeAnswerV5(input: Readonly<{
   return Object.freeze({
     contradictedClaimCount: input.settlement.contradictedClaimCount,
     draftClaimCount: input.draft.claimCount,
-    draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION,
+    draftContractVersion: input.contracts.draftContractVersion,
     draftHash: input.draft.hash,
     draftOperationId: input.draft.operationId,
     durations: Object.freeze({
@@ -165,7 +433,7 @@ export function groundSettledKnowledgeAnswerV5(input: Readonly<{
     }),
     receiptHash,
     requestCoverage: input.settlement.requestCoverage,
-    selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION,
+    selectorContractVersion: input.contracts.selectorContractVersion,
     selectorHash: input.selector.hash,
     selectorOperationId: input.selector.operationId,
     sessionId: input.evidence.sessionId,
@@ -175,6 +443,647 @@ export function groundSettledKnowledgeAnswerV5(input: Readonly<{
       draft: input.draft.usage,
       selector: input.selector.usage
     }),
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7
+  });
+}
+
+function validGroundingOperationV8(
+  operation: KnowledgeGroundingOperationEvidenceV8,
+  role: KnowledgeGroundingOperationEvidenceV8["role"],
+  claimCountRequired: boolean
+): boolean {
+  return operation.role === role && validOperationId(operation.operationId) &&
+    /^[0-9a-f]{64}$/u.test(operation.hash) && validDuration(operation.durationMs) &&
+    (claimCountRequired
+      ? Number.isSafeInteger(operation.claimCount) && operation.claimCount !== null &&
+        operation.claimCount >= 0 && operation.claimCount <= 24
+      : operation.claimCount === null);
+}
+
+/** Content-free V8 receipt for the bounded adaptive V12/V8 protocol. The
+ * private candidate/verdict text remains in provider-attempt state; this
+ * projection records only immutable operation identities, accounting, and the
+ * deterministic settlement. */
+export function groundSettledKnowledgeAnswerV8(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 12; selectorContractVersion: 8 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV8 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const shapeValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    input.selectors.length <= input.drafts.length &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    (input.drafts.length === 1 ||
+      validGroundingOperationV8(input.drafts[1]!, "supplement", true)) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false) &&
+    (input.selectors.length === 1 ||
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  if (input.contracts.draftContractVersion !== 12 ||
+    input.contracts.selectorContractVersion !== 8 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted adaptive Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors.length === 2,
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 12,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 8,
+    selectors,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V8
+  });
+}
+
+/** Content-free V9 receipt for the bounded adaptive V13/V9 atomic-entailment
+ * protocol. Its operation shape is intentionally identical to V8; the new
+ * receipt version keeps deterministic replay tied to the new contracts. */
+export function groundSettledKnowledgeAnswerV9(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 13; selectorContractVersion: 9 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV9 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const shapeValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    input.selectors.length <= input.drafts.length &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    (input.drafts.length === 1 ||
+      validGroundingOperationV8(input.drafts[1]!, "supplement", true)) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false) &&
+    (input.selectors.length === 1 ||
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  if (input.contracts.draftContractVersion !== 13 ||
+    input.contracts.selectorContractVersion !== 9 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted atomic-entailment Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors.length === 2,
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 13,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 9,
+    selectors,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V9
+  });
+}
+
+/** Content-free V10 receipt for the bounded adaptive V14/V10
+ * required-dimension protocol. The private coverage map stays in accepted
+ * provider state; this receipt records only operation identity and settlement. */
+export function groundSettledKnowledgeAnswerV10(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 14; selectorContractVersion: 10 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV10 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const shapeValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    input.selectors.length <= input.drafts.length &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    (input.drafts.length === 1 ||
+      validGroundingOperationV8(input.drafts[1]!, "supplement", true)) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false) &&
+    (input.selectors.length === 1 ||
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  if (input.contracts.draftContractVersion !== 14 ||
+    input.contracts.selectorContractVersion !== 10 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted required-dimension Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors.length === 2,
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 14,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 10,
+    selectors,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V10
+  });
+}
+
+/** Content-free V11 receipt for V15/V11. A second Draft remains the bounded
+ * coverage-correction path. Without that Draft, one second Selector may only
+ * be the single contract-validation repair over the immutable primary Draft
+ * and evidence. These mutually exclusive shapes make recovery auditable. */
+export function groundSettledKnowledgeAnswerV11(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 15; selectorContractVersion: 11 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV11 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const primaryValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false);
+  const correctionShape = input.drafts.length === 2 &&
+    validGroundingOperationV8(input.drafts[1]!, "supplement", true) &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  const repairShape = input.drafts.length === 1 &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "repair", false));
+  const shapeValid = primaryValid && (correctionShape || repairShape);
+  if (input.contracts.draftContractVersion !== 15 ||
+    input.contracts.selectorContractVersion !== 11 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted validation-repair Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectorValidationRepairApplied = selectors[1]?.role === "repair";
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors[1]?.role === "final",
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 15,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 11,
+    selectors,
+    selectorValidationRepairApplied,
+    selectorValidationRepairCompleted: selectorValidationRepairApplied,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V11
+  });
+}
+
+/** Content-free V12 receipt for V16/V12. Quantitative coverage changes only
+ * the private generation/adjudication contract; the bounded correction and
+ * mutually exclusive validation-repair shapes remain identical to V11. */
+export function groundSettledKnowledgeAnswerV12(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 16; selectorContractVersion: 12 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV12 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const primaryValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false);
+  const correctionShape = input.drafts.length === 2 &&
+    validGroundingOperationV8(input.drafts[1]!, "supplement", true) &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  const repairShape = input.drafts.length === 1 &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "repair", false));
+  const shapeValid = primaryValid && (correctionShape || repairShape);
+  if (input.contracts.draftContractVersion !== 16 ||
+    input.contracts.selectorContractVersion !== 12 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted quantitative-coverage Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectorValidationRepairApplied = selectors[1]?.role === "repair";
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors[1]?.role === "final",
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 16,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 12,
+    selectors,
+    selectorValidationRepairApplied,
+    selectorValidationRepairCompleted: selectorValidationRepairApplied,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V12
+  });
+}
+
+/** Content-free V13 receipt for V17/V13. The Selector supplies one semantic
+ * representation while the server derives redundant settlement control state;
+ * correction and validation-repair operation shapes remain auditable. */
+export function groundSettledKnowledgeAnswerV13(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 17; selectorContractVersion: 13 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV13 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const primaryValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false);
+  const correctionShape = input.drafts.length === 2 &&
+    validGroundingOperationV8(input.drafts[1]!, "supplement", true) &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  const repairShape = input.drafts.length === 1 &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "repair", false));
+  const shapeValid = primaryValid && (correctionShape || repairShape);
+  if (input.contracts.draftContractVersion !== 17 ||
+    input.contracts.selectorContractVersion !== 13 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted normalized-selector Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectorValidationRepairApplied = selectors[1]?.role === "repair";
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors[1]?.role === "final",
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 17,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 13,
+    selectors,
+    selectorValidationRepairApplied,
+    selectorValidationRepairCompleted: selectorValidationRepairApplied,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V13
+  });
+}
+
+/** Content-free V14 receipt for Draft V18 / Selector V14. The Selector emits
+ * coverage first and only semantic primitives; settlement control state stays
+ * server-derived while correction and validation-repair shapes remain auditable. */
+export function groundSettledKnowledgeAnswerV14(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 18; selectorContractVersion: 14 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV14 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const primaryValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false);
+  const correctionShape = input.drafts.length === 2 &&
+    validGroundingOperationV8(input.drafts[1]!, "supplement", true) &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  const repairShape = input.drafts.length === 1 &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "repair", false));
+  const shapeValid = primaryValid && (correctionShape || repairShape);
+  if (input.contracts.draftContractVersion !== 18 ||
+    input.contracts.selectorContractVersion !== 14 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted coverage-first Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectorValidationRepairApplied = selectors[1]?.role === "repair";
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors[1]?.role === "final",
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 18,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 14,
+    selectors,
+    selectorValidationRepairApplied,
+    selectorValidationRepairCompleted: selectorValidationRepairApplied,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V14
+  });
+}
+
+/** Content-free V15 receipt for the phased Draft V19 / Selector V15 path. */
+export function groundSettledKnowledgeAnswerV15(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 19; selectorContractVersion: 15 }>;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV15 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const primaryValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false);
+  const correctionShape = input.drafts.length === 2 &&
+    validGroundingOperationV8(input.drafts[1]!, "supplement", true) &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  const repairShape = input.drafts.length === 1 &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "repair", false));
+  const shapeValid = primaryValid && (correctionShape || repairShape);
+  if (input.contracts.draftContractVersion !== 19 ||
+    input.contracts.selectorContractVersion !== 15 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted phased-coverage Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectorValidationRepairApplied = selectors[1]?.role === "repair";
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors[1]?.role === "final",
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 19,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 15,
+    selectors,
+    selectorValidationRepairApplied,
+    selectorValidationRepairCompleted: selectorValidationRepairApplied,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V15
+  });
+}
+
+/** Content-free V16 receipt for the immutable Coverage Planner followed by
+ * Draft V20 and Selector V16. The plan text remains private provider-attempt
+ * state; this receipt records only the planner operation identity and usage. */
+export function groundSettledKnowledgeAnswerV16(input: Readonly<{
+  contracts: Readonly<{ draftContractVersion: 20; selectorContractVersion: 16 }>;
+  coveragePlanner: KnowledgeGroundingOperationEvidenceV8;
+  draftClaimCount: number;
+  drafts: readonly KnowledgeGroundingOperationEvidenceV8[];
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selectors: readonly KnowledgeGroundingOperationEvidenceV8[];
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV16 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  const primaryValid = input.drafts.length >= 1 && input.drafts.length <= 2 &&
+    input.selectors.length >= 1 && input.selectors.length <= 2 &&
+    validGroundingOperationV8(input.coveragePlanner, "planner", false) &&
+    validGroundingOperationV8(input.drafts[0]!, "primary", true) &&
+    validGroundingOperationV8(input.selectors[0]!, "initial", false);
+  const correctionShape = input.drafts.length === 2 &&
+    validGroundingOperationV8(input.drafts[1]!, "supplement", true) &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "final", false));
+  const repairShape = input.drafts.length === 1 &&
+    (input.selectors.length === 1 || input.selectors.length === 2 &&
+      validGroundingOperationV8(input.selectors[1]!, "repair", false));
+  const shapeValid = primaryValid && (correctionShape || repairShape);
+  if (input.contracts.draftContractVersion !== 20 ||
+    input.contracts.selectorContractVersion !== 16 || !shapeValid ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted planned-coverage Knowledge grounding operation evidence is invalid"
+    );
+  }
+  const coveragePlanner = Object.freeze({
+    ...input.coveragePlanner,
+    usage: Object.freeze({ ...input.coveragePlanner.usage })
+  });
+  const drafts = Object.freeze(input.drafts.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectors = Object.freeze(input.selectors.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  const selectorValidationRepairApplied = selectors[1]?.role === "repair";
+  return Object.freeze({
+    adaptiveCorrectionApplied: drafts.length === 2,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionCompleted: selectors[1]?.role === "final",
+    coveragePlanner,
+    draftClaimCount: input.draftClaimCount,
+    draftContractVersion: 20,
+    drafts,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: drafts[0]!.hash,
+    outcome: input.settlement.outcome,
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: 16,
+    selectors,
+    selectorValidationRepairApplied,
+    selectorValidationRepairCompleted: selectorValidationRepairApplied,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION
   });
 }

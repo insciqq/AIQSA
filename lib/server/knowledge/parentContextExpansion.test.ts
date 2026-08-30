@@ -24,6 +24,7 @@ function windowRow(input: Readonly<{
   id: string;
   layoutKind?: KnowledgePassageLayoutKind;
   ordinal: number;
+  page?: number;
   sectionId?: string;
   text?: string;
 }>): KnowledgeParentContextRow {
@@ -33,6 +34,7 @@ function windowRow(input: Readonly<{
     id: input.id,
     layoutKind: input.layoutKind ?? "body",
     ordinal: input.ordinal,
+    page: input.page ?? 1,
     sectionId: input.sectionId ?? "section-1",
     text: input.text ?? `Passage ${input.ordinal}.`
   };
@@ -44,8 +46,10 @@ function primary(input: Readonly<{
   documentContext?: KnowledgeParentExpansionPrimary["documentContext"];
   layoutKind?: KnowledgePassageLayoutKind;
   legacyUnits?: readonly KnowledgeParentExpansionUnit[];
+  page?: number;
   sectionId?: string | null;
   sourceArtifactId?: string;
+  text?: string;
 }>): KnowledgeParentExpansionPrimary {
   return {
     chunkId: input.chunkId,
@@ -56,8 +60,10 @@ function primary(input: Readonly<{
     documentVersionId: "version-1",
     layoutKind: input.layoutKind ?? "body",
     legacyUnits: input.legacyUnits ?? [],
+    page: input.page ?? 1,
     sectionId: input.sectionId === undefined ? "section-1" : input.sectionId,
-    sourceArtifactId: input.sourceArtifactId ?? "artifact-1"
+    sourceArtifactId: input.sourceArtifactId ?? "artifact-1",
+    text: input.text ?? `Passage ${input.chunkIndex}.`
   };
 }
 
@@ -155,6 +161,98 @@ describe("parent context expansion assembly", () => {
     });
     const kept = expansions.get("chunk-10")!.units.map((entry) => entry.chunkId).sort();
     expect(kept).toEqual(["chunk-11", "chunk-9"]);
+  });
+
+  it("bridges a short structural label to two immediately following headerless fragments", () => {
+    const fragmented = createKnowledgeTableDocumentContext({
+      blockId: "fragment-1",
+      cells: [{ columnEnd: 0, columnStart: 0, text: "p(pc) != jump" }],
+      headerLineage: [],
+      rowIndex: 0
+    });
+    expect(fragmented.ambiguityReasons).toContain("missing_header");
+    const hit = primary({
+      chunkId: "chunk-10",
+      chunkIndex: 10,
+      text: "(Rule:NoSpec-epsilon)"
+    });
+    const rows = [
+      windowRow({ id: "chunk-10", ordinal: 10, text: "(Rule:NoSpec-epsilon)" }),
+      windowRow({
+        documentContext: fragmented,
+        id: "chunk-11",
+        layoutKind: "table_row",
+        ordinal: 11,
+        text: "p(pc) != jump"
+      }),
+      windowRow({
+        documentContext: fragmented,
+        id: "chunk-12",
+        layoutKind: "table_row",
+        ordinal: 12,
+        text: "state -> state-prime"
+      }),
+      windowRow({ id: "chunk-13", ordinal: 13, text: "(Rule:Next)" })
+    ];
+
+    const expansion = assembleKnowledgeParentExpansions({
+      countTokens,
+      excludedContentHashes: new Set(),
+      primaries: [hit],
+      windows: new Map([["chunk-10", rows]])
+    }).get("chunk-10")!;
+
+    expect(expansion.units.map((entry) => entry.chunkId)).toEqual(["chunk-11", "chunk-12"]);
+    expect(renderKnowledgeParentExpansionUnits(expansion.units)).toBe(
+      "Next same-Source context:\np(pc) != jump\nstate -> state-prime"
+    );
+  });
+
+  it("does not bridge ordinary prose or a headerless fragment on another page", () => {
+    const fragmented = createKnowledgeTableDocumentContext({
+      blockId: "fragment-1",
+      cells: [{ columnEnd: 0, columnStart: 0, text: "value" }],
+      headerLineage: [],
+      rowIndex: 0
+    });
+    const longProse = "x".repeat(257);
+    const cases = [
+      {
+        hit: primary({ chunkId: "long-10", chunkIndex: 10, text: longProse }),
+        rows: [
+          windowRow({ id: "long-10", ordinal: 10, text: longProse }),
+          windowRow({
+            documentContext: fragmented,
+            id: "long-11",
+            layoutKind: "table_row",
+            ordinal: 11
+          })
+        ]
+      },
+      {
+        hit: primary({ chunkId: "page-10", chunkIndex: 10, page: 1, text: "Rule label" }),
+        rows: [
+          windowRow({ id: "page-10", ordinal: 10, page: 1, text: "Rule label" }),
+          windowRow({
+            documentContext: fragmented,
+            id: "page-11",
+            layoutKind: "table_row",
+            ordinal: 11,
+            page: 2
+          })
+        ]
+      }
+    ];
+
+    for (const testCase of cases) {
+      const expansion = assembleKnowledgeParentExpansions({
+        countTokens,
+        excludedContentHashes: new Set(),
+        primaries: [testCase.hit],
+        windows: new Map([[testCase.hit.chunkId, testCase.rows]])
+      }).get(testCase.hit.chunkId)!;
+      expect(expansion.units).toEqual([]);
+    }
   });
 
   it("enforces the 900-model-token cap for one evidence group", () => {

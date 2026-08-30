@@ -33,6 +33,7 @@ function claim(id: string, attemptCount: number): KnowledgeSourceWorkClaim {
       pdfProcessingMode: "local",
       pdfSystemModelPolicyVersion: null,
       pdfSystemModelSnapshot: null,
+      processingGeneration: 0,
       profileExecutionAuthority: "legacy_user",
       profileRevisionId: null,
       targetDimension: 1024,

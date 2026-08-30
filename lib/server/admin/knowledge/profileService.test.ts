@@ -263,8 +263,8 @@ describe("administrator Knowledge profile service", () => {
             providerModelId: "embedding-1"
           })],
           pdfProcessingMode: "local",
-          rolePolicyVersion: 4,
-          schemaVersion: 6
+          rolePolicyVersion: 5,
+          schemaVersion: 7
         },
         profileId: "installation",
         revisionNumber: 2,
@@ -275,7 +275,7 @@ describe("administrator Knowledge profile service", () => {
             operation: "embeddings",
             providerModelId: "embedding-1"
           })],
-          policyVersion: "knowledge-profile-egress-v6"
+          policyVersion: "knowledge-profile-egress-v7"
         }
       }),
       select: { id: true }

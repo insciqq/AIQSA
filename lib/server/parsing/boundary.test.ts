@@ -1,6 +1,7 @@
 import { createDocumentParserBoundary } from "./boundary";
 import { finalizeParsedDocument } from "./assessment";
 import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
+import { HttpDocumentParserEngineAdapter } from "./client";
 import { DocumentParserError } from "./errors";
 import {
   PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
@@ -196,6 +197,7 @@ describe("document parser boundary", () => {
       const form = init?.body as FormData;
       expect(form.get("to_formats")).toBe("json");
       expect(form.get("table_mode")).toBe("accurate");
+      expect(form.get("table_cell_matching")).toBe("true");
       expect(form.get("do_ocr")).toBe("true");
       expect(form.get("force_ocr")).toBe("false");
       expect(form.get("ocr_preset")).toBe("easyocr");
@@ -220,6 +222,33 @@ describe("document parser boundary", () => {
       blocks: [{ page: 1, text: "fixture text" }],
       engine: "docling"
     });
+  });
+
+  it("supports an OCR-free bounded Docling layout request for adaptive PDFs", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      const form = init?.body as FormData;
+      expect(form.get("do_ocr")).toBe("false");
+      expect(form.get("force_ocr")).toBe("false");
+      expect(form.get("page_range")).toBe("[3,7]");
+      expect(form.has("ocr_preset")).toBe(false);
+      expect(form.getAll("ocr_lang")).toEqual([]);
+      return new Response(JSON.stringify(doclingEnvelope), {
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const adapter = new HttpDocumentParserEngineAdapter({
+      config: engineConfig("http://docling:5001/"),
+      engine: "docling",
+      fetch: fetchImpl
+    });
+
+    await expect(adapter.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      docling: { doOcr: false, pageRange: { end: 7, start: 3 } },
+      fileName: "fixture.pdf",
+      mediaType: "application/pdf",
+      mimeType: "application/pdf"
+    })).resolves.toMatchObject({ engine: "docling" });
   });
 
   it("does not send Docling OCR fields or a private basename to Tika", async () => {

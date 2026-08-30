@@ -61,6 +61,12 @@ export const KNOWLEDGE_TABLE_CONTEXT_ROW_RADIUS = 4;
 export const KNOWLEDGE_TABLE_CONTEXT_MAX = 8;
 /** Adjacent explanatory body passages allowed per side for table/form hits. */
 export const KNOWLEDGE_PARENT_CONTEXT_STRUCTURED_ADJACENT_PER_SIDE = 1;
+/** Fragmented layout parsers can emit a short rule/table label as a body
+ * passage followed by headerless structured fragments. Keep this bridge
+ * deliberately small: it restores one logical retrieval unit without
+ * turning a selected label into a page dump. */
+export const KNOWLEDGE_PARENT_CONTEXT_FRAGMENTED_STRUCTURE_MAX = 2;
+export const KNOWLEDGE_PARENT_CONTEXT_STRUCTURAL_LABEL_MAX_CHARACTERS = 256;
 
 const PREVIOUS_SECTION_LABEL = "Previous same-Source context";
 const NEXT_SECTION_LABEL = "Next same-Source context";
@@ -105,6 +111,7 @@ export type KnowledgeParentContextRow = Readonly<{
   id: string;
   layoutKind: KnowledgePassageLayoutKind;
   ordinal: number;
+  page: number;
   sectionId: string;
   text: string;
 }>;
@@ -140,8 +147,10 @@ export type KnowledgeParentExpansionPrimary = Readonly<{
   /** Pre-existing candidate-pool neighbor/secondary segments as units, in
    * relevance order; empty when the section window subsumes them. */
   legacyUnits: readonly KnowledgeParentExpansionUnit[];
+  page: number;
   sectionId: string | null;
   sourceArtifactId: string | null;
+  text: string;
 }>;
 
 function sortedWindowRows(
@@ -210,6 +219,8 @@ type PrimaryState = {
   next: SideState;
   previous: SideState;
   primary: KnowledgeParentExpansionPrimary;
+  structuralBridgeOpen: boolean;
+  structuralBridgeTaken: number;
   structure: StructureKey | null;
   structured: boolean;
   units: KnowledgeParentExpansionUnit[];
@@ -223,6 +234,21 @@ type Claims = Readonly<{
 
 function claimed(claims: Claims, row: KnowledgeParentContextRow): boolean {
   return claims.chunkIds.has(row.id) || claims.contentHashes.has(row.contentHash);
+}
+
+function structuralLabel(primary: KnowledgeParentExpansionPrimary): boolean {
+  if (primary.layoutKind !== "body") return false;
+  const text = primary.text.trim();
+  return text.length > 0 && !text.includes("\n") &&
+    [...text].length <= KNOWLEDGE_PARENT_CONTEXT_STRUCTURAL_LABEL_MAX_CHARACTERS;
+}
+
+function fragmentedStructuredRow(
+  primary: KnowledgeParentExpansionPrimary,
+  row: KnowledgeParentContextRow
+): boolean {
+  if (row.page !== primary.page || row.layoutKind === "body") return false;
+  return row.documentContext?.ambiguityReasons.includes("missing_header") === true;
 }
 
 /**
@@ -256,7 +282,18 @@ function peekSide(
       index += direction;
       continue;
     }
-    if (row.layoutKind !== "body" || claimed(claims, row)) break;
+    if (claimed(claims, row)) break;
+    if (row.layoutKind !== "body") {
+      const mayBridgeFragmentedStructure = !state.structured && side === "next" &&
+        state.structuralBridgeOpen &&
+        state.structuralBridgeTaken < KNOWLEDGE_PARENT_CONTEXT_FRAGMENTED_STRUCTURE_MAX &&
+        fragmentedStructuredRow(state.primary, row);
+      if (!mayBridgeFragmentedStructure) break;
+    } else if (!state.structured && side === "next" && state.structuralBridgeTaken > 0) {
+      // Once a label-to-structure bridge starts, its first following body row
+      // is a hard boundary (normally the next rule/caption).
+      break;
+    }
     sideState = { ...sideState, index };
     state[side] = sideState;
     return { index, row };
@@ -294,6 +331,13 @@ function takeSide(
   claims.chunkIds.add(found.row.id);
   claims.contentHashes.add(found.row.contentHash);
   state.units.push(unit);
+  if (!state.structured && side === "next") {
+    if (found.row.layoutKind === "body") {
+      state.structuralBridgeOpen = false;
+    } else {
+      state.structuralBridgeTaken += 1;
+    }
+  }
   const direction = side === "previous" ? -1 : 1;
   state[side] = {
     index: found.index + direction,
@@ -406,6 +450,8 @@ export function assembleKnowledgeParentExpansions(input: Readonly<{
       next: { index: anchorIndex + 1, open: true, taken: 0 },
       previous: { index: anchorIndex - 1, open: true, taken: 0 },
       primary,
+      structuralBridgeOpen: structuralLabel(primary),
+      structuralBridgeTaken: 0,
       structure: primaryStructure(primary),
       structured: primary.layoutKind !== "body",
       units: [...legacy],

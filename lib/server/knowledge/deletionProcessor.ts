@@ -720,9 +720,56 @@ async function purgeProviderAttempts(
             state: "ambiguous" as const
           }
         : {};
-    const structuredAnswer = attempt.purpose === "knowledge_answer_draft_v5" ||
+    const structuredAnswer = attempt.purpose === "knowledge_coverage_planner_v20" ||
+      attempt.purpose === "knowledge_answer_draft_v20" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v20" ||
+      attempt.purpose === "knowledge_answer_draft_v19" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v19" ||
+      attempt.purpose === "knowledge_answer_draft_v18" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v18" ||
+      attempt.purpose === "knowledge_answer_draft_v17" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v17" ||
+      attempt.purpose === "knowledge_answer_draft_v16" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v16" ||
+      attempt.purpose === "knowledge_answer_draft_v15" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v15" ||
+      attempt.purpose === "knowledge_answer_draft_v14" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v14" ||
+      attempt.purpose === "knowledge_answer_draft_v13" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v13" ||
+      attempt.purpose === "knowledge_answer_draft_v12" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v12" ||
+      attempt.purpose === "knowledge_answer_draft_v11" ||
+      attempt.purpose === "knowledge_answer_draft_v10" ||
+      attempt.purpose === "knowledge_answer_draft_v9" ||
+      attempt.purpose === "knowledge_answer_draft_v8" ||
+      attempt.purpose === "knowledge_answer_draft_v7" ||
+      attempt.purpose === "knowledge_answer_draft_v6" ||
+      attempt.purpose === "knowledge_answer_draft_v5" ||
       attempt.purpose === "knowledge_grounded_selector_v2" ||
-      attempt.purpose === "knowledge_grounded_selector_v3";
+      attempt.purpose === "knowledge_grounded_selector_v3" ||
+      attempt.purpose === "knowledge_grounded_selector_v4" ||
+      attempt.purpose === "knowledge_grounded_selector_v5" ||
+      attempt.purpose === "knowledge_grounded_selector_v6" ||
+      attempt.purpose === "knowledge_grounded_selector_v7" ||
+      attempt.purpose === "knowledge_grounded_selector_v16" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v16" ||
+      attempt.purpose === "knowledge_grounded_selector_v15" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v15" ||
+      attempt.purpose === "knowledge_grounded_selector_v14" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v14" ||
+      attempt.purpose === "knowledge_grounded_selector_v13" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v13" ||
+      attempt.purpose === "knowledge_grounded_selector_v12" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v12" ||
+      attempt.purpose === "knowledge_grounded_selector_v11" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v11" ||
+      attempt.purpose === "knowledge_grounded_selector_v10" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v10" ||
+      attempt.purpose === "knowledge_grounded_selector_v9" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v9" ||
+      attempt.purpose === "knowledge_grounded_selector_v8" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v8";
     const settledStructuredAnswer = structuredAnswer && attempt.state === "settled";
     const updated = await tx.knowledgeProviderAttempt.updateMany({
       data: {

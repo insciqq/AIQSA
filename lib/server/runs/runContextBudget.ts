@@ -18,7 +18,10 @@ import {
   knowledgeToolLoopContract
 } from "../providers/personalContext";
 import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
-import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5 } from "../knowledge/answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7,
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8
+} from "../knowledge/answerGroundingV5";
 import type {
   NormalizedRunRequest,
   ProviderConversationMessage,
@@ -32,6 +35,14 @@ import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 // estimator, but applies once across every selected text attachment and is
 // therefore conservative for multilingual text and multi-file requests.
 export const UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS = 5_000;
+
+function knowledgeAnswerDraftContractText(version: 7 | 8 | undefined): string | null {
+  return version === 8
+    ? KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8
+    : version === 7
+      ? KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7
+      : null;
+}
 
 function maxOutputTokensForBudget(
   params: Readonly<Record<string, unknown>>,
@@ -114,9 +125,7 @@ export function applyRunContextBudget(input: Readonly<{
           ? memoryActionAnswerContract(input.prompt.memoryActionAnswerResult)
           : null,
         input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null,
-        input.prompt.knowledgeAnswerDraftContract === 5
-          ? KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5
-          : null
+        knowledgeAnswerDraftContractText(input.prompt.knowledgeAnswerDraftContract)
       ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
       system: input.prompt.system
     }
@@ -195,9 +204,9 @@ export function normalizedRequestPersonalContextTokenLimit(
     (request.prompt.knowledgeAnswerContract === 1
       ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
       : 0) +
-    (request.prompt.knowledgeAnswerDraftContract === 5
-      ? estimateApproxTokens(KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5)
-      : 0) +
+    estimateApproxTokens(
+      knowledgeAnswerDraftContractText(request.prompt.knowledgeAnswerDraftContract) ?? ""
+    ) +
     (request.knowledgePlan.mode !== "none"
       ? estimateApproxTokens(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2)
       : 0);
@@ -331,9 +340,11 @@ function fitProviderAttachmentText(input: Readonly<{
       (input.request.prompt.knowledgeAnswerContract === 1
         ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
         : 0) +
-      (input.request.prompt.knowledgeAnswerDraftContract === 5
-        ? estimateApproxTokens(KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5)
-        : 0);
+      estimateApproxTokens(
+        knowledgeAnswerDraftContractText(
+          input.request.prompt.knowledgeAnswerDraftContract
+        ) ?? ""
+      );
     const internalContextTokens = (input.request.context?.messages ?? [])
       .filter((message) => message.purpose !== undefined)
       .reduce((total, message) => total + estimateApproxTokens(message.content), 0);

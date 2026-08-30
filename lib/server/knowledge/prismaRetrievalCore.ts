@@ -75,7 +75,9 @@ const KNOWLEDGE_VECTOR_BUCKET_COUNT = 16;
 const KNOWLEDGE_LINEAR_CONTEXT_RADIUS = 1;
 const KNOWLEDGE_LINEAR_CONTEXT_MAX = 2;
 
-type RetrievalCoreClient = Pick<PrismaClient, "$queryRaw">;
+type RetrievalCoreClient = Readonly<{
+  $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+}>;
 
 /** Ready compatible hierarchical index versions for retrieval reads. Each
  * artifact contributes exactly one index (highest ready compatible version)
@@ -412,8 +414,7 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."contentHash",
       passage."sourceName",
       passage."text",
-      embedding."embeddingDimension",
-      embedding."embedding"
+      embedding."embeddingDimension"
     FROM canonical_binding_sources AS source_binding
     INNER JOIN source_provenance AS provenance
       ON provenance."sourceId" = source_binding."sourceId"
@@ -483,8 +484,7 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
         true
       ) AS "projectionComplete",
       count(passage."chunkId") FILTER (
-        WHERE passage."embedding" IS NOT NULL
-          AND passage."embeddingDimension" = binding."targetDimension"
+        WHERE passage."embeddingDimension" = binding."targetDimension"
       )::integer AS "eligibleRows"
     FROM bindings AS binding
     LEFT JOIN scoped_passages AS passage
@@ -557,6 +557,7 @@ function vectorDistanceExpression(vector: QueryVector, alias: string): Prisma.Sq
 }
 
 function knowledgeVectorLaneSql(input: Readonly<{
+  acceptedIndexArtifactIds: readonly string[];
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   relaxRelevanceFloors?: boolean;
@@ -568,6 +569,9 @@ function knowledgeVectorLaneSql(input: Readonly<{
   const bindings = retrievalBindingsSql(input);
   const scopedPassages = scopedPassagesSql();
   const globalDistance = vectorDistanceExpression(input.vector, "embedding");
+  const acceptedIndexArtifactIds = input.acceptedIndexArtifactIds.length > 0
+    ? Prisma.sql`ARRAY[${Prisma.join(input.acceptedIndexArtifactIds)}]::text[]`
+    : Prisma.sql`ARRAY[]::text[]`;
   // When a hosted reranker is configured, the global absolute dense floor
   // must not drop candidates before reranking; the per-lane limit still
   // bounds the scan.
@@ -577,29 +581,16 @@ function knowledgeVectorLaneSql(input: Readonly<{
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
-    scoped_passages AS MATERIALIZED (${scopedPassages}),
+    scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
     vector_hits AS (
-      SELECT embedding."passageId" AS "chunkId", ${globalDistance} AS "vectorDistance"
+      SELECT
+        embedding."indexArtifactId",
+        embedding."passageId" AS "chunkId",
+        ${globalDistance} AS "vectorDistance"
       FROM "KnowledgeArtifactPassageEmbedding" AS embedding
-      INNER JOIN "KnowledgeArtifactPassageIndex" AS indexed_passage
-        ON indexed_passage."indexArtifactId" = embedding."indexArtifactId"
-       AND indexed_passage."id" = embedding."passageId"
-      INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
-        ON hierarchy."id" = indexed_passage."indexArtifactId"
-       AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-       AND hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
       WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
+        AND embedding."indexArtifactId" = ANY(${acceptedIndexArtifactIds})
         ${denseFloor}
-        AND EXISTS (
-          SELECT 1
-          FROM scoped_passages AS scoped
-          WHERE scoped."bindingOrdinal" = ${input.vector.bindingOrdinal}
-            AND scoped."knowledgeBaseId" = ${input.vector.knowledgeBaseId}
-            AND scoped."indexGenerationId" = ${input.vector.indexGenerationId}
-            AND scoped."targetDimension" = ${input.vector.targetDimension}
-            AND scoped."indexArtifactId" = hierarchy."id"
-            AND scoped."chunkId" = embedding."passageId"
-        )
       ORDER BY ${globalDistance}
       LIMIT ${input.candidateLimit}
     ),
@@ -639,6 +630,7 @@ function knowledgeVectorLaneSql(input: Readonly<{
       ON binding."ordinal" = ${input.vector.bindingOrdinal}
     INNER JOIN scoped_passages AS passage
       ON passage."bindingOrdinal" = binding."ordinal"
+     AND passage."indexArtifactId" = ranked."indexArtifactId"
      AND passage."chunkId" = ranked."chunkId"
     ORDER BY ranked."laneRank"
   `;
@@ -721,7 +713,7 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
-    scoped_chunks AS MATERIALIZED (${scopedPassages}),
+    scoped_chunks AS NOT MATERIALIZED (${scopedPassages}),
     query_terms AS (
       SELECT
         websearch_to_tsquery('simple'::regconfig, ${input.query}) AS "modelSimpleStrictQuery",
@@ -922,6 +914,7 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
  * single operation; callers receive one envelope from one `$queryRaw` call.
  */
 function knowledgeFocusedHybridSearchSql(input: Readonly<{
+  acceptedScopes: readonly ScopeRow[];
   anchorQuery?: string;
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
@@ -933,14 +926,20 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
   userId: string;
   vectors: readonly QueryVector[];
 }>): Prisma.Sql {
-  const scopeQuery = knowledgeRetrievalScopeSql(input);
   const bindings = retrievalBindingsSql(input);
   const scopedPassages = scopedPassagesSql();
   const lexicalQuery = knowledgeMultiLaneLexicalSearchSql(input);
+  const acceptedScopesJson = JSON.stringify(input.acceptedScopes);
+  const acceptedScopesByOrdinal = new Map(input.acceptedScopes.map((scope) => [
+    scope.bindingOrdinal,
+    scope
+  ]));
   const vectorQueryUnion = input.vectors.length === 0
     ? Prisma.sql`SELECT candidate.* FROM lexical_candidates AS candidate WHERE false`
     : Prisma.join(input.vectors.map((vector) => {
       const query = knowledgeVectorLaneSql({
+        acceptedIndexArtifactIds:
+          acceptedScopesByOrdinal.get(vector.bindingOrdinal)?.acceptedIndexArtifactIds ?? [],
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
         ...(input.relaxRelevanceFloors ? { relaxRelevanceFloors: true } : {}),
@@ -959,7 +958,6 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
     WITH
     runtime_settings AS MATERIALIZED (
       SELECT
-        set_config('statement_timeout', '30000', true),
         set_config('hnsw.iterative_scan', 'strict_order', true),
         set_config('hnsw.ef_search', ${String(KNOWLEDGE_VECTOR_ANN_EF_SEARCH)}, true),
         set_config(
@@ -968,9 +966,8 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
           true
         )
     ),
-    scopes AS MATERIALIZED (${scopeQuery}),
     bindings AS MATERIALIZED (${bindings}),
-    scoped_passages AS MATERIALIZED (${scopedPassages}),
+    scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
     lexical_candidates AS MATERIALIZED (${lexicalQuery}),
     vector_candidate_union AS MATERIALIZED (${vectorQueryUnion}),
     vector_candidates AS MATERIALIZED (
@@ -1100,10 +1097,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
         )
         FROM all_candidates AS candidate
       ), '[]'::jsonb) AS candidates,
-      COALESCE((
-        SELECT jsonb_agg(to_jsonb(scope) ORDER BY scope."bindingOrdinal")
-        FROM scopes AS scope
-      ), '[]'::jsonb) AS scopes
+      ${acceptedScopesJson}::jsonb AS scopes
   `;
 }
 
@@ -1130,7 +1124,7 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
-    scoped_passages AS MATERIALIZED (${scopedPassages}),
+    scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
     bm25_hits(
       "indexArtifactId",
       "chunkId",
@@ -1696,9 +1690,28 @@ export async function executeKnowledgeRetrievalCore(
       vector.vector.some((value) => !Number.isFinite(value)))
   ) throw new Error("knowledge_query_vector_invalid");
 
+  const scopeRows = await client.$queryRaw<unknown[]>(knowledgeRetrievalScopeSql({
+    ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+    runId: input.runId,
+    ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+    userId: input.userId
+  }));
+  const decodedScopes = scopeRows.map(decodeScope);
+  if (decodedScopes.some((scope) => scope === null)) {
+    throw new Error("knowledge_retrieval_scope_invalid");
+  }
+  const acceptedScopes = decodedScopes as ScopeRow[];
+  if (
+    acceptedScopes.length < 1 || acceptedScopes.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+    new Set(acceptedScopes.map((scope) => scope.bindingOrdinal)).size !== acceptedScopes.length ||
+    acceptedScopes.some((scope, index) => index > 0 &&
+      scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
+  ) throw new Error("knowledge_retrieval_scope_invalid");
+
   const rerankConfigured = Boolean(input.rerank);
   const envelope = decodeHybridQueryEnvelope(await client.$queryRaw<unknown[]>(
     knowledgeFocusedHybridSearchSql({
+      acceptedScopes,
       ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
       ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
       candidateLimit: input.candidateLimit,
@@ -1711,13 +1724,9 @@ export async function executeKnowledgeRetrievalCore(
       vectors: input.vectors
     })
   ));
-  const acceptedScopes = envelope.scopes;
-  if (
-    acceptedScopes.length < 1 || acceptedScopes.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
-    new Set(acceptedScopes.map((scope) => scope.bindingOrdinal)).size !== acceptedScopes.length ||
-    acceptedScopes.some((scope, index) => index > 0 &&
-      scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
-  ) throw new Error("knowledge_retrieval_scope_invalid");
+  if (JSON.stringify(envelope.scopes) !== JSON.stringify(acceptedScopes)) {
+    throw new Error("knowledge_retrieval_scope_invalid");
+  }
 
   const acceptedIndexArtifactIds = [...new Set(acceptedScopes.flatMap((scope) =>
     scope.acceptedIndexArtifactIds))].sort();
@@ -1981,8 +1990,10 @@ export async function executeKnowledgeRetrievalCore(
         layoutKind: candidate.layoutKind,
         legacyUnits: Object.freeze(context.map((neighbor, index) =>
           legacyExpansionUnit(candidate, neighbor, index, countTokens))),
+        page: candidate.page,
         sectionId: candidate.sectionId,
-        sourceArtifactId: candidate.sourceArtifactId
+        sourceArtifactId: candidate.sourceArtifactId,
+        text: candidate.text
       });
     }
   }

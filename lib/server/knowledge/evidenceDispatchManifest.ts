@@ -9,8 +9,21 @@ import {
 export const KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 2 as const;
 export const LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 1 as const;
 export const KNOWLEDGE_EVIDENCE_PACKING_VERSION = "whole_source_item_v1" as const;
+export const KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION =
+  "whole_source_item_rank_interleave_v2" as const;
 export const KNOWLEDGE_EVIDENCE_SHORTENING_VERSION =
   "omit_expanded_context_v1" as const;
+
+export type KnowledgeEvidencePackingVersion =
+  | typeof KNOWLEDGE_EVIDENCE_PACKING_VERSION
+  | typeof KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION;
+
+export function isKnowledgeEvidencePackingVersion(
+  value: unknown
+): value is KnowledgeEvidencePackingVersion {
+  return value === KNOWLEDGE_EVIDENCE_PACKING_VERSION ||
+    value === KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION;
+}
 
 export type KnowledgeEvidenceDispatchCandidate =
   | Readonly<{
@@ -118,7 +131,7 @@ type KnowledgeEvidenceDispatchManifestBody = Readonly<{
   messageBytes: number;
   messageHash: string;
   messageTokens: number;
-  packingVersion: typeof KNOWLEDGE_EVIDENCE_PACKING_VERSION;
+  packingVersion: KnowledgeEvidencePackingVersion;
   profileId: string;
   promptFragmentVersion: number;
   shorteningPolicy: "disabled" | typeof KNOWLEDGE_EVIDENCE_SHORTENING_VERSION;
@@ -143,6 +156,7 @@ export type PackKnowledgeEvidenceDispatchManifestInput = Readonly<{
   header: string;
   maximumBytes: number;
   maximumTokens: number;
+  packingVersion?: KnowledgeEvidencePackingVersion;
   runtimeVersion: number;
   profileId: string;
   promptFragmentVersion: number;
@@ -282,8 +296,14 @@ function compareStrings(left: string, right: string): number {
 
 function compareOrder(
   left: Pick<KnowledgeEvidenceDispatchCandidate, "evidenceId" | "operationOrdinal" | "resultOrdinal">,
-  right: Pick<KnowledgeEvidenceDispatchCandidate, "evidenceId" | "operationOrdinal" | "resultOrdinal">
+  right: Pick<KnowledgeEvidenceDispatchCandidate, "evidenceId" | "operationOrdinal" | "resultOrdinal">,
+  packingVersion: KnowledgeEvidencePackingVersion
 ): number {
+  if (packingVersion === KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION) {
+    return left.resultOrdinal - right.resultOrdinal ||
+      left.operationOrdinal - right.operationOrdinal ||
+      compareStrings(left.evidenceId, right.evidenceId);
+  }
   return left.operationOrdinal - right.operationOrdinal ||
     left.resultOrdinal - right.resultOrdinal ||
     compareStrings(left.evidenceId, right.evidenceId);
@@ -511,12 +531,17 @@ export function packKnowledgeEvidenceDispatchManifest(
     maximumBytes: input.maximumBytes,
     maximumTokens: input.maximumTokens
   } as const;
+  const packingVersion = input.packingVersion ?? KNOWLEDGE_EVIDENCE_PACKING_VERSION;
+  if (!isKnowledgeEvidencePackingVersion(packingVersion)) {
+    throw new Error("knowledge_evidence_dispatch_config_invalid");
+  }
   const emptyMessage = renderMessage(input.header, input.coverageStatement, [], input.footer);
   if (!fitsLimits(emptyMessage, limits)) {
     throw new Error("knowledge_evidence_dispatch_envelope_exceeds_budget");
   }
 
-  const candidates = [...input.candidates].sort(compareOrder);
+  const candidates = [...input.candidates].sort((left, right) =>
+    compareOrder(left, right, packingVersion));
   const evidenceIds = new Set<string>();
   const firstEvidenceIdByHandle = new Map<string, string>();
   const items: KnowledgeEvidenceDispatchManifestItem[] = [];
@@ -618,7 +643,7 @@ export function packKnowledgeEvidenceDispatchManifest(
     messageBytes: utf8Bytes(message),
     messageHash: sha256Utf8(message),
     messageTokens: estimateApproxTokens(message),
-    packingVersion: KNOWLEDGE_EVIDENCE_PACKING_VERSION,
+    packingVersion,
     runtimeVersion: input.runtimeVersion,
     profileId: input.profileId,
     promptFragmentVersion: input.promptFragmentVersion,
@@ -750,8 +775,9 @@ export function decodeKnowledgeEvidenceDispatchManifestDraft(
   const current = value.version === KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
   const legacy = value.version === LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
   const versionField = current ? "runtimeVersion" : legacy ? "plannerVersion" : null;
+  const packingVersion = value.packingVersion;
   if (!versionField || !hasExactKeys(value, [...manifestBaseKeys, versionField]) ||
-    value.packingVersion !== KNOWLEDGE_EVIDENCE_PACKING_VERSION ||
+    !isKnowledgeEvidencePackingVersion(packingVersion) ||
     value.shorteningPolicy !== "disabled" &&
       value.shorteningPolicy !== KNOWLEDGE_EVIDENCE_SHORTENING_VERSION ||
     !positiveInteger(value[versionField]) || !positiveInteger(value.promptFragmentVersion) ||
@@ -773,10 +799,12 @@ export function decodeKnowledgeEvidenceDispatchManifestDraft(
     items.some(({ representation }) => representation !== "full")) return null;
   if (items.some((item, index) => index > 0 && compareOrder(
     item as unknown as KnowledgeEvidenceDispatchManifestItem,
-    items[index - 1] as unknown as KnowledgeEvidenceDispatchManifestItem
+    items[index - 1] as unknown as KnowledgeEvidenceDispatchManifestItem,
+    packingVersion
   ) < 0) || exclusions.some((exclusion, index) => index > 0 && compareOrder(
     exclusion as unknown as KnowledgeEvidenceDispatchManifestExclusion,
-    exclusions[index - 1] as unknown as KnowledgeEvidenceDispatchManifestExclusion
+    exclusions[index - 1] as unknown as KnowledgeEvidenceDispatchManifestExclusion,
+    packingVersion
   ) < 0)) return null;
 
   const evidenceIds = [...items, ...exclusions].map(({ evidenceId }) => evidenceId as string);

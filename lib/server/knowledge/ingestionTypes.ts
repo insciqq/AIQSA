@@ -45,6 +45,7 @@ export type KnowledgeSourceArtifactPinRecord = Readonly<{
   pdfProcessingMode: KnowledgePdfProcessingMode;
   pdfSystemModelPolicyVersion: number | null;
   pdfSystemModelSnapshot: unknown;
+  processingGeneration: number;
   profileExecutionAuthority: "installation" | "legacy_user";
   profileRevisionId: string | null;
   targetDimension: number;

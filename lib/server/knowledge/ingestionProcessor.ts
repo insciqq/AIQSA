@@ -451,6 +451,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
             mode: claim.artifact.pdfProcessingMode,
             ownerUserId: claim.ownerUserId,
             parserProfileVersion: claim.artifact.pdfParserProfileVersion,
+            processingGeneration: claim.artifact.processingGeneration,
             profileRevisionId: claim.artifact.profileRevisionId,
             ...(signal ? { signal } : {}),
             sourceVersionId: claim.sourceVersionId,

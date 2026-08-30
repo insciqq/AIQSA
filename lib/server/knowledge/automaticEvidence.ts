@@ -6,6 +6,7 @@ import {
   type ToolLoopJsonValue
 } from "../runs/toolLoopPersistence";
 import {
+  KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -193,6 +194,9 @@ export function toolLoopKnowledgeEvidenceDispatchDraft(input: Readonly<{
     header: toolLoopKnowledgeEvidenceHeader(),
     maximumBytes,
     maximumTokens: Math.max(1, Math.floor(maximumBytes / 4)),
+    ...(input.request.knowledgeEvidencePackingVersion === 2
+      ? { packingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION }
+      : {}),
     profileId: `${input.request.provider}:${input.request.modelId}`,
     promptFragmentVersion: 1,
     runtimeVersion: 1
@@ -267,8 +271,8 @@ export function withAutomaticKnowledgeEvidence(
     },
     prompt: {
       ...prompt,
-      knowledgeAnswerDraftContract: 5,
-      knowledgeGroundedSelectorContract: 3
+      knowledgeAnswerDraftContract: 8,
+      knowledgeGroundedSelectorContract: 6
     }
   };
 }

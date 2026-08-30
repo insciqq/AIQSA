@@ -1,4 +1,5 @@
 import { createPrismaEmbeddingRuntime } from "../providerRuntime/embeddingRuntime";
+import { createConfiguredDoclingLayoutParser } from "../parsing/doclingLayout";
 import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
 import {
@@ -31,7 +32,9 @@ function createDefaultKnowledgeIngestionCoordinator(): KnowledgeIngestionCoordin
     },
     process: createKnowledgeIngestionProcessor({
       embeddingRuntime: createPrismaEmbeddingRuntime(prisma),
-      modelPdfParser: createKnowledgeModelPdfParser(prisma),
+      modelPdfParser: createKnowledgeModelPdfParser(prisma, {
+        parseDocling: createConfiguredDoclingLayoutParser()
+      }),
       repository: defaultKnowledgeIngestionRepository,
       storage: defaultKnowledgeStorage
     }),

@@ -405,7 +405,8 @@ function pageBlocks(
 ): ParsedDocumentBlock[] {
   const lines = page.text.split("\n").filter((line) => Boolean(line.trim()));
   const blocks: ParsedDocumentBlock[] = [];
-  const headingPath: string[] = [];
+  const headings: Array<Readonly<{ level: number; text: string }>> = [];
+  const headingPath = (): readonly string[] => headings.map(({ text }) => text);
   let lineIndex = 0;
   while (lineIndex < lines.length) {
     const rawLine = lines[lineIndex]!;
@@ -425,7 +426,7 @@ function pageBlocks(
           input
         );
         blocks.push(block({
-          headingPath,
+          headingPath: headingPath(),
           index: firstIndex + blocks.length,
           page: page.page,
           table,
@@ -439,18 +440,18 @@ function pageBlocks(
     if (heading) {
       const level = heading[1]!.length;
       const text = heading[2]!.trim();
-      headingPath.splice(level - 1);
-      headingPath[level - 1] = text;
+      while (headings.at(-1) && headings.at(-1)!.level >= level) headings.pop();
       blocks.push(block({
-        headingPath: headingPath.slice(0, level - 1),
+        headingPath: headingPath(),
         index: firstIndex + blocks.length,
         page: page.page,
         text,
         type: level === 1 ? "title" : "heading"
       }));
+      headings.push(Object.freeze({ level, text }));
     } else {
       blocks.push(block({
-        headingPath,
+        headingPath: headingPath(),
         index: firstIndex + blocks.length,
         page: page.page,
         text: line,

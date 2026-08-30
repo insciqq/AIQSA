@@ -15,6 +15,8 @@ describe("Prisma Knowledge canonical direct Source scope", () => {
     expect(sql).toContain('run_scope."sourceBindingStrategy" = \'eager_v1\'');
     expect(sql).toContain("AND NOT EXISTS (SELECT 1 FROM canonical_profile_bindings)");
     expect(sql).toContain("binding.\"scopeKind\" = 'profile'");
+    expect(sql).toContain('embedding."embeddingDimension"');
+    expect(sql).not.toContain('embedding."embedding"');
   });
 
   it("loads one profile execution binding and the persisted Source alias without a Base", async () => {

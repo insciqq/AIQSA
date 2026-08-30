@@ -99,7 +99,9 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
-    $queryRaw: vi.fn(async () => [{ candidates: [...rows], scopes: [...scopes] }]),
+    $queryRaw: vi.fn()
+      .mockResolvedValueOnce([...scopes])
+      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
     vectors
   } as unknown as MockCoreClient;
 }
@@ -255,14 +257,14 @@ describe("Prisma retrieval core hosted rerank stage", () => {
       .toEqual(["chunk-strong", "chunk-weak-dense", "chunk-weak-lexical"]);
     expect(reranked.candidateCount).toBe(3);
     // The metadata match floor stays; the global lexical floor is lifted.
-    const rerankSql = sqlText(client.$queryRaw.mock.calls[0]![0]);
+    const rerankSql = sqlText(client.$queryRaw.mock.calls[1]![0]);
     expect(rerankSql.match(/"rawScore" >= \?/gu)).toHaveLength(1);
 
     const deterministicClient = mockClient([scope(0, "Base A", "base-a")], rows);
     const deterministic = await execute(deterministicClient);
     expect(deterministic.candidateCount).toBe(1);
     expect(deterministic.passages.map((passage) => passage.chunkId)).toEqual(["chunk-strong"]);
-    const deterministicSql = sqlText(deterministicClient.$queryRaw.mock.calls[0]![0]);
+    const deterministicSql = sqlText(deterministicClient.$queryRaw.mock.calls[1]![0]);
     expect(deterministicSql.match(/"rawScore" >= \?/gu)).toHaveLength(2);
   });
 

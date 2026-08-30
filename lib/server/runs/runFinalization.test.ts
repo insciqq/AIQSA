@@ -191,7 +191,7 @@ describe("run finalization", () => {
     const grounding = {
       contradictedClaimCount: 0,
       draftClaimCount: 1,
-      draftContractVersion: 5 as const,
+      draftContractVersion: 7 as const,
       draftHash: "a".repeat(64),
       draftOperationId: "draft-operation-1",
       durations: { draftMs: 10, selectorMs: 8 },
@@ -206,7 +206,7 @@ describe("run finalization", () => {
       providerRequestIds: { draft: "provider-draft-1", selector: "provider-selector-1" },
       receiptHash: "b".repeat(64),
       requestCoverage: "complete" as const,
-      selectorContractVersion: 3 as const,
+      selectorContractVersion: 5 as const,
       selectorHash: "e".repeat(64),
       selectorOperationId: "selector-operation-1",
       sessionId: "evidence-session-1",
@@ -230,8 +230,8 @@ describe("run finalization", () => {
     const result = await finalizeRunCompletion({
       ...completionInput(repository),
       knowledgeAnswerContracts: {
-        draftContractVersion: 5,
-        selectorContractVersion: 3
+        draftContractVersion: 7,
+        selectorContractVersion: 5
       },
       result: { ...completionInput(repository).result, finalText: "hidden structured result" }
     });
@@ -239,9 +239,9 @@ describe("run finalization", () => {
     expect(result).toMatchObject({ finalText: grounding.finalText, status: "completed" });
     expect(groundKnowledgeAnswer).not.toHaveBeenCalled();
     expect(groundKnowledgeAnswerV5).toHaveBeenCalledWith({
-      draftContractVersion: 5,
+      draftContractVersion: 7,
       runId: "run-1",
-      selectorContractVersion: 3,
+      selectorContractVersion: 5,
       userId: "user-1"
     });
     expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({

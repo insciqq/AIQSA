@@ -360,6 +360,7 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       mode: "system_model_direct_pdf" as const,
       pageEnd: 2,
       pageStart: 1,
+      processingGeneration: 0,
       requestDigest: "f".repeat(64),
       sourceVersionId: fixture.sourceVersionId
     };
@@ -383,6 +384,17 @@ describe("Prisma Knowledge Source ingestion claims", () => {
     await expect(pdfAttempts.reserve({ ...identity, now: restartNow })).resolves.toMatchObject({
       kind: "settled"
     });
+    await expect(pdfAttempts.reserve({
+      ...identity,
+      now: restartNow,
+      processingGeneration: 1
+    })).resolves.toMatchObject({
+      batch: {
+        attemptId: reservation.attemptId,
+        processingGeneration: 0
+      },
+      kind: "settled"
+    });
 
     const uncertainIdentity = {
       ...identity,
@@ -403,6 +415,11 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       ...uncertainIdentity,
       now: new Date(restartNow.getTime() + 1)
     })).rejects.toEqual(new KnowledgeModelPdfAttemptError("pdf_processing_ambiguous"));
+    await expect(pdfAttempts.reserve({
+      ...uncertainIdentity,
+      now: new Date(restartNow.getTime() + 2),
+      processingGeneration: 1
+    })).resolves.toMatchObject({ kind: "dispatch" });
 
     const chunkingDueAt = new Date(restartNow.getTime() + 2_000);
     await expect(restartedRepository.completeParsing({

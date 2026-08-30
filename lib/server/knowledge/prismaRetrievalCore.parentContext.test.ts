@@ -82,7 +82,9 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
-    $queryRaw: vi.fn(async () => [{ candidates: [...rows], scopes: [...scopes] }]),
+    $queryRaw: vi.fn()
+      .mockResolvedValueOnce([...scopes])
+      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
     vectors
   } as unknown as MockCoreClient;
 }
@@ -115,6 +117,7 @@ function windowRow(input: Readonly<{
     id: input.id,
     layoutKind: "body",
     ordinal: input.ordinal,
+    page: 1,
     sectionId: "section-1",
     text: input.text
   };

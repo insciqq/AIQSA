@@ -314,6 +314,17 @@ function deployAndVerify(
     app(database, ["npx", "prisma", "migrate", "status"]),
     /Database schema is up to date!/u,
   );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT character_maximum_length
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'KnowledgeProviderAttempt'
+        AND column_name = 'purpose';
+    `),
+    "64",
+    "Knowledge provider operation identifiers do not fit the active versioned purposes",
+  );
   const schemaDatamodelDiff = app(database, [
     "npx",
     "prisma",
@@ -1185,6 +1196,41 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       `),
       "4",
       "H2 durable receipt/state constraints are missing or unvalidated",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeProviderAttempt"'::regclass
+          AND conname IN (
+            'KnowledgeProviderAttempt_contract_check',
+            'KnowledgeProviderAttempt_answer_result_state_check'
+          )
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_planner_v20%';
+      `),
+      "2",
+      "Coverage Planner V20 is missing from durable provider-attempt constraints",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_modelRunId_purpose_key'
+          AND indexdef LIKE '%knowledge_coverage_planner_v20%';
+      `),
+      "1",
+      "Coverage Planner V20 is missing from provider-attempt operation uniqueness",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%16%';
+      `),
+      "1",
+      "Grounding Evidence V16 is missing from the durable evidence constraint",
     );
     assert.equal(
       psqlScalar(database, `
