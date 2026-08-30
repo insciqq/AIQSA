@@ -29,9 +29,10 @@ describe("LongMemEval frozen qualification manifest", () => {
   });
 
   it("freezes the reader-first reranker route and case concurrency two", async () => {
-    const [legacy, manifest] = await Promise.all([
+    const [legacy, prior, manifest] = await Promise.all([
       loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
-      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1")
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v2")
     ]);
 
     expect(manifest.runtime.caseConcurrency).toBe(2);
@@ -55,8 +56,9 @@ describe("LongMemEval frozen qualification manifest", () => {
       ]
     });
     expect(manifest.selection).toEqual(legacy.selection);
+    expect(manifest.selection).toEqual(prior.selection);
     expect(manifest.source.appCommit)
-      .toBe("b0a8f387962592fd70d8a23dd18b31b04a12f8be");
+      .toBe("0f57ee307de10173b291984c58dc02b8b48580fe");
   });
 
   it("binds every selected id to its frozen upstream category", async () => {
@@ -80,9 +82,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first reranker route drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v1"
+      "fu2-reader-first-blind-50-v2"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v1") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v2") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {

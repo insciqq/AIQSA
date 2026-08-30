@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import {
+  canonicalMemoryPackedSafeText,
   MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS,
   MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS,
   type MemorySafeProjectionKind
@@ -1715,8 +1716,11 @@ async function resolveRound(
   const boundedRawSafeText = row
     ? segmentId ? row.safeText : boundedMemoryRecallRoundEvidenceText(row.safeText)
     : null;
+  const authoritativeExactSafeText = boundedRawSafeText === null
+    ? null
+    : canonicalMemoryPackedSafeText("RECALL_ROUND", boundedRawSafeText);
   if (!row || projection.supportingItemId !== row.parentChunkId ||
-    input.exactSafeText !== boundedRawSafeText ||
+    input.exactSafeText !== authoritativeExactSafeText ||
     segmentId !== null &&
       (!isRoundSegmentAuthorityRow(row) || row.segmentId !== segmentId ||
         !exactRoundSegmentAuthority(row))) {
@@ -1899,7 +1903,8 @@ async function resolveToolEvent(
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
   const row = await resolveToolEventRow(tx, authority, input.toolEventId);
-  if (!row || input.exactSafeText !== row.safeText) {
+  if (!row || input.exactSafeText !==
+      canonicalMemoryPackedSafeText("TOOL_EVENT", row.safeText)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
   return {
