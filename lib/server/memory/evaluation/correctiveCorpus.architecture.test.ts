@@ -295,7 +295,7 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
   {
     evidence: [
       {
-        anchor: "[E08] bounds a 4,000-message append to the indexed tail plus one overlap",
+        anchor: "[E08] bounds a 4,000-message append to the indexed tail plus contextual overlap",
         kind: "database",
         path: "history/repository.prisma.test.ts"
       },
@@ -320,7 +320,7 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
         path: "history/repository.prisma.test.ts"
       },
       {
-        anchor: "messageContentRowsLoaded: 4",
+        anchor: "messageContentRowsLoaded: 6",
         kind: "operational",
         path: "history/repository.prisma.test.ts"
       }
@@ -450,7 +450,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v34",
+      retrieval: "memory-personal-retrieval-v62",
       synthesis: [
         "memory-synthesis-v2",
         "memory-synthesis-policy-v3",

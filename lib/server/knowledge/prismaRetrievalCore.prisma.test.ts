@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
+import { createKnowledgeOpenSearchTransport } from "../search/opensearch/transport";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import {
+  deleteKnowledgeSearchArtifacts,
+  inspectKnowledgeSearchIntegrity,
+  rebuildKnowledgeSearchProjections,
+  runKnowledgeSearchProjectionPass
+} from "./searchProjection";
 
 const fingerprint = "f".repeat(64);
 
@@ -124,6 +132,15 @@ async function createFixture(): Promise<Fixture> {
     },
     select: { id: true }
   });
+  await prisma.knowledgeRunScope.create({
+    data: {
+      budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      modelRunId: run.id,
+      resolvedBaseCount: 0,
+      resolvedSourceCount: 1,
+      selection: { baseIds: [], mode: "explicit", sourceIds: [], version: 1 }
+    }
+  });
   const profileBinding = await prisma.knowledgeRunProfileBinding.create({
     data: {
       embeddingConnectionId: connectionId,
@@ -189,7 +206,6 @@ async function createFixture(): Promise<Fixture> {
       documentType: "application/octet-stream",
       fileName: "opaque-reference.bin",
       indexArtifactId: hierarchyId,
-      languageConfig: "english",
       pageCount: 3,
       sourceName: "Exact policy source"
     }
@@ -201,7 +217,6 @@ async function createFixture(): Promise<Fixture> {
       id: sectionId,
       indexArtifactId: hierarchyId,
       label: "Opaque section",
-      languageConfig: "english",
       ordinal: 0,
       page: 1,
       pageEnd: 3,
@@ -216,7 +231,6 @@ async function createFixture(): Promise<Fixture> {
       fileName: "opaque-reference.bin",
       id,
       indexArtifactId: hierarchyId,
-      languageConfig: "english",
       ordinal,
       page: ordinal + 1,
       pageEnd: ordinal + 1,
@@ -342,6 +356,8 @@ async function createFixture(): Promise<Fixture> {
     },
     where: { id: artifactId }
   });
+  const projection = await runKnowledgeSearchProjectionPass({ client: prisma, limit: 16 });
+  if (projection.projected < 1) throw new Error("knowledge_search_projection_fixture_failed");
   await prisma.knowledgeRunSourceBinding.create({
     data: {
       directSelected: true,
@@ -375,6 +391,7 @@ async function createFixture(): Promise<Fixture> {
 }
 
 async function cleanupFixture(fixture: Fixture): Promise<void> {
+  await deleteKnowledgeSearchArtifacts({ indexArtifactIds: [fixture.hierarchyId] });
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
     await tx.modelRun.deleteMany({ where: { id: fixture.runId } });
@@ -416,11 +433,104 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
     expect(scores?.irrelevant).toBe(0);
   });
 
+  it("keeps filename routing in the coarse document lane, not the passage BM25 vote", async () => {
+    const fixture = await createFixture();
+    try {
+      const result = await executeKnowledgeRetrievalCore(prisma, {
+        candidateLimit: 64,
+        excludedContentHashes: [],
+        query: "reference",
+        resultLimit: 16,
+        runId: fixture.runId,
+        userId: fixture.userId,
+        vectors: []
+      });
+
+      expect(result.passages).toHaveLength(1);
+      expect(result.passages[0]?.chunkId).toBe(fixture.passageIds[0]);
+      expect(result.passages[0]?.signals).toEqual(expect.arrayContaining([
+        expect.objectContaining({ lane: "document_lexical" })
+      ]));
+      expect(result.passages[0]?.signals).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ lane: "passage_bm25" })
+      ]));
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
+  it("fails closed when the canonical scope is missing its projection row", async () => {
+    const fixture = await createFixture();
+    try {
+      await prisma.knowledgeSearchProjection.delete({
+        where: { indexArtifactId: fixture.hierarchyId }
+      });
+
+      await expect(executeKnowledgeRetrievalCore(prisma, {
+        candidateLimit: 64,
+        excludedContentHashes: [],
+        query: "SAFE-2718",
+        resultLimit: 16,
+        runId: fixture.runId,
+        userId: fixture.userId,
+        vectors: []
+      })).rejects.toThrow("knowledge_search_projection_incomplete");
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
+  it("rebuilds the physical index from canonical passages and detects orphan documents", async () => {
+    const fixture = await createFixture();
+    const search = createKnowledgeOpenSearchTransport();
+    try {
+      await expect(inspectKnowledgeSearchIntegrity({ client: prisma, search }))
+        .resolves.toMatchObject({
+          currentMappingDocumentCount: 3,
+          expectedArtifactCount: 1,
+          healthy: true,
+          orphanDocumentCount: 0
+        });
+
+      await search.bulkUpsertKnowledgeDocuments([{
+        body: "Synthetic orphan used only for content-free integrity proof.",
+        contentHash: "9".repeat(64),
+        heading: "",
+        indexArtifactId: `orphan-${randomUUID()}`,
+        layoutKind: "body",
+        ownerUserId: fixture.userId,
+        passageId: `orphan-passage-${randomUUID()}`,
+        sourceVersionId: fixture.sourceVersionId,
+        tableContext: ""
+      }]);
+      await search.refreshKnowledgeIndex();
+      await expect(inspectKnowledgeSearchIntegrity({ client: prisma, search }))
+        .resolves.toMatchObject({
+          currentMappingDocumentCount: 4,
+          healthy: false,
+          orphanDocumentCount: 1
+        });
+
+      await expect(rebuildKnowledgeSearchProjections({ client: prisma, search }))
+        .resolves.toMatchObject({ failed: 0, projected: 1, reset: 1 });
+      await expect(inspectKnowledgeSearchIntegrity({ client: prisma, search }))
+        .resolves.toMatchObject({
+          currentMappingDocumentCount: 3,
+          expectedPassageCount: 3,
+          healthy: true,
+          orphanDocumentCount: 0,
+          staleMappingDocumentCount: 0
+        });
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
   it("maps document, section, and passage exact entries without duplicate passage rows", async () => {
     const fixture = await createFixture();
     try {
       const result = await executeKnowledgeRetrievalCore(prisma, {
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "Find SAFE-2718 from 2026-08-20 in policy.pdf under \"Release Schedule\"",
         resultLimit: 16,
@@ -446,7 +556,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       })]);
 
       const discriminating = await executeKnowledgeRetrievalCore(prisma, {
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "SAFE-2718 2026-08-20",
         resultLimit: 8,
@@ -463,7 +573,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const anchored = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "What changed for SAFE-2718 on 2026-08-20?",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "policy event details",
         resultLimit: 8,
@@ -477,7 +587,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const anchorLexical = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "Find the opaque beta evidence",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "policy event details",
         resultLimit: 8,
@@ -491,7 +601,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const modelLexical = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "unrelated current request framing",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "Find the opaque alpha evidence",
         resultLimit: 8,
@@ -505,7 +615,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const semanticFusion = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "second latent concept",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "first latent concept",
         resultLimit: 8,
@@ -534,7 +644,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       for (const query of ["acme invoice", "invoice 2024"]) {
         const metadata = await executeKnowledgeRetrievalCore(prisma, {
-          candidateLimit: 40,
+          candidateLimit: 64,
           excludedContentHashes: [],
           query,
           resultLimit: 8,
@@ -551,7 +661,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       }
 
       await expect(executeKnowledgeRetrievalCore(prisma, {
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "quarterly report",
         resultLimit: 8,

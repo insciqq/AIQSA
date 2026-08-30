@@ -52,6 +52,7 @@ import type {
   KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
+import { DEFAULT_KNOWLEDGE_ANSWER_POLICY } from "../knowledge/answerPolicy";
 import { knowledgeRetrievalTool } from "../knowledge/knowledgeTools";
 import {
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
@@ -66,6 +67,7 @@ import {
   type KnowledgeEvidenceDispatchManifestDraft
 } from "../knowledge/evidenceDispatchManifest";
 import type { StoredKnowledgeEvidenceDispatch } from "../knowledge/evidenceDispatchRepository";
+import { KNOWLEDGE_INSUFFICIENT_MESSAGE } from "../knowledge/answerGroundingV5";
 import type {
   KnowledgeProviderDispatchLifecycle,
   KnowledgeProviderDispatchRecovery,
@@ -198,15 +200,70 @@ function deferred() {
   return { promise, resolve };
 }
 
+function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer [K1]") {
+  return {
+    grounding: {
+      contradictedClaimCount: 0,
+      draftClaimCount: 1,
+      draftContractVersion: 11 as const,
+      draftHash: "a".repeat(64),
+      draftOperationId: "draft-operation-1",
+      durations: { draftMs: 10, selectorMs: 8 },
+      evidenceReceiptHash: "b".repeat(64),
+      fallbackReason: null,
+      finalAnswerHash: "c".repeat(64),
+      finalText,
+      finalizationMode: "selected_claims" as const,
+      groundingStatus: "verified" as const,
+      originalAnswerHash: "d".repeat(64),
+      outcome: "answered" as const,
+      providerRequestIds: { draft: "provider-draft-1", selector: "provider-selector-1" },
+      receiptHash: "b".repeat(64),
+      requestCoverage: "complete" as const,
+      selectorContractVersion: 7 as const,
+      selectorHash: "e".repeat(64),
+      selectorOperationId: "selector-operation-1",
+      sessionId: "evidence-session-1",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0,
+      usage: {
+        draft: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          estimatedCostMicros: null,
+          inputTokens: 10,
+          outputTokens: 5,
+          reasoningTokens: 0,
+          totalTokens: 15
+        },
+        selector: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          estimatedCostMicros: null,
+          inputTokens: 8,
+          outputTokens: 4,
+          reasoningTokens: 0,
+          totalTokens: 12
+        }
+      },
+      version: 7 as const
+    }
+  };
+}
+
 function createHarness(options: Readonly<{
   attachmentLimits?: ReturnType<NonNullable<RunRecoveryDeps["getAttachmentLimits"]>>;
   completeRun?: boolean;
   controls?: readonly (RunControlRecord | null)[];
   failRun?: boolean;
   groundKnowledgeAnswer?: RunRecoveryRepository["groundKnowledgeAnswer"];
+  groundKnowledgeAnswerV5?: RunRecoveryRepository["groundKnowledgeAnswerV5"];
   liveRunIds?: readonly string[];
   knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
   knowledgeAdmission?: RunRecoveryDeps["knowledgeAdmission"];
+  knowledgeFullContextDispatchRecovery?: Awaited<ReturnType<
+    NonNullable<RunRecoveryRepository["loadKnowledgeFullContextDispatchRecovery"]>
+  >>;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   focusedKnowledgeRecoveryScope?: FocusedKnowledgeRecoveryScope | null;
   focusedKnowledgeScopeExclusions?: readonly KnowledgeRunAdmissionExclusion[] | null;
@@ -346,8 +403,20 @@ function createHarness(options: Readonly<{
     ...(options.groundKnowledgeAnswer
       ? { groundKnowledgeAnswer: options.groundKnowledgeAnswer }
       : {}),
+    ...(options.groundKnowledgeAnswerV5 || options.knowledgeProviderDispatch
+      ? {
+          groundKnowledgeAnswerV5: options.groundKnowledgeAnswerV5 ??
+            (async () => recoveredKnowledgeV5Finalization())
+        }
+      : {}),
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
+    ...(options.knowledgeFullContextDispatchRecovery
+      ? {
+          loadKnowledgeFullContextDispatchRecovery: async () =>
+            options.knowledgeFullContextDispatchRecovery!
+        }
+      : {}),
     loadFocusedKnowledgeScopeExclusions: async () =>
       options.focusedKnowledgeScopeExclusions === undefined
         ? []
@@ -646,6 +715,8 @@ function knowledgeProviderDispatchRecorder(
           : "ambiguous" as const;
   const dispatch: StoredKnowledgeEvidenceDispatch = {
     attempt: {
+      acceptedRequest: null,
+      acceptedResult: null,
       actualUsage: state === "settled" ? {
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
@@ -657,7 +728,9 @@ function knowledgeProviderDispatchRecorder(
       } : null,
       ambiguousAt: state === "ambiguous" ? new Date("2026-07-12T09:02:00.000Z") : null,
       checkpointHash: "a".repeat(64),
+      contractVersion: null,
       dispatchedAt: state === "reserved" ? null : new Date("2026-07-12T09:01:00.000Z"),
+      evidenceReceiptHash: null,
       estimatedUsage: {
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
@@ -691,6 +764,8 @@ function knowledgeProviderDispatchRecorder(
       purpose: "answer",
       releasedAt: state === "released" ? new Date("2026-07-12T09:02:00.000Z") : null,
       requestHash: "b".repeat(64),
+      resultAcceptedAt: null,
+      resultHash: null,
       roundIndex: 0,
       settledAt: state === "settled" ? new Date("2026-07-12T09:02:00.000Z") : null,
       state
@@ -1514,13 +1589,7 @@ describe("run recovery", () => {
       resourceType: "source"
     }] as const;
     const dispatch = knowledgeProviderDispatchRecorder("dispatch");
-    let prepared = false;
-    vi.mocked(dispatch.lifecycle.inspect).mockImplementation(async () =>
-      prepared ? dispatch.dispatch : null);
-    vi.mocked(dispatch.lifecycle.prepare).mockImplementation(async () => {
-      prepared = true;
-      return dispatch.prepared;
-    });
+    vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
     const execute = vi.fn(async () => focusedKnowledgeRetrievalResult());
     const requests: ProviderRunRequest[] = [];
     const harness = createHarness({
@@ -1549,8 +1618,28 @@ describe("run recovery", () => {
             requests.push(request);
             return {
               ...providerResult,
-              finalText: "AIQSA_KB_STATUS=ANSWERED\nRecovered answer [K1]",
-              providerResponseId: "response-recovered-focused"
+              finalText: requests.length === 1
+                ? JSON.stringify({
+                    dimensions: [{ description: "The requested answer.", id: "D1" }],
+                    version: 1
+                  })
+                : requests.length === 2
+                ? JSON.stringify({
+                    claims: [{ citationHints: ["K1"], text: "Recovered focused evidence" }],
+                    version: 1
+                  })
+                  : JSON.stringify({
+                      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+                      coverage: [{
+                        id: "D1",
+                        status: "covered",
+                        supportIds: ["C1"]
+                      }],
+                      extractIds: [],
+                      insufficientReason: "not_applicable",
+                      version: 1
+                    }),
+              providerResponseId: `response-recovered-${requests.length}`
             };
           }
         }
@@ -1585,10 +1674,132 @@ describe("run recovery", () => {
           "2 selected Knowledge resource(s) were unavailable; do not claim complete coverage."
       })
     }));
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ toolChoice: "none" });
-    expect(requests[0]?.tools).toBeUndefined();
-    expect(requests[0]?.prompt.knowledgeAnswerContract).toBe(1);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      contractVersion: 20,
+      purpose: "knowledge_coverage_planner_v20"
+    }));
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      contractVersion: 20,
+      purpose: "knowledge_answer_draft_v20"
+    }));
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      contractVersion: 16,
+      purpose: "knowledge_grounded_selector_v16"
+    }));
+    expect(requests).toHaveLength(3);
+    expect(requests.every((request) => request.toolChoice === "none" && !request.tools)).toBe(true);
+    expect(requests.every((request) => request.prompt.knowledgeAnswerContract === undefined))
+      .toBe(true);
+    expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
+  });
+
+  it("rebuilds full-context evidence before starting Draft V5 without retrieval", async () => {
+    const base = normalizedKnowledgeRequest();
+    const normalizedRequest: NormalizedRunRequest = {
+      ...base,
+      knowledgeAnswering: {
+        answerPolicy: DEFAULT_KNOWLEDGE_ANSWER_POLICY,
+        approximateDocumentTokens: 100,
+        evidenceCount: 1,
+        exactDocumentTokens: 100,
+        route: "full_context_v1",
+        version: 1
+      },
+      modelCapabilities: {
+        ...base.modelCapabilities,
+        contextWindow: 10_000,
+        toolCalling: false
+      },
+      toolMode: "none"
+    };
+    const draft = packKnowledgeEvidenceDispatchManifest({
+      allowExpandedContextOmission: false,
+      candidates: [{
+        ambiguity: "none",
+        evidenceId: "full-context-evidence-1:result:1",
+        exactExcerpt: "Recovered full-context evidence",
+        fileName: "recovery.txt",
+        handle: "K1",
+        locator: "page=1; heading=Recovery; source-passage=1",
+        operationOrdinal: 0,
+        resultOrdinal: 1,
+        sourceAlias: "S1",
+        sourceLabel: "Recovery source",
+        sourceTruncated: false,
+        sourceVersionNumber: 1,
+        state: "available"
+      }],
+      coverageStatement: "The full admitted corpus is included with no passage omitted.",
+      footer: "</private_knowledge_evidence>",
+      header: '<private_knowledge_evidence version="10" coverage="full_admitted_corpus">',
+      maximumBytes: 28_000,
+      maximumTokens: 7_000,
+      profileId: "openai:gpt-test",
+      promptFragmentVersion: 16,
+      runtimeVersion: 2
+    });
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch", draft);
+    vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      knowledgeFullContextDispatchRecovery: {
+        draft,
+        evidenceBindings: [{
+          dispatchEvidenceId: "full-context-evidence-1:result:1",
+          evidenceItemId: "evidence-item-1"
+        }]
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providerDispatchRecoveryRequest: normalizedRequest,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              ...providerResult,
+              finalText: requests.length === 1
+                ? JSON.stringify({
+                    dimensions: [{ description: "The requested answer.", id: "D1" }],
+                    version: 1
+                  })
+                : requests.length === 2
+                ? JSON.stringify({
+                    claims: [{ citationHints: ["K1"], text: "Recovered full-context evidence" }],
+                    version: 1
+                  })
+                  : JSON.stringify({
+                      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+                      coverage: [{
+                        id: "D1",
+                        status: "covered",
+                        supportIds: ["C1"]
+                      }],
+                      extractIds: [],
+                      insufficientReason: "not_applicable",
+                      version: 1
+                    })
+            };
+          }
+        }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toHaveLength(3);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      evidenceBindings: [{
+        dispatchEvidenceId: "full-context-evidence-1:result:1",
+        evidenceItemId: "evidence-item-1"
+      }],
+      purpose: "knowledge_coverage_planner_v20"
+    }));
+    expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
+    expect(harness.state.failed).toEqual([]);
   });
 
   it("terminalizes zero focused retrieval candidates without answer-provider I/O or retry", async () => {
@@ -1906,6 +2117,8 @@ describe("run recovery", () => {
   it("recovers a pending search_knowledge call and replays its result into continuation", async () => {
     const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
     const egress = createRecoveryMemoryEgressRecorder();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
     const execute = vi.fn(async (call: { id: string; name: string }) => {
       const result = focusedKnowledgeRetrievalResult();
       return { ...result, callId: call.id, name: call.name };
@@ -1925,13 +2138,40 @@ describe("run recovery", () => {
         tool: knowledgeRetrievalTool,
         tools: [knowledgeRetrievalTool]
       },
+      groundKnowledgeAnswerV5: async () =>
+        recoveredKnowledgeV5Finalization("Recovered answer"),
+      knowledgeProviderDispatch: dispatch.lifecycle,
       memoryEgress: egress.service,
+      providerDispatchRecoveryRequest: normalizedKnowledgeRequest(),
       providers: {
         openai: {
           buildRequestPreview: () => ({}),
           async *stream(request) {
             requests.push(request);
-            return providerResult;
+            if (request.tools?.length) return providerResult;
+            const answerOperationOrdinal = requests.filter(
+              (candidate) => !candidate.tools?.length
+            ).length;
+            return {
+              ...providerResult,
+              finalText: answerOperationOrdinal === 1
+                ? JSON.stringify({
+                    dimensions: [{ description: "The requested answer.", id: "D1" }],
+                    version: 1
+                  })
+                : answerOperationOrdinal === 2
+                ? JSON.stringify({
+                    claims: [{ citationHints: ["K1"], text: "Recovered focused evidence" }],
+                    version: 1
+                  })
+                : JSON.stringify({
+                    claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+                    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+                    extractIds: [],
+                    insufficientReason: "not_applicable",
+                    version: 1
+                  })
+            };
           }
         }
       }
@@ -1958,13 +2198,69 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(requests).toHaveLength(1);
+    expect(harness.state.failed).toEqual([]);
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered answer" });
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
+    expect(requests).toHaveLength(4);
     expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain(
       "Recovered focused evidence"
     );
     expect(egress.began.some((receipt) => receipt.destinationKind === "knowledge"))
       .toBe(true);
-    expect(harness.state.completed).toMatchObject({ finalText: "Recovered answer" });
+  });
+
+  it("terminalizes a recovered Knowledge tool loop with zero evidence without exposing provider text", async () => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const execute = vi.fn(async (call: { id: string; name: string }) => ({
+      ...focusedKnowledgeZeroCandidateResult(),
+      callId: call.id,
+      name: call.name
+    }));
+    const stream = vi.fn(async function* () {
+      yield { data: { delta: "UNTRUSTED_PROVIDER_FINAL_TEXT" }, type: "token" } as const;
+      return providerResult;
+    });
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight: vi.fn(async () => ({ kind: "admitted" as const })),
+        tool: knowledgeRetrievalTool,
+        tools: [knowledgeRetrievalTool]
+      },
+      providers: { openai: { buildRequestPreview: () => ({}), stream } }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "missing evidence", sourceAliases: [] },
+      mcpBinding: null,
+      providerCallId: "knowledge-provider-call-empty",
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [knowledgeCall], phase: "tools_pending" }),
+      knowledgeScope: {
+        bindings: authorization.admitted.bindings,
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan,
+        resolvedSourceCount: 1
+      },
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(stream).toHaveBeenCalledOnce();
+    expect(harness.state.completed?.finalText).toBe(KNOWLEDGE_INSUFFICIENT_MESSAGE);
+    expect(harness.state.assistantTexts).toEqual([]);
     expect(harness.state.failed).toEqual([]);
   });
 

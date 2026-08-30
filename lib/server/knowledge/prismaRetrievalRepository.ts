@@ -51,6 +51,13 @@ import {
 import {
   executeKnowledgeRetrievalCore
 } from "./prismaRetrievalCore";
+import { KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS } from "./hierarchicalIndex";
+import {
+  KnowledgeParentContextError,
+  type KnowledgeParentContextLoader,
+  type KnowledgeParentContextRow
+} from "./parentContextExpansion";
+import { decodeKnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import {
   decodeKnowledgeBudgetPolicy,
   estimatedKnowledgeEmbeddingCostMicros,
@@ -63,12 +70,20 @@ import {
   KNOWLEDGE_EXACT_TOOL_NAME,
   KNOWLEDGE_EXECUTION_TOOL_NAMES,
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+  KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
+  KNOWLEDGE_SCOPE_MAX_SOURCES,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER,
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_SEARCH_TOOL_NAME
 } from "./retrievalTypes";
 import { settleKnowledgeBudgetReservationReceipt } from "./knowledgeBudgetReservationRepository";
+import {
+  createKnowledgePassageBm25Search,
+  type KnowledgePassageBm25Search
+} from "./searchRetrieval";
 
 type RetrievalPrisma = Pick<
   PrismaClient,
@@ -79,6 +94,7 @@ type RetrievalPrisma = Pick<
   | "knowledgeRunBinding"
   | "knowledgeRunProfileBinding"
   | "knowledgeRunSourceBinding"
+  | "knowledgeBaseSnapshotSource"
   | "knowledgeRetrievalSession"
   | "knowledgeRunScope"
   | "knowledgeArtifactSectionIndex"
@@ -87,6 +103,51 @@ type RetrievalPrisma = Pick<
   | "modelRun"
   | "modelRunToolCall"
 > & AcceptedEmbeddingRuntimeStore;
+
+const KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS = 30_000;
+const KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS = 5_000;
+const KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS = 35_000;
+
+function retrievalQueryTimedOut(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && (
+    error.code === "P2028" ||
+    error.code === "P2010" && record(error.meta) && error.meta.code === "57014"
+  );
+}
+
+/**
+ * A Prisma AbortSignal cannot cancel an in-flight raw PostgreSQL statement.
+ * Run each retrieval statement in its own short transaction so the server-side
+ * deadline is installed before the expensive statement begins. Keeping this
+ * wrapper at the query boundary also avoids holding a transaction open while
+ * OpenSearch or the hosted reranker runs.
+ */
+function boundedRetrievalCoreClient(
+  client: Pick<RetrievalPrisma, "$transaction">
+): Parameters<typeof executeKnowledgeRetrievalCore>[0] {
+  return {
+    async $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> {
+      try {
+        return await client.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT set_config(
+            'statement_timeout',
+            ${String(KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS)},
+            true
+          )`;
+          return tx.$queryRaw<T>(query);
+        }, {
+          maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,
+          timeout: KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS
+        });
+      } catch (error) {
+        if (retrievalQueryTimedOut(error)) {
+          throw new Error("knowledge_retrieval_query_timed_out", { cause: error });
+        }
+        throw error;
+      }
+    }
+  };
+}
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
@@ -151,10 +212,26 @@ function passageDocumentContext(
   return decoded;
 }
 
+const PASSAGE_LAYOUT_KINDS = new Set<KnowledgeHybridPassage["layoutKind"]>([
+  "body",
+  "field_ambiguous",
+  "field_pair",
+  "table_ambiguous",
+  "table_row",
+  "table_row_projection"
+]);
+
+/** Structured layoutKind column first; the retired English contextPrefix
+ * markers remain decode-only compatibility for legacy rows. */
 function passageLayoutKind(
+  storedLayoutKind: string | null,
   contextPrefix: string,
   documentContext: KnowledgeDocumentContextV1 | null
 ): KnowledgeHybridPassage["layoutKind"] {
+  if (storedLayoutKind &&
+    PASSAGE_LAYOUT_KINDS.has(storedLayoutKind as KnowledgeHybridPassage["layoutKind"])) {
+    return storedLayoutKind as KnowledgeHybridPassage["layoutKind"];
+  }
   if (documentContext) return documentContext.locator.kind;
   const marker = contextPrefix.split("\n", 1)[0];
   if (marker === "Evidence layout: table_ambiguous_v1") return "table_ambiguous";
@@ -177,6 +254,7 @@ const SOURCE_READ_PASSAGE_SELECT = {
   documentContext: true,
   headingPath: true,
   id: true,
+  layoutKind: true,
   ordinal: true,
   page: true,
   sectionId: true,
@@ -198,6 +276,7 @@ type SourceReadPassageRow = SourceReadAnchor & Readonly<{
   contentHash: string;
   contextPrefix: string;
   id: string;
+  layoutKind: string | null;
   sourceName: string;
   text: string;
 }>;
@@ -267,10 +346,112 @@ function coherentSourceReadTableRow<T extends SourceReadPassageRow>(
   return Object.freeze(projected.map(({ row }) => row));
 }
 
+/**
+ * FR-14 canonical-section window loader. It re-resolves the ready compatible
+ * hierarchical index of each admitted source artifact with the same rule the
+ * retrieval SQL applies, then reads the bounded ordinal window of each hit's
+ * canonical section through the `KAPI_section_ordinal_idx` path — the exact
+ * shape the internal `read_source` service already uses. Structurally invalid
+ * persisted rows throw `KnowledgeParentContextError`,
+ * which the retrieval core degrades to atomic evidence with a content-free
+ * reason. Database/query failures deliberately propagate: they are not a
+ * parent-expansion outage and must never be hidden by the fallback path.
+ */
+export function createPrismaKnowledgeParentContextLoader(
+  client: Pick<RetrievalPrisma, "knowledgeArtifactPassageIndex" | "knowledgeSourceIndexArtifact">
+): KnowledgeParentContextLoader {
+  return async (requests) => {
+    if (requests.length === 0) return new Map();
+    const byArtifact = new Map(requests.map((request) => [request.sourceArtifactId, request]));
+    const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
+      select: {
+        hierarchicalIndexes: {
+          orderBy: { schemaVersion: "desc" },
+          select: { id: true },
+          take: 1,
+          where: {
+            schemaVersion: { in: [...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS] },
+            state: "ready"
+          }
+        },
+        id: true,
+        sourceVersionId: true
+      },
+      where: { id: { in: [...byArtifact.keys()] }, state: "ready" }
+    });
+    const indexByArtifact = new Map(artifacts.flatMap((artifact) => {
+      const request = byArtifact.get(artifact.id);
+      const indexArtifactId = artifact.hierarchicalIndexes[0]?.id;
+      return request && indexArtifactId && artifact.sourceVersionId === request.documentVersionId
+        ? [[artifact.id, indexArtifactId] as const]
+        : [];
+    }));
+    const scoped = requests.flatMap((request) => {
+      const indexArtifactId = indexByArtifact.get(request.sourceArtifactId);
+      return indexArtifactId ? [{ indexArtifactId, request }] : [];
+    });
+    if (scoped.length === 0) return new Map();
+    const rows = await client.knowledgeArtifactPassageIndex.findMany({
+      orderBy: { ordinal: "asc" },
+      select: {
+        contentHash: true,
+        contextPrefix: true,
+        documentContext: true,
+        id: true,
+        indexArtifactId: true,
+        layoutKind: true,
+        ordinal: true,
+        page: true,
+        sectionId: true,
+        text: true
+      },
+      where: {
+        OR: scoped.map((entry) => ({
+          indexArtifactId: entry.indexArtifactId,
+          ordinal: { gte: entry.request.fromOrdinal, lte: entry.request.toOrdinal },
+          sectionId: entry.request.sectionId
+        }))
+      }
+    });
+    const windows = new Map<string, KnowledgeParentContextRow[]>();
+    for (const entry of scoped) {
+      const window: KnowledgeParentContextRow[] = [];
+      for (const row of rows) {
+        if (row.indexArtifactId !== entry.indexArtifactId ||
+          row.sectionId !== entry.request.sectionId ||
+          row.ordinal < entry.request.fromOrdinal ||
+          row.ordinal > entry.request.toOrdinal) continue;
+        const documentContext = row.documentContext === null
+          ? null
+          : decodeKnowledgeDocumentContext(row.documentContext);
+        if (row.documentContext !== null && documentContext === null) {
+          throw new KnowledgeParentContextError("parent_context_rows_invalid");
+        }
+        window.push({
+          contentHash: row.contentHash.trim(),
+          documentContext,
+          id: row.id,
+          layoutKind:
+            passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext) ?? "body",
+          ordinal: row.ordinal,
+          page: row.page,
+          sectionId: row.sectionId,
+          text: row.text
+        });
+      }
+      if (window.length > 0) windows.set(entry.request.chunkId, window);
+    }
+    return windows;
+  };
+}
+
 export function createPrismaKnowledgeRetrievalStore(
-  client: RetrievalPrisma
+  client: RetrievalPrisma,
+  lexicalSearch: KnowledgePassageBm25Search = createKnowledgePassageBm25Search()
 ): KnowledgeRetrievalStore {
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
+  const parentContextLoader = createPrismaKnowledgeParentContextLoader(client);
+  const retrievalCoreClient = boundedRetrievalCoreClient(client);
   return {
     async budgetState(input): Promise<KnowledgeBudgetState | null> {
       const expectedToolNames = Prisma.sql`ARRAY[${Prisma.join(
@@ -386,12 +567,18 @@ export function createPrismaKnowledgeRetrievalStore(
           (counts.get(entry.bindingOrdinal) ?? 0) + 1
         ), new Map<number, number>()).values()].some((count) => count > 2)
       ) throw new Error("knowledge_query_vector_invalid");
-      const result = await executeKnowledgeRetrievalCore(client, {
+      const result = await executeKnowledgeRetrievalCore(retrievalCoreClient, {
         ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
         excludedContentHashes: input.excludedContentHashes,
+        lexicalSearch,
+        // FR-14/FR-15: child-to-parent expansion applies only to automatic
+        // search results; bounded exact reads and metadata discovery never
+        // expand, and receipt replay short-circuits before this call.
+        ...(input.operation === "automatic_search" ? { parentContextLoader } : {}),
         query: input.query,
+        ...(input.rerank ? { rerank: input.rerank } : {}),
         resultLimit: input.resultLimit,
         runId: input.runId,
         ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
@@ -403,6 +590,7 @@ export function createPrismaKnowledgeRetrievalStore(
         candidateCount: result.candidateCount,
         candidateCounts: result.candidateCounts,
         canonicalSourceProvenance: result.canonicalSourceProvenance,
+        lexicalBackendEvidence: result.lexicalBackendEvidence,
         passages: result.passages.map((passage): KnowledgeHybridPassage => ({
           annRank: passage.annRank,
           baseName: passage.baseName,
@@ -418,11 +606,13 @@ export function createPrismaKnowledgeRetrievalStore(
           ftsRank: passage.ftsRank,
           ftsScore: passage.ftsScore,
           ...(passage.expandedContext ? { expandedContext: passage.expandedContext } : {}),
+          ...(passage.expansion ? { expansion: passage.expansion } : {}),
           fusedScore: passage.fusedScore,
           headingPath: passage.headingPath,
           knowledgeBaseId: passage.knowledgeBaseId,
           layoutKind: passage.layoutKind,
           page: passage.page,
+          ...(passage.rerankScore !== undefined ? { rerankScore: passage.rerankScore } : {}),
           sectionId: passage.sectionId,
           signalProvenance: passage.signals,
           sourceArtifactId: passage.sourceArtifactId,
@@ -432,6 +622,7 @@ export function createPrismaKnowledgeRetrievalStore(
           vectorScore: passage.vectorScore
         })),
         rankingEvidence: result.rankingEvidence,
+        ...(result.rerankerBinding ? { rerankerBinding: result.rerankerBinding } : {}),
         vectorSearchEvidence:
           input.operation === "find_exact" || input.operation === "discover_sources"
             ? []
@@ -490,6 +681,7 @@ export function createPrismaKnowledgeRetrievalStore(
         headingPath: true,
         id: true,
         indexArtifactId: true,
+        layoutKind: true,
         ordinal: true,
         page: true,
         sectionId: true,
@@ -555,7 +747,7 @@ export function createPrismaKnowledgeRetrievalStore(
           headingPath: anchor.headingPath,
           knowledgeBaseId: binding.profileBinding.id,
           layoutKind: hit.field === "body"
-            ? passageLayoutKind(anchor.contextPrefix, documentContext)
+            ? passageLayoutKind(anchor.layoutKind, anchor.contextPrefix, documentContext)
             : "body",
           page: hit.page ?? anchor.page,
           sectionId: hit.sectionId ?? anchor.sectionId,
@@ -874,7 +1066,7 @@ export function createPrismaKnowledgeRetrievalStore(
             fusedScore: 1 / (60 + rank),
             headingPath: row.headingPath,
             knowledgeBaseId: input.binding.knowledgeBaseId,
-            layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
+            layoutKind: passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext),
             page: row.page,
             sectionId: row.sectionId,
             sourceArtifactId: input.sourceArtifactId,
@@ -938,7 +1130,7 @@ export function createPrismaKnowledgeRetrievalStore(
           fusedScore: 1 / (60 + rank),
           headingPath: row.headingPath,
           knowledgeBaseId: input.binding.knowledgeBaseId,
-          layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
+          layoutKind: passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext),
           page: row.page,
           sectionId: row.sectionId,
           sourceArtifactId: input.sourceArtifactId,
@@ -992,6 +1184,7 @@ export function createPrismaKnowledgeRetrievalStore(
           failureCode: true,
           fusion: true,
           invocationOrdinal: true,
+          lexicalBackendEvidence: true,
           operation: true,
           outcome: true,
           providerText: true,
@@ -1068,6 +1261,9 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(receipt.failureCode ? { failureCode: receipt.failureCode } : {}),
         fusion: receipt.fusion,
         invocationOrdinal: receipt.invocationOrdinal,
+        ...(receipt.operation === "automatic_search"
+          ? { lexicalBackend: receipt.lexicalBackendEvidence }
+          : {}),
         operation: receipt.operation,
         outcome: receipt.outcome,
         providerText: receipt.providerText,
@@ -1084,7 +1280,11 @@ export function createPrismaKnowledgeRetrievalStore(
             ? { exact: receipt.readReceipt }
             : receipt.operation === "discover_sources"
               ? { discovery: receipt.readReceipt }
-              : {};
+              : receipt.operation === "automatic_search" &&
+                  record(receipt.readReceipt) &&
+                  receipt.readReceipt.rerankerBinding !== undefined
+                ? { rerankerBinding: receipt.readReceipt.rerankerBinding }
+                : {};
       return decodeKnowledgeRetrievalEvidence({
         ...common,
         ...operationReceipt,
@@ -1092,7 +1292,16 @@ export function createPrismaKnowledgeRetrievalStore(
       });
     },
     async loadBindings(input) {
-      const profiles = await client.knowledgeRunProfileBinding.findMany({
+      const scope = await client.knowledgeRunScope.findFirst({
+        select: { sourceBindingStrategy: true },
+        where: { modelRun: { id: input.runId, userId: input.userId } }
+      });
+      if (!scope || scope.sourceBindingStrategy !== KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER &&
+        scope.sourceBindingStrategy !== KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED) {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
+      const profiles = scope.sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+        ? await client.knowledgeRunProfileBinding.findMany({
         orderBy: { ordinal: "asc" },
         select: {
           embeddingConnectionId: true,
@@ -1126,7 +1335,8 @@ export function createPrismaKnowledgeRetrievalStore(
             }
           }
         }
-      });
+          })
+        : [];
       if (profiles.length > 0) {
         return profiles.map((profile): KnowledgeAcceptedBinding => {
           const selectedSourceIds = profile.sourceBindings.flatMap((source) =>
@@ -1171,6 +1381,7 @@ export function createPrismaKnowledgeRetrievalStore(
           knowledgeBaseId: true,
           knowledgeBaseSnapshotId: true,
           ordinal: true,
+          profileBinding: { select: { profileRevisionId: true } },
           selectedSourceIds: true,
           targetDimension: true,
           vectorSpaceFingerprint: true
@@ -1199,16 +1410,213 @@ export function createPrismaKnowledgeRetrievalStore(
         knowledgeBaseId: row.knowledgeBaseId,
         knowledgeBaseSnapshotId: row.knowledgeBaseSnapshotId,
         ordinal: row.ordinal,
+        ...(row.profileBinding
+          ? { profileRevisionId: row.profileBinding.profileRevisionId }
+          : {}),
         selectedSourceIds: [...row.selectedSourceIds],
         targetDimension: row.targetDimension as 1024 | 1536,
         vectorSpaceFingerprint: row.vectorSpaceFingerprint.trim()
         };
       });
     },
+    async materializeScopeAliases(input): Promise<void> {
+      if (input.sourceProvenance.length === 0) return;
+      if (input.sourceProvenance.length > KNOWLEDGE_RESULT_LIMIT ||
+        new Set(input.sourceProvenance.map((source) => JSON.stringify([
+          source.sourceId,
+          source.sourceVersionId,
+          source.artifactId
+        ]))).size !== input.sourceProvenance.length) {
+        throw new Error("knowledge_canonical_source_provenance_invalid");
+      }
+      await client.$transaction(async (tx) => {
+        const scopes = await tx.$queryRaw<Array<{
+          projectId: string | null;
+          sourceBindingStrategy: string;
+        }>>(Prisma.sql`
+          SELECT chat."projectId", scope."sourceBindingStrategy"
+          FROM "KnowledgeRunScope" AS scope
+          INNER JOIN "ModelRun" AS run ON run."id" = scope."modelRunId"
+          INNER JOIN "Chat" AS chat ON chat."id" = run."chatId"
+          WHERE run."id" = ${input.runId}
+            AND run."userId" = ${input.userId}
+          FOR UPDATE OF scope
+        `);
+        const scope = scopes[0];
+        if (!scope) throw new Error("knowledge_run_scope_unavailable");
+        if (scope.sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER) return;
+        if (scope.sourceBindingStrategy !== KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED) {
+          throw new Error("knowledge_run_scope_invalid_in_storage");
+        }
+        const bindings = await tx.knowledgeRunBinding.findMany({
+          orderBy: { ordinal: "asc" },
+          select: {
+            indexGenerationId: true,
+            knowledgeBaseId: true,
+            knowledgeBaseSnapshotId: true,
+            ordinal: true,
+            profileBindingId: true
+          },
+          where: { modelRunId: input.runId }
+        });
+        if (bindings.length < 1 || bindings.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+          bindings.some((binding, ordinal) => binding.ordinal !== ordinal ||
+            !binding.knowledgeBaseSnapshotId || !binding.profileBindingId)) {
+          throw new Error("knowledge_run_scope_invalid_in_storage");
+        }
+        const snapshotIds = bindings.flatMap((binding) =>
+          binding.knowledgeBaseSnapshotId ? [binding.knowledgeBaseSnapshotId] : []);
+        const snapshotSources = await tx.knowledgeBaseSnapshotSource.findMany({
+          select: {
+            artifactId: true,
+            knowledgeBaseId: true,
+            snapshotId: true,
+            source: { select: { name: true, ownerUserId: true } },
+            sourceId: true,
+            sourceVersion: { select: { fileName: true, versionNumber: true } },
+            sourceVersionId: true
+          },
+          where: {
+            artifactId: { in: input.sourceProvenance.map((source) => source.artifactId) },
+            snapshotId: { in: snapshotIds },
+            sourceId: { in: input.sourceProvenance.map((source) => source.sourceId) },
+            sourceVersionId: {
+              in: input.sourceProvenance.map((source) => source.sourceVersionId)
+            }
+          }
+        });
+        const membershipKey = (value: Readonly<{
+          artifactId: string;
+          snapshotId: string;
+          sourceId: string;
+          sourceVersionId: string;
+        }>) => JSON.stringify([
+          value.snapshotId,
+          value.sourceId,
+          value.sourceVersionId,
+          value.artifactId
+        ]);
+        const memberships = new Map(snapshotSources.map((source) => [
+          membershipKey(source),
+          source
+        ]));
+        const prepared = input.sourceProvenance.map((source) => {
+          if (source.bindings.length < 1 ||
+            source.primaryBindingOrdinal !== source.bindings[0]?.bindingOrdinal ||
+            source.bindings.some((binding, index) => index > 0 &&
+              source.bindings[index - 1]!.bindingOrdinal >= binding.bindingOrdinal)) {
+            throw new Error("knowledge_canonical_source_provenance_invalid");
+          }
+          for (const provenance of source.bindings) {
+            const binding = bindings[provenance.bindingOrdinal];
+            if (!binding || binding.knowledgeBaseId !== provenance.knowledgeBaseId ||
+              !binding.knowledgeBaseSnapshotId || !memberships.has(membershipKey({
+                artifactId: source.artifactId,
+                snapshotId: binding.knowledgeBaseSnapshotId,
+                sourceId: source.sourceId,
+                sourceVersionId: source.sourceVersionId
+              }))) {
+              throw new Error("knowledge_canonical_source_provenance_invalid");
+            }
+          }
+          const admittedMemberships = bindings.flatMap((binding) => {
+            if (!binding.knowledgeBaseSnapshotId || !binding.profileBindingId) return [];
+            const membership = memberships.get(membershipKey({
+              artifactId: source.artifactId,
+              snapshotId: binding.knowledgeBaseSnapshotId,
+              sourceId: source.sourceId,
+              sourceVersionId: source.sourceVersionId
+            }));
+            return membership ? [{ binding, membership }] : [];
+          });
+          const primary = admittedMemberships[0];
+          if (!primary || admittedMemberships.some(({ binding }) =>
+            binding.profileBindingId !== primary.binding.profileBindingId)) {
+            throw new Error("knowledge_canonical_source_provenance_invalid");
+          }
+          return Object.freeze({ admittedMemberships, primary, source });
+        });
+        const existing = await tx.knowledgeRunSourceBinding.findMany({
+          orderBy: { ordinal: "asc" },
+          select: {
+            ordinal: true,
+            sourceAlias: true,
+            sourceArtifactId: true,
+            sourceId: true,
+            sourceVersionId: true
+          },
+          where: { modelRunId: input.runId }
+        });
+        if (existing.length > KNOWLEDGE_SCOPE_MAX_SOURCES || existing.some((source, ordinal) =>
+          source.ordinal !== ordinal || source.sourceAlias !== `S${ordinal + 1}` ||
+          !source.sourceId || !source.sourceVersionId || !source.sourceArtifactId)) {
+          throw new Error("knowledge_run_scope_invalid_in_storage");
+        }
+        const existingKeys = new Set(existing.map((source) => JSON.stringify([
+          source.sourceId,
+          source.sourceVersionId,
+          source.sourceArtifactId
+        ])));
+        const missing = prepared.filter(({ source }) => !existingKeys.has(JSON.stringify([
+          source.sourceId,
+          source.sourceVersionId,
+          source.artifactId
+        ])));
+        if (existing.length + missing.length > KNOWLEDGE_SCOPE_MAX_SOURCES) {
+          throw new Error("knowledge_scope_alias_limit_exceeded");
+        }
+        for (const [offset, entry] of missing.entries()) {
+          const ordinal = existing.length + offset;
+          const baseProvenance = entry.admittedMemberships.map(({ binding }) => ({
+            indexGenerationId: binding.indexGenerationId,
+            knowledgeBaseId: binding.knowledgeBaseId
+          }));
+          const knowledgeBaseIds = baseProvenance.map(({ knowledgeBaseId }) => knowledgeBaseId);
+          await tx.knowledgeRunSourceBinding.create({
+            data: {
+              accessProvenance: json({
+                authority: {
+                  knowledgeBaseIds,
+                  owner: scope.projectId === null &&
+                    entry.primary.membership.source.ownerUserId === input.userId,
+                  projectId: scope.projectId
+                },
+                selectionProvenance: ["base"]
+              }),
+              baseProvenance: json(baseProvenance),
+              directSelected: false,
+              fileNameSnapshot: entry.primary.membership.sourceVersion.fileName,
+              modelRunId: input.runId,
+              ordinal,
+              profileBindingId: entry.primary.binding.profileBindingId!,
+              readinessState: "ready",
+              selectionKind: scope.projectId ? "project" : "base",
+              sourceAlias: `S${ordinal + 1}`,
+              sourceArtifactId: entry.source.artifactId,
+              sourceId: entry.source.sourceId,
+              sourceNameSnapshot: entry.primary.membership.source.name,
+              sourceVersionId: entry.source.sourceVersionId,
+              sourceVersionNumber: entry.primary.membership.sourceVersion.versionNumber
+            }
+          });
+        }
+      });
+    },
     async loadScopeAliases(input): Promise<readonly KnowledgeScopeAlias[]> {
+      const scope = await client.knowledgeRunScope.findFirst({
+        select: { sourceBindingStrategy: true },
+        where: { modelRun: { id: input.runId, userId: input.userId } }
+      });
+      if (!scope || scope.sourceBindingStrategy !== KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER &&
+        scope.sourceBindingStrategy !== KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED) {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
+      const disclosureBound = scope.sourceBindingStrategy ===
+        KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED;
       const canonicalSources = await client.knowledgeRunSourceBinding.findMany({
         orderBy: { ordinal: "asc" },
         select: {
+          baseProvenance: true,
           profileBinding: { select: { ordinal: true } },
           sourceAlias: true,
           sourceArtifactId: true,
@@ -1225,16 +1633,26 @@ export function createPrismaKnowledgeRetrievalStore(
           tombstonedAt: null
         }
       });
-      if (canonicalSources.length > 0) {
+      if (canonicalSources.length > 0 || disclosureBound) {
         const acceptedSourceIds = new Set(canonicalSources.flatMap((source) =>
           source.sourceId ? [source.sourceId] : []));
         const baseRows = await client.knowledgeRunBinding.findMany({
           orderBy: { ordinal: "asc" },
           select: {
             includeWholeBase: true,
+            indexGenerationId: true,
             knowledgeBase: { select: { name: true } },
+            knowledgeBaseId: true,
             knowledgeBaseSnapshot: {
-              select: { sources: { orderBy: { ordinal: "asc" }, select: { sourceId: true } } }
+              select: {
+                sources: {
+                  orderBy: { ordinal: "asc" },
+                  select: { sourceId: true },
+                  ...(disclosureBound
+                    ? { where: { sourceId: { in: [] } } }
+                    : {})
+                }
+              }
             },
             ordinal: true,
             profileBinding: { select: { ordinal: true } },
@@ -1245,10 +1663,23 @@ export function createPrismaKnowledgeRetrievalStore(
             profileBindingId: { not: null }
           }
         });
+        const baseById = new Map(baseRows.map((base) => [
+          base.knowledgeBaseId,
+          base
+        ]));
         const baseAliases: KnowledgeScopeAlias[] = baseRows.flatMap((base) => {
-          const profileOrdinal = base.profileBinding?.ordinal;
-          if (!Number.isSafeInteger(profileOrdinal) || profileOrdinal === undefined ||
-            profileOrdinal < 0 || profileOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS) return [];
+          const retrievalOrdinal = disclosureBound ? base.ordinal : base.profileBinding?.ordinal;
+          if (!Number.isSafeInteger(retrievalOrdinal) || retrievalOrdinal === undefined ||
+            retrievalOrdinal < 0 || retrievalOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS) return [];
+          if (disclosureBound) {
+            return [{
+              alias: `B${base.ordinal + 1}`,
+              bindingOrdinal: retrievalOrdinal,
+              bindingOrdinals: [retrievalOrdinal],
+              kind: "base" as const,
+              label: base.knowledgeBase.name
+            }];
+          }
           const selected = base.includeWholeBase
             ? base.knowledgeBaseSnapshot?.sources.map((source) => source.sourceId) ?? []
             : base.selectedSourceIds;
@@ -1257,8 +1688,8 @@ export function createPrismaKnowledgeRetrievalStore(
           if (sourceIds.length === 0) return [];
           return [{
             alias: `B${base.ordinal + 1}`,
-            bindingOrdinal: profileOrdinal,
-            bindingOrdinals: [profileOrdinal],
+            bindingOrdinal: retrievalOrdinal,
+            bindingOrdinals: [retrievalOrdinal],
             kind: "base" as const,
             label: base.knowledgeBase.name,
             sourceIds
@@ -1267,10 +1698,29 @@ export function createPrismaKnowledgeRetrievalStore(
         const sourceAliases: KnowledgeScopeAlias[] = canonicalSources.map((source) => {
           if (!source.sourceArtifactId || !source.sourceId || !source.sourceVersionId ||
             !source.sourceNameSnapshot) throw new Error("knowledge_scope_alias_invalid");
+          const disclosedBindingOrdinals = disclosureBound &&
+            Array.isArray(source.baseProvenance)
+            ? source.baseProvenance.map((entry) => {
+                if (!record(entry) || typeof entry.knowledgeBaseId !== "string" ||
+                  typeof entry.indexGenerationId !== "string") return null;
+                const base = baseById.get(entry.knowledgeBaseId);
+                return base?.indexGenerationId === entry.indexGenerationId
+                  ? base.ordinal
+                  : null;
+              }).sort((left, right) => (left ?? -1) - (right ?? -1))
+            : disclosureBound
+              ? []
+              : [source.profileBinding.ordinal];
+          if (disclosedBindingOrdinals.length < 1 ||
+            disclosedBindingOrdinals.some((ordinal) => ordinal === null) ||
+            new Set(disclosedBindingOrdinals).size !== disclosedBindingOrdinals.length) {
+            throw new Error("knowledge_scope_alias_invalid");
+          }
+          const bindingOrdinals = disclosedBindingOrdinals as number[];
           return {
             alias: source.sourceAlias,
-            bindingOrdinal: source.profileBinding.ordinal,
-            bindingOrdinals: [source.profileBinding.ordinal],
+            bindingOrdinal: bindingOrdinals[0]!,
+            bindingOrdinals,
             kind: "source",
             label: source.sourceNameSnapshot,
             sourceArtifactId: source.sourceArtifactId,
@@ -1425,15 +1875,26 @@ export function createPrismaKnowledgeRetrievalStore(
         receiptCount > 1) {
         throw new Error("knowledge_operation_receipt_invalid");
       }
+      // Legacy planner-era ranking fields stay rejected; only the current
+      // content-free hosted reranker execution evidence (V2) may be written,
+      // and only with an automatic-search receipt.
+      const rerankerBinding = input.evidence.rerankerBinding === undefined
+        ? undefined
+        : decodeKnowledgeRerankerBindingEvidenceV2(input.evidence.rerankerBinding);
+      const rerankScoresAllowed = Boolean(rerankerBinding &&
+        (rerankerBinding.status === "complete" || rerankerBinding.status === "partial"));
       if (input.evidence.postRerankOrder !== undefined ||
         input.evidence.preRerankOrder !== undefined ||
-        input.evidence.rerankerBinding !== undefined || input.evidence.threshold !== undefined ||
+        rerankerBinding === null || input.evidence.threshold !== undefined ||
+        rerankerBinding &&
+          (input.evidence.operation ?? "automatic_search") !== "automatic_search" ||
         input.evidence.budget && (
           "noveltyRatio" in input.evidence.budget ||
           "lowNoveltyStreak" in input.evidence.budget.usage
         ) ||
         input.evidence.results.some((result) =>
-          result.confidence !== undefined || result.rerankScore !== undefined)) {
+          result.confidence !== undefined ||
+          result.rerankScore !== undefined && !rerankScoresAllowed)) {
         throw new Error("knowledge_legacy_ranking_write_forbidden");
       }
       if (input.evidence.results.some((result) =>
@@ -1653,6 +2114,12 @@ export function createPrismaKnowledgeRetrievalStore(
                     : {}),
                   expanded: entry.result.textTruncated,
                   excerptBytes: entry.result.includedTextBytes,
+                  // Content-free FR-14 expansion facts only; expanded text
+                  // ships through providerText/results exactly like the
+                  // pre-existing neighbor context.
+                  ...(entry.result.expansion
+                    ? { expansion: entry.result.expansion }
+                    : {}),
                   ...(entry.result.layoutKind
                     ? { layoutKind: entry.result.layoutKind }
                     : {}),
@@ -1701,6 +2168,11 @@ export function createPrismaKnowledgeRetrievalStore(
           degradedFlags.add(`retrieval_${input.evidence.outcome}`);
         }
         if (input.evidence.budget?.stopReason) degradedFlags.add("budget_exhausted");
+        if (rerankerBinding?.status === "degraded") {
+          degradedFlags.add("knowledge_reranker_degraded");
+        } else if (rerankerBinding?.status === "partial") {
+          degradedFlags.add("knowledge_reranker_partial");
+        }
         await tx.knowledgeRetrievalSession.update({
           data: {
             degradedFlags: [...degradedFlags].sort(),
@@ -1731,6 +2203,9 @@ export function createPrismaKnowledgeRetrievalStore(
             fusion: evidence.fusion,
             id: knowledgeRunId,
             invocationOrdinal: evidence.invocationOrdinal,
+            lexicalBackendEvidence: evidence.operation === "automatic_search"
+              ? json(evidence.lexicalBackend)
+              : Prisma.DbNull,
             modelRunId: input.runId,
             modelRunToolCallId: input.modelRunToolCallId,
             ...(input.budgetReservation
@@ -1750,7 +2225,9 @@ export function createPrismaKnowledgeRetrievalStore(
               ? {
                   readReceipt: json(evidence.read ?? evidence.exact ?? evidence.discovery)
                 }
-              : {}),
+              : rerankerBinding
+                ? { readReceipt: json({ rerankerBinding }) }
+                : {}),
           }
         });
         if (evidenceItems.length > 0) {

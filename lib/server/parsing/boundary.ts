@@ -17,6 +17,12 @@ import {
   parseNativeTextPdf,
   type NativePdfParserOptions
 } from "./nativePdf";
+import {
+  PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
+  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
+  supplementImageHeavyPdfOcr
+} from "./ocrSupplement";
+import { parseInlineMarkdownBlocks } from "./inlineMarkdown";
 import { resolveDocumentParserRoute } from "./routing";
 import { parseSpreadsheetDocument } from "./spreadsheet";
 import type {
@@ -55,8 +61,10 @@ function inlineDocument(
     ...(maxChars === undefined ? {} : { maxChars }),
     mimeType: mediaType
   });
-  const blocks: ParsedDocumentBlock[] = extracted.text
-    ? [Object.freeze({
+  const blocks: readonly ParsedDocumentBlock[] = extracted.text
+    ? extracted.kind === "markdown"
+      ? parseInlineMarkdownBlocks(extracted.text)
+      : [Object.freeze({
         assetIds: Object.freeze([]),
         boundingBoxes: Object.freeze([]),
         headingPath: Object.freeze([]),
@@ -73,7 +81,7 @@ function inlineDocument(
           : extracted.kind === "json"
             ? "code"
             : "paragraph"
-      })]
+        })]
     : [];
 
   const status = extracted.truncated ? "partial" : "complete";
@@ -161,6 +169,10 @@ export class DocumentParserBoundary {
   async parse(input: DocumentParseInput): Promise<ParsedDocument> {
     if (input.signal?.aborted) throw abortReason(input.signal);
     if (input.bytes.byteLength === 0) throw new DocumentParserError("parser_rejected");
+    if (input.parserProfileVersion !== undefined &&
+      (!Number.isSafeInteger(input.parserProfileVersion) || input.parserProfileVersion < 1)) {
+      throw new DocumentParserError("parser_rejected");
+    }
 
     const route = resolveDocumentParserRoute(input.fileName, input.mimeType);
     if (!route) throw new DocumentParserError("parser_rejected");
@@ -176,6 +188,7 @@ export class DocumentParserBoundary {
     const errors: DocumentParserError[] = [];
     const attempts: ParsedDocumentParserAttempt[] = [];
     const candidates: ParsedDocument[] = [];
+    let nativeQualityReason: ParsedDocumentParserAttempt["reasonCode"];
     if (route.mediaType === "application/pdf" && this.#nativePdfLimits) {
       try {
         const native = await this.#nativePdfParser({
@@ -189,6 +202,7 @@ export class DocumentParserBoundary {
           outcome: "quality_failure",
           reasonCode: native.reasonCode ?? "native_pdf_quality_failure"
         }));
+        nativeQualityReason = native.reasonCode ?? "native_pdf_quality_failure";
       } catch (error) {
         if (input.signal?.aborted) throw abortReason(input.signal);
         const normalized = isDocumentParserError(error)
@@ -200,6 +214,12 @@ export class DocumentParserBoundary {
       }
     }
     const engines = this.#sidecarFallback ? route.engines : route.engines.slice(0, 1);
+    const shouldSupplementImageOcr = nativeQualityReason ===
+      "native_pdf_image_heavy_low_text" && this.#nativePdfLimits !== undefined &&
+      (input.parserProfileVersion === undefined || input.parserProfileVersion >=
+        PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION) &&
+      engines.includes("tika") && this.#adapters.tika !== undefined;
+    let imageOcrPrimary: ParsedDocument | null = null;
     for (const engine of engines) {
       if (input.signal?.aborted) throw abortReason(input.signal);
       const adapter = this.#adapters[engine];
@@ -213,7 +233,7 @@ export class DocumentParserBoundary {
       try {
         const parsed = await adapter.parse({ ...input, mediaType: route.mediaType });
         const qualityFailure = parsedDocumentNeedsFallback(parsed);
-        attempts.push(Object.freeze({
+        const attempt = Object.freeze({
           engine,
           errorCode: null,
           outcome: parsed.quality.usableBlockCount === 0 || !parsed.quality.encodingValid
@@ -223,11 +243,41 @@ export class DocumentParserBoundary {
               : qualityFailure
                 ? "quality_failure"
                 : "complete"
-        }));
+        } satisfies ParsedDocumentParserAttempt);
         if (parsed.quality.usableBlockCount > 0 && parsed.quality.encodingValid) {
           candidates.push(parsed);
         } else {
           errors.push(new DocumentParserError("parser_rejected", engine));
+        }
+        if (imageOcrPrimary && engine === "tika" && !qualityFailure) {
+          const supplemented = supplementImageHeavyPdfOcr(
+            imageOcrPrimary,
+            parsed,
+            this.#nativePdfLimits!,
+            {
+              segmentFallbackBlocks: input.parserProfileVersion === undefined ||
+                input.parserProfileVersion >=
+                  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+            }
+          );
+          attempts.push(supplemented.outcome === "rejected"
+            ? Object.freeze({ ...attempt, outcome: "quality_failure" })
+            : attempt);
+          return withParserEvidence(supplemented.document, attempts, {
+            additionalWarnings: supplemented.outcome === "rejected"
+              ? ["parser_fallback_failed"]
+              : []
+          });
+        }
+        attempts.push(attempt);
+        if (imageOcrPrimary && engine === "tika") {
+          return withParserEvidence(imageOcrPrimary, attempts, {
+            additionalWarnings: ["parser_fallback_failed"]
+          });
+        }
+        if (!qualityFailure && engine === "docling" && shouldSupplementImageOcr) {
+          imageOcrPrimary = parsed;
+          continue;
         }
         if (!qualityFailure) return withParserEvidence(parsed, attempts);
       } catch (error) {
@@ -235,6 +285,11 @@ export class DocumentParserBoundary {
         const normalized = isDocumentParserError(error) ? error : unavailable(engine);
         errors.push(normalized);
         attempts.push(attemptForError(engine, normalized));
+        if (imageOcrPrimary && engine === "tika") {
+          return withParserEvidence(imageOcrPrimary, attempts, {
+            additionalWarnings: ["parser_fallback_failed"]
+          });
+        }
         if (normalized.code === "parser_output_too_large") throw normalized;
       }
     }

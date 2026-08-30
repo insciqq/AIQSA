@@ -41,12 +41,13 @@ describe("Knowledge request parsing", () => {
     expect(knowledgeRetrievalTool.description).toContain(
       "Before declaring a multi-item request unsupported"
     );
-    expect(knowledgeRetrievalTool.description).toContain("character-for-character");
-    expect(knowledgeRetrievalTool.description).toContain("leading zeroes");
     expect(knowledgeRetrievalTool.description).toContain(
-      "retain the exact supported operands and units"
+      "separate private answer-draft and grounding stage"
     );
-    expect(knowledgeRetrievalTool.description).toContain("report ambiguity instead of guessing");
+    expect(knowledgeRetrievalTool.description).toContain(
+      "do not use this tool contract to author the final answer"
+    );
+    expect(knowledgeRetrievalTool.description).not.toContain("Answer only the requested claims");
     expect(parseKnowledgeExecutionRequest({
       arguments: { query: "Что сказано about SLA 99.9%?", sourceAliases: [] },
       name: KNOWLEDGE_SEARCH_TOOL_NAME

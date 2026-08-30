@@ -47,6 +47,7 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
   return {
     async listEmbeddingModels() { return []; },
     async listModelEndpoints() { return []; },
+    async listRerankModels() { return []; },
     async listModels() {
       return [{
         id: "vendor/model",
@@ -308,11 +309,12 @@ describe("admin provider draft tester", () => {
   });
 
   it("checks reranker deployments with a bounded score-only probe", async () => {
-    const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => [{
+    const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
+    const listRerankModels = vi.fn<OpenRouterDiscoveryClient["listRerankModels"]>(async () => [{
       id: "qwen/qwen3-reranker-8b",
       inputModalities: ["text"],
       name: "Qwen3 Reranker 8B",
-      outputModalities: ["text"],
+      outputModalities: ["rerank"],
       pricing: {},
       supportedParameters: []
     }]);
@@ -328,7 +330,7 @@ describe("admin provider draft tester", () => {
     }), { headers: { "content-type": "application/json" }, status: 200 }));
     const createFetch = vi.fn(() => fetchFn);
     const tester = createAdminProviderDraftTester({
-      createDiscoveryClient: () => discovery({ listModels }),
+      createDiscoveryClient: () => discovery({ listModels, listRerankModels }),
       createFetch
     });
 
@@ -367,7 +369,8 @@ describe("admin provider draft tester", () => {
       },
       status: "available"
     });
-    expect(listModels).toHaveBeenCalledOnce();
+    expect(listRerankModels).toHaveBeenCalledOnce();
+    expect(listModels).not.toHaveBeenCalled();
     expect(createFetch).toHaveBeenCalledOnce();
     const [url, init] = fetchFn.mock.calls[0] ?? [];
     expect(url).toBe("https://openrouter.ai/api/v1/rerank");

@@ -104,7 +104,8 @@ async function factRefs(
   tx: MemoryTransaction,
   userId: string,
   limit: number,
-  factVersionIds?: readonly string[]
+  factVersionIds?: readonly string[],
+  excludedSourceMessageIds: readonly string[] = []
 ): Promise<readonly MemoryFactContextRef[]> {
   if (limit <= 0) return [];
   const frozenIds = factVersionIds === undefined
@@ -140,6 +141,17 @@ async function factRefs(
       ${frozenIds === undefined
         ? Prisma.empty
         : Prisma.sql`AND version."id" IN (${Prisma.join(frozenIds)})`}
+      ${excludedSourceMessageIds.length === 0 ? Prisma.empty : Prisma.sql`
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "MemoryEvidence" AS evidence
+          WHERE evidence."userId" = version."userId"
+            AND evidence."factVersionId" = version."id"
+            AND evidence."messageId" IN (
+              ${Prisma.join(excludedSourceMessageIds)}
+            )
+        )
+      `}
     ORDER BY fact."pinned" DESC, fact."lastConfirmedAt" DESC NULLS LAST,
       version."systemFrom" DESC, version."id"
     LIMIT ${limit}
@@ -187,7 +199,8 @@ export async function loadMemoryFactContextRefs(
     tx,
     input.userId,
     MEMORY_FACT_MAX_CONTEXT_REFS - messages.length,
-    input.factVersionIds
+    input.factVersionIds,
+    input.messages.filter(({ evidenceEligible }) => evidenceEligible).map(({ id }) => id)
   );
   const bounded: MemoryFactContextRef[] = [];
   let characters = 0;

@@ -207,7 +207,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
         },
         operation: "discover_sources",
         profileRevisionId,
-        resolvedSourceIds: [],
+        scope: { kind: "sources", sourceIds: [] },
         sourceAliases: []
       };
       const originalQuerySha256 = createHash("sha256")

@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultSearchStrategies } from "@/lib/domain/catalog";
 import { providerConnectionTemplates } from "@/lib/domain/providerTemplates";
+import { automaticRerankerRoutePresets } from "@/lib/domain/rerankerModels";
 import { LOCAL_ORDINARY_USERS } from "@/prisma/local-seed-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -78,6 +79,9 @@ function createBootstrapTransaction(input: {
     mcpServerFindMany: record("mcpServer.findMany", []),
     modelPolicyUpsert: record("modelPolicy.upsert", { id: "installation" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
+    providerModelCreate: record("providerModel.create", { id: "reranker-model-id" }),
+    providerModelFindUnique: record("providerModel.findUnique", null),
+    providerModelUpdate: record("providerModel.update", { id: "reranker-model-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
     searchIntegrationRevisionCreate: record("searchIntegrationRevision.create", { id: "search-revision-id" }),
     searchOptionUpsert: record("searchOption.upsert", { id: "search-option-id" }),
@@ -129,6 +133,9 @@ function createBootstrapTransaction(input: {
       upsert: spies.providerConnectionUpsert
     },
     providerModel: {
+      create: spies.providerModelCreate,
+      findUnique: spies.providerModelFindUnique,
+      update: spies.providerModelUpdate,
       upsert: spies.providerModelUpsert
     },
     searchIntegrationRevision: {
@@ -277,7 +284,7 @@ describe("installation bootstrap", () => {
         randomUUID: () => USER_ID
       })
     ).resolves.toEqual({
-      catalogModelCount: 1,
+      catalogModelCount: 1 + automaticRerankerRoutePresets.length,
       catalogSearchOptionCount: bootstrapSearchStrategies.length,
       status: "created"
     });
@@ -353,6 +360,9 @@ describe("installation bootstrap", () => {
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.providerModelCreate).toHaveBeenCalledTimes(
+      automaticRerankerRoutePresets.length
+    );
     expect(fixture.spies.modelPolicyUpsert).toHaveBeenCalledWith({
       create: { defaultProviderModelId: null, id: "installation" },
       update: {},

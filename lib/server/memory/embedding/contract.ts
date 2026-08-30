@@ -34,7 +34,7 @@ export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
   policyVersion: "memory-item-embed-policy-v1",
   promptVersion: "memory-document-embed-v1",
   retrievalConfigFingerprint:
-    "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2",
+    "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v2",
   schemaVersion: "memory-document-embed-result-v1"
 });
 
@@ -43,7 +43,7 @@ export const MEMORY_EMBEDDING_BATCH_VERSIONS = Object.freeze({
   policyVersion: "memory-item-embed-policy-v3",
   promptVersion: MEMORY_EMBEDDING_PROFILE.documentProjectionVersion,
   retrievalConfigFingerprint:
-    "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v3-batched-profile-v2",
+    "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v3-batched-profile-v2",
   schemaVersion: "memory-document-embed-batch-result-v2"
 });
 

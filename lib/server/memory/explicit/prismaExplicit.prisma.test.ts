@@ -236,6 +236,7 @@ describe("Prisma explicit Memory API", () => {
       expect(replay.memory).toMatchObject({ id: factId, currentVersionId: versionId });
       await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
         .resolves.toBe(0);
+      await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(0);
       await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(1);
       await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(1);
       await expect(memoryService.create(userId, {
@@ -418,6 +419,8 @@ describe("Prisma explicit Memory API", () => {
         safetyClassificationReasonCode: "lite_non_secret_default",
         safetyClassificationState: "CLASSIFIED",
         safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: "memory-safety-lite-v1",
         safetyClassifierProviderId: null
       });
       expect(classifierCalls).toBe(0);
@@ -462,6 +465,8 @@ describe("Prisma explicit Memory API", () => {
         safetyClassificationReasonCode: "lite_non_secret_default",
         safetyClassificationState: "CLASSIFIED",
         safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: "memory-safety-lite-v1",
         safetyClassifierProviderId: null
       });
     } finally {

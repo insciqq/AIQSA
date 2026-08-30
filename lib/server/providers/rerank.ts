@@ -20,6 +20,13 @@ import {
   type ProviderCredentialSource
 } from "./providerCredentialSource";
 import { createProviderSafeFetch } from "./providerSafeFetch";
+import {
+  executeWithProviderRetry,
+  isRetryableProviderHttpStatus,
+  isRetryableProviderNetworkError,
+  type ProviderRetryDecision,
+  type ProviderRetryOptions
+} from "./providerRetry";
 import { parseRetryAfterMs } from "../retryAfter";
 
 export const MAX_RERANK_DOCUMENTS = 96;
@@ -101,6 +108,7 @@ export class RerankAdapterError extends Error {
 type RerankNetworkOptions = Readonly<{
   fetchFn?: typeof fetch;
   responseMaxBytes?: number;
+  retry?: ProviderRetryOptions;
 }>;
 
 const OPENROUTER_NATIVE_RERANK_MODEL_ALIASES: Readonly<
@@ -115,6 +123,30 @@ const OPENROUTER_NATIVE_RERANK_MODEL_ALIASES: Readonly<
     provider: "cohere"
   })
 });
+
+function rerankRetryDecision(
+  error: unknown,
+  signal: AbortSignal
+): ProviderRetryDecision | null {
+  if (signal.aborted || error instanceof ProviderResponseTooLargeError ||
+    isProviderDeadlineExceededError(error)) return null;
+  if (error instanceof RerankAdapterError) {
+    return error.code === "rerank_provider_http_error" &&
+      isRetryableProviderHttpStatus(error.httpStatus)
+      ? { retryAfterMs: error.retryAfterMs }
+      : null;
+  }
+  return isRetryableProviderNetworkError(error) ? { retryAfterMs: null } : null;
+}
+
+/**
+ * "lenient" (default) keeps the valid unique in-range subset of returned
+ * scores and drops malformed entries, matching Memory's partial-score
+ * rejoin semantics. "strict" treats any duplicate, out-of-range, non-finite,
+ * or shape-invalid entry as a malformed response so a possibly wrong
+ * score-to-passage mapping is never used.
+ */
+export type RerankResponseValidation = "lenient" | "strict";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -198,18 +230,31 @@ function responseModelMatches(
     alias.models.includes(normalizedActual)) {
     return true;
   }
-  const providerNativeParts = normalizedActual.split("/");
-  return provider !== null && providerNativeParts.length === 4 &&
-    providerNativeParts[0] === "accounts" && providerNativeParts[2] === "models" &&
-    providerNativeParts[1] === provider.toLocaleLowerCase("und") &&
-    providerNativeParts[3] === expectedSlug;
+
+  // OpenRouter's rerank response identifies a routed Fireworks model with
+  // Fireworks' canonical resource name (for example,
+  // accounts/fireworks/models/qwen3-reranker-8b), rather than the OpenRouter
+  // catalog id sent in the request (qwen/qwen3-reranker-8b). Accept that
+  // provider-scoped canonical form only when both the terminal model slug and
+  // the independently returned provider agree. Arbitrary namespaces remain a
+  // mismatch, preserving the wrong-model guard.
+  if (!provider || !expectedSlug) return false;
+  const segments = normalizedActual.split("/");
+  return segments.length === 4 &&
+    segments[0] === "accounts" &&
+    segments[2] === "models" &&
+    segments[3] === expectedSlug &&
+    segments[1] === provider.toLocaleLowerCase("und");
 }
 
 function responseProviderMatches(
   actual: string | null,
   model: ProviderModelConfiguration
 ): boolean {
-  if (!actual || !model.openRouterRouting) return false;
+  // The provider field is optional in OpenRouter's response contract. When it
+  // is present, however, it must agree with the governed routing roster.
+  if (!actual) return true;
+  if (!model.openRouterRouting) return false;
   if (model.openRouterRouting.mode === "automatic") return true;
   const normalizedActual = actual.toLocaleLowerCase("und");
   return model.openRouterRouting.providers.some((provider) =>
@@ -220,8 +265,10 @@ function responseBody(
   value: unknown,
   documents: readonly RerankDocument[],
   model: ProviderModelConfiguration,
-  headerRequestId: string | null
+  headerRequestId: string | null,
+  validation: RerankResponseValidation
 ): RerankResult {
+  const strict = validation === "strict";
   const body = isRecord(value) ? value : null;
   const responseModel = boundedIdentifier(body?.model);
   const responseProvider = boundedIdentifier(body?.provider);
@@ -229,9 +276,8 @@ function responseBody(
     responseModelMatches(responseModel, model.upstreamModelId, responseProvider);
   const providerMatches = responseProviderMatches(responseProvider, model);
   if (!body || !responseModel ||
-    !modelMatches || !providerMatches ||
-    !Array.isArray(body.results) ||
-    body.results.length !== documents.length) {
+    !modelMatches || !providerMatches || !Array.isArray(body.results) ||
+    body.results.length > (strict ? documents.length : MAX_RERANK_DOCUMENTS * 4)) {
     if (isRecord(value) && typeof value.model === "string" && !modelMatches) {
       throw new RerankAdapterError("rerank_response_model_mismatch");
     }
@@ -244,13 +290,17 @@ function responseBody(
   const seen = new Set<number>();
   for (const entry of body.results) {
     if (!isRecord(entry) || !Number.isSafeInteger(entry.index)) {
-      throw new RerankAdapterError("rerank_response_invalid");
+      // Strict validation never tolerates an entry whose score-to-document
+      // mapping could be wrong; lenient callers keep the valid subset.
+      if (strict) throw new RerankAdapterError("rerank_response_invalid");
+      continue;
     }
     const index = Number(entry.index);
     const score = entry.relevance_score;
     if (index < 0 || index >= documents.length || seen.has(index) ||
-      typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
-      throw new RerankAdapterError("rerank_response_invalid");
+      typeof score !== "number" || !Number.isFinite(score)) {
+      if (strict) throw new RerankAdapterError("rerank_response_invalid");
+      continue;
     }
     seen.add(index);
     scores.push({
@@ -259,7 +309,7 @@ function responseBody(
       relevanceScore: score
     });
   }
-  if (seen.size !== documents.length) {
+  if (scores.length === 0) {
     throw new RerankAdapterError("rerank_response_invalid");
   }
   return {
@@ -276,7 +326,9 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
   model: ProviderModelConfiguration;
   network?: RerankNetworkOptions;
   secret: ProviderCredentialSource;
+  validation?: RerankResponseValidation;
 }>): RerankAdapter {
+  const validation: RerankResponseValidation = input.validation ?? "lenient";
   const connection = normalizeProviderConnectionConfiguration(input.connection);
   const model = normalizeProviderModelConfiguration(input.model);
   if (model.modelClass !== "reranker" || model.adapterKind !== "openrouter_rerank" ||
@@ -327,42 +379,50 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
           input.secret,
           "rerank_provider_request_failed"
         );
-        const response = await fetchFn(providerRequestEndpoint(
-          connection,
-          "openrouter_rerank"
-        ), {
-          body: serialized,
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${secret}`,
-            "content-type": "application/json"
+        return await executeWithProviderRetry({
+          operation: async () => {
+            const response = await fetchFn(providerRequestEndpoint(
+              connection,
+              "openrouter_rerank"
+            ), {
+              body: serialized,
+              headers: {
+                accept: "application/json",
+                authorization: `Bearer ${secret}`,
+                "content-type": "application/json"
+              },
+              method: "POST",
+              redirect: "error",
+              signal: timeout.signal
+            });
+            const text = await readBoundedResponseText(response, {
+              maxBytes: responseMaxBytes,
+              signal: timeout.signal
+            });
+            if (!response.ok) {
+              throw new RerankAdapterError("rerank_provider_http_error", {
+                httpStatus: response.status,
+                retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
+              });
+            }
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(text) as unknown;
+            } catch {
+              throw new RerankAdapterError("rerank_response_invalid");
+            }
+            return responseBody(
+              parsed,
+              documents,
+              model,
+              boundedIdentifier(response.headers.get("x-request-id")),
+              validation
+            );
           },
-          method: "POST",
-          redirect: "error",
+          options: input.network?.retry,
+          shouldRetry: (error) => rerankRetryDecision(error, timeout.signal),
           signal: timeout.signal
         });
-        const text = await readBoundedResponseText(response, {
-          maxBytes: responseMaxBytes,
-          signal: timeout.signal
-        });
-        if (!response.ok) {
-          throw new RerankAdapterError("rerank_provider_http_error", {
-            httpStatus: response.status,
-            retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
-          });
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(text) as unknown;
-        } catch {
-          throw new RerankAdapterError("rerank_response_invalid");
-        }
-        return responseBody(
-          parsed,
-          documents,
-          model,
-          boundedIdentifier(response.headers.get("x-request-id"))
-        );
       } catch (error) {
         if (error instanceof RerankAdapterError) throw error;
         if (error instanceof ProviderResponseTooLargeError) {

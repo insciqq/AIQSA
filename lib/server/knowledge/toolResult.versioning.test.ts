@@ -17,6 +17,7 @@ import {
   createKnowledgeTableDocumentContext,
   knowledgeTableRowId
 } from "./documentContext";
+import { KNOWLEDGE_SIGNAL_RANK_MAX } from "./retrievalRanking";
 
 const vectorSpaceFingerprint = "a".repeat(64);
 
@@ -526,6 +527,13 @@ describe("Knowledge result contract versioning", () => {
           rawScore: 0.9,
           vectorDistance: 0.1,
           vectorMode: "ann"
+        }, {
+          exactKind: null,
+          lane: "neighbor",
+          rank: KNOWLEDGE_SIGNAL_RANK_MAX,
+          rawScore: 0.001,
+          vectorDistance: null,
+          vectorMode: null
         }]
       }]
     });
@@ -535,6 +543,17 @@ describe("Knowledge result contract versioning", () => {
     expect(decodeKnowledgeRetrievalEvidence(evidence)).not.toBeNull();
     expect(compacted).not.toBeNull();
     expect(rehydratePersistedKnowledgeToolExecutionResult(compacted!)).toEqual(result);
+
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      results: [{
+        ...evidence.results[0]!,
+        signalProvenance: evidence.results[0]!.signalProvenance!.map((signal) =>
+          signal.lane === "neighbor"
+            ? { ...signal, rank: KNOWLEDGE_SIGNAL_RANK_MAX + 1 }
+            : signal)
+      }]
+    })).toBeNull();
   });
 
   it("dual-reads, compacts, and rehydrates V1 and V2 using their exact marker versions", () => {

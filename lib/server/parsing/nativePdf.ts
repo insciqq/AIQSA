@@ -54,14 +54,28 @@ type NativePdfRow = Readonly<{
 
 export type NativePdfPageMetrics = Readonly<{
   characterCount: number;
+  classification: NativePdfClassification;
+  duplicateTextItemCount: number;
   imageCount: number;
   invalidCharacterCount: number;
   invisibleText: boolean;
   maxVisualGroupCount: number;
   multiGroupRowCount: number;
+  outOfBoundsTextItemCount: number;
+  overlappingTextItemCount: number;
   page: number;
+  pageBottom: number;
+  pageLeft: number;
+  pageRight: number;
+  pageRotation: number;
+  pageTop: number;
   rowCount: number;
+  rotatedTextItemCount: number;
   shortRowCount: number;
+  textAreaRatio: number;
+  textItemCount: number;
+  vectorGraphicsOperationCount: number;
+  visualGroupOverflow: boolean;
 }>;
 
 export type NativePdfQualityMetrics = Readonly<{
@@ -122,9 +136,20 @@ function workerSource(): string {
     }
 
     function invalidCharacterCount(value) {
-      return Array.from(value.matchAll(
+      let count = Array.from(value.matchAll(
         /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\uFFFD]/gu
       )).length;
+      for (let index = 0; index < value.length; index += 1) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = value.charCodeAt(index + 1);
+          if (next >= 0xdc00 && next <= 0xdfff) index += 1;
+          else count += 1;
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+          count += 1;
+        }
+      }
+      return count;
     }
 
     function normalizedText(value) {
@@ -134,7 +159,29 @@ function workerSource(): string {
         .trim();
     }
 
-    function pageRows(items, pageNumber, maxCells) {
+    function pageClassification(page) {
+      if (page.characterCount >= 4 && !page.invisibleText) return "native_text";
+      if (page.characterCount < 4 && page.imageCount > 0) return "image_only";
+      if (page.characterCount >= 4 && page.invisibleText && page.imageCount > 0) {
+        return "image_with_ocr";
+      }
+      if (page.characterCount > 0 || page.imageCount > 0) return "mixed";
+      return "unknown";
+    }
+
+    function intersectionFraction(left, right) {
+      const width = Math.max(0, Math.min(left.x1, right.x1) - Math.max(left.x0, right.x0));
+      const height = Math.max(
+        0,
+        Math.min(left.top, right.top) - Math.max(left.bottom, right.bottom)
+      );
+      const leftArea = Math.max(0, left.x1 - left.x0) * Math.max(0, left.top - left.bottom);
+      const rightArea = Math.max(0, right.x1 - right.x0) *
+        Math.max(0, right.top - right.bottom);
+      return width * height / Math.max(1, Math.min(leftArea, rightArea));
+    }
+
+    function pageRows(items, pageNumber, maxCells, pageBounds) {
       const validItems = items.filter(textItem);
       const invalidCharacters = validItems.reduce((total, item) =>
         total + invalidCharacterCount(item.str), 0);
@@ -142,11 +189,46 @@ function workerSource(): string {
         const text = normalizedText(item.str);
         const height = Math.max(Math.abs(item.height), Math.abs(item.transform[3]), 1);
         const width = Math.abs(item.width);
-        const x0 = item.transform[4];
-        const x1 = x0 + width;
+        const xStart = item.transform[4];
+        const xEnd = xStart + width;
+        const x0 = Math.min(xStart, xEnd);
+        const x1 = Math.max(xStart, xEnd);
         const baseline = item.transform[5];
-        return { baseline, height, text, width, x0, x1 };
+        const bottom = baseline - height * 0.2;
+        const top = baseline + height * 0.8;
+        const scale = Math.max(
+          Math.abs(item.transform[0]),
+          Math.abs(item.transform[3]),
+          1
+        );
+        const rotated = Math.abs(item.transform[1]) > scale * 0.01 ||
+          Math.abs(item.transform[2]) > scale * 0.01;
+        return { baseline, bottom, height, rotated, text, top, width, x0, x1 };
       }).filter((item) => item.text && item.width > 0);
+      const boundsTolerance = Math.max(
+        2,
+        (pageBounds.right - pageBounds.left) * 0.005,
+        (pageBounds.top - pageBounds.bottom) * 0.005
+      );
+      const outOfBoundsTextItemCount = positioned.filter((item) =>
+        item.x0 < pageBounds.left - boundsTolerance ||
+        item.x1 > pageBounds.right + boundsTolerance ||
+        item.bottom < pageBounds.bottom - boundsTolerance ||
+        item.top > pageBounds.top + boundsTolerance
+      ).length;
+      const duplicateKeys = new Set();
+      let duplicateTextItemCount = 0;
+      for (const item of positioned) {
+        const key = [
+          item.text,
+          Math.round(item.x0 * 10),
+          Math.round(item.x1 * 10),
+          Math.round(item.bottom * 10),
+          Math.round(item.top * 10)
+        ].join("\u0001");
+        if (duplicateKeys.has(key)) duplicateTextItemCount += 1;
+        else duplicateKeys.add(key);
+      }
       positioned.sort((left, right) =>
         right.baseline - left.baseline || left.x0 - right.x0);
       const visualRows = [];
@@ -175,10 +257,22 @@ function workerSource(): string {
       let characterCount = 0;
       let maxVisualGroupCount = 0;
       let multiGroupRowCount = 0;
+      let overlappingTextItemCount = 0;
       let shortRowCount = 0;
+      let textArea = 0;
       let visualGroupOverflow = false;
       for (const row of visualRows) {
         const items = [...row.items].sort((left, right) => left.x0 - right.x0);
+        for (let index = 0; index < items.length; index += 1) {
+          const candidate = items[index];
+          for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+            const previous = items[previousIndex];
+            if (previous.x1 < candidate.x0) break;
+            if (intersectionFraction(previous, candidate) >= 0.35) {
+              overlappingTextItemCount += 1;
+            }
+          }
+        }
         const characterWidths = items.map((item) =>
           item.width / Math.max(Array.from(item.text).length, 1)
         ).filter((value) => finite(value) && value > 0);
@@ -202,6 +296,8 @@ function workerSource(): string {
           }
         }
         const fullText = groups.map((group) => group.text).join("\t");
+        textArea += groups.reduce((total, group) => total +
+          Math.max(0, group.x1 - group.x0) * Math.max(0, group.top - group.bottom), 0);
         characterCount += fullText.length;
         maxVisualGroupCount = Math.max(maxVisualGroupCount, groups.length);
         if (groups.length > 1) multiGroupRowCount += 1;
@@ -233,12 +329,21 @@ function workerSource(): string {
       }
       return {
         characterCount,
+        duplicateTextItemCount,
         invalidCharacterCount: invalidCharacters,
         maxVisualGroupCount,
         multiGroupRowCount,
+        outOfBoundsTextItemCount,
+        overlappingTextItemCount,
         rowCount: visualRows.length,
+        rotatedTextItemCount: positioned.filter((item) => item.rotated).length,
         rows,
         shortRowCount,
+        textAreaRatio: Math.min(1, textArea / Math.max(
+          1,
+          (pageBounds.right - pageBounds.left) * (pageBounds.top - pageBounds.bottom)
+        )),
+        textItemCount: positioned.length,
         visualGroupOverflow
       };
     }
@@ -299,10 +404,26 @@ function workerSource(): string {
                 code: "parser_invalid_output"
               });
             }
+            const pageView = Array.isArray(page.view) && page.view.length === 4 &&
+              page.view.every(finite)
+              ? page.view
+              : null;
+            if (!pageView || pageView[0] >= pageView[2] || pageView[1] >= pageView[3]) {
+              throw Object.assign(new Error("parser_invalid_output"), {
+                code: "parser_invalid_output"
+              });
+            }
+            const pageBounds = {
+              bottom: pageView[1],
+              left: pageView[0],
+              right: pageView[2],
+              top: pageView[3]
+            };
             const pageRowsValue = pageRows(
               content.items,
               pageNumber,
-              workerData.limits.maxCells
+              workerData.limits.maxCells,
+              pageBounds
             );
             characterCount += pageRowsValue.characterCount;
             invalidCharacterCount += pageRowsValue.invalidCharacterCount;
@@ -319,22 +440,50 @@ function workerSource(): string {
               pdfjs.OPS.paintInlineImageXObject
             ]);
             const imageCount = operators.fnArray.filter((operation) => imageOps.has(operation)).length;
+            const vectorOps = new Set([
+              pdfjs.OPS.constructPath,
+              pdfjs.OPS.stroke,
+              pdfjs.OPS.closeStroke,
+              pdfjs.OPS.fill,
+              pdfjs.OPS.eoFill,
+              pdfjs.OPS.fillStroke,
+              pdfjs.OPS.eoFillStroke,
+              pdfjs.OPS.closeFillStroke,
+              pdfjs.OPS.closeEOFillStroke,
+              pdfjs.OPS.paintFormXObjectBegin
+            ].filter((operation) => Number.isFinite(operation)));
+            const vectorGraphicsOperationCount = operators.fnArray.filter((operation) =>
+              vectorOps.has(operation)).length;
             const invisibleText = operators.fnArray.some((operation, index) =>
               operation === pdfjs.OPS.setTextRenderingMode &&
               Array.isArray(operators.argsArray[index]) &&
-              operators.argsArray[index][0] === 3
+              [3, 7].includes(operators.argsArray[index][0])
             );
-            pages.push({
+            const pageMetric = {
               characterCount: pageRowsValue.characterCount,
+              duplicateTextItemCount: pageRowsValue.duplicateTextItemCount,
               imageCount,
               invalidCharacterCount: pageRowsValue.invalidCharacterCount,
               invisibleText,
               maxVisualGroupCount: pageRowsValue.maxVisualGroupCount,
               multiGroupRowCount: pageRowsValue.multiGroupRowCount,
+              outOfBoundsTextItemCount: pageRowsValue.outOfBoundsTextItemCount,
+              overlappingTextItemCount: pageRowsValue.overlappingTextItemCount,
               page: pageNumber,
+              pageBottom: pageBounds.bottom,
+              pageLeft: pageBounds.left,
+              pageRight: pageBounds.right,
+              pageRotation: Number.isFinite(page.rotate) ? ((page.rotate % 360) + 360) % 360 : 0,
+              pageTop: pageBounds.top,
               rowCount: pageRowsValue.rowCount,
-              shortRowCount: pageRowsValue.shortRowCount
-            });
+              rotatedTextItemCount: pageRowsValue.rotatedTextItemCount,
+              shortRowCount: pageRowsValue.shortRowCount,
+              textAreaRatio: pageRowsValue.textAreaRatio,
+              textItemCount: pageRowsValue.textItemCount,
+              vectorGraphicsOperationCount,
+              visualGroupOverflow: pageRowsValue.visualGroupOverflow
+            };
+            pages.push({ ...pageMetric, classification: pageClassification(pageMetric) });
             rows.push(...pageRowsValue.rows);
             visualGroupOverflow ||= pageRowsValue.visualGroupOverflow;
           } finally {
@@ -413,16 +562,35 @@ function parseWorkerResult(
   let metricRowCount = 0;
   for (const [index, page] of result.pages.entries()) {
     if (!isRecord(page) || page.page !== index + 1 ||
+      !classifications.includes(page.classification as NativePdfClassification) ||
       !boundedInteger(page.characterCount, limits.maxCharacters) ||
+      !boundedInteger(page.duplicateTextItemCount, limits.maxCharacters) ||
       !boundedInteger(page.invalidCharacterCount, limits.maxCharacters) ||
-      !boundedInteger(page.imageCount, limits.maxBlocks) ||
+      !boundedInteger(page.imageCount, limits.maxCharacters) ||
       typeof page.invisibleText !== "boolean" ||
       !boundedInteger(page.maxVisualGroupCount, limits.maxCharacters) ||
       !boundedInteger(page.multiGroupRowCount, limits.maxBlocks) ||
+      !boundedInteger(page.outOfBoundsTextItemCount, limits.maxCharacters) ||
+      !boundedInteger(page.overlappingTextItemCount, limits.maxCharacters) ||
+      ![page.pageBottom, page.pageLeft, page.pageRight, page.pageTop].every((entry) =>
+        typeof entry === "number" && Number.isFinite(entry)) ||
+      Number(page.pageLeft) >= Number(page.pageRight) ||
+      Number(page.pageBottom) >= Number(page.pageTop) ||
+      !Number.isSafeInteger(page.pageRotation) || Number(page.pageRotation) < 0 ||
+      Number(page.pageRotation) >= 360 ||
       !boundedInteger(page.rowCount, limits.maxBlocks) ||
+      !boundedInteger(page.rotatedTextItemCount, limits.maxCharacters) ||
       !boundedInteger(page.shortRowCount, limits.maxBlocks) ||
+      typeof page.textAreaRatio !== "number" || !Number.isFinite(page.textAreaRatio) ||
+      Number(page.textAreaRatio) < 0 || Number(page.textAreaRatio) > 1 ||
+      !boundedInteger(page.textItemCount, limits.maxCharacters) ||
+      !boundedInteger(page.vectorGraphicsOperationCount, limits.maxCharacters) ||
+      typeof page.visualGroupOverflow !== "boolean" ||
       Number(page.multiGroupRowCount) > Number(page.rowCount) ||
-      Number(page.shortRowCount) > Number(page.rowCount)) {
+      Number(page.shortRowCount) > Number(page.rowCount) ||
+      Number(page.duplicateTextItemCount) > Number(page.textItemCount) ||
+      Number(page.rotatedTextItemCount) > Number(page.textItemCount) ||
+      Number(page.outOfBoundsTextItemCount) > Number(page.textItemCount)) {
       throw new DocumentParserError("parser_invalid_output", "native_pdf");
     }
     metricCharacterCount += Number(page.characterCount);
@@ -430,14 +598,28 @@ function parseWorkerResult(
     metricRowCount += Number(page.rowCount);
     pages.push(Object.freeze({
       characterCount: Number(page.characterCount),
+      classification: page.classification as NativePdfClassification,
+      duplicateTextItemCount: Number(page.duplicateTextItemCount),
       imageCount: Number(page.imageCount),
       invalidCharacterCount: Number(page.invalidCharacterCount),
       invisibleText: page.invisibleText,
       maxVisualGroupCount: Number(page.maxVisualGroupCount),
       multiGroupRowCount: Number(page.multiGroupRowCount),
+      outOfBoundsTextItemCount: Number(page.outOfBoundsTextItemCount),
+      overlappingTextItemCount: Number(page.overlappingTextItemCount),
       page: Number(page.page),
+      pageBottom: Number(page.pageBottom),
+      pageLeft: Number(page.pageLeft),
+      pageRight: Number(page.pageRight),
+      pageRotation: Number(page.pageRotation),
+      pageTop: Number(page.pageTop),
       rowCount: Number(page.rowCount),
-      shortRowCount: Number(page.shortRowCount)
+      rotatedTextItemCount: Number(page.rotatedTextItemCount),
+      shortRowCount: Number(page.shortRowCount),
+      textAreaRatio: Number(page.textAreaRatio),
+      textItemCount: Number(page.textItemCount),
+      vectorGraphicsOperationCount: Number(page.vectorGraphicsOperationCount),
+      visualGroupOverflow: page.visualGroupOverflow
     }));
   }
   if (metricCharacterCount + metricInvalidCharacterCount > limits.maxCharacters ||
@@ -686,9 +868,9 @@ export async function parseNativeTextPdf(
     : Object.freeze({ classification: geometry.classification, document, reasonCode: null });
 }
 
-/** Bounded geometry-only extraction. Callers may use its boxes to locate
- * model-authored text, but must never replace or correct that text with this
- * projection. */
+/** Bounded native-text and geometry extraction. Model-PDF profiles before the
+ * collaboration profile use only its boxes. Newer profiles may admit clean,
+ * visible unmatched rows through the separately bounded merge policy. */
 export async function extractNativePdfGeometry(
   input: DocumentParseInput,
   options: NativePdfParserOptions

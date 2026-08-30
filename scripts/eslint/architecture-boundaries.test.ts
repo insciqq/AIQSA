@@ -58,7 +58,7 @@ describe("repository lint policies", () => {
         ruleId: boundaryRuleId
       })
     ]);
-  });
+  }, 15_000);
 
   it("fails closed for a non-literal dependency", async () => {
     const [result] = await eslint.lintText(

@@ -555,6 +555,69 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
     })).resolves.toBe(snapshotCount);
   });
 
+  it("excludes trashed Sources from new snapshots while preserving membership for Restore", async () => {
+    const mapping = await prisma.knowledgeV1DocumentSourceMap.findUniqueOrThrow({
+      select: { sourceId: true },
+      where: {
+        knowledgeBaseId_documentId: {
+          documentId: fixture.readyDocumentId,
+          knowledgeBaseId: fixture.baseId
+        }
+      }
+    });
+    const source = await prisma.knowledgeSource.findUniqueOrThrow({
+      select: { version: true },
+      where: { id: mapping.sourceId }
+    });
+    const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
+    const beforeTrash = await prisma.$transaction((tx) =>
+      materializeKnowledgeBaseSnapshot(tx, {
+        indexGenerationId: fixture.generationId,
+        knowledgeBaseId: fixture.baseId
+      })
+    );
+
+    await expect(lifecycle.trashSource(
+      fixture.ownerUserId,
+      mapping.sourceId,
+      source.version
+    )).resolves.toEqual({ kind: "ok" });
+    const whileTrashed = await prisma.$transaction((tx) =>
+      materializeKnowledgeBaseSnapshot(tx, {
+        indexGenerationId: fixture.generationId,
+        knowledgeBaseId: fixture.baseId
+      })
+    );
+    expect(whileTrashed).toMatchObject({ readySourceCount: 0, sourceCount: 1 });
+    expect(whileTrashed.snapshotId).not.toBe(beforeTrash.snapshotId);
+    await expect(prisma.knowledgeBaseSource.count({
+      where: {
+        knowledgeBaseId: fixture.baseId,
+        removedAt: null,
+        sourceId: mapping.sourceId
+      }
+    })).resolves.toBe(1);
+
+    await expect(lifecycle.restoreSource(
+      fixture.ownerUserId,
+      mapping.sourceId,
+      source.version + 1
+    )).resolves.toEqual({ kind: "ok" });
+    const afterRestore = await prisma.$transaction((tx) =>
+      materializeKnowledgeBaseSnapshot(tx, {
+        indexGenerationId: fixture.generationId,
+        knowledgeBaseId: fixture.baseId
+      })
+    );
+    expect(afterRestore).toMatchObject({ readySourceCount: 0, sourceCount: 2 });
+    expect(afterRestore.snapshotId).not.toBe(beforeTrash.snapshotId);
+    expect(afterRestore.snapshotId).not.toBe(whileTrashed.snapshotId);
+    await expect(prisma.knowledgeBaseSnapshot.findUniqueOrThrow({
+      select: { sourceCount: true },
+      where: { id: beforeTrash.snapshotId }
+    })).resolves.toEqual({ sourceCount: 2 });
+  });
+
   it("keeps accepted evidence immutable while removals affect only future snapshots", async () => {
     const first = await prisma.$transaction((tx) =>
       materializeKnowledgeBaseSnapshot(tx, {

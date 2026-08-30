@@ -1,7 +1,4 @@
-import type {
-  KnowledgeExactEntryKind,
-  KnowledgeLexicalLanguage
-} from "./hierarchicalIndex";
+import type { KnowledgeExactEntryKind } from "./hierarchicalIndex";
 import type {
   KnowledgeExactSearchField,
   KnowledgeSourceDiscoveryField
@@ -31,10 +28,8 @@ export type KnowledgeHierarchicalScope =
   | KnowledgeAdmittedRunHierarchicalScope
   | KnowledgeOwnerHierarchicalScope;
 
-export type KnowledgeLexicalTargetLevel = "document" | "passage" | "section";
+export type KnowledgeLexicalTargetLevel = "document" | "section";
 export type KnowledgeLexicalMatchedField =
-  | "body"
-  | "context"
   | "description"
   | "entities"
   | "filename"
@@ -48,12 +43,10 @@ export type KnowledgeLexicalMatchedField =
 export type KnowledgeLexicalIndexHit = Readonly<{
   indexArtifactId: string;
   label: string;
-  languageConfig: KnowledgeLexicalLanguage;
   level: KnowledgeLexicalTargetLevel;
   matchedFields: readonly KnowledgeLexicalMatchedField[];
   page: number | null;
   pageEnd: number | null;
-  queryVariant: "english" | "russian" | "simple";
   rank: number;
   sourceArtifactId: string;
   targetId: string;
@@ -128,10 +121,6 @@ export type KnowledgeHierarchicalRetrievalRepository = Readonly<{
     operation: KnowledgeExactOperation;
     query: string;
   }): Promise<KnowledgeExactSearchPage>;
-  searchPassages(input: KnowledgeHierarchicalScope & {
-    limit: number;
-    query: string;
-  }): Promise<readonly KnowledgeLexicalIndexHit[]>;
 }>;
 
 export type KnowledgeHierarchicalQueryErrorCode =

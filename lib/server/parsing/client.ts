@@ -116,17 +116,29 @@ function requestBody(input: SidecarParseInput, engine: SidecarParserEngine): Bod
   const bytes = new Uint8Array(input.bytes);
   if (engine === "tika") return new Blob([bytes], { type: input.mediaType });
 
+  const pageRange = input.docling?.pageRange;
+  if (pageRange && (!Number.isSafeInteger(pageRange.start) ||
+    !Number.isSafeInteger(pageRange.end) || pageRange.start < 1 ||
+    pageRange.end < pageRange.start)) {
+    throw new DocumentParserError("parser_rejected", "docling");
+  }
+  const doOcr = input.docling?.doOcr ?? true;
+
   const form = new FormData();
   form.append("files", new Blob([bytes], { type: input.mediaType }), sidecarFileName(input.fileName));
   form.append("to_formats", "json");
   form.append("image_export_mode", "placeholder");
   form.append("table_mode", "accurate");
+  form.append("table_cell_matching", "true");
   form.append("abort_on_error", "true");
-  form.append("do_ocr", "true");
+  form.append("do_ocr", String(doOcr));
   form.append("force_ocr", "false");
-  form.append("ocr_preset", "easyocr");
-  form.append("ocr_lang", "ru");
-  form.append("ocr_lang", "en");
+  if (pageRange) form.append("page_range", JSON.stringify([pageRange.start, pageRange.end]));
+  if (doOcr) {
+    form.append("ocr_preset", "easyocr");
+    form.append("ocr_lang", "ru");
+    form.append("ocr_lang", "en");
+  }
   return form;
 }
 
@@ -155,6 +167,7 @@ function parseRequest(input: SidecarParseInput, engine: SidecarParserEngine, sig
       "content-disposition": `attachment; filename="${sidecarFileName(input.fileName)}"`,
       "content-type": input.mediaType,
       maxEmbeddedResources: "0",
+      "x-tika-ocrlanguage": "rus+eng",
       "x-tika-skip-embedded": "true"
     },
     method: "PUT",
@@ -193,9 +206,10 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
         ),
         parseRequest(input, this.#engine, timeout.signal)
       );
-    } catch {
+    } catch (error) {
       timeout.clear();
       if (input.signal?.aborted) throw abortReason(input.signal);
+      if (isDocumentParserError(error)) throw error;
       throw new DocumentParserError(
         timeout.didTimeOut() ? "parser_timeout" : "parser_unavailable",
         this.#engine

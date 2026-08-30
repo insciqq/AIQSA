@@ -1,0 +1,79 @@
+name: aiqsa-knowledge-benchmark-second
+
+services:
+  app:
+    container_name: aiqsa-knowledge-benchmark-second-app
+    environment:
+      AIQSA_APP_BASE_URL: http://localhost:${AIQSA_KNOWLEDGE_BENCHMARK_APP_PORT:-3147}
+      AIQSA_KNOWLEDGE_BENCHMARK_TARGET: public-retrieval
+      DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@postgres:5432/aiqsa_knowledge_benchmark?schema=public
+    ports: !override
+      - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_APP_PORT:-3147}:3000"
+
+  docling:
+    container_name: aiqsa-knowledge-benchmark-second-docling
+
+  knowledge-search-worker:
+    environment:
+      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH: "16"
+      DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@postgres:5432/aiqsa_knowledge_benchmark?schema=public
+
+  tika:
+    container_name: aiqsa-knowledge-benchmark-second-tika
+
+  toolhive-runtime:
+    container_name: aiqsa-knowledge-benchmark-second-toolhive
+    profiles: ["benchmark-disabled"]
+    user: "65532:65532"
+    volumes: !override []
+
+  postgres:
+    container_name: aiqsa-knowledge-benchmark-second-postgres
+    environment:
+      POSTGRES_DB: aiqsa_knowledge_benchmark
+      POSTGRES_PASSWORD: aiqsa-knowledge-benchmark-dev-password
+      POSTGRES_USER: aiqsa_benchmark
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiqsa_benchmark -d aiqsa_knowledge_benchmark"]
+    ports: !override
+      - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_POSTGRES_PORT:-55447}:5432"
+
+  minio:
+    container_name: aiqsa-knowledge-benchmark-second-minio
+    ports: !override
+      - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_MINIO_PORT:-19110}:9000"
+      - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_MINIO_CONSOLE_PORT:-19111}:9001"
+
+  minio-init:
+    container_name: aiqsa-knowledge-benchmark-second-minio-init
+
+  opensearch:
+    ports: !override
+      - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_OPENSEARCH_PORT:-19247}:9200"
+
+networks:
+  default:
+    name: aiqsa-knowledge-benchmark-second-default
+  mcp-control:
+    name: aiqsa-knowledge-benchmark-second-mcp-control
+    internal: true
+  parser-control:
+    name: aiqsa-knowledge-benchmark-second-parser-control
+    internal: true
+  search-control:
+    name: aiqsa-knowledge-benchmark-second-search-control
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.68.0/24
+  search-diagnostic:
+    name: aiqsa-knowledge-benchmark-second-search-diagnostic
+    ipam:
+      config:
+        - subnet: 192.168.69.0/24
+
+volumes:
+  minio_dev_data:
+    name: aiqsa-knowledge-benchmark-second-minio
+  postgres_dev_data:
+    name: aiqsa-knowledge-benchmark-second-postgres

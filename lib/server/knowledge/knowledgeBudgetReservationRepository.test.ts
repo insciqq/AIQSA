@@ -131,13 +131,13 @@ function persistenceRow(
   };
 }
 
-const requestInput: KnowledgeBudgetOperationRequestInput = {
+const requestInput = {
   focused,
   operation: "automatic_search",
   profileRevisionId: PROFILE_ID,
-  resolvedSourceIds: [SOURCE_ID],
+  scope: { kind: "sources", sourceIds: [SOURCE_ID] },
   sourceAliases: []
-};
+} satisfies KnowledgeBudgetOperationRequestInput;
 
 const estimate: KnowledgeBudgetResourceEstimate = Object.freeze({
   candidateCount: 8,
@@ -154,6 +154,11 @@ function sqlText(value: unknown): string {
 }
 
 function repositoryHarness(options: Readonly<{
+  bases?: readonly Readonly<{
+    knowledgeBaseId: string;
+    knowledgeBaseSnapshotId: string | null;
+    ordinal: number;
+  }>[];
   budgetPolicy?: typeof DEFAULT_KNOWLEDGE_BUDGET_POLICY;
   now?: () => Date;
   sources?: readonly Readonly<{
@@ -251,6 +256,7 @@ function repositoryHarness(options: Readonly<{
       sourceId: SOURCE_ID
     }
   ]);
+  const baseFindMany = vi.fn(async () => options.bases ?? []);
   const tx = {
     $queryRaw: vi.fn(async (query: unknown) => {
       lockQueries.push(query);
@@ -277,7 +283,7 @@ function repositoryHarness(options: Readonly<{
       findMany: vi.fn(async () => [...rows]),
       updateMany
     },
-    knowledgeRunBinding: { findMany: vi.fn(async () => []) },
+    knowledgeRunBinding: { findMany: baseFindMany },
     knowledgeRunProfileBinding: {
       findMany: profileFindMany
     },
@@ -293,7 +299,7 @@ function repositoryHarness(options: Readonly<{
     now: options.now ?? (() => new Date(NOW)),
     uuid: () => uuidValues.shift() ?? "88888888-8888-4888-8888-888888888888"
   });
-  return { create, lockQueries, profileFindMany, repository, rows, sourceFindMany };
+  return { baseFindMany, create, lockQueries, profileFindMany, repository, rows, sourceFindMany };
 }
 
 describe("Knowledge budget reservation Prisma repository", () => {
@@ -538,7 +544,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
         operation: "automatic_search",
         profileRevisionId: PROFILE_ID,
         query: "Missing row label",
-        resolvedSourceIds: [SOURCE_ID],
+        scope: { kind: "sources", sourceIds: [SOURCE_ID] },
         sourceAliases: ["S1"]
       },
       originalQuerySha256: "a".repeat(64),
@@ -555,6 +561,41 @@ describe("Knowledge budget reservation Prisma repository", () => {
       }
     });
     expect(harness.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("reserves broad retrieval against an exact immutable Base snapshot", async () => {
+    const knowledgeBaseId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const knowledgeBaseSnapshotId = `kbs_${"b".repeat(40)}`;
+    const harness = repositoryHarness({
+      bases: [{ knowledgeBaseId, knowledgeBaseSnapshotId, ordinal: 0 }]
+    });
+
+    await expect(harness.repository.reserve({
+      estimate,
+      idempotencyKey: "run:one:operation:one",
+      modelRunToolCallId: CALL_ID,
+      operationRequest: {
+        focused,
+        operation: "automatic_search",
+        profileRevisionId: PROFILE_ID,
+        scope: {
+          bindings: [{ bindingOrdinal: 0, knowledgeBaseId, knowledgeBaseSnapshotId }],
+          kind: "base_snapshots"
+        },
+        sourceAliases: []
+      },
+      originalQuerySha256: "a".repeat(64),
+      runId: RUN_ID,
+      userId: "owner-one"
+    })).resolves.toMatchObject({
+      kind: "admitted",
+      record: {
+        operationRequest: {
+          scope: { kind: "base_snapshots" },
+          version: 3
+        }
+      }
+    });
   });
 
   it("expires stale pre-dispatch work and makes stale dispatched work ambiguous", async () => {

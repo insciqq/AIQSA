@@ -94,7 +94,7 @@ describe("canonical Source candidates", () => {
       bindingOrdinal: 2,
       chunkId: "chunk-x",
       knowledgeBaseId: "base-a",
-      signals: [signal("passage_lexical", 7)],
+      signals: [signal("passage_bm25", 7)],
       sourceId: "source-x",
       sourceVersionId: "version-x"
     });
@@ -104,7 +104,7 @@ describe("canonical Source candidates", () => {
       bindingOrdinal: 9,
       chunkId: "chunk-x",
       knowledgeBaseId: "base-b",
-      signals: [signal("passage_lexical", 1), signal("passage_semantic", 1)],
+      signals: [signal("passage_bm25", 1), signal("passage_semantic", 1)],
       sourceId: "source-x",
       sourceVersionId: "version-x"
     });
@@ -116,7 +116,7 @@ describe("canonical Source candidates", () => {
       baseName: "Base A",
       bindingOrdinal: 2,
       knowledgeBaseId: "base-a",
-      signals: [{ lane: "passage_lexical", rank: 7 }]
+      signals: [{ lane: "passage_bm25", rank: 7 }]
     });
     expect(result.sourceProvenance).toEqual([{
       artifactId: "artifact-x",
@@ -138,7 +138,7 @@ describe("canonical Source candidates", () => {
         bindingOrdinal: 0,
         chunkId: "chunk-v1",
         knowledgeBaseId: "base-a",
-        signals: [signal("passage_lexical", 1)],
+        signals: [signal("passage_bm25", 1)],
         sourceId: "source-shared",
         sourceVersionId: "version-1"
       }),
@@ -148,7 +148,7 @@ describe("canonical Source candidates", () => {
         bindingOrdinal: 1,
         chunkId: "chunk-v2",
         knowledgeBaseId: "base-b",
-        signals: [signal("passage_lexical", 1)],
+        signals: [signal("passage_bm25", 1)],
         sourceId: "source-shared",
         sourceVersionId: "version-2",
         versionNumber: 2

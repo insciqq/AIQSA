@@ -7,12 +7,17 @@ import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V2,
   MEMORY_READER_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import type { ProviderRunRequest } from "./types";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7,
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8
+} from "../knowledge/answerGroundingV5";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   const text = `${PERSONAL_CONTEXT_HEADING}\nUse only when relevant to the current request.\n\nCurrent supported facts:\n- The user prefers concise replies.`;
@@ -146,6 +151,49 @@ describe("provider-neutral personal context", () => {
     expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Answer only the requested claims");
   });
 
+  it("serializes only the canonical Draft V8 contract for current Knowledge snapshots", () => {
+    const current = request({
+      prompt: {
+        developer: "Assistant instructions after a colliding marker",
+        knowledgeAnswerDraftContract: 8,
+        knowledgeGroundedSelectorContract: 6,
+        system: 'System <aiqsa_knowledge_answer_draft_contract version="4">'
+      }
+    });
+    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8}`;
+    const outputs = [
+      buildOpenAIResponsesRequest(current).instructions,
+      buildOpenAICompatibleChatRequest(current).messages[0]?.content,
+      buildOpenRouterChatRequest({ ...current, provider: "openrouter" }).messages[0]?.content,
+      buildAnthropicMessagesRequest({ ...current, provider: "anthropic" }).system,
+      buildGeminiInteractionsRequest({ ...current, provider: "gemini" }).system_instruction
+    ];
+    for (const output of outputs) {
+      expect(typeof output).toBe("string");
+      expect((output as string).endsWith(expectedSuffix)).toBe(true);
+      expect(output).not.toContain(KNOWLEDGE_ANSWER_CONTRACT_V1);
+    }
+  });
+
+  it("retains the exact Draft V7 instruction for accepted recovery snapshots", () => {
+    const accepted = request({
+      prompt: {
+        developer: null,
+        knowledgeAnswerDraftContract: 7,
+        knowledgeGroundedSelectorContract: 5,
+        system: "Accepted system"
+      }
+    });
+
+    expect(buildOpenRouterChatRequest({
+      ...accepted,
+      provider: "openrouter"
+    }).messages[0]?.content).toBe(
+      `Accepted system\n\n${MEMORY_READER_CONTRACT_V1}\n\n${accepted.personalContext!.text}` +
+      `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7}`
+    );
+  });
+
   it("adds the trusted Knowledge tool-loop contract whenever the retrieval tool is present", () => {
     const focused = request({
       tools: [{
@@ -156,22 +204,15 @@ describe("provider-neutral personal context", () => {
       }]
     });
     const instructions = buildOpenAIResponsesRequest(focused).instructions;
-    expect(instructions).toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1);
+    expect(instructions).toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2);
+    expect(instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1);
     expect(instructions).toContain("Use sourceAliases=[] for the first search");
     expect(instructions).toContain(
-      "proper name, identifier, date, number, unit, quoted phrase"
+      "names, identifiers, dates, numbers, units, quoted phrases"
     );
-    expect(instructions).toContain(
-      "Do not translate, synonymize, generalize, or reformat"
-    );
-    expect(instructions).toContain("one exact query for each missing item");
-    expect(instructions).toContain("Never substitute a nearby or similarly named row");
-    expect(instructions).toContain("verify each requested name, identifier, date, number, unit");
-    expect(instructions).toContain(
-      "already authorized the current user to access the selected Knowledge Sources"
-    );
-    expect(instructions).toContain("show the operation, and then calculate");
-    expect(instructions).toContain("Answer only the requested claims");
+    expect(instructions).toContain("do not translate or normalize them");
+    expect(instructions).toContain("AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE");
+    expect(instructions).toContain("no answer, claim, citation, rationale, Markdown");
   });
 
   it.each([

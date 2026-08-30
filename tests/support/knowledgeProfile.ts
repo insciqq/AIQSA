@@ -10,9 +10,12 @@ export function adminKnowledgeAnswerPolicyFixture(
 ): AdminKnowledgeSettings["answerPolicy"] {
   return {
     fullContextThresholdPercent: 70,
+    ingestionParallelism: 8,
     maximum: 32,
     maximumKnowledgeSearches: 12,
     minimum: 1,
+    parallelismMaximum: 64,
+    parallelismMinimum: 1,
     updatedAt: "2026-08-18T00:00:00.000Z",
     updatedBy: null,
     version: 1,

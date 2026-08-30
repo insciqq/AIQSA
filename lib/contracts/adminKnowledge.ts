@@ -46,6 +46,7 @@ export type AdminKnowledgeProfileSettings = Readonly<{
     pdfDestination: string | null;
     representations: readonly (
       | "document_text_chunks"
+      | "native_pdf_page_text"
       | "original_pdf_page_ranges"
       | "rendered_pdf_page_images"
       | "search_queries"
@@ -130,9 +131,12 @@ export type AdminKnowledgeOperations = Readonly<{
 export type AdminKnowledgeSettings = Readonly<{
   answerPolicy: Readonly<{
     fullContextThresholdPercent: 70;
+    ingestionParallelism: number;
     maximum: 32;
     maximumKnowledgeSearches: number;
     minimum: 1;
+    parallelismMaximum: 64;
+    parallelismMinimum: 1;
     updatedAt: string;
     updatedBy: { displayName: string; id: string } | null;
     version: number;
@@ -292,12 +296,15 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
       !safeString(value.egress.embeddingDestination, 512) ||
     value.egress.pdfDestination !== null && !safeString(value.egress.pdfDestination, 512) ||
     !Array.isArray(value.egress.representations) ||
-    value.egress.representations.length < 2 || value.egress.representations.length > 3 ||
+    value.egress.representations.length < 2 || value.egress.representations.length > 4 ||
     value.egress.representations[0] !== "document_text_chunks" ||
     value.egress.representations[1] !== "search_queries" ||
     (value.egress.representations.length === 3 &&
-      value.egress.representations[2] !== "original_pdf_page_ranges" &&
-      value.egress.representations[2] !== "rendered_pdf_page_images") ||
+      value.egress.representations[2] !== "original_pdf_page_ranges") ||
+    (value.egress.representations.length === 4 && (
+      value.egress.representations[2] !== "rendered_pdf_page_images" ||
+      value.egress.representations[3] !== "native_pdf_page_text"
+    )) ||
     !healthStates.has(String(value.health.state)) ||
     value.health.code !== null && !healthCodes.has(String(value.health.code)) ||
     value.health.checkedAt !== null && !isoDate(value.health.checkedAt) ||
@@ -450,6 +457,9 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
     answerPolicy.fullContextThresholdPercent !== 70 || answerPolicy.minimum !== 1 ||
     answerPolicy.maximum !== 32 || !positiveInteger(answerPolicy.maximumKnowledgeSearches) ||
     Number(answerPolicy.maximumKnowledgeSearches) > 32 ||
+    answerPolicy.parallelismMinimum !== 1 || answerPolicy.parallelismMaximum !== 64 ||
+    !positiveInteger(answerPolicy.ingestionParallelism) ||
+    Number(answerPolicy.ingestionParallelism) > 64 ||
     !positiveInteger(answerPolicy.version) || !isoDate(answerPolicy.updatedAt) ||
     answerPolicyUpdatedBy !== null && (!record(answerPolicyUpdatedBy) ||
       !safeString(answerPolicyUpdatedBy.id) ||
@@ -463,9 +473,12 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
     knowledge: {
       answerPolicy: {
         fullContextThresholdPercent: 70,
+        ingestionParallelism: Number(answerPolicy.ingestionParallelism),
         maximum: 32,
         maximumKnowledgeSearches: Number(answerPolicy.maximumKnowledgeSearches),
         minimum: 1,
+        parallelismMaximum: 64,
+        parallelismMinimum: 1,
         updatedAt: answerPolicy.updatedAt as string,
         updatedBy: answerPolicyUpdatedBy as { displayName: string; id: string } | null,
         version: Number(answerPolicy.version)

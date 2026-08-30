@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { imageOnlyPdfInputProbeFixture } from "../providers/pdfInputProbe";
-import { parseNativeTextPdf } from "./nativePdf";
+import { extractNativePdfGeometry, parseNativeTextPdf } from "./nativePdf";
 
 function generatedPdf(
   pageStreams: readonly string[],
@@ -156,6 +156,21 @@ describe("native PDF classification and geometry", () => {
     expect(parsed.reasonCode).toBe("native_pdf_image_heavy_low_text");
   });
 
+  it.each([3, 7])("marks PDF rendering mode %s as non-visible native text", async (mode) => {
+    const stream = [
+      `BT /F1 12 Tf ${mode} Tr`,
+      "1 0 0 1 40 720 Tm (Hidden native text) Tj",
+      "ET"
+    ].join("\n");
+    const extracted = await extractNativePdfGeometry({
+      bytes: generatedPdf([stream]),
+      fileName: "hidden-text.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(extracted.quality.pages[0]?.invisibleText).toBe(true);
+  });
+
   it("turns visual-group overflow into explicit fallback instead of truncating text", async () => {
     const cells = Array.from({ length: 33 }, (_, index) => ({
       text: `C${index.toString().padStart(2, "0")}`,
@@ -211,14 +226,28 @@ describe("native PDF classification and geometry", () => {
           pageCount: 1,
           pages: [{
             characterCount: text.length,
+            classification: "native_text",
+            duplicateTextItemCount: 0,
             imageCount: 0,
             invalidCharacterCount: 5,
             invisibleText: false,
             maxVisualGroupCount: 1,
             multiGroupRowCount: 0,
+            outOfBoundsTextItemCount: 0,
+            overlappingTextItemCount: 0,
             page: 1,
+            pageBottom: 0,
+            pageLeft: 0,
+            pageRight: 600,
+            pageRotation: 0,
+            pageTop: 800,
             rowCount: 1,
-            shortRowCount: 0
+            rotatedTextItemCount: 0,
+            shortRowCount: 0,
+            textAreaRatio: 0.02,
+            textItemCount: 1,
+            vectorGraphicsOperationCount: 0,
+            visualGroupOverflow: false
           }],
           rows: [{ box, cells: [{ box, text }], page: 1, text }],
           visualGroupOverflow: false

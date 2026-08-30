@@ -11,6 +11,7 @@ import {
   type EmbeddingModelConfiguration,
   type ProviderModelConfiguration
 } from "./providerConfiguration";
+import { ProviderSafeFetchError } from "./providerSafeFetch";
 
 const queryTemplate = "Instruct: retrieve relevant passages\nQuery: {text}";
 const openRouterConnection = {
@@ -240,15 +241,40 @@ describe("OpenAI-compatible embeddings", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry or fall back after an upstream failure", async () => {
+  it("retries a transient upstream failure with Retry-After on the same route", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("unavailable", {
+        headers: { "retry-after": "75" },
+        status: 503
+      }))
+      .mockResolvedValueOnce(providerResponse([vector(4_096)]));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection,
+      model: embeddingModel(),
+      network: { fetchFn, retry: { sleep } },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .resolves.toMatchObject({ model: "qwen/qwen3-embedding-8b" });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(75_000, expect.any(AbortSignal));
+    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://openrouter.ai/api/v1/embeddings",
+      "https://openrouter.ai/api/v1/embeddings"
+    ]);
+  });
+
+  it("surfaces the final transient status after bounded retries", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", {
-      headers: { "retry-after": "75" },
+      headers: { "retry-after": "1" },
       status: 503
     }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
       connection: openRouterConnection,
       model: embeddingModel(),
-      network: { fetchFn },
+      network: { fetchFn, retry: { sleep: async () => undefined } },
       secret: "openrouter-key"
     });
 
@@ -256,9 +282,9 @@ describe("OpenAI-compatible embeddings", () => {
       .rejects.toMatchObject({
         code: "embedding_provider_http_error",
         httpStatus: 503,
-        retryAfterMs: 75_000
+        retryAfterMs: 1_000
       });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
   });
 
   it("preserves a permanent upstream status without retaining its response body", async () => {
@@ -281,19 +307,36 @@ describe("OpenAI-compatible embeddings", () => {
       });
   });
 
-  it("does not classify upstream timeout text as the configured deadline", async () => {
+  it("does not retry permanent safe-fetch policy failures", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => {
-      throw new Error("upstream connect error: connection timeout");
+      throw new ProviderSafeFetchError("provider_http_origin_forbidden");
     });
     const adapter = createOpenAICompatibleEmbeddingAdapter({
       connection: openRouterConnection,
       model: embeddingModel(),
-      network: { fetchFn },
+      network: { fetchFn, retry: { sleep: async () => undefined } },
       secret: "openrouter-key"
     });
 
     await expect(adapter.embed({ mode: "document", texts: ["one"] }))
       .rejects.toMatchObject({ code: "embedding_provider_request_failed" });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("does not classify upstream timeout text as the configured deadline", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("upstream connect error: connection timeout");
+    });
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection,
+      model: embeddingModel(),
+      network: { fetchFn, retry: { sleep: async () => undefined } },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .rejects.toMatchObject({ code: "embedding_provider_request_failed" });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
   });
 
   it("classifies its own elapsed request deadline explicitly", async () => {

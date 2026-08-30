@@ -317,6 +317,8 @@ describe("Memory run utility execution", () => {
   });
 
   it("retries the whole dedicated rerank on the next model without mixing batch scores", async () => {
+    vi.useFakeTimers();
+    try {
     const [voyage, cohere] = approvedRerankerDeployments;
     if (!voyage || !cohere) throw new Error("approved reranker route missing");
     const targetByBinding = new Map<string, string>();
@@ -411,7 +413,7 @@ describe("Memory run utility execution", () => {
       resolveRerankPath: vi.fn(async () => "DEDICATED" as const)
     });
 
-    const result = await service.rerank({
+    const pending = service.rerank({
       ...baseInput(),
       aggregationRequested: true,
       candidates: dedicatedCandidates(MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES)
@@ -422,6 +424,8 @@ describe("Memory run utility execution", () => {
       profileRequested: false,
       query: "release milestones"
     });
+    await vi.runAllTimersAsync();
+    const result = await pending;
 
     expect(result).toMatchObject({
       diagnostics: {
@@ -452,7 +456,10 @@ describe("Memory run utility execution", () => {
     expect(primaryCallCount).toBeGreaterThan(1);
     expect(fallbackCallCount).toBe(primaryCallCount);
     expect(result.externalCallCount).toBe(calls.length);
-  });
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
 
   it.each([
     { ordinal: 1, purpose: "RETRIEVAL" as const },

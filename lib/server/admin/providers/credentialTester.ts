@@ -164,7 +164,8 @@ function compatibleCapabilities(entry: Record<string, unknown>): AdminCompatible
 
 function modelsFromCatalog(
   value: unknown,
-  family: ProviderFamily
+  family: ProviderFamily,
+  requiredOutputModality?: string
 ): AdminCompatibleDiscoveredModel[] {
   if (!isRecord(value)) {
     throw new AdminProviderCredentialTestError();
@@ -181,6 +182,15 @@ function modelsFromCatalog(
   const output: AdminCompatibleDiscoveredModel[] = [];
   const seen = new Set<string>();
   for (const entry of entries) {
+    if (requiredOutputModality) {
+      const architecture = isRecord(entry) && isRecord(entry.architecture)
+        ? entry.architecture
+        : null;
+      if (!architecture || !Array.isArray(architecture.output_modalities) ||
+        !architecture.output_modalities.includes(requiredOutputModality)) {
+        continue;
+      }
+    }
     const rawId = isRecord(entry)
       ? modelId(family === "gemini" ? entry.name : entry.id)
       : null;
@@ -262,7 +272,10 @@ export function createAdminProviderCredentialTester(
         const timeout = withTimeoutSignal(input.signal, connection.responseTimeoutMs);
         try {
           const classes = requestedModelClasses(input.family, input.modelClasses);
-          const load = async (path: string): Promise<AdminCompatibleDiscoveredModel[]> => {
+          const load = async (
+            path: string,
+            requiredOutputModality?: string
+          ): Promise<AdminCompatibleDiscoveredModel[]> => {
             const response = await fetchFn(`${connection.apiRoot}/${path}`, {
               headers: authenticationHeaders(input.family, secret),
               method: "GET",
@@ -275,12 +288,16 @@ export function createAdminProviderCredentialTester(
             });
             if (!response.ok) throw new AdminProviderCredentialTestError();
             try {
-              return modelsFromCatalog(JSON.parse(text) as unknown, input.family);
+              return modelsFromCatalog(
+                JSON.parse(text) as unknown,
+                input.family,
+                requiredOutputModality
+              );
             } catch {
               throw new AdminProviderCredentialTestError();
             }
           };
-          const answerModels = classes.includes("answer") || classes.includes("reranker")
+          const answerModels = classes.includes("answer")
             ? await load(answerCatalogPath(input.family))
             : [];
           const embeddingModels = classes.includes("embedding")
@@ -288,13 +305,17 @@ export function createAdminProviderCredentialTester(
               ? await load("embeddings/models")
               : await load(answerCatalogPath(input.family))
             : [];
+          const rerankerModels = classes.includes("reranker")
+            ? await load("models?output_modalities=rerank", "rerank")
+            : [];
           const modelIdsByClass = {
             answer: classes.includes("answer") ? answerModels.map(({ id }) => id) : [],
             embedding: embeddingModels.map(({ id }) => id),
-            reranker: classes.includes("reranker") ? answerModels.map(({ id }) => id) : []
+            reranker: rerankerModels.map(({ id }) => id)
           };
           const models = [...new Map(
-            [...answerModels, ...embeddingModels].map((model) => [model.id, model])
+            [...answerModels, ...embeddingModels, ...rerankerModels]
+              .map((model) => [model.id, model])
           ).values()];
           return {
             method: "models_catalog",

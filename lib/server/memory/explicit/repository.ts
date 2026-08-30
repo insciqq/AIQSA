@@ -685,113 +685,117 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       userId: string,
       factId: string
     ): Promise<ExplicitMemoryEditable | null> {
-      const fact = await client.memoryFact.findFirst({
-        select: {
-          canonicalKey: true,
-          category: true,
-          currentVersionId: true,
-          id: true,
-          movedToFactId: true,
-          pinned: true,
-          scopeId: true,
-          state: true
-        },
-        where: { id: factId, userId }
-      });
-      if (
-        !fact ||
-        (fact.state !== "ACTIVE" &&
-          fact.state !== "ORPHANED" &&
-          !(fact.state === "RETRACTED" && fact.movedToFactId))
-      ) return null;
-      const scope = await client.memoryScope.findFirst({
-        select: {
-          id: true,
-          scopeType: true,
-          state: true,
-          targetIdSnapshot: true
-        },
-        where: {
-          id: fact.scopeId,
-          state: fact.state === "ACTIVE"
-            ? "ACTIVE"
-            : fact.state === "ORPHANED"
-              ? "ORPHANED"
-              : { in: ["ACTIVE", "ORPHANED"] },
-          userId
-        }
-      });
-      const version = fact.state === "ACTIVE" && fact.currentVersionId
-        ? await client.memoryFactVersion.findFirst({
+      return client.$transaction(async (tx) => {
+        const fact = await tx.memoryFact.findFirst({
           select: {
-            displayText: true,
+            canonicalKey: true,
+            category: true,
+            currentVersionId: true,
             id: true,
-            languageCode: true,
-            modality: true,
-            sensitivityClass: true,
-            sourceMode: true,
-            validFrom: true,
-            validTo: true
+            movedToFactId: true,
+            pinned: true,
+            scopeId: true,
+            state: true
+          },
+          where: { id: factId, userId }
+        });
+        if (
+          !fact ||
+          (fact.state !== "ACTIVE" &&
+            fact.state !== "ORPHANED" &&
+            !(fact.state === "RETRACTED" && fact.movedToFactId))
+        ) return null;
+        const scope = await tx.memoryScope.findFirst({
+          select: {
+            id: true,
+            scopeType: true,
+            state: true,
+            targetIdSnapshot: true
           },
           where: {
-            factId,
-            id: fact.currentVersionId,
-            state: "ACTIVE",
-            safetyClassificationState: "CLASSIFIED",
-            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-            userId
-          }
-        })
-        : await client.memoryFactVersion.findFirst({
-          orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
-          select: {
-            displayText: true,
-            id: true,
-            languageCode: true,
-            modality: true,
-            sensitivityClass: true,
-            sourceMode: true,
-            validFrom: true,
-            validTo: true
-          },
-          where: {
-            factId,
-            sourceMode: "EXPLICIT",
-            state: fact.state === "ORPHANED" ? "ORPHANED" : "RETRACTED",
-            safetyClassificationState: "CLASSIFIED",
+            id: fact.scopeId,
+            state: fact.state === "ACTIVE"
+              ? "ACTIVE"
+              : fact.state === "ORPHANED"
+                ? "ORPHANED"
+                : { in: ["ACTIVE", "ORPHANED"] },
             userId
           }
         });
-      if (
-        !scope ||
-        !version ||
-        !version.displayText ||
-        (fact.state !== "ACTIVE" && version.sourceMode !== "EXPLICIT")
-      ) {
-        return null;
-      }
-      const selection = scope.scopeType === "GLOBAL_USER"
-        ? { type: "GLOBAL_USER" as const }
-        : scope.targetIdSnapshot
-          ? { targetId: scope.targetIdSnapshot, type: scope.scopeType }
-          : null;
-      if (!selection) return null;
-      return {
-        canonicalKey: fact.canonicalKey,
-        category: fact.category,
-        currentVersionId: version.id,
-        displayText: version.displayText,
-        factState: fact.state,
-        factId: fact.id,
-        languageCode: version.languageCode,
-        modality: version.modality,
-        pinned: fact.pinned,
-        scopeId: fact.scopeId,
-        scope: selection,
-        sensitivityClass: version.sensitivityClass,
-        validFrom: version.validFrom,
-        validTo: version.validTo
-      };
+        const version = fact.state === "ACTIVE" && fact.currentVersionId
+          ? await tx.memoryFactVersion.findFirst({
+              select: {
+                displayText: true,
+                id: true,
+                languageCode: true,
+                modality: true,
+                sensitivityClass: true,
+                sourceMode: true,
+                validFrom: true,
+                validTo: true
+              },
+              where: {
+                factId,
+                id: fact.currentVersionId,
+                state: "ACTIVE",
+                safetyClassificationState: "CLASSIFIED",
+                OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+                userId
+              }
+            })
+          : await tx.memoryFactVersion.findFirst({
+              orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+              select: {
+                displayText: true,
+                id: true,
+                languageCode: true,
+                modality: true,
+                sensitivityClass: true,
+                sourceMode: true,
+                validFrom: true,
+                validTo: true
+              },
+              where: {
+                factId,
+                sourceMode: "EXPLICIT",
+                state: fact.state === "ORPHANED" ? "ORPHANED" : "RETRACTED",
+                safetyClassificationState: "CLASSIFIED",
+                userId
+              }
+            });
+        if (
+          !scope ||
+          !version ||
+          !version.displayText ||
+          (fact.state !== "ACTIVE" && version.sourceMode !== "EXPLICIT")
+        ) {
+          return null;
+        }
+        const selection = scope.scopeType === "GLOBAL_USER"
+          ? { type: "GLOBAL_USER" as const }
+          : scope.targetIdSnapshot
+            ? { targetId: scope.targetIdSnapshot, type: scope.scopeType }
+            : null;
+        if (!selection) return null;
+        return {
+          canonicalKey: fact.canonicalKey,
+          category: fact.category,
+          currentVersionId: version.id,
+          displayText: version.displayText,
+          factState: fact.state,
+          factId: fact.id,
+          languageCode: version.languageCode,
+          modality: version.modality,
+          pinned: fact.pinned,
+          scopeId: fact.scopeId,
+          scope: selection,
+          sensitivityClass: version.sensitivityClass,
+          validFrom: version.validFrom,
+          validTo: version.validTo
+        };
+      }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+      });
     },
 
     async getConflict(

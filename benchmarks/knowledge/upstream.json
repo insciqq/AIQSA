@@ -1,0 +1,67 @@
+{
+  "formatVersion": 1,
+  "suites": {
+    "rusbeir-rus-scifact": {
+      "family": "RusBEIR",
+      "dataset": "rus-SciFact",
+      "querySplit": "test",
+      "resultLabel": "RusBEIR / rus-SciFact / test",
+      "expectedCorpusDocumentCount": 5183,
+      "expectedExcludedQueryCount": 0,
+      "expectedQueryCount": 300,
+      "licenseNote": "MIT per the upstream Hugging Face dataset cards (kaengreg/rus-scifact, kaengreg/rus-scifact-qrels).",
+      "sources": [
+        {
+          "datasetId": "kaengreg/rus-scifact",
+          "revision": "75b33d32f2f13f058d0598d6d78f0c3d3afc03d9",
+          "files": [
+            {
+              "path": "corpus.jsonl",
+              "sha256": "3f8e4a7bd5196ce0d067e109378786fd5c56f16ddba0c2d242c72885c989b473",
+              "bytes": 28662058
+            },
+            {
+              "path": "queries.jsonl",
+              "sha256": "f3e2f55f638c393e8f44ddf38e1e697e5273c3dea1c048a3b3a067ab4180c462",
+              "bytes": 503545
+            }
+          ]
+        },
+        {
+          "datasetId": "kaengreg/rus-scifact-qrels",
+          "revision": "5e0c312c9fb7304a2dc91ec7fd648b3ace5c329f",
+          "files": [
+            {
+              "path": "test.tsv",
+              "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
+              "bytes": 5389
+            }
+          ]
+        }
+      ]
+    },
+    "t2ragbench-convfinqa": {
+      "family": "T2-RAGBench",
+      "dataset": "ConvFinQA",
+      "querySplit": "turn_0",
+      "resultLabel": "T2-RAGBench / ConvFinQA / turn_0",
+      "expectedCorpusDocumentCount": 1806,
+      "expectedExcludedQueryCount": 5,
+      "expectedQueryCount": 3458,
+      "licenseNote": "CC-BY-4.0 per the upstream Hugging Face dataset card (G4KMU/t2-ragbench). turn_0 is the only official ConvFinQA query split in this artifact; there is no official train/dev/test split for ConvFinQA.",
+      "sources": [
+        {
+          "datasetId": "G4KMU/t2-ragbench",
+          "revision": "adf7fe1541ac37351ce1142544d8e3b43010ed92",
+          "files": [
+            {
+              "path": "data/ConvFinQA/turn_0.jsonl",
+              "sha256": "31dc9aa01a24eb27d082445c08c976580239311a305be6542b23059763cd9206",
+              "bytes": 30038650
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,19 +1,47 @@
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
+import { formatKnowledgeRerankCandidate } from "./rerankCandidateFormatter";
 
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
 export const KNOWLEDGE_RANKING_CANDIDATE_MAX = 1_000;
+/**
+ * Maximum rank carried by one retrieval-lane provenance signal. Primary
+ * lanes are much smaller, but the global neighbor window can exceed a single
+ * lane's fetch size before deduplication. Keep SQL admission and every
+ * durable decoder on this one explicit boundary.
+ */
+export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
+
+/**
+ * Versioned code-owned ranking profile. Version 2 widens the per-lane
+ * candidate limit to 64 and introduces the hosted-rerank merged-pool caps.
+ * Version 3 retained a bounded language-neutral token-coverage signal after
+ * hosted reranking instead of allowing an uncalibrated provider score to
+ * erase every first-stage lexical signal. Version 4 replaces only the
+ * passage-level PostgreSQL lexical vote with the OpenSearch BM25 projection.
+ * These values are internal retrieval defaults, never user or Admin settings.
+ */
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 4 as const;
+export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
+export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
+export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
 export const KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR = 0.1;
 export const KNOWLEDGE_METADATA_RELEVANCE_FLOOR = 0.45;
 export const KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR = 0.65;
 export const KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND = 0.08;
+export const KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT = 0.7;
+export const KNOWLEDGE_RERANK_TOKEN_COVERAGE_RANK_WEIGHT = 0.3;
+
+const KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX = 128;
+const KNOWLEDGE_TOKEN_COVERAGE_CANDIDATE_MAX = 4_096;
+const GENERIC_WORD = /[\p{L}\p{M}\p{N}]+/gu;
 
 export type KnowledgeRetrievalLane =
   | "document_lexical"
   | "exact"
   | "metadata"
   | "neighbor"
-  | "passage_lexical"
+  | "passage_bm25"
   | "passage_semantic"
   | "section_lexical";
 
@@ -95,7 +123,7 @@ export const KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS: Readonly<
   exact: 2.6,
   metadata: 1.2,
   neighbor: 0.25,
-  passage_lexical: 1.3,
+  passage_bm25: 1.3,
   passage_semantic: 1.15,
   section_lexical: 0.4
 });
@@ -120,9 +148,10 @@ export function knowledgeCandidateSignalEligible(signal: KnowledgeCandidateSigna
     case "exact":
       return true;
     case "document_lexical":
-    case "passage_lexical":
     case "section_lexical":
       return signal.rawScore >= KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR;
+    case "passage_bm25":
+      return signal.rawScore > 0;
     case "metadata":
       return signal.rawScore >= KNOWLEDGE_METADATA_RELEVANCE_FLOOR;
     case "passage_semantic":
@@ -141,6 +170,16 @@ function relevanceEligibleCandidate(
   return signals.length > 0
     ? Object.freeze({ ...candidate, signals: Object.freeze(signals) })
     : null;
+}
+
+/** Named lane relevance eligibility exactly as the deterministic path applies it. */
+export function eligibleKnowledgeCandidates(
+  candidates: readonly KnowledgeRetrievalCandidate[]
+): KnowledgeRetrievalCandidate[] {
+  return candidates.flatMap((candidate) => {
+    const accepted = relevanceEligibleCandidate(candidate);
+    return accepted ? [accepted] : [];
+  });
 }
 
 export function fuseKnowledgeCandidates(
@@ -208,6 +247,264 @@ export function boundKnowledgeCandidates(
     if (selected.length >= maximum) break;
     if (selectedChunks.has(candidate.chunkId)) continue;
     selected.push(candidate);
+  }
+  return selected;
+}
+
+export function knowledgeCandidateHasExactSignal(
+  candidate: KnowledgeRetrievalCandidate
+): boolean {
+  return candidate.signals.some((signal) => signal.lane === "exact");
+}
+
+/**
+ * Builds the merged pre-rerank candidate pool: weighted RRF pre-order,
+ * canonical content deduplication, guaranteed exact-candidate survival, and
+ * soft balancing across accepted bindings, capped at the versioned rerank
+ * input maximum. Relevance floors are deliberately not applied here — the
+ * hosted reranker sees every authority-scoped candidate.
+ */
+export function selectKnowledgePreRerankPool(input: Readonly<{
+  bindingOrdinals: readonly number[];
+  candidates: readonly KnowledgeRetrievalCandidate[];
+  maximum: number;
+}>): KnowledgeRankedCandidate[] {
+  const bindingCount = new Set(input.bindingOrdinals).size;
+  if (!Number.isSafeInteger(input.maximum) || input.maximum < 1 || bindingCount < 1) {
+    throw new Error("knowledge_prererank_pool_invalid");
+  }
+  const fused = fuseKnowledgeCandidates(input.candidates);
+  const representativeByContent = new Map<string, KnowledgeRankedCandidate>();
+  const seenChunks = new Set<string>();
+  for (const candidate of fused) {
+    if (seenChunks.has(candidate.chunkId)) continue;
+    seenChunks.add(candidate.chunkId);
+    const existing = representativeByContent.get(candidate.contentHash);
+    if (!existing || knowledgeCandidateHasExactSignal(candidate) &&
+      !knowledgeCandidateHasExactSignal(existing)) {
+      // Canonical content dedup must not erase the exact signal merely
+      // because another Source's duplicate happened to have stronger dense
+      // evidence. Keep the exact-bearing representative; ties retain the
+      // deterministic fused pre-order.
+      representativeByContent.set(candidate.contentHash, candidate);
+    }
+  }
+  const deduped = [...representativeByContent.values()].sort((left, right) =>
+    right.fusedScore - left.fusedScore || left.chunkId.localeCompare(right.chunkId));
+  if (deduped.length <= input.maximum) return deduped;
+  const selected: KnowledgeRankedCandidate[] = [];
+  const selectedChunks = new Set<string>();
+  const perBinding = new Map<number, number>();
+  const take = (candidate: KnowledgeRankedCandidate): void => {
+    selected.push(candidate);
+    selectedChunks.add(candidate.chunkId);
+    perBinding.set(
+      candidate.bindingOrdinal,
+      (perBinding.get(candidate.bindingOrdinal) ?? 0) + 1
+    );
+  };
+  // Exact candidates survive pre-rerank bounding regardless of dense or
+  // lexical strength and regardless of binding quotas.
+  for (const candidate of deduped) {
+    if (selected.length >= input.maximum) break;
+    if (knowledgeCandidateHasExactSignal(candidate)) take(candidate);
+  }
+  const quota = Math.max(1, Math.floor(input.maximum / bindingCount));
+  for (const candidate of deduped) {
+    if (selected.length >= input.maximum) break;
+    if (selectedChunks.has(candidate.chunkId)) continue;
+    if ((perBinding.get(candidate.bindingOrdinal) ?? 0) >= quota) continue;
+    take(candidate);
+  }
+  for (const candidate of deduped) {
+    if (selected.length >= input.maximum) break;
+    if (selectedChunks.has(candidate.chunkId)) continue;
+    take(candidate);
+  }
+  return selected.sort((left, right) =>
+    right.fusedScore - left.fusedScore || left.chunkId.localeCompare(right.chunkId));
+}
+
+export type KnowledgeRerankedCandidate = KnowledgeRankedCandidate & Readonly<{
+  rerankScore: number | null;
+}>;
+
+function genericWordTokens(value: string, maximum: number): string[] {
+  const tokens: string[] = [];
+  const normalized = value.normalize("NFKC").toLocaleLowerCase("und");
+  for (const match of normalized.matchAll(GENERIC_WORD)) {
+    const token = match[0];
+    if (!token || [...token].length > 128) continue;
+    tokens.push(token);
+    if (tokens.length >= maximum) break;
+  }
+  return tokens;
+}
+
+function rankedByScore(
+  entries: readonly Readonly<{ chunkId: string; score: number }>[]
+): ReadonlyMap<string, number> {
+  const ordered = [...entries].sort((left, right) =>
+    right.score - left.score || left.chunkId.localeCompare(right.chunkId));
+  const ranks = new Map<string, number>();
+  let previousScore: number | undefined;
+  let rank = 0;
+  for (const [index, entry] of ordered.entries()) {
+    if (previousScore === undefined || entry.score !== previousScore) rank = index + 1;
+    ranks.set(entry.chunkId, rank);
+    previousScore = entry.score;
+  }
+  return ranks;
+}
+
+/**
+ * Computes a bounded, language-neutral approximation of the weighted query
+ * coverage used alongside learned rerankers by mature RAG engines. Query
+ * terms that occur in most of the current authority-scoped pool contribute
+ * little; rare terms contribute more. This needs no language classifier,
+ * stop-word dictionary, corpus mutation, or additional provider call.
+ */
+function tokenCoverageScores(
+  candidates: readonly KnowledgeRerankedCandidate[],
+  query: string
+): ReadonlyMap<string, number> {
+  const queryTokens = [...new Set(genericWordTokens(
+    query,
+    KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX
+  ))];
+  if (queryTokens.length === 0 || candidates.length === 0) return new Map();
+  const candidateTokens = new Map<string, ReadonlySet<string>>();
+  for (const candidate of candidates) {
+    const formatted = formatKnowledgeRerankCandidate({
+      headingPath: candidate.headingPath,
+      sourceName: candidate.sourceName,
+      text: candidate.text
+    });
+    candidateTokens.set(candidate.chunkId, new Set(genericWordTokens(
+      formatted,
+      KNOWLEDGE_TOKEN_COVERAGE_CANDIDATE_MAX
+    )));
+  }
+  const weights = new Map<string, number>();
+  for (const token of queryTokens) {
+    let documentFrequency = 0;
+    for (const tokens of candidateTokens.values()) {
+      if (tokens.has(token)) documentFrequency += 1;
+    }
+    weights.set(
+      token,
+      Math.log((candidates.length + 1) / (documentFrequency + 0.5)) + 1
+    );
+  }
+  const totalWeight = [...weights.values()].reduce((sum, weight) => sum + weight, 0);
+  return new Map(candidates.map((candidate) => {
+    const tokens = candidateTokens.get(candidate.chunkId)!;
+    const matchedWeight = queryTokens.reduce((sum, token) =>
+      sum + (tokens.has(token) ? weights.get(token)! : 0), 0);
+    return [candidate.chunkId, totalWeight > 0 ? matchedWeight / totalWeight : 0];
+  }));
+}
+
+function hostedRerankFusionScores(
+  candidates: readonly KnowledgeRerankedCandidate[],
+  query: string
+): ReadonlyMap<string, number> {
+  const scored = candidates.filter((candidate) => candidate.rerankScore !== null);
+  const rerankRanks = rankedByScore(scored.map((candidate) => ({
+    chunkId: candidate.chunkId,
+    score: candidate.rerankScore!
+  })));
+  const coverage = tokenCoverageScores(scored, query);
+  const rankDenominator = Math.max(1, scored.length - 1);
+  return new Map(scored.map((candidate) => [
+    candidate.chunkId,
+    KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT * (scored.length === 1
+      ? 1
+      : 1 - (rerankRanks.get(candidate.chunkId)! - 1) / rankDenominator) +
+    KNOWLEDGE_RERANK_TOKEN_COVERAGE_RANK_WEIGHT *
+      (coverage.get(candidate.chunkId) ?? 0)
+  ]));
+}
+
+/**
+ * Final ranking after hosted reranking: descending rerank score, exact signal
+ * as tie-breaker, fused RRF score next, deterministic chunk id last. Scored
+ * candidates always precede candidates the provider omitted; omitted
+ * candidates keep their deterministic weighted RRF order.
+ */
+export function orderRerankedKnowledgeCandidates(input: Readonly<{
+  pool: readonly KnowledgeRankedCandidate[];
+  query: string;
+  rerankScores: ReadonlyMap<string, number>;
+}>): KnowledgeRerankedCandidate[] {
+  const withScores = input.pool.map((candidate): KnowledgeRerankedCandidate =>
+    Object.freeze({
+      ...candidate,
+      rerankScore: input.rerankScores.get(candidate.chunkId) ?? null
+    }));
+  const fusionScores = hostedRerankFusionScores(withScores, input.query);
+  return withScores.sort((left, right) => {
+    if ((left.rerankScore === null) !== (right.rerankScore === null)) {
+      return left.rerankScore === null ? 1 : -1;
+    }
+    if (left.rerankScore !== null && right.rerankScore !== null) {
+      const fusionDifference = fusionScores.get(right.chunkId)! -
+        fusionScores.get(left.chunkId)!;
+      if (fusionDifference !== 0) return fusionDifference;
+      if (left.rerankScore !== right.rerankScore) {
+        return right.rerankScore - left.rerankScore;
+      }
+    }
+    const leftExact = knowledgeCandidateHasExactSignal(left) ? 1 : 0;
+    const rightExact = knowledgeCandidateHasExactSignal(right) ? 1 : 0;
+    if (leftExact !== rightExact) return rightExact - leftExact;
+    if (left.fusedScore !== right.fusedScore) return right.fusedScore - left.fusedScore;
+    return left.chunkId.localeCompare(right.chunkId);
+  });
+}
+
+/**
+ * Post-rerank final selection: canonical content deduplication, then soft
+ * Source diversity applied only inside the narrow relative score band, then
+ * the final broad/scoped result limit. Diversity never promotes an unscored
+ * candidate above a scored one and never lifts a candidate outside the band.
+ */
+export function selectRerankedKnowledgeCandidates(input: Readonly<{
+  candidates: readonly KnowledgeRerankedCandidate[];
+  resultLimit: number;
+}>): KnowledgeRerankedCandidate[] {
+  const selectedChunks = new Set<string>();
+  const selectedContent = new Set<string>();
+  const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
+    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
+      return false;
+    }
+    selectedChunks.add(candidate.chunkId);
+    selectedContent.add(candidate.contentHash);
+    return true;
+  });
+  const bandScore = (candidate: KnowledgeRerankedCandidate): number =>
+    candidate.rerankScore ?? candidate.fusedScore;
+  const selected: KnowledgeRerankedCandidate[] = [];
+  const counts = new Map<string, number>();
+  while (selected.length < input.resultLimit && remaining.length > 0) {
+    const strongest = remaining[0]!;
+    const strongestSourceCount = counts.get(sourceKey(strongest)) ?? 0;
+    const bandFloor = bandScore(strongest) * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
+    const alternative = remaining
+      .filter((candidate) =>
+        (candidate.rerankScore === null) === (strongest.rerankScore === null) &&
+        bandScore(candidate) >= bandFloor &&
+        (counts.get(sourceKey(candidate)) ?? 0) < strongestSourceCount)
+      .sort((left, right) =>
+        (counts.get(sourceKey(left)) ?? 0) - (counts.get(sourceKey(right)) ?? 0) ||
+        bandScore(right) - bandScore(left) ||
+        left.chunkId.localeCompare(right.chunkId))[0];
+    const chosen = alternative ?? strongest;
+    remaining.splice(remaining.indexOf(chosen), 1);
+    selected.push(chosen);
+    const source = sourceKey(chosen);
+    counts.set(source, (counts.get(source) ?? 0) + 1);
   }
   return selected;
 }

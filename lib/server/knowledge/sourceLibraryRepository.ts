@@ -15,6 +15,7 @@ import type {
 import { prisma } from "../prisma";
 import { knowledgeTrashPurgeScheduledAt } from "./lifecyclePolicy";
 import { KNOWLEDGE_INDEX_PROFILE_ID } from "./knowledgeProfile";
+import { settleKnowledgeProfileMigrationsForSource } from "./profileMigration";
 import { knowledgeSourceNormalizedTextStorageKey } from "./sourceArtifactKeys";
 import { knowledgeSupportReference } from "./supportReference";
 
@@ -945,6 +946,8 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
             normalizedTextByteSize: true,
             normalizedTextChecksum: true,
             normalizedTextStorageKey: true,
+            processingGeneration: true,
+            profileRevisionId: true,
             state: true
           },
           where: {
@@ -971,6 +974,9 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
                   sourceId,
                   sourceVersionId
                 }),
+              ...(!normalizedAvailable
+                ? { processingGeneration: { increment: 1 } }
+                : {}),
               processingStage: normalizedAvailable ? "chunking" : "queued",
               processingStartedAt: null,
               readyAt: null,
@@ -981,6 +987,43 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
           });
         }
         if (created > 0 || failed.length > 0) return { kind: "ok" } as const;
+        const readyProfileRevisionIds = new Set(artifacts
+          .filter(({ state }) => state === "ready")
+          .map(({ profileRevisionId }) => profileRevisionId));
+        if (source.pendingVersionId === sourceVersionId &&
+          profileRevisionIds.every((profileRevisionId) =>
+            readyProfileRevisionIds.has(profileRevisionId))) {
+          const activated = await tx.knowledgeSource.updateMany({
+            data: {
+              currentVersionId: sourceVersionId,
+              pendingVersionId: null,
+              version: { increment: 1 }
+            },
+            where: {
+              deletionRequestedAt: null,
+              id: sourceId,
+              ownerUserId: userId,
+              pendingVersionId: sourceVersionId,
+              trashedAt: null
+            }
+          });
+          if (activated.count !== 1) return { kind: "active_ingest" } as const;
+          const memberships = await tx.knowledgeBaseSource.findMany({
+            distinct: ["knowledgeBaseId"],
+            select: { knowledgeBaseId: true },
+            where: { ownerUserId: userId, removedAt: null, sourceId }
+          });
+          if (memberships.length > 0) {
+            await tx.knowledgeBase.updateMany({
+              data: { version: { increment: 1 } },
+              where: {
+                id: { in: memberships.map(({ knowledgeBaseId }) => knowledgeBaseId) }
+              }
+            });
+          }
+          await settleKnowledgeProfileMigrationsForSource(tx, { now, sourceId });
+          return { kind: "ok" } as const;
+        }
         if (artifacts.some(({ state }) => state === "pending" || state === "processing")) {
           return { kind: "active_ingest" } as const;
         }

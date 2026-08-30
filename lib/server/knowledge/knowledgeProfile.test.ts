@@ -30,7 +30,7 @@ describe("Knowledge Profile", () => {
       operationRoles: roles,
       pdfProcessingMode: "local",
       rolePolicyVersion: KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION,
-      schemaVersion: 6
+      schemaVersion: 7
     });
     expect(roles.map(({ mode, operation }) => ({ mode, operation }))).toEqual([
       { mode: "external", operation: "embeddings" }
@@ -50,6 +50,21 @@ describe("Knowledge Profile", () => {
     );
     expect(JSON.stringify(configuration)).not.toContain("semanticValidator");
     expect(JSON.stringify(configuration)).not.toContain("selectionFreeze");
+  });
+
+  it("declares both page images and bounded native page text for adaptive Vision", () => {
+    const configuration = knowledgeProfileConfiguration({
+      embeddingProviderModelId,
+      pdfProcessingMode: "system_model_vision",
+      pdfSystemModelProviderModelId: "system-model-1"
+    });
+    const role = operationRoles(configuration).find(({ operation }) =>
+      operation === "pdf_transcription");
+
+    expect(role).toMatchObject({
+      allowedRepresentations: ["rendered_pdf_page_images", "native_pdf_page_text"],
+      rawPrivateText: true
+    });
   });
 
   it("writes an embedding-only egress policy", () => {

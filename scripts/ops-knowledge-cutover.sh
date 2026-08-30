@@ -219,7 +219,7 @@ if [[ "$phase" == "preflight" ]]; then
     die "Knowledge chunk relation size exceeds the guarded arithmetic bound."
 
   available_kb="$(compose exec -T "$postgres_service" sh -ceu \
-    "df -Pk /var/lib/postgresql/data | awk 'NR == 2 { print \\\$4 }'" 2>/dev/null)" ||
+    "df -Pk /var/lib/postgresql | awk 'NR == 2 { print \\\$4 }'" 2>/dev/null)" ||
     die "Could not inspect PostgreSQL volume capacity."
   available_kb="${available_kb//[[:space:]]/}"
   [[ "$available_kb" =~ ^[0-9]+$ ]] || die "PostgreSQL capacity preflight returned invalid evidence."

@@ -8,7 +8,7 @@ x-restore-logging: &restore-logging
 
 services:
   postgres-restore:
-    image: ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee
+    image: pgvector/pgvector:0.8.6-pg18-trixie@sha256:78bf48b801e792f99e3ac62b5036fd3876e9be48afda16c1e331af1c75ceb2ff
     environment:
       POSTGRES_DB: ${AIQSA_RESTORE_POSTGRES_DB:-aiqsa_restore}
       POSTGRES_PASSWORD: ${AIQSA_RESTORE_POSTGRES_PASSWORD:?Set a disposable restore database password}
@@ -24,7 +24,7 @@ services:
     restart: "no"
     stop_grace_period: 60s
     volumes:
-      - postgres_restore_data:/var/lib/postgresql/data
+      - postgres18_restore_data:/var/lib/postgresql
 
   minio-restore:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -95,4 +95,4 @@ networks:
 
 volumes:
   minio_restore_data:
-  postgres_restore_data:
+  postgres18_restore_data:

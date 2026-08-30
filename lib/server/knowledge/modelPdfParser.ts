@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
+import { sumTokenUsage } from "../../domain/usage";
 import {
   decodeModelPdfBatchOutput,
   modelPdfPagesToDocument,
@@ -15,13 +16,40 @@ import {
   type PreparedPdfBatch
 } from "../parsing/pdfPreparation";
 import type { ParsedDocument } from "../parsing/types";
-import { extractNativePdfGeometry } from "../parsing/nativePdf";
-import { enrichModelPdfGeometry } from "../parsing/pdfGeometry";
+import {
+  extractNativePdfGeometry,
+  type NativePdfGeometry
+} from "../parsing/nativePdf";
+import {
+  MODEL_PDF_ADAPTIVE_HYBRID_PROFILE_VERSION,
+  planAdaptivePdfPages,
+  type AdaptivePdfPlan
+} from "../parsing/adaptivePdf";
+import { mergeAdaptivePdfDocument } from "../parsing/adaptivePdfMerge";
+import {
+  adaptivePdfVisionPrompt,
+  prepareAdaptivePdfVisionSupplement,
+  type AdaptivePdfVisionSupplement
+} from "../parsing/adaptivePdfVision";
+import type { DoclingLayoutParser } from "../parsing/doclingLayout";
+import {
+  enrichModelPdfGeometry,
+  mergeModelPdfWithNativeText,
+  MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION,
+  MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION
+} from "../parsing/pdfGeometry";
 import { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import {
   normalizeProviderExecutionSnapshot,
   type ProviderExecutionSnapshot
 } from "../providers/runtimeFactory";
+import { isProviderDeadlineExceededError } from "../providers/network";
+import { openAIRetryableErrorPayload } from "../providers/openaiResponsesTransport";
+import {
+  executeWithProviderRetry,
+  isRetryableProviderNetworkError,
+  type ProviderRetryOptions
+} from "../providers/providerRetry";
 import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "./knowledgeProfile";
 import type {
   ProviderAttachment,
@@ -57,6 +85,7 @@ export type KnowledgeModelPdfParser = Readonly<{
     mode: PdfModelProcessingMode;
     ownerUserId: string;
     parserProfileVersion: number;
+    processingGeneration: number;
     profileRevisionId: string;
     signal?: AbortSignal;
     sourceVersionId: string;
@@ -69,6 +98,58 @@ type AttemptRepository = ReturnType<typeof createKnowledgeModelPdfAttemptReposit
 type AcceptedExecutor = ReturnType<typeof createAcceptedProviderRequestExecutor>;
 type PdfVisionDetail = "auto" | "original";
 
+export const KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY = 4 as const;
+export const KNOWLEDGE_MODEL_PDF_PROVIDER_MAX_ATTEMPTS = 3 as const;
+export const KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS = 120_000 as const;
+
+class RetryableKnowledgeModelPdfOutputError extends Error {
+  constructor() {
+    super("pdf_processing_output_invalid");
+    this.name = "RetryableKnowledgeModelPdfOutputError";
+  }
+}
+
+async function mapBoundedInOrder<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  worker: (value: T, index: number) => Promise<R>
+): Promise<readonly R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  let stopped = false;
+  let firstError: unknown;
+  const runners = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (!stopped) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= values.length) return;
+        try {
+          results[index] = await worker(values[index]!, index);
+        } catch (error) {
+          if (!stopped) {
+            firstError = error;
+            stopped = true;
+          }
+        }
+      }
+    }
+  );
+  await Promise.all(runners);
+  if (stopped) throw firstError;
+  return Object.freeze(results);
+}
+
+function retryableProviderFailure(error: unknown): Readonly<{ retryAfterMs: null }> | null {
+  return error instanceof RetryableKnowledgeModelPdfOutputError ||
+    isProviderDeadlineExceededError(error) ||
+    openAIRetryableErrorPayload(error) !== null ||
+    isRetryableProviderNetworkError(error)
+    ? { retryAfterMs: null }
+    : null;
+}
+
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 }
@@ -79,6 +160,7 @@ function digestPreparedBatch(input: Readonly<{
   profileRevisionId: string;
   prompt: string;
   snapshot: ProviderExecutionSnapshot;
+  supplement: AdaptivePdfVisionSupplement | null;
   visionDetail: PdfVisionDetail;
 }>): string {
   const hash = createHash("sha256");
@@ -113,12 +195,29 @@ function digestPreparedBatch(input: Readonly<{
       hash.update(image.bytes);
     }
   }
+  if (input.supplement) {
+    hash.update("\0adaptive-pdf-supplement-v1\0", "utf8");
+    hash.update(input.supplement.nativePageText ?? "", "utf8");
+    for (const crop of input.supplement.crops) {
+      hash.update("\0", "utf8");
+      hash.update(JSON.stringify({
+        height: crop.height,
+        index: crop.index,
+        mimeType: crop.mimeType,
+        nativeText: crop.nativeText,
+        page: crop.page,
+        width: crop.width
+      }), "utf8");
+      hash.update(crop.bytes);
+    }
+  }
   return hash.digest("hex");
 }
 
 function attachments(
   batch: PreparedPdfBatch,
-  visionDetail: PdfVisionDetail
+  visionDetail: PdfVisionDetail,
+  supplement: AdaptivePdfVisionSupplement | null
 ): ProviderAttachment[] {
   if (batch.kind === "pdf") {
     return [{
@@ -139,7 +238,7 @@ function attachments(
       status: "ready"
     }];
   }
-  return batch.images.map((image) => {
+  const pages = batch.images.map((image) => {
     const pageName = `page-${String(image.page).padStart(6, "0")}`;
     return {
       byteSize: image.bytes.byteLength,
@@ -162,6 +261,28 @@ function attachments(
       status: "ready"
     };
   });
+  const crops: ProviderAttachment[] = (supplement?.crops ?? []).map((crop) => {
+    const pageName = `page-${String(crop.page).padStart(6, "0")}-table-crop-${crop.index + 1}`;
+    return {
+      byteSize: crop.bytes.byteLength,
+      dataUrl: `data:${crop.mimeType};base64,${crop.bytes.toString("base64")}`,
+      extractedText: null,
+      fileName: `${pageName}.${crop.mimeType === "image/png" ? "png" : "jpg"}`,
+      id: `knowledge-pdf-page-${crop.page}-table-crop-${crop.index + 1}`,
+      kind: "image",
+      metadata: {
+        image: {
+          detail: "original",
+          height: crop.height,
+          sourcePage: crop.page,
+          width: crop.width
+        }
+      },
+      mimeType: crop.mimeType,
+      status: "ready"
+    };
+  });
+  return [...pages, ...crops];
 }
 
 function providerRequest(input: Readonly<{
@@ -169,9 +290,10 @@ function providerRequest(input: Readonly<{
   mode: PdfModelProcessingMode;
   prompt: string;
   snapshot: ProviderExecutionSnapshot;
+  supplement: AdaptivePdfVisionSupplement | null;
   visionDetail: PdfVisionDetail;
 }>): ProviderRunRequest {
-  const files = attachments(input.batch, input.visionDetail);
+  const files = attachments(input.batch, input.visionDetail, input.supplement);
   const declaredOutput = input.snapshot.model.capabilities.defaultMaxOutputTokens;
   const maxOutputTokens = typeof declaredOutput === "number" &&
     Number.isSafeInteger(declaredOutput) && declaredOutput > 0
@@ -210,8 +332,8 @@ function providerRequest(input: Readonly<{
 function validSnapshot(
   input: Parameters<KnowledgeModelPdfParser["parse"]>[0]
 ): ProviderExecutionSnapshot {
-  if (![1, 2, 3, 4, KNOWLEDGE_PDF_PARSER_PROFILE_VERSION]
-    .includes(input.parserProfileVersion) ||
+  if (!Number.isSafeInteger(input.parserProfileVersion) || input.parserProfileVersion < 1 ||
+    input.parserProfileVersion > KNOWLEDGE_PDF_PARSER_PROFILE_VERSION ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
     throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
@@ -249,7 +371,9 @@ export function createKnowledgeModelPdfParser(
     extractGeometry?: typeof extractNativePdfGeometry;
     inspect?: typeof inspectPdfForModelProcessing;
     now?: () => Date;
+    parseDocling?: DoclingLayoutParser | null;
     prepare?: typeof preparePdfModelBatch;
+    retry?: ProviderRetryOptions;
   }> = {}
 ): KnowledgeModelPdfParser {
   const attemptRepository = options.attemptRepository ??
@@ -257,7 +381,9 @@ export function createKnowledgeModelPdfParser(
   const execute = options.execute ?? createAcceptedProviderRequestExecutor(prisma);
   const extractGeometry = options.extractGeometry ?? extractNativePdfGeometry;
   const inspect = options.inspect ?? inspectPdfForModelProcessing;
+  const parseDocling = options.parseDocling ?? null;
   const prepare = options.prepare ?? preparePdfModelBatch;
+  const retry = options.retry;
   const now = options.now ?? (() => new Date());
 
   return {
@@ -275,7 +401,47 @@ export function createKnowledgeModelPdfParser(
         if (input.signal?.aborted) throw abortReason(input.signal);
         throw modelFailure(error);
       }
-      const settled: SettledKnowledgeModelPdfBatch[] = [];
+      let adaptiveGeometry: NativePdfGeometry | null = null;
+      let adaptiveDocling: ParsedDocument | null = null;
+      let adaptivePlan: AdaptivePdfPlan | null = null;
+      const adaptiveHybrid = input.mode === "system_model_vision" &&
+        input.parserProfileVersion >= MODEL_PDF_ADAPTIVE_HYBRID_PROFILE_VERSION;
+      if (adaptiveHybrid && parseDocling) {
+        try {
+          adaptiveGeometry = await extractGeometry({
+            bytes: input.bytes,
+            fileName: "source.pdf",
+            mimeType: "application/pdf",
+            ...(input.signal ? { signal: input.signal } : {})
+          }, {
+            maxBlocks: input.maxBlocks,
+            maxCharacters: input.maxCharacters,
+            maxPages: input.maxPages
+          });
+          if (adaptiveGeometry.pageCount !== pageCount) adaptiveGeometry = null;
+        } catch {
+          if (input.signal?.aborted) throw abortReason(input.signal);
+          adaptiveGeometry = null;
+        }
+        if (adaptiveGeometry) {
+          try {
+            adaptiveDocling = await parseDocling({
+              bytes: input.bytes,
+              fileName: "source.pdf",
+              mimeType: "application/pdf",
+              parserProfileVersion: input.parserProfileVersion,
+              ...(input.signal ? { signal: input.signal } : {})
+            });
+          } catch {
+            if (input.signal?.aborted) throw abortReason(input.signal);
+            adaptiveDocling = null;
+          }
+          adaptivePlan = planAdaptivePdfPages({
+            docling: adaptiveDocling,
+            geometry: adaptiveGeometry
+          });
+        }
+      }
       const highFidelityVision = input.mode === "system_model_vision" &&
         input.parserProfileVersion >= 3;
       const adaptiveHighFidelityVision = highFidelityVision &&
@@ -285,10 +451,33 @@ export function createKnowledgeModelPdfParser(
       const batchPageCount = highFidelityVision
         ? PDF_MODEL_VISION_BATCH_PAGE_COUNT
         : PDF_MODEL_BATCH_PAGE_COUNT;
+      const batches: Array<Readonly<{
+        batchIndex: number;
+        pageEnd: number;
+        pageStart: number;
+      }>> = [];
+      const visionPages = adaptivePlan
+        ? new Set(adaptivePlan.pages.filter((page) =>
+            page.route === "vision_required").map((page) => page.page))
+        : null;
       for (let pageStart = 1, batchIndex = 0; pageStart <= pageCount;
         pageStart += batchPageCount, batchIndex += 1) {
+        if (visionPages && !visionPages.has(pageStart)) continue;
+        batches.push(Object.freeze({
+          batchIndex,
+          pageEnd: Math.min(pageCount, pageStart + batchPageCount - 1),
+          pageStart
+        }));
+      }
+      const concurrency = input.mode === "system_model_vision"
+        ? KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY
+        : 1;
+      const settled = await mapBoundedInOrder(batches, concurrency, async ({
+        batchIndex,
+        pageEnd,
+        pageStart
+      }) => {
         if (input.signal?.aborted) throw abortReason(input.signal);
-        const pageEnd = Math.min(pageCount, pageStart + batchPageCount - 1);
         let prepared: PreparedPdfBatch;
         try {
           prepared = await prepare({
@@ -306,26 +495,44 @@ export function createKnowledgeModelPdfParser(
           if (input.signal?.aborted) throw abortReason(input.signal);
           throw modelFailure(error);
         }
-        const prompt = modelPdfTranscriptionPrompt({
+        const basePrompt = modelPdfTranscriptionPrompt({
           mode: input.mode,
           pageEnd,
           pageStart,
-          promptVersion: input.parserProfileVersion >= 5
-            ? 3
+          promptVersion: input.parserProfileVersion >= 7
+            ? 5
+            : input.parserProfileVersion >= 6 ? 4
+            : input.parserProfileVersion >= 5 ? 3
             : input.parserProfileVersion >= 3 ? 2 : 1
         });
+        let supplement: AdaptivePdfVisionSupplement | null = null;
+        if (adaptivePlan && adaptiveGeometry && input.mode === "system_model_vision") {
+          try {
+            supplement = await prepareAdaptivePdfVisionSupplement({
+              batch: prepared,
+              docling: adaptiveDocling,
+              geometry: adaptiveGeometry
+            });
+          } catch (error) {
+            if (input.signal?.aborted) throw abortReason(input.signal);
+            throw modelFailure(error);
+          }
+        }
+        const prompt = supplement ? adaptivePdfVisionPrompt(basePrompt, supplement) : basePrompt;
         const identity: KnowledgeModelPdfAttemptIdentity = {
           artifactId: input.artifactId,
           batchIndex,
           mode: input.mode,
           pageEnd,
           pageStart,
+          processingGeneration: input.processingGeneration,
           requestDigest: digestPreparedBatch({
             batch: prepared,
             mode: input.mode,
             profileRevisionId: input.profileRevisionId,
             prompt,
             snapshot,
+            supplement,
             visionDetail
           }),
           sourceVersionId: input.sourceVersionId
@@ -337,8 +544,7 @@ export function createKnowledgeModelPdfParser(
           throw modelFailure(error);
         }
         if (reservation.kind === "settled") {
-          settled.push(reservation.batch);
-          continue;
+          return reservation.batch;
         }
         const dispatched = await attemptRepository.markDispatched({
           ...identity,
@@ -349,16 +555,41 @@ export function createKnowledgeModelPdfParser(
           throw new KnowledgeModelPdfParsingError("pdf_processing_ambiguous");
         }
         let result: ProviderRunResult;
+        const acceptedUsages: ModelRunUsage[] = [];
         try {
-          result = await execute(snapshot, providerRequest({
-            batch: prepared,
-            mode: input.mode,
-            prompt,
-            snapshot,
-            visionDetail
-          }), {
-            ...(input.signal ? { signal: input.signal } : {}),
-            timeoutMs: 300_000
+          const signal = input.signal ?? new AbortController().signal;
+          result = await executeWithProviderRetry({
+            operation: async () => {
+              const candidate = await execute(snapshot, providerRequest({
+                batch: prepared,
+                mode: input.mode,
+                prompt,
+                snapshot,
+                supplement,
+                visionDetail
+              }), {
+                signal,
+                timeoutMs: KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS
+              });
+              try {
+                decodeModelPdfBatchOutput({
+                  mode: input.mode,
+                  pageEnd,
+                  pageStart,
+                  text: candidate.finalText
+                });
+              } catch {
+                acceptedUsages.push(candidate.usage as ModelRunUsage);
+                throw new RetryableKnowledgeModelPdfOutputError();
+              }
+              return candidate;
+            },
+            options: {
+              ...retry,
+              maxAttempts: KNOWLEDGE_MODEL_PDF_PROVIDER_MAX_ATTEMPTS
+            },
+            shouldRetry: retryableProviderFailure,
+            signal
           });
         } catch (error) {
           await attemptRepository.markAmbiguous(reservation.attemptId, now()).catch(() => undefined);
@@ -374,26 +605,54 @@ export function createKnowledgeModelPdfParser(
             ownerUserId: input.ownerUserId,
             resultText: result.finalText,
             snapshot,
-            usage: result.usage as ModelRunUsage
+            usage: sumTokenUsage([
+              ...acceptedUsages,
+              result.usage as ModelRunUsage
+            ])
           });
         } catch (error) {
           throw modelFailure(error);
         }
-        settled.push(batch);
-      }
+        return batch;
+      });
       try {
-        const pages = settled.flatMap((batch) => decodeModelPdfBatchOutput({
+        const decodedPages = settled.flatMap((batch) => decodeModelPdfBatchOutput({
           mode: input.mode,
           pageEnd: batch.pageEnd,
           pageStart: batch.pageStart,
           text: batch.resultText
         }));
+        if (adaptivePlan && adaptiveGeometry) {
+          const decodedByPage = new Map(decodedPages.map((page) => [page.page, page]));
+          const pages = Array.from({ length: pageCount }, (_, index) =>
+            decodedByPage.get(index + 1) ?? Object.freeze({ page: index + 1, text: "" }));
+          const visionDocument = adaptivePlan.visionRequiredPageCount > 0
+            ? modelPdfPagesToDocument({
+                maxBlocks: input.maxBlocks,
+                maxCharacters: input.maxCharacters,
+                mode: input.mode,
+                pageCount,
+                pages,
+                tableContinuationMarkers: true
+              })
+            : null;
+          return mergeAdaptivePdfDocument({
+            docling: adaptiveDocling,
+            geometry: adaptiveGeometry,
+            maxBlocks: input.maxBlocks,
+            maxCharacters: input.maxCharacters,
+            plan: adaptivePlan,
+            vision: visionDocument
+          });
+        }
+        const pages = decodedPages;
         const document = modelPdfPagesToDocument({
           maxBlocks: input.maxBlocks,
           maxCharacters: input.maxCharacters,
           mode: input.mode,
           pageCount,
-          pages
+          pages,
+          tableContinuationMarkers: input.parserProfileVersion >= 7
         });
         try {
           const geometry = await extractGeometry({
@@ -406,6 +665,15 @@ export function createKnowledgeModelPdfParser(
             maxCharacters: input.maxCharacters,
             maxPages: input.maxPages
           });
+          if (input.mode === "system_model_vision" &&
+            input.parserProfileVersion >= MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION) {
+            return mergeModelPdfWithNativeText(document, geometry, {
+              allowTextCorrections: input.parserProfileVersion >=
+                MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION,
+              maxBlocks: input.maxBlocks,
+              maxCharacters: input.maxCharacters
+            }).document;
+          }
           return enrichModelPdfGeometry(document, geometry);
         } catch {
           if (input.signal?.aborted) throw abortReason(input.signal);

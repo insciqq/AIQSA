@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeChunkPlanEntry } from "./chunking";
-import { buildAndPersistKnowledgeHierarchicalIndex } from "./hierarchicalIndexRepository";
+import {
+  buildAndPersistKnowledgeHierarchicalIndex,
+  createPrismaKnowledgeHierarchicalIndexRepository,
+  KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
+  KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS,
+  KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE
+} from "./hierarchicalIndexRepository";
 
 function overflowChunks(): KnowledgeChunkPlanEntry[] {
   return Array.from({ length: 240 }, (_, index) => {
@@ -15,6 +21,7 @@ function overflowChunks(): KnowledgeChunkPlanEntry[] {
       embeddingTextHash: (index + 1).toString(16).padStart(64, "0"),
       headingPath: [],
       index,
+      layoutKind: "body" as const,
       page: index + 1,
       pageEnd: index + 1,
       sourceBlockEnd: index,
@@ -29,6 +36,12 @@ function overflowChunks(): KnowledgeChunkPlanEntry[] {
 describe("Knowledge hierarchical index persistence diagnostics", () => {
   it("emits only bounded counts and artifact identity when exact entries are truncated", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const createExactEntries = vi.fn(async (_input: { data: unknown[] }) => ({
+      count: 10_000
+    }));
+    const createPassageEntries = vi.fn(async (_input: { data: unknown[] }) => ({
+      count: 240
+    }));
     const tx = {
       $queryRaw: vi.fn(async () => [{
         description: "Private source description",
@@ -41,8 +54,8 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
         tags: ["private-tag"]
       }]),
       knowledgeArtifactDocumentIndex: { create: vi.fn(async () => ({})) },
-      knowledgeArtifactExactEntry: { createMany: vi.fn(async () => ({ count: 10_000 })) },
-      knowledgeArtifactPassageIndex: { createMany: vi.fn(async () => ({ count: 240 })) },
+      knowledgeArtifactExactEntry: { createMany: createExactEntries },
+      knowledgeArtifactPassageIndex: { createMany: createPassageEntries },
       knowledgeArtifactSectionIndex: { createMany: vi.fn(async () => ({ count: 1 })) },
       knowledgeHierarchicalIndexArtifact: {
         create: vi.fn(async () => ({})),
@@ -60,6 +73,15 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
       sourceVersionId: "version-overflow"
     })).resolves.toBe("created");
 
+    expect(createPassageEntries).toHaveBeenCalledOnce();
+    expect(createPassageEntries.mock.calls[0]![0].data)
+      .toHaveLength(240);
+    expect(createExactEntries).toHaveBeenCalledTimes(
+      10_000 / KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE
+    );
+    expect(createExactEntries.mock.calls.every(([input]) =>
+      input.data.length <= KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE)).toBe(true);
+
     expect(warn).toHaveBeenCalledOnce();
     const serialized = warn.mock.calls[0]![0];
     expect(typeof serialized).toBe("string");
@@ -75,5 +97,49 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
     expect(serialized).not.toContain("SAFE-");
     expect(serialized).not.toContain("private-tag");
     warn.mockRestore();
+  });
+
+  it("gives bounded bulk index writes an explicit transaction deadline", async () => {
+    const tx = {
+      $queryRaw: vi.fn(async () => [{
+        description: "",
+        fileName: "source.txt",
+        mimeType: "text/plain",
+        sourceArtifactId: "artifact-transaction",
+        sourceArtifactState: "processing",
+        sourceName: "source.txt",
+        sourceVersionId: "version-transaction",
+        tags: []
+      }]),
+      knowledgeArtifactDocumentIndex: { create: vi.fn(async () => ({})) },
+      knowledgeArtifactExactEntry: { createMany: vi.fn(async () => ({ count: 1 })) },
+      knowledgeArtifactPassageIndex: { createMany: vi.fn(async () => ({ count: 1 })) },
+      knowledgeArtifactSectionIndex: { createMany: vi.fn(async () => ({ count: 1 })) },
+      knowledgeHierarchicalIndexArtifact: {
+        create: vi.fn(async () => ({})),
+        delete: vi.fn(async () => ({})),
+        findUnique: vi.fn(async () => null),
+        updateMany: vi.fn(async () => ({ count: 1 }))
+      }
+    };
+    const transaction = vi.fn(async (
+      operation: (client: typeof tx) => Promise<unknown>
+    ) => operation(tx));
+    const repository = createPrismaKnowledgeHierarchicalIndexRepository({
+      $transaction: transaction
+    } as never);
+
+    await expect(repository.build({
+      chunks: [overflowChunks()[0]!],
+      document: null,
+      now: new Date("2026-08-30T10:00:00.000Z"),
+      sourceArtifactId: "artifact-transaction",
+      sourceVersionId: "version-transaction"
+    })).resolves.toBe("created");
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
+      timeout: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS
+    });
   });
 });

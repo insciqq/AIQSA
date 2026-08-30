@@ -30,6 +30,11 @@ import type {
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import {
+  parseProviderStructuredOutputObject,
+  type ProviderStructuredOutputAdapter,
+  type ProviderStructuredOutputRequest
+} from "../providers/structuredOutput";
+import {
   sameProviderAdmissionPlan,
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
@@ -58,7 +63,10 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
-import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS,
+  type KnowledgeToolExecutor
+} from "../knowledge/toolExecutor";
 import {
   knowledgeRunAdmissionHasReadySources,
   type KnowledgeRunAdmissionAuthorizationSnapshot,
@@ -72,15 +80,25 @@ import {
   focusedKnowledgeCallArgumentsMatch,
   focusedKnowledgeEvidenceDispatchDraft,
   knowledgeEvidenceMessageFromDispatchDraft,
+  toolLoopKnowledgeEvidenceDispatchDraft,
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
 import type { KnowledgeEvidenceDispatchManifestDraft } from "../knowledge/evidenceDispatchManifest";
 import type { KnowledgeEvidenceDispatchBinding } from "../knowledge/evidenceDispatchRepository";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
 import type {
-  KnowledgeProviderDispatchLifecycle,
-  PreparedKnowledgeProviderDispatch
+  KnowledgeProviderDispatchLifecycle
 } from "../knowledge/providerDispatchLifecycle";
+import {
+  executeKnowledgeAnswerGroundingV8,
+  type KnowledgeAnswerOperationExecutionV8
+} from "../knowledge/answerGroundingExecutionV5";
+import {
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_INSUFFICIENT_MESSAGE,
+  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
+} from "../knowledge/answerGroundingV5";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import {
@@ -197,6 +215,7 @@ export type RunExecutionRepository = Pick<
   | "getChatUpdateForRun"
   | "getRunControlForUser"
   | "groundKnowledgeAnswer"
+  | "groundKnowledgeAnswerV5"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
@@ -222,6 +241,7 @@ export type RunExecutionInput = Readonly<{
   repository: RunExecutionRepository;
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
+  structuredOutputAdapter?: ProviderStructuredOutputAdapter;
   knowledgeAdmission?: Readonly<{
     authorizeSnapshot?(input: {
       executionScope?: "project";
@@ -783,58 +803,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         if (publication === "terminal") throw abortError();
       }
 
-      async function prepareKnowledgeProviderDispatch(inputRequest: Readonly<{
-        draft: KnowledgeEvidenceDispatchManifestDraft | null;
-        evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null;
-        ordinal: number;
-        purpose: "answer";
-        request: ProviderRunRequest;
-        roundIndex: number;
-      }>): Promise<PreparedKnowledgeProviderDispatch | null> {
-        if (!inputRequest.draft) return null;
-        if (!input.knowledgeProviderDispatch) {
-          if (process.env.NODE_ENV === "production") {
-            throw new RunPipelineError(
-              "knowledge_evidence_dispatch_unavailable",
-              "Knowledge evidence dispatch persistence is unavailable"
-            );
-          }
-          return null;
-        }
-        return input.knowledgeProviderDispatch.prepare({
-          draft: inputRequest.draft,
-          ...(inputRequest.evidenceBindings
-            ? { evidenceBindings: inputRequest.evidenceBindings }
-            : {}),
-          modelRunId: runId,
-          ordinal: inputRequest.ordinal,
-          purpose: inputRequest.purpose,
-          requestPreview: input.adapter.buildRequestPreview(inputRequest.request),
-          roundIndex: inputRequest.roundIndex
-        });
-      }
-
-      async function streamProviderRequest(
-        request: ProviderRunRequest,
-        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null,
-        evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null
-      ): Promise<ProviderRunResult> {
-        const preparedDispatch = await prepareKnowledgeProviderDispatch({
-          draft: dispatchDraft,
-          evidenceBindings,
-          ordinal: 1,
-          purpose: "answer",
-          request,
-          roundIndex: 0
-        });
-        const answerSignal = dispatchDraft
-          ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
-          : signal;
+      async function streamProviderRequest(request: ProviderRunRequest): Promise<ProviderRunResult> {
         const providerStream = streamAnswerProviderWithEgress(
           request,
-          answerSignal,
-          preparedDispatch,
-          dispatchDraft !== null
+          signal
         );
         let lastReportedUsage: ModelRunUsage | null = null;
 
@@ -858,12 +830,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         } catch (error) {
           if (lastReportedUsage) {
             rememberReportedUsage(request.provider, request.modelId, lastReportedUsage);
-          }
-          if (dispatchDraft && !signal.aborted && isAbortError(error)) {
-            throw new RunPipelineError(
-              "knowledge_answer_failed",
-              "The Knowledge answer provider exceeded its deadline"
-            );
           }
           throw error;
         }
@@ -1158,7 +1124,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             try {
               const retrievalSignal = AbortSignal.any([
                 signal,
-                AbortSignal.timeout(30_000)
+                AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
               ]);
               result = await input.knowledgeExecutor.execute(
                 call,
@@ -1177,12 +1143,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (signal.aborted || error instanceof RunPipelineError) {
                 throw error;
-              }
-              if (isAbortError(error)) {
-                throw new RunPipelineError(
-                  "knowledge_retrieval_failed",
-                  "Focused Knowledge retrieval exceeded its deadline"
-                );
               }
               result = toolExecutionErrorResult(call, error, "Knowledge");
             }
@@ -1252,6 +1212,245 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         };
       }
 
+      function providerNeutralKnowledgeRequest(
+        operation: ProviderStructuredOutputRequest
+      ): ProviderRunRequest {
+        return {
+          ...input.prepared.providerRequest,
+          attachmentIds: [],
+          attachments: [],
+          content: textMessageContent(operation.userPrompt),
+          context: undefined,
+          knowledgeAnswering: undefined,
+          knowledgeFocusedRequest: undefined,
+          mcp: undefined,
+          mcpDiscovery: undefined,
+          params: {
+            ...input.prepared.providerRequest.params,
+            maxOutputTokens: operation.maxOutputTokens
+          },
+          personalContext: undefined,
+          prompt: {
+            developer: null,
+            system: operation.systemPrompt
+          },
+          searchPlan: { mode: "all_selected", options: [] },
+          toolChoice: "none",
+          toolMode: "none",
+          tools: undefined
+        };
+      }
+
+      async function authorizeKnowledgeAnswerOperation(): Promise<void> {
+        await assertProjectRunAccessCurrent(true);
+        if (!(await currentAnswerDispatchAllowed())) {
+          throw new RunPipelineError(
+            "model_not_available",
+            "The selected model is no longer available"
+          );
+        }
+        if (!(await currentKnowledgeDispatchAllowed())) {
+          throw new RunPipelineError(
+            "memory_egress_destination_revoked",
+            "Knowledge access changed before answer-provider dispatch"
+          );
+        }
+        if (egressReceiptRequired && !input.memoryEgress &&
+          process.env.NODE_ENV === "production") {
+          throw new RunPipelineError(
+            "memory_egress_receipt_unavailable",
+            "Memory egress evidence is unavailable."
+          );
+        }
+      }
+
+      async function executeKnowledgeStructuredOutput(
+        operation: ProviderStructuredOutputRequest
+      ): Promise<KnowledgeAnswerOperationExecutionV8> {
+        const dispatchRequest = providerNeutralKnowledgeRequest(operation);
+        const operationSignal = AbortSignal.any([
+          signal,
+          AbortSignal.timeout(120_000)
+        ]);
+        const receipt = input.memoryEgress && egressReceiptRequired
+          ? await input.memoryEgress.beginDispatch({
+              destinationKind: "answer_provider",
+              destinationSnapshot: {
+                modelId: normalizedRequest.modelId,
+                operation: operation.name,
+                provider: normalizedRequest.provider,
+                version: 1
+              },
+              mode: "PROVIDER_REQUEST",
+              requestEvidence: memoryEgressRequestEvidence(dispatchRequest),
+              requestPreview: {
+                operation: operation.name,
+                requestHash: memorySha256(operation)
+              },
+              runId,
+              userId: input.userId
+            })
+          : null;
+        try {
+          let providerResponseId: string | null = null;
+          let reportedUsage: ModelRunUsage = {
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 0
+          };
+          let output: Readonly<Record<string, unknown>>;
+          if (input.structuredOutputAdapter) {
+            output = await input.structuredOutputAdapter.execute(operation, {
+              onProviderResponseId(value) {
+                providerResponseId = value;
+              },
+              onUsage(value) {
+                reportedUsage = value;
+              },
+              signal: operationSignal,
+              timeoutMs: 120_000
+            });
+          } else {
+            const stream = input.adapter.stream(dispatchRequest, {
+              signal: operationSignal
+            });
+            let next = await stream.next();
+            while (!next.done) {
+              const eventResponseId = providerResponseIdFromEvent(next.value);
+              if (eventResponseId) providerResponseId = eventResponseId;
+              if (next.value.type === "usage") reportedUsage = next.value.data;
+              next = await stream.next();
+            }
+            if ((next.value.toolCalls?.length ?? 0) > 0) {
+              throw new Error("structured_output_tools_forbidden");
+            }
+            providerResponseId = next.value.providerResponseId ?? providerResponseId;
+            reportedUsage = next.value.usage;
+            output = parseProviderStructuredOutputObject(next.value.finalText);
+          }
+          if (providerResponseId) await publishProviderResponseId(providerResponseId);
+          if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
+            throw new RunPipelineError(
+              "memory_egress_receipt_conflict",
+              "Provider dispatch evidence could not be completed."
+            );
+          }
+          return Object.freeze({
+            output,
+            providerResponseId,
+            usage: normalizeTokenUsage(reportedUsage)
+          });
+        } catch (error) {
+          if (receipt) {
+            await input.memoryEgress!.failDispatch(
+              receipt.id,
+              error instanceof RunPipelineError ? error.code : "provider_dispatch_failed"
+            ).catch(() => undefined);
+          }
+          throw error;
+        }
+      }
+
+      async function runAutomaticKnowledgeAnswerV5(inputRequest: Readonly<{
+        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft;
+        evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null;
+        routeInstruction?: string;
+      }>): Promise<Readonly<{
+        contracts: Readonly<{
+          draftContractVersion: 20;
+          selectorContractVersion: 16;
+        }>;
+        result: ProviderRunResult & { usageAttributions: RunUsageAttribution[] };
+      }>> {
+        if (!input.knowledgeProviderDispatch || !input.repository.groundKnowledgeAnswerV5) {
+          throw new RunPipelineError(
+            "knowledge_answer_v5_unavailable",
+            "Knowledge answer grounding V5 is unavailable"
+          );
+        }
+        const requestText = textFromContentBlocks(normalizedRequest.content).trim();
+        if (!requestText) {
+          throw new RunPipelineError(
+            "knowledge_answer_request_invalid",
+            "The effective Knowledge request is empty"
+          );
+        }
+        const reasoningEffort = typeof normalizedRequest.params.reasoningEffort === "string"
+          ? normalizedRequest.params.reasoningEffort
+          : null;
+        const operationResult = await executeKnowledgeAnswerGroundingV8({
+          authorize: authorizeKnowledgeAnswerOperation,
+          draft: inputRequest.dispatchDraft,
+          ...(inputRequest.evidenceBindings
+            ? { evidenceBindings: inputRequest.evidenceBindings }
+            : {}),
+          execute: executeKnowledgeStructuredOutput,
+          forbiddenIdentityFragments: [
+            runId,
+            ...inputRequest.dispatchDraft.items.map((item) => item.evidenceId),
+            ...(input.prepared.knowledgeAdmissionPlan?.sources ?? []).flatMap((source) => [
+              source.sourceId,
+              source.sourceVersionId,
+              source.sourceArtifactId
+            ])
+          ],
+          lifecycle: input.knowledgeProviderDispatch,
+          modelRunId: runId,
+          reasoningEffort,
+          request: requestText,
+          routeInstruction: inputRequest.routeInstruction ?? (fullContextPlan
+            ? KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION
+            : KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION),
+          shouldAbort: () => signal.aborted,
+          transport: input.structuredOutputAdapter
+            ? "native_strict"
+            : "provider_neutral_json"
+        });
+        if (operationResult.contracts.draftContractVersion !== 20 ||
+          operationResult.contracts.selectorContractVersion !== 16) {
+          throw new RunPipelineError(
+            "knowledge_answer_contract_conflict",
+            "The current Knowledge answer run returned an unexpected contract pair"
+          );
+        }
+        const usageAttributions = operationResult.operations.map((operation) => ({
+          modelId: normalizedRequest.modelId,
+          provider: normalizedRequest.provider,
+          usage: operation.usage
+        }));
+        for (const operation of operationResult.operations) {
+          rememberReportedUsage(
+            normalizedRequest.provider,
+            normalizedRequest.modelId,
+            operation.usage
+          );
+        }
+        const usage = sumTokenUsage(usageAttributions.map((entry) => entry.usage));
+        return Object.freeze({
+          contracts: operationResult.contracts,
+          result: {
+            finalText: "",
+            finalProviderResponsePreview: {
+              draftContractVersion: 20,
+              selectorContractVersion: 16,
+              structuredKnowledgeAnswer: true
+            },
+            ...((operationResult.operations.at(-1)?.providerResponseId ??
+              operationResult.operations[0]?.providerResponseId)
+              ? {
+                  providerResponseId: operationResult.operations.at(-1)?.providerResponseId ??
+                    operationResult.operations[0]!.providerResponseId!
+                }
+              : {}),
+            usage,
+            usageAttributions
+          }
+        });
+      }
+
       async function currentMcpDispatchAllowed(inputRoute: Readonly<{
         fingerprint: string;
         namespacedName: string;
@@ -1287,61 +1486,48 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function* streamAnswerProviderWithEgress(
         request: ProviderRunRequest,
-        dispatchSignal: AbortSignal = signal,
-        preparedDispatch: PreparedKnowledgeProviderDispatch | null = null,
-        knowledgeAuthorizationRequired = false
+        dispatchSignal: AbortSignal = signal
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-        let providerDispatched = false;
         let preview: Record<string, unknown> | null = null;
         const requestPreview = () => {
           preview ??= input.adapter.buildRequestPreview(request);
           return preview;
         };
-        try {
-          await assertProjectRunAccessCurrent(true);
-          if (!(await currentAnswerDispatchAllowed())) {
-            throw new RunPipelineError(
-              "model_not_available",
-              "The selected model is no longer available"
-            );
-          }
-          if (egressReceiptRequired && !input.memoryEgress &&
-            process.env.NODE_ENV === "production") {
-            throw new RunPipelineError(
-              "memory_egress_receipt_unavailable",
-              "Memory egress evidence is unavailable."
-            );
-          }
-          if (requestHasHostedSearchCapability(request) &&
-            !(await currentSearchDispatchAllowed())) {
-            await input.memoryEgress?.recordBlockedDispatch({
-              destinationKind: "answer_provider",
-              destinationSnapshot: {
-                modelId: request.modelId,
-                provider: request.provider,
-                searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
-                version: 1
-              },
-              errorCode: "memory_egress_search_revoked",
-              mode: "PROVIDER_REQUEST",
-              requestEvidence: memoryEgressRequestEvidence(request),
-              requestPreview: requestPreview(),
-              runId,
-              userId: input.userId
-            });
-            throw new RunPipelineError(
-              "search_strategy_not_available",
-              "The selected search destination is no longer available."
-            );
-          }
-        } catch (error) {
-          if (preparedDispatch) {
-            await input.knowledgeProviderDispatch!.release(
-              preparedDispatch,
-              "provider_dispatch_not_started"
-            ).catch(() => undefined);
-          }
-          throw error;
+        await assertProjectRunAccessCurrent(true);
+        if (!(await currentAnswerDispatchAllowed())) {
+          throw new RunPipelineError(
+            "model_not_available",
+            "The selected model is no longer available"
+          );
+        }
+        if (egressReceiptRequired && !input.memoryEgress &&
+          process.env.NODE_ENV === "production") {
+          throw new RunPipelineError(
+            "memory_egress_receipt_unavailable",
+            "Memory egress evidence is unavailable."
+          );
+        }
+        if (requestHasHostedSearchCapability(request) &&
+          !(await currentSearchDispatchAllowed())) {
+          await input.memoryEgress?.recordBlockedDispatch({
+            destinationKind: "answer_provider",
+            destinationSnapshot: {
+              modelId: request.modelId,
+              provider: request.provider,
+              searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
+              version: 1
+            },
+            errorCode: "memory_egress_search_revoked",
+            mode: "PROVIDER_REQUEST",
+            requestEvidence: memoryEgressRequestEvidence(request),
+            requestPreview: requestPreview(),
+            runId,
+            userId: input.userId
+          });
+          throw new RunPipelineError(
+            "search_strategy_not_available",
+            "The selected search destination is no longer available."
+          );
         }
         let receipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
         try {
@@ -1362,17 +1548,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               })
             : null;
           await assertProjectRunAccessCurrent(true);
-          if (knowledgeAuthorizationRequired &&
-            !(await currentKnowledgeDispatchAllowed())) {
-            throw new RunPipelineError(
-              "memory_egress_destination_revoked",
-              "Knowledge access changed before answer-provider dispatch"
-            );
-          }
-          if (preparedDispatch) {
-            await input.knowledgeProviderDispatch!.dispatch(preparedDispatch);
-            providerDispatched = true;
-          }
           const stream = input.adapter.stream(request, { signal: dispatchSignal });
           let next = await stream.next();
           while (!next.done) {
@@ -1385,12 +1560,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               "Provider dispatch evidence could not be completed."
             );
           }
-          if (preparedDispatch) {
-            await input.knowledgeProviderDispatch!.settle(preparedDispatch, {
-              providerResponseId: next.value.providerResponseId ?? null,
-              usage: next.value.usage
-            });
-          }
           return next.value;
         } catch (error) {
           if (receipt) {
@@ -1399,25 +1568,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               error instanceof RunPipelineError ? error.code : "provider_dispatch_failed"
             ).catch(() => undefined);
           }
-          if (preparedDispatch) {
-            if (providerDispatched) {
-              await input.knowledgeProviderDispatch!.markAmbiguous(preparedDispatch, {
-                reason: "provider_dispatch_failed"
-              }).catch(() => undefined);
-            } else {
-              await input.knowledgeProviderDispatch!.release(
-                preparedDispatch,
-                "provider_dispatch_not_started"
-              ).catch(() => undefined);
-            }
-          }
           throw error;
         }
       }
 
       async function runProviderToolLoop(
         request: ProviderRunRequest
-      ): Promise<ProviderRunResult & { usageAttributions: RunUsageAttribution[] }> {
+      ): Promise<ProviderRunResult & {
+        knowledgeDispatchDraft?: KnowledgeEvidenceDispatchManifestDraft;
+        knowledgeEvidenceEmpty?: true;
+        usageAttributions: RunUsageAttribution[];
+      }> {
         const provider = normalizedRequest.provider;
         const toolBridge = input.toolBridge ??
           providerToolBridges[provider as keyof typeof providerToolBridges];
@@ -1465,6 +1626,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
+        const knowledgeToolResults = new Map<string, ToolExecutionResult>();
         const mcpDiscoveryBatches = new Map<string, Readonly<{
           calls: readonly Readonly<{
             call: ModelToolCall;
@@ -1536,6 +1698,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 }
               }
               if (isKnowledgeCall(call.name)) {
+                knowledgeToolResults.set(call.id, result);
                 for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
                   rememberReportedUsage(
                     attribution.provider,
@@ -1821,7 +1984,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     {
                       signal: AbortSignal.any([
                         context.signal,
-                        AbortSignal.timeout(30_000)
+                        AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
                       ])
                     }
                   );
@@ -1857,7 +2020,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       : "external_tool_dispatch_failed"
                   ).catch(() => undefined);
                 }
-                if (signal.aborted || isAbortError(error)) throw error;
+                // A local deadline on read-only Knowledge retrieval is a known
+                // technical result and must be durably settled. Only the
+                // parent run cancellation, or an abort from a potentially
+                // side-effecting non-Knowledge tool, remains crash-ambiguous.
+                if (signal.aborted ||
+                  isAbortError(error) && !isKnowledgeCall(call.name)) throw error;
                 if (error instanceof McpAutoDiscoveryUnavailableError) {
                   fatalToolError = {
                     code: error.code,
@@ -2114,8 +2282,36 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             streamSafetyReport
           );
         }
+        let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
+        let knowledgeEvidenceEmpty = false;
+        if (knowledgeToolResults.size > 0) {
+          const results = [...knowledgeToolResults.entries()]
+            .sort(([leftId], [rightId]) => {
+              const left = persistedCalls.get(leftId);
+              const right = persistedCalls.get(rightId);
+              if (!left || !right) return leftId.localeCompare(rightId);
+              return left.roundIndex - right.roundIndex || left.ordinal - right.ordinal;
+            })
+            .map(([, result]) => result);
+          try {
+            knowledgeDispatchDraft = toolLoopKnowledgeEvidenceDispatchDraft({
+              request,
+              results
+            }) ?? undefined;
+            knowledgeEvidenceEmpty = knowledgeDispatchDraft === undefined;
+          } catch (error) {
+            throw new RunPipelineError(
+              error instanceof Error && error.message === "no_retrieval_candidates"
+                ? "no_retrieval_candidates"
+                : "knowledge_retrieval_failed",
+              "The final Knowledge tool evidence could not be prepared"
+            );
+          }
+        }
         return {
           ...outcome.final,
+          ...(knowledgeDispatchDraft ? { knowledgeDispatchDraft } : {}),
+          ...(knowledgeEvidenceEmpty ? { knowledgeEvidenceEmpty: true as const } : {}),
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
           usageAttributions: groupedUsageAttributions(reportedUsageAttributions)
         };
@@ -2187,13 +2383,64 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         );
         const providerRequest = preparedProviderRequest.request;
         assertPersonalContextEgressSafe(providerRequest);
-        const providerResult = hasClientTools
-          ? await runProviderToolLoop(providerRequest)
-          : await streamProviderRequest(
-              providerRequest,
-              preparedProviderRequest.dispatchDraft,
-              preparedProviderRequest.evidenceBindings
-            );
+        let knowledgeZeroEvidence = false;
+        let knowledgeAnswerExecution = groundedKnowledgeAnswer
+          ? preparedProviderRequest.dispatchDraft
+            ? await runAutomaticKnowledgeAnswerV5({
+                dispatchDraft: preparedProviderRequest.dispatchDraft,
+                evidenceBindings: preparedProviderRequest.evidenceBindings
+              })
+            : (() => {
+                throw new RunPipelineError(
+                  "knowledge_evidence_receipt_invalid",
+                  "The Knowledge answer evidence manifest is unavailable"
+                );
+              })()
+          : null;
+        let providerResult: ProviderRunResult & {
+          usageAttributions?: RunUsageAttribution[];
+        };
+        if (knowledgeAnswerExecution) {
+          providerResult = knowledgeAnswerExecution.result;
+        } else if (hasClientTools) {
+          const toolLoopResult = await runProviderToolLoop(providerRequest);
+          if (hasClientKnowledge) {
+            if (!toolLoopResult.knowledgeDispatchDraft) {
+              if (!toolLoopResult.knowledgeEvidenceEmpty) {
+                throw new RunPipelineError(
+                  "knowledge_retrieval_required",
+                  "The Knowledge tool loop ended without settled evidence"
+                );
+              }
+              const {
+                knowledgeDispatchDraft: _knowledgeDispatchDraft,
+                knowledgeEvidenceEmpty: _knowledgeEvidenceEmpty,
+                ...emptyResult
+              } = toolLoopResult;
+              void _knowledgeDispatchDraft;
+              void _knowledgeEvidenceEmpty;
+              knowledgeZeroEvidence = true;
+              providerResult = {
+                ...emptyResult,
+                finalText: KNOWLEDGE_INSUFFICIENT_MESSAGE
+              };
+            } else {
+              knowledgeAnswerExecution = await runAutomaticKnowledgeAnswerV5({
+                dispatchDraft: toolLoopResult.knowledgeDispatchDraft,
+                evidenceBindings: null,
+                routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
+              });
+              providerResult = knowledgeAnswerExecution.result;
+            }
+          } else {
+            const { knowledgeDispatchDraft: _knowledgeDispatchDraft, ...ordinaryResult } =
+              toolLoopResult;
+            void _knowledgeDispatchDraft;
+            providerResult = ordinaryResult;
+          }
+        } else {
+          providerResult = await streamProviderRequest(providerRequest);
+        }
         const attributedProviderResult = {
           ...providerResult,
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
@@ -2210,6 +2457,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           : attributedProviderResult;
         const finalization = await finalizeRunCompletion({
+          ...(knowledgeAnswerExecution
+            ? { knowledgeAnswerContracts: knowledgeAnswerExecution.contracts }
+            : {}),
+          ...(knowledgeZeroEvidence ? { knowledgeZeroEvidence: true as const } : {}),
           repository: input.repository,
           result: persistedProviderResult,
           run: {

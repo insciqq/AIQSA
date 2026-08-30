@@ -72,7 +72,7 @@ case "${command:-}" in
       *'count(*) FROM "KnowledgeChunk"'*) printf '10\n' ;;
       *pg_total_relation_size*) printf '1048576\n' ;;
       *'_prisma_migrations'*) printf '%s\n' "${FAKE_MIGRATION_APPLIED:-0}" ;;
-      *'df -Pk /var/lib/postgresql/data'*) printf '%s\n' "${FAKE_AVAILABLE_KB:-2097152}" ;;
+      *'df -Pk /var/lib/postgresql'*) printf '%s\n' "${FAKE_AVAILABLE_KB:-2097152}" ;;
       *) exit 2 ;;
     esac
     ;;

@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "7a7c9dd923a91bd99e1e5d6525280ae5b13795fa80b6931468d59152d2522c92";
+  "0bff7efcc322aa98df140584a4fb7ea5cf2eab85198dc656fdea7bba918756e9";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -44,6 +44,10 @@ const KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION =
   "20260822020000_knowledge_tool_coexistence_constraints";
 const KNOWLEDGE_MAP_REDUCE_LIMITS_MIGRATION =
   "20260826120000_knowledge_map_reduce_result_limits";
+const KNOWLEDGE_RANKING_PROFILE_V2_MIGRATION =
+  "20260828090000_knowledge_ranking_profile_v2";
+const KNOWLEDGE_RERANKER_RECEIPT_V2_MIGRATION =
+  "20260828093000_knowledge_reranker_receipt_v2";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
@@ -309,6 +313,17 @@ function deployAndVerify(
   assert.match(
     app(database, ["npx", "prisma", "migrate", "status"]),
     /Database schema is up to date!/u,
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT character_maximum_length
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'KnowledgeProviderAttempt'
+        AND column_name = 'purpose';
+    `),
+    "64",
+    "Knowledge provider operation identifiers do not fit the active versioned purposes",
   );
   const schemaDatamodelDiff = app(database, [
     "npx",
@@ -1181,6 +1196,41 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       `),
       "4",
       "H2 durable receipt/state constraints are missing or unvalidated",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeProviderAttempt"'::regclass
+          AND conname IN (
+            'KnowledgeProviderAttempt_contract_check',
+            'KnowledgeProviderAttempt_answer_result_state_check'
+          )
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_planner_v20%';
+      `),
+      "2",
+      "Coverage Planner V20 is missing from durable provider-attempt constraints",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_modelRunId_purpose_key'
+          AND indexdef LIKE '%knowledge_coverage_planner_v20%';
+      `),
+      "1",
+      "Coverage Planner V20 is missing from provider-attempt operation uniqueness",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%16%';
+      `),
+      "1",
+      "Grounding Evidence V16 is missing from the durable evidence constraint",
     );
     assert.equal(
       psqlScalar(database, `
@@ -2235,6 +2285,51 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
   }
 }
 
+function runKnowledgeValidatorRestoreSafetyProof(database: string): void {
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_proc
+      WHERE proname = 'knowledge_document_context_valid'
+        AND provolatile = 'i'
+        AND proparallel = 'r'
+        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
+    `),
+    "1",
+    "H5 document context validator lacks its immutable restore-safe contract",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_proc
+      WHERE proname IN (
+          'knowledge_discovery_receipt_valid',
+          'knowledge_exact_receipt_valid'
+        )
+        AND provolatile = 'i'
+        AND proparallel = 'r'
+        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
+    `),
+    "2",
+    "H3 receipt validators lack their immutable restore-safe contracts",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_proc
+      WHERE proname IN (
+          'knowledge_structured_receipt_valid',
+          'knowledge_visual_receipt_valid'
+        )
+        AND provolatile = 'i'
+        AND proparallel = 's'
+        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
+    `),
+    "2",
+    "H3 auxiliary receipt validators lack restore-safe helper resolution",
+  );
+}
+
 function runKnowledgeH5DocumentContextMigrationProof(
   database: string,
   committed: readonly string[],
@@ -2255,17 +2350,6 @@ function runKnowledgeH5DocumentContextMigrationProof(
     `),
     "1",
     "H5 immutable passage context constraint is missing or unvalidated",
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname = 'knowledge_document_context_valid'
-        AND provolatile = 'i'
-        AND proparallel = 's';
-    `),
-    "1",
-    "H5 document context validator is not immutable and parallel-safe",
   );
   assert.equal(
     psqlScalar(database, `
@@ -3399,7 +3483,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     ) VALUES (
       'knowledge-coexistence-four-binding-run', 'knowledge-h4-run-2',
       'knowledge-coexistence-four-binding-call', 4, 'automatic_search',
-      'four binding receipt', 'base_empty', 'weighted_rrf_v2', 40, 16, 0,
+      'four binding receipt', 'base_empty', 'weighted_rrf_v2', 64, 16, 0,
       (SELECT jsonb_agg(jsonb_build_object(
         'baseName', 'Base ' || ordinal,
         'knowledgeBaseId', 'base-' || ordinal,
@@ -3414,7 +3498,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     ), (
       'knowledge-map-reduce-scoped-run', 'knowledge-h4-run-2',
       'knowledge-map-reduce-scoped-call', 6, 'automatic_search',
-      'scoped row', 'no_relevant_evidence', 'weighted_rrf_v2', 40, 8, 0,
+      'scoped row', 'no_relevant_evidence', 'weighted_rrf_v2', 64, 8, 0,
       '[{"baseName":"Scoped Base","ordinal":0}]'::jsonb,
       '[]'::jsonb, 'No relevant evidence.', '[]'::jsonb, 1, CURRENT_TIMESTAMP
     );
@@ -3846,6 +3930,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
         AND pg_get_constraintdef(oid) LIKE '%knowledge_read_source_receipt_valid_v2%'
         AND pg_get_constraintdef(oid) LIKE '%knowledge_exact_receipt_valid%'
         AND pg_get_constraintdef(oid) LIKE '%knowledge_discovery_receipt_valid%'
+        AND pg_get_constraintdef(oid) LIKE '%knowledge_reranker_binding_valid_v2%'
         AND pg_get_constraintdef(oid) LIKE '%deleted_knowledge_resource%'
         AND pg_get_constraintdef(oid) NOT LIKE '%threshold%'
       ) OR (
@@ -3975,7 +4060,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
       'knowledge-basic-query-3000', 'knowledge-h4-run-2',
       'knowledge-h4-call-other-run', 1, 'automatic_search',
       repeat('Ж', 1499) || E'\n\n' || repeat('я', 1499),
-      'base_empty', 'weighted_rrf_v2', 40, 8, 0,
+      'base_empty', 'weighted_rrf_v2', 64, 8, 0,
       '[{"baseName":"Basic Base","ordinal":0}]'::jsonb, '[]'::jsonb,
       'No matching evidence.', '[]'::jsonb, 1, CURRENT_TIMESTAMP
     );
@@ -3989,6 +4074,66 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     `),
     "3000",
     "Basic cleanup truncated the maximum multi-message focused query",
+  );
+
+  psqlScalar(database, `
+    UPDATE "KnowledgeRun"
+    SET "readReceipt" = jsonb_build_object(
+      'rerankerBinding', jsonb_build_object(
+        'adapterVersion', NULL,
+        'candidateFormatterVersion', NULL,
+        'connectionSnapshotId', NULL,
+        'credentialSnapshotRef', NULL,
+        'durationMs', 0,
+        'fallbackReason', NULL,
+        'inputCandidateCount', 0,
+        'orderedCandidateChunkIds', '[]'::jsonb,
+        'outputOrder', '[]'::jsonb,
+        'policyVersion', NULL,
+        'provider', NULL,
+        'providerModelId', NULL,
+        'providerRequestId', NULL,
+        'rankingProfileVersion', 2,
+        'relevanceScores', '[]'::jsonb,
+        'status', 'disabled',
+        'timedOut', false,
+        'upstreamModelId', NULL,
+        'usage', jsonb_build_object('searchUnits', NULL, 'totalTokens', NULL),
+        'version', 2
+      )
+    )
+    WHERE id = 'knowledge-basic-query-3000';
+    SELECT "readReceipt" #>> '{rerankerBinding,status}'
+    FROM "KnowledgeRun" WHERE id = 'knowledge-basic-query-3000';
+  `);
+  assert.equal(
+    psqlScalar(database, `
+      SELECT "readReceipt" #>> '{rerankerBinding,status}'
+      FROM "KnowledgeRun" WHERE id = 'knowledge-basic-query-3000';
+    `),
+    "disabled",
+    "Knowledge reranker receipt v2 rejected the current content-free disabled binding",
+  );
+
+  const contentBearingRerankerReceipt = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeRun"
+      SET "readReceipt" = jsonb_set(
+        "readReceipt", '{rerankerBinding,privateText}', '"forbidden"'::jsonb
+      )
+      WHERE id = 'knowledge-basic-query-3000';`,
+  ]);
+  assert.notEqual(
+    contentBearingRerankerReceipt.status,
+    0,
+    "Knowledge reranker receipt v2 accepted an unversioned content-bearing field",
+  );
+  assert.match(
+    `${contentBearingRerankerReceipt.stdout}\n${contentBearingRerankerReceipt.stderr}`,
+    /KnowledgeRun_read_receipt_operation_check/u,
+    "Content-bearing reranker receipt failed without the stable database constraint",
   );
 
   const unsafeQueryControl = compose([
@@ -4046,18 +4191,18 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
     "--dbname", database,
     "--command", `UPDATE "KnowledgeRun"
-      SET "candidateLimit" = 39, fusion = 'rrf_k60'
+      SET "candidateLimit" = 40
       WHERE id = 'knowledge-basic-query-3000';`,
   ]);
   assert.notEqual(
     mutatedFocusedContract.status,
     0,
-    "Basic cleanup accepted mutated focused checkpoint constants",
+    "Ranking profile v2 accepted the retired 40-candidate focused constant",
   );
   assert.match(
     `${mutatedFocusedContract.stdout}\n${mutatedFocusedContract.stderr}`,
     /knowledge_basic_focused_run_contract_invalid/u,
-    "Mutated focused constants failed without the focused checkpoint guard",
+    "Retired focused candidate limit failed without the focused checkpoint guard",
   );
 
   const retiredFocusedOutcome = compose([
@@ -4088,7 +4233,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
       SET "toolName" = 'knowledge_search_v1', "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = 'knowledge-h4-call-other-run';
       UPDATE "KnowledgeRun"
-      SET "candidateLimit" = 39, fusion = 'rrf_k60'
+      SET "candidateLimit" = 40
       WHERE id = 'knowledge-basic-query-3000';
       UPDATE "ModelRunToolCall"
       SET "toolName" = 'knowledge_focused_v1', "updatedAt" = CURRENT_TIMESTAMP
@@ -4113,6 +4258,8 @@ function runKnowledgeToolCoexistenceMigrationProof(
   const cleanupIndex = committed.indexOf(KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION);
   const coexistenceIndex = committed.indexOf(KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION);
   const mapReduceIndex = committed.indexOf(KNOWLEDGE_MAP_REDUCE_LIMITS_MIGRATION);
+  const rankingProfileV2Index = committed.indexOf(KNOWLEDGE_RANKING_PROFILE_V2_MIGRATION);
+  const rerankerReceiptV2Index = committed.indexOf(KNOWLEDGE_RERANKER_RECEIPT_V2_MIGRATION);
   assert.ok(
     coexistenceIndex > cleanupIndex,
     "Knowledge tool coexistence migration must follow the Basic runtime cleanup",
@@ -4120,6 +4267,14 @@ function runKnowledgeToolCoexistenceMigrationProof(
   assert.ok(
     mapReduceIndex > coexistenceIndex,
     "Knowledge map/reduce limits migration must follow tool coexistence",
+  );
+  assert.ok(
+    rankingProfileV2Index > mapReduceIndex,
+    "Knowledge ranking profile v2 migration must follow map/reduce limits",
+  );
+  assert.ok(
+    rerankerReceiptV2Index > rankingProfileV2Index,
+    "Knowledge reranker receipt v2 migration must follow ranking profile v2",
   );
   const coexistenceSql = readFileSync(
     join(migrationsRoot, KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION, "migration.sql"),
@@ -4168,6 +4323,39 @@ function runKnowledgeToolCoexistenceMigrationProof(
     mapReduceSql,
     /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
     "Knowledge map/reduce migration must not rewrite immutable receipts",
+  );
+  const rankingProfileV2Sql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_RANKING_PROFILE_V2_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.equal(
+    (rankingProfileV2Sql.match(/"candidateLimit" IS DISTINCT FROM 64/gu) ?? []).length,
+    2,
+    "Both immutable Knowledge receipt guards must enforce ranking profile v2 limit 64",
+  );
+  assert.doesNotMatch(
+    rankingProfileV2Sql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Knowledge ranking profile v2 migration must not rewrite immutable receipts",
+  );
+  const rerankerReceiptV2Sql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_RERANKER_RECEIPT_V2_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.match(
+    rerankerReceiptV2Sql,
+    /WHEN 'automatic_search'[\s\S]*knowledge_reranker_binding_valid_v2/u,
+    "Knowledge automatic-search receipts must validate hosted reranker evidence v2",
+  );
+  assert.match(
+    rerankerReceiptV2Sql,
+    /binding - ARRAY\[[\s\S]*'version'[\s\S]*\]::TEXT\[\] <> '\{\}'::JSONB/u,
+    "Knowledge reranker evidence must reject unversioned top-level fields",
+  );
+  assert.doesNotMatch(
+    rerankerReceiptV2Sql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Knowledge reranker receipt v2 migration must not rewrite immutable receipts",
   );
 }
 
@@ -4297,6 +4485,7 @@ function main(
   runKnowledgeReadReceiptMigrationProof(shadowDatabase, migrations);
   runKnowledgeH2DurableDispatchMigrationProof(shadowDatabase, migrations);
   runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, migrations);
+  runKnowledgeValidatorRestoreSafetyProof(databases[0]!);
   runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, migrations);
   runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
   runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
