@@ -639,33 +639,48 @@ describe("local Memory retrieval repository", () => {
       structuredValue: null
     };
     let digestReady = false;
+    let digestExpansionStarted = false;
+    let snapshotReads = 0;
     mocked.$queryRaw.mockImplementation(async (query: { strings?: readonly string[] }) => {
       const sql = query.strings?.join("?") ?? "";
-      if (sql.includes('owner."status"')) return [snapshotRow()];
+      if (sql.includes('owner."status"')) {
+        snapshotReads += 1;
+        return snapshotReads === 1 ? [snapshotRow()] : new Promise<never>(() => undefined);
+      }
       if (sql.includes("digest_navigation")) {
         digestReady = true;
         return [digestRow];
       }
-      if (digestReady) return new Promise<never>(() => undefined);
+      if (sql.includes("source_filtered_history")) {
+        digestExpansionStarted = true;
+        return new Promise<never>(() => undefined);
+      }
+      if (digestReady) return [];
       return [];
     });
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     const controller = new AbortController();
-    const pending = repository.retrieveSpeculativeBaseline({
+    const plan = planMemoryRetrieval({
+      currentUserText: "Where did we discuss the migration?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const input = {
       assistantId: null,
       chatId: "chat-1",
       now,
-      plan: planMemoryRetrieval({
-        currentUserText: "Where did we discuss the migration?",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now,
-        temporalIntent: "ANY"
-      }),
+      plan,
       userId: "user-1"
+    } as const;
+    const sourceSnapshot = await repository.snapshot(input);
+    const pending = repository.retrieveSpeculativeBaseline({
+      ...input,
+      sourceSnapshot
     }, controller.signal);
 
-    await vi.waitFor(() => expect(digestReady).toBe(true));
+    await vi.waitFor(() => expect(digestExpansionStarted).toBe(true));
     controller.abort({ code: "test_reader_deadline" });
     const result = await Promise.race([
       pending,
@@ -678,6 +693,7 @@ describe("local Memory retrieval repository", () => {
       candidates: [expect.objectContaining({ itemId: "digest-ready" })],
       lane: "HISTORY_DIGEST_FTS_SIMPLE"
     }]));
+    expect(snapshotReads).toBe(1);
   });
 
   it("routes tool observations through the episodic history family only", async () => {

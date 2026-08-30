@@ -2165,16 +2165,14 @@ export function createMemoryRunRetrievalService(
           runBoundedMemoryRead(
             deadline,
             MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-            (retrievalSignal) => abortableRead(
-              repository.retrieveSpeculativeBaseline!({
+            (retrievalSignal) => repository.retrieveSpeculativeBaseline!({
                 assistantId: input.expected.assistantId,
                 chatId: input.chatId,
                 now: input.now,
                 plan: baselineReadPlan,
+                sourceSnapshot: snapshot,
                 userId: input.userId
               }, retrievalSignal),
-              retrievalSignal
-            ),
             speculativeBaselineController.signal
           )).catch(() => null);
       }
@@ -2237,12 +2235,12 @@ export function createMemoryRunRetrievalService(
             runBoundedMemoryRead(
               deadline,
               MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-              (retrievalSignal) => abortableRead(
-                repository.retrieveSpeculativeHybrid!({
+              (retrievalSignal) => repository.retrieveSpeculativeHybrid!({
                   assistantId: input.expected.assistantId,
                   chatId: input.chatId,
                   now: input.now,
                   plan: baselineReadPlan,
+                  sourceSnapshot: snapshot,
                   userId: input.userId,
                   vector: {
                     minimumScore: MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
@@ -2250,8 +2248,6 @@ export function createMemoryRunRetrievalService(
                     vector: embedding.vector
                   }
                 }, retrievalSignal),
-                retrievalSignal
-              ),
               speculativeHybridController.signal
             ));
         }).catch(() => null);
@@ -2492,12 +2488,14 @@ export function createMemoryRunRetrievalService(
             runBoundedMemoryRead(
               deadline,
               MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-              (retrievalSignal) => abortableRead(repository.retrieve({
+              (retrievalSignal) => repository.retrieve({
                 assistantId: input.expected.assistantId,
                 ...(plans.baseline ? { baselinePlan: plans.baseline } : {}),
                 chatId: input.chatId,
                 now: input.now,
                 plan,
+                settleSignal: retrievalSignal,
+                sourceSnapshot: snapshot,
                 userId: input.userId,
                 ...(queryEmbedding?.status === "READY" && !plan.profileRequested
                   ? { vector: {
@@ -2506,7 +2504,7 @@ export function createMemoryRunRetrievalService(
                       vector: queryEmbedding.vector
                     } }
                   : {})
-              }), retrievalSignal)
+              })
             ));
         }
       } catch (error) {

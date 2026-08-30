@@ -93,7 +93,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v29";
+  "memory-local-retrieval-repository-v30";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
@@ -136,6 +136,8 @@ export type MemoryLocalRetrievalInput = Readonly<{
   now: Date;
   plan: MemoryRetrievalPlan;
   settleSignal?: AbortSignal;
+  /** Stable capability issued by this repository for the current admission. */
+  sourceSnapshot?: MemoryLocalRetrievalSnapshot;
   userId: string;
   vector?: MemoryLocalVectorQuery;
 }>;
@@ -4370,7 +4372,39 @@ function usesDigestOnlyProjection(candidate: MemoryRankedCandidate): boolean {
     lane.startsWith("HISTORY_RECALL_"));
 }
 
+async function settleMemoryLocalRead<T>(
+  signal: AbortSignal | undefined,
+  execute: () => Promise<T>,
+  fallback: T
+): Promise<T> {
+  if (signal?.aborted) return fallback;
+  const execution = execute();
+  if (!signal) return execution;
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<Readonly<{ status: "ABORTED" }>>((resolve) => {
+    onAbort = () => resolve(Object.freeze({ status: "ABORTED" }));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    const result = await Promise.race([
+      execution.then((value) => Object.freeze({ status: "READY" as const, value })),
+      aborted
+    ]);
+    if (result.status === "ABORTED") {
+      // Prisma reads are side-effect free but not transport-cancellable. Keep
+      // the detached operation observed while returning the bounded fallback.
+      void execution.catch(() => undefined);
+      return fallback;
+    }
+    return result.value;
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient = prisma) {
+  const issuedSnapshots = new WeakSet<MemoryLocalRetrievalSnapshot>();
   const repository = {
     async expand(
       snapshot: MemoryLocalRetrievalSnapshot,
@@ -4573,20 +4607,35 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       return decodeMemoryAggregationSessionCompletion(rows, selectedSources);
     },
 
-    snapshot(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalSnapshot> {
-      return loadSnapshot(client, input);
+    async snapshot(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalSnapshot> {
+      const snapshot = await loadSnapshot(client, input);
+      issuedSnapshots.add(snapshot);
+      return snapshot;
     },
 
     async retrieve(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalResult> {
       if (!validPlan(input.plan)) throw new Error("memory_retrieval_plan_invalid");
-      const snapshot = await loadSnapshot(client, input);
+      const snapshot = input.sourceSnapshot ?? await loadSnapshot(client, input);
+      if (input.sourceSnapshot) {
+        if (!issuedSnapshots.has(snapshot) || snapshot.userId !== input.userId ||
+          snapshot.chatId !== input.chatId || snapshot.assistantId !== input.assistantId ||
+          snapshot.repositoryVersion !== MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION) {
+          throw new Error("memory_retrieval_source_snapshot_invalid");
+        }
+      } else {
+        issuedSnapshots.add(snapshot);
+      }
       if (input.baselinePlan &&
         !validBaselinePlan(input.baselinePlan, input.plan, snapshot)) {
         throw new Error("memory_retrieval_baseline_plan_invalid");
       }
       if (snapshot.status !== "READY") return emptyResult(snapshot);
       const core = input.plan.applyResponsePreferences
-        ? await loadCore(client, snapshot)
+        ? await settleMemoryLocalRead(
+            input.settleSignal,
+            () => loadCore(client, snapshot),
+            []
+          )
         : [];
       if (!input.plan.queryPresent) {
         return emptyResult(snapshot, core, input.vector ? "DISABLED" : "NOT_CONFIGURED");
