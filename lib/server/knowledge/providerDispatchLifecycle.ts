@@ -8,6 +8,7 @@ import type {
 import type {
   KnowledgeEvidenceDispatchBinding,
   KnowledgeProviderAttemptRecovery,
+  KnowledgeProviderAttemptPurpose,
   KnowledgeProviderAttemptUsage,
   StoredKnowledgeEvidenceDispatch,
   createPrismaKnowledgeEvidenceDispatchRepository
@@ -132,35 +133,50 @@ export function createKnowledgeProviderDispatchLifecycle(
 
   return Object.freeze({
     async prepare(input: Readonly<{
+      acceptedRequest?: Readonly<Record<string, unknown>>;
+      contractVersion?: number;
       draft: KnowledgeEvidenceDispatchManifestDraft;
+      evidenceReceiptHash?: string;
       evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
       modelRunId: string;
       ordinal: number;
       providerBindingKey?: string;
-      purpose: "answer";
+      purpose: KnowledgeProviderAttemptPurpose;
       requestPreview: unknown;
       roundIndex: number;
     }>): Promise<PreparedKnowledgeProviderDispatch> {
       const providerBindingKey = input.providerBindingKey ?? "answer";
-      const requestHash = memorySha256(input.requestPreview);
+      const requestHash = memorySha256(input.acceptedRequest ?? input.requestPreview);
       const checkpointHash = memorySha256({
         manifestHash: input.draft.manifestHash,
         modelRunId: input.modelRunId,
         ordinal: input.ordinal,
         providerBindingKey,
         purpose: input.purpose,
+        ...(input.contractVersion !== undefined
+          ? { contractVersion: input.contractVersion }
+          : {}),
         requestHash,
         roundIndex: input.roundIndex,
         version: 1
       });
-      const idempotencyKey = `knowledge-answer:${input.ordinal}:${checkpointHash}`;
+      const idempotencyKey = input.purpose === "answer"
+        ? `knowledge-answer:${input.ordinal}:${checkpointHash}`
+        : `knowledge-answer:${input.purpose}:${input.ordinal}:${checkpointHash}`;
       const leaseToken = uuid();
       const now = currentTime();
       const reserved = await store.reserve({
+        ...(input.acceptedRequest ? { acceptedRequest: input.acceptedRequest } : {}),
         checkpointHash,
+        ...(input.contractVersion !== undefined
+          ? { contractVersion: input.contractVersion }
+          : {}),
         draft: input.draft,
         ...(input.evidenceBindings ? { evidenceBindings: input.evidenceBindings } : {}),
         estimatedUsage: estimatedUsage(input.requestPreview),
+        ...(input.evidenceReceiptHash
+          ? { evidenceReceiptHash: input.evidenceReceiptHash }
+          : {}),
         idempotencyKey,
         leaseExpiresAt: new Date(now.valueOf() + PROVIDER_DISPATCH_LEASE_MS),
         leaseToken,
@@ -226,16 +242,25 @@ export function createKnowledgeProviderDispatchLifecycle(
     async settle(
       prepared: PreparedKnowledgeProviderDispatch,
       input: Readonly<{
+        acceptedResult?: Readonly<Record<string, unknown>>;
         providerResponseId?: string | null;
         usage: TokenUsage & Readonly<{ estimatedCostMicros?: number | null }>;
       }>
     ): Promise<void> {
+      const settledAt = currentTime();
       await store.settle({
         ...prepared.identity,
+        ...(input.acceptedResult
+          ? {
+              acceptedResult: input.acceptedResult,
+              resultAcceptedAt: settledAt,
+              resultHash: memorySha256(input.acceptedResult)
+            }
+          : {}),
         actualUsage: attemptUsage(input.usage),
         leaseToken: prepared.leaseToken,
         providerResponseId: input.providerResponseId ?? null,
-        settledAt: currentTime()
+        settledAt
       });
     },
 

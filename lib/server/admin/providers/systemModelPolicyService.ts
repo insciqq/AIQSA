@@ -156,7 +156,11 @@ export function createAdminSystemModelPolicyService(
 
   return {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
-      const [policy, rows, rerankerRows, resolution, rerankerResolution] =
+      // Resolve the reranker role first: resolution performs one-time
+      // fresh-install default adoption, and the catalog read below must see
+      // the adopted selection rather than a pre-adoption snapshot.
+      const rerankerResolution = await resolveRerankerRole();
+      const [policy, rows, rerankerRows, resolution] =
         await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
@@ -224,8 +228,7 @@ export function createAdminSystemModelPolicyService(
           ],
           where: { modelClass: "reranker" }
         }),
-        resolveRole(),
-        resolveRerankerRole()
+        resolveRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const models = rows as SystemModelRow[];
@@ -413,12 +416,25 @@ export function createAdminSystemModelPolicyService(
 
     async update(input: Readonly<{
       expectedVersion: number;
-      providerModelId: string | null;
-      rerankerProviderModelId: string | null;
-      reasoningEffort: string | null;
+      /** Utility fields are present together for an explicit utility-role
+       * save/clear; absent preserves that independent role. */
+      providerModelId?: string | null;
+      /** Absent preserves the independent reranker role. Present (including
+       * null) is an explicit administrator save/clear and permanently closes
+       * fresh-install default adoption for this installation. */
+      rerankerProviderModelId?: string | null;
+      reasoningEffort?: string | null;
       userId: string;
     }>): Promise<void> {
+      const providerModelId = input.providerModelId;
+      const reasoningEffort = input.reasoningEffort;
       const rerankerProviderModelId = input.rerankerProviderModelId;
+      const hasUtilityUpdate = providerModelId !== undefined;
+      const hasReasoningUpdate = reasoningEffort !== undefined;
+      if (hasUtilityUpdate !== hasReasoningUpdate ||
+        !hasUtilityUpdate && rerankerProviderModelId === undefined) {
+        throw new Error("system_model_policy_update_invalid");
+      }
       try {
         await prisma.$transaction(async (tx) => {
           const policies = await tx.$queryRaw<Array<{ version: number }>>(Prisma.sql`
@@ -442,19 +458,19 @@ export function createAdminSystemModelPolicyService(
             );
           }
 
-          if (input.providerModelId === null && input.reasoningEffort !== null) {
+          if (providerModelId === null && reasoningEffort !== null) {
             throw new AdminSystemModelPolicyServiceError(
               "system_model_policy_reasoning_unavailable"
             );
           }
 
-          if (input.providerModelId !== null) {
+          if (providerModelId !== undefined && providerModelId !== null) {
             try {
               const role = await loadRole(tx, {
-                providerModelId: input.providerModelId
+                providerModelId
               });
-              if (input.reasoningEffort !== null &&
-                !supportsReasoningEffort(role, input.reasoningEffort)) {
+              if (reasoningEffort !== undefined && reasoningEffort !== null &&
+                !supportsReasoningEffort(role, reasoningEffort)) {
                 throw new AdminSystemModelPolicyServiceError(
                   "system_model_policy_reasoning_unavailable"
                 );
@@ -470,7 +486,8 @@ export function createAdminSystemModelPolicyService(
             }
           }
 
-          if (rerankerProviderModelId !== null) {
+          if (rerankerProviderModelId !== undefined &&
+            rerankerProviderModelId !== null) {
             try {
               await loadRerankerRole(tx, {
                 providerModelId: rerankerProviderModelId
@@ -487,9 +504,17 @@ export function createAdminSystemModelPolicyService(
 
           await tx.systemModelPolicy.update({
             data: {
-              providerModelId: input.providerModelId,
-              rerankerProviderModelId,
-              reasoningEffort: input.reasoningEffort,
+              ...(hasUtilityUpdate ? {
+                providerModelId,
+                reasoningEffort
+              } : {}),
+              // Utility and reranker are independent roles. Only a request
+              // that explicitly carries the reranker field fixes that role;
+              // a utility-only save must not suppress later default adoption.
+              ...(rerankerProviderModelId !== undefined ? {
+                rerankerConfiguredAt: new Date(),
+                rerankerProviderModelId
+              } : {}),
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },

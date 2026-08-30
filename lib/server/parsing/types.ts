@@ -17,6 +17,9 @@ export type DocumentParseInput = Readonly<{
   bytes: Buffer;
   fileName: string;
   mimeType: string;
+  /** Immutable local-PDF parser profile. Omitted non-Knowledge callers use
+   * the current parser behavior. */
+  parserProfileVersion?: number;
   signal?: AbortSignal;
 }>;
 
@@ -269,6 +272,12 @@ export type ParserProbeResult = Readonly<{
 export type DocumentParserProbe = Readonly<Record<SidecarParserEngine, ParserProbeResult>>;
 
 export type SidecarParseInput = DocumentParseInput & Readonly<{
+  docling?: Readonly<{
+    /** Adaptive PDF verification disables OCR explicitly so the sidecar cannot
+     * manufacture a second text layer from the same page image. */
+    doOcr: boolean;
+    pageRange?: Readonly<{ end: number; start: number }>;
+  }>;
   mediaType: string;
 }>;
 

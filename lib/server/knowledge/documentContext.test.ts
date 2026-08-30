@@ -4,6 +4,7 @@ import {
   createKnowledgeTableDocumentContext,
   decodeKnowledgeDocumentContext,
   isCompleteKnowledgeTableRowProjectionSequence,
+  knowledgeDocumentContextHasAssociationAmbiguity,
   KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS,
   normalizeKnowledgeObservationValue,
   normalizeKnowledgeTableHeaderPeriodV1
@@ -79,6 +80,95 @@ describe("Knowledge document context v1", () => {
       kind: "number",
       normalizedValue: null,
       unit: null
+    });
+  });
+
+  it("separates raw-value normalization uncertainty from association ambiguity", () => {
+    const lexical = createKnowledgeTableDocumentContext({
+      blockId: "block-identifier",
+      cells: [
+        { columnEnd: 0, columnStart: 0, text: "Batch identifier" },
+        { columnEnd: 1, columnStart: 1, text: "5widgets" }
+      ],
+      headerLineage: [
+        { columnEnd: 0, columnStart: 0, rowIndex: 0, text: "Field" },
+        { columnEnd: 1, columnStart: 1, rowIndex: 0, text: "Value" }
+      ],
+      rowIndex: 1
+    });
+    expect(lexical.ambiguityReasons).toContain("ambiguous_number");
+    expect(knowledgeDocumentContextHasAssociationAmbiguity(lexical)).toBe(false);
+
+    const relational = createKnowledgeTableDocumentContext({
+      blockId: "block-conflicting-unit",
+      cells: [{ columnEnd: 0, columnStart: 0, text: "1e3mg" }],
+      headerLineage: [{
+        columnEnd: 0,
+        columnStart: 0,
+        rowIndex: 0,
+        text: "Actual (g)"
+      }],
+      rowIndex: 1
+    });
+    expect(relational.ambiguityReasons).toContain("ambiguous_role");
+    expect(knowledgeDocumentContextHasAssociationAmbiguity(relational)).toBe(true);
+  });
+
+  it("recognizes only a complete separated two-cell row as an explicit inline pair", () => {
+    const input = {
+      blockId: "block-inline-pair",
+      cells: [
+        { columnEnd: 0, columnStart: 0, text: "Reviewer" },
+        { columnEnd: 9, columnStart: 9, text: "Alex Rivera" }
+      ],
+      headerLineage: [],
+      rowIndex: 3
+    } as const;
+    const pair = createKnowledgeTableDocumentContext({
+      ...input,
+      inlinePairEvidence: "sparse_row"
+    });
+
+    expect(pair.ambiguityReasons).toEqual([]);
+    expect(pair.observations).toEqual([expect.objectContaining({
+      ambiguityReasons: [],
+      metric: "Reviewer",
+      normalizedValue: "Alex Rivera",
+      origin: { columnEnd: 9, columnStart: 9, kind: "table_cell" },
+      rawValue: "Alex Rivera"
+    })]);
+    expect(knowledgeDocumentContextHasAssociationAmbiguity(pair)).toBe(false);
+    expect(decodeKnowledgeDocumentContext(JSON.parse(JSON.stringify(pair)))).toEqual(pair);
+
+    const legacy = createKnowledgeTableDocumentContext(input);
+    const adjacent = createKnowledgeTableDocumentContext({
+      ...input,
+      inlinePairEvidence: "sparse_row",
+      cells: [input.cells[0], { ...input.cells[1], columnEnd: 1, columnStart: 1 }]
+    });
+    const singleton = createKnowledgeTableDocumentContext({
+      ...input,
+      inlinePairEvidence: "singleton_table",
+      cells: [input.cells[0], { ...input.cells[1], columnEnd: 1, columnStart: 1 }]
+    });
+    const threeCells = createKnowledgeTableDocumentContext({
+      ...input,
+      inlinePairEvidence: "singleton_table",
+      cells: [input.cells[0], { columnEnd: 5, columnStart: 5, text: "Secondary" }, input.cells[1]]
+    });
+    const numericLabel = createKnowledgeTableDocumentContext({
+      ...input,
+      inlinePairEvidence: "singleton_table",
+      cells: [{ ...input.cells[0], text: "2026" }, input.cells[1]]
+    });
+
+    expect([legacy, adjacent, threeCells, numericLabel].every((context) =>
+      context.ambiguityReasons.includes("missing_header") &&
+      knowledgeDocumentContextHasAssociationAmbiguity(context))).toBe(true);
+    expect(singleton.ambiguityReasons).toEqual([]);
+    expect(singleton.observations[0]).toMatchObject({
+      metric: "Reviewer",
+      rawValue: "Alex Rivera"
     });
   });
 

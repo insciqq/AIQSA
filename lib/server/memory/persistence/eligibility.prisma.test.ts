@@ -470,6 +470,37 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
         data: { activeLeafMessageId: consumerAssistantMessage.id },
         where: { id: consumerChat.id }
       });
+      await prisma.$transaction(async (tx) => {
+        await tx.chatMemoryCheckpoint.create({
+          data: {
+            activeLeafMessageId: consumerAssistantMessage.id,
+            branchGeneration: consumerChat.memoryBranchGeneration,
+            chatId: consumerChat.id,
+            lastIndexedMessageId: consumerAssistantMessage.id,
+            lastSucceededAt: fixtureNow,
+            pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+            sourceContentHash: memorySha256({
+              assistantMessageId: consumerAssistantMessage.id,
+              userMessageId: consumerUserMessage.id
+            }),
+            sourceRevision: consumerChat.memorySourceRevision,
+            status: "READY",
+            userId
+          }
+        });
+        await tx.chatMemoryCheckpointMessage.createMany({
+          data: [consumerUserMessage, consumerAssistantMessage].map(
+            (message, ordinal) => ({
+              chatId: consumerChat.id,
+              messageId: message.id,
+              ordinal,
+              sourceMessageCreatedAt: message.createdAt,
+              sourceMessageUpdatedAt: message.updatedAt,
+              userId
+            })
+          )
+        });
+      });
 
       const retrieval = createPrismaLocalMemoryRetrievalRepository(prisma);
       const plan = planMemoryRetrieval({

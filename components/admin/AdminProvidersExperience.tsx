@@ -136,7 +136,7 @@ export function AdminProvidersExperience({
           ["connections", "Connections"],
           ["defaults", "Default model"],
           ["limits", "Tool limits"],
-          ["system", "System model"]
+          ["system", "System Models"]
         ] as const).map(([task, label]) => (
           <button
             aria-selected={workspaceTask === task}

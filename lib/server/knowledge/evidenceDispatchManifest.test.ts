@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   KNOWLEDGE_EVIDENCE_SHORTENING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate
 } from "./evidenceDispatchManifest";
@@ -32,6 +33,7 @@ function pack(input: Readonly<{
   candidates?: readonly CurrentKnowledgeEvidenceDispatchCandidate[];
   maximumBytes?: number;
   maximumTokens?: number;
+  packingVersion?: typeof KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION;
 }> = {}) {
   return packKnowledgeEvidenceDispatchManifest({
     candidates: input.candidates ?? [candidate()],
@@ -40,6 +42,7 @@ function pack(input: Readonly<{
     header: "<private_knowledge_evidence version=\"2\">",
     maximumBytes: input.maximumBytes ?? 64 * 1_024,
     maximumTokens: input.maximumTokens ?? 64 * 1_024,
+    ...(input.packingVersion ? { packingVersion: input.packingVersion } : {}),
     runtimeVersion: 1,
     profileId: "answer:test-model",
     promptFragmentVersion: 2
@@ -86,6 +89,48 @@ describe("Knowledge evidence dispatch manifest", () => {
       "evidence-a",
       "evidence-b"
     ]);
+  });
+
+  it("rank-interleaves retrieval operations before applying the evidence budget", () => {
+    const excerpt = "x".repeat(1_200);
+    const candidates = [
+      candidate({ evidenceId: "evidence-1", exactExcerpt: excerpt, handle: "K1" }),
+      candidate({
+        evidenceId: "evidence-2",
+        exactExcerpt: excerpt,
+        handle: "K2",
+        resultOrdinal: 2
+      }),
+      candidate({
+        evidenceId: "evidence-3",
+        exactExcerpt: excerpt,
+        handle: "K3",
+        operationOrdinal: 2
+      }),
+      candidate({
+        evidenceId: "evidence-4",
+        exactExcerpt: excerpt,
+        handle: "K4",
+        operationOrdinal: 2,
+        resultOrdinal: 2
+      })
+    ];
+    const twoItemBudget = pack({ candidates: [candidates[0]!, candidates[1]!] }).messageBytes;
+
+    const chronological = pack({ candidates, maximumBytes: twoItemBudget });
+    const interleaved = pack({
+      candidates,
+      maximumBytes: twoItemBudget,
+      packingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
+    });
+
+    expect(chronological.items.map(({ handle }) => handle)).toEqual(["K1", "K2"]);
+    expect(interleaved.items.map(({ handle }) => handle)).toEqual(["K1", "K3"]);
+    expect(interleaved.exclusions.map(({ handle, reason }) => [handle, reason])).toEqual([
+      ["K2", "budget"],
+      ["K4", "budget"]
+    ]);
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(interleaved)).toEqual(interleaved);
   });
 
   it("deduplicates handles before rendering and never leaks the later poison item", () => {

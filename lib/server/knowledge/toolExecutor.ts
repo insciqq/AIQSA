@@ -3,6 +3,7 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embeddings";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
 import type {
   ModelToolCall,
   RunTool,
@@ -17,7 +18,6 @@ import {
   knowledgeToolResultText
 } from "./toolResult";
 import {
-  KNOWLEDGE_CANDIDATE_LIMIT,
   KNOWLEDGE_EXECUTION_TOOL_NAMES,
   KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
   KNOWLEDGE_QUERY_MAX_CHARACTERS,
@@ -31,6 +31,7 @@ import {
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactSearchRequest,
   type KnowledgeExactSearchResult,
+  type KnowledgeHybridPassage,
   type KnowledgeHybridSearchResult,
   type KnowledgeRetrievalEvidence,
   type KnowledgeRetrievalOutcome,
@@ -70,8 +71,30 @@ import {
   type KnowledgeDocumentLocatorV1
 } from "./documentContext";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
+import { KNOWLEDGE_LANE_CANDIDATE_LIMIT } from "./retrievalRanking";
+import {
+  createKnowledgeRerankStage,
+  knowledgeRerankerDisabledEvidence,
+  knowledgeRerankerUnavailableEvidence,
+  type KnowledgeRerankExecutor
+} from "./rerankExecution";
+import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
+import { knowledgeTokenizerEvidenceLabel } from "./tokenizer/knowledgeTokenCounter";
+import {
+  fitKnowledgeParentExpansionsToByteBudget,
+  knowledgeParentExpansionEvidence
+} from "./parentContextExpansion";
 
 export { knowledgeRetrievalTool } from "./knowledgeTools";
+
+/**
+ * End-to-end envelope for one read-only Knowledge tool operation. Query
+ * embedding, hybrid retrieval, hosted reranking, and durable receipt writes
+ * are sequential stages; this must leave headroom beyond the reranker's own
+ * bounded fallback deadline instead of racing it at the same wall clock.
+ */
+export const KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS = 60_000 as const;
 
 export type KnowledgeAcceptedEmbeddingRuntime = Readonly<{
   adapter: EmbeddingAdapter;
@@ -103,6 +126,10 @@ export type KnowledgeRetrievalStore = Readonly<{
     excludedContentHashes: readonly string[];
     operation: KnowledgeOperationKind;
     query: string;
+    rerank?: Readonly<{
+      executor: KnowledgeRerankExecutor;
+      signal?: AbortSignal;
+    }>;
     resultLimit: number;
     runId: string;
     sourceIds?: readonly string[];
@@ -146,6 +173,11 @@ export type KnowledgeRetrievalStore = Readonly<{
     runId: string;
     userId: string;
   }>): Promise<readonly KnowledgeScopeAlias[]>;
+  materializeScopeAliases?(input: Readonly<{
+    runId: string;
+    sourceProvenance: readonly KnowledgeCanonicalSourceProvenance[];
+    userId: string;
+  }>): Promise<void>;
   readSource?(input: Readonly<{
     binding: KnowledgeAcceptedBinding;
     read: NormalizedReadSourceRequest;
@@ -301,6 +333,18 @@ function completedResult(
   };
 }
 
+/** Content-free tokenizer identity derived from the accepted embedding
+ * snapshot; recorded next to the vector-space fingerprint that already
+ * carries the index-profile identity. Never fails the operation. */
+function bindingTokenizerProfile(binding: KnowledgeAcceptedBinding): string | null {
+  try {
+    const snapshot = normalizeProviderExecutionSnapshot(binding.embeddingExecutionSnapshot);
+    return knowledgeTokenizerEvidenceLabel(snapshot.model.upstreamModelId);
+  } catch {
+    return null;
+  }
+}
+
 function baseEvidence(
   bindings: readonly KnowledgeAcceptedBinding[],
   candidateCounts: Readonly<Record<number, number>> = {},
@@ -314,6 +358,7 @@ function baseEvidence(
   return bindings.map((binding) => {
     const candidateCount = candidateCounts[binding.ordinal] ?? 0;
     const vectorSearch = vectorByBinding.get(binding.ordinal);
+    const tokenizerProfile = bindingTokenizerProfile(binding);
     return {
       baseContentRevision: binding.baseContentRevision,
       baseName: binding.baseName,
@@ -326,6 +371,7 @@ function baseEvidence(
         ? "indexing"
         : candidateCount === 0 && !readyWhenEmpty ? "empty" : "ready",
       targetDimension: binding.targetDimension,
+      ...(tokenizerProfile ? { tokenizerProfile } : {}),
       ...(vectorSearch ? { vectorSearch } : {}),
       vectorSpaceFingerprint: binding.vectorSpaceFingerprint
     };
@@ -414,8 +460,9 @@ function includedPassages(
   const sourceAliasByArtifact = primarySourceAliasesByArtifact(aliases);
   const selected: KnowledgeRetrievedPassageEvidence[] = [];
   const pendingExpandedContext: Array<string | null> = [];
+  const pendingExpansion: Array<KnowledgeHybridPassage["expansion"] | null> = [];
   let retainedExcerptBytes = 0;
-  for (const { expandedContext, text, ...passage } of passages) {
+  for (const { expandedContext, expansion, text, ...passage } of passages) {
     const sourceTextBytes = Buffer.byteLength(text, "utf8");
     if (sourceTextBytes > excerptBudgetBytes) {
       if (selected.length === 0) throw new Error("knowledge_evidence_item_too_large");
@@ -438,10 +485,53 @@ function includedPassages(
       textTruncated: false
     });
     pendingExpandedContext.push(expandedContext || null);
+    pendingExpansion.push(expansion ?? null);
     retainedExcerptBytes += sourceTextBytes;
   }
+  // FR-14 trim order: every atomic hit above is already packed and is never
+  // dropped in favor of expansion — expanded context competes only for the
+  // leftover bytes. Unit-bearing expansions shrink unit-by-unit with
+  // per-source round-robin fairness before any expansion drops entirely;
+  // legacy whole-string context keeps its historical all-or-nothing attach.
   let remainingContextBytes = excerptBudgetBytes - retainedExcerptBytes;
+  const unitEntries = selected.flatMap((passage, index) => {
+    const expansion = pendingExpansion[index];
+    return expansion && expansion.units.length > 0
+      ? [{
+          key: String(index),
+          sourceKey: [
+            passage.documentId,
+            passage.documentVersionId,
+            passage.sourceArtifactId ?? ""
+          ].join("\u001f"),
+          units: expansion.units
+        }]
+      : [];
+  });
+  const fitted = unitEntries.length > 0
+    ? fitKnowledgeParentExpansionsToByteBudget({
+        entries: unitEntries,
+        maximumBytes: Math.max(0, remainingContextBytes)
+      })
+    : null;
+  if (fitted) {
+    for (const kept of fitted.values()) {
+      if (kept.units.length > 0) {
+        remainingContextBytes -= Buffer.byteLength(kept.text, "utf8");
+      }
+    }
+  }
   return selected.map((passage, index) => {
+    const expansion = pendingExpansion[index];
+    if (expansion) {
+      const kept = fitted?.get(String(index));
+      const units = kept?.units ?? [];
+      return {
+        ...passage,
+        ...(units.length > 0 ? { expandedContext: kept!.text } : {}),
+        expansion: knowledgeParentExpansionEvidence(expansion, units)
+      };
+    }
     const expandedContext = pendingExpandedContext[index];
     if (!expandedContext) return passage;
     const expandedContextBytes = Buffer.byteLength(expandedContext, "utf8");
@@ -621,11 +711,33 @@ function operationRequestInput(input: Readonly<{
       filteredSourceIds && !filteredSourceIds.has(alias.sourceId)) return [];
     return [alias.sourceId];
   }))].sort();
-  if (resolvedSourceIds.length < 1) return null;
+  const canUseBaseSnapshots = input.request.operation === "automatic_search" &&
+    !input.filter.sourceIds &&
+    input.bindings.every((binding) => binding.executionScope === "base" &&
+      Boolean(binding.knowledgeBaseSnapshotId)) &&
+    input.request.sourceAliases.every((alias) => alias.startsWith("B"));
+  const scope = canUseBaseSnapshots
+    ? Object.freeze({
+        bindings: Object.freeze([...input.bindings]
+          .sort((left, right) => left.ordinal - right.ordinal)
+          .map((binding) => Object.freeze({
+            bindingOrdinal: binding.ordinal,
+            knowledgeBaseId: binding.knowledgeBaseId,
+            knowledgeBaseSnapshotId: binding.knowledgeBaseSnapshotId
+          }))),
+        kind: "base_snapshots" as const
+      })
+    : resolvedSourceIds.length > 0 || input.request.operation === "discover_sources"
+      ? Object.freeze({
+          kind: "sources" as const,
+          sourceIds: Object.freeze(resolvedSourceIds)
+        })
+      : null;
+  if (!scope) return null;
   const common = Object.freeze({
     operation: input.request.operation,
     profileRevisionId: profileRevisionIds[0]!,
-    resolvedSourceIds,
+    scope,
     sourceAliases: [...input.request.sourceAliases]
   });
   switch (input.request.operation) {
@@ -835,10 +947,20 @@ function validBindings(bindings: readonly KnowledgeAcceptedBinding[]): boolean {
 export function createKnowledgeToolExecutor(input: Readonly<{
   budgetReservations?: KnowledgeBudgetReservationRepository;
   embeddingRuntime: KnowledgeEmbeddingRuntimeResolver;
+  /** Test seam for the monotonic elapsed-time source; never a wall clock. */
+  monotonicNow?: () => number;
+  /**
+   * Installation reranker role for hosted reranking. When omitted, retrieval
+   * stays fully deterministic and no reranker evidence is recorded.
+   */
+  rerankerRuntime?: KnowledgeRerankerRuntimeResolver;
   store: KnowledgeRetrievalStore;
 }>): KnowledgeToolExecutor {
+  const monotonicNow = input.monotonicNow ?? monotonicNowMilliseconds;
+  const elapsedSince = (startedAt: number) =>
+    elapsedMilliseconds(startedAt, monotonicNow());
   const staticPolicy = Object.freeze({
-    candidateLimit: KNOWLEDGE_CANDIDATE_LIMIT,
+    candidateLimit: KNOWLEDGE_LANE_CANDIDATE_LIMIT,
     resultLimit: KNOWLEDGE_RESULT_LIMIT
   });
 
@@ -1048,10 +1170,10 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       const candidateLimit = staticPolicy.candidateLimit;
       const resultLimit = automaticSearchResultLimit(request);
       const anchorQuery = currentUserAnchorQuery(context, request);
-      const startedAt = Date.now();
+      const startedAt = monotonicNow();
       const bindings = await input.store.loadBindings({ runId, userId: context.userId });
       if (!validBindings(bindings)) return errorResult(call, "knowledge_run_binding_unavailable");
-      const aliases = input.store.loadScopeAliases
+      let aliases = input.store.loadScopeAliases
         ? await input.store.loadScopeAliases({ runId, userId: context.userId })
         : [];
       const filter = aliasFilter(request.sourceAliases, aliases, request.operation);
@@ -1152,7 +1274,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         return completedResult(call, persistedEvidence);
       };
       const persistExplicitUnavailable = async (failureCode: string) => {
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings),
           candidateCount: 0,
@@ -1218,7 +1340,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
           aliases
         );
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(
             scopedBindings,
@@ -1303,7 +1425,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
           aliases
         );
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings, search.candidateCounts, [], true),
           candidateCount: search.candidateCount,
@@ -1367,7 +1489,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
               source.sourceVersionNumber < 1 || source.matchedFields.length < 1 ||
               source.matchedFields.some((field) => !requestedFields.has(field));
           })) throw new Error("knowledge_discovery_result_invalid");
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings, discovery.candidateCounts, [], true),
           candidateCount: discovery.candidateCount,
@@ -1415,7 +1537,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         vector: readonly number[];
       }> = [];
       for (const group of groups) {
-        const embeddingStartedAt = Date.now();
+        const embeddingStartedAt = monotonicNow();
         let runtime: KnowledgeAcceptedEmbeddingRuntime | null = null;
         try {
           runtime = await input.embeddingRuntime.resolve(group.bindings[0]!);
@@ -1432,7 +1554,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           }
           embeddingExecutions.push({
             bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
-            durationMs: Date.now() - embeddingStartedAt,
+            durationMs: elapsedSince(embeddingStartedAt),
             inputTokens: result.usage.inputTokens ?? 0,
             modelId: runtime.configuration.upstreamModelId,
             provider: runtime.provider,
@@ -1458,7 +1580,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             semanticUnavailable = true;
             embeddingExecutions.push({
               bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
-              durationMs: Date.now() - embeddingStartedAt,
+              durationMs: elapsedSince(embeddingStartedAt),
               inputTokens: 0,
               modelId: runtime?.configuration.upstreamModelId ??
                 group.snapshot.model.upstreamModelId,
@@ -1475,6 +1597,21 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         }
       }
 
+      // FR-4/FR-15: the installation reranker role is resolved and pinned per
+      // accepted operation. Recovery replays the stored receipt above and
+      // never reaches this resolution, so an accepted operation is immutable.
+      const rerankResolution = input.rerankerRuntime
+        ? await input.rerankerRuntime.resolve()
+        : null;
+      const rerankExecutor: KnowledgeRerankExecutor | null =
+        rerankResolution?.kind === "ready"
+          ? createKnowledgeRerankStage({
+              adapter: rerankResolution.adapter,
+              now: monotonicNow,
+              pin: rerankResolution.pin,
+              query: request.query
+            })
+          : null;
       const search = await input.store.hybridSearch({
         ...(anchorQuery ? { anchorQuery } : {}),
         ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
@@ -1482,6 +1619,14 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         excludedContentHashes: budgetState.priorContentHashes,
         operation: request.operation,
         query: request.query,
+        ...(rerankExecutor
+          ? {
+              rerank: {
+                executor: rerankExecutor,
+                ...(options?.signal ? { signal: options.signal } : {})
+              }
+            }
+          : {}),
         resultLimit,
         runId,
         ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}),
@@ -1493,10 +1638,36 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         throw new Error("knowledge_hybrid_result_invalid");
       }
       const ranking = search.rankingEvidence;
+      const lexicalBackend = search.lexicalBackendEvidence;
       if (!ranking || ranking.fusion !== "weighted_rrf_v2" ||
         ranking.candidateOrder.length !== search.candidateCount ||
-        (search.candidateCount > 0 && search.passages.length === 0)) {
+        (search.candidateCount > 0 && search.passages.length === 0) ||
+        lexicalBackend?.backendKind !== "opensearch_bm25_v1" ||
+        lexicalBackend.rankingProfileVersion !== 4 ||
+        lexicalBackend.status !== "complete") {
         throw new Error("knowledge_hybrid_ranking_invalid");
+      }
+      const rerankerBinding: KnowledgeRerankerBindingEvidenceV2 | undefined =
+        rerankResolution === null
+          ? undefined
+          : rerankResolution.kind === "absent"
+            ? knowledgeRerankerDisabledEvidence()
+            : rerankResolution.kind === "unavailable"
+              ? knowledgeRerankerUnavailableEvidence({
+                  selectedProviderModelId: rerankResolution.selectedProviderModelId
+                })
+              : search.rerankerBinding;
+      if (rerankResolution?.kind === "ready" && !rerankerBinding) {
+        throw new Error("knowledge_reranker_evidence_missing");
+      }
+      if (search.canonicalSourceProvenance?.length &&
+        input.store.materializeScopeAliases && input.store.loadScopeAliases) {
+        await input.store.materializeScopeAliases({
+          runId,
+          sourceProvenance: search.canonicalSourceProvenance,
+          userId: context.userId
+        });
+        aliases = await input.store.loadScopeAliases({ runId, userId: context.userId });
       }
       const remainingRetrievedTokens = Math.max(
         1,
@@ -1521,7 +1692,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
               binding.indexedContentRevision < binding.baseContentRevision)
             ? "base_indexing"
             : "no_relevant_evidence";
-      const durationMs = Date.now() - startedAt;
+      const durationMs = elapsedSince(startedAt);
       return persist(finalizedEvidence({
         bases: baseEvidence(
           scopedBindings,
@@ -1539,9 +1710,11 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             : {}),
         fusion: ranking.fusion,
         invocationOrdinal: budgetState.invocationOrdinal,
+        lexicalBackend,
         operation: request.operation,
         outcome: retrievalOutcome,
         query: request.query,
+        ...(rerankerBinding ? { rerankerBinding } : {}),
         resultLimit,
         results: retrievalOutcome === "complete" ? results : [],
         scopeAliases: evidenceAliases(aliases, results, scopedBindings),

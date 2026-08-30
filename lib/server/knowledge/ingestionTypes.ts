@@ -17,6 +17,7 @@ export type KnowledgeIngestionFailureCode =
   | "knowledge_object_size_mismatch"
   | "knowledge_page_limit_exceeded"
   | "knowledge_text_limit_exceeded"
+  | "knowledge_tokenizer_unavailable"
   | "normalized_text_unavailable"
   | "parser_rejected"
   | "parser_unavailable"
@@ -44,6 +45,7 @@ export type KnowledgeSourceArtifactPinRecord = Readonly<{
   pdfProcessingMode: KnowledgePdfProcessingMode;
   pdfSystemModelPolicyVersion: number | null;
   pdfSystemModelSnapshot: unknown;
+  processingGeneration: number;
   profileExecutionAuthority: "installation" | "legacy_user";
   profileRevisionId: string | null;
   targetDimension: number;

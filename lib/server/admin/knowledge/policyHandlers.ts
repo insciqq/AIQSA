@@ -1,5 +1,9 @@
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
+import {
+  KNOWLEDGE_INGESTION_PARALLELISM_MAXIMUM,
+  KNOWLEDGE_INGESTION_PARALLELISM_MINIMUM
+} from "../../knowledge/ingestionCoordinator";
 import type { createAdminKnowledgePolicyService } from "./policyService";
 import { AdminKnowledgeProfileServiceError } from "./profileService";
 import { AdminKnowledgeAnswerPolicyServiceError } from "./answerPolicyService";
@@ -44,7 +48,8 @@ function contentTypeIsJson(request: Request): boolean {
 function failure(error: unknown): Response {
   if (error instanceof AdminKnowledgeAnswerPolicyServiceError) {
     return Response.json({ error: error.code }, {
-      status: error.code === "knowledge_answer_policy_stale" ? 409 : 400
+      status: error.code === "knowledge_answer_policy_stale" ||
+        error.code === "knowledge_ingestion_parallelism_stale" ? 409 : 400
     });
   }
   if (error instanceof AdminKnowledgeProfileServiceError) {
@@ -113,6 +118,29 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
           await input.service.rollbackProfile({
             expectedVersion: Number(value.expectedVersion),
             revisionId,
+            userId: auth.session.userId
+          });
+          return Response.json({ knowledge: await input.service.list() });
+        } catch (error) {
+          return failure(error);
+        }
+      }
+      if (record(value) && value.action === "update_ingestion_parallelism") {
+        if (!allowedKeys(value, [
+          "action",
+          "expectedVersion",
+          "ingestionParallelism"
+        ]) || !Number.isSafeInteger(value.expectedVersion) ||
+          Number(value.expectedVersion) < 1 ||
+          !Number.isSafeInteger(value.ingestionParallelism) ||
+          Number(value.ingestionParallelism) < KNOWLEDGE_INGESTION_PARALLELISM_MINIMUM ||
+          Number(value.ingestionParallelism) > KNOWLEDGE_INGESTION_PARALLELISM_MAXIMUM) {
+          return Response.json({ error: "knowledge_ingestion_parallelism_invalid" }, { status: 400 });
+        }
+        try {
+          await input.service.updateIngestionParallelism({
+            expectedVersion: Number(value.expectedVersion),
+            ingestionParallelism: Number(value.ingestionParallelism),
             userId: auth.session.userId
           });
           return Response.json({ knowledge: await input.service.list() });

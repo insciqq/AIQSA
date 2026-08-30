@@ -672,12 +672,12 @@ describe("Memory semantic smoke support", () => {
     expect(learnedFactLoop).toContain("sourceBackedFactVersionCount");
     expect(learnedFactLoop).toContain("sourceBackedFactEmbeddingReadyCount");
     expect(source).toContain("readyExplicitFactEmbeddingCount");
-    expect(source.match(/await sourceRun\(/gu)).toHaveLength(13);
+    const main = source.slice(source.indexOf("async function main(): Promise<void>"));
+    expect(main.match(/await sourceRun\(/gu)).toHaveLength(13);
     expect(source).toContain("const MAX_CHAT_RUNS = 13;");
     expect(source).toContain("Memory smoke implicit save quarterly ${marker}");
-    const main = source.slice(source.indexOf("async function main(): Promise<void>"));
     const consumerGate = main.indexOf("requireConsumerPreparation(settings);");
-    const providerPreflight = main.indexOf("answer = await preflightPrismaMemorySemanticSmoke(");
+    const providerPreflight = main.indexOf("await preflightPrismaMemorySemanticSmoke(");
     const readiness = main.indexOf(
       "const rebuildActions = await ensureAdminMemoryReady(initialStatus, settings);"
     );

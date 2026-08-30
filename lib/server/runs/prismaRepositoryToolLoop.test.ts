@@ -352,6 +352,42 @@ describe("provider dispatch recovery request loading", () => {
     });
   });
 
+  it("recovers historical chronological and current rank-interleaved evidence policies", async () => {
+    for (const [packingVersion, accepted] of [
+      [undefined, true],
+      [2, true],
+      [1, false],
+      [3, false]
+    ] as const) {
+      const request = {
+        ...normalizedRequest,
+        ...(packingVersion === undefined ? {} : {
+          knowledgeEvidencePackingVersion: packingVersion
+        })
+      };
+      const operations = createPrismaRunToolLoopOperations({
+        modelRun: {
+          findUnique: vi.fn(async () => ({
+            chat: { projectId: null, userId: "owner-one" },
+            chatId: "chat-one",
+            modelId: "model-one",
+            normalizedRequest: request,
+            provider: "provider-one"
+          }))
+        }
+      } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+      const loaded = operations.loadProviderDispatchRecoveryRequest!({
+        runId: "run-one",
+        userId: "owner-one"
+      });
+
+      if (accepted) await expect(loaded).resolves.toEqual(request);
+      else await expect(loaded).rejects.toThrow(
+        "provider_dispatch_recovery_request_invalid_in_storage"
+      );
+    }
+  });
+
   it("round-trips a frozen full-context request with its exact evidence envelope", async () => {
     const evidenceBlock = JSON.stringify({
       citation: "[K1]",
@@ -579,6 +615,7 @@ describe("provider dispatch recovery request loading", () => {
         exclusions: [{ count: 1, reason: "not_ready", resourceType: "source" }],
         resolvedBaseCount: 1,
         resolvedSourceCount: 1,
+        sourceBindingStrategy: "eager_v1",
         selection: { baseIds: ["base-one"], mode: "explicit", sourceIds: [], version: 1 }
       },
       knowledgeRunSourceBindings: [{
@@ -632,6 +669,48 @@ describe("provider dispatch recovery request loading", () => {
     }));
   });
 
+  it("loads a large Base recovery scope before any Source alias is disclosed", async () => {
+    const findFirst = vi.fn(async () => ({
+      knowledgeRunBindings: [{
+        includeWholeBase: true,
+        indexGenerationId: "generation-one",
+        knowledgeBaseId: "base-one",
+        ordinal: 0,
+        selectedSourceIds: [],
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      knowledgeRunProfileBindings: [{
+        embeddingCredentialSource: "default",
+        embeddingExecutionSnapshot: focusedEmbeddingSnapshot,
+        embeddingProviderModelId: "embedding-model",
+        ordinal: 0,
+        profileRevisionId: "profile-revision-one",
+        targetDimension: 1_024,
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      knowledgeRunScope: {
+        exclusions: [],
+        resolvedBaseCount: 1,
+        resolvedSourceCount: 5_183,
+        selection: { baseIds: ["base-one"], mode: "explicit", sourceIds: [], version: 1 },
+        sourceBindingStrategy: "disclosed_v1"
+      },
+      knowledgeRunSourceBindings: []
+    }));
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: { findFirst }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadFocusedKnowledgeRecoveryScope!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).resolves.toMatchObject({
+      resolvedSourceCount: 5_183,
+      sourceBindingStrategy: "disclosed_v1",
+      sources: []
+    });
+  });
+
   it("rejects a focused Source snapshot whose Base provenance is not in the accepted scope", async () => {
     const findFirst = vi.fn(async () => ({
       knowledgeRunBindings: [{
@@ -655,6 +734,7 @@ describe("provider dispatch recovery request loading", () => {
         exclusions: [],
         resolvedBaseCount: 1,
         resolvedSourceCount: 1,
+        sourceBindingStrategy: "eager_v1",
         selection: { baseIds: ["base-one"], mode: "explicit", sourceIds: [], version: 1 }
       },
       knowledgeRunSourceBindings: [{

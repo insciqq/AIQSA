@@ -17,7 +17,7 @@ import {
   type LockedMemorySettings,
   type MemoryTransaction
 } from "../../persistence/transaction";
-import { ensureClassifiedSearchEntry } from "../../reclassification/repository";
+import { ensureClassifiedSearchEntry } from "../../persistence/factSearchEntry";
 import {
   MEMORY_FACT_RELATION_PIPELINE_VERSION,
   MEMORY_FACT_RELATION_POLICY_VERSION,

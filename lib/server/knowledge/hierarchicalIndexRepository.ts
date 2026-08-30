@@ -41,6 +41,10 @@ export class KnowledgeHierarchicalIndexPersistenceError extends Error {
   }
 }
 
+export const KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS = 10_000;
+export const KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS = 300_000;
+export const KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE = 250;
+
 async function lockSourceArtifact(
   tx: HierarchicalIndexWriteClient,
   input: Readonly<{ sourceArtifactId: string; sourceVersionId: string }>
@@ -147,9 +151,6 @@ async function persistPlan(
       entitiesText: document.entities.join(" "),
       fileName: document.fileName,
       indexArtifactId: plan.id,
-      keywords: [...document.keywords],
-      keywordsText: document.keywords.join(" "),
-      languageConfig: document.languageConfig,
       languages: [...document.languages],
       metadataText: document.metadataText,
       outline: [...document.outline],
@@ -162,82 +163,97 @@ async function persistPlan(
       title: document.title
     }
   });
-  await tx.knowledgeArtifactSectionIndex.createMany({
-    data: plan.sections.map((section) => ({
-      contentHash: section.contentHash,
-      createdAt: now,
-      documentTitle: document.title ?? "",
-      entities: [...section.entities],
-      entitiesText: section.entities.join(" "),
-      fileName: document.fileName,
-      headingPath: [...section.headingPath],
-      headingText: section.headingPath.join(" "),
-      id: section.id,
-      indexArtifactId: plan.id,
-      keywords: [...section.keywords],
-      keywordsText: section.keywords.join(" "),
-      label: section.label,
-      languageConfig: section.languageConfig,
-      languages: [...section.languages],
-      ordinal: section.ordinal,
-      page: section.page,
-      pageEnd: section.pageEnd,
-      passageEnd: section.passageEnd,
-      passageStart: section.passageStart,
-      sourceDescription: document.description,
-      summary: section.summary,
-      tags: [...document.tags],
-      tagsText: document.tags.join(" ")
-    }))
-  });
-  await tx.knowledgeArtifactPassageIndex.createMany({
-    data: plan.passages.map((passage) => ({
-      contentHash: passage.contentHash,
-      contextPrefix: passage.contextPrefix,
-      createdAt: now,
-      documentContext: passage.documentContext === null
-        ? Prisma.DbNull
-        : passage.documentContext as Prisma.InputJsonValue,
-      documentTitle: document.title ?? "",
-      embeddingTextHash: passage.embeddingTextHash,
-      fileName: document.fileName,
-      headingPath: [...passage.headingPath],
-      headingText: passage.headingPath.join(" "),
-      id: passage.id,
-      indexArtifactId: plan.id,
-      languageConfig: passage.languageConfig,
-      languages: [...passage.languages],
-      ordinal: passage.ordinal,
-      page: passage.page,
-      pageEnd: passage.pageEnd,
-      sectionId: passage.sectionId,
-      sourceBlockEnd: passage.sourceBlockEnd,
-      sourceBlockIds: [...passage.sourceBlockIds],
-      sourceBlockStart: passage.sourceBlockStart,
-      sourceDescription: document.description,
-      sourceName: document.sourceName,
-      tags: [...document.tags],
-      tagsText: document.tags.join(" "),
-      text: passage.text,
-      tokenCount: passage.tokenCount
-    }))
-  });
-  await tx.knowledgeArtifactExactEntry.createMany({
-    data: plan.exactEntries.map((entry) => ({
-      createdAt: now,
-      id: entry.id,
-      indexArtifactId: plan.id,
-      kind: entry.kind,
-      normalizedValue: entry.normalizedValue,
-      ordinal: entry.ordinal,
-      page: entry.page,
-      pageEnd: entry.pageEnd,
-      passageId: entry.passageId,
-      sectionId: entry.sectionId,
-      value: entry.value,
-      valueHash: entry.valueHash
-    }))
-  });
+  for (let offset = 0; offset < plan.sections.length;
+    offset += KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE) {
+    await tx.knowledgeArtifactSectionIndex.createMany({
+      data: plan.sections.slice(
+        offset,
+        offset + KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE
+      ).map((section) => ({
+        contentHash: section.contentHash,
+        createdAt: now,
+        documentTitle: document.title ?? "",
+        entities: [...section.entities],
+        entitiesText: section.entities.join(" "),
+        fileName: document.fileName,
+        headingPath: [...section.headingPath],
+        headingText: section.headingPath.join(" "),
+        id: section.id,
+        indexArtifactId: plan.id,
+        label: section.label,
+        languages: [...section.languages],
+        ordinal: section.ordinal,
+        page: section.page,
+        pageEnd: section.pageEnd,
+        passageEnd: section.passageEnd,
+        passageStart: section.passageStart,
+        sourceDescription: document.description,
+        summary: section.summary,
+        tags: [...document.tags],
+        tagsText: document.tags.join(" ")
+      }))
+    });
+  }
+  for (let offset = 0; offset < plan.passages.length;
+    offset += KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE) {
+    await tx.knowledgeArtifactPassageIndex.createMany({
+      data: plan.passages.slice(
+        offset,
+        offset + KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE
+      ).map((passage) => ({
+        contentHash: passage.contentHash,
+        contextPrefix: passage.contextPrefix,
+        createdAt: now,
+        documentContext: passage.documentContext === null
+          ? Prisma.DbNull
+          : passage.documentContext as Prisma.InputJsonValue,
+        documentTitle: document.title ?? "",
+        embeddingTextHash: passage.embeddingTextHash,
+        fileName: document.fileName,
+        headingPath: [...passage.headingPath],
+        headingText: passage.headingPath.join(" "),
+        id: passage.id,
+        indexArtifactId: plan.id,
+        languages: [...passage.languages],
+        layoutKind: passage.layoutKind,
+        ordinal: passage.ordinal,
+        page: passage.page,
+        pageEnd: passage.pageEnd,
+        sectionId: passage.sectionId,
+        sourceBlockEnd: passage.sourceBlockEnd,
+        sourceBlockIds: [...passage.sourceBlockIds],
+        sourceBlockStart: passage.sourceBlockStart,
+        sourceDescription: document.description,
+        sourceName: document.sourceName,
+        tags: [...document.tags],
+        tagsText: document.tags.join(" "),
+        text: passage.text,
+        tokenCount: passage.tokenCount
+      }))
+    });
+  }
+  for (let offset = 0; offset < plan.exactEntries.length;
+    offset += KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE) {
+    await tx.knowledgeArtifactExactEntry.createMany({
+      data: plan.exactEntries.slice(
+        offset,
+        offset + KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE
+      ).map((entry) => ({
+        createdAt: now,
+        id: entry.id,
+        indexArtifactId: plan.id,
+        kind: entry.kind,
+        normalizedValue: entry.normalizedValue,
+        ordinal: entry.ordinal,
+        page: entry.page,
+        pageEnd: entry.pageEnd,
+        passageId: entry.passageId,
+        sectionId: entry.sectionId,
+        value: entry.value,
+        valueHash: entry.valueHash
+      }))
+    });
+  }
   const settled = await tx.knowledgeHierarchicalIndexArtifact.updateMany({
     data: {
       checksum: plan.checksum,
@@ -307,7 +323,10 @@ export function createPrismaKnowledgeHierarchicalIndexRepository(
       sourceArtifactId: string;
       sourceVersionId: string;
     }>): Promise<"created" | "reused"> {
-      return client.$transaction((tx) => buildAndPersistKnowledgeHierarchicalIndex(tx, input));
+      return client.$transaction((tx) => buildAndPersistKnowledgeHierarchicalIndex(tx, input), {
+        maxWait: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
+        timeout: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS
+      });
     }
   };
 }

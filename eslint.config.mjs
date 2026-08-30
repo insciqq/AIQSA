@@ -8,6 +8,7 @@ const eslintConfig = [
   ...nextVitals,
   {
     ignores: [
+      ".aiqsa/**",
       ".next/**",
       "**/*.d.mts",
       "coverage/**",

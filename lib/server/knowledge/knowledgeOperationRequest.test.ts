@@ -3,9 +3,12 @@ import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import {
   canonicalKnowledgeOperationRequestV2,
   createKnowledgeOperationRequestV2,
+  createKnowledgeOperationRequestV3,
   decodeKnowledgeOperationRequestV2,
+  decodeKnowledgeOperationRequestV3,
   hashKnowledgeOperationRequestV2,
   knowledgeOperationTargetSourceIds,
+  KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION,
   KNOWLEDGE_OPERATION_REQUEST_VERSION
 } from "./knowledgeOperationRequest";
 import { normalizeReadSourceRequest } from "./readSourceLocator";
@@ -26,7 +29,7 @@ function envelope(operation: string, sourceAliases: readonly string[] = []) {
     resolvedSourceIds: [SOURCE_ID],
     sourceAliases,
     subqueryOrdinal: 0,
-    version: KNOWLEDGE_OPERATION_REQUEST_VERSION
+    version: KNOWLEDGE_OPERATION_REQUEST_LEGACY_VERSION
   };
 }
 
@@ -110,6 +113,47 @@ describe("Knowledge operation request", () => {
     expect(decodeKnowledgeOperationRequestV2({
       ...envelope("automatic_search", ["S1"]),
       focused
+    })).toBeNull();
+  });
+
+  it("binds broad V3 retrieval to immutable Base snapshots", () => {
+    const focused = createKnowledgeFocusedRequest({ currentUserMessage: "Question" })!;
+    const { resolvedSourceIds: _resolvedSourceIds, ...v3Envelope } =
+      envelope("automatic_search");
+    const request = createKnowledgeOperationRequestV3({
+      ...v3Envelope,
+      focused,
+      scope: {
+        bindings: [{
+          bindingOrdinal: 0,
+          knowledgeBaseId: "00000000-0000-4000-8000-000000000004",
+          knowledgeBaseSnapshotId: `kbs_${"b".repeat(40)}`
+        }],
+        kind: "base_snapshots"
+      },
+      version: KNOWLEDGE_OPERATION_REQUEST_VERSION
+    });
+
+    expect(request.scope).toMatchObject({ kind: "base_snapshots" });
+    expect(knowledgeOperationTargetSourceIds(request)).toEqual([]);
+  });
+
+  it("keeps V3 source targeting bounded and rejects V2-shaped payloads", () => {
+    const { resolvedSourceIds: _resolvedSourceIds, ...v3Envelope } =
+      envelope("automatic_search", ["S1"]);
+    const value = {
+      ...v3Envelope,
+      phaseOrdinal: 1,
+      query: "Follow-up",
+      scope: { kind: "sources", sourceIds: [SOURCE_ID] },
+      version: KNOWLEDGE_OPERATION_REQUEST_VERSION
+    };
+    const request = createKnowledgeOperationRequestV3(value);
+    expect(knowledgeOperationTargetSourceIds(request)).toEqual([SOURCE_ID]);
+    expect(decodeKnowledgeOperationRequestV3({
+      ...value,
+      scope: undefined,
+      resolvedSourceIds: [SOURCE_ID]
     })).toBeNull();
   });
 });

@@ -327,7 +327,7 @@ function searchInput(
   };
 }
 
-describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () => {
+describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => {
   beforeAll(async () => {
     // Repeated qualification runs delete their owned fixture rows, but HNSW
     // can retain dead graph tuples until vacuum. Start from a maintained index
@@ -560,8 +560,8 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
         current_setting('server_version') AS postgres,
         (SELECT extversion FROM pg_extension WHERE extname = 'vector') AS pgvector
     `);
-    expect(versions[0]).toMatchObject({ pgvector: "0.8.5" });
-    expect(versions[0]?.postgres).toMatch(/^16\.14(?:\D|$)/u);
+    expect(versions[0]).toMatchObject({ pgvector: "0.8.6" });
+    expect(versions[0]?.postgres).toMatch(/^18\.6(?:\D|$)/u);
 
     const annStatement = memoryVectorCandidateSql({
       input: searchInput(annFixture),
@@ -670,7 +670,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       ),
       incompatibleSpaceLeakageCount,
       pgvectorVersion: versions[0]!.pgvector,
-      postgresqlMajorMinor: "16.14",
+      postgresqlMajorMinor: "18.6",
       recallAt5,
       sampleCount,
       sanitizedAggregatesOnly: true

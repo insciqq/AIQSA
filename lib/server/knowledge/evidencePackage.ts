@@ -5,7 +5,10 @@ import type { KnowledgeCandidateSignal } from "./retrievalRanking";
 import type { StructuredAnalysisResult, StructuredInputRange } from "./structuredData";
 import type { KnowledgeVisualAnalysisResult } from "./visualEvidence";
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
-import type { KnowledgePassageLayoutKind } from "./retrievalTypes";
+import type {
+  KnowledgeParentExpansionEvidence,
+  KnowledgePassageLayoutKind
+} from "./retrievalTypes";
 
 export const KNOWLEDGE_EVIDENCE_PACKAGE_VERSION = 2 as const;
 export const KNOWLEDGE_EVIDENCE_PROVENANCE_VERSION = 2 as const;
@@ -51,6 +54,8 @@ export type KnowledgeEvidencePackageItem = Readonly<{
     expanded: boolean;
     documentContext?: KnowledgeDocumentContextV1;
     excerptBytes: number;
+    /** Content-free FR-14 child-to-parent expansion facts; never text. */
+    expansion?: KnowledgeParentExpansionEvidence;
     layoutKind?: KnowledgePassageLayoutKind;
     sourceTextBytes: number;
     structuredAnalysis?: StructuredAnalysisResult;

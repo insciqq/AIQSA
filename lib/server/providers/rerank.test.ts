@@ -71,8 +71,22 @@ function adapter(fetchFn: typeof fetch, responseMaxBytes?: number) {
   return createOpenRouterRerankAdapter({
     connection,
     model: rerankerModel(),
-    network: { fetchFn, ...(responseMaxBytes ? { responseMaxBytes } : {}) },
+    network: {
+      fetchFn,
+      ...(responseMaxBytes ? { responseMaxBytes } : {}),
+      retry: { sleep: async () => undefined }
+    },
     secret: "openrouter-secret"
+  });
+}
+
+function strictAdapter(fetchFn: typeof fetch) {
+  return createOpenRouterRerankAdapter({
+    connection,
+    model: rerankerModel(),
+    network: { fetchFn, retry: { sleep: async () => undefined } },
+    secret: "openrouter-secret",
+    validation: "strict"
   });
 }
 
@@ -120,41 +134,29 @@ describe("OpenRouter reranker adapter", () => {
     });
   });
 
-  it.each([
-    ["missing index", [
-      { index: 2, relevance_score: 0.88 },
-      { index: 0, relevance_score: 0.35 }
-    ]],
-    ["duplicate index", [
-      { index: 2, relevance_score: 0.88 },
-      { index: 2, relevance_score: 0.1 },
-      { index: 0, relevance_score: 0.35 }
-    ]],
-    ["unknown index", [
-      { index: 2, relevance_score: 0.88 },
-      { index: 3, relevance_score: 0.1 },
-      { index: 0, relevance_score: 0.35 }
-    ]],
-    ["malformed entry", [
-      { index: 2, relevance_score: 0.88 },
-      { relevance_score: 0.1 },
-      { index: 0, relevance_score: 0.35 }
-    ]],
-    ["invalid score", [
-      { index: 2, relevance_score: 0.88 },
-      { index: 1, relevance_score: 4 },
-      { index: 0, relevance_score: 0.35 }
-    ]]
-  ] as const)("rejects the complete response for a %s", async (_label, results) => {
-    const fetchFn = vi.fn<typeof fetch>(async () => response({ results: [...results] }));
-    await expect(adapter(fetchFn).rerank({
+  it("preserves valid partial scores and ignores malformed or duplicate entries", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      results: [
+        { index: 2, relevance_score: 0.88 },
+        { index: 1, relevance_score: 4 },
+        { index: 2, relevance_score: 0.1 },
+        { index: 0, relevance_score: 0.35 }
+      ]
+    }));
+    const result = await adapter(fetchFn).rerank({
       documents: [
         { handle: "c0", text: "first" },
         { handle: "c1", text: "second" },
         { handle: "c2", text: "third" }
       ],
       query: "query"
-    })).rejects.toMatchObject({ code: "rerank_response_invalid" });
+    });
+
+    expect(result.scores).toEqual([
+      { handle: "c2", index: 2, relevanceScore: 0.88 },
+      { handle: "c1", index: 1, relevanceScore: 4 },
+      { handle: "c0", index: 0, relevanceScore: 0.35 }
+    ]);
   });
 
   it("fails when no valid score remains", async () => {
@@ -259,6 +261,27 @@ describe("OpenRouter reranker adapter", () => {
     })).rejects.toMatchObject({ code: "rerank_response_provider_mismatch" });
   });
 
+  it("accepts the routed provider's canonical model resource name", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      model: "accounts/fireworks/models/qwen3-reranker-8b",
+      provider: "Fireworks",
+      results: [{ index: 0, relevance_score: 0.8 }]
+    }));
+    const reranker = createOpenRouterRerankAdapter({
+      connection,
+      model: rerankerModel("qwen/qwen3-reranker-8b", ["Fireworks"]),
+      network: { fetchFn },
+      secret: "openrouter-secret"
+    });
+    await expect(reranker.rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({
+      model: "accounts/fireworks/models/qwen3-reranker-8b",
+      provider: "Fireworks"
+    });
+  });
+
   it("rejects a provider-native model path that contradicts the routed provider", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response({
       model: "accounts/fireworks/models/qwen3-reranker-8b",
@@ -270,7 +293,25 @@ describe("OpenRouter reranker adapter", () => {
     })).rejects.toMatchObject({ code: "rerank_response_model_mismatch" });
   });
 
-  it("does not retry or enable provider fallback after an upstream failure", async () => {
+  it("rejects a canonical resource name that disagrees with its provider", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      model: "accounts/other/models/qwen3-reranker-8b",
+      provider: "Fireworks",
+      results: [{ index: 0, relevance_score: 0.8 }]
+    }));
+    const reranker = createOpenRouterRerankAdapter({
+      connection,
+      model: rerankerModel("qwen/qwen3-reranker-8b", ["Fireworks"]),
+      network: { fetchFn },
+      secret: "openrouter-secret"
+    });
+    await expect(reranker.rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_response_model_mismatch" });
+  });
+
+  it("bounds transient retries and never enables provider fallback", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", {
       headers: { "retry-after": "2" },
       status: 503
@@ -283,9 +324,11 @@ describe("OpenRouter reranker adapter", () => {
       httpStatus: 503,
       retryAfterMs: 2_000
     });
-    expect(fetchFn).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)))
-      .toMatchObject({ provider: { allow_fallbacks: false } });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    for (const call of fetchFn.mock.calls) {
+      expect(JSON.parse(String(call[1]?.body)))
+        .toMatchObject({ provider: { allow_fallbacks: false } });
+    }
   });
 
   it("bounds document count and the full serialized request before network I/O", async () => {
@@ -343,6 +386,144 @@ describe("OpenRouter reranker adapter", () => {
     }
   });
 
+  it("rejects an empty results array", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({ results: [] }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_response_invalid" });
+  });
+
+  it.each([400, 401, 402, 404, 413])(
+    "surfaces upstream HTTP %d as a typed provider error",
+    async (status) => {
+      const fetchFn = vi.fn<typeof fetch>(async () =>
+        new Response("failure", { status }));
+      await expect(adapter(fetchFn).rerank({
+        documents: [{ handle: "c0", text: "first" }],
+        query: "query"
+      })).rejects.toMatchObject({
+        code: "rerank_provider_http_error",
+        httpStatus: status,
+        retryAfterMs: null
+      });
+      expect(fetchFn).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("retries 429 with its Retry-After hint and succeeds on the same route", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("limited", {
+        headers: { "retry-after": "7" },
+        status: 429
+      }))
+      .mockResolvedValueOnce(response({
+        results: [{ index: 0, relevance_score: 0.5 }]
+      }));
+    const reranker = createOpenRouterRerankAdapter({
+      connection,
+      model: rerankerModel(),
+      network: { fetchFn, retry: { sleep } },
+      secret: "openrouter-secret"
+    });
+
+    await expect(reranker.rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({ scores: [{ handle: "c0", index: 0 }] });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(7_000, expect.any(AbortSignal));
+    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://openrouter.ai/api/v1/rerank",
+      "https://openrouter.ai/api/v1/rerank"
+    ]);
+  });
+
+  it("surfaces 429 after bounded retries are exhausted", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("limited", {
+      headers: { "retry-after": "7" },
+      status: 429
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({
+      code: "rerank_provider_http_error",
+      httpStatus: 429,
+      retryAfterMs: 7_000
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("falls back to the response header request ID when the body has none", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      model: "qwen/qwen3-reranker-8b",
+      results: [{ index: 0, relevance_score: 0.5 }]
+    }), {
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "header-request-id"
+      },
+      status: 200
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({
+      provider: null,
+      requestId: "header-request-id"
+    });
+  });
+
+  it("keeps the query and documents out of every thrown failure", async () => {
+    const privateQuery = "private-query-marker";
+    const privateDocument = "private-document-marker";
+    const failures: unknown[] = [];
+    for (const fetchFn of [
+      vi.fn<typeof fetch>(async () => new Response("denied", { status: 401 })),
+      vi.fn<typeof fetch>(async () => new Response("not json", { status: 200 })),
+      vi.fn<typeof fetch>(async () => { throw new Error("socket closed"); })
+    ]) {
+      failures.push(await adapter(fetchFn).rerank({
+        documents: [{ handle: "c0", text: privateDocument }],
+        instruction: privateQuery,
+        query: privateQuery
+      }).then(
+        () => {
+          throw new Error("expected_failure");
+        },
+        (error: unknown) => error
+      ));
+    }
+
+    for (const failure of failures) {
+      const serialized = JSON.stringify({
+        message: (failure as Error).message,
+        object: failure,
+        stack: (failure as Error).stack ?? ""
+      });
+      expect(serialized).not.toContain(privateQuery);
+      expect(serialized).not.toContain(privateDocument);
+    }
+  });
+
+  it("uses only the rerank endpoint and never falls back to chat completions", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response("unavailable", { status: 500 }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({
+      code: "rerank_provider_http_error",
+      httpStatus: 500
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual(
+      Array.from({ length: 4 }, () => "https://openrouter.ai/api/v1/rerank")
+    );
+  });
+
   it("rejects malformed usage without fabricating accounting", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response({
       results: [{ index: 0, relevance_score: 0.5 }],
@@ -352,5 +533,82 @@ describe("OpenRouter reranker adapter", () => {
       documents: [{ handle: "c0", text: "first" }],
       query: "query"
     })).rejects.toMatchObject({ code: "rerank_response_invalid" });
+  });
+
+  it("keeps the lenient default tolerating dropped malformed entries", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      results: [
+        { index: 0, relevance_score: 0.9 },
+        { index: 0, relevance_score: 0.1 },
+        { index: 7, relevance_score: 0.5 }
+      ]
+    }));
+    const result = await adapter(fetchFn).rerank({
+      documents: [
+        { handle: "c0", text: "first" },
+        { handle: "c1", text: "second" }
+      ],
+      query: "query"
+    });
+    expect(result.scores).toEqual([{ handle: "c0", index: 0, relevanceScore: 0.9 }]);
+  });
+
+  it("treats duplicate, out-of-range, and non-finite entries as malformed in strict mode", async () => {
+    const documents = [
+      { handle: "c0", text: "first" },
+      { handle: "c1", text: "second" }
+    ];
+    for (const results of [
+      [{ index: 0, relevance_score: 0.9 }, { index: 0, relevance_score: 0.1 }],
+      [{ index: 0, relevance_score: 0.9 }, { index: 7, relevance_score: 0.5 }],
+      [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: Number.NaN }],
+      [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: Infinity }],
+      [{ index: 0, relevance_score: 0.9 }, { relevance_score: 0.5 }],
+      [
+        { index: 0, relevance_score: 0.9 },
+        { index: 1, relevance_score: 0.5 },
+        { index: 0, relevance_score: 0.4 }
+      ]
+    ]) {
+      const fetchFn = vi.fn<typeof fetch>(async () => response({ results }));
+      await expect(strictAdapter(fetchFn).rerank({ documents, query: "query" }))
+        .rejects.toMatchObject({ code: "rerank_response_invalid" });
+    }
+  });
+
+  it("accepts any finite provider relevance score without inventing a range", async () => {
+    const documents = [
+      { handle: "c0", text: "first" },
+      { handle: "c1", text: "second" }
+    ];
+    const result = await strictAdapter(vi.fn<typeof fetch>(async () => response({
+      results: [
+        { index: 0, relevance_score: -2.5 },
+        { index: 1, relevance_score: 4.25 }
+      ]
+    }))).rerank({ documents, query: "query" });
+    expect(result.scores).toEqual([
+      { handle: "c0", index: 0, relevanceScore: -2.5 },
+      { handle: "c1", index: 1, relevanceScore: 4.25 }
+    ]);
+  });
+
+  it("still accepts a full valid response and a genuine partial subset in strict mode", async () => {
+    const documents = [
+      { handle: "c0", text: "first" },
+      { handle: "c1", text: "second" }
+    ];
+    const full = await strictAdapter(vi.fn<typeof fetch>(async () => response({
+      results: [
+        { index: 1, relevance_score: 0.91 },
+        { index: 0, relevance_score: 0.42 }
+      ]
+    }))).rerank({ documents, query: "query" });
+    expect(full.scores).toHaveLength(2);
+
+    const partial = await strictAdapter(vi.fn<typeof fetch>(async () => response({
+      results: [{ index: 1, relevance_score: 0.91 }]
+    }))).rerank({ documents, query: "query" });
+    expect(partial.scores).toEqual([{ handle: "c1", index: 1, relevanceScore: 0.91 }]);
   });
 });

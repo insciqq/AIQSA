@@ -76,6 +76,8 @@ import {
 } from "../../contracts/projects";
 import {
   groundKnowledgeRunAnswer,
+  groundKnowledgeRunAnswerV5,
+  loadKnowledgeFullContextDispatchRecovery,
   settleKnowledgeGrounding
 } from "../knowledge/evidenceRepository";
 import { decodeKnowledgeDocumentContext } from "../knowledge/documentContext";
@@ -388,6 +390,9 @@ export function createPrismaRunRepository(
 
   return {
     groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input),
+    groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input),
+    loadKnowledgeFullContextDispatchRecovery: (input) =>
+      loadKnowledgeFullContextDispatchRecovery(prismaClient, input),
     admitPreparingRun: (input) =>
       admitPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     beginPreparingRunAttempt: (input) =>

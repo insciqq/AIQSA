@@ -277,13 +277,13 @@ test.describe("system model policy", () => {
   test("sets and clears the exact role through the administrator Providers UI", async ({ page }) => {
     await signInWithLocalToken(page);
     await page.goto("/admin");
-    await page.getByRole("tab", { name: "System model" }).click();
-    const deployment = page.getByLabel("Active answer model deployment");
+    await page.getByRole("tab", { name: "System Models" }).click();
+    const deployment = page.getByLabel("Internal utility model");
     await expect(deployment).toBeVisible();
     await deployment.selectOption(fixture.modelId);
     await expect(page.getByLabel("Reasoning effort")).toHaveValue("xhigh");
-    await page.getByRole("button", { name: "Save system model" }).click();
-    await expect(page.getByText("System model updated.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Save system models" }).click();
+    await expect(page.getByText("System models updated.", { exact: true })).toBeVisible();
     await expect(page.getByText("Status: Available.", { exact: true })).toBeVisible();
     await expect(page.getByText("MCP Auto: Verification required.", { exact: true }))
       .toBeVisible();
@@ -334,8 +334,8 @@ test.describe("system model policy", () => {
       }
     });
 
-    await page.getByRole("button", { name: "Clear system model" }).click();
-    await expect(page.getByText("System model cleared.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Clear utility model" }).click();
+    await expect(page.getByText("System models updated.", { exact: true })).toBeVisible();
     await expect(deployment).toHaveValue("");
   });
 });

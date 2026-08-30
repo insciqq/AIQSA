@@ -1003,7 +1003,9 @@ describe("AdminPanel", () => {
     await waitFor(() => expect(knowledgeGets).toBe(2));
     expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" }))
       .not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    for (const save of screen.getAllByRole("button", { name: "Save" })) {
+      expect(save).toBeDisabled();
+    }
     expect(screen.getByRole("tab", { name: "Providers" })).toBeEnabled();
     const unload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(unload);

@@ -1293,7 +1293,7 @@ describe("AdminProvidersSection", () => {
     render(<AdminProvidersSection active groups={[]} />);
 
     openTask("Models");
-    expect(screen.getByRole("heading", { name: "Memory reranker presets" }))
+    expect(screen.getByRole("heading", { name: "Reranker presets" }))
       .toBeVisible();
     expect(screen.getByText("Answer").parentElement).toHaveTextContent("Blocked");
     expect(screen.getByText("Embed").parentElement).toHaveTextContent("Blocked");

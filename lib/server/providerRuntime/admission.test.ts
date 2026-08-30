@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { loadInstallationAnswerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
+import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
   nativePdfInput?: boolean;
@@ -547,6 +547,32 @@ describe("provider admission", () => {
       technical.db as unknown as Prisma.TransactionClient,
       { providerModelId: officialOpenAiModel.id }
     )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+  });
+
+  it("keeps answer and reranker installation admission classes mutually exclusive", async () => {
+    const findFirst = vi.fn(async () => null);
+    const db = {
+      providerModel: {
+        findFirst,
+        findUnique: vi.fn(async () => ({ connectionId: "connection-1" }))
+      }
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(loadInstallationAnswerProviderRole(
+      db,
+      { providerModelId: "reranker-1" }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+    await expect(loadInstallationRerankerProviderRole(
+      db,
+      { providerModelId: "answer-1" }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+
+    expect(findFirst).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: expect.objectContaining({ id: "reranker-1", modelClass: "answer" })
+    }));
+    expect(findFirst).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: expect.objectContaining({ id: "answer-1", modelClass: "reranker" })
+    }));
   });
 
   it("resolves a verified model context before snapshotting a new run", async () => {

@@ -1,11 +1,12 @@
+import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
+  isKnowledgeEvidencePackingVersion,
   LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION,
   KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION,
-  KNOWLEDGE_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_EVIDENCE_SHORTENING_VERSION,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
@@ -15,15 +16,22 @@ import {
   type LegacyKnowledgeSummaryDispatchCandidate,
   type LegacyKnowledgeSummarySupportBinding
 } from "./legacySummaryReceipt";
+import {
+  decodeKnowledgeAnswerOperationRequestSnapshotV1,
+  KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES,
+  type KnowledgeAnswerContractPair
+} from "./answerGroundingV5";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
 const SAFE_REASON = /^[a-z][a-z0-9_]{0,63}$/u;
 const SOURCE_ALIAS = /^S[1-9][0-9]{0,2}$/u;
 const MAX_ACCOUNTING_VALUE = 2_147_483_647;
+const MAX_ACCEPTED_RESULT_BYTES = 128 * 1_024;
 const SERIALIZABLE_ATTEMPTS = 3;
 const STORED_DISPATCH_METADATA_VERSION = 2 as const;
 const LEGACY_STORED_DISPATCH_METADATA_VERSION = 1 as const;
+export const KNOWLEDGE_PROVIDER_ATTEMPT_PURPOSE_STORAGE_LIMIT = 64;
 
 function isCurrentKnowledgeHandle(value: string): boolean {
   const decoded = decodeKnowledgeCitationHandle(value);
@@ -50,20 +58,75 @@ export type KnowledgeProviderAttemptUsage = Readonly<{
   totalTokens: number | null;
 }>;
 
-export type KnowledgeProviderAttemptPurpose = "answer";
-
-/** Accepted-record decoder only; current reservations accept `answer` only. */
-type LegacyKnowledgeProviderAttemptPurpose =
+export type KnowledgeProviderAttemptPurpose =
   | "answer"
+  | "knowledge_coverage_planner_v20"
+  | "knowledge_answer_draft_v20"
+  | "knowledge_answer_draft_supplement_v20"
+  | "knowledge_answer_draft_v19"
+  | "knowledge_answer_draft_supplement_v19"
+  | "knowledge_answer_draft_v18"
+  | "knowledge_answer_draft_supplement_v18"
+  | "knowledge_answer_draft_v17"
+  | "knowledge_answer_draft_supplement_v17"
+  | "knowledge_answer_draft_v16"
+  | "knowledge_answer_draft_supplement_v16"
+  | "knowledge_answer_draft_v15"
+  | "knowledge_answer_draft_supplement_v15"
+  | "knowledge_answer_draft_v14"
+  | "knowledge_answer_draft_supplement_v14"
+  | "knowledge_answer_draft_v13"
+  | "knowledge_answer_draft_supplement_v13"
+  | "knowledge_answer_draft_v12"
+  | "knowledge_answer_draft_supplement_v12"
+  | "knowledge_answer_draft_v11"
+  | "knowledge_answer_draft_v10"
+  | "knowledge_answer_draft_v9"
+  | "knowledge_answer_draft_v8"
+  | "knowledge_answer_draft_v7"
+  | "knowledge_grounded_selector_v16"
+  | "knowledge_grounded_selector_final_v16"
+  | "knowledge_grounded_selector_v15"
+  | "knowledge_grounded_selector_final_v15"
+  | "knowledge_grounded_selector_v14"
+  | "knowledge_grounded_selector_final_v14"
+  | "knowledge_grounded_selector_v13"
+  | "knowledge_grounded_selector_final_v13"
+  | "knowledge_grounded_selector_v12"
+  | "knowledge_grounded_selector_final_v12"
+  | "knowledge_grounded_selector_v11"
+  | "knowledge_grounded_selector_final_v11"
+  | "knowledge_grounded_selector_v10"
+  | "knowledge_grounded_selector_final_v10"
+  | "knowledge_grounded_selector_v9"
+  | "knowledge_grounded_selector_final_v9"
+  | "knowledge_grounded_selector_v8"
+  | "knowledge_grounded_selector_final_v8"
+  | "knowledge_grounded_selector_v7"
+  | "knowledge_grounded_selector_v6"
+  | "knowledge_grounded_selector_v5";
+
+/** Accepted-record decoder includes retired purposes for historical recovery. */
+type LegacyKnowledgeProviderAttemptPurpose =
+  | KnowledgeProviderAttemptPurpose
   | "answer_citation_retry"
   | "citation_repair"
+  | "knowledge_answer_draft_v5"
+  | "knowledge_answer_draft_v6"
+  | "knowledge_grounded_selector_v2"
+  | "knowledge_grounded_selector_v3"
+  | "knowledge_grounded_selector_v4"
   | "tool_follow_up";
 
 export type KnowledgeProviderAttemptRecord = Readonly<{
+  acceptedRequest: Readonly<Record<string, unknown>> | null;
+  acceptedResult: Readonly<Record<string, unknown>> | null;
   actualUsage: KnowledgeProviderAttemptUsage | null;
   ambiguousAt: Date | null;
   checkpointHash: string;
+  contractVersion: number | null;
   dispatchedAt: Date | null;
+  evidenceReceiptHash: string | null;
   estimatedUsage: KnowledgeProviderAttemptUsage;
   failureCode: string | null;
   id: string;
@@ -77,6 +140,8 @@ export type KnowledgeProviderAttemptRecord = Readonly<{
   purpose: LegacyKnowledgeProviderAttemptPurpose;
   releasedAt: Date | null;
   requestHash: string;
+  resultAcceptedAt: Date | null;
+  resultHash: string | null;
   roundIndex: number;
   settledAt: Date | null;
   state: "ambiguous" | "dispatched" | "released" | "reserved" | "settled";
@@ -119,6 +184,15 @@ export type KnowledgeGroundingDispatchSelection =
       kind: "legacy";
     }>;
 
+export type StoredKnowledgeAnswerGroundingOperations = Readonly<{
+  coveragePlanner: StoredKnowledgeEvidenceDispatch | null;
+  draft: StoredKnowledgeEvidenceDispatch;
+  finalSelector: StoredKnowledgeEvidenceDispatch | null;
+  initialSelector: StoredKnowledgeEvidenceDispatch;
+  selector: StoredKnowledgeEvidenceDispatch;
+  supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
+}>;
+
 export type KnowledgeEvidenceDispatchRepositoryErrorCode =
   | "binding_unavailable"
   | "draft_conflict"
@@ -160,9 +234,12 @@ type AttemptIdentity = Readonly<{
 }>;
 
 export type ReserveKnowledgeEvidenceDispatchInput = Readonly<{
+  acceptedRequest?: Readonly<Record<string, unknown>>;
   checkpointHash: string;
+  contractVersion?: number;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   estimatedUsage: KnowledgeProviderAttemptUsage;
+  evidenceReceiptHash?: string;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
   idempotencyKey: string;
   leaseExpiresAt: Date;
@@ -184,9 +261,12 @@ export type DispatchKnowledgeProviderAttemptInput = AttemptIdentity & Readonly<{
 }>;
 
 export type SettleKnowledgeProviderAttemptInput = AttemptIdentity & Readonly<{
+  acceptedResult?: Readonly<Record<string, unknown>>;
   actualUsage: KnowledgeProviderAttemptUsage;
   leaseToken: string;
   providerResponseId: string | null;
+  resultAcceptedAt?: Date;
+  resultHash?: string;
   settledAt: Date;
 }>;
 
@@ -348,6 +428,79 @@ function canonicalJson(value: unknown): string {
   throw new KnowledgeEvidenceDispatchRepositoryError("invalid_input");
 }
 
+function canonicalJsonBytes(value: unknown): number {
+  return Buffer.byteLength(canonicalJson(value), "utf8");
+}
+
+function canonicalJsonHash(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+function answerOperationContractVersion(
+  purpose: LegacyKnowledgeProviderAttemptPurpose
+): number | null {
+  if (purpose === "knowledge_coverage_planner_v20" ||
+    purpose === "knowledge_answer_draft_v20" ||
+    purpose === "knowledge_answer_draft_supplement_v20") return 20;
+  if (purpose === "knowledge_answer_draft_v19" ||
+    purpose === "knowledge_answer_draft_supplement_v19") return 19;
+  if (purpose === "knowledge_answer_draft_v18" ||
+    purpose === "knowledge_answer_draft_supplement_v18") return 18;
+  if (purpose === "knowledge_answer_draft_v17" ||
+    purpose === "knowledge_answer_draft_supplement_v17") return 17;
+  if (purpose === "knowledge_answer_draft_v16" ||
+    purpose === "knowledge_answer_draft_supplement_v16") return 16;
+  if (purpose === "knowledge_answer_draft_v15" ||
+    purpose === "knowledge_answer_draft_supplement_v15") return 15;
+  if (purpose === "knowledge_answer_draft_v14" ||
+    purpose === "knowledge_answer_draft_supplement_v14") return 14;
+  if (purpose === "knowledge_answer_draft_v13" ||
+    purpose === "knowledge_answer_draft_supplement_v13") return 13;
+  if (purpose === "knowledge_answer_draft_v12" ||
+    purpose === "knowledge_answer_draft_supplement_v12") return 12;
+  if (purpose === "knowledge_answer_draft_v11") return 11;
+  if (purpose === "knowledge_answer_draft_v10") return 10;
+  if (purpose === "knowledge_answer_draft_v9") return 9;
+  if (purpose === "knowledge_answer_draft_v8") return 8;
+  if (purpose === "knowledge_grounded_selector_v16" ||
+    purpose === "knowledge_grounded_selector_final_v16") return 16;
+  if (purpose === "knowledge_grounded_selector_v15" ||
+    purpose === "knowledge_grounded_selector_final_v15") return 15;
+  if (purpose === "knowledge_grounded_selector_v14" ||
+    purpose === "knowledge_grounded_selector_final_v14") return 14;
+  if (purpose === "knowledge_grounded_selector_v13" ||
+    purpose === "knowledge_grounded_selector_final_v13") return 13;
+  if (purpose === "knowledge_grounded_selector_v12" ||
+    purpose === "knowledge_grounded_selector_final_v12") return 12;
+  if (purpose === "knowledge_grounded_selector_v11" ||
+    purpose === "knowledge_grounded_selector_final_v11") return 11;
+  if (purpose === "knowledge_grounded_selector_v10" ||
+    purpose === "knowledge_grounded_selector_final_v10") return 10;
+  if (purpose === "knowledge_grounded_selector_v9" ||
+    purpose === "knowledge_grounded_selector_final_v9") return 9;
+  if (purpose === "knowledge_grounded_selector_v8" ||
+    purpose === "knowledge_grounded_selector_final_v8") return 8;
+  if (purpose === "knowledge_grounded_selector_v7") return 7;
+  if (purpose === "knowledge_grounded_selector_v6") return 6;
+  if (purpose === "knowledge_answer_draft_v7") return 7;
+  if (purpose === "knowledge_grounded_selector_v5") return 5;
+  if (purpose === "knowledge_answer_draft_v6") return 6;
+  if (purpose === "knowledge_grounded_selector_v4") return 4;
+  if (purpose === "knowledge_answer_draft_v5") return 5;
+  if (purpose === "knowledge_grounded_selector_v3") return 3;
+  return purpose === "knowledge_grounded_selector_v2" ? 2 : null;
+}
+
+function validAcceptedJsonObject(value: unknown, maximumBytes: number):
+  value is Record<string, unknown> {
+  if (!record(value)) return false;
+  try {
+    return canonicalJsonBytes(value) <= maximumBytes;
+  } catch {
+    return false;
+  }
+}
+
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
@@ -381,7 +534,105 @@ function repositoryError(code: KnowledgeEvidenceDispatchRepositoryErrorCode): ne
 
 function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPurpose {
   return value === "answer" || value === "answer_citation_retry" ||
-    value === "citation_repair" || value === "tool_follow_up";
+    value === "citation_repair" || value === "tool_follow_up" ||
+    value === "knowledge_coverage_planner_v20" ||
+    value === "knowledge_answer_draft_v20" ||
+    value === "knowledge_answer_draft_supplement_v20" ||
+    value === "knowledge_answer_draft_v19" ||
+    value === "knowledge_answer_draft_supplement_v19" ||
+    value === "knowledge_answer_draft_v18" ||
+    value === "knowledge_answer_draft_supplement_v18" ||
+    value === "knowledge_answer_draft_v17" ||
+    value === "knowledge_answer_draft_supplement_v17" ||
+    value === "knowledge_answer_draft_v16" ||
+    value === "knowledge_answer_draft_supplement_v16" ||
+    value === "knowledge_answer_draft_v15" ||
+    value === "knowledge_answer_draft_supplement_v15" ||
+    value === "knowledge_answer_draft_v14" ||
+    value === "knowledge_answer_draft_supplement_v14" ||
+    value === "knowledge_answer_draft_v13" ||
+    value === "knowledge_answer_draft_supplement_v13" ||
+    value === "knowledge_answer_draft_v12" ||
+    value === "knowledge_answer_draft_supplement_v12" ||
+    value === "knowledge_answer_draft_v11" ||
+    value === "knowledge_answer_draft_v10" ||
+    value === "knowledge_answer_draft_v9" ||
+    value === "knowledge_answer_draft_v8" ||
+    value === "knowledge_answer_draft_v7" ||
+    value === "knowledge_answer_draft_v6" ||
+    value === "knowledge_answer_draft_v5" ||
+    value === "knowledge_grounded_selector_v2" ||
+    value === "knowledge_grounded_selector_v3" ||
+    value === "knowledge_grounded_selector_v4" ||
+    value === "knowledge_grounded_selector_v5" ||
+    value === "knowledge_grounded_selector_v16" ||
+    value === "knowledge_grounded_selector_final_v16" ||
+    value === "knowledge_grounded_selector_v15" ||
+    value === "knowledge_grounded_selector_final_v15" ||
+    value === "knowledge_grounded_selector_v14" ||
+    value === "knowledge_grounded_selector_final_v14" ||
+    value === "knowledge_grounded_selector_v13" ||
+    value === "knowledge_grounded_selector_final_v13" ||
+    value === "knowledge_grounded_selector_v12" ||
+    value === "knowledge_grounded_selector_final_v12" ||
+    value === "knowledge_grounded_selector_v11" ||
+    value === "knowledge_grounded_selector_final_v11" ||
+    value === "knowledge_grounded_selector_v10" ||
+    value === "knowledge_grounded_selector_final_v10" ||
+    value === "knowledge_grounded_selector_v9" ||
+    value === "knowledge_grounded_selector_final_v9" ||
+    value === "knowledge_grounded_selector_v8" ||
+    value === "knowledge_grounded_selector_final_v8" ||
+    value === "knowledge_grounded_selector_v7" ||
+    value === "knowledge_grounded_selector_v6";
+}
+
+function validReservationPurpose(value: unknown): value is KnowledgeProviderAttemptPurpose {
+  return value === "answer" || value === "knowledge_coverage_planner_v20" ||
+    value === "knowledge_answer_draft_v20" ||
+    value === "knowledge_answer_draft_supplement_v20" ||
+    value === "knowledge_answer_draft_v19" ||
+    value === "knowledge_answer_draft_supplement_v19" ||
+    value === "knowledge_answer_draft_v18" ||
+    value === "knowledge_answer_draft_supplement_v18" ||
+    value === "knowledge_answer_draft_v17" ||
+    value === "knowledge_answer_draft_supplement_v17" ||
+    value === "knowledge_answer_draft_v16" ||
+    value === "knowledge_answer_draft_supplement_v16" ||
+    value === "knowledge_answer_draft_v15" ||
+    value === "knowledge_answer_draft_supplement_v15" ||
+    value === "knowledge_answer_draft_v14" ||
+    value === "knowledge_answer_draft_supplement_v14" ||
+    value === "knowledge_answer_draft_v13" ||
+    value === "knowledge_answer_draft_supplement_v13" ||
+    value === "knowledge_answer_draft_v12" ||
+    value === "knowledge_answer_draft_supplement_v12" ||
+    value === "knowledge_answer_draft_v11" ||
+    value === "knowledge_answer_draft_v10" ||
+    value === "knowledge_answer_draft_v9" ||
+    value === "knowledge_answer_draft_v8" ||
+    value === "knowledge_answer_draft_v7" ||
+    value === "knowledge_grounded_selector_v16" ||
+    value === "knowledge_grounded_selector_final_v16" ||
+    value === "knowledge_grounded_selector_v15" ||
+    value === "knowledge_grounded_selector_final_v15" ||
+    value === "knowledge_grounded_selector_v14" ||
+    value === "knowledge_grounded_selector_final_v14" ||
+    value === "knowledge_grounded_selector_v13" ||
+    value === "knowledge_grounded_selector_final_v13" ||
+    value === "knowledge_grounded_selector_v12" ||
+    value === "knowledge_grounded_selector_final_v12" ||
+    value === "knowledge_grounded_selector_v11" ||
+    value === "knowledge_grounded_selector_final_v11" ||
+    value === "knowledge_grounded_selector_v10" ||
+    value === "knowledge_grounded_selector_final_v10" ||
+    value === "knowledge_grounded_selector_v9" ||
+    value === "knowledge_grounded_selector_final_v9" ||
+    value === "knowledge_grounded_selector_v8" ||
+    value === "knowledge_grounded_selector_final_v8" ||
+    value === "knowledge_grounded_selector_v7" ||
+    value === "knowledge_grounded_selector_v6" ||
+    value === "knowledge_grounded_selector_v5";
 }
 
 function validateAttemptIdentity(input: AttemptIdentity): void {
@@ -399,6 +650,18 @@ function validateReserveInput(
 }> {
   const draft = decodeKnowledgeEvidenceDispatchManifestDraft(input.draft);
   const estimatedUsage = decodeKnowledgeProviderAttemptUsage(input.estimatedUsage);
+  const contractVersion = answerOperationContractVersion(input.purpose);
+  const answerOperationSnapshotValid = contractVersion === null
+    ? input.acceptedRequest === undefined && input.contractVersion === undefined &&
+      input.evidenceReceiptHash === undefined
+    : input.contractVersion === contractVersion &&
+      input.evidenceReceiptHash === draft?.manifestHash &&
+      typeof input.evidenceReceiptHash === "string" && SHA256.test(input.evidenceReceiptHash) &&
+      validAcceptedJsonObject(
+        input.acceptedRequest,
+        KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES
+      ) &&
+      canonicalJsonHash(input.acceptedRequest) === input.requestHash;
   if (!draft || draft.version !== KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION ||
     draft.items.some((item) => "kind" in item) || !estimatedUsage ||
     !safeString(input.modelRunId) ||
@@ -407,7 +670,9 @@ function validateReserveInput(
     !SAFE_IDENTITY.test(input.idempotencyKey) || !SAFE_IDENTITY.test(input.leaseToken) ||
     !SHA256.test(input.checkpointHash) || !SHA256.test(input.requestHash) ||
     !integer(input.ordinal, 1, 256) || !integer(input.roundIndex, 0, 255) ||
-    input.purpose !== "answer" || !validDate(input.now) || !validDate(input.leaseExpiresAt) ||
+    !safeString(input.purpose, KNOWLEDGE_PROVIDER_ATTEMPT_PURPOSE_STORAGE_LIMIT) ||
+    !validReservationPurpose(input.purpose) ||
+    !answerOperationSnapshotValid || !validDate(input.now) || !validDate(input.leaseExpiresAt) ||
     input.leaseExpiresAt <= input.now || (input.evidenceBindings?.length ?? 0) > 4_096) {
     repositoryError("invalid_input");
   }
@@ -574,13 +839,27 @@ function decodeAttempt(row: AttemptRow): KnowledgeProviderAttemptRecord {
   const actualUsage = row.actualUsage === null
     ? null
     : decodeKnowledgeProviderAttemptUsage(row.actualUsage);
+  const acceptedRequest = row.acceptedRequest === null
+    ? null
+    : validAcceptedJsonObject(
+        row.acceptedRequest,
+        KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES
+      )
+      ? deepFreeze(row.acceptedRequest)
+      : repositoryError("stored_manifest_invalid");
+  const acceptedResult = row.acceptedResult === null
+    ? null
+    : validAcceptedJsonObject(row.acceptedResult, MAX_ACCEPTED_RESULT_BYTES)
+      ? deepFreeze(row.acceptedResult)
+      : repositoryError("stored_manifest_invalid");
   const dates = [
     row.createdAt,
     row.dispatchedAt,
     row.leaseExpiresAt,
     row.settledAt,
     row.releasedAt,
-    row.ambiguousAt
+    row.ambiguousAt,
+    row.resultAcceptedAt
   ];
   if (!estimatedUsage || row.actualUsage !== null && !actualUsage || !validPurpose(row.purpose) ||
     !safeString(row.id) || !safeString(row.modelRunId) ||
@@ -593,6 +872,19 @@ function decodeAttempt(row: AttemptRow): KnowledgeProviderAttemptRecord {
   if (row.providerResponseId !== null && !safeString(row.providerResponseId, 1_024)) {
     repositoryError("stored_manifest_invalid");
   }
+  const expectedContractVersion = answerOperationContractVersion(row.purpose);
+  const answerOperationSnapshotValid = expectedContractVersion === null
+    ? row.contractVersion === null && row.evidenceReceiptHash === null &&
+      acceptedRequest === null && acceptedResult === null && row.resultHash === null &&
+      row.resultAcceptedAt === null
+    : row.contractVersion === expectedContractVersion &&
+      typeof row.evidenceReceiptHash === "string" && SHA256.test(row.evidenceReceiptHash) &&
+      acceptedRequest !== null && canonicalJsonHash(acceptedRequest) === row.requestHash &&
+      (acceptedResult === null && row.resultHash === null && row.resultAcceptedAt === null ||
+        acceptedResult !== null && typeof row.resultHash === "string" &&
+        SHA256.test(row.resultHash) && canonicalJsonHash(acceptedResult) === row.resultHash &&
+        row.resultAcceptedAt !== null);
+  if (!answerOperationSnapshotValid) repositoryError("stored_manifest_invalid");
   const activeLease = row.leaseToken !== null && SAFE_IDENTITY.test(row.leaseToken) &&
     row.leaseExpiresAt !== null;
   const clearedLease = row.leaseToken === null && row.leaseExpiresAt === null;
@@ -622,12 +914,23 @@ function decodeAttempt(row: AttemptRow): KnowledgeProviderAttemptRecord {
             row.releasedAt === null && row.ambiguousAt !== null &&
             row.ambiguousAt >= row.dispatchedAt && actualUsage === null &&
             row.failureCode !== null && SAFE_REASON.test(row.failureCode);
-  if (!lifecycleValid) repositoryError("stored_manifest_invalid");
+  const answerOperationStateValid = expectedContractVersion === null || row.state === "settled"
+    ? expectedContractVersion === null || acceptedResult !== null && row.resultAcceptedAt !== null &&
+      row.dispatchedAt !== null && row.settledAt !== null &&
+      row.resultAcceptedAt >= row.dispatchedAt && row.resultAcceptedAt <= row.settledAt
+    : acceptedResult === null && row.resultAcceptedAt === null && row.resultHash === null;
+  if (!lifecycleValid || !answerOperationStateValid) {
+    repositoryError("stored_manifest_invalid");
+  }
   return deepFreeze({
+    acceptedRequest,
+    acceptedResult,
     actualUsage,
     ambiguousAt: row.ambiguousAt,
     checkpointHash: row.checkpointHash,
+    contractVersion: row.contractVersion,
     dispatchedAt: row.dispatchedAt,
+    evidenceReceiptHash: row.evidenceReceiptHash,
     estimatedUsage,
     failureCode: row.failureCode,
     id: row.id,
@@ -641,6 +944,8 @@ function decodeAttempt(row: AttemptRow): KnowledgeProviderAttemptRecord {
     purpose: row.purpose,
     releasedAt: row.releasedAt,
     requestHash: row.requestHash,
+    resultAcceptedAt: row.resultAcceptedAt,
+    resultHash: row.resultHash,
     roundIndex: row.roundIndex,
     settledAt: row.settledAt,
     state: row.state
@@ -814,12 +1119,17 @@ function storedDispatch(row: AttemptRow): StoredKnowledgeEvidenceDispatch {
   if (!draft || manifest.version !== draft.version ||
     manifest.version !== KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION &&
       manifest.version !== LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION ||
-    manifest.packingVersion !== KNOWLEDGE_EVIDENCE_PACKING_VERSION ||
+    !isKnowledgeEvidencePackingVersion(manifest.packingVersion) ||
     manifest.shortenedCount !== items.filter((item) => item.representation !== "full").length) {
     repositoryError("stored_manifest_invalid");
   }
+  const attempt = decodeAttempt(row);
+  if (answerOperationContractVersion(attempt.purpose) !== null &&
+    attempt.evidenceReceiptHash !== draft.manifestHash) {
+    repositoryError("stored_manifest_invalid");
+  }
   return deepFreeze({
-    attempt: decodeAttempt(row),
+    attempt,
     draft,
     exclusions: exclusionBindings,
     manifestId: manifest.id,
@@ -881,6 +1191,123 @@ export async function loadFinalKnowledgeGroundingDispatch(
     repositoryError("stored_manifest_invalid");
   }
   return deepFreeze({ dispatch, kind: "current" });
+}
+
+/** Loads one settled version-paired answer protocol over byte-identical
+ * evidence. Adaptive pairs may add a supplement and final Selector. V15/V11
+ * may instead use the final Selector slot as ordinal-three validation repair,
+ * without a supplemental Draft. */
+export async function loadSettledKnowledgeAnswerGroundingOperations(
+  client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
+  input: Readonly<{ contractPair: KnowledgeAnswerContractPair; modelRunId: string }>
+): Promise<StoredKnowledgeAnswerGroundingOperations> {
+  if (!safeString(input.modelRunId)) repositoryError("invalid_input");
+  const expectedPurposes: KnowledgeProviderAttemptPurpose[] = [
+    ...(input.contractPair.coveragePlannerOperation
+      ? [input.contractPair.coveragePlannerOperation]
+      : []),
+    input.contractPair.draftOperation,
+    input.contractPair.selectorOperation
+  ];
+  if (input.contractPair.supplementalDraftOperation) {
+    expectedPurposes.push(input.contractPair.supplementalDraftOperation);
+  }
+  if (input.contractPair.finalSelectorOperation) {
+    expectedPurposes.push(input.contractPair.finalSelectorOperation);
+  }
+  const rows = await client.knowledgeProviderAttempt.findMany({
+    include: attemptInclude,
+    orderBy: { ordinal: "asc" },
+    where: {
+      modelRunId: input.modelRunId,
+      purpose: {
+        in: expectedPurposes
+      }
+    }
+  });
+  const minimumOperations = input.contractPair.coveragePlannerOperation ? 3 : 2;
+  if (rows.length < minimumOperations || rows.length > expectedPurposes.length) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const dispatches = rows.map(storedDispatch);
+  const purposeSequence = dispatches.map((dispatch) => dispatch.attempt.purpose);
+  const basePurposeSequence: KnowledgeProviderAttemptPurpose[] = [
+    ...(input.contractPair.coveragePlannerOperation
+      ? [input.contractPair.coveragePlannerOperation]
+      : []),
+    input.contractPair.draftOperation,
+    input.contractPair.selectorOperation
+  ];
+  const allowedPurposeSequences: KnowledgeProviderAttemptPurpose[][] = [basePurposeSequence];
+  if (input.contractPair.supplementalDraftOperation) {
+    allowedPurposeSequences.push([
+      ...basePurposeSequence,
+      input.contractPair.supplementalDraftOperation
+    ]);
+    if (input.contractPair.finalSelectorOperation) {
+      allowedPurposeSequences.push([
+        ...basePurposeSequence,
+        input.contractPair.supplementalDraftOperation,
+        input.contractPair.finalSelectorOperation
+      ]);
+    }
+  }
+  if ((input.contractPair.draftContractVersion === 20 &&
+    input.contractPair.selectorContractVersion === 16 ||
+    input.contractPair.draftContractVersion === 19 &&
+    input.contractPair.selectorContractVersion === 15 ||
+    input.contractPair.draftContractVersion === 18 &&
+    input.contractPair.selectorContractVersion === 14 ||
+    input.contractPair.draftContractVersion === 17 &&
+    input.contractPair.selectorContractVersion === 13 ||
+    input.contractPair.draftContractVersion === 16 &&
+    input.contractPair.selectorContractVersion === 12 ||
+    input.contractPair.draftContractVersion === 15 &&
+    input.contractPair.selectorContractVersion === 11) &&
+    input.contractPair.finalSelectorOperation) {
+    allowedPurposeSequences.push([
+      ...basePurposeSequence,
+      input.contractPair.finalSelectorOperation
+    ]);
+  }
+  if (!allowedPurposeSequences.some((sequence) =>
+    canonicalJson(sequence) === canonicalJson(purposeSequence))) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const requests = dispatches.map((dispatch) =>
+    decodeKnowledgeAnswerOperationRequestSnapshotV1(dispatch.attempt.acceptedRequest));
+  const terminal = (dispatch: StoredKnowledgeEvidenceDispatch) =>
+    dispatch.attempt.state === "settled" && dispatch.attempt.actualUsage !== null &&
+    dispatch.attempt.acceptedResult !== null && dispatch.attempt.dispatchedAt !== null &&
+    dispatch.attempt.settledAt !== null && dispatch.attempt.resultAcceptedAt !== null;
+  const canonicalManifest = canonicalJson(dispatches[0]!.draft);
+  if (dispatches.some((dispatch, index) =>
+    dispatch.attempt.ordinal !== index + 1 ||
+    dispatch.attempt.providerBindingKey !== "answer" ||
+    !terminal(dispatch) || !requests[index] ||
+    requests[index]!.operation !== purposeSequence[index] ||
+    requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
+    canonicalJson(dispatch.draft) !== canonicalManifest)) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const coveragePlanner = input.contractPair.coveragePlannerOperation
+    ? dispatches[0]!
+    : null;
+  const draftIndex = coveragePlanner ? 1 : 0;
+  const draft = dispatches[draftIndex]!;
+  const initialSelector = dispatches[draftIndex + 1]!;
+  const supplementalDraft = dispatches.find((dispatch) =>
+    dispatch.attempt.purpose === input.contractPair.supplementalDraftOperation) ?? null;
+  const finalSelector = dispatches.find((dispatch) =>
+    dispatch.attempt.purpose === input.contractPair.finalSelectorOperation) ?? null;
+  return deepFreeze({
+    coveragePlanner,
+    draft,
+    finalSelector,
+    initialSelector,
+    selector: finalSelector ?? initialSelector,
+    supplementalDraft
+  });
 }
 
 function assertAttemptIdentity(row: AttemptRow, input: AttemptIdentity): void {
@@ -1272,6 +1699,9 @@ function assertReuse(
     row.ordinal !== input.ordinal || row.roundIndex !== input.roundIndex ||
     row.purpose !== input.purpose || row.idempotencyKey !== input.idempotencyKey ||
     row.checkpointHash !== input.checkpointHash || row.requestHash !== input.requestHash ||
+    row.contractVersion !== (input.contractVersion ?? null) ||
+    row.evidenceReceiptHash !== (input.evidenceReceiptHash ?? null) ||
+    canonicalJson(row.acceptedRequest) !== canonicalJson(input.acceptedRequest ?? null) ||
     !sameUsage(row.estimatedUsage, usage)) repositoryError("idempotency_conflict");
   const stored = storedDispatch(row);
   if (stored.retrievalSessionId !== retrievalSessionId ||
@@ -1359,7 +1789,16 @@ export function createPrismaKnowledgeEvidenceDispatchRepository(
         );
         const created = await tx.knowledgeProviderAttempt.create({
           data: {
+            ...(input.acceptedRequest
+              ? { acceptedRequest: json(input.acceptedRequest) }
+              : {}),
             checkpointHash: input.checkpointHash,
+            ...(input.contractVersion !== undefined
+              ? { contractVersion: input.contractVersion }
+              : {}),
+            ...(input.evidenceReceiptHash
+              ? { evidenceReceiptHash: input.evidenceReceiptHash }
+              : {}),
             estimatedUsage: json(validated.estimatedUsage),
             idempotencyKey: input.idempotencyKey,
             leaseExpiresAt: input.leaseExpiresAt,
@@ -1650,30 +2089,55 @@ export function createPrismaKnowledgeEvidenceDispatchRepository(
       input: SettleKnowledgeProviderAttemptInput
     ): Promise<KnowledgeProviderAttemptTransition> {
       const usage = decodeKnowledgeProviderAttemptUsage(input.actualUsage);
+      const acceptedResult = input.acceptedResult === undefined
+        ? null
+        : validAcceptedJsonObject(input.acceptedResult, MAX_ACCEPTED_RESULT_BYTES)
+          ? input.acceptedResult
+          : repositoryError("invalid_input");
+      const resultSnapshotValid = acceptedResult === null
+        ? input.resultHash === undefined && input.resultAcceptedAt === undefined
+        : typeof input.resultHash === "string" && SHA256.test(input.resultHash) &&
+          canonicalJsonHash(acceptedResult) === input.resultHash &&
+          validDate(input.resultAcceptedAt);
       if (!usage || !SAFE_IDENTITY.test(input.leaseToken) || !validDate(input.settledAt) ||
+        !resultSnapshotValid ||
         input.providerResponseId !== null && !safeString(input.providerResponseId, 1_024)) {
         repositoryError("invalid_input");
       }
       return serializable(client, async (tx) => {
         const current = await findAttempt(tx, input);
+        if (!validPurpose(current.purpose)) repositoryError("stored_manifest_invalid");
+        const answerOperation = answerOperationContractVersion(current.purpose) !== null;
+        if (answerOperation !== (acceptedResult !== null)) {
+          repositoryError("invalid_input");
+        }
         if (current.state === "settled") {
           if (!sameUsage(current.actualUsage, usage) ||
-            current.providerResponseId !== input.providerResponseId) {
+            current.providerResponseId !== input.providerResponseId ||
+            canonicalJson(current.acceptedResult) !== canonicalJson(acceptedResult) ||
+            current.resultHash !== (input.resultHash ?? null) ||
+            current.resultAcceptedAt?.valueOf() !== input.resultAcceptedAt?.valueOf()) {
             repositoryError("idempotency_conflict");
           }
           return { attempt: decodeAttempt(current), kind: "idempotent" };
         }
         if (current.state !== "dispatched") repositoryError("invalid_state");
         if (current.leaseToken !== input.leaseToken) repositoryError("lease_conflict");
-        if (!current.dispatchedAt || input.settledAt < current.dispatchedAt) {
+        if (!current.dispatchedAt || input.settledAt < current.dispatchedAt ||
+          input.resultAcceptedAt !== undefined &&
+            (input.resultAcceptedAt < current.dispatchedAt ||
+              input.resultAcceptedAt > input.settledAt)) {
           repositoryError("invalid_input");
         }
         const updated = await tx.knowledgeProviderAttempt.updateMany({
           data: {
+            ...(acceptedResult ? { acceptedResult: json(acceptedResult) } : {}),
             actualUsage: json(usage),
             leaseExpiresAt: null,
             leaseToken: null,
             providerResponseId: input.providerResponseId,
+            ...(input.resultAcceptedAt ? { resultAcceptedAt: input.resultAcceptedAt } : {}),
+            ...(input.resultHash ? { resultHash: input.resultHash } : {}),
             settledAt: input.settledAt,
             state: "settled"
           },

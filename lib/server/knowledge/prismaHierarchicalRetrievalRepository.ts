@@ -2,9 +2,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
   knowledgeExactNormalizedValue,
-  KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,
-  type KnowledgeExactEntryKind,
-  type KnowledgeLexicalLanguage
+  KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS,
+  type KnowledgeExactEntryKind
 } from "./hierarchicalIndex";
 import {
   decodeKnowledgeExactCursor,
@@ -34,15 +33,7 @@ import type {
 
 type HierarchicalRetrievalClient = Pick<PrismaClient, "$queryRaw" | "$transaction">;
 
-const lexicalLanguages = new Set<KnowledgeLexicalLanguage>([
-  "english",
-  "mixed",
-  "russian",
-  "unknown"
-]);
 const lexicalFields = new Set<KnowledgeLexicalMatchedField>([
-  "body",
-  "context",
   "description",
   "entities",
   "filename",
@@ -97,9 +88,16 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Ready compatible hierarchical index versions; each artifact contributes
+ * exactly one index (the highest compatible ready version) so pre-cutover
+ * version-3 rows stay retrievable without ever double-counting an artifact. */
+const compatibleIndexVersionsSql = Prisma.sql`ANY(ARRAY[${Prisma.join([
+  ...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS
+])}]::integer[])`;
+
 function authorizedArtifactsSql(scope: KnowledgeHierarchicalScope): Prisma.Sql {
   if (scope.scopeKind === "admitted_run") return Prisma.sql`
-    SELECT DISTINCT
+    SELECT DISTINCT ON (source_artifact."id")
       hierarchy."id" AS "indexArtifactId",
       source_artifact."id" AS "sourceArtifactId"
     FROM "ModelRun" AS run
@@ -119,12 +117,13 @@ function authorizedArtifactsSql(scope: KnowledgeHierarchicalScope): Prisma.Sql {
     WHERE run."id" = ${scope.runId}
       AND run."userId" = ${scope.userId}
       AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-      AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
+      AND hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
       AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
       AND source_artifact."id" IN (${Prisma.join([...scope.sourceArtifactIds])})
+    ORDER BY source_artifact."id", hierarchy."schemaVersion" DESC
   `;
   return Prisma.sql`
-    SELECT
+    SELECT DISTINCT ON (source_artifact."id")
       hierarchy."id" AS "indexArtifactId",
       source_artifact."id" AS "sourceArtifactId"
     FROM "KnowledgeHierarchicalIndexArtifact" AS hierarchy
@@ -136,10 +135,11 @@ function authorizedArtifactsSql(scope: KnowledgeHierarchicalScope): Prisma.Sql {
     INNER JOIN "KnowledgeSource" AS source
       ON source."id" = version."sourceId"
     WHERE hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-      AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
+      AND hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
       AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
       AND source."ownerUserId" = ${scope.ownerUserId}
       AND source_artifact."id" IN (${Prisma.join([...scope.sourceArtifactIds])})
+    ORDER BY source_artifact."id", hierarchy."schemaVersion" DESC
   `;
 }
 
@@ -153,7 +153,6 @@ function indexedRowsSql(level: KnowledgeLexicalTargetLevel): Prisma.Sql {
       NULL::integer AS "page",
       NULL::integer AS "pageEnd",
       NULL::text AS "text",
-      item."languageConfig",
       item."fileName" AS "filenameField",
       item."sourceName" AS "sourceNameField",
       COALESCE(item."title", '') AS "titleField",
@@ -163,16 +162,12 @@ function indexedRowsSql(level: KnowledgeLexicalTargetLevel): Prisma.Sql {
       item."entitiesText" AS "entitiesField",
       item."description" AS "descriptionField",
       item."summary" AS "summaryField",
-      ''::text AS "contextField",
-      ''::text AS "bodyField",
-      item."simpleSearchVector",
-      item."englishSearchVector",
-      item."russianSearchVector"
+      item."simpleSearchVector"
     FROM "KnowledgeArtifactDocumentIndex" AS item
     INNER JOIN authorized_artifacts AS authorized
       ON authorized."indexArtifactId" = item."indexArtifactId"
   `;
-  if (level === "section") return Prisma.sql`
+  return Prisma.sql`
     SELECT
       authorized."sourceArtifactId",
       item."indexArtifactId",
@@ -181,7 +176,6 @@ function indexedRowsSql(level: KnowledgeLexicalTargetLevel): Prisma.Sql {
       item."page",
       item."pageEnd",
       NULL::text AS "text",
-      item."languageConfig",
       item."fileName" AS "filenameField",
       ''::text AS "sourceNameField",
       item."documentTitle" AS "titleField",
@@ -191,51 +185,17 @@ function indexedRowsSql(level: KnowledgeLexicalTargetLevel): Prisma.Sql {
       item."entitiesText" AS "entitiesField",
       item."sourceDescription" AS "descriptionField",
       item."summary" AS "summaryField",
-      ''::text AS "contextField",
-      ''::text AS "bodyField",
-      item."simpleSearchVector",
-      item."englishSearchVector",
-      item."russianSearchVector"
+      item."simpleSearchVector"
     FROM "KnowledgeArtifactSectionIndex" AS item
-    INNER JOIN authorized_artifacts AS authorized
-      ON authorized."indexArtifactId" = item."indexArtifactId"
-  `;
-  return Prisma.sql`
-    SELECT
-      authorized."sourceArtifactId",
-      item."indexArtifactId",
-      item."id" AS "targetId",
-      COALESCE(NULLIF(item."headingPath"[cardinality(item."headingPath")], ''), item."fileName") AS "label",
-      item."page",
-      item."pageEnd",
-      item."text",
-      item."languageConfig",
-      item."fileName" AS "filenameField",
-      item."sourceName" AS "sourceNameField",
-      item."documentTitle" AS "titleField",
-      item."headingText" AS "headingField",
-      item."tagsText" AS "tagsField",
-      ''::text AS "keywordsField",
-      ''::text AS "entitiesField",
-      item."sourceDescription" AS "descriptionField",
-      ''::text AS "summaryField",
-      item."contextPrefix" AS "contextField",
-      item."text" AS "bodyField",
-      item."simpleSearchVector",
-      item."englishSearchVector",
-      item."russianSearchVector"
-    FROM "KnowledgeArtifactPassageIndex" AS item
     INNER JOIN authorized_artifacts AS authorized
       ON authorized."indexArtifactId" = item."indexArtifactId"
   `;
 }
 
 function fieldMatches(field: Prisma.Sql): Prisma.Sql {
-  return Prisma.sql`(
+  return Prisma.sql`
     to_tsvector('simple'::regconfig, COALESCE(${field}, '')) @@ candidate."simpleQuery"
-    OR to_tsvector('english'::regconfig, COALESCE(${field}, '')) @@ candidate."englishQuery"
-    OR to_tsvector('russian'::regconfig, COALESCE(${field}, '')) @@ candidate."russianQuery"
-  )`;
+  `;
 }
 
 function matchedFieldsSql(): Prisma.Sql {
@@ -248,9 +208,7 @@ function matchedFieldsSql(): Prisma.Sql {
     ["keywords", Prisma.sql`candidate."keywordsField"`],
     ["entities", Prisma.sql`candidate."entitiesField"`],
     ["description", Prisma.sql`candidate."descriptionField"`],
-    ["summary", Prisma.sql`candidate."summaryField"`],
-    ["context", Prisma.sql`candidate."contextField"`],
-    ["body", Prisma.sql`candidate."bodyField"`]
+    ["summary", Prisma.sql`candidate."summaryField"`]
   ];
   return Prisma.sql`array_remove(ARRAY[${Prisma.join(fields.map(([name, field]) =>
     Prisma.sql`CASE WHEN ${fieldMatches(field)} THEN ${name}::text ELSE NULL::text END`
@@ -272,42 +230,22 @@ export function knowledgeHierarchicalLexicalSearchSql(input: Readonly<{
     query_terms AS (
       SELECT
         websearch_to_tsquery('simple'::regconfig, ${input.query}) AS "simpleStrictQuery",
-        websearch_to_tsquery('english'::regconfig, ${input.query}) AS "englishStrictQuery",
-        websearch_to_tsquery('russian'::regconfig, ${input.query}) AS "russianStrictQuery",
         to_tsquery(
           'simple'::regconfig,
           replace(plainto_tsquery('simple'::regconfig, ${input.query})::text, ' & ', ' | ')
-        ) AS "simpleQuery",
-        to_tsquery(
-          'english'::regconfig,
-          replace(plainto_tsquery('english'::regconfig, ${input.query})::text, ' & ', ' | ')
-        ) AS "englishQuery",
-        to_tsquery(
-          'russian'::regconfig,
-          replace(plainto_tsquery('russian'::regconfig, ${input.query})::text, ' & ', ' | ')
-        ) AS "russianQuery"
+        ) AS "simpleQuery"
     ),
     indexed AS (${indexed}),
     candidates AS MATERIALIZED (
       SELECT
         indexed.*,
         query_terms."simpleQuery",
-        query_terms."englishQuery",
-        query_terms."russianQuery",
         ts_rank_cd(indexed."simpleSearchVector", query_terms."simpleQuery") +
           CASE WHEN indexed."simpleSearchVector" @@ query_terms."simpleStrictQuery"
-            THEN 1 ELSE 0 END AS "simpleRank",
-        ts_rank_cd(indexed."englishSearchVector", query_terms."englishQuery") +
-          CASE WHEN indexed."englishSearchVector" @@ query_terms."englishStrictQuery"
-            THEN 1 ELSE 0 END AS "englishRank",
-        ts_rank_cd(indexed."russianSearchVector", query_terms."russianQuery") +
-          CASE WHEN indexed."russianSearchVector" @@ query_terms."russianStrictQuery"
-            THEN 1 ELSE 0 END AS "russianRank"
+            THEN 1 ELSE 0 END AS "rank"
       FROM indexed
       CROSS JOIN query_terms
       WHERE indexed."simpleSearchVector" @@ query_terms."simpleQuery"
-        OR indexed."englishSearchVector" @@ query_terms."englishQuery"
-        OR indexed."russianSearchVector" @@ query_terms."russianQuery"
     )
     SELECT
       candidate."sourceArtifactId",
@@ -317,14 +255,7 @@ export function knowledgeHierarchicalLexicalSearchSql(input: Readonly<{
       candidate."page",
       candidate."pageEnd",
       candidate."text",
-      candidate."languageConfig",
-      GREATEST(candidate."simpleRank", candidate."englishRank", candidate."russianRank") AS "rank",
-      CASE
-        WHEN candidate."simpleRank" >= candidate."englishRank"
-          AND candidate."simpleRank" >= candidate."russianRank" THEN 'simple'
-        WHEN candidate."russianRank" >= candidate."englishRank" THEN 'russian'
-        ELSE 'english'
-      END AS "queryVariant",
+      candidate."rank",
       ${matchedFields} AS "matchedFields"
     FROM candidates AS candidate
     ORDER BY "rank" DESC, candidate."sourceArtifactId", candidate."targetId"
@@ -342,9 +273,6 @@ function decodeLexicalHit(value: unknown, level: KnowledgeLexicalTargetLevel): K
     typeof value.indexArtifactId !== "string" || !value.indexArtifactId ||
     typeof value.targetId !== "string" || !value.targetId ||
     typeof value.label !== "string" || !value.label ||
-    typeof value.languageConfig !== "string" ||
-    !lexicalLanguages.has(value.languageConfig as KnowledgeLexicalLanguage) ||
-    !["english", "russian", "simple"].includes(String(value.queryVariant)) ||
     rank === null || rank < 0 ||
     !Array.isArray(value.matchedFields) ||
     value.matchedFields.some((field) =>
@@ -356,12 +284,10 @@ function decodeLexicalHit(value: unknown, level: KnowledgeLexicalTargetLevel): K
   return Object.freeze({
     indexArtifactId: value.indexArtifactId,
     label: value.label,
-    languageConfig: value.languageConfig as KnowledgeLexicalLanguage,
     level,
     matchedFields: Object.freeze(value.matchedFields as KnowledgeLexicalMatchedField[]),
     page,
     pageEnd,
-    queryVariant: value.queryVariant as "english" | "russian" | "simple",
     rank,
     sourceArtifactId: value.sourceArtifactId,
     targetId: value.targetId,
@@ -973,8 +899,7 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
         (tx) => tx.$queryRaw<unknown[]>(sql)
       );
       return decodeExactPage(rows[0], { limit, offset, operation });
-    },
-    searchPassages: (input) => lexical("passage", input)
+    }
   };
 }
 

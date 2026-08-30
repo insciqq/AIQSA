@@ -53,7 +53,7 @@ function candidate(input: Readonly<{
     layoutKind: "body",
     page: 1,
     sectionId: `section-${input.chunkId}`,
-    signals: input.signals ?? [signal("passage_lexical", 1)],
+    signals: input.signals ?? [signal("passage_bm25", 1)],
     sourceArtifactId: input.artifactId ?? `artifact-${source}`,
     sourceName: source,
     text: `Evidence ${input.chunkId}`
@@ -65,7 +65,7 @@ describe("Knowledge retrieval ranking", () => {
     const candidates = Array.from({ length: 1_200 }, (_, index) => candidate({
       bindingOrdinal: index % 3,
       chunkId: `dense-${index}`,
-      signals: [signal("passage_lexical", index + 1)]
+      signals: [signal("passage_bm25", index + 1)]
     }));
     const bounded = boundKnowledgeCandidates(candidates, 3);
     const counts = [0, 1, 2].map((bindingOrdinal) =>
@@ -77,11 +77,11 @@ describe("Knowledge retrieval ranking", () => {
   it("uses each lane's best signal once in weighted RRF", () => {
     const [fused] = fuseKnowledgeCandidates([candidate({
       chunkId: "c1",
-      signals: [signal("passage_lexical", 1), signal("passage_lexical", 2), signal("exact", 3)]
+      signals: [signal("passage_bm25", 1), signal("passage_bm25", 2), signal("exact", 3)]
     })]);
     const [single] = fuseKnowledgeCandidates([candidate({
       chunkId: "c2",
-      signals: [signal("passage_lexical", 1)]
+      signals: [signal("passage_bm25", 1)]
     })]);
     expect(fused!.fusedScore).toBeGreaterThan(single!.fusedScore);
   });
@@ -119,7 +119,7 @@ describe("Knowledge retrieval ranking", () => {
       candidates: [
         candidate({
           chunkId: "weak-lexical",
-          signals: [signal("passage_lexical", 1, {
+          signals: [signal("document_lexical", 1, {
             rawScore: KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR - 0.001
           })]
         }),
@@ -147,6 +147,17 @@ describe("Knowledge retrieval ranking", () => {
     expect(result.evidence.candidateOrder).toEqual(["exact"]);
   });
 
+  it("retains positive OpenSearch BM25 hits without an absolute score floor", async () => {
+    const result = await rankKnowledgeCandidates({
+      candidates: [candidate({
+        chunkId: "bm25-hit",
+        signals: [signal("passage_bm25", 1, { rawScore: 0.001 })]
+      })],
+      resultLimit: 8
+    });
+    expect(result.selected.map((entry) => entry.chunkId)).toEqual(["bm25-hit"]);
+  });
+
   it("returns an ordinary empty ranking when every generated candidate is irrelevant", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [candidate({
@@ -171,7 +182,7 @@ describe("Knowledge retrieval ranking", () => {
           source: "a",
           signals: [signal("exact", index + 1)]
         })),
-        candidate({ chunkId: "b1", source: "b", signals: [signal("passage_lexical", 1)] })
+        candidate({ chunkId: "b1", source: "b", signals: [signal("passage_bm25", 1)] })
       ],
       resultLimit: 8
     });
@@ -215,7 +226,7 @@ describe("Knowledge retrieval ranking", () => {
           chunkId: "b-1",
           source: "b",
           sourceId: "source-b",
-          signals: [signal("passage_lexical", 1)]
+          signals: [signal("passage_bm25", 1)]
         })
       ],
       resultLimit: 8
@@ -238,7 +249,7 @@ describe("Knowledge retrieval ranking", () => {
           chunkId: `a${index}`,
           contentHash: index === 7 ? "hash-a6" : `hash-a${index}`,
           source: "a",
-          signals: [signal("passage_lexical", index + 1)]
+          signals: [signal("passage_bm25", index + 1)]
         })),
         candidate({ chunkId: "neighbor", source: "a", signals: [signal("neighbor", 1)] })
       ],

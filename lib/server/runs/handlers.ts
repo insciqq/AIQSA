@@ -289,6 +289,7 @@ async function acceptedRuntimeBinding(
 ): Promise<{
   adapter: ProviderAdapter;
   searchRuntimes: Record<string, ProviderRuntimeBinding>;
+  structuredOutputAdapter?: ProviderRuntimeBinding["structuredOutputAdapter"];
   toolBridge?: ProviderToolBridge;
 } | null> {
   if (!deps.providerRuntime) {
@@ -311,6 +312,9 @@ async function acceptedRuntimeBinding(
   return {
     adapter: answer.adapter,
     searchRuntimes,
+    ...(answer.structuredOutputAdapter
+      ? { structuredOutputAdapter: answer.structuredOutputAdapter }
+      : {}),
     ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
   };
 }
@@ -555,6 +559,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
+      ...(runtime?.structuredOutputAdapter
+        ? { structuredOutputAdapter: runtime.structuredOutputAdapter }
+        : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
@@ -706,6 +713,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
+      ...(runtime?.structuredOutputAdapter
+        ? { structuredOutputAdapter: runtime.structuredOutputAdapter }
+        : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });

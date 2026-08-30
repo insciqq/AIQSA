@@ -586,7 +586,7 @@ export function createAdminKnowledgeProfileService(
         ...(active?.pdfProcessingMode === "system_model_direct_pdf"
           ? ["original_pdf_page_ranges" as const]
           : active?.pdfProcessingMode === "system_model_vision"
-            ? ["rendered_pdf_page_images" as const]
+            ? ["rendered_pdf_page_images" as const, "native_pdf_page_text" as const]
             : [])
       ];
       return {

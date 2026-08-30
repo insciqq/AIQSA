@@ -964,6 +964,10 @@ model SystemModelPolicy {
   id                      String         @id
   providerModelId         String?
   rerankerProviderModelId String?
+  /// Set only by an explicit administrator save or clear of the reranker role.
+  /// NULL means the role was never configured, which permits one-time
+  /// fresh-install default adoption; automatic adoption keeps it NULL.
+  rerankerConfiguredAt    DateTime?
   reasoningEffort         String?        @db.VarChar(32)
   version                 Int            @default(1)
   updatedByUserId         String?
@@ -981,6 +985,7 @@ model SystemModelPolicy {
 model KnowledgeAnswerPolicy {
   id                       String   @id
   maximumKnowledgeSearches Int      @default(12)
+  ingestionParallelism     Int      @default(8)
   version                  Int      @default(1)
   updatedByUserId          String?
   createdAt                DateTime @default(now())
@@ -1122,6 +1127,16 @@ enum KnowledgeHierarchicalIndexState {
   building
   ready
   failed
+}
+
+enum KnowledgeSearchProjectionState {
+  PENDING
+  BUILDING
+  READY
+  RETRY_WAIT
+  FAILED
+  DELETING
+  DELETED
 }
 
 enum KnowledgeExactEntryKind {
@@ -1625,6 +1640,7 @@ model KnowledgeSourceIndexArtifact {
   id                       String                                  @id @default(uuid())
   sourceVersionId          String
   profileRevisionId        String
+  processingGeneration     Int                                     @default(0)
   state                    KnowledgeSourceArtifactState            @default(pending)
   processingStage          KnowledgeSourceArtifactProcessingStage?
   normalizedTextStorageKey String?
@@ -1662,6 +1678,7 @@ model KnowledgePdfProcessingAttempt {
   id               String                             @id @default(uuid())
   sourceArtifactId String
   sourceVersionId  String
+  processingGeneration Int                            @default(0)
   batchIndex       Int
   mode             KnowledgePdfProcessingMode
   pageStart        Int
@@ -1678,7 +1695,7 @@ model KnowledgePdfProcessingAttempt {
   sourceArtifact   KnowledgeSourceIndexArtifact       @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgePdfAttempt_source_artifact_fkey")
   usageEvent       UsageEvent?
 
-  @@unique([sourceArtifactId, batchIndex])
+  @@unique([sourceArtifactId, processingGeneration, batchIndex], map: "KnowledgePdfAttempt_artifact_generation_batch_key")
   @@index([sourceVersionId, sourceArtifactId], map: "KnowledgePdfAttempt_source_artifact_idx")
   @@index([state, updatedAt])
 }
@@ -1704,10 +1721,35 @@ model KnowledgeHierarchicalIndexArtifact {
   sectionIndexes   KnowledgeArtifactSectionIndex[]
   passageIndexes   KnowledgeArtifactPassageIndex[]
   exactEntries     KnowledgeArtifactExactEntry[]
+  searchProjection KnowledgeSearchProjection?
 
   @@unique([sourceArtifactId, schemaVersion], map: "KHI_source_artifact_version_key")
   @@index([sourceVersionId, sourceArtifactId], map: "KHI_source_version_artifact_idx")
   @@index([state, schemaVersion, createdAt], map: "KHI_state_version_created_idx")
+}
+
+model KnowledgeSearchProjection {
+  id                       String                         @id @default(uuid()) @db.Uuid
+  indexArtifactId          String                         @unique
+  backendKind              String                         @db.VarChar(32)
+  mappingVersion           Int
+  projectionFingerprint    String                         @db.Char(64)
+  state                    KnowledgeSearchProjectionState @default(PENDING)
+  expectedPassageCount     Int
+  indexedPassageCount      Int                            @default(0)
+  attemptCount             Int                            @default(0)
+  claimToken               String?                        @db.VarChar(128)
+  leaseExpiresAt           DateTime?
+  nextAttemptAt            DateTime                       @default(now())
+  lastErrorCode            String?                        @db.VarChar(64)
+  startedAt                DateTime?
+  readyAt                  DateTime?
+  deleteCompletedAt        DateTime?
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
+  indexArtifact            KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([state, nextAttemptAt, leaseExpiresAt, createdAt], map: "KnowledgeSearchProjection_queue_idx")
 }
 
 model KnowledgeArtifactDocumentIndex {
@@ -1719,7 +1761,6 @@ model KnowledgeArtifactDocumentIndex {
   tags                String[]                           @default([])
   tagsText            String                             @default("")
   languages           String[]                           @default([])
-  languageConfig      String                             @db.VarChar(16)
   documentType        String                             @db.VarChar(255)
   pageCount           Int
   summary             String                             @default("")
@@ -1732,8 +1773,6 @@ model KnowledgeArtifactDocumentIndex {
   metadataText        String                             @default("")
   contentHash         String                             @db.Char(64)
   simpleSearchVector  Unsupported("tsvector")?
-  englishSearchVector Unsupported("tsvector")?
-  russianSearchVector Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KADI_index_artifact_fkey")
 }
@@ -1753,7 +1792,6 @@ model KnowledgeArtifactSectionIndex {
   entities            String[]                           @default([])
   entitiesText        String                             @default("")
   languages           String[]                           @default([])
-  languageConfig      String                             @db.VarChar(16)
   passageStart        Int
   passageEnd          Int
   fileName            String
@@ -1763,8 +1801,6 @@ model KnowledgeArtifactSectionIndex {
   tagsText            String                             @default("")
   contentHash         String                             @db.Char(64)
   simpleSearchVector  Unsupported("tsvector")?
-  englishSearchVector Unsupported("tsvector")?
-  russianSearchVector Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KASI_index_artifact_fkey")
   passages            KnowledgeArtifactPassageIndex[]
@@ -1787,6 +1823,9 @@ model KnowledgeArtifactPassageIndex {
   text                String
   contextPrefix       String                             @default("")
   documentContext     Json?
+  /// Structured layout identity for current builds; legacy rows resolve layout
+  /// from documentContext or the retired contextPrefix markers at read time.
+  layoutKind          String?                            @db.VarChar(32)
   fileName            String
   sourceName          String
   documentTitle       String                             @default("")
@@ -1794,16 +1833,12 @@ model KnowledgeArtifactPassageIndex {
   tags                String[]                           @default([])
   tagsText            String                             @default("")
   languages           String[]                           @default([])
-  languageConfig      String                             @db.VarChar(16)
   contentHash         String                             @db.Char(64)
   embeddingTextHash   String                             @db.Char(64)
   sourceBlockStart    Int
   sourceBlockEnd      Int
   sourceBlockIds      String[]                           @default([])
   tokenCount          Int
-  simpleSearchVector  Unsupported("tsvector")?
-  englishSearchVector Unsupported("tsvector")?
-  russianSearchVector Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAPI_index_artifact_fkey")
   section             KnowledgeArtifactSectionIndex      @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageIndex_section_fkey")
@@ -2873,6 +2908,7 @@ model KnowledgeRun {
   durationMs          Int
   failureCode         String?                     @db.VarChar(128)
   budgetEvidence      Json                        @default("{}")
+  lexicalBackendEvidence Json?
   readReceipt         Json?
   receiptVersion      Int?
   budgetReservationId String?                     @unique
@@ -3005,31 +3041,37 @@ model KnowledgeBudgetReservation {
 }
 
 model KnowledgeProviderAttempt {
-  id                 String                             @id @default(uuid())
-  modelRunId         String
-  providerBindingKey String                             @default("answer")
-  ordinal            Int
-  roundIndex         Int
-  purpose            String                             @default("answer") @db.VarChar(32)
-  idempotencyKey     String                             @db.VarChar(128)
-  checkpointHash     String                             @db.Char(64)
-  requestHash        String                             @db.Char(64)
-  state              KnowledgeProviderAttemptState      @default(reserved)
-  estimatedUsage     Json
-  actualUsage        Json?
-  providerResponseId String?
-  leaseToken         String?                            @db.VarChar(128)
-  leaseExpiresAt     DateTime?
-  failureCode        String?                            @db.VarChar(128)
-  dispatchedAt       DateTime?
-  settledAt          DateTime?
-  releasedAt         DateTime?
-  ambiguousAt        DateTime?
-  createdAt          DateTime                           @default(now())
-  updatedAt          DateTime                           @updatedAt
-  modelRun           ModelRun                           @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  providerBinding    ProviderRunBinding                 @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeProviderAttempt_providerBinding_fkey")
-  manifest           KnowledgeEvidenceDispatchManifest?
+  id                  String                             @id @default(uuid())
+  modelRunId          String
+  providerBindingKey  String                             @default("answer")
+  ordinal             Int
+  roundIndex          Int
+  purpose             String                             @default("answer") @db.VarChar(64)
+  idempotencyKey      String                             @db.VarChar(128)
+  checkpointHash      String                             @db.Char(64)
+  requestHash         String                             @db.Char(64)
+  contractVersion     Int?
+  evidenceReceiptHash String?                            @db.Char(64)
+  acceptedRequest     Json?
+  acceptedResult      Json?
+  resultHash          String?                            @db.Char(64)
+  resultAcceptedAt    DateTime?
+  state               KnowledgeProviderAttemptState      @default(reserved)
+  estimatedUsage      Json
+  actualUsage         Json?
+  providerResponseId  String?
+  leaseToken          String?                            @db.VarChar(128)
+  leaseExpiresAt      DateTime?
+  failureCode         String?                            @db.VarChar(128)
+  dispatchedAt        DateTime?
+  settledAt           DateTime?
+  releasedAt          DateTime?
+  ambiguousAt         DateTime?
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
+  modelRun            ModelRun                           @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  providerBinding     ProviderRunBinding                 @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeProviderAttempt_providerBinding_fkey")
+  manifest            KnowledgeEvidenceDispatchManifest?
 
   @@unique([modelRunId, id])
   @@unique([modelRunId, ordinal])
@@ -3118,6 +3160,7 @@ model KnowledgeRunScope {
   selection           Json
   resolvedBaseCount   Int
   resolvedSourceCount Int
+  sourceBindingStrategy String   @default("eager_v1") @db.VarChar(24)
   exclusions          Json     @default("[]")
   budgetPolicy        Json
   answerPolicy        Json     @default("{\"version\":1,\"revision\":1,\"maximumKnowledgeSearches\":12,\"fullContextThresholdBasisPoints\":7000}")
@@ -3205,9 +3248,11 @@ model KnowledgeRunEvidence {
 
 model KnowledgeGroundingResult {
   retrievalSessionId String                    @id
+  version            Int                       @default(5)
   outcome            String                    @db.VarChar(32)
   originalAnswerHash String                    @db.Char(64)
   finalAnswerHash    String                    @db.Char(64)
+  evidence           Json?
   createdAt          DateTime                  @default(now())
   retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 }

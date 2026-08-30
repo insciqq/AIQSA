@@ -22,7 +22,8 @@ export const rerankerModelPresets: readonly RerankerModelPreset[] = Object.freez
   {
     automaticRoutePosition: 0,
     default: true,
-    description: "Provisional accuracy-first multilingual default for Memory evidence ordering.",
+    description:
+      "Accuracy-first multilingual default for Knowledge retrieval reranking and Memory evidence ordering.",
     displayName: "Voyage Rerank 2.5",
     id: DEFAULT_RERANKER_MODEL_PRESET_ID,
     providerFamily: "openrouter",

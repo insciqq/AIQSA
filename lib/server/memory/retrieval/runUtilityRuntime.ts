@@ -2,10 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import type { ProviderConnectionConfiguration } from "../../providers/providerConfiguration";
 import { normalizeProviderExecutionSnapshot } from "../../providers/runtimeFactory";
-import {
-  STRUCTURED_OUTPUT_LIMITS,
-  supportsStructuredOutputAdapter
-} from "../../providers/structuredOutput";
+import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
 import type { ModelToolCall } from "../../tools/types";
 import {
@@ -17,8 +14,10 @@ import {
 import { sanitizeMemoryUtilityText } from "./querySafety";
 
 export const MEMORY_RERANK_TOOL_NAME = "submit_memory_relevance_v5";
-export const MEMORY_RERANK_MAX_PROMPT_CHARACTERS =
-  STRUCTURED_OUTPUT_LIMITS.maxPromptCharacters;
+// This is a Memory execution/batching contract, not the maximum capacity of
+// the shared structured-output adapter. Knowledge may legitimately use a
+// larger adapter envelope without changing accepted Memory batch boundaries.
+export const MEMORY_RERANK_MAX_PROMPT_CHARACTERS = 64_000;
 
 export type MemoryRunUtilityProviderEvidence = Readonly<{
   connectionId: string;

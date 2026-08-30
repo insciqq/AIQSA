@@ -122,20 +122,18 @@ export function AdminProviderSystemModelTask({
     };
   }, [active, catalog, loading, refresh]);
 
-  const save = async (
-    providerModelId: string | null,
-    reasoningEffort: string | null,
-    rerankerProviderModelId: string | null
-  ) => {
+  const save = async (updates: Readonly<{
+    providerModelId?: string | null;
+    reasoningEffort?: string | null;
+    rerankerProviderModelId?: string | null;
+  }>) => {
     if (!catalog || busy) return;
     setSaving(true);
     setError(null);
     setNotice(null);
     const result = await updateAdminSystemModelPolicy({
       expectedVersion: catalog.policy.version,
-      providerModelId,
-      rerankerProviderModelId,
-      reasoningEffort
+      ...updates
     });
     setSaving(false);
     if (!result.ok) {
@@ -143,7 +141,7 @@ export function AdminProviderSystemModelTask({
       return;
     }
     apply(result.data);
-    setNotice("Utility model roles updated.");
+    setNotice("System models updated.");
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
@@ -199,10 +197,10 @@ export function AdminProviderSystemModelTask({
       <div className="max-w-3xl">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-trace-subtle pb-4">
           <div>
-            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation role</p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="provider-system-model-heading">Utility models</h2>
+            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation roles</p>
+            <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="provider-system-model-heading">System Models</h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
-              Generative utility work and Memory reranking use separately typed deployments. Neither role grants user access or substitutes another configured model.
+              The internal utility model and the Knowledge reranking model are independent installation roles. Neither grants user access or substitutes another configured model.
             </p>
           </div>
           <button
@@ -225,12 +223,12 @@ export function AdminProviderSystemModelTask({
           <div className="mt-5 grid gap-4">
             <div className="border-l-2 border-proof/60 pl-3 text-xs leading-5 text-ink-secondary">
               <p>
-                Generative: {catalog.policy.systemModel
+                Utility model: {catalog.policy.systemModel
                   ? `${deploymentLabel(catalog.policy.systemModel)} · reasoning ${catalog.policy.reasoningEffort ?? "provider default"}`
                   : "None"}.
               </p>
               <p>
-                Memory reranker: {catalog.policy.rerankerModel
+                Reranking model: {catalog.policy.rerankerModel
                   ? deploymentLabel(catalog.policy.rerankerModel)
                   : catalog.policy.systemModel
                     ? `System Model fallback · ${deploymentLabel(catalog.policy.systemModel)}`
@@ -295,9 +293,9 @@ export function AdminProviderSystemModelTask({
                 </>
               ) : (
                 <p className="text-caution">
-                  Configuration warning: {catalog.policy.systemModel
-                    ? `Memory uses ${deploymentLabel(catalog.policy.systemModel)} through the slower generative compatibility path until a dedicated reranker is selected. Successful fallback runs are not marked degraded.`
-                    : "Semantic Memory sorting is unavailable until a dedicated reranker or System Model is selected. Fused local ranking remains available."}
+                  Knowledge retrieval keeps deterministic ranking. {catalog.policy.systemModel
+                    ? `Memory uses ${deploymentLabel(catalog.policy.systemModel)} through the slower generative compatibility path until a dedicated reranker is selected; successful fallback runs are not marked degraded.`
+                    : "Semantic Memory sorting is unavailable until a dedicated reranker or System Model is selected; fused local ranking remains available."}
                 </p>
               )}
               <p>Policy version: {catalog.policy.version}.</p>
@@ -309,7 +307,7 @@ export function AdminProviderSystemModelTask({
             </div>
 
             <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="system-model-deployment">
-              Active answer model deployment
+              Internal utility model
               <select
                 className={inputClass}
                 disabled={busy || loading}
@@ -317,7 +315,7 @@ export function AdminProviderSystemModelTask({
                 onChange={(event) => selectDeployment(event.currentTarget.value)}
                 value={selectedId}
               >
-                <option value="">No system model</option>
+                <option value="">No utility model</option>
                 {catalog.policy.systemModel &&
                   !catalog.candidates.some((candidate) => candidate.id === catalog.policy.systemModel?.id) ? (
                     <option disabled value={catalog.policy.systemModel.id}>
@@ -354,16 +352,16 @@ export function AdminProviderSystemModelTask({
               </select>
             </label>
 
-            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="memory-reranker-deployment">
-              Dedicated Memory reranker deployment
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="knowledge-reranker-deployment">
+              Knowledge reranking model
               <select
                 className={inputClass}
                 disabled={busy || loading}
-                id="memory-reranker-deployment"
+                id="knowledge-reranker-deployment"
                 onChange={(event) => setSelectedRerankerId(event.currentTarget.value)}
                 value={selectedRerankerId}
               >
-                <option value="">Use System Model fallback (slower compatibility path)</option>
+                <option value="">None — Knowledge uses deterministic ranking; Memory uses the System Model path</option>
                 {catalog.policy.rerankerModel &&
                   !catalog.rerankerCandidates.some((candidate) =>
                     candidate.id === catalog.policy.rerankerModel?.id) ? (
@@ -380,46 +378,58 @@ export function AdminProviderSystemModelTask({
             </label>
 
             <p className="text-xs leading-5 text-ink-muted">
-              Runtime uses the selected connection&apos;s installation-default credential. Reasoning choices are limited to capabilities advertised by that deployment.
+              Runtime uses the selected connection&apos;s installation-default credential. Reasoning choices are limited to capabilities advertised by the utility deployment; the reranking role has no reasoning or structured-output settings. Reranking changes apply to new operations only and never trigger Knowledge reindexing.
             </p>
 
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className={primaryButton}
                 disabled={busy || !canSave}
-                onClick={() => void save(
-                  selectedId || null,
-                  selectedId ? selectedReasoningEffort || null : null,
-                  selectedRerankerId || null
-                )}
+                onClick={() => {
+                  const utilityChanged = selectedId !== currentId ||
+                    selectedReasoningEffort !== currentReasoningEffort ||
+                    catalog.policy.systemModel?.available === false;
+                  const rerankerChanged = selectedRerankerId !== currentRerankerId ||
+                    catalog.policy.rerankerModel?.available === false && !utilityChanged;
+                  void save({
+                    ...(utilityChanged ? {
+                      providerModelId: selectedId || null,
+                      reasoningEffort: selectedId
+                        ? selectedReasoningEffort || null
+                        : null
+                    } : {}),
+                    ...(rerankerChanged
+                      ? { rerankerProviderModelId: selectedRerankerId || null }
+                      : {})
+                  });
+                }}
                 type="button"
               >
-                Save utility models
+                Save system models
               </button>
               <button
                 className={quietButton}
                 disabled={busy || catalog.policy.systemModel === null}
-                onClick={() => void save(null, null, selectedRerankerId || null)}
+                onClick={() => void save({
+                  providerModelId: null,
+                  reasoningEffort: null
+                })}
                 type="button"
               >
-                Clear system model
+                Clear utility model
               </button>
               <button
                 className={quietButton}
                 disabled={busy || catalog.policy.rerankerModel === null}
-                onClick={() => void save(
-                  selectedId || null,
-                  selectedId ? selectedReasoningEffort || null : null,
-                  null
-                )}
+                onClick={() => void save({ rerankerProviderModelId: null })}
                 type="button"
               >
-                Use System Model fallback
+                Clear reranking model
               </button>
             </div>
           </div>
         ) : loading ? (
-          <p className="mt-5 text-sm text-ink-muted" role="status">Loading utility models…</p>
+          <p className="mt-5 text-sm text-ink-muted" role="status">Loading system models…</p>
         ) : null}
       </div>
     </section>

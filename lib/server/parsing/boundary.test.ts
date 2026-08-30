@@ -1,7 +1,12 @@
 import { createDocumentParserBoundary } from "./boundary";
 import { finalizeParsedDocument } from "./assessment";
 import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
+import { HttpDocumentParserEngineAdapter } from "./client";
 import { DocumentParserError } from "./errors";
+import {
+  PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
+  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+} from "./ocrSupplement";
 import type {
   DocumentParserEngine,
   DocumentParserEngineAdapter,
@@ -92,6 +97,97 @@ describe("document parser boundary", () => {
     expect(doclingParse).not.toHaveBeenCalled();
   });
 
+  it("preserves GFM tables as atomic inline Markdown blocks", async () => {
+    const doclingParse = vi.fn<DocumentParserEngineAdapter["parse"]>();
+    const boundary = createDocumentParserBoundary({
+      adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) }
+    });
+
+    const document = await boundary.parse({
+      bytes: Buffer.from([
+        "# Quarterly report",
+        "",
+        "Opening context.",
+        "| period | value |",
+        "| --- | ---: |",
+        "| 2027 | 41 |",
+        "| 2026 | 37 |",
+        "Closing context."
+      ].join("\n")),
+      fileName: "quarterly-report.md",
+      mimeType: "text/markdown"
+    });
+
+    expect(document.blocks.map(({ text, type }) => [type, text])).toEqual([
+      ["title", "Quarterly report"],
+      ["paragraph", "Opening context."],
+      ["table", "period\tvalue\n2027\t41\n2026\t37"],
+      ["paragraph", "Closing context."]
+    ]);
+    expect(document.blocks[2]).toMatchObject({
+      headingPath: ["Quarterly report"],
+      isTable: true,
+      table: { columnCount: 2, rowCount: 3 }
+    });
+    expect(doclingParse).not.toHaveBeenCalled();
+  });
+
+  it("recognizes borderless and ragged GFM tables without losing escaped pipes", async () => {
+    const boundary = createDocumentParserBoundary();
+
+    const document = await boundary.parse({
+      bytes: Buffer.from([
+        "## Metrics",
+        "label | value | note",
+        ": --- | ---: | :--- :",
+        String.raw`gross \| net | 42`,
+        "operating | 37 | audited | retained"
+      ].join("\r\n")),
+      fileName: "metrics.markdown",
+      mimeType: "text/markdown"
+    });
+
+    expect(document.blocks.map(({ headingPath, text, type }) => ({
+      headingPath,
+      text,
+      type
+    }))).toEqual([
+      { headingPath: [], text: "Metrics", type: "heading" },
+      {
+        headingPath: ["Metrics"],
+        text: "label\tvalue\tnote\ngross | net\t42\noperating\t37\taudited\tretained",
+        type: "table"
+      }
+    ]);
+    expect(document.blocks[1]?.table).toMatchObject({
+      columnCount: 4,
+      rowCount: 3
+    });
+  });
+
+  it("keeps Markdown table examples inside fenced code as one code block", async () => {
+    const boundary = createDocumentParserBoundary();
+
+    const document = await boundary.parse({
+      bytes: Buffer.from([
+        "````md | example",
+        "left | right",
+        "--- | ---",
+        "one | two",
+        "```",
+        "still fenced",
+        "````"
+      ].join("\n")),
+      fileName: "syntax.md",
+      mimeType: "text/markdown"
+    });
+
+    expect(document.blocks.map(({ text, type }) => [type, text])).toEqual([[
+      "code",
+      "left | right\n--- | ---\none | two\n```\nstill fenced"
+    ]]);
+  });
+
   it("replaces a hostile private basename in the Docling multipart filename", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
       expect(String(url)).toBe("http://docling:5001/v1/convert/file");
@@ -101,6 +197,7 @@ describe("document parser boundary", () => {
       const form = init?.body as FormData;
       expect(form.get("to_formats")).toBe("json");
       expect(form.get("table_mode")).toBe("accurate");
+      expect(form.get("table_cell_matching")).toBe("true");
       expect(form.get("do_ocr")).toBe("true");
       expect(form.get("force_ocr")).toBe("false");
       expect(form.get("ocr_preset")).toBe("easyocr");
@@ -127,6 +224,33 @@ describe("document parser boundary", () => {
     });
   });
 
+  it("supports an OCR-free bounded Docling layout request for adaptive PDFs", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      const form = init?.body as FormData;
+      expect(form.get("do_ocr")).toBe("false");
+      expect(form.get("force_ocr")).toBe("false");
+      expect(form.get("page_range")).toBe("[3,7]");
+      expect(form.has("ocr_preset")).toBe(false);
+      expect(form.getAll("ocr_lang")).toEqual([]);
+      return new Response(JSON.stringify(doclingEnvelope), {
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const adapter = new HttpDocumentParserEngineAdapter({
+      config: engineConfig("http://docling:5001/"),
+      engine: "docling",
+      fetch: fetchImpl
+    });
+
+    await expect(adapter.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      docling: { doOcr: false, pageRange: { end: 7, start: 3 } },
+      fileName: "fixture.pdf",
+      mediaType: "application/pdf",
+      mimeType: "application/pdf"
+    })).resolves.toMatchObject({ engine: "docling" });
+  });
+
   it("does not send Docling OCR fields or a private basename to Tika", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
       expect(String(url)).toBe("http://tika:9998/rmeta");
@@ -136,6 +260,7 @@ describe("document parser boundary", () => {
       expect(new Headers(init?.headers).get("content-disposition")).toBe(
         'attachment; filename="document.doc"'
       );
+      expect(new Headers(init?.headers).get("x-tika-ocrlanguage")).toBe("rus+eng");
       return new Response(JSON.stringify([{
         "Content-Type": "application/msword",
         "X-TIKA:content": "<html><body><p>binary document fixture</p></body></html>"
@@ -258,6 +383,7 @@ describe("document parser boundary", () => {
     const doclingParse = vi.fn(async () => parsed("docling", "ocr output"));
     const boundary = createDocumentParserBoundary({
       adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) },
+      config: {},
       nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
       nativePdfParser
     });
@@ -281,6 +407,105 @@ describe("document parser boundary", () => {
     });
     expect(nativePdfParser).toHaveBeenCalledOnce();
     expect(doclingParse).toHaveBeenCalledOnce();
+  });
+
+  it("supplements image-heavy Docling structure with materially novel Tika OCR", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "Category alpha 10 Category beta"));
+    const tikaParse = vi.fn(async () => parsed("tika", "Category alpha 10 Category beta 20"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf",
+      parserProfileVersion: PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+    })).resolves.toMatchObject({
+      attempts: [
+        { engine: "native_pdf", outcome: "quality_failure" },
+        { engine: "docling", outcome: "complete" },
+        { engine: "tika", outcome: "complete" }
+      ],
+      blocks: [
+        { index: 0, text: "Category alpha 10 Category beta" },
+        { index: 1, page: 1, text: "Category alpha 10 Category beta 20" }
+      ],
+      engine: "docling"
+    });
+    expect(doclingParse).toHaveBeenCalledOnce();
+    expect(tikaParse).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an older immutable parser profile on its original single-parser behavior", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "profile-seven output"));
+    const tikaParse = vi.fn(async () => parsed("tika", "newer OCR output"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf",
+      parserProfileVersion: PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION - 1
+    })).resolves.toMatchObject({ engine: "docling", text: "profile-seven output" });
+    expect(doclingParse).toHaveBeenCalledOnce();
+    expect(tikaParse).not.toHaveBeenCalled();
+  });
+
+  it("segments fallback OCR only in parser profile 9", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "Revenue 10 percent"));
+    const tikaParse = vi.fn(async () => parsed(
+      "tika",
+      "Revenue — 10 percent\n\nCategory gamma 20"
+    ));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf",
+      parserProfileVersion: PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+    })).resolves.toMatchObject({
+      blocks: [
+        { text: "Revenue 10 percent" },
+        { text: "Category gamma 20" }
+      ],
+      engine: "docling"
+    });
   });
 
   it("does not hide a native PDF output bound behind a sidecar", async () => {

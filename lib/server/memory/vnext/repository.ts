@@ -13,6 +13,7 @@ import {
 } from "../learning/extraction/contract";
 import type { MemorySemanticAdjudication } from "../learning/extraction/contract";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
 import { memoryExactVNextDirectAuthorityPredicate } from
   "../persistence/eligibility";
@@ -27,7 +28,6 @@ import {
   persistMemoryFactDependencies
 } from "../learning/dependencies/repository";
 import { persistMemoryCandidateEntities } from "../learning/entities/repository";
-import { ensureClassifiedSearchEntry } from "../reclassification/repository";
 
 type LockedFact = Readonly<{
   currentVersionId: string | null;
@@ -821,13 +821,22 @@ async function createObservation(
     return { attachedEvidence: 0, createdVersions: 0 };
   }
   const replay = await tx.memoryEvidence.findFirst({
-    select: { id: true },
+    select: { factVersionId: true, id: true },
     where: {
       evidenceFingerprint: evidence[0]!.evidenceFingerprint,
       userId: settings.userId
     }
   });
-  if (replay) return { attachedEvidence: 0, createdVersions: 0 };
+  if (replay) {
+    await ensureClassifiedSearchEntry(
+      tx,
+      settings,
+      replay.factVersionId,
+      evidence[0]!.evidenceFingerprint,
+      now
+    );
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
 
   const semanticAdjudication = resolveSemanticAdjudication(plan, decision);
   if (decision !== null && semanticAdjudication === null) {

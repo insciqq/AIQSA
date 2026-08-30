@@ -5,9 +5,20 @@ import {
 } from "./evidencePackage";
 import {
   groundKnowledgeAnswer,
+  groundSettledKnowledgeAnswerV5,
+  groundSettledKnowledgeAnswerV8,
+  groundSettledKnowledgeAnswerV9,
+  groundSettledKnowledgeAnswerV10,
+  groundSettledKnowledgeAnswerV11,
+  groundSettledKnowledgeAnswerV12,
+  groundSettledKnowledgeAnswerV13,
+  groundSettledKnowledgeAnswerV14,
+  groundSettledKnowledgeAnswerV15,
+  groundSettledKnowledgeAnswerV16,
   groundKnowledgeToolLoopAnswer,
   KnowledgeAnswerContractError
 } from "./grounding";
+import type { KnowledgeAnswerSettlementV5 } from "./answerGroundingV5";
 
 const privateSourceId = "2e3aa829-79cd-41df-b5c7-1a53f4b5cf19";
 
@@ -73,6 +84,576 @@ function toolLoopEvidence(): KnowledgeEvidencePackage {
 }
 
 describe("Knowledge answer citation contract", () => {
+  it("records content-free Grounding Evidence V7 for deterministic settlement", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const settlement: KnowledgeAnswerSettlementV5 = {
+      contradictedClaimCount: 0,
+      fallbackReason: null,
+      finalText: "Supported fact. [K1]",
+      finalizationMode: "selected_claims",
+      groundingStatus: "verified",
+      outcome: "answered",
+      requestCoverage: "complete",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0
+    };
+    const result = groundSettledKnowledgeAnswerV5({
+      contracts: {
+        draftContractVersion: 11,
+        selectorContractVersion: 7
+      },
+      draft: {
+        claimCount: 1,
+        durationMs: 120,
+        hash: "a".repeat(64),
+        operationId: "draft-operation-0001",
+        providerRequestId: "draft-response-1",
+        usage
+      },
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selector: {
+        durationMs: 80,
+        hash: "b".repeat(64),
+        operationId: "selector-operation-0001",
+        providerRequestId: "selector-response-1",
+        usage
+      },
+      settlement
+    });
+
+    expect(result).toMatchObject({
+      draftClaimCount: 1,
+      draftContractVersion: 11,
+      finalizationMode: "selected_claims",
+      requestCoverage: "complete",
+      selectorContractVersion: 7,
+      version: 7
+    });
+    expect(result.evidenceReceiptHash).toBe("c".repeat(64));
+    expect(JSON.stringify(result)).not.toContain("Evidence");
+    expect(result.finalAnswerHash).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it("records every bounded adaptive operation in content-free Grounding Evidence V8", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (input: Readonly<{
+      claimCount: number | null;
+      role: "final" | "initial" | "primary" | "supplement";
+      suffix: string;
+    }>) => ({
+      claimCount: input.claimCount,
+      durationMs: 20,
+      hash: input.suffix.repeat(64),
+      operationId: `operation-${input.role}-0001`,
+      providerRequestId: `provider-${input.role}`,
+      role: input.role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV8({
+      contracts: { draftContractVersion: 12, selectorContractVersion: 8 },
+      draftClaimCount: 2,
+      drafts: [
+        operation({ claimCount: 1, role: "primary", suffix: "a" }),
+        operation({ claimCount: 1, role: "supplement", suffix: "b" })
+      ],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [
+        operation({ claimCount: null, role: "initial", suffix: "d" }),
+        operation({ claimCount: null, role: "final", suffix: "e" })
+      ],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported fact. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: true,
+      correctionCompleted: true,
+      draftContractVersion: 12,
+      selectorContractVersion: 8,
+      version: 8
+    });
+    expect(result.drafts.map(({ role }) => role)).toEqual(["primary", "supplement"]);
+    expect(result.selectors.map(({ role }) => role)).toEqual(["initial", "final"]);
+    expect(JSON.stringify(result)).not.toContain("Evidence");
+  });
+
+  it("records V13/V9 atomic-entailment operations in content-free Grounding Evidence V9", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (input: Readonly<{
+      claimCount: number | null;
+      role: "final" | "initial" | "primary" | "supplement";
+      suffix: string;
+    }>) => ({
+      claimCount: input.claimCount,
+      durationMs: 20,
+      hash: input.suffix.repeat(64),
+      operationId: `operation-${input.role}-0001`,
+      providerRequestId: `provider-${input.role}`,
+      role: input.role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV9({
+      contracts: { draftContractVersion: 13, selectorContractVersion: 9 },
+      draftClaimCount: 2,
+      drafts: [
+        operation({ claimCount: 1, role: "primary", suffix: "a" }),
+        operation({ claimCount: 1, role: "supplement", suffix: "b" })
+      ],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [
+        operation({ claimCount: null, role: "initial", suffix: "d" }),
+        operation({ claimCount: null, role: "final", suffix: "e" })
+      ],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported fact. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: true,
+      correctionCompleted: true,
+      draftContractVersion: 13,
+      selectorContractVersion: 9,
+      version: 9
+    });
+    expect(result.drafts.map(({ role }) => role)).toEqual(["primary", "supplement"]);
+    expect(result.selectors.map(({ role }) => role)).toEqual(["initial", "final"]);
+    expect(JSON.stringify(result)).not.toContain("Evidence");
+  });
+
+  it("records V14/V10 required-dimension operations in content-free Grounding Evidence V10", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (input: Readonly<{
+      claimCount: number | null;
+      role: "initial" | "primary";
+      suffix: string;
+    }>) => ({
+      claimCount: input.claimCount,
+      durationMs: 20,
+      hash: input.suffix.repeat(64),
+      operationId: `operation-${input.role}-0001`,
+      providerRequestId: `provider-${input.role}`,
+      role: input.role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV10({
+      contracts: { draftContractVersion: 14, selectorContractVersion: 10 },
+      draftClaimCount: 1,
+      drafts: [operation({ claimCount: 1, role: "primary", suffix: "a" })],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [operation({ claimCount: null, role: "initial", suffix: "d" })],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported fact. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      draftContractVersion: 14,
+      selectorContractVersion: 10,
+      version: 10
+    });
+    expect(JSON.stringify(result)).not.toContain("The defining mechanism");
+  });
+
+  it("records one V15/V11 validation repair without conflating it with coverage correction", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (
+      role: "initial" | "primary" | "repair" | "supplement",
+      claimCount: number | null,
+      suffix: string
+    ) => ({
+      claimCount,
+      durationMs: 20,
+      hash: suffix.repeat(64),
+      operationId: `operation-${role}-0001`,
+      providerRequestId: `provider-${role}`,
+      role,
+      usage
+    });
+    const settlement: KnowledgeAnswerSettlementV5 = {
+      contradictedClaimCount: 0,
+      fallbackReason: null,
+      finalText: "Supported fact. [K1]",
+      finalizationMode: "selected_claims",
+      groundingStatus: "verified",
+      outcome: "answered",
+      requestCoverage: "complete",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0
+    };
+    const result = groundSettledKnowledgeAnswerV11({
+      contracts: { draftContractVersion: 15, selectorContractVersion: 11 },
+      draftClaimCount: 1,
+      drafts: [operation("primary", 1, "a")],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [
+        operation("initial", null, "d"),
+        operation("repair", null, "e")
+      ],
+      settlement
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      draftContractVersion: 15,
+      selectorContractVersion: 11,
+      selectorValidationRepairApplied: true,
+      selectorValidationRepairCompleted: true,
+      version: 11
+    });
+    expect(result.selectors.map(({ role }) => role)).toEqual(["initial", "repair"]);
+    expect(() => groundSettledKnowledgeAnswerV11({
+      contracts: { draftContractVersion: 15, selectorContractVersion: 11 },
+      draftClaimCount: 2,
+      drafts: [
+        operation("primary", 1, "a"),
+        operation("supplement", 1, "b")
+      ],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [
+        operation("initial", null, "d"),
+        operation("repair", null, "e")
+      ],
+      settlement
+    })).toThrow(KnowledgeAnswerContractError);
+  });
+
+  it("records V16/V12 quantitative-coverage operations in content-free Grounding Evidence V12", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (role: "initial" | "primary", claimCount: number | null, suffix: string) => ({
+      claimCount,
+      durationMs: 20,
+      hash: suffix.repeat(64),
+      operationId: `operation-${role}-0001`,
+      providerRequestId: `provider-${role}`,
+      role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV12({
+      contracts: { draftContractVersion: 16, selectorContractVersion: 12 },
+      draftClaimCount: 4,
+      drafts: [operation("primary", 4, "a")],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [operation("initial", null, "d")],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported quantitative comparison. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      draftContractVersion: 16,
+      selectorContractVersion: 12,
+      selectorValidationRepairApplied: false,
+      selectorValidationRepairCompleted: false,
+      version: 12
+    });
+    expect(JSON.stringify(result)).not.toContain("Evidence");
+  });
+
+  it("records V17/V13 normalized-selector operations in content-free Grounding Evidence V13", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (role: "initial" | "primary", claimCount: number | null, suffix: string) => ({
+      claimCount,
+      durationMs: 20,
+      hash: suffix.repeat(64),
+      operationId: `operation-${role}-0001`,
+      providerRequestId: `provider-${role}`,
+      role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV13({
+      contracts: { draftContractVersion: 17, selectorContractVersion: 13 },
+      draftClaimCount: 1,
+      drafts: [operation("primary", 1, "a")],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [operation("initial", null, "d")],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported polar relation. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      draftContractVersion: 17,
+      selectorContractVersion: 13,
+      selectorValidationRepairApplied: false,
+      selectorValidationRepairCompleted: false,
+      version: 13
+    });
+    expect(JSON.stringify(result)).not.toContain(privateSourceId);
+  });
+
+  it("records V18/V14 coverage-first operations in content-free Grounding Evidence V14", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (role: "initial" | "primary", claimCount: number | null, suffix: string) => ({
+      claimCount,
+      durationMs: 20,
+      hash: suffix.repeat(64),
+      operationId: `operation-${role}-0001`,
+      providerRequestId: `provider-${role}`,
+      role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV14({
+      contracts: { draftContractVersion: 18, selectorContractVersion: 14 },
+      draftClaimCount: 2,
+      drafts: [operation("primary", 2, "a")],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [operation("initial", null, "d")],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported co-equal results. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      draftContractVersion: 18,
+      selectorContractVersion: 14,
+      selectorValidationRepairApplied: false,
+      selectorValidationRepairCompleted: false,
+      version: 14
+    });
+    expect(JSON.stringify(result)).not.toContain(privateSourceId);
+  });
+
+  it("records V19/V15 phased coverage operations in content-free Grounding Evidence V15", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (role: "initial" | "primary", claimCount: number | null, suffix: string) => ({
+      claimCount,
+      durationMs: 20,
+      hash: suffix.repeat(64),
+      operationId: `operation-${role}-0001`,
+      providerRequestId: `provider-${role}`,
+      role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV15({
+      contracts: { draftContractVersion: 19, selectorContractVersion: 15 },
+      draftClaimCount: 2,
+      drafts: [operation("primary", 2, "a")],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [operation("initial", null, "d")],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported phased results. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      draftContractVersion: 19,
+      selectorContractVersion: 15,
+      selectorValidationRepairApplied: false,
+      selectorValidationRepairCompleted: false,
+      version: 15
+    });
+    expect(JSON.stringify(result)).not.toContain(privateSourceId);
+  });
+
+  it("records the Planner before V20/V16 in content-free Grounding Evidence V16", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const operation = (
+      role: "initial" | "planner" | "primary",
+      claimCount: number | null,
+      suffix: string
+    ) => ({
+      claimCount,
+      durationMs: 20,
+      hash: suffix.repeat(64),
+      operationId: `operation-${role}-0001`,
+      providerRequestId: `provider-${role}`,
+      role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV16({
+      contracts: { draftContractVersion: 20, selectorContractVersion: 16 },
+      coveragePlanner: operation("planner", null, "e"),
+      draftClaimCount: 2,
+      drafts: [operation("primary", 2, "a")],
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selectors: [operation("initial", null, "d")],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported planned results. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      adaptiveCorrectionApplied: false,
+      correctionCompleted: false,
+      coveragePlanner: { claimCount: null, role: "planner" },
+      draftContractVersion: 20,
+      selectorContractVersion: 16,
+      selectorValidationRepairApplied: false,
+      selectorValidationRepairCompleted: false,
+      version: 16
+    });
+    expect(JSON.stringify(result)).not.toContain(privateSourceId);
+    expect(JSON.stringify(result)).not.toContain("requested alpha value");
+  });
+
   it("accepts ANSWERED only with a dispatched citation", () => {
     const result = groundKnowledgeAnswer({
       answer: "AIQSA_KB_STATUS=ANSWERED\nОтвет подтвержден [K1].",

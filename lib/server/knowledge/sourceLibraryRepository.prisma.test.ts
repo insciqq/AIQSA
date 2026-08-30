@@ -514,6 +514,7 @@ describe("Prisma Knowledge Source Library", () => {
       where: { id: artifact.id }
     })).resolves.toMatchObject({
       errorCode: null,
+      processingGeneration: 1,
       processingStage: "queued",
       state: "pending"
     });
@@ -539,8 +540,55 @@ describe("Prisma Knowledge Source Library", () => {
       errorCode: null,
       normalizedTextByteSize: 2_048,
       normalizedTextChecksum: normalizedChecksum,
+      processingGeneration: 1,
       processingStage: "chunking",
       state: "pending"
+    });
+
+    const [sourceBeforeActivation, baseBeforeActivation] = await Promise.all([
+      prisma.knowledgeSource.findUniqueOrThrow({
+        select: { version: true },
+        where: { id: fixture.sourceId }
+      }),
+      prisma.knowledgeBase.findUniqueOrThrow({
+        select: { sourceRevision: true, version: true },
+        where: { id: fixture.baseCId }
+      })
+    ]);
+    await prisma.knowledgeSourceIndexArtifact.updateMany({
+      data: {
+        chunkCount: 1,
+        embeddedPassageCount: 1,
+        errorCode: null,
+        normalizedTextByteSize: 2_048,
+        normalizedTextChecksum: normalizedChecksum,
+        normalizedTextStorageKey: `source-library/${fixture.sourceId}/replacement-normalized`,
+        pageCount: 1,
+        processingStage: null,
+        readyAt: new Date(),
+        state: "ready"
+      },
+      where: { sourceVersionId }
+    });
+    await expect(repository.reprocess(
+      fixture.ownerUserId,
+      fixture.sourceId,
+      new Date()
+    )).resolves.toEqual({ kind: "ok" });
+    await expect(prisma.knowledgeSource.findUniqueOrThrow({
+      select: { currentVersionId: true, pendingVersionId: true, version: true },
+      where: { id: fixture.sourceId }
+    })).resolves.toEqual({
+      currentVersionId: sourceVersionId,
+      pendingVersionId: null,
+      version: sourceBeforeActivation.version + 1
+    });
+    await expect(prisma.knowledgeBase.findUniqueOrThrow({
+      select: { sourceRevision: true, version: true },
+      where: { id: fixture.baseCId }
+    })).resolves.toEqual({
+      sourceRevision: baseBeforeActivation.sourceRevision + 1,
+      version: baseBeforeActivation.version + 1
     });
   });
 });

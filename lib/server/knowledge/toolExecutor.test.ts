@@ -5,6 +5,8 @@ import type { ProviderRunRequest } from "../providers/types";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
+import { decodeKnowledgeRetrievalEvidence } from "./toolResult";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
@@ -158,6 +160,7 @@ function lexicalSearchResult() {
     candidateCount: 1,
     candidateCounts: { 0: 1 },
     canonicalSourceProvenance: [],
+    lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture(),
     passages: [{
       annRank: null,
       baseName: "Base",
@@ -180,7 +183,7 @@ function lexicalSearchResult() {
       sectionId: "section-1",
       signalProvenance: [{
         exactKind: null,
-        lane: "passage_lexical" as const,
+        lane: "passage_bm25" as const,
         rank: 1,
         rawScore: 1,
         vectorDistance: null,
@@ -248,6 +251,74 @@ describe("Knowledge executor surface", () => {
     expect(store.hybridSearch).not.toHaveBeenCalled();
   });
 
+  it("reserves a broad large-corpus search by immutable Base snapshot", async () => {
+    const reserve = vi.fn(async () => ({ kind: "conflict", reason: "invalid_payload" } as const));
+    const knowledgeBaseId = "11111111-1111-4111-8111-111111111111";
+    const profileRevisionId = "22222222-2222-4222-8222-222222222222";
+    const knowledgeBaseSnapshotId = `kbs_${"a".repeat(40)}`;
+    const runtime = createKnowledgeToolExecutor({
+      budgetReservations: { reserve } as never,
+      embeddingRuntime: { resolve: vi.fn() },
+      store: {
+        budgetState: vi.fn(async () => ({
+          evidenceCount: 0,
+          invocationOrdinal: 1,
+          policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+          priorContentHashes: [],
+          priorSourceAliases: [],
+          stopReason: null,
+          usage: {
+            cumulativeCandidates: 0,
+            estimatedCostMicros: 0,
+            latencyMs: 0,
+            operations: 0,
+            queryEmbeddingCalls: 0,
+            retrievedTokens: 0
+          }
+        })),
+        hybridSearch: vi.fn(),
+        invocationOrdinal: vi.fn(),
+        loadBindings: vi.fn(async () => [{
+          ...acceptedBinding,
+          executionScope: "base" as const,
+          knowledgeBaseId,
+          knowledgeBaseSnapshotId,
+          profileRevisionId
+        }]),
+        loadScopeAliases: vi.fn(async () => [{
+          alias: "B1",
+          bindingOrdinal: 0,
+          bindingOrdinals: [0],
+          kind: "base" as const,
+          label: "Large corpus"
+        }]),
+        persistReceipt: vi.fn()
+      }
+    });
+
+    await runtime.preflight!({
+      arguments: { query: "Question", sourceAliases: [] },
+      id: "call-large",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-large",
+      request: request(),
+      runId: "run-large",
+      userId: "user-1"
+    });
+
+    expect(reserve).toHaveBeenCalledWith(expect.objectContaining({
+      operationRequest: expect.objectContaining({
+        profileRevisionId,
+        scope: {
+          bindings: [{ bindingOrdinal: 0, knowledgeBaseId, knowledgeBaseSnapshotId }],
+          kind: "base_snapshots"
+        },
+        sourceAliases: []
+      })
+    }));
+  });
+
   it("fans one query embedding across four ready profiles and reports excluded sources", async () => {
     const embed = vi.fn(async () => ({
       model: "embedding-upstream",
@@ -266,6 +337,7 @@ describe("Knowledge executor surface", () => {
       candidateCount: 1,
       candidateCounts: { 0: 1, 1: 0, 2: 0, 3: 0 },
       canonicalSourceProvenance: [],
+      lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture(),
       passages: [{
         annRank: 1,
         baseName: "Base",
@@ -363,7 +435,7 @@ describe("Knowledge executor surface", () => {
     expect(embed).toHaveBeenCalledWith({ mode: "query", texts: ["Question"] });
     expect(hybridSearch).toHaveBeenCalledOnce();
     expect(hybridSearch).toHaveBeenCalledWith(expect.objectContaining({
-      candidateLimit: 40,
+      candidateLimit: 64,
       excludedContentHashes: ["c".repeat(64)],
       operation: "automatic_search",
       query: "Question",
@@ -376,6 +448,82 @@ describe("Knowledge executor surface", () => {
       ]
     }));
     expect(persistReceipt).toHaveBeenCalledOnce();
+  });
+
+  it("persists monotonic durations while the host wall clock moves backward", async () => {
+    const monotonicTicks = [100.25, 105.5, 112.9, 130.1];
+    const monotonicNow = vi.fn(() => {
+      const tick = monotonicTicks.shift();
+      if (tick === undefined) throw new Error("unexpected_monotonic_clock_read");
+      return tick;
+    });
+    let wallNow = 20_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+    try {
+      const embed = vi.fn(async () => {
+        const wallStartedAt = Date.now();
+        wallNow = 10_000;
+        await Promise.resolve();
+        expect(Date.now()).toBeLessThan(wallStartedAt);
+        return {
+          model: "embedding-upstream",
+          requestId: "embedding-request-clock-step",
+          usage: { inputTokens: 1, totalTokens: 1 },
+          vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+        };
+      });
+      const hybridSearch = vi.fn(async () => ({
+        ...lexicalSearchResult(),
+        vectorSearchEvidence: [{
+          bindingOrdinal: 0,
+          candidateCount: 0,
+          eligibleRows: 1,
+          mode: "exact" as const,
+          scan: {
+            efSearch: null,
+            iterativeScan: null,
+            maxScanTuples: null,
+            retrievalBucket: 0
+          },
+          targetDimension: 1_024 as const
+        }]
+      }));
+      const { persistReceipt, store } = automaticStore(hybridSearch);
+      const runtime = createKnowledgeToolExecutor({
+        embeddingRuntime: {
+          resolve: vi.fn(async () => ({
+            adapter: { embed },
+            configuration: embeddingConfiguration,
+            provider: "openai_compatible",
+            providerModelId: "embedding-model-1"
+          }))
+        },
+        monotonicNow,
+        store
+      });
+
+      const result = await runtime.execute({
+        arguments: { query: "Question", sourceAliases: [] },
+        id: "call-clock-step",
+        name: KNOWLEDGE_SEARCH_TOOL_NAME
+      }, {
+        persistedToolCallId: "tool-call-clock-step",
+        request: request(),
+        runId: "run-clock-step",
+        userId: "user-1"
+      });
+
+      expect(result.status).toBe("complete");
+      expect(monotonicNow).toHaveBeenCalledTimes(4);
+      const evidence = persistReceipt.mock.calls[0]![0].evidence;
+      expect(evidence.durationMs).toBe(29);
+      expect(evidence.embeddingExecutions).toEqual([
+        expect.objectContaining({ durationMs: 7, status: "complete" })
+      ]);
+      expect(decodeKnowledgeRetrievalEvidence(evidence)).not.toBeNull();
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("fuses the exact current question with the model query on the first search", async () => {
@@ -529,6 +677,95 @@ describe("Knowledge executor surface", () => {
     expect(hybridSearch).toHaveBeenCalledOnce();
   });
 
+  it("materializes a Source alias for selected evidence before provider packaging", async () => {
+    const hybridSearch = vi.fn(async () => ({
+      ...lexicalSearchResult(),
+      canonicalSourceProvenance: [{
+        artifactId: "artifact-1",
+        bindings: [{
+          baseName: "Base",
+          bindingOrdinal: 0,
+          knowledgeBaseId: "base-1"
+        }],
+        primaryBindingOrdinal: 0,
+        sourceId: "source-1",
+        sourceVersionId: "source-version-1"
+      }]
+    }));
+    const materializeScopeAliases = vi.fn(async () => undefined);
+    const loadScopeAliases = vi.fn()
+      .mockResolvedValueOnce([{
+        alias: "B1",
+        bindingOrdinal: 0,
+        kind: "base" as const,
+        label: "Base"
+      }])
+      .mockResolvedValueOnce([{
+        alias: "B1",
+        bindingOrdinal: 0,
+        kind: "base" as const,
+        label: "Base"
+      }, {
+        alias: "S1",
+        bindingOrdinal: 0,
+        bindingOrdinals: [0],
+        kind: "source" as const,
+        label: "Source",
+        sourceArtifactId: "artifact-1",
+        sourceId: "source-1",
+        sourceVersionId: "source-version-1"
+      }]);
+    const persistReceipt = vi.fn(async (
+      input: Parameters<KnowledgeRetrievalStore["persistReceipt"]>[0]
+    ) => input.evidence);
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: {
+        resolve: vi.fn(async () => ({
+          adapter: {
+            embed: vi.fn(async () => ({
+              model: "embedding-upstream",
+              requestId: "embedding-request-alias",
+              usage: { inputTokens: 1, totalTokens: 1 },
+              vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+            }))
+          },
+          configuration: embeddingConfiguration,
+          provider: "openai_compatible",
+          providerModelId: "embedding-model-1"
+        }))
+      },
+      store: {
+        hybridSearch,
+        invocationOrdinal: vi.fn(async () => 1),
+        loadBindings: vi.fn(async () => [acceptedBinding]),
+        loadScopeAliases,
+        materializeScopeAliases,
+        persistReceipt
+      }
+    });
+
+    const result = await runtime.execute({
+      arguments: { query: "Question", sourceAliases: [] },
+      id: "call-lazy-alias",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-lazy-alias",
+      request: request(),
+      runId: "run-lazy-alias",
+      userId: "user-1"
+    });
+
+    expect(result.status).toBe("complete");
+    expect(materializeScopeAliases).toHaveBeenCalledWith(expect.objectContaining({
+      sourceProvenance: [expect.objectContaining({ sourceId: "source-1" })]
+    }));
+    expect(persistReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      evidence: expect.objectContaining({
+        results: [expect.objectContaining({ sourceAlias: "S1" })]
+      })
+    }));
+  });
+
   it.each([
     ["timeout", () => new EmbeddingAdapterError("embedding_request_timed_out")],
     ["connection failure", () => new EmbeddingAdapterError("embedding_provider_request_failed")],
@@ -636,6 +873,7 @@ describe("Knowledge executor surface", () => {
       candidateCount: 0,
       candidateCounts: { 0: 0 },
       canonicalSourceProvenance: [],
+      lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 0 }),
       passages: [],
       rankingEvidence: { candidateOrder: [], fusion: "weighted_rrf_v2" as const },
       vectorSearchEvidence: [{

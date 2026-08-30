@@ -35,8 +35,13 @@ import {
 import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
 import {
   createKnowledgeVectorSpacePin,
-  KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
+  KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION,
+  KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
+  KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION
 } from "./indexProfile";
+import { requireKnowledgeTokenCounter } from "./tokenizer/knowledgeTokenCounter";
+import { KnowledgeTokenizerError } from "./tokenizer/qwen2BpeTokenizer";
+import type { KnowledgeTokenCounter } from "./tokenizer/types";
 import {
   decodeKnowledgeNormalizedDocument,
   encodeKnowledgeNormalizedDocument,
@@ -263,18 +268,37 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     }
   }
 
+  function claimTokenCounter(claim: KnowledgeWorkClaim): KnowledgeTokenCounter | undefined {
+    if (claim.artifact.chunkingProfileVersion <
+      KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION) return undefined;
+    // Deterministic per immutable profile revision: the counter follows the
+    // pinned embedding configuration. A failed model-native asset
+    // verification fails the artifact (and therefore the generation) before
+    // activation instead of silently mixing counting profiles.
+    const upstreamModelId = claim.artifact.embeddingConfiguration?.upstreamModelId;
+    return requireKnowledgeTokenCounter(
+      typeof upstreamModelId === "string" ? upstreamModelId : ""
+    );
+  }
+
   async function chunkPlan(claim: KnowledgeWorkClaim, signal?: AbortSignal) {
     try {
       const normalized = await normalizedDocument(claim, signal);
+      const tokenCounter = claimTokenCounter(claim);
       return {
         chunks: chunkKnowledgeDocument({
           document: normalized,
           maxChunks: config.maxChunksPerDocument,
-          profileVersion: claim.artifact.chunkingProfileVersion
+          profileVersion: claim.artifact.chunkingProfileVersion,
+          ...(tokenCounter ? { tokenCounter } : {})
         }),
-        document: normalized
+        document: normalized,
+        tokenCounter
       };
     } catch (error) {
+      if (error instanceof KnowledgeTokenizerError) {
+        throw new KnowledgeIngestionError("knowledge_tokenizer_unavailable");
+      }
       throw error instanceof KnowledgeChunkingError
         ? chunkingFailure(error)
         : error;
@@ -315,7 +339,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     expectedChunkCount: number,
     signal?: AbortSignal
   ): Promise<void> {
-    const { chunks } = await chunkPlan(claim, signal);
+    const { chunks, tokenCounter } = await chunkPlan(claim, signal);
     if (chunks.length !== expectedChunkCount) {
       throw new KnowledgeIngestionError("chunking_failed");
     }
@@ -325,7 +349,8 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     ));
     const pending = knowledgeEmbeddingBatches(
       chunks,
-      claim.artifact.chunkingProfileVersion
+      claim.artifact.chunkingProfileVersion,
+      tokenCounter
     ).filter(
       (batch) => !completed.has(batch.batchIndex)
     );
@@ -426,6 +451,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
             mode: claim.artifact.pdfProcessingMode,
             ownerUserId: claim.ownerUserId,
             parserProfileVersion: claim.artifact.pdfParserProfileVersion,
+            processingGeneration: claim.artifact.processingGeneration,
             profileRevisionId: claim.artifact.profileRevisionId,
             ...(signal ? { signal } : {}),
             sourceVersionId: claim.sourceVersionId,
@@ -437,6 +463,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
             bytes: body,
             fileName: claim.fileName,
             mimeType: claim.mimeType,
+            parserProfileVersion: claim.artifact.pdfParserProfileVersion,
             ...(signal ? { signal } : {})
           });
         }
@@ -448,6 +475,9 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       let encoded;
       try {
         encoded = encodeKnowledgeNormalizedDocument(parsed, config, {
+          layoutAwareInlineReferences:
+            claim.artifact.chunkingProfileVersion >=
+              KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION,
           layoutAwareTables:
             claim.artifact.chunkingProfileVersion >=
               KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,

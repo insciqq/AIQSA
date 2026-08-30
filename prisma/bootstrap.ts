@@ -3,10 +3,12 @@ import {
   bootstrapInstallationDatabase,
   installationBootstrapInputFromEnv
 } from "../lib/server/bootstrap/installationBootstrap";
+import { assertAiqsaPostgresRuntime } from "../lib/server/postgresRuntimePreflight";
 
 const prisma = new PrismaClient();
 
 async function main(): Promise<void> {
+  await assertAiqsaPostgresRuntime(prisma);
   const input = installationBootstrapInputFromEnv();
   const result = await bootstrapInstallationDatabase(
     prisma,

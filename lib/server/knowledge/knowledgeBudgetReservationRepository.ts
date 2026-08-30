@@ -26,13 +26,13 @@ import {
   type KnowledgeOperationKind
 } from "./knowledgeBudget";
 import {
-  canonicalKnowledgeOperationRequestV2,
-  createKnowledgeOperationRequestV2,
-  decodeKnowledgeOperationRequestV2,
-  hashKnowledgeOperationRequestV2,
+  createKnowledgeOperationRequestV3,
+  decodeKnowledgeOperationRequest,
+  hashKnowledgeOperationRequest,
   knowledgeOperationTargetSourceIds,
   KNOWLEDGE_OPERATION_REQUEST_VERSION,
-  type KnowledgeOperationRequestV2
+  type KnowledgeOperationRequest,
+  type KnowledgeOperationRequestV3
 } from "./knowledgeOperationRequest";
 import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
@@ -122,7 +122,7 @@ type ActiveStoredKnowledgeBudgetReservation = Readonly<{
   leaseToken: string | null;
   modelRunId: string;
   modelRunToolCallId: string;
-  operationRequest: KnowledgeOperationRequestV2;
+  operationRequest: KnowledgeOperationRequest;
   purgedAt: null;
   reservation: KnowledgeBudgetReservation;
 }>;
@@ -158,7 +158,7 @@ export type KnowledgeBudgetResourceActual = Readonly<
   Pick<KnowledgeBudgetActual, KnowledgeBudgetResourceKey>
 >;
 
-type KnowledgeOperationRequestInputWithoutEnvelope<T> = T extends KnowledgeOperationRequestV2
+type KnowledgeOperationRequestInputWithoutEnvelope<T> = T extends KnowledgeOperationRequestV3
   ? Omit<
       T,
       | "idempotencyKey"
@@ -172,7 +172,7 @@ type KnowledgeOperationRequestInputWithoutEnvelope<T> = T extends KnowledgeOpera
   : never;
 
 export type KnowledgeBudgetOperationRequestInput = Readonly<
-  KnowledgeOperationRequestInputWithoutEnvelope<KnowledgeOperationRequestV2>
+  KnowledgeOperationRequestInputWithoutEnvelope<KnowledgeOperationRequestV3>
 >;
 
 export type ReserveKnowledgeBudgetInput = Readonly<{
@@ -293,6 +293,12 @@ type AvailableSource = Readonly<{
   baseProvenance: Prisma.JsonValue | null;
   sourceAlias: string;
   sourceId: string | null;
+}>;
+
+type AvailableBase = Readonly<{
+  knowledgeBaseId: string;
+  knowledgeBaseSnapshotId: string | null;
+  ordinal: number;
 }>;
 
 function invalidStorage(): never {
@@ -510,7 +516,7 @@ export function decodeKnowledgeBudgetReservationPersistenceRow(
       createdAt
     );
   }
-  const operationRequest = decodeKnowledgeOperationRequestV2(row.operationRequest);
+  const operationRequest = decodeKnowledgeOperationRequest(row.operationRequest);
   const requestHash = row.operationRequestHash?.trim();
   if (!operationRequest || row.policyVersion !== KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION ||
     row.id !== operationRequest.reservationId ||
@@ -519,7 +525,7 @@ export function decodeKnowledgeBudgetReservationPersistenceRow(
     row.phaseOrdinal !== operationRequest.phaseOrdinal ||
     row.subqueryOrdinal !== operationRequest.subqueryOrdinal ||
     !requestHash || !SHA256.test(requestHash) ||
-    hashKnowledgeOperationRequestV2(operationRequest) !== requestHash) invalidStorage();
+    hashKnowledgeOperationRequest(operationRequest) !== requestHash) invalidStorage();
 
   const estimate = persistedEstimate(row);
   const common = {
@@ -722,7 +728,7 @@ function json(value: unknown): Prisma.InputJsonValue {
 }
 
 function resourceEstimate(
-  request: KnowledgeOperationRequestV2,
+  request: KnowledgeOperationRequest,
   value: KnowledgeBudgetResourceEstimate
 ): KnowledgeBudgetEstimate | null {
   return decodeKnowledgeBudgetEstimate({
@@ -732,7 +738,7 @@ function resourceEstimate(
 }
 
 function resourceActual(
-  request: KnowledgeOperationRequestV2,
+  request: KnowledgeOperationRequest,
   value: KnowledgeBudgetResourceActual
 ): KnowledgeBudgetActual | null {
   return decodeKnowledgeBudgetActual({
@@ -759,11 +765,44 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function sourceScopeMatches(
-  request: KnowledgeBudgetOperationRequestInput,
-  sources: readonly AvailableSource[],
-  bases: readonly Readonly<{ knowledgeBaseId: string; ordinal: number }>[]
+function sameKnowledgeOperationIntent(
+  left: KnowledgeOperationRequest,
+  right: KnowledgeOperationRequest
 ): boolean {
+  const normalize = (request: KnowledgeOperationRequest) => {
+    const common = Object.fromEntries(Object.entries(request).filter(([key]) =>
+      key !== "resolvedSourceIds" && key !== "scope" && key !== "version"));
+    const scope = request.version === KNOWLEDGE_OPERATION_REQUEST_VERSION
+      ? request.scope
+      : { kind: "sources" as const, sourceIds: request.resolvedSourceIds };
+    return { ...common, scope };
+  };
+  return canonicalJson(normalize(left)) === canonicalJson(normalize(right));
+}
+
+function sourceScopeMatches(
+  request: KnowledgeOperationRequest,
+  sources: readonly AvailableSource[],
+  bases: readonly AvailableBase[]
+): boolean {
+  if (request.version === KNOWLEDGE_OPERATION_REQUEST_VERSION &&
+    request.scope.kind === "base_snapshots") {
+    const byOrdinal = new Map(bases.map((base) => [base.ordinal, base]));
+    const expectedOrdinals = request.sourceAliases.length === 0
+      ? bases.map((base) => base.ordinal)
+      : request.sourceAliases.map((alias) => Number(alias.slice(1)) - 1);
+    const orderedExpectedOrdinals = [...expectedOrdinals].sort((left, right) => left - right);
+    if (new Set(expectedOrdinals).size !== expectedOrdinals.length ||
+      expectedOrdinals.some((ordinal) => !byOrdinal.has(ordinal)) ||
+      request.scope.bindings.length !== expectedOrdinals.length) return false;
+    return request.scope.bindings.every((binding, index) => {
+      const expectedOrdinal = orderedExpectedOrdinals[index];
+      const base = expectedOrdinal === undefined ? undefined : byOrdinal.get(expectedOrdinal);
+      return Boolean(base && binding.bindingOrdinal === expectedOrdinal &&
+        binding.knowledgeBaseId === base.knowledgeBaseId &&
+        binding.knowledgeBaseSnapshotId === base.knowledgeBaseSnapshotId);
+    });
+  }
   const available = new Map<string, AvailableSource>();
   const sourceAliases = new Map<string, string>();
   const sourcesByBase = new Map<string, Set<string>>();
@@ -798,7 +837,9 @@ function sourceScopeMatches(
     }
   }
   const expectedIds = [...expected].sort();
-  const suppliedIds = [...request.resolvedSourceIds].sort();
+  const suppliedIds = request.version === KNOWLEDGE_OPERATION_REQUEST_VERSION
+    ? [...(request.scope.kind === "sources" ? request.scope.sourceIds : [])].sort()
+    : [...request.resolvedSourceIds].sort();
   return sameStrings(expectedIds, suppliedIds) &&
     knowledgeOperationTargetSourceIds(request)
       .every((sourceId) => expected.has(sourceId));
@@ -1194,9 +1235,9 @@ export function createPrismaKnowledgeBudgetReservationRepository(
           return { kind: "conflict", reason: "scope_mismatch" } as const;
         }
         const reservationId = existingForCall?.reservation.id ?? uuid();
-        let request: KnowledgeOperationRequestV2;
+        let request: KnowledgeOperationRequest;
         try {
-          request = createKnowledgeOperationRequestV2({
+          request = createKnowledgeOperationRequestV3({
             ...input.operationRequest,
             idempotencyKey: input.idempotencyKey,
             originalQuery: {
@@ -1225,8 +1266,15 @@ export function createPrismaKnowledgeBudgetReservationRepository(
           }),
           tx.knowledgeRunBinding.findMany({
             orderBy: { ordinal: "asc" },
-            select: { knowledgeBaseId: true, ordinal: true },
-            where: { modelRunId: input.runId }
+            select: {
+              knowledgeBaseId: true,
+              knowledgeBaseSnapshotId: true,
+              ordinal: true
+            },
+            where: {
+              modelRunId: input.runId,
+              profileBindingId: { in: compatibleProfileBindingIds }
+            }
           })
         ]);
         if (!sourceScopeMatches(request, sources, bases)) {
@@ -1240,6 +1288,10 @@ export function createPrismaKnowledgeBudgetReservationRepository(
         if (!leaseDurationMs) throw new Error("knowledge_budget_policy_invalid_in_storage");
         const createdAt = existingForCall?.reservation.createdAt ?? now.toISOString();
         const proposalLease = new Date(now.valueOf() + leaseDurationMs).toISOString();
+        const requestHash = existingForCall?.purgedAt === null &&
+          sameKnowledgeOperationIntent(existingForCall.operationRequest, request)
+          ? existingForCall.reservation.requestHash
+          : hashKnowledgeOperationRequest(request);
         const proposal = {
           createdAt,
           estimate,
@@ -1248,7 +1300,7 @@ export function createPrismaKnowledgeBudgetReservationRepository(
           leaseExpiresAt: proposalLease,
           operationOrdinal,
           phaseOrdinal: request.phaseOrdinal,
-          requestHash: hashKnowledgeOperationRequestV2(request),
+          requestHash,
           state: "reserved" as const,
           subqueryOrdinal: request.subqueryOrdinal,
           version: KNOWLEDGE_BUDGET_RESERVATION_VERSION
@@ -1265,8 +1317,7 @@ export function createPrismaKnowledgeBudgetReservationRepository(
             candidate.reservation.id === decision.reservation.id);
           if (!record || record.purgedAt !== null ||
             record.modelRunToolCallId !== input.modelRunToolCallId ||
-            canonicalKnowledgeOperationRequestV2(record.operationRequest) !==
-              canonicalKnowledgeOperationRequestV2(request)) {
+            !sameKnowledgeOperationIntent(record.operationRequest, request)) {
             return { kind: "conflict", reason: "idempotency_conflict" } as const;
           }
           return Object.freeze({

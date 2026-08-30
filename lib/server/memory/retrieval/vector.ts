@@ -26,7 +26,7 @@ import {
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
   "memory-personal-retrieval-v8-vector";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v10-memory-profile-v2";
+  "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v10-memory-profile-v2";
 export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
   1024: 0.55,
   1536: 0.55

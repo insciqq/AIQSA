@@ -43,7 +43,7 @@ services:
       - source_tools_node_modules:/app/node_modules
 
   postgres:
-    image: ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee
+    image: pgvector/pgvector:0.8.6-pg18-trixie@sha256:78bf48b801e792f99e3ac62b5036fd3876e9be48afda16c1e331af1c75ceb2ff
     environment:
       POSTGRES_DB: aiqsa_test
       POSTGRES_PASSWORD: aiqsa-test-postgres
@@ -57,7 +57,7 @@ services:
     mem_limit: 768m
     restart: "no"
     volumes:
-      - source_postgres_data:/var/lib/postgresql/data
+      - source_postgres18_data:/var/lib/postgresql
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -100,5 +100,5 @@ networks:
 
 volumes:
   source_minio_data:
-  source_postgres_data:
+  source_postgres18_data:
   source_tools_node_modules:

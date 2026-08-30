@@ -6,6 +6,7 @@ import {
   explicitKnowledgeSelection
 } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
+import { deleteKnowledgeSearchArtifacts } from "./searchProjection";
 
 export const DEFAULT_KNOWLEDGE_DELETION_BATCH_SIZE = 25;
 export const DEFAULT_KNOWLEDGE_DELETION_LEASE_MINUTES = 15;
@@ -689,7 +690,14 @@ async function purgeProviderAttempts(
   if (modelRunIds.length === 0) return;
   const attempts = await tx.knowledgeProviderAttempt.findMany({
     orderBy: [{ modelRunId: "asc" }, { ordinal: "asc" }],
-    select: { createdAt: true, dispatchedAt: true, id: true, modelRunId: true, state: true },
+    select: {
+      createdAt: true,
+      dispatchedAt: true,
+      id: true,
+      modelRunId: true,
+      purpose: true,
+      state: true
+    },
     where: { modelRunId: { in: [...modelRunIds] } }
   });
   for (const attempt of attempts) {
@@ -712,9 +720,71 @@ async function purgeProviderAttempts(
             state: "ambiguous" as const
           }
         : {};
+    const structuredAnswer = attempt.purpose === "knowledge_coverage_planner_v20" ||
+      attempt.purpose === "knowledge_answer_draft_v20" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v20" ||
+      attempt.purpose === "knowledge_answer_draft_v19" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v19" ||
+      attempt.purpose === "knowledge_answer_draft_v18" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v18" ||
+      attempt.purpose === "knowledge_answer_draft_v17" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v17" ||
+      attempt.purpose === "knowledge_answer_draft_v16" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v16" ||
+      attempt.purpose === "knowledge_answer_draft_v15" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v15" ||
+      attempt.purpose === "knowledge_answer_draft_v14" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v14" ||
+      attempt.purpose === "knowledge_answer_draft_v13" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v13" ||
+      attempt.purpose === "knowledge_answer_draft_v12" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v12" ||
+      attempt.purpose === "knowledge_answer_draft_v11" ||
+      attempt.purpose === "knowledge_answer_draft_v10" ||
+      attempt.purpose === "knowledge_answer_draft_v9" ||
+      attempt.purpose === "knowledge_answer_draft_v8" ||
+      attempt.purpose === "knowledge_answer_draft_v7" ||
+      attempt.purpose === "knowledge_answer_draft_v6" ||
+      attempt.purpose === "knowledge_answer_draft_v5" ||
+      attempt.purpose === "knowledge_grounded_selector_v2" ||
+      attempt.purpose === "knowledge_grounded_selector_v3" ||
+      attempt.purpose === "knowledge_grounded_selector_v4" ||
+      attempt.purpose === "knowledge_grounded_selector_v5" ||
+      attempt.purpose === "knowledge_grounded_selector_v6" ||
+      attempt.purpose === "knowledge_grounded_selector_v7" ||
+      attempt.purpose === "knowledge_grounded_selector_v16" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v16" ||
+      attempt.purpose === "knowledge_grounded_selector_v15" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v15" ||
+      attempt.purpose === "knowledge_grounded_selector_v14" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v14" ||
+      attempt.purpose === "knowledge_grounded_selector_v13" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v13" ||
+      attempt.purpose === "knowledge_grounded_selector_v12" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v12" ||
+      attempt.purpose === "knowledge_grounded_selector_v11" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v11" ||
+      attempt.purpose === "knowledge_grounded_selector_v10" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v10" ||
+      attempt.purpose === "knowledge_grounded_selector_v9" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v9" ||
+      attempt.purpose === "knowledge_grounded_selector_v8" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v8";
+    const settledStructuredAnswer = structuredAnswer && attempt.state === "settled";
     const updated = await tx.knowledgeProviderAttempt.updateMany({
       data: {
         ...terminalTransition,
+        ...(structuredAnswer
+          ? {
+              acceptedRequest: json({ purged: true, version: 1 }),
+              acceptedResult: settledStructuredAnswer
+                ? json({ purged: true, version: 1 })
+                : Prisma.DbNull,
+              evidenceReceiptHash: "0".repeat(64),
+              resultAcceptedAt: settledStructuredAnswer ? undefined : null,
+              resultHash: settledStructuredAnswer ? "0".repeat(64) : null
+            }
+          : {}),
         checkpointHash: "0".repeat(64),
         idempotencyKey,
         leaseExpiresAt: null,
@@ -1541,7 +1611,11 @@ async function purgeBase(
   ], now);
 }
 
-export function createPrismaKnowledgeDeletionProcessor(client: PrismaClient = prisma) {
+export function createPrismaKnowledgeDeletionProcessor(
+  client: PrismaClient = prisma,
+  searchDeletion: (indexArtifactIds: readonly string[]) => Promise<void> =
+    (indexArtifactIds) => deleteKnowledgeSearchArtifacts({ indexArtifactIds })
+) {
   async function settle(
     tx: Prisma.TransactionClient,
     knowledgeDeletionJobId: string,
@@ -1629,6 +1703,34 @@ export function createPrismaKnowledgeDeletionProcessor(client: PrismaClient = pr
 
   async function process(claim: KnowledgeDeletionClaim, now = new Date()): Promise<ProcessResult> {
     try {
+      if (claim.targetType === "SOURCE") {
+        const projections = await client.knowledgeSearchProjection.findMany({
+          orderBy: { indexArtifactId: "asc" },
+          select: { indexArtifactId: true },
+          where: {
+            indexArtifact: {
+              sourceArtifact: {
+                sourceVersion: { sourceId: claim.targetId }
+              }
+            }
+          }
+        });
+        if (projections.length > 0) {
+          await client.knowledgeSearchProjection.updateMany({
+            data: {
+              claimToken: null,
+              leaseExpiresAt: null,
+              state: "DELETING"
+            },
+            where: {
+              indexArtifactId: {
+                in: projections.map(({ indexArtifactId }) => indexArtifactId)
+              }
+            }
+          });
+          await searchDeletion(projections.map(({ indexArtifactId }) => indexArtifactId));
+        }
+      }
       return await client.$transaction(async (tx) => {
         const job = await tx.knowledgeDeletionJob.findFirst({
           select: { id: true },

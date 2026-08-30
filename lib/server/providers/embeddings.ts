@@ -21,6 +21,13 @@ import {
   type ProviderCredentialSource
 } from "./providerCredentialSource";
 import { createProviderSafeFetch } from "./providerSafeFetch";
+import {
+  executeWithProviderRetry,
+  isRetryableProviderHttpStatus,
+  isRetryableProviderNetworkError,
+  type ProviderRetryDecision,
+  type ProviderRetryOptions
+} from "./providerRetry";
 import { parseRetryAfterMs } from "../retryAfter";
 
 export const MAX_EMBEDDING_BATCH_INPUTS = 128;
@@ -90,7 +97,23 @@ export class EmbeddingAdapterError extends Error {
 type EmbeddingNetworkOptions = Readonly<{
   fetchFn?: typeof fetch;
   responseMaxBytes?: number;
+  retry?: ProviderRetryOptions;
 }>;
+
+function embeddingRetryDecision(
+  error: unknown,
+  signal: AbortSignal
+): ProviderRetryDecision | null {
+  if (signal.aborted || error instanceof ProviderResponseTooLargeError ||
+    isProviderDeadlineExceededError(error)) return null;
+  if (error instanceof EmbeddingAdapterError) {
+    return error.code === "embedding_provider_http_error" &&
+      isRetryableProviderHttpStatus(error.httpStatus)
+      ? { retryAfterMs: error.retryAfterMs }
+      : null;
+  }
+  return isRetryableProviderNetworkError(error) ? { retryAfterMs: null } : null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -305,38 +328,45 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
           "content-type": "application/json"
         });
         if (secret !== null) headers.set("authorization", `Bearer ${secret}`);
-        const response = await fetchFn(providerRequestEndpoint(
-          connection,
-          "openai_embeddings_compatible"
-        ), {
-          body: serialized,
-          headers,
-          method: "POST",
-          redirect: "error",
+        return await executeWithProviderRetry({
+          operation: async () => {
+            const response = await fetchFn(providerRequestEndpoint(
+              connection,
+              "openai_embeddings_compatible"
+            ), {
+              body: serialized,
+              headers,
+              method: "POST",
+              redirect: "error",
+              signal: timeout.signal
+            });
+            const text = await readBoundedResponseText(response, {
+              maxBytes: responseMaxBytes,
+              signal: timeout.signal
+            });
+            if (!response.ok) {
+              throw new EmbeddingAdapterError("embedding_provider_http_error", {
+                httpStatus: response.status,
+                retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
+              });
+            }
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(text) as unknown;
+            } catch {
+              throw new EmbeddingAdapterError("embedding_response_invalid");
+            }
+            return responseBody(
+              parsed,
+              prepared.length,
+              model,
+              boundedIdentifier(response.headers.get("x-request-id"))
+            );
+          },
+          options: input.network?.retry,
+          shouldRetry: (error) => embeddingRetryDecision(error, timeout.signal),
           signal: timeout.signal
         });
-        const text = await readBoundedResponseText(response, {
-          maxBytes: responseMaxBytes,
-          signal: timeout.signal
-        });
-        if (!response.ok) {
-          throw new EmbeddingAdapterError("embedding_provider_http_error", {
-            httpStatus: response.status,
-            retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
-          });
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(text) as unknown;
-        } catch {
-          throw new EmbeddingAdapterError("embedding_response_invalid");
-        }
-        return responseBody(
-          parsed,
-          prepared.length,
-          model,
-          boundedIdentifier(response.headers.get("x-request-id"))
-        );
       } catch (error) {
         if (error instanceof EmbeddingAdapterError) throw error;
         if (error instanceof ProviderResponseTooLargeError) {

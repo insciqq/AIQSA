@@ -500,7 +500,9 @@ async function testOpenRouterCatalog(
   });
   const models = input.model.modelClass === "embedding"
     ? await client.listEmbeddingModels({ signal: input.signal })
-    : await client.listModels({ signal: input.signal });
+    : input.model.modelClass === "reranker"
+      ? await client.listRerankModels({ signal: input.signal })
+      : await client.listModels({ signal: input.signal });
   const model = models.find(({ id }) => id === input.model.upstreamModelId);
   if (!model) {
     return {

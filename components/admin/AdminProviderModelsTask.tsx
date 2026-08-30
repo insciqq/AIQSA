@@ -200,9 +200,9 @@ export function AdminProviderModelsTask({
         {rerankerPresets.length ? (
           <div className="border-b border-trace-subtle bg-workspace-rail/35 px-4 py-4">
             <div className="max-w-3xl">
-              <h4 className="text-sm font-semibold text-ink">Memory reranker presets</h4>
+              <h4 className="text-sm font-semibold text-ink">Reranker presets</h4>
               <p className="mt-1 text-xs leading-5 text-ink-muted">
-                These deployments score bounded evidence only. They cannot answer chats, embed documents, or silently substitute another model.
+                These deployments score bounded retrieval candidates only. They cannot answer chats, embed documents, or silently substitute another model.
               </p>
               <dl className="mt-3 grid grid-cols-3 border-y border-trace-subtle text-metadata">
                 <div className="py-2"><dt className="text-ink-muted">Answer</dt><dd className="font-semibold text-critical">Blocked</dd></div>
@@ -282,7 +282,7 @@ export function AdminProviderModelsTask({
                   <div className="min-w-0">
                     <p className="break-words text-sm font-medium text-ink">{model.displayName}</p>
                     <p className="mt-1 text-xs leading-5 text-ink-muted">
-                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {isEmbedding ? "Embedding model" : isReranker ? "Memory reranker only" : model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
+                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {isEmbedding ? "Embedding model" : isReranker ? "Reranking only" : model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
                     </p>
                     <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                       <AdminAvailabilityStatus enabled={model.enabled} />

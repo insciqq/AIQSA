@@ -36,6 +36,11 @@ import {
   KNOWLEDGE_ANSWER_ROUTE_RAG
 } from "../knowledge/fullContext";
 import {
+  KNOWLEDGE_SCOPE_MAX_SOURCES,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+} from "../knowledge/retrievalTypes";
+import {
   KnowledgeSourceSnapshotConflictError,
   materializeKnowledgeBaseSnapshot
 } from "../knowledge/sourcePersistence";
@@ -664,7 +669,19 @@ export async function lockKnowledgeRunAdmissionSources(
     `;
     if (!group[0]) throw new KnowledgeRunPlanConflictError();
   }
-  for (const source of input.plan.sources ?? []) {
+  const sources = input.plan.sources ?? [];
+  if (sources.length > KNOWLEDGE_SCOPE_MAX_SOURCES) {
+    if (sources.some((source) => source.baseProvenance.length === 0 ||
+      source.directSelected || source.selectionProvenance.some((selection) =>
+        selection !== "base"))) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    // A large whole-Base run is authorized and frozen by the locked Base and
+    // its immutable snapshot. Per-Source locks would make admission scale
+    // linearly with collection size without strengthening that authority.
+    return lockedProfiles;
+  }
+  for (const source of sources) {
     const rows = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
       SELECT source."ownerUserId"
       FROM "KnowledgeSource" AS source
@@ -921,6 +938,17 @@ export async function insertAcceptedKnowledgeRunBindings(
   if (fullContextPlan && (!canonicalBindings || fullContextPlan.evidenceItems.length < 1)) {
     throw new KnowledgeRunPlanConflictError();
   }
+  const largeCanonicalScope = Boolean(
+    canonicalBindings && canonicalBindings.sources.length > KNOWLEDGE_SCOPE_MAX_SOURCES
+  );
+  if (largeCanonicalScope && (fullContextPlan || canonicalBindings!.sources.some((source) =>
+    source.value.baseProvenance.length === 0 || source.value.directSelected ||
+    source.value.selectionProvenance.some((selection) => selection !== "base")))) {
+    throw new KnowledgeRunPlanConflictError();
+  }
+  const sourceBindingStrategy = largeCanonicalScope
+    ? KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
+    : KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER;
   await tx.knowledgeRunScope.create({
     data: {
       answerPolicy: json(answerPolicy),
@@ -930,7 +958,8 @@ export async function insertAcceptedKnowledgeRunBindings(
       modelRunId: input.runId,
       resolvedBaseCount: current.bindings.length,
       resolvedSourceCount: current.resolvedSourceCount,
-      selection: json(current.knowledgePlan)
+      selection: json(current.knowledgePlan),
+      sourceBindingStrategy
     }
   });
   const excludedResources = current.exclusions.reduce(
@@ -962,7 +991,8 @@ export async function insertAcceptedKnowledgeRunBindings(
         exclusions: current.exclusions,
         resolvedBaseCount: current.bindings.length,
         resolvedSourceCount: current.resolvedSourceCount,
-        selection: current.knowledgePlan
+        selection: current.knowledgePlan,
+        sourceBindingStrategy
       }),
       version: 2
     }
@@ -1032,7 +1062,9 @@ export async function insertAcceptedKnowledgeRunBindings(
       }
     });
   }
-  for (const source of canonicalBindings?.sources ?? []) {
+  for (const source of sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+    ? canonicalBindings?.sources ?? []
+    : []) {
     await tx.knowledgeRunSourceBinding.create({
       data: {
         accessProvenance: json({

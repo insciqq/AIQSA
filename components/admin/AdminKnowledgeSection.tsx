@@ -5,7 +5,8 @@ import {
   adminKnowledgeErrorMessage,
   getAdminKnowledgeSettings,
   rollbackAdminKnowledgeProfile,
-  updateAdminKnowledgeAnswerPolicy
+  updateAdminKnowledgeAnswerPolicy,
+  updateAdminKnowledgeIngestionParallelism
 } from "@/components/admin/adminKnowledgeApi";
 import { inputClass, primaryButton, quietButton } from "@/components/admin/adminPrimitives";
 import type {
@@ -64,6 +65,7 @@ export function AdminKnowledgeSection({
     useState<AdminKnowledgePdfProcessingMode>("local");
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
   const [maximumKnowledgeSearches, setMaximumKnowledgeSearches] = useState(12);
+  const [ingestionParallelism, setIngestionParallelism] = useState(8);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const autoLoadAttemptedRef = useRef(false);
@@ -83,6 +85,7 @@ export function AdminKnowledgeSection({
     );
     setSelectedPdfMode(next.profile.activeRevision?.pdfProcessing.mode ?? "local");
     setMaximumKnowledgeSearches(next.answerPolicy.maximumKnowledgeSearches);
+    setIngestionParallelism(next.answerPolicy.ingestionParallelism);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -164,6 +167,27 @@ export function AdminKnowledgeSection({
     }
     apply(result.data);
     setNotice("Answer retrieval settings saved. New answers use the updated limit.");
+    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
+  };
+
+  const saveIngestionParallelism = async () => {
+    if (!settings || busy || !Number.isSafeInteger(ingestionParallelism) ||
+      ingestionParallelism < settings.answerPolicy.parallelismMinimum ||
+      ingestionParallelism > settings.answerPolicy.parallelismMaximum) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await updateAdminKnowledgeIngestionParallelism({
+      expectedVersion: settings.answerPolicy.version,
+      ingestionParallelism
+    });
+    setBusy(false);
+    if (!result.ok) {
+      setError(adminKnowledgeErrorMessage(result.error));
+      return;
+    }
+    apply(result.data);
+    setNotice("Document processing settings saved. Future background processing uses the updated limit.");
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
@@ -512,33 +536,63 @@ export function AdminKnowledgeSection({
                 <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
                   A selected corpus that fits within {settings.answerPolicy.fullContextThresholdPercent}% of the model context is sent in full. Larger selections may use this many bounded Knowledge searches per answer.
                 </p>
-                <div className="mt-4 grid gap-3 border-y border-trace-subtle px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end">
-                  <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="maximum-knowledge-searches">
-                    Maximum Knowledge searches per answer
-                    <span className="font-normal leading-5 text-ink-muted">Applies only to new answers. Small full-context selections use no Knowledge searches.</span>
-                  </label>
-                  <input
-                    className={inputClass}
-                    disabled={busy}
-                    id="maximum-knowledge-searches"
-                    max={settings.answerPolicy.maximum}
-                    min={settings.answerPolicy.minimum}
-                    onChange={(event) => setMaximumKnowledgeSearches(Number(event.currentTarget.value))}
-                    step={1}
-                    type="number"
-                    value={maximumKnowledgeSearches}
-                  />
-                  <button
-                    className={primaryButton}
-                    disabled={busy || maximumKnowledgeSearches === settings.answerPolicy.maximumKnowledgeSearches ||
-                      !Number.isSafeInteger(maximumKnowledgeSearches) ||
-                      maximumKnowledgeSearches < settings.answerPolicy.minimum ||
-                      maximumKnowledgeSearches > settings.answerPolicy.maximum}
-                    onClick={() => void saveAnswerPolicy()}
-                    type="button"
-                  >
-                    Save
-                  </button>
+                <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
+                  <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end">
+                    <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="maximum-knowledge-searches">
+                      Maximum Knowledge searches per answer
+                      <span className="font-normal leading-5 text-ink-muted">Applies only to new answers. Small full-context selections use no Knowledge searches.</span>
+                    </label>
+                    <input
+                      className={inputClass}
+                      disabled={busy}
+                      id="maximum-knowledge-searches"
+                      max={settings.answerPolicy.maximum}
+                      min={settings.answerPolicy.minimum}
+                      onChange={(event) => setMaximumKnowledgeSearches(Number(event.currentTarget.value))}
+                      step={1}
+                      type="number"
+                      value={maximumKnowledgeSearches}
+                    />
+                    <button
+                      className={primaryButton}
+                      disabled={busy || maximumKnowledgeSearches === settings.answerPolicy.maximumKnowledgeSearches ||
+                        !Number.isSafeInteger(maximumKnowledgeSearches) ||
+                        maximumKnowledgeSearches < settings.answerPolicy.minimum ||
+                        maximumKnowledgeSearches > settings.answerPolicy.maximum}
+                      onClick={() => void saveAnswerPolicy()}
+                      type="button"
+                    >
+                      Save
+                    </button>
+                  </div>
+                  <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end" data-testid="knowledge-ingestion-parallelism-row">
+                    <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="knowledge-ingestion-parallelism">
+                      Parallel document processing
+                      <span className="font-normal leading-5 text-ink-muted">Applies only to future background processing. Documents already processing are unaffected.</span>
+                    </label>
+                    <input
+                      className={inputClass}
+                      disabled={busy}
+                      id="knowledge-ingestion-parallelism"
+                      max={settings.answerPolicy.parallelismMaximum}
+                      min={settings.answerPolicy.parallelismMinimum}
+                      onChange={(event) => setIngestionParallelism(Number(event.currentTarget.value))}
+                      step={1}
+                      type="number"
+                      value={ingestionParallelism}
+                    />
+                    <button
+                      className={primaryButton}
+                      disabled={busy || ingestionParallelism === settings.answerPolicy.ingestionParallelism ||
+                        !Number.isSafeInteger(ingestionParallelism) ||
+                        ingestionParallelism < settings.answerPolicy.parallelismMinimum ||
+                        ingestionParallelism > settings.answerPolicy.parallelismMaximum}
+                      onClick={() => void saveIngestionParallelism()}
+                      type="button"
+                    >
+                      Save
+                    </button>
+                  </div>
                 </div>
               </section>
 

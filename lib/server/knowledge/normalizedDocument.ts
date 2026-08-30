@@ -40,6 +40,7 @@ import {
 import { isSpreadsheetDateValue } from "../parsing/spreadsheetDate";
 import { utils as spreadsheetUtils } from "xlsx";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
+import { withLayoutAwareInlineReferences } from "./layoutInlineReferences";
 import { withLayoutAwareTables } from "./layoutTables";
 
 export type KnowledgeNormalizedLocator = Readonly<{
@@ -214,6 +215,9 @@ function normalizedText(value: string, maxLength = Number.MAX_SAFE_INTEGER): str
 }
 
 function normalizedHeadingPath(values: readonly string[]): readonly string[] {
+  if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
   return Object.freeze(values.slice(0, 16).map((value) =>
     normalizedText(value.replace(/[\u0000-\u001f\u007f]/gu, " "), 256).replace(/\s+/gu, " ")
   ).filter(Boolean));
@@ -879,14 +883,18 @@ export function encodeKnowledgeNormalizedDocument(
   parsed: ParsedDocument,
   config: KnowledgeExtractionConfig,
   metadata: Readonly<{
+    layoutAwareInlineReferences?: boolean;
     layoutAwareTables?: boolean;
     sourceDisplayName?: string | null;
     sourceMediaType?: string;
   }> = {}
 ): EncodedKnowledgeNormalizedDocument {
-  const preparedDocument = metadata.layoutAwareTables
-    ? withLayoutAwareTablesAndFieldGroups(parsed)
+  const withReferences = metadata.layoutAwareInlineReferences
+    ? withLayoutAwareInlineReferences(parsed)
     : parsed;
+  const preparedDocument = metadata.layoutAwareTables
+    ? withLayoutAwareTablesAndFieldGroups(withReferences)
+    : withReferences;
   const document = buildStoredDocument(
     preparedDocument,
     metadata

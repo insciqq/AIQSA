@@ -218,6 +218,32 @@ describe("reranker runtime admission", () => {
     ]) expect(delegate).not.toHaveBeenCalled();
   });
 
+  it("leaves the single fresh Memory retry to the accepted-runtime caller", async () => {
+    const prisma = store();
+    const admitted = await createPrismaRerankerRuntime(
+      prisma as unknown as PrismaClient,
+      { createFetch: () => vi.fn<typeof fetch>(), encryptionKey: () => KEY }
+    ).resolveForInstallation({ providerModelId: "reranker-1" });
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response("temporarily unavailable", { status: 503 }));
+    const runtime = await createAcceptedRerankerRuntime(
+      prisma as unknown as PrismaClient,
+      { createFetch: () => fetchFn, encryptionKey: () => KEY }
+    ).resolve({
+      connectionId: admitted.connectionId,
+      credentialId: admitted.credentialId,
+      credentialVersionId: admitted.credentialVersionId,
+      executionSnapshot: admitted.executionSnapshot,
+      providerModelId: admitted.providerModelId
+    });
+
+    await expect(runtime.adapter.rerank({
+      documents: [{ handle: "c0", text: "evidence" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_provider_http_error", httpStatus: 503 });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
   it("rejects accepted evidence that does not match the immutable snapshot", async () => {
     const prisma = store();
     const admitted = await createPrismaRerankerRuntime(

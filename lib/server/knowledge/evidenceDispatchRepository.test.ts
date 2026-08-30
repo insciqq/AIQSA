@@ -1,10 +1,13 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { memorySha256 } from "../memory/persistence/lexical";
 import {
   createPrismaKnowledgeEvidenceDispatchRepository,
   decodeKnowledgeProviderAttemptUsage,
   KnowledgeEvidenceDispatchRepositoryError,
+  KNOWLEDGE_PROVIDER_ATTEMPT_PURPOSE_STORAGE_LIMIT,
   loadFinalKnowledgeGroundingDispatch,
+  loadSettledKnowledgeAnswerGroundingOperations,
   type KnowledgeEvidenceDispatchBinding,
   type KnowledgeProviderAttemptUsage,
   type ReserveKnowledgeEvidenceDispatchInput
@@ -14,6 +17,24 @@ import {
   type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
+import {
+  createKnowledgeAnswerOperationRequestSnapshotV1,
+  knowledgeAnswerDraftPromptForPair,
+  knowledgeAnswerHash,
+  knowledgeCoveragePlannerPrompt,
+  knowledgeGroundedSelectorPromptForPair,
+  knowledgeSelectorEvidenceFromManifest,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V15_V11,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
+  KNOWLEDGE_ANSWER_DRAFT_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V6,
+  KNOWLEDGE_COVERAGE_PLAN_SCHEMA_V1,
+  KNOWLEDGE_COVERAGE_PLANNER_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_GROUNDED_SELECTOR_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V6,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V9
+} from "./answerGroundingV5";
 
 const NOW = new Date("2026-08-19T10:00:00.000Z");
 const LEASE = new Date("2026-08-19T10:05:00.000Z");
@@ -103,11 +124,22 @@ function createFakePrisma(input: Readonly<{
       attempt.modelRunId === key.modelRunId && attempt.idempotencyKey === key.idempotencyKey) ?? null;
   };
   const attemptFindMany = async (args: unknown) => {
-    const where = object(nested(args, "where"));
-    const take = Number(nested(args, "take"));
+    const inputArgs = object(args);
+    const where = object(inputArgs.where);
+    const purposeFilter = where.purpose === undefined
+      ? null
+      : object(where.purpose).in;
+    const purposes = Array.isArray(purposeFilter) ? new Set(purposeFilter) : null;
+    const ascending = object(inputArgs.orderBy).ordinal === "asc";
+    const take = inputArgs.take === undefined
+      ? state.attempts.length
+      : Number(inputArgs.take);
     return state.attempts
-      .filter((attempt) => attempt.modelRunId === where.modelRunId)
-      .sort((left, right) => Number(right.ordinal) - Number(left.ordinal))
+      .filter((attempt) => attempt.modelRunId === where.modelRunId &&
+        (!purposes || purposes.has(attempt.purpose)))
+      .sort((left, right) => ascending
+        ? Number(left.ordinal) - Number(right.ordinal)
+        : Number(right.ordinal) - Number(left.ordinal))
       .slice(0, take);
   };
   const attemptUpdateMany = async (args: unknown) => {
@@ -213,11 +245,15 @@ function createFakePrisma(input: Readonly<{
       version: manifestData.version
     };
     const attempt = {
+      acceptedRequest: data.acceptedRequest ?? null,
+      acceptedResult: null,
       actualUsage: null,
       ambiguousAt: null,
       checkpointHash: data.checkpointHash,
+      contractVersion: data.contractVersion ?? null,
       createdAt: NOW,
       dispatchedAt: null,
+      evidenceReceiptHash: data.evidenceReceiptHash ?? null,
       estimatedUsage: data.estimatedUsage,
       failureCode: null,
       id: attemptId,
@@ -232,6 +268,8 @@ function createFakePrisma(input: Readonly<{
       purpose: data.purpose,
       releasedAt: null,
       requestHash: data.requestHash,
+      resultAcceptedAt: null,
+      resultHash: null,
       roundIndex: data.roundIndex,
       settledAt: null,
       state: "reserved",
@@ -489,6 +527,59 @@ describe("Knowledge evidence dispatch repository", () => {
       expect(fake.state.manifests).toEqual([]);
     }
   );
+
+  it("atomically persists a V11 accepted request and decoded terminal result", async () => {
+    const fake = createFakePrisma();
+    const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+    const manifest = draft();
+    const acceptedRequest = {
+      contractVersion: 11,
+      evidenceReceiptHash: manifest.manifestHash,
+      operation: "knowledge_answer_draft_v11",
+      version: 1
+    } as const;
+    const input: ReserveKnowledgeEvidenceDispatchInput = {
+      ...reserveInput(manifest),
+      acceptedRequest,
+      contractVersion: 11,
+      evidenceReceiptHash: manifest.manifestHash,
+      purpose: "knowledge_answer_draft_v11",
+      requestHash: memorySha256(acceptedRequest)
+    };
+    const created = await repository.reserve(input);
+    await repository.dispatch({
+      ...identity(input, created.dispatch.attempt.id),
+      dispatchedAt: DISPATCHED,
+      leaseExpiresAt: DISPATCH_LEASE,
+      leaseToken: input.leaseToken
+    });
+    const acceptedResult = {
+      kind: "draft_malformed",
+      reason: "draft_claim_text_invalid"
+    } as const;
+    await repository.settle({
+      ...identity(input, created.dispatch.attempt.id),
+      acceptedResult,
+      actualUsage: usage(),
+      leaseToken: input.leaseToken,
+      providerResponseId: "provider-response-1",
+      resultAcceptedAt: SETTLED,
+      resultHash: memorySha256(acceptedResult),
+      settledAt: SETTLED
+    });
+
+    await expect(repository.loadForRecovery({ modelRunId: "run-1", ordinal: 1 }))
+      .resolves.toMatchObject({
+        attempt: {
+          acceptedRequest,
+          acceptedResult,
+          contractVersion: 11,
+          evidenceReceiptHash: manifest.manifestHash,
+          purpose: "knowledge_answer_draft_v11",
+          state: "settled"
+        }
+      });
+  });
 
   it("persists the full canonical K1..K2048 handle range and rejects K2049", async () => {
     const fake = createFakePrisma({
@@ -798,6 +889,295 @@ describe("Knowledge evidence dispatch repository", () => {
       modelRunId: "run-1",
       retrievalSessionId: "session-1"
     }), "stored_manifest_invalid");
+  });
+
+  it("loads the V15/V11 ordinal-three validation-repair sequence without a supplement", async () => {
+    const fake = createFakePrisma();
+    const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+    const currentManifest = draft();
+    const request = "How long are completed exports retained?";
+    const acceptedDraft = {
+      blocks: [{ claimIds: ["C1"], type: "paragraph" as const }],
+      claims: [{
+        citationHints: ["K1"],
+        id: "C1",
+        text: "Completed exports are retained for 30 days."
+      }],
+      version: 1 as const
+    };
+    const draftPrompt = knowledgeAnswerDraftPromptForPair({
+      evidenceManifest: currentManifest.message,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    }, KNOWLEDGE_ANSWER_CONTRACT_PAIR_V15_V11);
+    const initialPrompt = knowledgeGroundedSelectorPromptForPair({
+      draft: acceptedDraft,
+      evidence: knowledgeSelectorEvidenceFromManifest(currentManifest),
+      evidenceManifest: currentManifest.message,
+      request,
+      selectorPass: "initial"
+    }, KNOWLEDGE_ANSWER_CONTRACT_PAIR_V15_V11);
+    const repairPrompt = knowledgeGroundedSelectorPromptForPair({
+      draft: acceptedDraft,
+      evidence: knowledgeSelectorEvidenceFromManifest(currentManifest),
+      evidenceManifest: currentManifest.message,
+      repairReason: "selector_coverage_invalid",
+      request,
+      selectorPass: "repair"
+    }, KNOWLEDGE_ANSWER_CONTRACT_PAIR_V15_V11);
+    const snapshots = [
+      createKnowledgeAnswerOperationRequestSnapshotV1({
+        contractVersion: 15,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_MAX_OUTPUT_TOKENS,
+        operation: "knowledge_answer_draft_v15",
+        schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V6,
+        systemPrompt: draftPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: draftPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV1({
+        contractVersion: 11,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_MAX_OUTPUT_TOKENS,
+        operation: "knowledge_grounded_selector_v11",
+        schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V6,
+        systemPrompt: initialPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: initialPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV1({
+        contractVersion: 11,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_MAX_OUTPUT_TOKENS,
+        operation: "knowledge_grounded_selector_final_v11",
+        schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V6,
+        systemPrompt: repairPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: repairPrompt.userPrompt
+      })
+    ] as const;
+    const results = [{
+      claims: [{
+        citationHints: ["K1"],
+        text: "Completed exports are retained for 30 days."
+      }],
+      version: 1
+    }, {
+      kind: "selector_failed",
+      reason: "selector_coverage_invalid"
+    }, {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{
+        description: "The requested retention period.",
+        id: "D1",
+        status: "covered",
+        supportIds: ["C1"]
+      }],
+      decision: "select_claims",
+      missingInformation: [],
+      requestCoverage: "complete",
+      version: 1
+    }] as const;
+
+    expect(snapshots.every(({ operation }) =>
+      operation.length <= KNOWLEDGE_PROVIDER_ATTEMPT_PURPOSE_STORAGE_LIMIT)).toBe(true);
+
+    for (const [index, snapshot] of snapshots.entries()) {
+      const ordinal = index + 1;
+      const input: ReserveKnowledgeEvidenceDispatchInput = {
+        acceptedRequest: snapshot,
+        checkpointHash: String(ordinal).repeat(64),
+        contractVersion: snapshot.contractVersion,
+        draft: currentManifest,
+        estimatedUsage: usage(),
+        evidenceBindings: [{
+          dispatchEvidenceId: "dispatch-evidence-1",
+          evidenceItemId: "evidence-item-1"
+        }],
+        evidenceReceiptHash: currentManifest.manifestHash,
+        idempotencyKey: `run:answer:v15:${ordinal}`,
+        leaseExpiresAt: LEASE,
+        leaseToken: `lease:worker:${ordinal}`,
+        modelRunId: "run-1",
+        now: NOW,
+        ordinal,
+        providerBindingKey: "answer",
+        purpose: snapshot.operation,
+        requestHash: knowledgeAnswerHash(snapshot),
+        retrievalSessionId: "session-1",
+        roundIndex: 0
+      };
+      const reserved = await repository.reserve(input);
+      const attemptIdentity = identity(input, reserved.dispatch.attempt.id);
+      await repository.dispatch({
+        ...attemptIdentity,
+        dispatchedAt: DISPATCHED,
+        leaseExpiresAt: DISPATCH_LEASE,
+        leaseToken: input.leaseToken
+      });
+      await repository.settle({
+        ...attemptIdentity,
+        acceptedResult: results[index]!,
+        actualUsage: usage(),
+        leaseToken: input.leaseToken,
+        providerResponseId: `provider-response-${ordinal}`,
+        resultAcceptedAt: new Date("2026-08-19T10:01:30.000Z"),
+        resultHash: knowledgeAnswerHash(results[index]!),
+        settledAt: SETTLED
+      });
+    }
+
+    await expect(loadSettledKnowledgeAnswerGroundingOperations(fake.client, {
+      contractPair: KNOWLEDGE_ANSWER_CONTRACT_PAIR_V15_V11,
+      modelRunId: "run-1"
+    })).resolves.toMatchObject({
+      draft: { attempt: { purpose: "knowledge_answer_draft_v15" } },
+      finalSelector: { attempt: { purpose: "knowledge_grounded_selector_final_v11" } },
+      initialSelector: { attempt: { purpose: "knowledge_grounded_selector_v11" } },
+      selector: { attempt: { purpose: "knowledge_grounded_selector_final_v11" } },
+      supplementalDraft: null
+    });
+  });
+
+  it("loads the V20/V16 Planner, Draft, and Selector sequence in ordinal order", async () => {
+    const fake = createFakePrisma();
+    const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+    const currentManifest = draft();
+    const request = "How long are completed exports retained?";
+    const plan = {
+      dimensions: [{ description: "The requested retention period.", id: "D1" }],
+      version: 1 as const
+    };
+    const acceptedDraft = {
+      blocks: [{ claimIds: ["C1"], type: "paragraph" as const }],
+      claims: [{
+        citationHints: ["K1"],
+        id: "C1",
+        text: "Completed exports are retained for 30 days."
+      }],
+      version: 1 as const
+    };
+    const plannerPrompt = knowledgeCoveragePlannerPrompt({
+      evidenceManifest: currentManifest.message,
+      request
+    });
+    const draftPrompt = knowledgeAnswerDraftPromptForPair({
+      coveragePlan: plan,
+      evidenceManifest: currentManifest.message,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    }, KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16);
+    const selectorPrompt = knowledgeGroundedSelectorPromptForPair({
+      coveragePlan: plan,
+      draft: acceptedDraft,
+      evidence: knowledgeSelectorEvidenceFromManifest(currentManifest),
+      evidenceManifest: currentManifest.message,
+      request,
+      selectorPass: "initial"
+    }, KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16);
+    const snapshots = [
+      createKnowledgeAnswerOperationRequestSnapshotV1({
+        contractVersion: 20,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_PLANNER_MAX_OUTPUT_TOKENS,
+        operation: "knowledge_coverage_planner_v20",
+        schema: KNOWLEDGE_COVERAGE_PLAN_SCHEMA_V1,
+        systemPrompt: plannerPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: plannerPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV1({
+        contractVersion: 20,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_MAX_OUTPUT_TOKENS,
+        operation: "knowledge_answer_draft_v20",
+        schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V6,
+        systemPrompt: draftPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: draftPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV1({
+        contractVersion: 16,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_MAX_OUTPUT_TOKENS,
+        operation: "knowledge_grounded_selector_v16",
+        schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V9,
+        systemPrompt: selectorPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: selectorPrompt.userPrompt
+      })
+    ] as const;
+    const results = [plan, {
+      claims: [{
+        citationHints: ["K1"],
+        text: "Completed exports are retained for 30 days."
+      }],
+      version: 1
+    }, {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    }] as const;
+
+    for (const [index, snapshot] of snapshots.entries()) {
+      const ordinal = index + 1;
+      const input: ReserveKnowledgeEvidenceDispatchInput = {
+        acceptedRequest: snapshot,
+        checkpointHash: String(ordinal).repeat(64),
+        contractVersion: snapshot.contractVersion,
+        draft: currentManifest,
+        estimatedUsage: usage(),
+        evidenceBindings: [{
+          dispatchEvidenceId: "dispatch-evidence-1",
+          evidenceItemId: "evidence-item-1"
+        }],
+        evidenceReceiptHash: currentManifest.manifestHash,
+        idempotencyKey: `run:answer:v20:${ordinal}`,
+        leaseExpiresAt: LEASE,
+        leaseToken: `lease:worker:v20:${ordinal}`,
+        modelRunId: "run-1",
+        now: NOW,
+        ordinal,
+        providerBindingKey: "answer",
+        purpose: snapshot.operation,
+        requestHash: knowledgeAnswerHash(snapshot),
+        retrievalSessionId: "session-1",
+        roundIndex: 0
+      };
+      const reserved = await repository.reserve(input);
+      const attemptIdentity = identity(input, reserved.dispatch.attempt.id);
+      await repository.dispatch({
+        ...attemptIdentity,
+        dispatchedAt: DISPATCHED,
+        leaseExpiresAt: DISPATCH_LEASE,
+        leaseToken: input.leaseToken
+      });
+      await repository.settle({
+        ...attemptIdentity,
+        acceptedResult: results[index]!,
+        actualUsage: usage(),
+        leaseToken: input.leaseToken,
+        providerResponseId: `provider-response-v20-${ordinal}`,
+        resultAcceptedAt: new Date("2026-08-19T10:01:30.000Z"),
+        resultHash: knowledgeAnswerHash(results[index]!),
+        settledAt: SETTLED
+      });
+    }
+
+    await expect(loadSettledKnowledgeAnswerGroundingOperations(fake.client, {
+      contractPair: KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
+      modelRunId: "run-1"
+    })).resolves.toMatchObject({
+      coveragePlanner: { attempt: { purpose: "knowledge_coverage_planner_v20" } },
+      draft: { attempt: { purpose: "knowledge_answer_draft_v20" } },
+      finalSelector: null,
+      initialSelector: { attempt: { purpose: "knowledge_grounded_selector_v16" } },
+      selector: { attempt: { purpose: "knowledge_grounded_selector_v16" } },
+      supplementalDraft: null
+    });
   });
 
   it("maps a one-based draft result reference to a zero-based durable evidence link", async () => {

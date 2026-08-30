@@ -254,6 +254,7 @@ function snapshotAuthorizationStore(options: Readonly<{
   projectActive?: boolean;
   projectBaseBound?: boolean;
   projectSourceBound?: boolean;
+  sourceAvailable?: boolean;
   sourceDeleting?: boolean;
   sourcePurged?: boolean;
 }> = {}) {
@@ -285,7 +286,7 @@ function snapshotAuthorizationStore(options: Readonly<{
       }])
     },
     knowledgeSource: {
-      findMany: vi.fn(async () => options.sourcePurged
+      findMany: vi.fn(async () => options.sourcePurged || options.sourceAvailable === false
         ? []
         : [{
             currentVersionId: "source-version-new",
@@ -475,6 +476,36 @@ describe("Knowledge run admission", () => {
           currentVersion: expect.anything()
         })
       })
+    );
+  });
+
+  it("reauthorizes a large immutable Base snapshot before any Source alias is disclosed", async () => {
+    const client = store({
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+    const authorizationStore = snapshotAuthorizationStore({ sourceAvailable: false });
+    const snapshot: KnowledgeRunAdmissionAuthorizationSnapshot = {
+      ...authorizationSnapshot(admitted),
+      resolvedSourceCount: 5_183,
+      sourceBindingStrategy: "disclosed_v1",
+      sources: []
+    };
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(authorizationStore, {
+      snapshot,
+      userId: "user-1"
+    })).resolves.toBe(true);
+    expect(authorizationStore.knowledgeSource.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: [] } } })
     );
   });
 

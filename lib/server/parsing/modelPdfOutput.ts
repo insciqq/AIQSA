@@ -5,13 +5,13 @@ import type {
   ParsedDocument,
   ParsedDocumentBlock,
   ParsedDocumentBlockType,
-  ParsedTable,
-  ParsedTableCell
+  ParsedTable
 } from "./types";
 
 export const MODEL_PDF_OUTPUT_MAX_CHARACTERS_PER_BATCH = 500_000;
 export const MODEL_PDF_OUTPUT_MAX_LINES_PER_PAGE = 20_000;
-export const MODEL_PDF_PROMPT_VERSION = 3;
+export const MODEL_PDF_PROMPT_VERSION = 5;
+export const MODEL_PDF_ROW_CONTINUATION_CELL = "[[AIQSA_ROW_CONTINUATION]]";
 
 export type DecodedModelPdfPage = Readonly<{
   page: number;
@@ -34,7 +34,7 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
   mode: PdfModelProcessingMode;
   pageEnd: number;
   pageStart: number;
-  promptVersion?: 1 | 2 | 3;
+  promptVersion?: 1 | 2 | 3 | 4 | 5;
 }>): string {
   const sections: string[] = [];
   for (let page = input.pageStart; page <= input.pageEnd; page += 1) {
@@ -60,6 +60,22 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
     ...(promptVersion >= 3 && input.mode === "system_model_vision" ? [
       "Inspect the supplied original-detail page image at full resolution before transcribing. " +
         "Zoom into dense tables, scans, and small labels instead of relying on a reduced overview."
+    ] : []),
+    ...(promptVersion === 4 ? [
+      "Emit each table as logical rows with one stable tab-separated column order. When a " +
+        "visibly merged cell spans multiple rows or columns, repeat its exact text in every " +
+        "logical output cell covered by that span so each row retains its complete identity. " +
+        "Keep genuinely empty, non-spanning cells empty, and never infer a span from wording."
+    ] : []),
+    ...(promptVersion >= 5 ? [
+      "Emit each table as logical rows with one stable tab-separated column order. A logical " +
+        "record may occupy multiple physical rows. In every cell that continues the value " +
+        `directly above, write exactly ${MODEL_PDF_ROW_CONTINUATION_CELL}. ` +
+        "Use it for a visually merged row span and for a leading record identity shown once " +
+        "while aligned subordinate rows remain in that same record. Continue only until the " +
+        "next peer value or visible separator. Decide from layout (borders, alignment, " +
+        "indentation, and repeated row pattern), never from the language or meaning of labels. " +
+        "Leave genuinely empty cells empty."
     ] : []),
     "For an empty page, write [BLANK PAGE].",
     "Return only the following page sections, once each and in this exact order:",
@@ -137,25 +153,222 @@ function rowCells(line: string): string[] | null {
   return markdownCells(line);
 }
 
-function tableFor(rows: readonly (readonly string[])[]): ParsedTable {
+function tablePatternCell(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/gu, " ").trim().toLocaleLowerCase("und");
+}
+
+type RegularRowGroup = Readonly<{ starts: readonly number[]; stride: number }>;
+
+function regularRowGroups(
+  anchors: readonly number[],
+  rowCount: number
+): readonly RegularRowGroup[] {
+  // Only adjacent equal-stride anchor runs can describe a regular record grid.
+  // Scanning runs keeps the fallback proportional to the parsed table instead
+  // of comparing every anchor pair in the 20,000-line provider-output budget.
+  const groups: RegularRowGroup[] = [];
+  let startIndex = 0;
+  while (startIndex + 2 < anchors.length) {
+    const stride = anchors[startIndex + 1]! - anchors[startIndex]!;
+    let endIndex = startIndex + 2;
+    while (endIndex < anchors.length &&
+      anchors[endIndex]! - anchors[endIndex - 1]! === stride) endIndex += 1;
+    const starts = anchors.slice(startIndex, endIndex);
+    if (stride >= 2 && starts.length >= 3 && starts.at(-1)! + stride === rowCount) {
+      groups.push(Object.freeze({ starts: Object.freeze(starts), stride }));
+    }
+    startIndex = endIndex - 1;
+  }
+  return Object.freeze(groups);
+}
+
+function validRegularGroupSuffix(
+  group: RegularRowGroup,
+  valid: (start: number) => boolean
+): RegularRowGroup | null {
+  let firstValid = group.starts.length;
+  while (firstValid > 0 && valid(group.starts[firstValid - 1]!)) firstValid -= 1;
+  const starts = group.starts.slice(firstValid);
+  return starts.length >= 3
+    ? Object.freeze({ starts: Object.freeze(starts), stride: group.stride })
+    : null;
+}
+
+function restoreTrimmedLeadingTableCells(
+  rows: readonly (readonly string[])[]
+): string[][] {
   const columnCount = Math.max(...rows.map((row) => row.length));
-  const cells: ParsedTableCell[] = [];
+  const restored = rows.map((row) =>
+    Array.from({ length: columnCount }, (_, column) => row[column] ?? ""));
+  if (columnCount < 3) return restored;
+  const fullRows = restored.flatMap((row, rowIndex) =>
+    row.every((cell) => Boolean(cell)) ? [rowIndex] : []);
+  let best: Readonly<{ repeatedOffsets: number; starts: readonly number[]; stride: number }> |
+    null = null;
+  for (const rawGroup of regularRowGroups(fullRows, restored.length)) {
+    const group = validRegularGroupSuffix(rawGroup, (start) => {
+      if (!restored[start]?.every((cell) => Boolean(cell))) return false;
+      for (let offset = 1; offset < rawGroup.stride; offset += 1) {
+        const row = restored[start + offset];
+        if (!row || row.at(-1) || !row.slice(0, -1).every((cell) => Boolean(cell))) {
+          return false;
+        }
+      }
+      return true;
+    });
+    if (!group) continue;
+    let repeatedOffsets = 0;
+    for (let offset = 0; offset < group.stride; offset += 1) {
+      const comparableColumns = offset === 0
+        ? Array.from({ length: columnCount }, (_, column) => column)
+        : Array.from({ length: columnCount - 1 }, (_, column) => column);
+      if (comparableColumns.some((column) => {
+        const values = group.starts.map((start) =>
+          tablePatternCell(restored[start + offset]?.[column] ?? ""));
+        return values.every((value) => value && /[\p{L}\p{M}]/u.test(value)) &&
+          new Set(values).size === 1;
+      })) repeatedOffsets += 1;
+    }
+    if (repeatedOffsets < Math.max(2, Math.ceil(group.stride / 2))) continue;
+    if (!best || group.starts.length > best.starts.length ||
+      group.starts.length === best.starts.length && repeatedOffsets > best.repeatedOffsets) {
+      best = Object.freeze({ ...group, repeatedOffsets });
+    }
+  }
+  if (!best) return restored;
+  for (const start of best.starts) {
+    for (let offset = 1; offset < best.stride; offset += 1) {
+      const row = restored[start + offset]!;
+      for (let column = columnCount - 1; column > 0; column -= 1) {
+        row[column] = row[column - 1]!;
+      }
+      row[0] = "";
+    }
+  }
+  return restored;
+}
+
+function inferRegularRowGroupContinuations(
+  rows: readonly (readonly string[])[]
+): readonly (readonly string[])[] {
+  const completed = restoreTrimmedLeadingTableCells(rows);
+  const columnCount = Math.max(...completed.map((row) => row.length));
+  for (let column = 0; column < columnCount - 1; column += 1) {
+    const anchors = completed.flatMap((row, rowIndex) => {
+      const value = row[column]!;
+      return value && value !== MODEL_PDF_ROW_CONTINUATION_CELL &&
+        row.slice(column + 1).some((cell) => Boolean(cell))
+        ? [rowIndex]
+        : [];
+    });
+    let best: Readonly<{ repeatedOffsets: number; starts: readonly number[]; stride: number }> |
+      null = null;
+    for (const rawGroup of regularRowGroups(anchors, completed.length)) {
+      const group = validRegularGroupSuffix(rawGroup, (start) => {
+        const anchor = completed[start]?.[column] ?? "";
+        if (!anchor || anchor === MODEL_PDF_ROW_CONTINUATION_CELL) return false;
+        for (let offset = 1; offset < rawGroup.stride; offset += 1) {
+          const row = completed[start + offset];
+          if (!row || row[column] && row[column] !== MODEL_PDF_ROW_CONTINUATION_CELL ||
+            !row.slice(column + 1).some((cell) => Boolean(cell))) return false;
+        }
+        return true;
+      });
+      if (!group || !group.starts.some((start) =>
+        /[\p{L}\p{M}]/u.test(completed[start]?.[column] ?? ""))) continue;
+      let repeatedOffsets = 0;
+      for (let offset = 0; offset < group.stride; offset += 1) {
+        const hasRepeatedLabel = Array.from(
+          { length: columnCount - column - 1 },
+          (_, suffixOffset) => column + suffixOffset + 1
+        ).some((suffixColumn) => {
+          const values = group.starts.map((start) =>
+            tablePatternCell(completed[start + offset]?.[suffixColumn] ?? ""));
+          return values.every((value) => value && /[\p{L}\p{M}]/u.test(value)) &&
+            new Set(values).size === 1;
+        });
+        if (hasRepeatedLabel) repeatedOffsets += 1;
+      }
+      if (repeatedOffsets < Math.max(2, Math.ceil(group.stride / 2))) continue;
+      if (!best || group.starts.length > best.starts.length ||
+        group.starts.length === best.starts.length && repeatedOffsets > best.repeatedOffsets) {
+        best = Object.freeze({ ...group, repeatedOffsets });
+      }
+    }
+    if (!best) continue;
+    for (const start of best.starts) {
+      for (let offset = 1; offset < best.stride; offset += 1) {
+        if (!completed[start + offset]![column]) {
+          completed[start + offset]![column] = MODEL_PDF_ROW_CONTINUATION_CELL;
+        }
+      }
+    }
+  }
+  return Object.freeze(completed.map((row) => Object.freeze(row)));
+}
+
+type MutableParsedTableCell = {
+  column: number;
+  columnSpan: number;
+  row: number;
+  rowSpan: number;
+  text: string;
+};
+
+function tableFor(
+  rows: readonly (readonly string[])[],
+  input: Readonly<{
+    continuationMarkers: boolean;
+    mode: PdfModelProcessingMode;
+  }>
+): ParsedTable {
+  const columnCount = Math.max(...rows.map((row) => row.length));
+  const cells: MutableParsedTableCell[] = [];
+  const verticalAnchors = Array<MutableParsedTableCell | null>(columnCount).fill(null);
   rows.forEach((row, rowIndex) => {
     for (let column = 0; column < columnCount; column += 1) {
-      cells.push(Object.freeze({
+      const rawText = row[column] ?? "";
+      if (input.continuationMarkers && rawText === MODEL_PDF_ROW_CONTINUATION_CELL) {
+        const anchor = verticalAnchors[column];
+        if (anchor?.text && anchor.row + anchor.rowSpan === rowIndex) {
+          anchor.rowSpan += 1;
+          continue;
+        }
+      }
+      // The marker is synthetic parser control, not source evidence. A vision
+      // model can occasionally use it for a horizontal span or at a page-local
+      // table boundary where no vertical anchor exists. Preserve the rest of
+      // the table and degrade only that unresolvable control cell to empty.
+      const text = rawText === MODEL_PDF_ROW_CONTINUATION_CELL ? "" : rawText;
+      const cell: MutableParsedTableCell = {
         column,
         columnSpan: 1,
         row: rowIndex,
         rowSpan: 1,
-        text: row[column] ?? ""
-      }));
+        text
+      };
+      cells.push(cell);
+      verticalAnchors[column] = text ? cell : null;
     }
   });
   return Object.freeze({
-    cells: Object.freeze(cells),
+    cells: Object.freeze(cells.map((cell) => Object.freeze(cell))),
     columnCount,
     rowCount: rows.length
   });
+}
+
+function tableText(table: ParsedTable): string {
+  const rows = Array.from(
+    { length: table.rowCount },
+    () => Array<string>(table.columnCount).fill("")
+  );
+  for (const cell of table.cells) {
+    for (let row = cell.row; row < cell.row + cell.rowSpan; row += 1) {
+      rows[row]![cell.column] = cell.text;
+    }
+  }
+  return rows.map((row) => row.join("\t").trimEnd()).filter(Boolean).join("\n");
 }
 
 function block(input: Readonly<{
@@ -184,15 +397,21 @@ function block(input: Readonly<{
 
 function pageBlocks(
   page: DecodedModelPdfPage,
-  firstIndex: number
+  firstIndex: number,
+  input: Readonly<{
+    continuationMarkers: boolean;
+    mode: PdfModelProcessingMode;
+  }>
 ): ParsedDocumentBlock[] {
-  const lines = page.text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = page.text.split("\n").filter((line) => Boolean(line.trim()));
   const blocks: ParsedDocumentBlock[] = [];
-  const headingPath: string[] = [];
+  const headings: Array<Readonly<{ level: number; text: string }>> = [];
+  const headingPath = (): readonly string[] => headings.map(({ text }) => text);
   let lineIndex = 0;
   while (lineIndex < lines.length) {
-    const line = lines[lineIndex]!;
-    const cells = rowCells(line);
+    const rawLine = lines[lineIndex]!;
+    const line = rawLine.trim();
+    const cells = rowCells(rawLine);
     if (cells) {
       const rows: string[][] = [];
       while (lineIndex < lines.length) {
@@ -202,13 +421,16 @@ function pageBlocks(
         lineIndex += 1;
       }
       if (rows.length > 0) {
-        const table = tableFor(rows);
+        const table = tableFor(
+          input.continuationMarkers ? inferRegularRowGroupContinuations(rows) : rows,
+          input
+        );
         blocks.push(block({
-          headingPath,
+          headingPath: headingPath(),
           index: firstIndex + blocks.length,
           page: page.page,
           table,
-          text: rows.map((row) => row.join("\t")).join("\n"),
+          text: tableText(table),
           type: "table"
         }));
       }
@@ -218,18 +440,18 @@ function pageBlocks(
     if (heading) {
       const level = heading[1]!.length;
       const text = heading[2]!.trim();
-      headingPath.splice(level - 1);
-      headingPath[level - 1] = text;
+      while (headings.at(-1) && headings.at(-1)!.level >= level) headings.pop();
       blocks.push(block({
-        headingPath: headingPath.slice(0, level - 1),
+        headingPath: headingPath(),
         index: firstIndex + blocks.length,
         page: page.page,
         text,
         type: level === 1 ? "title" : "heading"
       }));
+      headings.push(Object.freeze({ level, text }));
     } else {
       blocks.push(block({
-        headingPath,
+        headingPath: headingPath(),
         index: firstIndex + blocks.length,
         page: page.page,
         text: line,
@@ -247,6 +469,7 @@ export function modelPdfPagesToDocument(input: Readonly<{
   mode: PdfModelProcessingMode;
   pageCount: number;
   pages: readonly DecodedModelPdfPage[];
+  tableContinuationMarkers?: boolean;
 }>): ParsedDocument {
   if (input.pages.length !== input.pageCount || input.pages.some((page, index) =>
     page.page !== index + 1)) throw parserError(input.mode);
@@ -257,7 +480,10 @@ export function modelPdfPagesToDocument(input: Readonly<{
     if (characterCount > input.maxCharacters) {
       throw new DocumentParserError("parser_output_too_large", input.mode);
     }
-    blocks.push(...pageBlocks(page, blocks.length));
+    blocks.push(...pageBlocks(page, blocks.length, {
+      continuationMarkers: input.tableContinuationMarkers === true,
+      mode: input.mode
+    }));
     if (blocks.length > input.maxBlocks) {
       throw new DocumentParserError("parser_output_too_large", input.mode);
     }

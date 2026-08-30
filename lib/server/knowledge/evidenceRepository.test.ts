@@ -7,12 +7,24 @@ import {
 import {
   groundKnowledgeRunAnswer,
   knowledgeEvidencePackageForGroundingDispatch,
-  loadKnowledgeEvidencePackage
+  loadKnowledgeFullContextDispatchRecovery,
+  loadKnowledgeEvidencePackage,
+  settleKnowledgeGrounding
 } from "./evidenceRepository";
 import { knowledgeEvidenceReceiptHash } from "./evidencePackage";
 import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchRepository";
 import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
-import { groundKnowledgeAnswer } from "./grounding";
+import { createKnowledgeTableDocumentContext } from "./documentContext";
+import { knowledgeSelectorEvidenceFromManifest } from "./answerGroundingV5";
+import { knowledgeFullContextDispatchPresentation } from "./fullContext";
+import {
+  groundKnowledgeAnswer,
+  groundSettledKnowledgeAnswerV5,
+  groundSettledKnowledgeAnswerV11,
+  groundSettledKnowledgeAnswerV14,
+  groundSettledKnowledgeAnswerV15,
+  groundSettledKnowledgeAnswerV16
+} from "./grounding";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
   KNOWLEDGE_RESULT_VERSION,
@@ -42,7 +54,8 @@ function row(overrides: Record<string, unknown> = {}) {
         knowledgeRun: {
           fusion: "weighted_rrf_v2",
           invocationOrdinal: 1,
-          operation: "automatic_search"
+          operation: "automatic_search",
+          resultLimit: 8
         },
         knowledgeRunId: "knowledge-operation-1",
         resultOrdinal: 0,
@@ -105,6 +118,7 @@ function row(overrides: Record<string, unknown> = {}) {
 function client(value: unknown, input: Readonly<{
   attempts?: readonly unknown[];
   currentOperation?: unknown;
+  modelRun?: unknown;
   normalizedRequest?: unknown;
   toolLoopRun?: unknown;
 }> = {}) {
@@ -119,7 +133,7 @@ function client(value: unknown, input: Readonly<{
       findFirst: vi.fn(async () => input.currentOperation ?? null)
     },
     modelRun: {
-      findFirst: vi.fn(async () => input.toolLoopRun ?? (
+      findFirst: vi.fn(async () => input.modelRun ?? input.toolLoopRun ?? (
         input.normalizedRequest === undefined
           ? null
           : { normalizedRequest: input.normalizedRequest }
@@ -233,7 +247,8 @@ function exactItems(count: number) {
         knowledgeRun: {
           fusion: "none",
           invocationOrdinal: 1,
-          operation: "find_exact"
+          operation: "find_exact",
+          resultLimit: 100
         },
         knowledgeRunId: "exact-operation-1",
         resultOrdinal: index % 100,
@@ -337,10 +352,14 @@ function settledDispatch(input: Readonly<{
   };
   return {
     attempt: {
+      acceptedRequest: null,
+      acceptedResult: null,
       actualUsage: usage,
       ambiguousAt: null,
       checkpointHash: "b".repeat(64),
+      contractVersion: null,
       dispatchedAt: new Date("2026-08-19T10:01:00.000Z"),
+      evidenceReceiptHash: null,
       estimatedUsage: usage,
       failureCode: null,
       id: "provider-attempt-1",
@@ -354,6 +373,8 @@ function settledDispatch(input: Readonly<{
       purpose: "answer",
       releasedAt: null,
       requestHash: "c".repeat(64),
+      resultAcceptedAt: null,
+      resultHash: null,
       roundIndex: 0,
       settledAt: new Date("2026-08-19T10:02:00.000Z"),
       state: "settled"
@@ -447,6 +468,125 @@ describe("Knowledge Evidence v2 repository projection", () => {
       answer: "AIQSA_KB_STATUS=ANSWERED\nAtlas retains exports for 30 days citeK1.",
       evidence: narrowed
     }).finalText).toBe("Atlas retains exports for 30 days [K1].");
+  });
+
+  it("rebuilds the canonical full-context manifest only from persisted accepted evidence", async () => {
+    const fixture = row();
+    const evidenceRow = fixture.evidenceItems[0]!;
+    const recovery = await loadKnowledgeFullContextDispatchRecovery(client(row({
+      evidenceItems: [{ ...evidenceRow, operationLinks: [] }],
+      originalIntent: { kind: "full_context_v1" }
+    }), {
+      modelRun: {
+        knowledgeRunSourceBindings: [{
+          sourceAlias: "S1",
+          sourceArtifactId: evidenceRow.sourceArtifactId,
+          sourceVersionId: evidenceRow.sourceVersionId,
+          tombstonedAt: null
+        }]
+      }
+    }), {
+      maximumTokens: 2_048,
+      modelId: "answer-model",
+      provider: "test",
+      runId: "run-1",
+      userId: "user-1"
+    });
+
+    expect(recovery).toMatchObject({
+      draft: {
+        exclusions: [],
+        profileId: "test:answer-model",
+        promptFragmentVersion: 18,
+        runtimeVersion: 2,
+        version: 2
+      },
+      evidenceBindings: [{
+        dispatchEvidenceId: "full-context-evidence-private-id:result:1",
+        evidenceItemId: "evidence-private-id"
+      }]
+    });
+    expect(recovery?.draft.items[0]).toMatchObject({
+      evidenceId: "full-context-evidence-private-id:result:1",
+      exactExcerpt: evidenceRow.excerpt,
+      locator: "page=2; heading=Retention; source-passage=1",
+      sourceAlias: "S1"
+    });
+    expect(recovery?.draft.message).toContain(
+      '<private_knowledge_evidence version="11" coverage="full_admitted_corpus">'
+    );
+  });
+
+  it("rebuilds the same bounded table presentation from persisted atomic evidence", async () => {
+    const template = row().evidenceItems[0]!;
+    const evidenceItems = Array.from({ length: 6 }, (_, index) => {
+      const excerpt = index % 3 === 0
+        ? `Record ${String.fromCharCode(65 + index)}`
+        : index % 3 === 1
+          ? `Attribute ${index}`
+          : `Value ${index}`;
+      return {
+        ...template,
+        contentHash: (index + 1).toString(16).padStart(64, "0"),
+        contextBoundaries: {
+          documentContext: createKnowledgeTableDocumentContext({
+            blockId: "private-recovery-table",
+            cells: [{ columnEnd: 1, columnStart: 0, text: excerpt }],
+            headerLineage: [],
+            rowIndex: index
+          }),
+          expanded: false,
+          excerptBytes: Buffer.byteLength(excerpt, "utf8"),
+          sourceTextBytes: Buffer.byteLength(excerpt, "utf8")
+        },
+        excerpt,
+        handle: `K${index + 1}`,
+        id: `table-evidence-${index + 1}`,
+        operationLinks: [],
+        ordinal: index + 1,
+        passageId: `table-passage-${index + 1}`
+      };
+    });
+    const recovery = await loadKnowledgeFullContextDispatchRecovery(client(row({
+      evidenceItems,
+      originalIntent: { kind: "full_context_v1" }
+    }), {
+      modelRun: {
+        knowledgeRunSourceBindings: [{
+          sourceAlias: "S1",
+          sourceArtifactId: template.sourceArtifactId,
+          sourceVersionId: template.sourceVersionId,
+          tombstonedAt: null
+        }]
+      }
+    }), {
+      maximumTokens: 8_192,
+      modelId: "answer-model",
+      provider: "test",
+      runId: "run-1",
+      userId: "user-1"
+    });
+    const expected = knowledgeFullContextDispatchPresentation(evidenceItems.map((item) => ({
+      documentContext: item.contextBoundaries.documentContext,
+      exactExcerpt: item.excerpt,
+      handle: item.handle,
+      headingPath: item.headingPath,
+      page: item.locator.page,
+      sourceAlias: "S1"
+    })));
+
+    expect(recovery?.draft.items.map((item) => item.expandedContext)).toEqual(
+      expected.expandedContexts
+    );
+    expect(recovery?.draft.items[3]).toMatchObject({
+      expandedContextState: "included",
+      handle: "K4"
+    });
+    expect(recovery?.draft.items[3]?.expandedContext).toContain("handle=K1; table=T1");
+    expect(recovery?.draft.items[3]?.expandedContext).toContain("handle=K6; table=T1");
+    expect(recovery && knowledgeSelectorEvidenceFromManifest(recovery.draft)
+      .map((item) => item.handle)).toEqual(["K1", "K2", "K3", "K4", "K5", "K6"]);
+    expect(recovery?.draft.message).not.toContain("private-recovery-table");
   });
 
   it("keeps partial readiness unverified", async () => {
@@ -604,6 +744,38 @@ describe("Knowledge Evidence v2 repository projection", () => {
     );
   });
 
+  it("accepts a bounded neighbor rank beyond the legacy single-lane window", async () => {
+    const fixture = row();
+    const item = fixture.evidenceItems[0]!;
+    const operation = item.operationLinks[0]!;
+    const loaded = await loadKnowledgeEvidencePackage(client(row({
+      evidenceItems: [{
+        ...item,
+        operationLinks: [{
+          ...operation,
+          retrievalProvenance: {
+            ...operation.retrievalProvenance,
+            signals: [
+              ...operation.retrievalProvenance.signals,
+              {
+                exactKind: null,
+                lane: "neighbor",
+                rank: 242,
+                rawScore: 0.001,
+                vectorDistance: null,
+                vectorMode: null
+              }
+            ]
+          }
+        }]
+      }]
+    })), { runId: "run-1", userId: "user-1" });
+
+    expect(loaded?.items[0]?.provenance[0]?.signals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lane: "neighbor", rank: 242 })
+    ]));
+  });
+
   it("validates stored canonical Base provenance without projecting it to readers", async () => {
     const fixture = row();
     const item = fixture.evidenceItems[0]!;
@@ -759,7 +931,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     })).resolves.toMatchObject({ grounding: { outcome: "answered" } });
   });
 
-  it("allows fusion none and wide ordinals only for exact operations", async () => {
+  it("allows fusion none only for exact operations and binds ordinals to the stored result limit", async () => {
     const [exact] = exactItems(1);
     expect(exact).toBeDefined();
     const exactBoundary = {
@@ -808,7 +980,33 @@ describe("Knowledge Evidence v2 repository projection", () => {
       evidenceItems: [nonExactFusion]
     })), { runId: "run-1", userId: "user-1" })).resolves.toBeNull();
 
-    const wideNonExact = {
+    const broadNonExact = {
+      ...row().evidenceItems[0]!,
+      operationLinks: [{
+        ...row().evidenceItems[0]!.operationLinks[0]!,
+        knowledgeRun: {
+          ...row().evidenceItems[0]!.operationLinks[0]!.knowledgeRun,
+          resultLimit: 16
+        },
+        resultOrdinal: 15
+      }]
+    };
+    await expect(loadKnowledgeEvidencePackage(client(row({
+      evidenceItems: [broadNonExact]
+    })), { runId: "run-1", userId: "user-1" })).resolves.toMatchObject({
+      items: [{ provenance: [{ resultOrdinal: 15 }] }]
+    });
+    await expect(loadKnowledgeEvidencePackage(client(row({
+      evidenceItems: [{
+        ...broadNonExact,
+        operationLinks: [{
+          ...broadNonExact.operationLinks[0]!,
+          resultOrdinal: 16
+        }]
+      }]
+    })), { runId: "run-1", userId: "user-1" })).resolves.toBeNull();
+
+    const scopedOverflow = {
       ...row().evidenceItems[0]!,
       operationLinks: [{
         ...row().evidenceItems[0]!.operationLinks[0]!,
@@ -816,7 +1014,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       }]
     };
     await expect(loadKnowledgeEvidencePackage(client(row({
-      evidenceItems: [wideNonExact]
+      evidenceItems: [scopedOverflow]
     })), { runId: "run-1", userId: "user-1" })).resolves.toBeNull();
   });
 
@@ -943,6 +1141,340 @@ describe("Knowledge Evidence v2 repository projection", () => {
       runId: "run-1",
       userId: "user-1"
     })).rejects.toThrow("knowledge_evidence_dispatch_stored_manifest_invalid");
+  });
+
+  it("persists content-free Grounding Evidence V7 idempotently and rejects replay drift", async () => {
+    const evidenceRow = row({ originalIntent: { kind: "tool_loop_v1" } });
+    const acceptedEvidence = await loadKnowledgeEvidencePackage(client(evidenceRow), {
+      runId: "run-1",
+      userId: "user-1"
+    });
+    expect(acceptedEvidence).not.toBeNull();
+    const retrieval = toolLoopRetrieval();
+    const checkpoint = toolLoopCheckpoint({
+      phase: "provider_running",
+      providerContinuation: { responseId: "response-after-tools" },
+      roundIndex: 2
+    });
+    if (!checkpoint) throw new Error("tool_loop_checkpoint_fixture_invalid");
+    const toolLoopRun = {
+      toolCalls: [{
+        knowledgeRun: {
+          evidenceLinks: [{ evidenceItemId: "evidence-private-id" }],
+          providerText: retrieval.providerText,
+          retrievalSessionId: "session-1"
+        },
+        providerCallId: "knowledge-provider-call-1",
+        result: persistedToolLoopKnowledgeResult(retrieval),
+        roundIndex: 1,
+        state: "complete",
+        toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+      }],
+      toolLoopState: checkpoint
+    };
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 4,
+      reasoningTokens: 0,
+      totalTokens: 14
+    };
+    const grounding = groundSettledKnowledgeAnswerV5({
+      contracts: {
+        draftContractVersion: 11,
+        selectorContractVersion: 7
+      },
+      draft: {
+        claimCount: 1,
+        durationMs: 12,
+        hash: "a".repeat(64),
+        operationId: "draft-operation-v4",
+        providerRequestId: "draft-response-v4",
+        usage
+      },
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "c".repeat(64),
+      selector: {
+        durationMs: 8,
+        hash: "b".repeat(64),
+        operationId: "selector-operation-v1",
+        providerRequestId: "selector-response-v1",
+        usage
+      },
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Atlas retains completed exports for 30 days. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+    let acceptedAt: Date | null = null;
+    let receiptHash: string | null = null;
+    let existing: Record<string, unknown> | null = null;
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      existing = { ...data };
+      return data;
+    });
+    const transaction = {
+      $queryRaw: vi.fn(async () => [{
+        acceptedAt,
+        id: "session-1",
+        receiptHash
+      }]),
+      knowledgeGroundingResult: {
+        create,
+        findUnique: vi.fn(async () => existing)
+      },
+      knowledgeProviderAttempt: { findMany: vi.fn(async () => []) },
+      knowledgeRetrievalSession: {
+        findFirst: vi.fn(async () => evidenceRow),
+        findUnique: vi.fn(async () => ({
+          modelRun: { userId: "user-1" },
+          modelRunId: "run-1"
+        })),
+        update: vi.fn(async ({ data }: { data: { acceptedAt: Date; receiptHash: string } }) => {
+          acceptedAt = data.acceptedAt;
+          receiptHash = data.receiptHash;
+          return { id: "session-1" };
+        })
+      },
+      knowledgeRun: { findFirst: vi.fn(async () => null) },
+      modelRun: { findFirst: vi.fn(async () => toolLoopRun) }
+    };
+
+    await expect(settleKnowledgeGrounding(transaction as never, { grounding }))
+      .resolves.toBeUndefined();
+    await expect(settleKnowledgeGrounding(transaction as never, { grounding }))
+      .resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    const storedEvidence = (existing as { evidence?: unknown } | null)?.evidence;
+    expect(storedEvidence).toMatchObject({
+      draftContractVersion: 11,
+      evidenceReceiptHash: "c".repeat(64),
+      selectorContractVersion: 7,
+      version: 7
+    });
+    expect(JSON.stringify(storedEvidence)).not.toContain("finalText");
+    expect(JSON.stringify(storedEvidence)).not.toContain("Completed Atlas exports");
+
+    existing = {
+      ...(existing as Record<string, unknown> | null ?? {}),
+      evidence: {
+        ...(storedEvidence as Record<string, unknown>),
+        selectorHash: "f".repeat(64)
+      }
+    };
+    await expect(settleKnowledgeGrounding(transaction as never, { grounding }))
+      .rejects.toThrow("knowledge_grounding_result_conflict");
+
+    existing = null;
+    create.mockClear();
+    const groundingV11 = groundSettledKnowledgeAnswerV11({
+      contracts: { draftContractVersion: 15, selectorContractVersion: 11 },
+      draftClaimCount: 1,
+      drafts: [{
+        claimCount: 1,
+        durationMs: 12,
+        hash: "d".repeat(64),
+        operationId: "draft-operation-v15",
+        providerRequestId: "draft-response-v15",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "e".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "f".repeat(64),
+        operationId: "selector-operation-v11",
+        providerRequestId: "selector-response-v11",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Atlas retains completed exports for 30 days. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV11
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      draftContractVersion: 15,
+      selectorContractVersion: 11,
+      selectorValidationRepairApplied: false,
+      version: 11
+    });
+
+    existing = null;
+    create.mockClear();
+    const groundingV14 = groundSettledKnowledgeAnswerV14({
+      contracts: { draftContractVersion: 18, selectorContractVersion: 14 },
+      draftClaimCount: 2,
+      drafts: [{
+        claimCount: 2,
+        durationMs: 12,
+        hash: "1".repeat(64),
+        operationId: "draft-operation-v18",
+        providerRequestId: "draft-response-v18",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "2".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "3".repeat(64),
+        operationId: "selector-operation-v14",
+        providerRequestId: "selector-response-v14",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both co-equal results are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV14
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      draftContractVersion: 18,
+      selectorContractVersion: 14,
+      selectorValidationRepairApplied: false,
+      version: 14
+    });
+
+    existing = null;
+    create.mockClear();
+    const groundingV15 = groundSettledKnowledgeAnswerV15({
+      contracts: { draftContractVersion: 19, selectorContractVersion: 15 },
+      draftClaimCount: 2,
+      drafts: [{
+        claimCount: 2,
+        durationMs: 12,
+        hash: "4".repeat(64),
+        operationId: "draft-operation-v19",
+        providerRequestId: "draft-response-v19",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "5".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "6".repeat(64),
+        operationId: "selector-operation-v15",
+        providerRequestId: "selector-response-v15",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both phased results are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV15
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      draftContractVersion: 19,
+      selectorContractVersion: 15,
+      selectorValidationRepairApplied: false,
+      version: 15
+    });
+
+    existing = null;
+    create.mockClear();
+    const groundingV16 = groundSettledKnowledgeAnswerV16({
+      contracts: { draftContractVersion: 20, selectorContractVersion: 16 },
+      coveragePlanner: {
+        claimCount: null,
+        durationMs: 4,
+        hash: "7".repeat(64),
+        operationId: "coverage-planner-operation-v20",
+        providerRequestId: "coverage-planner-response-v20",
+        role: "planner",
+        usage
+      },
+      draftClaimCount: 2,
+      drafts: [{
+        claimCount: 2,
+        durationMs: 12,
+        hash: "8".repeat(64),
+        operationId: "draft-operation-v20",
+        providerRequestId: "draft-response-v20",
+        role: "primary",
+        usage
+      }],
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "9".repeat(64),
+      selectors: [{
+        claimCount: null,
+        durationMs: 8,
+        hash: "a".repeat(64),
+        operationId: "selector-operation-v16",
+        providerRequestId: "selector-response-v16",
+        role: "initial",
+        usage
+      }],
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both planned results are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV16
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    expect((existing as { evidence?: unknown } | null)?.evidence).toMatchObject({
+      coveragePlanner: { claimCount: null, role: "planner" },
+      draftContractVersion: 20,
+      selectorContractVersion: 16,
+      selectorValidationRepairApplied: false,
+      version: 16
+    });
   });
 
 });

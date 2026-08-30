@@ -2465,7 +2465,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("indexes a Safety Lite fact and batches its hybrid embedding", async () => {
+  it("commits Safety Lite semantics and independently queues hybrid indexing", async () => {
     const userId = await createOwner("embedding-outage");
     try {
       await activateHybridIndex(userId);
@@ -2492,15 +2492,30 @@ describe("Prisma Memory vNext source-message ingestion", () => {
 
       await expect(prisma.memoryFactVersion.count({ where: { userId } }))
         .resolves.toBe(1);
-      await expect(prisma.memorySearchEntry.findFirstOrThrow({
-        select: { embeddingState: true, itemType: true },
+      const version = await prisma.memoryFactVersion.findFirstOrThrow({
         where: { userId }
-      })).resolves.toEqual({
+      });
+      expect(version).toMatchObject({
+        safetyClassificationReasonCode: "lite_non_secret_default",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        safetyClassifierProviderId: null,
+        state: "ACTIVE"
+      });
+      await expect(prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: version.id, userId }
+      })).resolves.toMatchObject({
         embeddingState: "PENDING",
+        factVersionId: version.id,
         itemType: "FACT_VERSION"
       });
       await expect(prisma.memoryJob.count({
         where: { kind: "EMBED_ITEMS", state: "QUEUED", userId }
+      })).resolves.toBe(1);
+      await expect(prisma.memoryEmbeddingBatchItem.count({
+        where: { userId }
       })).resolves.toBe(1);
     } finally {
       await cleanupOwner(userId);

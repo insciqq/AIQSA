@@ -2481,6 +2481,7 @@ describe("run preparation", () => {
     ));
 
     expect(prepared.normalizedRequest.knowledgePlan).toEqual(selection);
+    expect(prepared.normalizedRequest.knowledgeEvidencePackingVersion).toBe(2);
     expect(prepared.knowledgeAdmissionPlan?.sources).toEqual([
       expect.objectContaining({
         directSelected: true,
