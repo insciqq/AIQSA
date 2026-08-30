@@ -568,6 +568,7 @@ describe("LongMemEval adapter contract", () => {
       aggregationResolution: "RESOLVED",
       aggregationState: "READER_REQUIRED",
       budgetProfile: "COMPLEX",
+      broadLexicalFallbackUsed: null,
       candidateCountsByLane: { FACT_EXACT: 4, HISTORY_RECALL_VECTOR: 6 },
       cardinalityParserAcceptedCount: 3,
       cardinalityParserReasonCounts: { UNSUPPORTED_NUMBER_WORD: 1 },

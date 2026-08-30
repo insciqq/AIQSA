@@ -94,9 +94,9 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v39";
+  "memory-run-retrieval-admission-v40";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v13";
+  "memory-retrieval-component-metrics-v14";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -1102,6 +1102,7 @@ function queryVariantCounts(plan: MemoryRetrievalPlan): Readonly<Record<string, 
 }
 
 function memoryRetrievalComponentEvidence(input: Readonly<{
+  broadLexicalFallbackUsed: boolean;
   control: MemoryControlResult;
   digestEvidence: NonNullable<MemoryLocalRetrievalResult["digestEvidence"]>;
   dynamicFused: readonly MemoryRankedCandidate[];
@@ -1216,6 +1217,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     baselineOnlyCandidateCount: input.sourceFamilyEvidence.baselineOnlyCandidateCount,
     baselineOnlySelectedCount,
     baselineSourceKinds: [...input.enabledSourceKinds],
+    broadLexicalFallbackUsed: input.broadLexicalFallbackUsed,
     candidateCountsByLane,
     candidateCountsBySourceKind: sourceCandidateCounts,
     candidatesRetainedAfterReranker: input.relevant.length,
@@ -2465,10 +2467,17 @@ export function createMemoryRunRetrievalService(
         plan.applyResponsePreferences;
 
       let local: MemoryLocalRetrievalResult;
+      let broadLexicalFallbackUsed = false;
       let speculativeBaselineUsed = false;
       let speculativeHybridUsed = false;
       try {
         const speculationUsable = broadPlannerFallback || plan === baselineReadPlan;
+        // The fast hedge intentionally omits broad digest navigation. It may
+        // replace the enriched plan only while dense original-query evidence
+        // is available; otherwise the existing bounded broad lexical plan is
+        // the authoritative fail-soft path.
+        const broadLexicalFallbackRequired = broadPlannerFallback &&
+          queryEmbedding?.status !== "READY";
         const speculativeHybrid = speculationUsable
           ? await speculativeHybridPromise
           : null;
@@ -2480,10 +2489,11 @@ export function createMemoryRunRetrievalService(
         if (speculativeHybrid) {
           local = speculativeHybrid;
           speculativeHybridUsed = true;
-        } else if (speculativeBaseline) {
+        } else if (speculativeBaseline && !broadLexicalFallbackRequired) {
           local = speculativeBaseline;
           speculativeBaselineUsed = true;
         } else {
+          broadLexicalFallbackUsed = broadLexicalFallbackRequired;
           local = await timings.measure("localRetrievalMs", () =>
             runBoundedMemoryRead(
               deadline,
@@ -2846,7 +2856,7 @@ export function createMemoryRunRetrievalService(
         queryEmbedding,
         dynamicAllowed,
         plan.profileRequested,
-        speculativeBaselineUsed || speculativeHybridUsed,
+        speculativeBaselineUsed || speculativeHybridUsed || broadLexicalFallbackUsed,
         admittedSourceKinds
       );
       const pack = timings.measureSync("packerMs", () => packMemoryPersonalContext({
@@ -2871,6 +2881,7 @@ export function createMemoryRunRetrievalService(
         budgetProfile: pack.budgetProfile,
         candidateCount: pack.candidateCount,
         componentMetrics: memoryRetrievalComponentEvidence({
+          broadLexicalFallbackUsed,
           control: controlEvidence,
           digestEvidence: local.digestEvidence ?? {
             digestOnlyChatCount: 0,
@@ -2927,6 +2938,7 @@ export function createMemoryRunRetrievalService(
         packerVersion: pack.packerVersion,
         plan: planEvidence(plan),
         plannerFallbackReason,
+        broadLexicalFallbackUsed,
         speculativeBaselineUsed,
         speculativeHybridUsed,
         providerTokenLimit: pack.providerTokenLimit,

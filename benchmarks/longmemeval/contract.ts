@@ -329,6 +329,7 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   aggregationResolution: string | null;
   aggregationState: string | null;
   budgetProfile: string | null;
+  broadLexicalFallbackUsed: boolean | null;
   candidateCountsByLane: Readonly<Record<string, number>>;
   cardinalityParserAcceptedCount: number | null;
   cardinalityParserReasonCounts: Readonly<Record<string, number>>;
@@ -617,6 +618,9 @@ export function sanitizeLongMemEvalRetrievalAudit(
     aggregationResolution: uppercaseCode(budget.aggregationResolution),
     aggregationState: uppercaseCode(budget.aggregationState),
     budgetProfile: uppercaseCode(budget.budgetProfile),
+    broadLexicalFallbackUsed: typeof component.broadLexicalFallbackUsed === "boolean"
+      ? component.broadLexicalFallbackUsed
+      : null,
     candidateCountsByLane: sanitizedCounts(component.candidateCountsByLane),
     cardinalityParserAcceptedCount:
       nonNegativeInteger(budget.cardinalityParserAcceptedCount),
