@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnvConfig } from "@next/env";
+import { Client } from "pg";
 import {
   Prisma,
   PrismaClient,
@@ -56,20 +57,55 @@ import { defaultMemoryExecutionAuthority } from
   "../../lib/server/memory/execution/defaultAuthority";
 import { probeMemoryStructuredOutputAuthority } from
   "../../lib/server/memory/execution/structuredClassifier";
-import { MEMORY_ITEM_EMBEDDING_VERSIONS } from
-  "../../lib/server/memory/embedding/contract";
+import {
+  MEMORY_ITEM_EMBEDDING_VERSIONS,
+  memoryItemEmbeddingGenerationMatchesPin
+} from "../../lib/server/memory/embedding/contract";
 import { probeCurrentMemoryEmbeddingPin } from
   "../../lib/server/memory/embedding/handler";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from
+  "../../lib/server/memory/history/chunking";
+import { MEMORY_HISTORY_CLASSIFICATION_VERSIONS } from
+  "../../lib/server/memory/history/classifier";
+import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+} from "../../lib/server/memory/history/contract";
+import { MEMORY_CONTEXTUAL_KEY_VERSIONS } from
+  "../../lib/server/memory/history/contextualKeys";
+import {
+  MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
+  MEMORY_CHAT_DIGEST_VERSIONS
+} from "../../lib/server/memory/history/digest";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../../lib/server/memory/history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../../lib/server/memory/history/segments";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from
+  "../../lib/server/memory/history/sourceProjection";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from
+  "../../lib/server/memory/history/toolEvents";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION } from
   "../../lib/server/memory/learning/extraction/contract";
 import { createPrismaMemorySettingsRepository } from
   "../../lib/server/memory/persistence/settings";
+import {
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_NORMALIZATION_VERSION
+} from "../../lib/server/memory/persistence/lexical";
 import { createRerankerModelRoleResolver } from
   "../../lib/server/providerRuntime/rerankerModelRole";
 import { createPrismaMemoryRebuildRepository } from
   "../../lib/server/memory/rebuild/repository";
 import { createMemoryRebuildService } from
   "../../lib/server/memory/rebuild/service";
+import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
+  "../../lib/server/memory/retrieval/vector";
+import { MEMORY_SAFETY_LITE_POLICY_VERSION } from
+  "../../lib/server/memory/safetyLite";
 import { defaultMemorySourceMutationHooks } from
   "../../lib/server/memory/sourceHooks";
 import {
@@ -143,6 +179,16 @@ import {
   type LongMemEvalQualificationManifest,
   type LongMemEvalQualificationManifestId
 } from "./qualification";
+import {
+  LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
+  LONGMEMEVAL_PREPARED_CASE_EMAIL_SUFFIX,
+  LONGMEMEVAL_PREPARED_CASE_IMPORT_VERSION,
+  longMemEvalPreparedCaseAdvisoryKey,
+  longMemEvalPreparedCaseBuildingEmail,
+  longMemEvalPreparedCaseDisplayName,
+  longMemEvalPreparedCaseFingerprint,
+  longMemEvalPreparedCaseReadyEmail
+} from "./preparedCaseCache";
 
 const execFile = promisify(execFileCallback);
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
@@ -254,7 +300,28 @@ type ProviderRoles = Readonly<{
 
 type BenchmarkIdentity = Readonly<{
   cookie: string;
+  sessionId: string;
   userId: string;
+}>;
+
+type ImportedHistory = Readonly<{
+  assistantTurnsWithoutProductProvenance: number;
+  automaticSettlements: number;
+  chatIds: readonly string[];
+  messages: number;
+  syntheticAssistantSettlements: number;
+}>;
+
+type PreparedCaseCacheEvidence = Readonly<{
+  cacheVersion: string;
+  hybridCacheHit: boolean;
+  sourceCacheHit: boolean;
+  sourceFingerprint: string;
+}>;
+
+type PreparedCaseCacheRuntime = Readonly<{
+  databaseUrl: string;
+  migrationFingerprint: string;
 }>;
 
 type JobAggregate = Readonly<{
@@ -305,6 +372,7 @@ type CaseSummary = Readonly<{
     syntheticAssistantSettlements: number;
   }>;
   learning: LongMemEvalLearningEvidence;
+  preparedCase: PreparedCaseCacheEvidence | null;
   questionId: string;
   questionType: string;
   retrieval: LongMemEvalRetrievalAudit;
@@ -652,6 +720,7 @@ function decodeCheckpointCaseSummary(value: unknown): CaseSummary {
     !isRecord(value.componentEvaluation) ||
     !isRecord(value.embeddingBatchSizeDistribution) || !isRecord(value.history) ||
     !isRecord(value.learning) || !isRecord(value.retrieval) ||
+    (value.preparedCase !== null && !isRecord(value.preparedCase)) ||
     !Array.isArray(value.utilityExecutions)) {
     throw new Error("longmemeval_checkpoint_summary_invalid");
   }
@@ -961,7 +1030,8 @@ async function createBenchmarkIdentity(
   prisma: PrismaClient,
   roles: ProviderRoles,
   questionId: string,
-  profile: LongMemEvalProfile
+  profile: LongMemEvalProfile,
+  persistentIdentity?: Readonly<{ displayName: string; email: string }>
 ): Promise<BenchmarkIdentity> {
   const fullAccess = await prisma.group.findUnique({
     select: { id: true },
@@ -972,8 +1042,9 @@ async function createBenchmarkIdentity(
   await prisma.$transaction(async (tx) => {
     await tx.user.create({
       data: {
-        displayName: `LongMemEval ${questionId}`,
-        email: `${questionId}.${userId}${benchmarkEmailSuffix}`,
+        displayName: persistentIdentity?.displayName ?? `LongMemEval ${questionId}`,
+        email: persistentIdentity?.email ??
+          `${questionId}.${userId}${benchmarkEmailSuffix}`,
         id: userId,
         role: "user",
         status: "active"
@@ -1021,6 +1092,24 @@ async function createBenchmarkIdentity(
   });
   return Object.freeze({
     cookie: session.cookie.split(";", 1)[0]!,
+    sessionId: session.sessionId,
+    userId
+  });
+}
+
+async function createBenchmarkSession(
+  prisma: PrismaClient,
+  userId: string
+): Promise<BenchmarkIdentity> {
+  await prisma.authSession.deleteMany({ where: { userId } });
+  const session = await createAuthSession({
+    secureCookie: false,
+    sessions: createPrismaAuthSessionStore(prisma),
+    userId
+  });
+  return Object.freeze({
+    cookie: session.cookie.split(";", 1)[0]!,
+    sessionId: session.sessionId,
     userId
   });
 }
@@ -1232,13 +1321,7 @@ async function importHistory(
   entry: LongMemEvalCase,
   concurrency: number,
   profile: LongMemEvalProfile
-): Promise<Readonly<{
-  assistantTurnsWithoutProductProvenance: number;
-  automaticSettlements: number;
-  chatIds: readonly string[];
-  messages: number;
-  syntheticAssistantSettlements: number;
-}>> {
+): Promise<ImportedHistory> {
   let completed = 0;
   const importedSessions = await mapConcurrentOrdered(
     entry.haystackSessions.map((_session, index) => index),
@@ -1277,6 +1360,386 @@ async function importHistory(
       0
     )
   });
+}
+
+function preparedCaseSourceFingerprint(input: Readonly<{
+  entry: LongMemEvalCase;
+  migrationFingerprint: string;
+  profile: LongMemEvalProfile;
+  roles: ProviderRoles;
+}>): string {
+  return longMemEvalPreparedCaseFingerprint({
+    cacheVersion: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
+    case: {
+      haystackDates: input.entry.haystackDates,
+      haystackSessionIds: input.entry.haystackSessionIds,
+      haystackSessions: input.entry.haystackSessions,
+      questionId: input.entry.questionId
+    },
+    datasetSha256: LONGMEMEVAL_S_SHA256,
+    historyContract: {
+      chatDigest: MEMORY_CHAT_DIGEST_VERSIONS,
+      chatDigestPipeline: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+      chatDigestRebuildPolicy: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
+      chunking: MEMORY_HISTORY_CHUNKING_VERSION,
+      classification: MEMORY_HISTORY_CLASSIFICATION_VERSIONS,
+      contextualKey: MEMORY_CONTEXTUAL_KEY_VERSIONS,
+      contextualKeyPolicy: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+      historyPipeline: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+      importVersion: LONGMEMEVAL_PREPARED_CASE_IMPORT_VERSION,
+      recallRound: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      recallRoundSegment: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+      safetyLite: MEMORY_SAFETY_LITE_POLICY_VERSION,
+      sourceProjection: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      toolEvent: MEMORY_TOOL_EVENT_PROJECTION_VERSION
+    },
+    migrationFingerprint: input.migrationFingerprint,
+    profile: input.profile,
+    systemHistoryAuthority: {
+      connectionId: input.roles.system.connectionId,
+      credentialId: input.roles.system.credentialId,
+      providerModelId: input.roles.system.id,
+      upstreamModelId: input.roles.system.upstreamModelId
+    }
+  });
+}
+
+async function databaseMigrationFingerprint(prisma: PrismaClient): Promise<string> {
+  const migrations = await prisma.$queryRaw<Array<{
+    checksum: string;
+    migrationName: string;
+  }>>(Prisma.sql`
+    SELECT "checksum", "migration_name" AS "migrationName"
+    FROM "_prisma_migrations"
+    WHERE "finished_at" IS NOT NULL
+      AND "rolled_back_at" IS NULL
+    ORDER BY "migration_name" ASC
+  `);
+  if (migrations.length === 0 || migrations.some(({ checksum, migrationName }) =>
+    !checksum || !migrationName)) {
+    throw new Error("longmemeval_migration_fingerprint_invalid");
+  }
+  return longMemEvalPreparedCaseFingerprint({ migrations, version: 1 });
+}
+
+async function withPreparedCaseLock<T>(
+  databaseUrl: string,
+  fingerprint: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const [first, second] = longMemEvalPreparedCaseAdvisoryKey(fingerprint);
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  let locked = false;
+  try {
+    await client.query("SELECT pg_advisory_lock($1::integer, $2::integer)", [
+      first,
+      second
+    ]);
+    locked = true;
+    return await operation();
+  } finally {
+    try {
+      if (locked) {
+        await client.query("SELECT pg_advisory_unlock($1::integer, $2::integer)", [
+          first,
+          second
+        ]);
+      }
+    } finally {
+      await client.end();
+    }
+  }
+}
+
+async function assertPreparedQueryIsolation(
+  prisma: PrismaClient,
+  userId: string,
+  questionId: string
+): Promise<void> {
+  const [temporaryChats, excludedChats, activeRuns, activeAttempts] =
+    await Promise.all([
+      prisma.chat.count({ where: { memoryMode: "TEMPORARY", userId } }),
+      prisma.chat.count({ where: { memoryMode: "EXCLUDED", userId } }),
+      prisma.modelRun.count({
+        where: {
+          chat: { memoryMode: "EXCLUDED" },
+          status: { notIn: ["cancelled", "complete", "error"] },
+          userId
+        }
+      }),
+      prisma.memoryRetrievalAttempt.count({
+        where: {
+          chatMemoryModeSnapshot: "EXCLUDED",
+          state: { in: ["EXECUTING", "PENDING", "READY"] },
+          userId
+        }
+      })
+    ]);
+  if (temporaryChats > 0 || activeRuns > 0 || activeAttempts > 0) {
+    throw new Error("longmemeval_prepared_case_not_quiescent");
+  }
+  if (excludedChats > 0) {
+    emit("prepared_case_query_isolated", {
+      questionId,
+      retainedTerminalChats: excludedChats
+    });
+  }
+}
+
+async function alignPreparedCaseIdentity(
+  prisma: PrismaClient,
+  input: Readonly<{
+    displayName: string;
+    email: string;
+    roles: ProviderRoles;
+    userId: string;
+  }>
+): Promise<void> {
+  const [user, userSettings, memorySettings, credentialAssignments] =
+    await Promise.all([
+      prisma.user.findUnique({
+        select: { displayName: true, email: true, status: true },
+        where: { id: input.userId }
+      }),
+      prisma.userSettings.findUnique({
+        select: { defaultProviderModelId: true },
+        where: { userId: input.userId }
+      }),
+      prisma.userMemorySettings.findUnique({
+        select: {
+          decayEnabled: true,
+          embeddingProviderModelId: true,
+          learnAutomatically: true,
+          referenceChatHistory: true,
+          synthesisEnabled: true,
+          useMemoryFacts: true
+        },
+        where: { userId: input.userId }
+      }),
+      prisma.providerUserCredentialAssignment.count({
+        where: {
+          connectionId: input.roles.system.connectionId,
+          credentialId: input.roles.system.credentialId,
+          userId: input.userId
+        }
+      })
+    ]);
+  if (user?.email !== input.email || user.displayName !== input.displayName ||
+    user.status !== "active" ||
+    userSettings?.defaultProviderModelId !== input.roles.system.id ||
+    credentialAssignments !== 1 || !memorySettings ||
+    memorySettings.decayEnabled || memorySettings.learnAutomatically ||
+    !memorySettings.referenceChatHistory || memorySettings.synthesisEnabled ||
+    !memorySettings.useMemoryFacts) {
+    throw new Error("longmemeval_prepared_case_identity_invalid");
+  }
+  if (memorySettings.embeddingProviderModelId === input.roles.qwen.id) return;
+  const repository = createPrismaMemorySettingsRepository(prisma);
+  const current = await repository.get(input.userId);
+  const updated = await repository.patch(input.userId, {
+    embeddingDeploymentId: input.roles.qwen.id,
+    expectedMemoryRevision: current.memoryRevision,
+    expectedSettingsRevision: current.settingsRevision
+  });
+  if (updated.embeddingProviderModelId !== input.roles.qwen.id) {
+    throw new Error("longmemeval_prepared_case_embedding_alignment_failed");
+  }
+}
+
+async function loadPreparedHistory(
+  prisma: PrismaClient,
+  userId: string,
+  entry: LongMemEvalCase
+): Promise<ImportedHistory> {
+  const chats = await prisma.chat.findMany({
+    orderBy: { createdAt: "asc" },
+    select: {
+      activeLeafMessageId: true,
+      createdAt: true,
+      id: true,
+      memoryBranchGeneration: true,
+      memoryMode: true,
+      memorySourceRevision: true,
+      messages: {
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: {
+          content: true,
+          createdAt: true,
+          id: true,
+          modelId: true,
+          parentMessageId: true,
+          provider: true,
+          role: true,
+          status: true,
+          updatedAt: true
+        }
+      },
+      modelRuns: {
+        select: {
+          assistantMessageId: true,
+          modelId: true,
+          provider: true,
+          status: true,
+          userMessageId: true
+        }
+      },
+      title: true
+    },
+    where: { memoryMode: "NORMAL", userId }
+  });
+  if (chats.length !== entry.haystackSessions.length ||
+    chats.some(({ memoryMode }) => memoryMode !== "NORMAL")) {
+    throw new Error("longmemeval_prepared_case_chat_set_invalid");
+  }
+  const byTitle = new Map(chats.map((chat) => [chat.title, chat]));
+  if (byTitle.size !== chats.length) {
+    throw new Error("longmemeval_prepared_case_chat_set_invalid");
+  }
+  const chatIds: string[] = [];
+  let messages = 0;
+  let assistantTurnsWithoutProductProvenance = 0;
+  let syntheticAssistantSettlements = 0;
+  for (let sessionIndex = 0;
+    sessionIndex < entry.haystackSessions.length;
+    sessionIndex += 1) {
+    const officialTurns = entry.haystackSessions[sessionIndex]!;
+    const plan = longMemEvalSettledImportTurns(officialTurns);
+    const chat = byTitle.get(
+      `LongMemEval ${entry.questionId} session ${sessionIndex + 1}`
+    );
+    const occurredAt = parseLongMemEvalDate(entry.haystackDates[sessionIndex]!);
+    if (!chat || chat.createdAt.getTime() !== occurredAt.getTime() ||
+      chat.memoryBranchGeneration !== 0 || chat.memorySourceRevision !== 1 ||
+      chat.messages.length !== plan.turns.length ||
+      chat.activeLeafMessageId !== chat.messages.at(-1)?.id) {
+      throw new Error("longmemeval_prepared_case_chat_invalid");
+    }
+    for (let turnIndex = 0; turnIndex < plan.turns.length; turnIndex += 1) {
+      const expected = plan.turns[turnIndex]!;
+      const message = chat.messages[turnIndex]!;
+      const expectedParent = turnIndex === 0
+        ? null
+        : chat.messages[turnIndex - 1]!.id;
+      const expectedProvider = expected.role === "assistant"
+        ? "longmemeval-import"
+        : null;
+      const expectedModel = expected.role === "assistant"
+        ? "external-history"
+        : null;
+      if (message.role !== expected.role || message.status !== "complete" ||
+        message.parentMessageId !== expectedParent ||
+        message.provider !== expectedProvider || message.modelId !== expectedModel ||
+        message.createdAt.getTime() !== occurredAt.getTime() + turnIndex ||
+        message.updatedAt.getTime() !== occurredAt.getTime() + turnIndex ||
+        textFromContentBlocks(message.content as { blocks?: unknown[] }) !==
+          expected.content) {
+        throw new Error("longmemeval_prepared_case_message_invalid");
+      }
+    }
+    const expectedBackedRuns = plan.turns.flatMap((turn, index) =>
+      turn.role === "assistant" && plan.turns[index - 1]?.role === "user"
+        ? [{ assistantIndex: index, userIndex: index - 1 }]
+        : []);
+    if (chat.modelRuns.length !== expectedBackedRuns.length ||
+      expectedBackedRuns.some(({ assistantIndex, userIndex }) =>
+        !chat.modelRuns.some((run) =>
+          run.assistantMessageId === chat.messages[assistantIndex]!.id &&
+          run.userMessageId === chat.messages[userIndex]!.id &&
+          run.modelId === "external-history" &&
+          run.provider === "longmemeval-import" && run.status === "complete"))) {
+      throw new Error("longmemeval_prepared_case_provenance_invalid");
+    }
+    chatIds.push(chat.id);
+    messages += plan.turns.length;
+    assistantTurnsWithoutProductProvenance += officialTurns.filter(
+      (turn, index) => turn.role === "assistant" &&
+        officialTurns[index - 1]?.role !== "user"
+    ).length;
+    syntheticAssistantSettlements += Number(plan.appendedAssistantSettlement);
+  }
+  return Object.freeze({
+    assistantTurnsWithoutProductProvenance,
+    automaticSettlements: 0,
+    chatIds: Object.freeze(chatIds),
+    messages,
+    syntheticAssistantSettlements
+  });
+}
+
+async function loadReadyHybridIndex(
+  prisma: PrismaClient,
+  userId: string
+): Promise<Readonly<{ activeChunks: number; hybridEntries: number }> | null> {
+  const pin = await probeCurrentMemoryEmbeddingPin(
+    defaultMemoryExecutionAuthority,
+    prisma,
+    userId,
+    MEMORY_ITEM_EMBEDDING_VERSIONS
+  );
+  const settings = await prisma.userMemorySettings.findUnique({
+    select: { activeIndexGenerationId: true, memoryRevision: true },
+    where: { userId }
+  });
+  if (!settings?.activeIndexGenerationId) return null;
+  const [generation, activeJobs, failedEmbeddingJobs, activeChunks, entries] =
+    await Promise.all([
+      prisma.memoryIndexGeneration.findFirst({
+        select: {
+          chunkingVersion: true,
+          contextualKeyPolicyVersion: true,
+          embeddingConfigurationFingerprint: true,
+          embeddingConnectionId: true,
+          embeddingDimension: true,
+          embeddingProviderModelId: true,
+          id: true,
+          indexedThroughMemoryRevision: true,
+          indexMode: true,
+          languageProfile: true,
+          normalizationVersion: true,
+          retrievalPipelineVersion: true,
+          roundProjectionVersion: true,
+          roundSegmentProjectionVersion: true,
+          state: true,
+          vectorSpaceFingerprint: true
+        },
+        where: {
+          id: settings.activeIndexGenerationId,
+          userId
+        }
+      }),
+      prisma.memoryJob.count({
+        where: { state: { in: [...activeJobStates] }, userId }
+      }),
+      prisma.memoryJob.count({
+        where: {
+          kind: "EMBED_ITEMS",
+          state: { in: [...unsuccessfulJobStates] },
+          userId
+        }
+      }),
+      prisma.memoryRecallChunk.count({ where: { state: "ACTIVE", userId } }),
+      prisma.memorySearchEntry.findMany({
+        select: { embeddingState: true },
+        where: { indexGenerationId: settings.activeIndexGenerationId, userId }
+      })
+    ]);
+  if (!generation || generation.state !== "ACTIVE" ||
+    generation.indexedThroughMemoryRevision !== settings.memoryRevision ||
+    generation.languageProfile !== MEMORY_LEXICAL_LANGUAGE_PROFILE ||
+    generation.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
+    generation.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
+    generation.roundProjectionVersion !== MEMORY_RECALL_ROUND_PROJECTION_VERSION ||
+    generation.roundSegmentProjectionVersion !==
+      MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION ||
+    generation.contextualKeyPolicyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
+    generation.retrievalPipelineVersion !== MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION ||
+    !memoryItemEmbeddingGenerationMatchesPin(generation, pin) || activeJobs !== 0 ||
+    failedEmbeddingJobs !== 0 || activeChunks === 0 || entries.length === 0 ||
+    entries.some(({ embeddingState }) => embeddingState !== "READY")) {
+    return null;
+  }
+  return Object.freeze({ activeChunks, hybridEntries: entries.length });
 }
 
 async function sourceJobs(prisma: PrismaClient, userId: string) {
@@ -2515,7 +2978,8 @@ async function writeDreamDiagnosticArtifact(
 async function assertExecutionModels(
   prisma: PrismaClient,
   userId: string,
-  roles: ProviderRoles
+  roles: ProviderRoles,
+  executionStartedAt: Date
 ): Promise<Readonly<{
   aggregates: readonly ExecutionAggregate[];
   embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
@@ -2534,7 +2998,7 @@ async function assertExecutionModels(
       state: true,
       totalTokens: true
     },
-    where: { userId }
+    where: { createdAt: { gte: executionStartedAt }, userId }
   });
   const successful = executions.filter(({ state }) => state === "SUCCEEDED");
   for (const execution of successful) {
@@ -2580,81 +3044,87 @@ async function runCase(
   baseUrl: URL,
   roles: ProviderRoles,
   entry: LongMemEvalCase,
-  options: CliOptions
+  options: CliOptions,
+  cacheRuntime: PreparedCaseCacheRuntime
 ): Promise<Readonly<{ hypothesis: string; summary: CaseSummary }>> {
-  const identity = await withFailureCode(
-    "longmemeval_identity_setup_failed",
-    () => createBenchmarkIdentity(prisma, roles, entry.questionId, options.profile)
-  );
-  try {
-    if (options.forceDreamDiagnostic) {
-      await withFailureCode(
-        "longmemeval_dream_diagnostic_boundary_failed",
-        () => prepareForcedDreamDiagnostic(
-          prisma,
-          identity.userId,
-          entry
-        )
-      );
-    }
-    await withFailureCode(
-      "longmemeval_catalog_preflight_failed",
-      () => catalogSystemModel(
-        baseUrl,
-        identity.cookie,
-        roles.system.id,
-        roles.system.upstreamModelId
-      )
-    );
-    const indexStartedAt = Date.now();
-    const imported = await withFailureCode(
-      "longmemeval_history_import_failed",
-      () => importHistory(
-        prisma,
-        identity.userId,
+  const cacheEnabled = options.profile === "official" &&
+    !options.forceDreamDiagnostic;
+  const sourceFingerprint = cacheEnabled
+    ? preparedCaseSourceFingerprint({
         entry,
-        options.sessionConcurrency,
-        options.profile
-      )
-    );
-    const importCompletedAt = Date.now();
-    let learning = await withFailureCode(
-      "longmemeval_history_index_failed",
-      () => waitForHistoryIndex(
-        prisma,
-        identity.userId,
-        imported.chatIds.length,
-        imported.automaticSettlements,
-        options.profile,
-        options.indexTimeoutMs,
-        entry.questionId
-      )
-    );
-    if (options.forceDreamDiagnostic) {
-      await withFailureCode(
-        "longmemeval_dream_diagnostic_artifact_failed",
-        () => writeDreamDiagnosticArtifact(prisma, {
-          chatIds: imported.chatIds,
-          entry,
-          outputDirectory: options.outputDirectory,
-          phase: "pre",
-          userId: identity.userId
-        })
-      );
-      if (learning.synthesisJobs === 0) {
-        await withFailureCode(
-          "longmemeval_dream_diagnostic_admission_failed",
-          () => admitForcedDreamDiagnostic(
+        migrationFingerprint: cacheRuntime.migrationFingerprint,
+        profile: options.profile,
+        roles
+      })
+    : null;
+
+  const executeCase = async (): Promise<Readonly<{
+    hypothesis: string;
+    summary: CaseSummary;
+  }>> => {
+    let identity: BenchmarkIdentity | null = null;
+    let preserveUser = false;
+    const executionStartedAt = new Date(Date.now() - 1_000);
+    let preparedCase: PreparedCaseCacheEvidence | null = null;
+    try {
+      let imported!: ImportedHistory;
+      let learning!: LongMemEvalLearningEvidence;
+      let hybrid!: Readonly<{ activeChunks: number; hybridEntries: number }>;
+      let indexStartedAt!: number;
+      let importCompletedAt!: number;
+      let lexicalIndexCompletedAt!: number;
+      let hybridIndexCompletedAt!: number;
+      let sourceCacheHit = false;
+      let hybridCacheHit = false;
+      const buildFresh = async (persistent: Readonly<{
+        buildingEmail: string;
+        displayName: string;
+        readyEmail: string;
+      }> | null): Promise<void> => {
+        identity = await withFailureCode(
+          "longmemeval_identity_setup_failed",
+          () => createBenchmarkIdentity(
             prisma,
-            identity.userId,
-            entry.questionId
+            roles,
+            entry.questionId,
+            options.profile,
+            persistent
+              ? { displayName: persistent.displayName, email: persistent.buildingEmail }
+              : undefined
           )
         );
+        if (options.forceDreamDiagnostic) {
+          await withFailureCode(
+            "longmemeval_dream_diagnostic_boundary_failed",
+            () => prepareForcedDreamDiagnostic(prisma, identity!.userId, entry)
+          );
+        }
+        await withFailureCode(
+          "longmemeval_catalog_preflight_failed",
+          () => catalogSystemModel(
+            baseUrl,
+            identity!.cookie,
+            roles.system.id,
+            roles.system.upstreamModelId
+          )
+        );
+        indexStartedAt = Date.now();
+        imported = await withFailureCode(
+          "longmemeval_history_import_failed",
+          () => importHistory(
+            prisma,
+            identity!.userId,
+            entry,
+            options.sessionConcurrency,
+            options.profile
+          )
+        );
+        importCompletedAt = Date.now();
         learning = await withFailureCode(
-          "longmemeval_dream_diagnostic_pipeline_failed",
+          "longmemeval_history_index_failed",
           () => waitForHistoryIndex(
             prisma,
-            identity.userId,
+            identity!.userId,
             imported.chatIds.length,
             imported.automaticSettlements,
             options.profile,
@@ -2662,147 +3132,336 @@ async function runCase(
             entry.questionId
           )
         );
-      }
-      if (learning.synthesisJobs < 1 ||
-        learning.successfulSynthesisJobs !== learning.synthesisJobs ||
-        learning.appliedSynthesisExecutions !== learning.synthesisJobs) {
-        throw new Error("longmemeval_dream_diagnostic_not_applied");
-      }
-      await withFailureCode(
-        "longmemeval_dream_diagnostic_artifact_failed",
-        () => writeDreamDiagnosticArtifact(prisma, {
-          chatIds: imported.chatIds,
-          entry,
-          outputDirectory: options.outputDirectory,
-          phase: "post",
-          userId: identity.userId
-        })
-      );
-    }
-    const lexicalIndexCompletedAt = Date.now();
-    const rebuildJobId = await withFailureCode(
-      "longmemeval_hybrid_rebuild_start_failed",
-      () => startHybridRebuild(prisma, identity.userId, roles.qwen.id)
-    );
-    const hybrid = await withFailureCode(
-      "longmemeval_hybrid_index_failed",
-      () => waitForHybridIndex(
-        prisma,
-        identity.userId,
-        rebuildJobId,
-        roles.qwen.id,
-        options.indexTimeoutMs,
-        entry.questionId
-      )
-    );
-    const hybridIndexCompletedAt = Date.now();
-    const answer = await withFailureCode(
-      "longmemeval_question_run_failed",
-      () => runQuestion(
-        prisma,
-        baseUrl,
-        identity,
-        roles,
-        entry,
-        options.runTimeoutMs
-      )
-    );
-    const componentEvaluation = await withFailureCode(
-      "longmemeval_component_evaluation_failed",
-      () => loadPackedComponentEvaluation(prisma, {
-        answerSessionIds: entry.answerSessionIds,
-        chatIds: imported.chatIds,
-        haystackSessionIds: entry.haystackSessionIds,
-        retrievalAttemptId: answer.debugLocator.retrievalAttemptId,
-        userId: identity.userId
-      })
-    );
-    if (options.debugMemory) {
-      await withFailureCode(
-        "longmemeval_memory_debug_failed",
-        () => writeMemoryDebugArtifact(prisma, {
-          chatIds: imported.chatIds,
-          entry,
-          hypothesis: answer.hypothesis,
-          locator: answer.debugLocator,
-          outputDirectory: options.outputDirectory,
-          userId: identity.userId
-        })
-      );
-    }
-    const [jobs, executionEvidence] = await withFailureCode(
-      "longmemeval_evidence_audit_failed",
-      () => Promise.all([
-        sourceJobs(prisma, identity.userId),
-        assertExecutionModels(prisma, identity.userId, roles)
-      ])
-    );
-    return Object.freeze({
-      hypothesis: answer.hypothesis,
-      summary: Object.freeze({
-        answer: answer.summary,
-        componentEvaluation,
-        embeddingBatchSizeDistribution:
-          executionEvidence.embeddingBatchSizeDistribution,
-        history: Object.freeze({
-          activeChunks: hybrid.activeChunks,
-          assistantTurnsWithoutProductProvenance:
-            imported.assistantTurnsWithoutProductProvenance,
-          hybridEntries: hybrid.hybridEntries,
-          hybridIndexMs: hybridIndexCompletedAt - lexicalIndexCompletedAt,
-          importMs: importCompletedAt - indexStartedAt,
-          indexMs: hybridIndexCompletedAt - indexStartedAt,
-          jobs: aggregateJobs(jobs),
-          lexicalIndexMs: lexicalIndexCompletedAt - importCompletedAt,
-          messages: imported.messages,
-          sessions: imported.chatIds.length,
-          syntheticAssistantSettlements: imported.syntheticAssistantSettlements
-        }),
-        learning,
-        questionId: entry.questionId,
-        questionType: entry.questionType,
-        retrieval: answer.retrieval,
-        utilityExecutions: executionEvidence.aggregates
-      })
-    });
-  } catch (error) {
-    const diagnostics = await Promise.all([
-      sourceJobs(prisma, identity.userId),
-      prisma.memoryExecutionBinding.findMany({
-        orderBy: [{ createdAt: "desc" }, { ordinal: "desc" }],
-        select: { errorCode: true, logicalRole: true, state: true },
-        take: 20,
-        where: {
-          state: { in: ["CANCELLED", "FAILED"] },
-          userId: identity.userId
+        if (options.forceDreamDiagnostic) {
+          await withFailureCode(
+            "longmemeval_dream_diagnostic_artifact_failed",
+            () => writeDreamDiagnosticArtifact(prisma, {
+              chatIds: imported.chatIds,
+              entry,
+              outputDirectory: options.outputDirectory,
+              phase: "pre",
+              userId: identity!.userId
+            })
+          );
+          if (learning.synthesisJobs === 0) {
+            await withFailureCode(
+              "longmemeval_dream_diagnostic_admission_failed",
+              () => admitForcedDreamDiagnostic(
+                prisma,
+                identity!.userId,
+                entry.questionId
+              )
+            );
+            learning = await withFailureCode(
+              "longmemeval_dream_diagnostic_pipeline_failed",
+              () => waitForHistoryIndex(
+                prisma,
+                identity!.userId,
+                imported.chatIds.length,
+                imported.automaticSettlements,
+                options.profile,
+                options.indexTimeoutMs,
+                entry.questionId
+              )
+            );
+          }
+          if (learning.synthesisJobs < 1 ||
+            learning.successfulSynthesisJobs !== learning.synthesisJobs ||
+            learning.appliedSynthesisExecutions !== learning.synthesisJobs) {
+            throw new Error("longmemeval_dream_diagnostic_not_applied");
+          }
+          await withFailureCode(
+            "longmemeval_dream_diagnostic_artifact_failed",
+            () => writeDreamDiagnosticArtifact(prisma, {
+              chatIds: imported.chatIds,
+              entry,
+              outputDirectory: options.outputDirectory,
+              phase: "post",
+              userId: identity!.userId
+            })
+          );
         }
-      })
-    ]).then(([jobs, failedExecutions]) => Object.freeze({
-      jobs: aggregateJobs(jobs),
-      primaryCode: safeFailureCode(error),
-      recentExecutionFailures: Object.freeze(failedExecutions.map((execution) =>
-        Object.freeze({
-          errorCode: diagnosticToken(execution.errorCode),
-          role: diagnosticToken(execution.logicalRole),
-          state: execution.state
-        }))),
-      terminalJobs: Object.freeze(jobs
-        .filter(({ state }) => unsuccessfulJobStates.has(state))
-        .slice(0, 20)
-        .map((job) => Object.freeze({
-          errorCode: diagnosticToken(job.errorCode),
-          kind: job.kind,
-          state: job.state
-        })))
-    } satisfies CaseFailureDiagnostics)).catch(() => null);
-    if (diagnostics) throw new LongMemEvalCaseFailure(diagnostics);
-    throw error;
-  } finally {
-    await prisma.user.delete({ where: { id: identity.userId } });
-  }
+        lexicalIndexCompletedAt = Date.now();
+        const rebuildJobId = await withFailureCode(
+          "longmemeval_hybrid_rebuild_start_failed",
+          () => startHybridRebuild(prisma, identity!.userId, roles.qwen.id)
+        );
+        hybrid = await withFailureCode(
+          "longmemeval_hybrid_index_failed",
+          () => waitForHybridIndex(
+            prisma,
+            identity!.userId,
+            rebuildJobId,
+            roles.qwen.id,
+            options.indexTimeoutMs,
+            entry.questionId
+          )
+        );
+        hybridIndexCompletedAt = Date.now();
+        if (persistent) {
+          const promoted = await prisma.user.updateMany({
+            data: { email: persistent.readyEmail },
+            where: { email: persistent.buildingEmail, id: identity.userId }
+          });
+          if (promoted.count !== 1) {
+            throw new Error("longmemeval_prepared_case_promotion_failed");
+          }
+          preserveUser = true;
+        }
+      };
+
+      if (sourceFingerprint) {
+        const readyEmail = longMemEvalPreparedCaseReadyEmail(sourceFingerprint);
+        const displayName = longMemEvalPreparedCaseDisplayName(
+          entry.questionId,
+          sourceFingerprint
+        );
+        let cachedUser = await prisma.user.findUnique({
+          select: { id: true },
+          where: { email: readyEmail }
+        });
+        if (cachedUser) {
+          try {
+            await assertPreparedQueryIsolation(
+              prisma,
+              cachedUser.id,
+              entry.questionId
+            );
+            await alignPreparedCaseIdentity(prisma, {
+              displayName,
+              email: readyEmail,
+              roles,
+              userId: cachedUser.id
+            });
+            imported = await loadPreparedHistory(prisma, cachedUser.id, entry);
+            learning = await waitForHistoryIndex(
+              prisma,
+              cachedUser.id,
+              imported.chatIds.length,
+              imported.automaticSettlements,
+              options.profile,
+              options.indexTimeoutMs,
+              entry.questionId
+            );
+          } catch (error) {
+            emit("prepared_case_source_invalid", {
+              code: safeFailureCode(error),
+              questionId: entry.questionId,
+              sourceFingerprint
+            });
+            await prisma.user.delete({ where: { id: cachedUser.id } });
+            cachedUser = null;
+          }
+        }
+        if (cachedUser) {
+          sourceCacheHit = true;
+          preserveUser = true;
+          identity = await createBenchmarkSession(prisma, cachedUser.id);
+          await withFailureCode(
+            "longmemeval_catalog_preflight_failed",
+            () => catalogSystemModel(
+              baseUrl,
+              identity!.cookie,
+              roles.system.id,
+              roles.system.upstreamModelId
+            )
+          );
+          const preparedAt = Date.now();
+          indexStartedAt = preparedAt;
+          importCompletedAt = preparedAt;
+          lexicalIndexCompletedAt = preparedAt;
+          const readyHybrid = await loadReadyHybridIndex(prisma, cachedUser.id);
+          if (readyHybrid) {
+            hybrid = readyHybrid;
+            hybridCacheHit = true;
+          } else {
+            const rebuildJobId = await withFailureCode(
+              "longmemeval_hybrid_rebuild_start_failed",
+              () => startHybridRebuild(prisma, cachedUser!.id, roles.qwen.id)
+            );
+            hybrid = await withFailureCode(
+              "longmemeval_hybrid_index_failed",
+              () => waitForHybridIndex(
+                prisma,
+                cachedUser!.id,
+                rebuildJobId,
+                roles.qwen.id,
+                options.indexTimeoutMs,
+                entry.questionId
+              )
+            );
+          }
+          hybridIndexCompletedAt = Date.now();
+        } else {
+          const stale = await prisma.user.findMany({
+            select: { id: true },
+            where: {
+              displayName,
+              email: { endsWith: LONGMEMEVAL_PREPARED_CASE_EMAIL_SUFFIX }
+            }
+          });
+          for (const user of stale) {
+            await prisma.user.delete({ where: { id: user.id } });
+          }
+          await buildFresh({
+            buildingEmail: longMemEvalPreparedCaseBuildingEmail(
+              sourceFingerprint,
+              randomUUID()
+            ),
+            displayName,
+            readyEmail
+          });
+        }
+        preparedCase = Object.freeze({
+          cacheVersion: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
+          hybridCacheHit,
+          sourceCacheHit,
+          sourceFingerprint
+        });
+        emit(sourceCacheHit ? "prepared_case_cache_hit" : "prepared_case_cache_miss", {
+          hybridCacheHit,
+          questionId: entry.questionId,
+          sourceFingerprint
+        });
+      } else {
+        await buildFresh(null);
+      }
+      if (!identity) throw new Error("longmemeval_identity_setup_failed");
+      const answer = await withFailureCode(
+        "longmemeval_question_run_failed",
+        () => runQuestion(
+          prisma,
+          baseUrl,
+          identity!,
+          roles,
+          entry,
+          options.runTimeoutMs
+        )
+      );
+      const componentEvaluation = await withFailureCode(
+        "longmemeval_component_evaluation_failed",
+        () => loadPackedComponentEvaluation(prisma, {
+          answerSessionIds: entry.answerSessionIds,
+          chatIds: imported.chatIds,
+          haystackSessionIds: entry.haystackSessionIds,
+          retrievalAttemptId: answer.debugLocator.retrievalAttemptId,
+          userId: identity!.userId
+        })
+      );
+      if (options.debugMemory) {
+        await withFailureCode(
+          "longmemeval_memory_debug_failed",
+          () => writeMemoryDebugArtifact(prisma, {
+            chatIds: imported.chatIds,
+            entry,
+            hypothesis: answer.hypothesis,
+            locator: answer.debugLocator,
+            outputDirectory: options.outputDirectory,
+            userId: identity!.userId
+          })
+        );
+      }
+      const [jobs, executionEvidence] = await withFailureCode(
+        "longmemeval_evidence_audit_failed",
+        () => Promise.all([
+          sourceJobs(prisma, identity!.userId),
+          assertExecutionModels(
+            prisma,
+            identity!.userId,
+            roles,
+            executionStartedAt
+          )
+        ])
+      );
+      return Object.freeze({
+        hypothesis: answer.hypothesis,
+        summary: Object.freeze({
+          answer: answer.summary,
+          componentEvaluation,
+          embeddingBatchSizeDistribution:
+            executionEvidence.embeddingBatchSizeDistribution,
+          history: Object.freeze({
+            activeChunks: hybrid.activeChunks,
+            assistantTurnsWithoutProductProvenance:
+              imported.assistantTurnsWithoutProductProvenance,
+            hybridEntries: hybrid.hybridEntries,
+            hybridIndexMs: hybridIndexCompletedAt - lexicalIndexCompletedAt,
+            importMs: importCompletedAt - indexStartedAt,
+            indexMs: hybridIndexCompletedAt - indexStartedAt,
+            jobs: aggregateJobs(jobs),
+            lexicalIndexMs: lexicalIndexCompletedAt - importCompletedAt,
+            messages: imported.messages,
+            sessions: imported.chatIds.length,
+            syntheticAssistantSettlements: imported.syntheticAssistantSettlements
+          }),
+          learning,
+          preparedCase,
+          questionId: entry.questionId,
+          questionType: entry.questionType,
+          retrieval: answer.retrieval,
+          utilityExecutions: executionEvidence.aggregates
+        })
+      });
+    } catch (error) {
+      if (!identity) throw error;
+      const diagnostics = await Promise.all([
+        sourceJobs(prisma, identity.userId),
+        prisma.memoryExecutionBinding.findMany({
+          orderBy: [{ createdAt: "desc" }, { ordinal: "desc" }],
+          select: { errorCode: true, logicalRole: true, state: true },
+          take: 20,
+          where: {
+            createdAt: { gte: executionStartedAt },
+            state: { in: ["CANCELLED", "FAILED"] },
+            userId: identity.userId
+          }
+        })
+      ]).then(([jobs, failedExecutions]) => Object.freeze({
+        jobs: aggregateJobs(jobs),
+        primaryCode: safeFailureCode(error),
+        recentExecutionFailures: Object.freeze(failedExecutions.map((execution) =>
+          Object.freeze({
+            errorCode: diagnosticToken(execution.errorCode),
+            role: diagnosticToken(execution.logicalRole),
+            state: execution.state
+          }))),
+        terminalJobs: Object.freeze(jobs
+          .filter(({ state }) => unsuccessfulJobStates.has(state))
+          .slice(0, 20)
+          .map((job) => Object.freeze({
+            errorCode: diagnosticToken(job.errorCode),
+            kind: job.kind,
+            state: job.state
+          })))
+      } satisfies CaseFailureDiagnostics)).catch(() => null);
+      if (diagnostics) throw new LongMemEvalCaseFailure(diagnostics);
+      throw error;
+    } finally {
+      if (identity) {
+        if (preserveUser) {
+          try {
+            await assertPreparedQueryIsolation(
+              prisma,
+              identity.userId,
+              entry.questionId
+            );
+          } finally {
+            await prisma.authSession.deleteMany({ where: { id: identity.sessionId } });
+          }
+        } else {
+          await prisma.user.delete({ where: { id: identity.userId } });
+        }
+      }
+    }
+  };
+
+  return sourceFingerprint
+    ? withPreparedCaseLock(cacheRuntime.databaseUrl, sourceFingerprint, executeCase)
+    : executeCase();
 }
 
 function buildCheckpointIdentity(input: Readonly<{
+  cacheRuntime: PreparedCaseCacheRuntime;
   options: CliOptions;
   roles: ProviderRoles;
   selection: ReturnType<typeof selectLongMemEvalCases>;
@@ -2821,6 +3480,12 @@ function buildCheckpointIdentity(input: Readonly<{
       embeddingModel: qualificationEmbeddingModelId,
       forceDreamDiagnostic: input.options.forceDreamDiagnostic,
       indexTimeoutMs: input.options.indexTimeoutMs,
+      preparedCaseCache: Object.freeze({
+        enabled: input.options.profile === "official" &&
+          !input.options.forceDreamDiagnostic,
+        migrationFingerprint: input.cacheRuntime.migrationFingerprint,
+        version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
+      }),
       rerankerRoute: Object.freeze(input.roles.rerankerRoute.map((role) =>
         Object.freeze({
           providerModelId: role.id,
@@ -2837,7 +3502,7 @@ function buildCheckpointIdentity(input: Readonly<{
       mode: input.selection.mode,
       seed: input.selection.seed
     }),
-    version: 2
+    version: 3
   });
 }
 
@@ -2880,6 +3545,10 @@ async function main(): Promise<void> {
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
   try {
     await assertDatabaseIdentity(prisma);
+    const cacheRuntime = Object.freeze({
+      databaseUrl,
+      migrationFingerprint: await databaseMigrationFingerprint(prisma)
+    });
     const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
     const roles = await resolveProviderRoles(prisma, options.systemModelId);
     if (qualificationManifest) {
@@ -2891,7 +3560,12 @@ async function main(): Promise<void> {
         : { sampleSize: options.sampleSize }),
       ...(options.seed ? { seed: options.seed } : {})
     });
-    const checkpointIdentity = buildCheckpointIdentity({ options, roles, selection });
+    const checkpointIdentity = buildCheckpointIdentity({
+      cacheRuntime,
+      options,
+      roles,
+      selection
+    });
     const checkpointManifest = options.resume
       ? await resumeLongMemEvalCheckpointRun({
           expectedIdentity: checkpointIdentity,
@@ -2939,6 +3613,8 @@ async function main(): Promise<void> {
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
       forceDreamDiagnostic: options.forceDreamDiagnostic,
+      preparedCaseCache: options.profile === "official" &&
+        !options.forceDreamDiagnostic,
       profile: options.profile,
       remainingCases: pendingCases.length,
       resume: options.resume,
@@ -2961,7 +3637,14 @@ async function main(): Promise<void> {
         });
         let outcome: LongMemEvalCheckpointOutcome<CaseSummary, CaseFailure>;
         try {
-          const result = await runCase(prisma, baseUrl, roles, entry, options);
+          const result = await runCase(
+            prisma,
+            baseUrl,
+            roles,
+            entry,
+            options,
+            cacheRuntime
+          );
           outcome = Object.freeze({
             hypothesis: result.hypothesis,
             reason: checkpointOutcomeReason(result.summary),
@@ -3110,6 +3793,15 @@ async function main(): Promise<void> {
         upstreamModelId: roles.reranker.upstreamModelId
       },
       profile: longMemEvalProfileManifest(options.profile),
+      preparedCaseCache: {
+        enabled: options.profile === "official" && !options.forceDreamDiagnostic,
+        hybridHits: summaries.filter(({ preparedCase }) =>
+          preparedCase?.hybridCacheHit).length,
+        migrationFingerprint: cacheRuntime.migrationFingerprint,
+        sourceHits: summaries.filter(({ preparedCase }) =>
+          preparedCase?.sourceCacheHit).length,
+        version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
+      },
       qualificationManifest: qualificationManifest
         ? {
             appCommit: qualificationManifest.source.appCommit,
@@ -3130,7 +3822,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 13,
+      version: 14,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: qualificationMemoryJobParallelism,
