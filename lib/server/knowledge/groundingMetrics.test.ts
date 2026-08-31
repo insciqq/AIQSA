@@ -11,7 +11,16 @@ import type {
   KnowledgeGroundingEvidenceV27,
   KnowledgeGroundingEvidenceV28,
   KnowledgeGroundingEvidenceV29,
-  KnowledgeGroundingEvidenceV30
+  KnowledgeGroundingEvidenceV30,
+  KnowledgeGroundingEvidenceV31,
+  KnowledgeGroundingEvidenceV32,
+  KnowledgeGroundingEvidenceV33,
+  KnowledgeGroundingEvidenceV34,
+  KnowledgeGroundingEvidenceV35,
+  KnowledgeGroundingEvidenceV36,
+  KnowledgeGroundingEvidenceV37,
+  KnowledgeGroundingEvidenceV38,
+  KnowledgeGroundingEvidenceV39
 } from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
@@ -309,6 +318,113 @@ function evidenceV30(durationMs: number): KnowledgeGroundingEvidenceV30 {
   } as KnowledgeGroundingEvidenceV30;
 }
 
+function evidenceV31(durationMs: number): KnowledgeGroundingEvidenceV31 {
+  return {
+    ...evidenceV30(durationMs),
+    version: 31
+  } as KnowledgeGroundingEvidenceV31;
+}
+
+function evidenceV32(durationMs: number): KnowledgeGroundingEvidenceV32 {
+  return {
+    ...evidenceV31(durationMs),
+    version: 32
+  } as KnowledgeGroundingEvidenceV32;
+}
+
+function evidenceV33(durationMs: number): KnowledgeGroundingEvidenceV33 {
+  return {
+    ...evidenceV32(durationMs),
+    version: 33
+  } as KnowledgeGroundingEvidenceV33;
+}
+
+function evidenceV34(durationMs: number): KnowledgeGroundingEvidenceV34 {
+  const historical = evidenceV33(durationMs);
+  const [primary, scope, _scopeRepair, completeness, initial, supplement, final] =
+    historical.operations;
+  void _scopeRepair;
+  return {
+    ...historical,
+    closure: {
+      initialCoveredDimensionCount: 2,
+      payloadHash: hash,
+      reopenedDimensionCount: 1,
+      status: "accepted"
+    },
+    closureRepairAttempted: false,
+    closureRepairSucceeded: false,
+    operations: [primary, scope, { ...completeness, ordinal: 3 }, {
+      ...initial,
+      ordinal: 4
+    }, {
+      ...initial,
+      contractVersion: 1,
+      operationId: "operation-scope-closure",
+      ordinal: 5,
+      purpose: "knowledge_coverage_scope_closure_v1",
+      role: "scope_closure"
+    }, supplement, final],
+    version: 34
+  } as KnowledgeGroundingEvidenceV34;
+}
+
+function evidenceV35(durationMs: number): KnowledgeGroundingEvidenceV35 {
+  const historical = evidenceV34(durationMs);
+  const [primary, scope, completeness, initial, closure, supplement, final] =
+    historical.operations;
+  return {
+    ...historical,
+    operations: [primary, scope, {
+      ...scope,
+      operationId: "operation-scope-repair-v35",
+      ordinal: 3,
+      role: "scope_repair"
+    }, { ...completeness, ordinal: 4 }, { ...initial, ordinal: 5 }, {
+      ...closure,
+      ordinal: 6
+    }, { ...supplement, ordinal: 7 }, { ...final, ordinal: 8 }],
+    scopeRepairAttempted: true,
+    scopeRepairSucceeded: true,
+    version: 35
+  } as KnowledgeGroundingEvidenceV35;
+}
+
+function evidenceV36(durationMs: number): KnowledgeGroundingEvidenceV36 {
+  return {
+    ...evidenceV35(durationMs),
+    version: 36
+  } as KnowledgeGroundingEvidenceV36;
+}
+
+function evidenceV37(durationMs: number): KnowledgeGroundingEvidenceV37 {
+  return {
+    ...evidenceV36(durationMs),
+    version: 37
+  } as KnowledgeGroundingEvidenceV37;
+}
+
+function evidenceV38(durationMs: number): KnowledgeGroundingEvidenceV38 {
+  return {
+    ...evidenceV37(durationMs),
+    version: 38
+  } as KnowledgeGroundingEvidenceV38;
+}
+
+function evidenceV39(durationMs: number): KnowledgeGroundingEvidenceV39 {
+  const historical = evidenceV34(durationMs);
+  const final = historical.operations.at(-1)!;
+  return {
+    ...historical,
+    operations: [...historical.operations, {
+      ...final,
+      operationId: "operation-final-delta-repair",
+      ordinal: 8
+    }],
+    version: 39
+  } as KnowledgeGroundingEvidenceV39;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
     const metrics = aggregateKnowledgeGroundingMetrics([
@@ -361,21 +477,36 @@ describe("Knowledge grounding operational metrics", () => {
       evidenceV27(100),
       evidenceV28(100),
       evidenceV29(100),
-      evidenceV30(100)
+      evidenceV30(100),
+      evidenceV31(100),
+      evidenceV32(100),
+      evidenceV33(100),
+      evidenceV34(100),
+      evidenceV35(100),
+      evidenceV36(100),
+      evidenceV37(100),
+      evidenceV38(100),
+      evidenceV39(100)
     ]);
-    expect(metrics.scopeCompletenessAccepted).toBe(7);
-    expect(metrics.totalScopeCompletenessAdditions).toBe(14);
-    expect(metrics.stages.scope_completeness.calls).toBe(7);
-    expect(metrics.stages.scope_repair.calls).toBe(6);
-    expect(metrics.stages.final.calls).toBe(6);
+    expect(metrics.scopeCompletenessAccepted).toBe(16);
+    expect(metrics.totalScopeCompletenessAdditions).toBe(32);
+    expect(metrics.scopeClosureAccepted).toBe(6);
+    expect(metrics.totalScopeClosureReopenedDimensions).toBe(6);
+    expect(metrics.stages.scope_completeness.calls).toBe(16);
+    expect(metrics.stages.scope_closure.calls).toBe(6);
+    expect(metrics.stages.scope_repair.calls).toBe(13);
+    expect(metrics.stages.final.calls).toBe(16);
     expect(JSON.stringify(metrics)).not.toContain("PRIVATE");
   });
 
-  it("loads only structurally valid V18-V30 metric receipts", async () => {
+  it("loads only structurally valid V18-V39 metric receipts", async () => {
     const findMany = async (query: unknown) => {
       expect(query).toMatchObject({
         where: {
-          version: { in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30] }
+          version: {
+            in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+              34, 35, 36, 37, 38, 39]
+          }
         }
       });
       return [
@@ -391,6 +522,16 @@ describe("Knowledge grounding operational metrics", () => {
         { evidence: evidenceV28(100) },
         { evidence: evidenceV29(100) },
         { evidence: evidenceV30(100) },
+        { evidence: evidenceV31(100) },
+        { evidence: evidenceV32(100) },
+        { evidence: evidenceV33(100) },
+        { evidence: evidenceV34(100) },
+        { evidence: evidenceV35(100) },
+        { evidence: evidenceV36(100) },
+        { evidence: evidenceV37(100) },
+        { evidence: evidenceV38(100) },
+        { evidence: evidenceV39(100) },
+        { evidence: { ...evidenceV35(100), version: 34 } },
         { evidence: { ...evidenceV25(100), version: 24 } },
         { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
       ];
@@ -398,7 +539,7 @@ describe("Knowledge grounding operational metrics", () => {
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
     } as never, { limit: 5 });
-    expect(metrics.answers).toBe(12);
-    expect(metrics.modelOperations).toBe(61);
+    expect(metrics.answers).toBe(21);
+    expect(metrics.modelOperations).toBe(129);
   });
 });

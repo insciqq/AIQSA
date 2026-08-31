@@ -16,7 +16,11 @@ import type {
   KnowledgeCoverageDimensionV6,
   KnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
-import { knowledgeCoverageEvidenceAtomIndexV1 } from "./coverageScopeV4";
+import {
+  knowledgeCoverageEvidenceAtomIndex,
+  type KnowledgeCoverageEvidenceAtomContextRoleV2,
+  type KnowledgeCoverageEvidenceAtomIndexVersion
+} from "./coverageScopeV4";
 import type { KnowledgeCoverageEvidenceV6 } from "./coverageScopeV6";
 
 export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1 = 1 as const;
@@ -99,6 +103,24 @@ export type KnowledgeTargetedEvidenceAtomIndexV1 = Readonly<{
   }>[];
   version: 1;
 }>;
+
+export type KnowledgeTargetedEvidenceAtomIndexV2 = Readonly<{
+  atoms: readonly Readonly<{
+    contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+    handle: string;
+    id: string;
+    text: string;
+  }>[];
+  targets: readonly Readonly<{
+    evidenceAtomIds: readonly string[];
+    targetDimensionId: string;
+  }>[];
+  version: 2;
+}>;
+
+export type KnowledgeTargetedEvidenceAtomIndex =
+  | KnowledgeTargetedEvidenceAtomIndexV1
+  | KnowledgeTargetedEvidenceAtomIndexV2;
 
 export type KnowledgeTargetedSupplementFailureReasonV1 =
   | "draft_duplicate_primary_claim"
@@ -330,15 +352,34 @@ export function knowledgeTargetedEvidenceAtomIndexV1(input: Readonly<{
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   targetDimensions: readonly KnowledgeCoverageDimensionV6[];
 }>): KnowledgeTargetedEvidenceAtomIndexV1 | null {
+  const atomIndex = knowledgeTargetedEvidenceAtomIndex(input, 1);
+  return atomIndex?.version === 1 ? atomIndex : null;
+}
+
+export function knowledgeTargetedEvidenceAtomIndexV2(input: Readonly<{
+  evidence: readonly KnowledgeCoverageEvidenceV6[];
+  targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+}>): KnowledgeTargetedEvidenceAtomIndexV2 | null {
+  const atomIndex = knowledgeTargetedEvidenceAtomIndex(input, 2);
+  return atomIndex?.version === 2 ? atomIndex : null;
+}
+
+export function knowledgeTargetedEvidenceAtomIndex(
+  input: Readonly<{
+    evidence: readonly KnowledgeCoverageEvidenceV6[];
+    targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+  }>,
+  atomIndexVersion: KnowledgeCoverageEvidenceAtomIndexVersion
+): KnowledgeTargetedEvidenceAtomIndex | null {
   const targetable = knowledgeTargetableMissingDimensionsV1(input.targetDimensions);
   const targetIds = new Set(targetable.map(({ id }) => id));
   if (targetable.length !== input.targetDimensions.length || targetable.length < 1 ||
     targetIds.size !== targetable.length || targetable.some(({ id, evidenceAtomIds }) =>
       !targetIdPattern.test(id) || evidenceAtomIds.length < 1 ||
       new Set(evidenceAtomIds).size !== evidenceAtomIds.length)) return null;
-  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndexV1>;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndex>;
   try {
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(input.evidence, atomIndexVersion);
   } catch {
     return null;
   }
@@ -359,14 +400,16 @@ export function knowledgeTargetedEvidenceAtomIndexV1(input: Readonly<{
   if (atoms.length < 1 ||
     atoms.length > KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1.maxAtoms ||
     totalCodePoints > KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1.maxCodePoints) return null;
-  return Object.freeze({
+  const common = {
     atoms: Object.freeze(atoms.map((atom) => Object.freeze({ ...atom }))),
     targets: Object.freeze(targetable.map((dimension) => Object.freeze({
       evidenceAtomIds: Object.freeze([...dimension.evidenceAtomIds]),
       targetDimensionId: dimension.id
-    }))),
-    version: 1 as const
-  });
+    })))
+  };
+  return atomIndex.version === 2
+    ? Object.freeze({ ...common, version: 2 as const }) as KnowledgeTargetedEvidenceAtomIndexV2
+    : Object.freeze({ ...common, version: 1 as const }) as KnowledgeTargetedEvidenceAtomIndexV1;
 }
 
 /** The all-target supplement contract is dispatchable only when one candidate
@@ -640,17 +683,56 @@ function immutableClaim(claim: KnowledgeGroundedSelectorClaimV3) {
   });
 }
 
+/** Detects one narrow final-delta consistency state worth a fresh bounded
+ * review: every candidate generated for an exact missing target was verified
+ * as supported from that target's own provenance, but the target remained
+ * missing. This never promotes coverage or rewrites a verdict. The caller may
+ * spend one remaining operation on an independent verifier pass and must
+ * accept the second pass fail-closed even when it remains partial. */
+export function knowledgeGroundedDeltaCoverageReviewRequiredV1(input: Readonly<{
+  bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
+  finalSelector: KnowledgeGroundedSelectorV21;
+  initialSelector: KnowledgeGroundedSelectorV21;
+  primaryClaimCount: number;
+}>): boolean {
+  if (!Number.isSafeInteger(input.primaryClaimCount) || input.primaryClaimCount < 1 ||
+    input.initialSelector.claims.length !== input.primaryClaimCount ||
+    input.finalSelector.claims.length < input.primaryClaimCount ||
+    input.initialSelector.coverage.length !== input.finalSelector.coverage.length ||
+    input.bindings.length !== input.finalSelector.claims.length - input.primaryClaimCount) {
+    return false;
+  }
+  const finalClaimById = new Map(input.finalSelector.claims.map((claim) =>
+    [claim.id, claim] as const));
+  return input.initialSelector.coverage.some((initialDimension, index) => {
+    const finalDimension = input.finalSelector.coverage[index];
+    if (!finalDimension || initialDimension.id !== finalDimension.id ||
+      initialDimension.status !== "missing" ||
+      initialDimension.evidenceHandles.length === 0 ||
+      finalDimension.status !== "missing") return false;
+    const targetClaimIds = input.bindings
+      .filter(({ targetDimensionId }) => targetDimensionId === initialDimension.id)
+      .map(({ claimId }) => claimId);
+    return targetClaimIds.length > 0 && targetClaimIds.every((claimId) => {
+      const claim = finalClaimById.get(claimId);
+      return claim?.verdict === "supported" && claim.supportHandles.length > 0 &&
+        claim.supportHandles.every((handle) =>
+          initialDimension.evidenceHandles.includes(handle));
+    });
+  });
+}
+
 /** Applies the final Selector as a delta. Initial support, covered Scope, and
  * eligibility decisions are immutable; only supplement claim verdicts and
  * mappings for dimensions that were initially missing can be added. A new
  * mapping is admitted only when the final Selector chose a supported claim
  * explicitly targeted to that same dimension. */
-export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
+function mergeKnowledgeGroundedCorrection(input: Readonly<{
   bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
   finalSelector: KnowledgeGroundedSelectorV21;
   initialSelector: KnowledgeGroundedSelectorV21;
   primaryClaimCount: number;
-}>): KnowledgeGroundedSelectorV21 {
+}>, allowTargetExclusion: boolean): KnowledgeGroundedSelectorV21 {
   const { finalSelector, initialSelector } = input;
   if (!Number.isSafeInteger(input.primaryClaimCount) || input.primaryClaimCount < 1 ||
     initialSelector.claims.length !== input.primaryClaimCount ||
@@ -697,21 +779,45 @@ export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
     const allowed = new Set(input.bindings
       .filter(({ targetDimensionId }) => targetDimensionId === initialDimension.id)
       .map(({ claimId }) => claimId));
-    const supportIds = finalDimension.status === "covered"
+    const status = allowTargetExclusion && finalDimension.status === "excluded"
+      ? "excluded" as const
+      : finalDimension.status;
+    const supportIds = status === "covered"
       ? finalDimension.supportIds.filter((id) =>
-          allowed.has(id) && finalClaimById.get(id)?.verdict === "supported")
+          allowed.has(id) && finalClaimById.get(id)?.verdict === "supported" &&
+          finalClaimById.get(id)!.supportHandles.every((handle) =>
+            initialDimension.evidenceHandles.includes(handle)))
       : [];
     return Object.freeze({
       ...initialDimension,
       evidenceAtomIds: Object.freeze([...initialDimension.evidenceAtomIds]),
       evidenceHandles: Object.freeze([...initialDimension.evidenceHandles]),
-      status: supportIds.length > 0 ? "covered" as const : "missing" as const,
+      status: status === "excluded"
+        ? "excluded" as const
+        : supportIds.length > 0 ? "covered" as const : "missing" as const,
       supportIds: Object.freeze(supportIds)
     });
   });
+  const excludedTargetIds = new Set(coverage
+    .filter(({ status }) => status === "excluded")
+    .map(({ id }) => id));
   const claims = Object.freeze([
     ...initialSelector.claims.map(immutableClaim),
-    ...supplementalClaims.map(immutableClaim)
+    ...supplementalClaims.map((claim) => {
+      const binding = bindingByClaimId.get(claim.id)!;
+      const target = initialSelector.coverage.find(({ id }) =>
+        id === binding.targetDimensionId)!;
+      const targetPurposeInvalid = excludedTargetIds.has(binding.targetDimensionId) ||
+        claim.verdict === "supported" && claim.supportHandles.some((handle) =>
+          !target.evidenceHandles.includes(handle));
+      return targetPurposeInvalid
+        ? immutableClaim(Object.freeze({
+            ...claim,
+            supportHandles: Object.freeze([]),
+            verdict: "unsupported" as const
+          }))
+        : immutableClaim(claim);
+    })
   ]);
   const hasSupportedContent = claims.some(({ verdict }) => verdict === "supported") ||
     initialSelector.extractIds.length > 0;
@@ -726,4 +832,27 @@ export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
         : finalSelector.insufficientReason,
     version: finalSelector.version
   });
+}
+
+export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
+  bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
+  finalSelector: KnowledgeGroundedSelectorV21;
+  initialSelector: KnowledgeGroundedSelectorV21;
+  primaryClaimCount: number;
+}>): KnowledgeGroundedSelectorV21 {
+  return mergeKnowledgeGroundedCorrection(input, false);
+}
+
+/** Current least-authority delta merge. A final target-only verifier may veto
+ * a false-positive positive Scope target to excluded, but cannot exclude an
+ * unsupported facet (which never enters correction) or alter accepted base
+ * state. Supplemental support outside the exact target provenance, or bound to
+ * an excluded target, is purpose-bound discarded before settlement. */
+export function mergeKnowledgeGroundedCorrectionV2(input: Readonly<{
+  bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
+  finalSelector: KnowledgeGroundedSelectorV21;
+  initialSelector: KnowledgeGroundedSelectorV21;
+  primaryClaimCount: number;
+}>): KnowledgeGroundedSelectorV21 {
+  return mergeKnowledgeGroundedCorrection(input, true);
 }

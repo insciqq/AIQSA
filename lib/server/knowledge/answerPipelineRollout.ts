@@ -13,7 +13,7 @@ export type KnowledgeAnswerPipelineRolloutV1 = Readonly<{
  * persisted operation, never from the current rollout. */
 export const KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1 = Object.freeze({
   defaultPipeline: "v20_v16",
-  v21CanaryBasisPoints: 0,
+  v21CanaryBasisPoints: 10_000,
   version: 1
 } as const satisfies KnowledgeAnswerPipelineRolloutV1);
 

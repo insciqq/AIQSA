@@ -2,6 +2,9 @@ import type {
   OpenRagAnswerRunManifest
 } from "./openRagAnswerContract";
 import {
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
+} from "../../lib/server/knowledge/answerGroundingV21";
+import {
   decodeOpenRagAnswerRunManifest,
   openRagAnswerManifestFingerprint
 } from "./openRagAnswerContract";
@@ -230,11 +233,15 @@ export function decodeOpenRagAnswerOutcome(
     value.classification !== null && (typeof value.classification !== "string" ||
       !failureClassifications.has(value.classification as OpenRagFailureClassification)) ||
     !Array.isArray(value.stageRecords) || value.stageRecords.length < 3 ||
-      value.stageRecords.length > 7 ||
+      value.stageRecords.length >
+        KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 ||
     !Array.isArray(value.diagnosticJudgeRuns) || value.diagnosticJudgeRuns.length > 10) {
     throw new Error(code);
   }
-  const operationCount = boundedInteger(value.operationCount, 7);
+  const operationCount = boundedInteger(
+    value.operationCount,
+    KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
+  );
   const stageRecords = value.stageRecords.map(decodeStage);
   const judgment = value.judgment === null ? null : decodeJudgeStage(value.judgment);
   const diagnosticJudgeRuns = value.diagnosticJudgeRuns.map(decodeJudgeStage);

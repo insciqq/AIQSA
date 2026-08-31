@@ -14,13 +14,17 @@ import {
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_MAX_OPERATION_COUNT_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+  knowledgeAnswerScopeV6CorrectionFitsV2,
   type KnowledgeAnswerOperationScopeV3,
   type KnowledgeAnswerOperationScopeV4,
   type KnowledgeAnswerOperationScopeV5,
   type KnowledgeAnswerOperationScopeV6,
   type KnowledgeAnswerOperationScopeV6CompletenessV1,
+  type KnowledgeAnswerOperationScopeV6ClosureV1,
   type KnowledgeAnswerOperationAuditV2,
   type KnowledgeAnswerV21AuditV2ContractVersions,
   type KnowledgeAnswerV21ContractVersions,
@@ -48,6 +52,9 @@ import { KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION } from "./coverageScopeV6";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
 } from "./coverageScopeCompletenessV1";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+} from "./coverageScopeClosureV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
@@ -86,6 +93,15 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V27 = 27 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V28 = 28 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V29 = 29 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 = 30 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V31 = 31 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V32 = 32 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V33 = 33 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V34 = 34 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V35 = 35 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V36 = 36 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V37 = 37 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V38 = 38 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39 = 39 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -598,6 +614,13 @@ export type KnowledgeGroundingOperationEvidenceV25 = Omit<
   ordinal: 1 | 2 | 3 | 4 | 5 | 6 | 7;
 }>;
 
+type KnowledgeGroundingOperationEvidenceRepairBudgetV2 = Omit<
+  KnowledgeGroundingOperationEvidenceV24,
+  "ordinal"
+> & Readonly<{
+  ordinal: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+}>;
+
 export type KnowledgeGroundingEvidenceV25 = Omit<
   KnowledgeGroundingEvidenceV24,
   "operations" | "version"
@@ -661,6 +684,123 @@ export type KnowledgeGroundingEvidenceV30 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV31 =
+  KnowledgeGroundingOperationEvidenceV30;
+
+export type KnowledgeGroundingEvidenceV31 = Omit<
+  KnowledgeGroundingEvidenceV30,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV31[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V31;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV32 =
+  KnowledgeGroundingOperationEvidenceV31;
+
+export type KnowledgeGroundingEvidenceV32 = Omit<
+  KnowledgeGroundingEvidenceV31,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV32[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V32;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV33 =
+  KnowledgeGroundingOperationEvidenceV32;
+
+export type KnowledgeGroundingEvidenceV33 = Omit<
+  KnowledgeGroundingEvidenceV32,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV33[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V33;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV34 = Omit<
+  KnowledgeGroundingOperationEvidenceV33,
+  "purpose" | "role"
+> & Readonly<{
+  purpose: KnowledgeAnswerOperationScopeV6ClosureV1;
+  role: KnowledgeGroundingOperationEvidenceV33["role"] |
+    "scope_closure" | "scope_closure_repair";
+}>;
+
+export type KnowledgeGroundingEvidenceV34 = Omit<
+  KnowledgeGroundingEvidenceV33,
+  "operations" | "version"
+> & Readonly<{
+  closure: Readonly<{
+    initialCoveredDimensionCount: number;
+    payloadHash: string;
+    reopenedDimensionCount: number;
+    status: "accepted";
+  }> | null;
+  closureRepairAttempted: boolean;
+  closureRepairSucceeded: boolean;
+  operations: readonly KnowledgeGroundingOperationEvidenceV34[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V34;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV35 = Omit<
+  KnowledgeGroundingOperationEvidenceV34,
+  "ordinal"
+> & Readonly<{
+  ordinal: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+}>;
+
+export type KnowledgeGroundingEvidenceV35 = Omit<
+  KnowledgeGroundingEvidenceV34,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV35[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V35;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV36 =
+  KnowledgeGroundingOperationEvidenceV35;
+
+export type KnowledgeGroundingEvidenceV36 = Omit<
+  KnowledgeGroundingEvidenceV35,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV36[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V36;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV37 =
+  KnowledgeGroundingOperationEvidenceV36;
+
+export type KnowledgeGroundingEvidenceV37 = Omit<
+  KnowledgeGroundingEvidenceV36,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV37[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V37;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV38 =
+  KnowledgeGroundingOperationEvidenceV37;
+
+export type KnowledgeGroundingEvidenceV38 = Omit<
+  KnowledgeGroundingEvidenceV37,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV38[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V38;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV39 =
+  KnowledgeGroundingOperationEvidenceV38;
+
+export type KnowledgeGroundingEvidenceV39 = Omit<
+  KnowledgeGroundingEvidenceV38,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV39[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -686,7 +826,16 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV27
   | KnowledgeGroundingEvidenceV28
   | KnowledgeGroundingEvidenceV29
-  | KnowledgeGroundingEvidenceV30;
+  | KnowledgeGroundingEvidenceV30
+  | KnowledgeGroundingEvidenceV31
+  | KnowledgeGroundingEvidenceV32
+  | KnowledgeGroundingEvidenceV33
+  | KnowledgeGroundingEvidenceV34
+  | KnowledgeGroundingEvidenceV35
+  | KnowledgeGroundingEvidenceV36
+  | KnowledgeGroundingEvidenceV37
+  | KnowledgeGroundingEvidenceV38
+  | KnowledgeGroundingEvidenceV39;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -2119,7 +2268,8 @@ type KnowledgeGroundingV24Input = Omit<
 
 function validGroundingOperationV24(
   operation: KnowledgeGroundingOperationEvidenceV24 |
-    KnowledgeGroundingOperationEvidenceV25,
+    KnowledgeGroundingOperationEvidenceV25 |
+    KnowledgeGroundingOperationEvidenceRepairBudgetV2,
   ordinal: number
 ): boolean {
   const purpose = operation.role === "primary"
@@ -2313,17 +2463,29 @@ type KnowledgeGroundingV25Input = Omit<
   operations: readonly KnowledgeGroundingOperationEvidenceV25[];
 }>;
 
-/** V25 attests Snapshot V9's repair-reserved execution budget. It preserves
- * V24's content-free append-only completeness contract while allowing one
- * validation repair followed by the bounded Supplement/final-Selector pair. */
-export function groundSettledKnowledgeAnswerV25(
-  input: KnowledgeGroundingV25Input
-): KnowledgeGroundingEvidenceV25 {
-  const roleSequences: KnowledgeGroundingOperationEvidenceV25["role"][][] = [];
+type KnowledgeGroundingRepairBudgetInput = Omit<
+  KnowledgeGroundingV25Input,
+  "operations"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceRepairBudgetV2[];
+}>;
+
+type KnowledgeGroundingRepairBudgetEvidence = Omit<
+  KnowledgeGroundingEvidenceV25,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceRepairBudgetV2[];
+}>;
+
+function groundSettledKnowledgeAnswerRepairBudget(
+  input: KnowledgeGroundingRepairBudgetInput,
+  maxOperationCount: number
+): KnowledgeGroundingRepairBudgetEvidence {
+  const roleSequences: KnowledgeGroundingOperationEvidenceRepairBudgetV2["role"][][] = [];
   for (const scopeRepair of [false, true]) {
     for (const completenessRepair of [false, true]) {
       for (const selectorRepair of [false, true]) {
-        const base: KnowledgeGroundingOperationEvidenceV25["role"][] = [
+        const base: KnowledgeGroundingOperationEvidenceRepairBudgetV2["role"][] = [
           "primary",
           "scope",
           ...(scopeRepair ? ["scope_repair" as const] : []),
@@ -2332,8 +2494,8 @@ export function groundSettledKnowledgeAnswerV25(
           "initial",
           ...(selectorRepair ? ["repair" as const] : [])
         ];
-        if (base.length <= 7) roleSequences.push(base);
-        if (base.length + 2 <= 7) {
+        if (base.length <= maxOperationCount) roleSequences.push(base);
+        if (base.length + 2 <= maxOperationCount) {
           roleSequences.push([...base, "supplement"], [...base, "supplement", "final"]);
         }
       }
@@ -2376,7 +2538,10 @@ export function groundSettledKnowledgeAnswerV25(
   const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(
     input.executionPolicy
   );
-  if (input.contracts.draftContractVersion !== 21 ||
+  if (maxOperationCount !== KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_MAX_OPERATION_COUNT_V1 &&
+    maxOperationCount !==
+      KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 ||
+    input.contracts.draftContractVersion !== 21 ||
     input.contracts.selectorContractVersion !== 21 ||
     input.contracts.coverageAuditorContractVersion !== 6 ||
     input.contracts.settlementVersion !== 6 || !operationsValid || !scope ||
@@ -2466,7 +2631,23 @@ export function groundSettledKnowledgeAnswerV25(
     selectorRepairSucceeded: input.selectorRepairSucceeded,
     sessionId: input.evidence.sessionId,
     supportedClaimCount: input.settlement.supportedClaimCount,
-    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount
+  });
+}
+
+/** V25 attests Snapshot V9's repair-reserved execution budget. It preserves
+ * V24's content-free append-only completeness contract while allowing one
+ * validation repair followed by the bounded Supplement/final-Selector pair. */
+export function groundSettledKnowledgeAnswerV25(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV25 {
+  const grounded = groundSettledKnowledgeAnswerRepairBudget(
+    input,
+    KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_MAX_OPERATION_COUNT_V1
+  );
+  return Object.freeze({
+    ...grounded,
+    operations: grounded.operations as readonly KnowledgeGroundingOperationEvidenceV25[],
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V25
   });
 }
@@ -2530,6 +2711,392 @@ export function groundSettledKnowledgeAnswerV30(
   return Object.freeze({
     ...grounded,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30
+  });
+}
+
+/** V31 distinguishes Snapshot V15's content-safe Scope validation feedback
+ * from V30. Receipt content and seven-call invariants remain unchanged. */
+export function groundSettledKnowledgeAnswerV31(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV31 {
+  const grounded = groundSettledKnowledgeAnswerV30(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V31
+  });
+}
+
+/** V32 distinguishes Snapshot V16's complete target-group closure and ordered
+ * same-unit conclusion resolution from V31. Receipt content and seven-call
+ * invariants remain unchanged. */
+export function groundSettledKnowledgeAnswerV32(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV32 {
+  const grounded = groundSettledKnowledgeAnswerV31(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V32
+  });
+}
+
+/** V33 distinguishes Snapshot V17's verifier-directed Scope patch merge from
+ * V32. Only independently rejected JSON-pointer paths may change; receipt
+ * content and seven-call invariants remain unchanged. */
+export function groundSettledKnowledgeAnswerV33(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV33 {
+  const grounded = groundSettledKnowledgeAnswerV32(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V33
+  });
+}
+
+type KnowledgeGroundingV34Input = Omit<
+  KnowledgeGroundingV25Input,
+  "operations"
+> & Readonly<{
+  closure: Readonly<{
+    initialCoveredDimensionCount: number;
+    payloadHash: string;
+    reopenedDimensionCount: number;
+  }> | null;
+  operations: readonly KnowledgeGroundingOperationEvidenceV34[];
+}>;
+
+function validGroundingOperationV34(
+  operation: KnowledgeGroundingOperationEvidenceV34 |
+    KnowledgeGroundingOperationEvidenceV35,
+  ordinal: number
+): boolean {
+  const purpose = operation.role === "primary"
+    ? KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+    : operation.role === "scope" || operation.role === "scope_repair"
+      ? KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+      : operation.role === "scope_completeness" ||
+          operation.role === "scope_completeness_repair"
+        ? KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+        : operation.role === "initial" || operation.role === "repair"
+          ? KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+          : operation.role === "scope_closure" ||
+              operation.role === "scope_closure_repair"
+            ? KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+            : operation.role === "supplement"
+              ? KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+              : KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
+  const contractVersion = operation.role === "scope" || operation.role === "scope_repair"
+    ? 6
+    : operation.role === "scope_completeness" ||
+        operation.role === "scope_completeness_repair" ||
+        operation.role === "scope_closure" || operation.role === "scope_closure_repair"
+      ? 1
+      : 21;
+  const usage = decodeKnowledgeProviderAttemptUsage(operation.usage);
+  return operation.ordinal === ordinal && operation.purpose === purpose &&
+    operation.contractVersion === contractVersion &&
+    validOperationId(operation.operationId) && validDuration(operation.durationMs) &&
+    /^[0-9a-f]{64}$/u.test(operation.acceptedRequestHash) &&
+    /^[0-9a-f]{64}$/u.test(operation.acceptedResultHash) &&
+    (operation.providerRequestId === null || operation.providerRequestId.length <= 1_024) &&
+    Boolean(usage && usage.inputTokens !== null && usage.outputTokens !== null);
+}
+
+/** V34 attests Snapshot V18's independent post-Selector semantic closure veto.
+ * The receipt remains content-free: it records only operation hashes, aggregate
+ * closure counts, timings, usage, and the pre-existing settlement aggregates. */
+export function groundSettledKnowledgeAnswerV34(
+  input: KnowledgeGroundingV34Input
+): KnowledgeGroundingEvidenceV34 {
+  const roleSequences: KnowledgeGroundingOperationEvidenceV34["role"][][] = [];
+  for (const scopeRepair of [false, true]) {
+    for (const completenessRepair of [false, true]) {
+      for (const selectorRepair of [false, true]) {
+        const base: KnowledgeGroundingOperationEvidenceV34["role"][] = [
+          "primary",
+          "scope",
+          ...(scopeRepair ? ["scope_repair" as const] : []),
+          "scope_completeness",
+          ...(completenessRepair ? ["scope_completeness_repair" as const] : []),
+          "initial",
+          ...(selectorRepair ? ["repair" as const] : [])
+        ];
+        for (const closureCount of [0, 1, 2] as const) {
+          const closureGated = [
+            ...base,
+            ...Array.from({ length: closureCount }, (_unused, index) =>
+              index === 0 ? "scope_closure" as const : "scope_closure_repair" as const)
+          ];
+          if (closureGated.length <= 7) roleSequences.push(closureGated);
+          if (closureGated.length + 2 <= 7) {
+            roleSequences.push(
+              [...closureGated, "supplement"],
+              [...closureGated, "supplement", "final"]
+            );
+          }
+        }
+      }
+    }
+  }
+  const roles = input.operations.map(({ role }) => role);
+  const validSequence = roleSequences.some((sequence) =>
+    JSON.stringify(sequence) === JSON.stringify(roles));
+  const operationsValid = validSequence && input.operations.length <= 7 &&
+    input.operations.every((operation, index) =>
+      validGroundingOperationV34(operation, index + 1));
+  const closureOperations = input.operations.filter(({ role }) =>
+    role === "scope_closure" || role === "scope_closure_repair");
+  const closureRepairAttempted = roles.includes("scope_closure_repair");
+  const acceptedClosure = closureOperations.at(-1);
+  const closureValid = input.closure === null
+    ? closureOperations.length === 0 && input.coverage.coveredDimensionCount === 0
+    : closureOperations.length >= 1 && closureOperations.length <= 2 &&
+      Number.isSafeInteger(input.closure.initialCoveredDimensionCount) &&
+      input.closure.initialCoveredDimensionCount >= 1 &&
+      input.closure.initialCoveredDimensionCount <= input.coverageScope.dimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedDimensionCount) &&
+      input.closure.reopenedDimensionCount >= 0 &&
+      input.closure.reopenedDimensionCount <= input.closure.initialCoveredDimensionCount &&
+      input.coverage.coveredDimensionCount ===
+        input.closure.initialCoveredDimensionCount - input.closure.reopenedDimensionCount &&
+      /^[0-9a-f]{64}$/u.test(input.closure.payloadHash) &&
+      input.closure.payloadHash === acceptedClosure?.acceptedResultHash &&
+      closureRepairAttempted === (closureOperations.length === 2);
+  if (!operationsValid || !closureValid) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted Scope-closure grounding evidence is invalid"
+    );
+  }
+  const historicalOperations = input.operations
+    .filter(({ role }) => role !== "scope_closure" && role !== "scope_closure_repair")
+    .map((operation, index) => Object.freeze({
+      ...operation,
+      ordinal: index + 1 as 1 | 2 | 3 | 4 | 5 | 6 | 7,
+      usage: Object.freeze({ ...operation.usage })
+    })) as readonly KnowledgeGroundingOperationEvidenceV25[];
+  const { closure: _closure, operations: _operations, ...shared } = input;
+  void _closure;
+  void _operations;
+  const historical = groundSettledKnowledgeAnswerV33({
+    ...shared,
+    operations: historicalOperations
+  });
+  const operations = Object.freeze(input.operations.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    ...historical,
+    closure: input.closure === null
+      ? null
+      : Object.freeze({ ...input.closure, status: "accepted" as const }),
+    closureRepairAttempted,
+    closureRepairSucceeded: closureRepairAttempted,
+    operations,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V34
+  });
+}
+
+type KnowledgeGroundingV35Input = Omit<
+  KnowledgeGroundingV34Input,
+  "operations"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV35[];
+}>;
+
+/** V35 attests Snapshot V19's repair-reserved correction budget. The normal
+ * closure path remains five calls; after any one adjacent structural repair,
+ * the complete Supplement/final-Selector pair still fits under the bounded
+ * eight-operation ceiling. */
+export function groundSettledKnowledgeAnswerV35(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV35 {
+  const roleSequences: KnowledgeGroundingOperationEvidenceV35["role"][][] = [];
+  for (const scopeRepair of [false, true]) {
+    for (const completenessRepair of [false, true]) {
+      for (const selectorRepair of [false, true]) {
+        const base: KnowledgeGroundingOperationEvidenceV35["role"][] = [
+          "primary",
+          "scope",
+          ...(scopeRepair ? ["scope_repair" as const] : []),
+          "scope_completeness",
+          ...(completenessRepair ? ["scope_completeness_repair" as const] : []),
+          "initial",
+          ...(selectorRepair ? ["repair" as const] : [])
+        ];
+        for (const closureCount of [0, 1, 2] as const) {
+          const closureGated = [
+            ...base,
+            ...Array.from({ length: closureCount }, (_unused, index) =>
+              index === 0 ? "scope_closure" as const : "scope_closure_repair" as const)
+          ];
+          if (closureGated.length <=
+            KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+            roleSequences.push(closureGated);
+          }
+          if (knowledgeAnswerScopeV6CorrectionFitsV2(closureGated.length)) {
+            roleSequences.push(
+              [...closureGated, "supplement"],
+              [...closureGated, "supplement", "final"]
+            );
+          }
+        }
+      }
+    }
+  }
+  const roles = input.operations.map(({ role }) => role);
+  const validSequence = roleSequences.some((sequence) =>
+    JSON.stringify(sequence) === JSON.stringify(roles));
+  const operationsValid = validSequence && input.operations.length <=
+    KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 &&
+    input.operations.every((operation, index) =>
+      validGroundingOperationV34(operation, index + 1));
+  const closureOperations = input.operations.filter(({ role }) =>
+    role === "scope_closure" || role === "scope_closure_repair");
+  const closureRepairAttempted = roles.includes("scope_closure_repair");
+  const acceptedClosure = closureOperations.at(-1);
+  const closureValid = input.closure === null
+    ? closureOperations.length === 0 && input.coverage.coveredDimensionCount === 0
+    : closureOperations.length >= 1 && closureOperations.length <= 2 &&
+      Number.isSafeInteger(input.closure.initialCoveredDimensionCount) &&
+      input.closure.initialCoveredDimensionCount >= 1 &&
+      input.closure.initialCoveredDimensionCount <= input.coverageScope.dimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedDimensionCount) &&
+      input.closure.reopenedDimensionCount >= 0 &&
+      input.closure.reopenedDimensionCount <= input.closure.initialCoveredDimensionCount &&
+      input.coverage.coveredDimensionCount ===
+        input.closure.initialCoveredDimensionCount - input.closure.reopenedDimensionCount &&
+      /^[0-9a-f]{64}$/u.test(input.closure.payloadHash) &&
+      input.closure.payloadHash === acceptedClosure?.acceptedResultHash &&
+      closureRepairAttempted === (closureOperations.length === 2);
+  if (!operationsValid || !closureValid) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted repair-reserved Scope-closure grounding evidence is invalid"
+    );
+  }
+  const baseOperations = input.operations
+    .filter(({ role }) => role !== "scope_closure" && role !== "scope_closure_repair")
+    .map((operation, index) => Object.freeze({
+      ...operation,
+      ordinal: index + 1 as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
+      purpose: operation.purpose as KnowledgeAnswerOperationScopeV6CompletenessV1,
+      role: operation.role as KnowledgeGroundingOperationEvidenceRepairBudgetV2["role"],
+      usage: Object.freeze({ ...operation.usage })
+    })) as readonly KnowledgeGroundingOperationEvidenceRepairBudgetV2[];
+  const { closure: _closure, operations: _operations, ...shared } = input;
+  void _closure;
+  void _operations;
+  const grounded = groundSettledKnowledgeAnswerRepairBudget({
+    ...shared,
+    operations: baseOperations
+  }, KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2);
+  const operations = Object.freeze(input.operations.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    ...grounded,
+    closure: input.closure === null
+      ? null
+      : Object.freeze({ ...input.closure, status: "accepted" as const }),
+    closureRepairAttempted,
+    closureRepairSucceeded: closureRepairAttempted,
+    operations,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V35
+  });
+}
+
+/** V36 attests Snapshot V20's trusted source-ordered contextual evidence
+ * projection. Receipt contents and the bounded eight-operation state machine
+ * stay identical to V35; the version prevents historical runs from being
+ * reinterpreted with the new atom coordinates. */
+export function groundSettledKnowledgeAnswerV36(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV36 {
+  const grounded = groundSettledKnowledgeAnswerV35(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V36
+  });
+}
+
+/** V37 attests Snapshot V21's target-only least-authority delta verifier.
+ * Receipt contents and the bounded eight-operation state machine stay
+ * identical to V36; the version prevents historical final-Selector prompts
+ * from being reinterpreted with target-veto authority. */
+export function groundSettledKnowledgeAnswerV37(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV37 {
+  const grounded = groundSettledKnowledgeAnswerV36(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V37
+  });
+}
+
+/** V38 attests Snapshot V22's fail-closed local provenance rejection.  A
+ * foreign-atom local finding is discarded in full and the remaining Scope is
+ * revalidated; receipt contents and the bounded state machine stay identical
+ * to V37. */
+export function groundSettledKnowledgeAnswerV38(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV38 {
+  const grounded = groundSettledKnowledgeAnswerV37(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V38
+  });
+}
+
+/** V39 attests Snapshot V23's one bounded final-delta consistency review.
+ * Receipt contents and the eight-operation hard cap stay identical to V38;
+ * the version prevents historical final verifiers from acquiring retry
+ * semantics. */
+export function groundSettledKnowledgeAnswerV39(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV39 {
+  const roles = input.operations.map(({ role }) => role);
+  const finalIndexes = roles.flatMap((role, index) => role === "final" ? [index] : []);
+  const finalRepair = finalIndexes.length === 2 &&
+    finalIndexes[0] === input.operations.length - 2 &&
+    finalIndexes[1] === input.operations.length - 1 &&
+    roles.at(-3) === "supplement";
+  if (!finalRepair) {
+    const grounded = groundSettledKnowledgeAnswerV38(input);
+    return Object.freeze({
+      ...grounded,
+      version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39
+    });
+  }
+  const operationsValid = input.operations.length <=
+    KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 &&
+    input.operations.every((operation, index) =>
+      validGroundingOperationV34(operation, index + 1));
+  if (!operationsValid) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted final-delta repair grounding evidence is invalid"
+    );
+  }
+  const historicalOperations = input.operations
+    .filter((_operation, index) => index !== finalIndexes[0])
+    .map((operation, index) => Object.freeze({
+      ...operation,
+      ordinal: index + 1 as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
+      usage: Object.freeze({ ...operation.usage })
+    })) as readonly KnowledgeGroundingOperationEvidenceV35[];
+  const grounded = groundSettledKnowledgeAnswerV38({
+    ...input,
+    operations: historicalOperations
+  });
+  return Object.freeze({
+    ...grounded,
+    operations: Object.freeze(input.operations.map((operation) => Object.freeze({
+      ...operation,
+      usage: Object.freeze({ ...operation.usage })
+    }))),
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39
   });
 }
 

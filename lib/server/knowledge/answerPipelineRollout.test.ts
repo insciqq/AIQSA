@@ -5,14 +5,14 @@ import {
 } from "./answerPipelineRollout";
 
 describe("Knowledge answer pipeline rollout", () => {
-  it("keeps the code-owned V21 canary disabled by default", () => {
+  it("activates the code-owned V21 acceptance candidate", () => {
     expect(KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1).toEqual({
       defaultPipeline: "v20_v16",
-      v21CanaryBasisPoints: 0,
+      v21CanaryBasisPoints: 10_000,
       version: 1
     });
     expect(selectKnowledgeAnswerPipelineForNewRun({ modelRunId: "run-default-1" }))
-      .toBe("v20_v16");
+      .toBe("v21_scope_v6");
   });
 
   it("selects deterministically at the rollout boundaries", () => {

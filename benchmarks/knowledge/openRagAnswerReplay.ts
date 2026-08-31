@@ -3,7 +3,9 @@ import type { ModelRunUsage } from "../../lib/domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../lib/domain/usage";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
+  KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
   decodeKnowledgeAnswerDraftAcceptedResultForPair,
   decodeKnowledgeAnswerDraftSupplementAcceptedResultV1,
   decodeKnowledgeCoveragePlanAcceptedResultV1,
@@ -23,6 +25,8 @@ import {
 import {
   KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
   KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
+  knowledgeAnswerScopeV6CorrectionFitsV2,
   type KnowledgeAnswerOperationRequestSnapshotV21
 } from "../../lib/server/knowledge/answerGroundingV21";
 import {
@@ -30,14 +34,19 @@ import {
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import { executeKnowledgeAnswerGroundingV21 } from
   "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV6";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39 } from
   "../../lib/server/knowledge/grounding";
 import {
-  decodeKnowledgeCoverageScopeFailureV6
-} from "../../lib/server/knowledge/coverageScopeV6";
+  decodeKnowledgeCoverageScopeRepairFeedbackFailureV1
+} from "../../lib/server/knowledge/coverageScopeRepairFeedbackV1";
+import {
+  decodeKnowledgeCoverageScopeVerifiedPatchFailureV1
+} from "../../lib/server/knowledge/coverageScopeVerifiedPatchRepairV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
 } from "../../lib/server/knowledge/coverageScopeCompletenessV1";
+import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION } from
+  "../../lib/server/knowledge/coverageScopeClosureV1";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -67,6 +76,28 @@ import {
 import type { OpenRagAnswerStageRecord } from "./openRagAnswerCheckpoint";
 
 export const OPEN_RAG_ANSWER_REPLAY_SCHEMA_VERSION = 2 as const;
+
+const replaySnapshotDiagnostics = new WeakMap<object, string>();
+const replayRouteInstructions = new Set([
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
+]);
+
+function invalidReplaySnapshot(diagnostic: string): never {
+  const error = new Error("open_rag_answer_replay_snapshot_invalid");
+  replaySnapshotDiagnostics.set(error, diagnostic);
+  throw error;
+}
+
+/** Returns only a content-free validator stage for private benchmark debug.
+ * The public error code remains stable and the candidate payload is never
+ * attached to the Error. */
+export function getOpenRagAnswerReplaySnapshotDiagnostic(error: unknown): string | null {
+  return typeof error === "object" && error !== null
+    ? replaySnapshotDiagnostics.get(error) ?? null
+    : null;
+}
 
 export type OpenRagAnswerReplayContracts = Readonly<{
   coverageAuditorContractVersion: number | null;
@@ -390,15 +421,31 @@ export function isOpenRagAnswerOperationSequence(
           ),
           ...Array.from({ length: selectorPasses }, () => pair.selectorOperation)
         ];
-        return base.length > 7 ? [] : [
-          base,
-          ...(base.length + 2 <= 7
-            ? [
-                [...base, pair.supplementalDraftOperation],
-                [...base, pair.supplementalDraftOperation, pair.finalSelectorOperation]
-              ]
-            : [])
-        ];
+        return [0, 1, 2].flatMap((closurePasses) => {
+          const closureGated = [
+            ...base,
+            ...Array.from(
+              { length: closurePasses },
+              () => KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+            )
+          ];
+          return closureGated.length >
+            KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 ? [] : [
+            closureGated,
+            ...(knowledgeAnswerScopeV6CorrectionFitsV2(closureGated.length)
+              ? [
+                  [...closureGated, pair.supplementalDraftOperation],
+                  [...closureGated, pair.supplementalDraftOperation,
+                    pair.finalSelectorOperation],
+                  ...(closureGated.length + 3 <=
+                    KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
+                    ? [[...closureGated, pair.supplementalDraftOperation,
+                        pair.finalSelectorOperation, pair.finalSelectorOperation]]
+                    : [])
+                ]
+              : [])
+          ];
+        });
       })
     ));
     return candidates.some((candidate) => exactSequence(operations, candidate));
@@ -416,7 +463,7 @@ function contractsFromEngine(
     settlementVersion: engine.settlementVersion
   });
   if (!replayPipeline(contracts)) {
-    throw new Error("open_rag_answer_replay_snapshot_invalid");
+    invalidReplaySnapshot("contracts_invalid");
   }
   return contracts;
 }
@@ -463,13 +510,13 @@ export function createOpenRagAnswerReplaySnapshot(
   >
 ): OpenRagAnswerReplaySnapshot {
   const evidence = decodeKnowledgeEvidenceDispatchManifestDraft(input.evidence);
-  if (!evidence) throw new Error("open_rag_answer_replay_snapshot_invalid");
+  if (!evidence) invalidReplaySnapshot("evidence_invalid");
   const engine = decodeOpenRagAnswerEnginePin(input.origin.engine);
   const executionPolicy = input.executionPolicy === null
     ? null
     : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
   if (input.executionPolicy !== null && !executionPolicy) {
-    throw new Error("open_rag_answer_replay_snapshot_invalid");
+    invalidReplaySnapshot("execution_policy_invalid");
   }
   const body = Object.freeze({
     ...input,
@@ -498,44 +545,62 @@ export function createOpenRagAnswerReplaySnapshot(
 export function decodeOpenRagAnswerReplaySnapshot(
   value: unknown
 ): OpenRagAnswerReplaySnapshot {
-  const code = "open_rag_answer_replay_snapshot_invalid";
   if (!isRecord(value) || !hasExactKeys(value, snapshotKeys) ||
-    value.schemaVersion !== OPEN_RAG_ANSWER_REPLAY_SCHEMA_VERSION ||
-    typeof value.capturedAt !== "string" || !Number.isFinite(Date.parse(value.capturedAt)) ||
-    typeof value.originalRunId !== "string" || !safeIdPattern.test(value.originalRunId) ||
-    typeof value.request !== "string" || !value.request.trim() ||
-      Buffer.byteLength(value.request, "utf8") > 64 * 1_024 ||
-    typeof value.routeInstruction !== "string" || !value.routeInstruction.trim() ||
-      Buffer.byteLength(value.routeInstruction, "utf8") > 16 * 1_024 ||
-    value.routeInstruction !== KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION ||
-    !isRecord(value.contracts) || !hasExactKeys(value.contracts, contractKeys) ||
+    value.schemaVersion !== OPEN_RAG_ANSWER_REPLAY_SCHEMA_VERSION) {
+    invalidReplaySnapshot("envelope_shape_invalid");
+  }
+  if (typeof value.capturedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.capturedAt)) ||
+    typeof value.originalRunId !== "string" || !safeIdPattern.test(value.originalRunId)) {
+    invalidReplaySnapshot("envelope_identity_invalid");
+  }
+  if (typeof value.request !== "string" || !value.request.trim() ||
+    Buffer.byteLength(value.request, "utf8") > 64 * 1_024) {
+    invalidReplaySnapshot("envelope_request_invalid");
+  }
+  if (typeof value.routeInstruction !== "string" || !value.routeInstruction.trim() ||
+    Buffer.byteLength(value.routeInstruction, "utf8") > 16 * 1_024 ||
+    !replayRouteInstructions.has(value.routeInstruction)) {
+    invalidReplaySnapshot("envelope_route_invalid");
+  }
+  if (!isRecord(value.contracts) || !hasExactKeys(value.contracts, contractKeys) ||
     value.contracts.coverageAuditorContractVersion !== null &&
       !Number.isSafeInteger(value.contracts.coverageAuditorContractVersion) ||
     !Number.isSafeInteger(value.contracts.draftContractVersion) ||
     !Number.isSafeInteger(value.contracts.selectorContractVersion) ||
-    !Number.isSafeInteger(value.contracts.settlementVersion) ||
-    value.reasoningEffort !== null && (typeof value.reasoningEffort !== "string" ||
+    !Number.isSafeInteger(value.contracts.settlementVersion)) {
+    invalidReplaySnapshot("envelope_contracts_invalid");
+  }
+  if (value.reasoningEffort !== null && (typeof value.reasoningEffort !== "string" ||
       !value.reasoningEffort.trim() || value.reasoningEffort.length > 32) ||
-    value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
-    !Array.isArray(value.forbiddenIdentityFragments) ||
+    value.transport !== "native_strict" && value.transport !== "provider_neutral_json") {
+    invalidReplaySnapshot("envelope_execution_control_invalid");
+  }
+  if (!Array.isArray(value.forbiddenIdentityFragments) ||
       value.forbiddenIdentityFragments.length > 1_000 ||
     value.forbiddenIdentityFragments.some((fragment) => typeof fragment !== "string" ||
       fragment.length < 1 || fragment.length > 512) ||
     new Set(value.forbiddenIdentityFragments).size !==
-      value.forbiddenIdentityFragments.length ||
-    !isRecord(value.origin) || !hasExactKeys(value.origin, originKeys) ||
+      value.forbiddenIdentityFragments.length) {
+    invalidReplaySnapshot("envelope_forbidden_identity_invalid");
+  }
+  if (!isRecord(value.origin) || !hasExactKeys(value.origin, originKeys) ||
     typeof value.origin.baseFingerprint !== "string" ||
       !sha256Pattern.test(value.origin.baseFingerprint) ||
     typeof value.origin.sourceBindingFingerprint !== "string" ||
-      !sha256Pattern.test(value.origin.sourceBindingFingerprint) ||
-    !Array.isArray(value.evidenceBindings) || value.evidenceBindings.length < 1 ||
+      !sha256Pattern.test(value.origin.sourceBindingFingerprint)) {
+    invalidReplaySnapshot("envelope_origin_invalid");
+  }
+  if (!Array.isArray(value.evidenceBindings) || value.evidenceBindings.length < 1 ||
       value.evidenceBindings.length > 1_000 ||
     value.evidenceBindings.some((binding) => !isRecord(binding) ||
       !hasExactKeys(binding, evidenceBindingKeys) ||
       evidenceBindingKeys.some((key) => typeof binding[key] !== "string" ||
-        !safeIdPattern.test(binding[key] as string))) ||
-    typeof value.snapshotHash !== "string" || !sha256Pattern.test(value.snapshotHash)) {
-    throw new Error(code);
+        !safeIdPattern.test(binding[key] as string)))) {
+    invalidReplaySnapshot("envelope_evidence_binding_invalid");
+  }
+  if (typeof value.snapshotHash !== "string" || !sha256Pattern.test(value.snapshotHash)) {
+    invalidReplaySnapshot("envelope_hash_invalid");
   }
   const replayCase = decodeCase(value.case);
   const evidence = decodeKnowledgeEvidenceDispatchManifestDraft(value.evidence);
@@ -553,10 +618,14 @@ export function decodeOpenRagAnswerReplaySnapshot(
     answerExecutionSnapshot = normalizeProviderExecutionSnapshot(value.answerExecutionSnapshot);
     engine = decodeOpenRagAnswerEnginePin(value.origin.engine);
   } catch {
-    throw new Error(code);
+    invalidReplaySnapshot("execution_snapshot_or_engine_invalid");
   }
-  if (!replayCase || !evidence || !pipeline) throw new Error(code);
-  if (value.request !== replayCase.question) throw new Error(code);
+  if (!replayCase || !evidence || !pipeline) {
+    invalidReplaySnapshot("case_evidence_or_contract_invalid");
+  }
+  if (value.request !== replayCase.question) {
+    invalidReplaySnapshot("request_case_mismatch");
+  }
   const evidenceBindings = (value.evidenceBindings as Record<string, string>[]).map(
     (binding): OpenRagAnswerReplayEvidenceBinding => Object.freeze({
       dispatchEvidenceId: binding.dispatchEvidenceId!,
@@ -577,7 +646,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
       evidenceBindings.length ||
     evidenceBindings.some((binding) =>
       evidenceByHandle.get(binding.handle)?.evidenceId !== binding.dispatchEvidenceId)) {
-    throw new Error(code);
+    invalidReplaySnapshot("evidence_binding_invalid");
   }
   const executionPolicy = value.executionPolicy === null
     ? null
@@ -586,7 +655,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
     pipeline === "v21_scope_v6" &&
-      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 ||
+      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39 ||
       engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==
@@ -600,7 +669,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
       reasoningEffort: value.reasoningEffort as string | null,
       snapshot: answerExecutionSnapshot
     })) {
-    throw new Error(code);
+    invalidReplaySnapshot("engine_or_reasoning_policy_invalid");
   }
   const body = Object.freeze({
     answerExecutionSnapshot,
@@ -626,7 +695,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
     transport: value.transport
   });
   if (sha256Canonical(replaySnapshotBody(body)) !== value.snapshotHash) {
-    throw new Error(code);
+    invalidReplaySnapshot("snapshot_hash_invalid");
   }
   return Object.freeze({ ...body, snapshotHash: value.snapshotHash });
 }
@@ -960,7 +1029,8 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
       operation.operation ===
         KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.coverageAuditorOperation);
     const acceptedScopeFailure = lastScope
-      ? decodeKnowledgeCoverageScopeFailureV6(lastScope.acceptedResult)
+      ? decodeKnowledgeCoverageScopeVerifiedPatchFailureV1(lastScope.acceptedResult) ??
+        decodeKnowledgeCoverageScopeRepairFeedbackFailureV1(lastScope.acceptedResult)
       : null;
     const mappedError = error instanceof Error &&
       error.message === "knowledge_coverage_scope_unaccepted" &&

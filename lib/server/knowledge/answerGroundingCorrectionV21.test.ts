@@ -18,7 +18,9 @@ import {
   knowledgeTargetedEvidenceAtomIndexV1,
   knowledgeTargetedSupplementClaimLimitsV2,
   knowledgeTargetedSupplementFitsV1,
+  knowledgeGroundedDeltaCoverageReviewRequiredV1,
   mergeKnowledgeGroundedCorrectionV1,
+  mergeKnowledgeGroundedCorrectionV2,
   mergeKnowledgeTargetedSupplementV2,
   mergeKnowledgeTargetedSupplementV1,
   knowledgeTargetedSupplementFailureV1,
@@ -426,5 +428,141 @@ describe("target-addressed Knowledge correction", () => {
       status: "excluded",
       supportIds: []
     }]);
+  });
+
+  it("lets the target-only verifier veto a false positive and discards foreign support", () => {
+    const supplement = decodeKnowledgeTargetedSupplementV1({
+      claims: [{
+        targetDimensionId: "D2",
+        text: "Beta reverses the beneficiary."
+      }, {
+        targetDimensionId: "D3",
+        text: "Gamma removes duplicates."
+      }],
+      version: 1
+    }, {
+      availableHandles: ["K1", "K2", "K3"],
+      missingDimensions: missing,
+      primaryDraft: primary
+    })!;
+    const merged = mergeKnowledgeTargetedSupplementV1({
+      primaryDraft: primary,
+      supplement
+    });
+    const initial = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([
+        dimension("D1", "K1", "covered", ["C1"]),
+        ...missing
+      ])
+    });
+    const final = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze([]),
+        verdict: "unsupported" as const
+      }), Object.freeze({
+        id: "C2",
+        supportHandles: Object.freeze(["K2"]),
+        verdict: "supported" as const
+      }), Object.freeze({
+        id: "C3",
+        supportHandles: Object.freeze(["K2"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([
+        dimension("D1", "K1", "missing"),
+        dimension("D2", "K2", "excluded"),
+        dimension("D3", "K3", "covered", ["C3"]),
+        dimension("D4", null, "missing")
+      ])
+    });
+    const corrected = mergeKnowledgeGroundedCorrectionV2({
+      bindings: merged.bindings,
+      finalSelector: final,
+      initialSelector: initial,
+      primaryClaimCount: primary.claims.length
+    });
+    expect(corrected.coverage.map(({ id, status, supportIds }) => ({
+      id,
+      status,
+      supportIds
+    }))).toEqual([{
+      id: "D1", status: "covered", supportIds: ["C1"]
+    }, {
+      id: "D2", status: "excluded", supportIds: []
+    }, {
+      id: "D3", status: "missing", supportIds: []
+    }, {
+      id: "D4", status: "missing", supportIds: []
+    }]);
+    expect(corrected.claims).toEqual([{
+      id: "C1", supportHandles: ["K1"], verdict: "supported"
+    }, {
+      id: "C2", supportHandles: [], verdict: "unsupported"
+    }, {
+      id: "C3", supportHandles: [], verdict: "unsupported"
+    }]);
+  });
+
+  it("reviews only an all-supported target group left missing by the final verifier", () => {
+    const initial = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([
+        dimension("D1", "K1", "covered", ["C1"]),
+        dimension("D2", "K2", "missing")
+      ])
+    });
+    const final = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      }), Object.freeze({
+        id: "C2",
+        supportHandles: Object.freeze(["K2"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([
+        dimension("D1", "K1", "covered", ["C1"]),
+        dimension("D2", "K2", "missing")
+      ])
+    });
+    const input = {
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      finalSelector: final,
+      initialSelector: initial,
+      primaryClaimCount: 1
+    } as const;
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV1(input)).toBe(true);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV1({
+      ...input,
+      finalSelector: selector({
+        claims: final.claims,
+        coverage: Object.freeze([
+          dimension("D1", "K1", "covered", ["C1"]),
+          dimension("D2", "K2", "covered", ["C2"])
+        ])
+      })
+    })).toBe(false);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV1({
+      ...input,
+      finalSelector: selector({
+        claims: Object.freeze([final.claims[0]!, Object.freeze({
+          ...final.claims[1]!,
+          supportHandles: Object.freeze([]),
+          verdict: "unsupported" as const
+        })]),
+        coverage: final.coverage
+      })
+    })).toBe(false);
   });
 });

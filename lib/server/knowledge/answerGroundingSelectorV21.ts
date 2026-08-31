@@ -22,6 +22,7 @@ import {
 } from "./answerGroundingSelectorV20";
 import {
   validateDecodedKnowledgeCoverageScopeV6,
+  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
   type KnowledgeCoverageScopeItemV6,
   type KnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
@@ -29,8 +30,9 @@ import {
   validateDecodedKnowledgeCoverageScopeCompletenessUnionV1
 } from "./coverageScopeCompletenessV1";
 import {
-  knowledgeCoverageEvidenceAtomIndexV1,
-  type KnowledgeCoverageEvidenceAtomIndexV1
+  knowledgeCoverageEvidenceAtomIndex,
+  type KnowledgeCoverageEvidenceAtomIndex,
+  type KnowledgeCoverageEvidenceAtomIndexVersion
 } from "./coverageScopeV4";
 import type { KnowledgeCoverageScopeV5 } from "./coverageScopeV5";
 
@@ -143,6 +145,7 @@ function rejected(
 }
 
 function validCoverageScopeV21(input: Readonly<{
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   request: string;
   scope: KnowledgeCoverageScopeV6;
@@ -153,10 +156,12 @@ function validCoverageScopeV21(input: Readonly<{
   try {
     return input.scopeProtocol === "append_only_completeness_v1"
       ? validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(input.scope, {
+          atomIndexVersion: input.atomIndexVersion,
           evidence: input.evidence,
           request: input.request
         })
       : validateDecodedKnowledgeCoverageScopeV6(input.scope, {
+          atomIndexVersion: input.atomIndexVersion,
           evidence: input.evidence,
           request: input.request
         });
@@ -168,6 +173,7 @@ function validCoverageScopeV21(input: Readonly<{
 export function validateKnowledgeGroundedSelectorV21(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     draft: KnowledgeAnswerDraftSelectorInput;
     evidence: readonly KnowledgeSelectorEvidenceV1[];
     request: string;
@@ -209,7 +215,10 @@ export function validateKnowledgeGroundedSelectorV21(
     ...value,
     coverage: legacyCoverage
   }, {
-    ...input,
+    atomIndexVersion: input.atomIndexVersion,
+    draft: input.draft,
+    evidence: input.evidence,
+    request: input.request,
     scope: scopeV5Projection(input.scope)
   });
   if (validation.kind === "rejected") return validation;
@@ -349,12 +358,16 @@ export function deriveKnowledgeCoverageV6(
 /** Exact, de-duplicated atom slice used by the Selector to verify whether each
  * positive Scope description is actually entailed by its own provenance. */
 export function knowledgeSelectorScopeEvidenceAtomIndexV21(input: Readonly<{
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   scope: KnowledgeCoverageScopeV6;
-}>): KnowledgeCoverageEvidenceAtomIndexV1 {
+}>): KnowledgeCoverageEvidenceAtomIndex {
   const assignedIds = new Set(input.scope.scope.flatMap(({ evidenceAtomIds }) =>
     evidenceAtomIds));
-  const atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+  const atomIndex = knowledgeCoverageEvidenceAtomIndex(
+    input.evidence,
+    input.atomIndexVersion ?? 1
+  );
   return Object.freeze({
     items: Object.freeze(atomIndex.items.filter(({ id }) => assignedIds.has(id))),
     version: atomIndex.version
@@ -394,6 +407,7 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_REPAIR_TASK_REMINDER_V21 =
   "Perform one fresh adjudication and immutable-scope mapping that fixes only the supplied structural validation reason.";
 
 export function knowledgeGroundedSelectorPromptV21(input: Readonly<{
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   draft: KnowledgeAnswerDraftSelectorInput;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   evidenceManifest: string;
@@ -405,6 +419,7 @@ export function knowledgeGroundedSelectorPromptV21(input: Readonly<{
 }>): Readonly<{ systemPrompt: string; userPrompt: string }> {
   const rawInput = input as unknown;
   const expectedKeys = [
+    ...(input.atomIndexVersion === undefined ? [] : ["atomIndexVersion"]),
     "draft",
     "evidence",
     "evidenceManifest",
@@ -429,9 +444,16 @@ export function knowledgeGroundedSelectorPromptV21(input: Readonly<{
     : input.selectorPass === "repair"
       ? KNOWLEDGE_GROUNDED_SELECTOR_REPAIR_TASK_REMINDER_V21
       : KNOWLEDGE_GROUNDED_SELECTOR_TASK_REMINDER_V21;
+  const atomIndexVersion = input.atomIndexVersion ?? 1;
   return Object.freeze({
-    systemPrompt: KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_V21,
+    systemPrompt: atomIndexVersion === 2
+      ? `${KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_V21}\n\n` +
+        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      : KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_V21,
     userPrompt: knowledgeAnswerCanonicalJson({
+      ...(atomIndexVersion === 2
+        ? { atomProjection: "source_ordered_context_v2" as const }
+        : {}),
       coverageScope: input.scope,
       draft: isKnowledgeDraftMalformed(input.draft) ? KNOWLEDGE_DRAFT_MALFORMED : input.draft,
       evidenceManifest: input.evidenceManifest,
@@ -439,6 +461,7 @@ export function knowledgeGroundedSelectorPromptV21(input: Readonly<{
       repairReason: input.repairReason ?? null,
       request: input.request,
       scopeEvidenceAtomIndex: knowledgeSelectorScopeEvidenceAtomIndexV21({
+        atomIndexVersion,
         evidence: input.evidence,
         scope: input.scope
       }),

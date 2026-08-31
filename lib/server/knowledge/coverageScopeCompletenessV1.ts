@@ -4,6 +4,7 @@ import {
 } from "./answerGroundingV5";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
+  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
   validateDecodedKnowledgeCoverageScopeV6,
   validateKnowledgeCoverageScopeV6,
   type KnowledgeCoverageEvidenceV6,
@@ -11,11 +12,12 @@ import {
   type KnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
 import {
-  knowledgeCoverageEvidenceAtomIndexV1,
-  knowledgeCoverageEvidenceContextV1
+  knowledgeCoverageEvidenceAtomIndex,
+  knowledgeCoverageEvidenceContextV1,
+  type KnowledgeCoverageEvidenceAtomIndexVersion
 } from "./coverageScopeV4";
 import {
-  knowledgeCoverageEvidenceUnitIndexV1
+  knowledgeCoverageEvidenceUnitIndex
 } from "./coverageScopeV5";
 
 export const KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION = 1 as const;
@@ -197,11 +199,15 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
   value: unknown,
   input: Readonly<{
     acceptedScope: KnowledgeCoverageScopeV6;
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     evidence: readonly KnowledgeCoverageEvidenceV6[];
     request: string;
   }>
 ): KnowledgeCoverageScopeCompletenessValidationV1 {
   if (!validateDecodedKnowledgeCoverageScopeV6(input.acceptedScope, {
+    ...(input.atomIndexVersion !== undefined
+      ? { atomIndexVersion: input.atomIndexVersion }
+      : {}),
     evidence: input.evidence,
     request: input.request
   }) || !record(value) || !exactKeys(value, ["version", "additions"]) ||
@@ -214,9 +220,12 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
   if (value.additions.length > remainingCapacity) {
     return rejected("coverage_scope_completeness_capacity_exceeded");
   }
-  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndexV1>;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndex>;
   try {
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(
+      input.evidence,
+      input.atomIndexVersion ?? 1
+    );
   } catch {
     return rejected("coverage_scope_completeness_shape_invalid");
   }
@@ -288,6 +297,9 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
     unsupportedDimensions,
     version: 6
   }, {
+    ...(input.atomIndexVersion !== undefined
+      ? { atomIndexVersion: input.atomIndexVersion }
+      : {}),
     evidence: input.evidence,
     request: input.request
   });
@@ -318,6 +330,9 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
     version: 6 as const
   });
   if (!validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(scope, {
+    ...(input.atomIndexVersion !== undefined
+      ? { atomIndexVersion: input.atomIndexVersion }
+      : {}),
     evidence: input.evidence,
     request: input.request
   })) {
@@ -336,6 +351,7 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
 export function validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     evidence: readonly KnowledgeCoverageEvidenceV6[];
     request: string;
   }>
@@ -434,6 +450,7 @@ export function decodeKnowledgeCoverageScopeCompletenessV1(
 
 export function knowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
   acceptedScope: KnowledgeCoverageScopeV6;
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   completenessPass: "initial" | "repair";
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   evidenceManifest: string;
@@ -443,6 +460,7 @@ export function knowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
   const rawInput = input as unknown;
   const expectedKeys = [
     "acceptedScope",
+    ...(input.atomIndexVersion === undefined ? [] : ["atomIndexVersion"]),
     "completenessPass",
     "evidence",
     "evidenceManifest",
@@ -456,20 +474,32 @@ export function knowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
       !isKnowledgeCoverageScopeCompletenessValidationFailureReasonV1(input.repairReason) ||
     !input.evidenceManifest.trim() ||
     !validateDecodedKnowledgeCoverageScopeV6(input.acceptedScope, {
+      ...(input.atomIndexVersion !== undefined
+        ? { atomIndexVersion: input.atomIndexVersion }
+        : {}),
       evidence: input.evidence,
       request: input.request
     })) {
     throw new Error("knowledge_coverage_scope_completeness_v1_prompt_invalid");
   }
   return Object.freeze({
-    systemPrompt: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1,
+    systemPrompt: input.atomIndexVersion === 2
+      ? `${KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1}\n\n` +
+        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
       acceptedScope: input.acceptedScope,
       acceptedScopePayloadHash: knowledgeAnswerHash(input.acceptedScope),
+      ...(input.atomIndexVersion === 2
+        ? { atomProjection: "source_ordered_context_v2" as const }
+        : {}),
       completenessPass: input.completenessPass,
       evidenceContext: knowledgeCoverageEvidenceContextV1(input.evidence),
       evidenceManifestHash: knowledgeAnswerHash(input.evidenceManifest),
-      evidenceUnitIndex: knowledgeCoverageEvidenceUnitIndexV1(input.evidence),
+      evidenceUnitIndex: knowledgeCoverageEvidenceUnitIndex(
+        input.evidence,
+        input.atomIndexVersion ?? 1
+      ),
       remainingCapacity: KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDimensions -
         input.acceptedScope.scope.length,
       repairReason: input.repairReason ?? null,
@@ -484,6 +514,7 @@ export function knowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
 
 export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
   acceptedScope: KnowledgeCoverageScopeV6;
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   evidenceManifest: string;
   request: string;
@@ -493,7 +524,12 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
   completenessPass: "initial" | "repair";
   repairReason: KnowledgeCoverageScopeCompletenessValidationFailureReasonV1 | null;
 }> | null {
-  if (input.systemPrompt !== KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1) return null;
+  const atomIndexVersion = input.atomIndexVersion ?? 1;
+  const expectedSystemPrompt = atomIndexVersion === 2
+    ? `${KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1}\n\n` +
+      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+    : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1;
+  if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
   try {
     value = JSON.parse(input.userPrompt) as unknown;
@@ -503,6 +539,7 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
   if (!record(value) || !exactKeys(value, [
     "acceptedScope",
     "acceptedScopePayloadHash",
+    ...(atomIndexVersion === 2 ? ["atomProjection"] : []),
     "completenessPass",
     "evidenceContext",
     "evidenceManifestHash",
@@ -514,12 +551,17 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
     "version"
   ]) || knowledgeAnswerCanonicalJson(value.acceptedScope) !==
       knowledgeAnswerCanonicalJson(input.acceptedScope) ||
+    (atomIndexVersion === 2) !==
+      (value.atomProjection === "source_ordered_context_v2") ||
     value.acceptedScopePayloadHash !== knowledgeAnswerHash(input.acceptedScope) ||
     value.evidenceManifestHash !== knowledgeAnswerHash(input.evidenceManifest) ||
     knowledgeAnswerCanonicalJson(value.evidenceContext) !==
       knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceContextV1(input.evidence)) ||
     knowledgeAnswerCanonicalJson(value.evidenceUnitIndex) !==
-      knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceUnitIndexV1(input.evidence)) ||
+      knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceUnitIndex(
+        input.evidence,
+        atomIndexVersion
+      )) ||
     value.remainingCapacity !== KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDimensions -
       input.acceptedScope.scope.length || value.request !== input.request ||
     value.version !== KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_PAYLOAD_VERSION ||

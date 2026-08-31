@@ -3,8 +3,12 @@ import { decodeKnowledgeAnswerDraftV21 } from "./answerGroundingV21";
 import {
   knowledgeAnswerTargetedSupplementPromptV1,
   knowledgeAnswerTargetedSupplementPromptV2,
+  knowledgeAnswerTargetedSupplementPromptV3,
   knowledgeGroundedDeltaSelectorPromptV1,
-  knowledgeGroundedDeltaSelectorPromptV2
+  knowledgeGroundedDeltaSelectorPromptV2,
+  knowledgeGroundedDeltaSelectorPromptV3,
+  knowledgeGroundedDeltaSelectorPromptV4,
+  knowledgeGroundedSelectorPromptV21TargetClosureV1
 } from "./answerGroundingCorrectionPromptV21";
 import {
   knowledgeCoverageEvidenceFromManifestV6,
@@ -162,6 +166,38 @@ describe("targeted correction prompts", () => {
     expect(prompt.systemPrompt).toContain("Never spend another target's capacity");
   });
 
+  it("closes each target over ordered evidence without promoting provisional branches", () => {
+    const { draft, evidence, request, selector } = fixture();
+    const historical = knowledgeAnswerTargetedSupplementPromptV2({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    const current = knowledgeAnswerTargetedSupplementPromptV3({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    expect(historical.systemPrompt).not.toContain("provisional branch");
+    expect(current.systemPrompt).toContain('contract version="3"');
+    expect(current.systemPrompt).toContain("ordered union of targets[D]");
+    expect(current.systemPrompt).toContain("later same-unit qualifications");
+    expect(current.systemPrompt).toContain("without their requested outcomes");
+    expect(JSON.parse(current.userPrompt)).toMatchObject({
+      targetClosureProtocol: {
+        coverageRequirement: "complete_target_entailment",
+        evidenceOrder: "target_evidence_atom_ids",
+        sameUnitConclusionResolution: "final_qualification_or_exclusion_controls",
+        version: 1
+      },
+      version: 3
+    });
+  });
+
   it("fails closed rather than projecting incomplete target evidence", () => {
     const { request, selector } = fixture();
     expect(() => knowledgeAnswerTargetedSupplementPromptV1({
@@ -217,6 +253,108 @@ describe("targeted correction prompts", () => {
       correctionTargets: [{ claimId: "C2", targetDimensionId: "D2" }],
       selectorPass: "final_delta"
     });
+  });
+
+  it("resolves complete ordered evidence in both initial and correction verification", () => {
+    const { correctedDraft, draft, evidence, manifest, request, scope, selector } = fixture();
+    const initial = knowledgeGroundedSelectorPromptV21TargetClosureV1({
+      draft,
+      evidence,
+      evidenceManifest: manifest.message,
+      request,
+      scope,
+      selectorPass: "initial"
+    });
+    const final = knowledgeGroundedDeltaSelectorPromptV3({
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      evidenceManifest: manifest.message,
+      initialSelector: selector,
+      request,
+      scope
+    });
+    expect(initial.systemPrompt).toContain("complete atom sequence");
+    expect(initial.systemPrompt).toContain("later rules out is contradicted");
+    expect(JSON.parse(initial.userPrompt)).toHaveProperty("targetClosureProtocol.version", 1);
+    expect(final.systemPrompt).toContain('delta_selector_contract version="3"');
+    expect(final.systemPrompt).toContain("list of candidate cases without each requested final outcome");
+    expect(final.systemPrompt).toContain("complete ordered target evidence");
+    expect(JSON.parse(final.userPrompt)).toMatchObject({
+      correctionTargets: [{ claimId: "C2", targetDimensionId: "D2" }],
+      selectorPass: "final_delta",
+      targetClosureProtocol: { version: 1 }
+    });
+  });
+
+  it("physically limits the current final verifier to target statements and atoms", () => {
+    const { correctedDraft, evidence, request, scope, selector } = fixture();
+    const final = knowledgeGroundedDeltaSelectorPromptV4({
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      initialSelector: selector,
+      request,
+      scope
+    });
+    const payload = JSON.parse(final.userPrompt) as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual([
+      "baseSelector",
+      "correctionTargets",
+      "request",
+      "selectorPass",
+      "supplementalClaims",
+      "targetEvidenceAtomIndex",
+      "targetTasks",
+      "targetVerificationProtocol",
+      "taskReminder",
+      "version"
+    ]);
+    expect(payload).toMatchObject({
+      correctionTargets: [{ claimId: "C2", targetDimensionId: "D2" }],
+      selectorPass: "final_delta_least_authority",
+      supplementalClaims: [{ id: "C2", text: "Beta preserves order." }],
+      targetEvidenceAtomIndex: {
+        atoms: [{ handle: "K1", id: "A2", text: "Beta preserves order." }],
+        targets: [{ evidenceAtomIds: ["A2"], targetDimensionId: "D2" }],
+        version: 1
+      },
+      targetVerificationProtocol: {
+        evidenceAuthority: "target_atoms_only",
+        targetAuthority: "eligible_or_veto_false_positive",
+        version: 1
+      },
+      version: 4
+    });
+    expect(payload).not.toHaveProperty("draft");
+    expect(payload).not.toHaveProperty("evidenceManifest");
+    expect(payload).not.toHaveProperty("literalExtractIndex");
+    expect(payload).not.toHaveProperty("scopeEvidenceAtomIndex");
+    expect(final.userPrompt).not.toContain("Alpha is bounded.");
+    expect(final.systemPrompt).toContain("sole factual evidence");
+    expect(final.systemPrompt).toContain("recipient or beneficiary");
+    expect(final.systemPrompt).toContain("swapped actor or recipient");
+    expect(final.systemPrompt).toContain("may become excluded only");
+
+    const repair = knowledgeGroundedDeltaSelectorPromptV4({
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      initialSelector: selector,
+      repairReason: "selector_coverage_invalid",
+      request,
+      scope
+    });
+    expect(JSON.parse(repair.userPrompt)).toMatchObject({
+      repairReason: "selector_coverage_invalid",
+      selectorPass: "final_delta_least_authority_repair",
+      version: 4
+    });
+    expect(repair.systemPrompt).toContain(
+      'grounded_delta_selector_repair_contract version="1"'
+    );
+    expect(repair.systemPrompt).toContain("prior rejected payload is absent");
+    expect(repair.userPrompt).not.toContain("Generated JSON");
   });
 
   it("rejects an incomplete or cross-target delta prompt before dispatch", () => {

@@ -8,9 +8,12 @@ import type {
 } from "./evidenceDispatchManifest";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS,
+  knowledgeCoverageEvidenceAtomIndex,
   knowledgeCoverageEvidenceAtomIndexV1,
   knowledgeCoverageEvidenceContextV1,
   knowledgeCoverageEvidenceFromManifestV4,
+  type KnowledgeCoverageEvidenceAtomContextRoleV2,
+  type KnowledgeCoverageEvidenceAtomIndexVersion,
   type KnowledgeCoverageEvidenceV4
 } from "./coverageScopeV4";
 
@@ -20,6 +23,7 @@ export const KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION =
   "knowledge_coverage_scope_v5" as const;
 export const KNOWLEDGE_COVERAGE_SCOPE_V5_MAX_OUTPUT_TOKENS = 8_192;
 export const KNOWLEDGE_COVERAGE_EVIDENCE_UNIT_INDEX_VERSION = 1 as const;
+export const KNOWLEDGE_COVERAGE_EVIDENCE_UNIT_INDEX_VERSION_V2 = 2 as const;
 export const KNOWLEDGE_COVERAGE_SCOPE_V5_LIMITS = KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS;
 
 export type KnowledgeCoverageEvidenceV5 = KnowledgeCoverageEvidenceV4;
@@ -38,6 +42,24 @@ export type KnowledgeCoverageEvidenceUnitIndexV1 = Readonly<{
   units: readonly KnowledgeCoverageEvidenceUnitV1[];
   version: typeof KNOWLEDGE_COVERAGE_EVIDENCE_UNIT_INDEX_VERSION;
 }>;
+
+export type KnowledgeCoverageEvidenceUnitAtomV2 = Readonly<{
+  contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+  id: string;
+  text: string;
+}>;
+
+export type KnowledgeCoverageEvidenceUnitIndexV2 = Readonly<{
+  units: readonly Readonly<{
+    atoms: readonly KnowledgeCoverageEvidenceUnitAtomV2[];
+    handle: string;
+  }>[];
+  version: typeof KNOWLEDGE_COVERAGE_EVIDENCE_UNIT_INDEX_VERSION_V2;
+}>;
+
+export type KnowledgeCoverageEvidenceUnitIndex =
+  | KnowledgeCoverageEvidenceUnitIndexV1
+  | KnowledgeCoverageEvidenceUnitIndexV2;
 
 export type KnowledgeCoverageEvidenceMapItemV1 = Readonly<{
   answerAtomIds: readonly string[];
@@ -189,6 +211,33 @@ export function knowledgeCoverageEvidenceUnitIndexV1(
   });
 }
 
+export function knowledgeCoverageEvidenceUnitIndexV2(
+  evidence: readonly KnowledgeCoverageEvidenceV5[]
+): KnowledgeCoverageEvidenceUnitIndexV2 {
+  const atomIndex = knowledgeCoverageEvidenceAtomIndex(evidence, 2);
+  if (atomIndex.version !== 2) {
+    throw new Error("knowledge_coverage_unit_index_version_invalid");
+  }
+  return Object.freeze({
+    units: Object.freeze(evidence.map(({ handle }) => Object.freeze({
+      atoms: Object.freeze(atomIndex.items
+        .filter((atom) => atom.handle === handle)
+        .map(({ contextRole, id, text }) => Object.freeze({ contextRole, id, text }))),
+      handle
+    }))),
+    version: KNOWLEDGE_COVERAGE_EVIDENCE_UNIT_INDEX_VERSION_V2
+  });
+}
+
+export function knowledgeCoverageEvidenceUnitIndex(
+  evidence: readonly KnowledgeCoverageEvidenceV5[],
+  atomIndexVersion: KnowledgeCoverageEvidenceAtomIndexVersion
+): KnowledgeCoverageEvidenceUnitIndex {
+  return atomIndexVersion === 2
+    ? knowledgeCoverageEvidenceUnitIndexV2(evidence)
+    : knowledgeCoverageEvidenceUnitIndexV1(evidence);
+}
+
 const atomIdSchema = Object.freeze({ pattern: "^A[1-9]\\d{0,3}$", type: "string" });
 const evidenceMapItemSchema = Object.freeze({
   additionalProperties: false,
@@ -278,6 +327,7 @@ export const KNOWLEDGE_COVERAGE_SCOPE_REPAIR_TASK_REMINDER_V5 =
 export function validateKnowledgeCoverageScopeV5(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     evidence: readonly KnowledgeCoverageEvidenceV5[];
     request: string;
   }>
@@ -296,9 +346,12 @@ export function validateKnowledgeCoverageScopeV5(
   if (!uniqueStrings(handles) || handles.some((handle) => !handlePattern.test(handle))) {
     return rejected("coverage_scope_shape_invalid");
   }
-  let unitIndex: KnowledgeCoverageEvidenceUnitIndexV1;
+  let unitIndex: KnowledgeCoverageEvidenceUnitIndex;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndex>;
   try {
-    unitIndex = knowledgeCoverageEvidenceUnitIndexV1(input.evidence);
+    const atomIndexVersion = input.atomIndexVersion ?? 1;
+    unitIndex = knowledgeCoverageEvidenceUnitIndex(input.evidence, atomIndexVersion);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(input.evidence, atomIndexVersion);
   } catch {
     return rejected("coverage_scope_shape_invalid");
   }
@@ -321,7 +374,6 @@ export function validateKnowledgeCoverageScopeV5(
     handles.some((handle) => !suppliedMap.has(handle))) {
     return rejected("coverage_scope_atom_map_invalid");
   }
-  const atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
   const atomById = new Map(atomIndex.items.map((atom, index) =>
     [atom.id, Object.freeze({ ...atom, index })] as const));
   const answerAtomIds = new Set<string>();
@@ -416,9 +468,12 @@ export function validateDecodedKnowledgeCoverageScopeV5(
     input.evidence.length > KNOWLEDGE_COVERAGE_SCOPE_V5_LIMITS.maxEvidenceItems) {
     return false;
   }
-  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndexV1>;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndex>;
   try {
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(
+      input.evidence,
+      input.atomIndexVersion ?? 1
+    );
   } catch {
     return false;
   }

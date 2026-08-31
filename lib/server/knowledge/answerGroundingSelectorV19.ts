@@ -22,6 +22,7 @@ import {
 } from "./answerGroundingSelectorV18";
 import {
   validateDecodedKnowledgeCoverageScopeV4,
+  type KnowledgeCoverageEvidenceAtomIndexVersion,
   type KnowledgeCoverageScopeItemV4,
   type KnowledgeCoverageScopeV4
 } from "./coverageScopeV4";
@@ -93,6 +94,7 @@ function rejected(
 export function validateKnowledgeGroundedSelectorV19(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     draft: KnowledgeAnswerDraftSelectorInput;
     evidence: readonly KnowledgeSelectorEvidenceV1[];
     request: string;
@@ -102,6 +104,7 @@ export function validateKnowledgeGroundedSelectorV19(
   let scopeValid = false;
   try {
     scopeValid = validateDecodedKnowledgeCoverageScopeV4(input.scope, {
+      atomIndexVersion: input.atomIndexVersion,
       evidence: input.evidence,
       request: input.request
     });
@@ -110,7 +113,9 @@ export function validateKnowledgeGroundedSelectorV19(
   }
   if (!scopeValid) return rejected("selector_malformed");
   const validation = validateKnowledgeGroundedSelectorV18(value, {
-    ...input,
+    draft: input.draft,
+    evidence: input.evidence,
+    request: input.request,
     scope: scopeV3Projection(input.scope)
   });
   if (validation.kind === "rejected") return validation;

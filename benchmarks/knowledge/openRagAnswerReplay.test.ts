@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderExecutionSnapshot } from
   "../../lib/server/providers/runtimeFactory";
 import {
-  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
 } from "../../lib/server/knowledge/answerGroundingV5";
 import { packKnowledgeEvidenceDispatchManifest } from
   "../../lib/server/knowledge/evidenceDispatchManifest";
@@ -14,6 +15,7 @@ import {
   createOpenRagAnswerReplaySnapshot,
   decodeOpenRagAnswerReplaySnapshot,
   getOpenRagAnswerReplayFailureTrace,
+  getOpenRagAnswerReplaySnapshotDiagnostic,
   isOpenRagAnswerOperationSequence,
   openRagAnswerReplayMatchesReasoningControl,
   replayOpenRagAnswerSnapshot
@@ -134,7 +136,7 @@ function origin() {
   });
 }
 
-function v21Origin() {
+function v23Origin() {
   const legacy = origin();
   return Object.freeze({
     ...legacy,
@@ -142,18 +144,18 @@ function v21Origin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 30,
-      pipelineVersion: currentV21PipelineVersion,
+      groundingEvidenceVersion: 39,
+      pipelineVersion: currentV23PipelineVersion,
       selectorContractVersion: 21,
       settlementVersion: 6
     })
   });
 }
 
-const currentV21PipelineVersion =
-  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_settlement_v6";
+const currentV23PipelineVersion =
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_settlement_v6";
 
-const v21ExecutionPolicy = Object.freeze({
+const v23ExecutionPolicy = Object.freeze({
   auditorReasoningEffort: "medium",
   draftReasoningEffort: "medium",
   egressDestination: "answer_provider",
@@ -166,11 +168,11 @@ const v21ExecutionPolicy = Object.freeze({
 
 describe("OpenRAG frozen-evidence replay", () => {
   it("admits bounded append-only pipeline identities beyond generic IDs", () => {
-    expect(currentV21PipelineVersion.length).toBeGreaterThan(200);
-    expect(decodeOpenRagAnswerEnginePin(v21Origin().engine).pipelineVersion)
-      .toBe(currentV21PipelineVersion);
+    expect(currentV23PipelineVersion.length).toBeGreaterThan(200);
+    expect(decodeOpenRagAnswerEnginePin(v23Origin().engine).pipelineVersion)
+      .toBe(currentV23PipelineVersion);
     expect(() => decodeOpenRagAnswerEnginePin({
-      ...v21Origin().engine,
+      ...v23Origin().engine,
       pipelineVersion: `p${"x".repeat(512)}`
     })).toThrow("open_rag_answer_engine_pin_invalid");
   });
@@ -188,7 +190,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       originalRunId: "run-original",
       reasoningEffort: "low",
       request: benchmarkCase.question,
-      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
       transport: "native_strict"
     });
     const executeStructuredOutput = vi.fn(async (_snapshot, request, options) => {
@@ -297,17 +299,17 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V21 Draft, Scope, completeness, Selector path", async () => {
+  it("runs the current V23 snapshot with V21 Draft and Selector", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
-      executionPolicy: v21ExecutionPolicy,
+      executionPolicy: v23ExecutionPolicy,
       forbiddenIdentityFragments: [],
-      origin: v21Origin(),
-      originalRunId: "run-original-v21",
+      origin: v23Origin(),
+      originalRunId: "run-original-v23",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -341,6 +343,9 @@ describe("OpenRAG frozen-evidence replay", () => {
       if (request.name === "knowledge_coverage_scope_completeness_v1") {
         return { additions: [], version: 1 };
       }
+      if (request.name === "knowledge_coverage_scope_closure_v1") {
+        return { decisions: [{ id: "D1", status: "closed" }], version: 1 };
+      }
       return {
         claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
         coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
@@ -359,7 +364,8 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_answer_draft_v21",
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
-      "knowledge_grounded_selector_v21"
+      "knowledge_grounded_selector_v21",
+      "knowledge_coverage_scope_closure_v1"
     ]);
     expect(result).toMatchObject({
       contracts: {
@@ -369,7 +375,7 @@ describe("OpenRAG frozen-evidence replay", () => {
         settlementVersion: 6
       },
       coverage: "complete",
-      operationCount: 4
+      operationCount: 5
     });
     expect(result.rawProviderOutputs.map(({ operation, ordinal }) => ({
       operation,
@@ -378,7 +384,8 @@ describe("OpenRAG frozen-evidence replay", () => {
       { operation: "knowledge_answer_draft_v21", ordinal: 1 },
       { operation: "knowledge_coverage_scope_v6", ordinal: 2 },
       { operation: "knowledge_coverage_scope_completeness_v1", ordinal: 3 },
-      { operation: "knowledge_grounded_selector_v21", ordinal: 4 }
+      { operation: "knowledge_grounded_selector_v21", ordinal: 4 },
+      { operation: "knowledge_coverage_scope_closure_v1", ordinal: 5 }
     ]);
     expect(result.rawProviderOutputs[0]?.output).toMatchObject({
       claims: [{ text: "Atlas retains completed exports for 30 days." }]
@@ -395,10 +402,10 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
-      executionPolicy: v21ExecutionPolicy,
+      executionPolicy: v23ExecutionPolicy,
       forbiddenIdentityFragments: [],
-      origin: v21Origin(),
-      originalRunId: "run-original-v21-audit-repair",
+      origin: v23Origin(),
+      originalRunId: "run-original-v23-audit-repair",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -434,6 +441,9 @@ describe("OpenRAG frozen-evidence replay", () => {
       if (request.name === "knowledge_coverage_scope_completeness_v1") {
         return { additions: [], version: 1 };
       }
+      if (request.name === "knowledge_coverage_scope_closure_v1") {
+        return { decisions: [{ id: "D1", status: "closed" }], version: 1 };
+      }
       return {
         claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
         coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
@@ -448,7 +458,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       snapshot: frozen
     });
 
-    expect(result.operationCount).toBe(5);
+    expect(result.operationCount).toBe(6);
     const scopeRequests = executeStructuredOutput.mock.calls
       .map(([, request]) => request)
       .filter(({ name }) => name === "knowledge_coverage_scope_v6");
@@ -466,7 +476,29 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
-      "knowledge_grounded_selector_v21"
+      "knowledge_grounded_selector_v21",
+      "knowledge_coverage_scope_closure_v1",
+      "knowledge_answer_draft_supplement_v21"
+    ])).toBe(true);
+    expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
+      "knowledge_answer_draft_v21",
+      "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_completeness_v1",
+      "knowledge_grounded_selector_v21",
+      "knowledge_coverage_scope_closure_v1",
+      "knowledge_answer_draft_supplement_v21",
+      "knowledge_grounded_selector_final_v21"
+    ])).toBe(true);
+    expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
+      "knowledge_answer_draft_v21",
+      "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_completeness_v1",
+      "knowledge_grounded_selector_v21",
+      "knowledge_coverage_scope_closure_v1",
+      "knowledge_answer_draft_supplement_v21",
+      "knowledge_grounded_selector_final_v21",
+      "knowledge_grounded_selector_final_v21"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
@@ -479,7 +511,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
-      "knowledge_answer_draft_supplement_v21"
+      "knowledge_coverage_scope_closure_v1"
     ])).toBe(true);
   });
 
@@ -490,10 +522,10 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
-      executionPolicy: v21ExecutionPolicy,
+      executionPolicy: v23ExecutionPolicy,
       forbiddenIdentityFragments: [],
-      origin: v21Origin(),
-      originalRunId: "run-original-v21-audit-failure",
+      origin: v23Origin(),
+      originalRunId: "run-original-v23-audit-failure",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -554,13 +586,13 @@ describe("OpenRAG frozen-evidence replay", () => {
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
       executionPolicy: Object.freeze({
-        ...v21ExecutionPolicy,
+        ...v23ExecutionPolicy,
         overriddenRoles: Object.freeze(["selector"] as const),
         selectorReasoningEffort: "high"
       }),
       forbiddenIdentityFragments: [],
-      origin: v21Origin(),
-      originalRunId: "run-original-v21-override",
+      origin: v23Origin(),
+      originalRunId: "run-original-v23-override",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -576,6 +608,53 @@ describe("OpenRAG frozen-evidence replay", () => {
         selectorReasoningEffort: "ultra"
       })
     }), "medium")).toBe(false);
+  });
+
+  it("freezes a current V23 run that inherits the provider reasoning default", () => {
+    const frozen = createOpenRagAnswerReplaySnapshot({
+      answerExecutionSnapshot: snapshot(),
+      capturedAt: "2026-09-01T00:00:00.000Z",
+      case: benchmarkCase,
+      evidence: evidence(),
+      evidenceBindings: evidenceBindings(),
+      executionPolicy: Object.freeze({
+        ...v23ExecutionPolicy,
+        auditorReasoningEffort: null,
+        draftReasoningEffort: null,
+        selectorReasoningEffort: null,
+        supplementReasoningEffort: null
+      }),
+      forbiddenIdentityFragments: [],
+      origin: v23Origin(),
+      originalRunId: "run-original-v23-provider-default",
+      reasoningEffort: null,
+      request: benchmarkCase.question,
+      routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
+      transport: "native_strict"
+    });
+
+    expect(frozen.executionPolicy).toMatchObject({
+      auditorReasoningEffort: null,
+      draftReasoningEffort: null,
+      selectorReasoningEffort: null,
+      supplementReasoningEffort: null
+    });
+    expect(openRagAnswerReplayMatchesReasoningControl(frozen, null)).toBe(true);
+    let routeError: unknown;
+    try {
+      decodeOpenRagAnswerReplaySnapshot({
+        ...frozen,
+        routeInstruction: "unattested route"
+      });
+    } catch (error) {
+      routeError = error;
+    }
+    expect(routeError).toBeInstanceOf(Error);
+    expect((routeError as Error).message)
+      .toBe("open_rag_answer_replay_snapshot_invalid");
+    expect(getOpenRagAnswerReplaySnapshotDiagnostic(routeError))
+      .toBe("envelope_route_invalid");
+    expect(JSON.stringify(routeError)).not.toContain("envelope_route_invalid");
   });
 
   it("rejects any snapshot identity or evidence mutation", () => {

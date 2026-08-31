@@ -10,6 +10,9 @@ import {
 } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
+} from "../../lib/server/knowledge/answerGroundingV21";
 import type {
   OpenRagAnswerCheckpointHeader,
   OpenRagAnswerOutcome,
@@ -43,6 +46,7 @@ import {
 import {
   decodeOpenRagAnswerReplaySnapshot,
   getOpenRagAnswerReplayFailureTrace,
+  getOpenRagAnswerReplaySnapshotDiagnostic,
   isOpenRagAnswerOperationSequence,
   type OpenRagRawProviderOutput,
   type OpenRagAnswerReplaySnapshot
@@ -128,6 +132,7 @@ export type OpenRagAnswerCheckpointStore = Readonly<{
   writeFailure(input: Readonly<{
     caseId: string;
     code: string;
+    diagnostic?: string;
     privateRecord?: Readonly<Record<string, unknown>>;
     repeatOrdinal: number;
     stage: string;
@@ -476,6 +481,13 @@ function errorCode(error: unknown): string {
     : "provider_or_infrastructure_failure";
 }
 
+function replaySnapshotDiagnostic(error: unknown): string | undefined {
+  const diagnostic = getOpenRagAnswerReplaySnapshotDiagnostic(error);
+  return diagnostic !== null && /^[a-z][a-z0-9_]{0,95}$/u.test(diagnostic)
+    ? diagnostic
+    : undefined;
+}
+
 function sha256Text(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -544,7 +556,8 @@ function assertProductAnswerIntegrity(
   const rawProviderOutputs = answer.rawProviderOutputs;
   if (!answer.answerText.trim() || answer.answerText.includes("\u0000") ||
     Buffer.byteLength(answer.answerText, "utf8") > 2 * 1_024 * 1_024 ||
-    answer.operationCount < 3 || answer.operationCount > 7 ||
+    answer.operationCount < 3 || answer.operationCount >
+      KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 ||
     operations.length !== answer.operationCount || stages.length !== answer.operationCount ||
     operations.some((operation, index) => operation !== stages[index]) ||
     (rawProviderOutputs !== undefined &&
@@ -660,10 +673,12 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
         assertProductAnswerIntegrity(answer, benchmarkCase, manifest);
       } catch (error) {
         const code = errorCode(error);
+        const diagnostic = replaySnapshotDiagnostic(error);
         const privateRecord = privateReplayFailureRecord(error);
         await input.checkpoint.writeFailure({
           caseId: benchmarkCase.caseId,
           code,
+          ...(diagnostic ? { diagnostic } : {}),
           ...(privateRecord ? { privateRecord } : {}),
           repeatOrdinal,
           stage: manifest.mode === "replay" ? "replay" : "answer"

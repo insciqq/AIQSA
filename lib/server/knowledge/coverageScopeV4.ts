@@ -6,6 +6,8 @@ import {
 import type {
   KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
+import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion";
+import type { KnowledgeExpandedContextOrderV1 } from "./retrievalTypes";
 
 export const KNOWLEDGE_COVERAGE_SCOPE_V4_CONTRACT_VERSION = 4 as const;
 export const KNOWLEDGE_COVERAGE_SCOPE_V4_PAYLOAD_VERSION = 4 as const;
@@ -13,6 +15,7 @@ export const KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION =
   "knowledge_coverage_scope_v4" as const;
 export const KNOWLEDGE_COVERAGE_SCOPE_V4_MAX_OUTPUT_TOKENS = 8_192;
 export const KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION = 1 as const;
+export const KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 = 2 as const;
 
 export const KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS = Object.freeze({
   maxAnchorCodePoints: 500,
@@ -36,9 +39,35 @@ export type KnowledgeCoverageEvidenceAtomIndexV1 = Readonly<{
   version: typeof KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION;
 }>;
 
+export type KnowledgeCoverageEvidenceAtomContextRoleV2 =
+  | "exact_excerpt"
+  | "next_context"
+  | "previous_context"
+  | "related_context";
+
+export type KnowledgeCoverageEvidenceAtomV2 = Readonly<{
+  contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+  handle: string;
+  id: string;
+  text: string;
+}>;
+
+export type KnowledgeCoverageEvidenceAtomIndexV2 = Readonly<{
+  items: readonly KnowledgeCoverageEvidenceAtomV2[];
+  version: typeof KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2;
+}>;
+
+export type KnowledgeCoverageEvidenceAtomIndex =
+  | KnowledgeCoverageEvidenceAtomIndexV1
+  | KnowledgeCoverageEvidenceAtomIndexV2;
+
+export type KnowledgeCoverageEvidenceAtomIndexVersion =
+  KnowledgeCoverageEvidenceAtomIndex["version"];
+
 export type KnowledgeCoverageEvidenceV4 = KnowledgeSelectorEvidenceV1 & Readonly<{
   ambiguity?: "none" | "table_cell_associations_ambiguous";
   expandedContext?: string | null;
+  expandedContextOrder?: KnowledgeExpandedContextOrderV1;
   fileName?: string;
   locator?: string;
   sourceAlias?: string;
@@ -299,6 +328,95 @@ export function knowledgeCoverageEvidenceAtomIndexV1(
   });
 }
 
+/**
+ * Current source-ordered atom projection. Parent-expansion boundaries come
+ * from trusted retrieval coordinates persisted alongside the rendered text;
+ * no untrusted label is reparsed. Previous units are restored before the
+ * focal exact excerpt and next units after it. Context without coordinates is
+ * retained explicitly as unordered related context for compatibility.
+ */
+export function knowledgeCoverageEvidenceAtomIndexV2(
+  evidence: readonly KnowledgeCoverageEvidenceV4[]
+): KnowledgeCoverageEvidenceAtomIndexV2 {
+  const items: KnowledgeCoverageEvidenceAtomV2[] = [];
+  for (const evidenceItem of evidence) {
+    if (!handlePattern.test(evidenceItem.handle) || !evidenceItem.exactExcerpt.trim() ||
+      evidenceItem.expandedContext !== undefined &&
+      evidenceItem.expandedContext !== null &&
+      !evidenceItem.expandedContext.trim()) {
+      throw new Error("knowledge_coverage_atom_evidence_invalid");
+    }
+    const contextOrder = evidenceItem.expandedContextOrder === undefined
+      ? undefined
+      : decodeKnowledgeExpandedContextOrderV1(
+          evidenceItem.expandedContextOrder,
+          evidenceItem.expandedContext ?? undefined
+        );
+    if (evidenceItem.expandedContextOrder !== undefined && (!contextOrder ||
+      !evidenceItem.expandedContext)) {
+      throw new Error("knowledge_coverage_atom_evidence_invalid");
+    }
+    const orderedContext = contextOrder
+      ? contextOrder.segments
+          .map((segment) => Object.freeze({
+            ...segment,
+            text: evidenceItem.expandedContext!.slice(segment.start, segment.end)
+          }))
+          .sort((left, right) =>
+            left.sourceOrdinal - right.sourceOrdinal || left.start - right.start)
+      : [];
+    const segments: Readonly<{
+      contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+      text: string;
+    }>[] = [
+      ...orderedContext
+        .filter(({ position }) => position === "previous")
+        .map(({ text }) => ({ contextRole: "previous_context" as const, text })),
+      { contextRole: "exact_excerpt" as const, text: evidenceItem.exactExcerpt },
+      ...orderedContext
+        .filter(({ position }) => position === "next")
+        .map(({ text }) => ({ contextRole: "next_context" as const, text })),
+      ...(!contextOrder && evidenceItem.expandedContext
+        ? [{
+            contextRole: "related_context" as const,
+            text: evidenceItem.expandedContext
+          }]
+        : [])
+    ];
+    const seen = new Set<string>();
+    for (const segment of segments) {
+      for (const text of sentenceAtoms(segment.text)) {
+        const key = `${segment.contextRole}\u0000${text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (items.length >= KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS.maxAtoms) {
+          throw new Error("knowledge_coverage_atom_limit_exceeded");
+        }
+        items.push(Object.freeze({
+          contextRole: segment.contextRole,
+          handle: evidenceItem.handle,
+          id: `A${items.length + 1}`,
+          text
+        }));
+      }
+    }
+  }
+  if (items.length < 1) throw new Error("knowledge_coverage_atom_evidence_invalid");
+  return Object.freeze({
+    items: Object.freeze(items),
+    version: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2
+  });
+}
+
+export function knowledgeCoverageEvidenceAtomIndex(
+  evidence: readonly KnowledgeCoverageEvidenceV4[],
+  version: KnowledgeCoverageEvidenceAtomIndexVersion
+): KnowledgeCoverageEvidenceAtomIndex {
+  return version === KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2
+    ? knowledgeCoverageEvidenceAtomIndexV2(evidence)
+    : knowledgeCoverageEvidenceAtomIndexV1(evidence);
+}
+
 /** Builds the V4 map input from every evidence span visible in the immutable
  * manifest. Unlike the historical Selector projection, this includes admitted
  * parent/expanded context under the same canonical handle. */
@@ -309,6 +427,9 @@ export function knowledgeCoverageEvidenceFromManifestV4(
     ambiguity: item.ambiguity,
     exactExcerpt: item.exactExcerpt,
     expandedContext: item.expandedContext,
+    ...(item.expandedContextOrder
+      ? { expandedContextOrder: item.expandedContextOrder }
+      : {}),
     fileName: item.fileName,
     handle: item.handle,
     locator: item.locator,
@@ -430,7 +551,7 @@ export const KNOWLEDGE_COVERAGE_SCOPE_REPAIR_TASK_REMINDER_V4 =
   "Return one fresh complete atom review and scope that fixes only the supplied structural validation reason.";
 
 function atomIndexByHandle(
-  atomIndex: KnowledgeCoverageEvidenceAtomIndexV1,
+  atomIndex: KnowledgeCoverageEvidenceAtomIndex,
   evidence: readonly KnowledgeCoverageEvidenceV4[]
 ): readonly Readonly<{ handle: string; ids: readonly string[] }>[] {
   return Object.freeze(evidence.map(({ handle }) => Object.freeze({
@@ -443,6 +564,7 @@ function atomIndexByHandle(
 export function validateKnowledgeCoverageScopeV4(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     evidence: readonly KnowledgeCoverageEvidenceV4[];
     request: string;
   }>
@@ -461,9 +583,12 @@ export function validateKnowledgeCoverageScopeV4(
   if (!uniqueStrings(handles) || handles.some((handle) => !handlePattern.test(handle))) {
     return rejected("coverage_scope_shape_invalid");
   }
-  let atomIndex: KnowledgeCoverageEvidenceAtomIndexV1;
+  let atomIndex: KnowledgeCoverageEvidenceAtomIndex;
   try {
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(
+      input.evidence,
+      input.atomIndexVersion ?? KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION
+    );
   } catch {
     return rejected("coverage_scope_shape_invalid");
   }
@@ -592,9 +717,12 @@ export function validateDecodedKnowledgeCoverageScopeV4(
   const inputHandles = input.evidence.map(({ handle }) => handle);
   if (!uniqueStrings(inputHandles) ||
     inputHandles.some((handle) => !handlePattern.test(handle))) return false;
-  let atomIndex: KnowledgeCoverageEvidenceAtomIndexV1;
+  let atomIndex: KnowledgeCoverageEvidenceAtomIndex;
   try {
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(
+      input.evidence,
+      input.atomIndexVersion ?? KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION
+    );
   } catch {
     return false;
   }

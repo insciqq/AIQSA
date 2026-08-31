@@ -24,7 +24,10 @@ import {
   type KnowledgeCoverageScopeItemV5,
   type KnowledgeCoverageScopeV5
 } from "./coverageScopeV5";
-import type { KnowledgeCoverageScopeV4 } from "./coverageScopeV4";
+import type {
+  KnowledgeCoverageEvidenceAtomIndexVersion,
+  KnowledgeCoverageScopeV4
+} from "./coverageScopeV4";
 import { KNOWLEDGE_GROUNDED_SELECTOR_MAX_OUTPUT_TOKENS } from "./answerGroundingV5";
 
 export const KNOWLEDGE_GROUNDED_SELECTOR_V20_CONTRACT_VERSION = 20 as const;
@@ -93,6 +96,7 @@ function rejected(
 export function validateKnowledgeGroundedSelectorV20(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     draft: KnowledgeAnswerDraftSelectorInput;
     evidence: readonly KnowledgeSelectorEvidenceV1[];
     request: string;
@@ -102,6 +106,7 @@ export function validateKnowledgeGroundedSelectorV20(
   let scopeValid = false;
   try {
     scopeValid = validateDecodedKnowledgeCoverageScopeV5(input.scope, {
+      atomIndexVersion: input.atomIndexVersion,
       evidence: input.evidence,
       request: input.request
     });
@@ -110,7 +115,10 @@ export function validateKnowledgeGroundedSelectorV20(
   }
   if (!scopeValid) return rejected("selector_malformed");
   const validation = validateKnowledgeGroundedSelectorV19(value, {
-    ...input,
+    atomIndexVersion: input.atomIndexVersion,
+    draft: input.draft,
+    evidence: input.evidence,
+    request: input.request,
     scope: scopeV4Projection(input.scope)
   });
   if (validation.kind === "rejected") return validation;

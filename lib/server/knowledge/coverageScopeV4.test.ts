@@ -3,6 +3,7 @@ import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifes
 import {
   decodeKnowledgeCoverageScopePromptV4,
   knowledgeCoverageEvidenceAtomIndexV1,
+  knowledgeCoverageEvidenceAtomIndexV2,
   knowledgeCoverageEvidenceFromManifestV4,
   knowledgeCoverageScopePromptV4,
   validateDecodedKnowledgeCoverageScopeV4,
@@ -109,6 +110,84 @@ describe("Knowledge Coverage Scope V4", () => {
       }],
       version: 1
     });
+  });
+
+  it("restores trusted parent context around the focal excerpt in source order", () => {
+    const previous = "The am-AMM is governed by an auction-managed lease.";
+    const next = "The withdrawal cost accrues to the current manager.";
+    const expandedContext = [
+      `Previous same-Source context:\n${previous}`,
+      `Next same-Source context:\n${next}`
+    ].join("\n\n");
+    const previousStart = expandedContext.indexOf(previous);
+    const nextStart = expandedContext.indexOf(next);
+    const manifest = packKnowledgeEvidenceDispatchManifest({
+      candidates: [{
+        ambiguity: "none",
+        evidenceId: "provider-call:result:ordered",
+        exactExcerpt: "Liquidity providers can enter and exit the pool freely.",
+        expandedContext,
+        expandedContextOrder: {
+          offsetEncoding: "utf16_code_units",
+          segments: [{
+            end: previousStart + previous.length,
+            position: "previous",
+            sourceOrdinal: 10,
+            start: previousStart
+          }, {
+            end: nextStart + next.length,
+            position: "next",
+            sourceOrdinal: 12,
+            start: nextStart
+          }],
+          version: 1
+        },
+        fileName: "amm.md",
+        handle: "K1",
+        locator: "section=am-AMM",
+        operationOrdinal: 1,
+        resultOrdinal: 1,
+        sourceAlias: "S1",
+        sourceLabel: "AMM",
+        sourceTruncated: false,
+        sourceVersionNumber: 1,
+        state: "available"
+      }],
+      coverageStatement: "Coverage is limited to the supplied SOURCE blocks.",
+      footer: "</private_knowledge_evidence>",
+      header: '<private_knowledge_evidence version="4">',
+      maximumBytes: 16_384,
+      maximumTokens: 4_096,
+      profileId: "fixture:source-order",
+      promptFragmentVersion: 1,
+      runtimeVersion: 1
+    });
+
+    const atomIndex = knowledgeCoverageEvidenceAtomIndexV2(
+      knowledgeCoverageEvidenceFromManifestV4(manifest)
+    );
+
+    expect(atomIndex).toEqual({
+      items: [{
+        contextRole: "previous_context",
+        handle: "K1",
+        id: "A1",
+        text: previous
+      }, {
+        contextRole: "exact_excerpt",
+        handle: "K1",
+        id: "A2",
+        text: "Liquidity providers can enter and exit the pool freely."
+      }, {
+        contextRole: "next_context",
+        handle: "K1",
+        id: "A3",
+        text: next
+      }],
+      version: 2
+    });
+    expect(atomIndex.items.map(({ text }) => text).join(" "))
+      .not.toContain("same-Source context");
   });
 
   it("accepts an exhaustive review and derives handles from answer atoms", () => {
