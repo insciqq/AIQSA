@@ -120,7 +120,7 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION = 6 as const;
 export const KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21 = 7 as const;
 export const KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 =
-  "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v1_settlement_v6" as const;
+  "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v2_settlement_v6" as const;
 
 export type KnowledgeAnswerV21ContractVersions = Readonly<{
   coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION;
@@ -427,7 +427,7 @@ export type KnowledgeAnswerOperationRequestSnapshotV21V7 = Readonly<{
   maxOutputTokens: number;
   name: KnowledgeAnswerOperationScopeV6;
   operation: KnowledgeAnswerOperationScopeV6;
-  pipeline: "scope_v6_targeted_delta_v1";
+  pipeline: "scope_v6_targeted_delta_v2";
   reasoningEffort: string | null;
   schema: Readonly<Record<string, unknown>>;
   schemaHash: string;
@@ -816,7 +816,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
   maxOutputTokens: number;
   operation: KnowledgeAnswerOperationV21;
   protocol?: "scope_v3" | "scope_v4" | "scope_v5" | "scope_v6" |
-    "scope_v6_targeted_delta_v1";
+    "scope_v6_targeted_delta_v2";
   reasoningEffort?: string | null;
   schema: Readonly<Record<string, unknown>>;
   systemPrompt: string;
@@ -825,7 +825,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
 }>): KnowledgeAnswerOperationRequestSnapshotV21 {
   const scopeProtocol = input.protocol ?? null;
   const scopedProtocol = scopeProtocol !== null;
-  const metadata = scopeProtocol === "scope_v6_targeted_delta_v1"
+  const metadata = scopeProtocol === "scope_v6_targeted_delta_v2"
     ? scopeV6TargetedDeltaOperationMetadata(input.operation)
     : scopeProtocol === "scope_v6"
       ? scopeV6OperationMetadata(input.operation)
@@ -844,7 +844,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
   if (scopeProtocol !== null && scopeProtocol !== "scope_v3" &&
       scopeProtocol !== "scope_v4" && scopeProtocol !== "scope_v5" &&
       scopeProtocol !== "scope_v6" &&
-      scopeProtocol !== "scope_v6_targeted_delta_v1" || !metadata ||
+      scopeProtocol !== "scope_v6_targeted_delta_v2" || !metadata ||
     metadata.contractVersion !== input.contractVersion ||
     scopedProtocol && (!executionPolicy || input.auditPayloadHash !== undefined) ||
     !scopedProtocol && input.coverageScopePayloadHash !== undefined ||
@@ -891,7 +891,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
     userPrompt: input.userPrompt
   };
   const snapshot: KnowledgeAnswerOperationRequestSnapshotV21 =
-    scopeProtocol === "scope_v6_targeted_delta_v1"
+    scopeProtocol === "scope_v6_targeted_delta_v2"
       ? Object.freeze({
           ...snapshotBase,
           contractVersion: input.contractVersion as 6 | 21,
@@ -899,7 +899,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
           executionPolicy: executionPolicy!,
           name: input.operation as KnowledgeAnswerOperationScopeV6,
           operation: input.operation as KnowledgeAnswerOperationScopeV6,
-          pipeline: "scope_v6_targeted_delta_v1" as const,
+          pipeline: "scope_v6_targeted_delta_v2" as const,
           version: KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21
         })
       : scopeProtocol === "scope_v6"
@@ -1043,7 +1043,7 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     value.version === 4 && value.pipeline !== "scope_v4" ||
     value.version === 5 && value.pipeline !== "scope_v5" ||
     value.version === 6 && value.pipeline !== "scope_v6" ||
-    value.version === 7 && value.pipeline !== "scope_v6_targeted_delta_v1" ||
+    value.version === 7 && value.pipeline !== "scope_v6_targeted_delta_v2" ||
     value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
     value.tools !== "none" || !record(value.schema) ||
     typeof value.schemaHash !== "string" ||
@@ -1896,7 +1896,7 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
       ...(input.snapshot.version === 7
         ? {
             executionPolicy: input.snapshot.executionPolicy,
-            protocol: "scope_v6_targeted_delta_v1" as const
+            protocol: "scope_v6_targeted_delta_v2" as const
           }
         : input.snapshot.version === 6
         ? {

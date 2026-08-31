@@ -1625,7 +1625,7 @@ export async function groundKnowledgeRunAnswerV21(
   }
   const requestExecutionPolicy = {
     executionPolicy: primaryRequest.executionPolicy,
-    protocol: "scope_v6_targeted_delta_v1" as const
+    protocol: "scope_v6_targeted_delta_v2" as const
   };
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
@@ -1843,8 +1843,6 @@ export async function groundKnowledgeRunAnswerV21(
     const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: targetableMissingDimensions,
       evidence,
-      evidenceManifest: operations.draft.draft.message,
-      primaryDraft,
       request: primaryPrompt.request,
       routeInstruction: primaryPrompt.routeInstruction
     });

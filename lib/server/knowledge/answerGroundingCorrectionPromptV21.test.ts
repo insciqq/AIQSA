@@ -92,17 +92,24 @@ function fixture() {
 }
 
 describe("targeted correction prompts", () => {
-  it("makes exact D targets explicit without treating them as evidence", () => {
-    const { draft, evidence, manifest, request, selector } = fixture();
+  it("makes the exact target atom slice the only factual context", () => {
+    const { evidence, request, selector } = fixture();
     const prompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: [selector.coverage[1]!],
       evidence,
-      evidenceManifest: manifest.message,
-      primaryDraft: draft,
       request,
       routeInstruction: "Answer from supplied Knowledge evidence only."
     });
     const payload = JSON.parse(prompt.userPrompt) as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual([
+      "draftPass",
+      "request",
+      "targetEvidenceAtomIndex",
+      "targetTasks",
+      "targetingMode",
+      "taskReminder",
+      "version"
+    ]);
     expect(payload).toMatchObject({
       targetEvidenceAtomIndex: {
         atoms: [{
@@ -116,22 +123,29 @@ describe("targeted correction prompts", () => {
         }],
         version: 1
       },
+      targetTasks: [{
+        description: "Explain beta.",
+        id: "D2",
+        requestAnchor: "beta"
+      }],
       targetingMode: "exact_missing_dimension"
     });
+    expect(payload).not.toHaveProperty("evidenceManifest");
+    expect(payload).not.toHaveProperty("primaryDraft");
+    expect(payload).not.toHaveProperty("primaryClaimIndex");
     expect(prompt.systemPrompt).toContain("targetDimensionId");
-    expect(prompt.systemPrompt).toContain("never evidence");
-    expect(prompt.systemPrompt).toContain("advisory routing metadata, not proof");
+    expect(prompt.systemPrompt).toContain("sole factual evidence");
+    expect(prompt.systemPrompt).toContain("full manifest, unrelated evidence handles");
+    expect(prompt.systemPrompt).toContain("model does not choose provenance");
     expect(prompt.systemPrompt).toContain("final delta Selector independently chooses");
     expect(prompt.systemPrompt).toContain("deterministic complete projection");
   });
 
   it("fails closed rather than projecting incomplete target evidence", () => {
-    const { draft, manifest, request, selector } = fixture();
+    const { request, selector } = fixture();
     expect(() => knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: [selector.coverage[1]!],
       evidence: [],
-      evidenceManifest: manifest.message,
-      primaryDraft: draft,
       request,
       routeInstruction: "Answer from supplied Knowledge evidence only."
     })).toThrow("knowledge_targeted_supplement_prompt_invalid");

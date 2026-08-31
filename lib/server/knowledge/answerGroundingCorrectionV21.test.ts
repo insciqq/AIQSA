@@ -63,7 +63,8 @@ function selector(input: Readonly<{
 describe("target-addressed Knowledge correction", () => {
   it("keeps targeted diagnostics outside the historical Draft failure decoder", () => {
     // Preserve exact recovery of a settled pre-refinement V7 diagnostic. The
-    // current validator no longer emits this reason because hints are advisory.
+    // current validator no longer emits this reason because target provenance
+    // is server-derived rather than model-authored.
     const failure = knowledgeTargetedSupplementFailureV1(
       "draft_target_evidence_invalid"
     );
@@ -74,11 +75,9 @@ describe("target-addressed Knowledge correction", () => {
   it("requires one task-addressed candidate for every positive missing dimension", () => {
     const accepted = validateKnowledgeTargetedSupplementV1({
       claims: [{
-        citationHints: ["K2"],
         targetDimensionId: "D2",
         text: "Beta preserves order."
       }, {
-        citationHints: ["K3"],
         targetDimensionId: "D3",
         text: "Gamma removes duplicates."
       }],
@@ -97,6 +96,8 @@ describe("target-addressed Knowledge correction", () => {
       claimId: "C2",
       targetDimensionId: "D3"
     }]);
+    expect(accepted.value.draft.claims.map(({ citationHints }) => citationHints))
+      .toEqual([["K2"], ["K3"]]);
     expect(knowledgeTargetableMissingDimensionsV1(missing).map(({ id }) => id))
       .toEqual(["D2", "D3"]);
     expect(knowledgeTargetedSupplementFitsV1({
@@ -171,7 +172,7 @@ describe("target-addressed Knowledge correction", () => {
     })).toBeNull();
   });
 
-  it("keeps hints advisory while rejecting missing targets and primary duplicates", () => {
+  it("derives target hints while rejecting missing targets and primary duplicates", () => {
     const base = {
       availableHandles: ["K1", "K2", "K3"],
       missingDimensions: missing,
@@ -179,33 +180,32 @@ describe("target-addressed Knowledge correction", () => {
     } as const;
     expect(validateKnowledgeTargetedSupplementV1({
       claims: [{
-        citationHints: ["K2"],
         targetDimensionId: "D2",
         text: "Beta preserves order."
       }],
       version: 1
     }, base)).toEqual({ kind: "rejected", reason: "draft_target_set_invalid" });
-    const advisoryHint = validateKnowledgeTargetedSupplementV1({
+    const derivedHints = validateKnowledgeTargetedSupplementV1({
       claims: [{
-        citationHints: ["K3"],
         targetDimensionId: "D2",
         text: "Beta preserves order."
       }, {
-        citationHints: ["K3"],
         targetDimensionId: "D3",
         text: "Gamma removes duplicates."
       }],
       version: 1
     }, base);
-    expect(advisoryHint.kind).toBe("accepted");
-    if (advisoryHint.kind === "accepted") {
-      expect(advisoryHint.value.bindings).toEqual([{
+    expect(derivedHints.kind).toBe("accepted");
+    if (derivedHints.kind === "accepted") {
+      expect(derivedHints.value.bindings).toEqual([{
         claimId: "C1",
         targetDimensionId: "D2"
       }, {
         claimId: "C2",
         targetDimensionId: "D3"
       }]);
+      expect(derivedHints.value.draft.claims.map(({ citationHints }) => citationHints))
+        .toEqual([["K2"], ["K3"]]);
     }
     expect(validateKnowledgeTargetedSupplementV1({
       claims: [{
@@ -213,19 +213,16 @@ describe("target-addressed Knowledge correction", () => {
         targetDimensionId: "D2",
         text: "Beta preserves order."
       }, {
-        citationHints: ["K3"],
         targetDimensionId: "D3",
         text: "Gamma removes duplicates."
       }],
       version: 1
-    }, base)).toEqual({ kind: "rejected", reason: "draft_unknown_handle" });
+    }, base)).toEqual({ kind: "rejected", reason: "draft_target_shape_invalid" });
     expect(validateKnowledgeTargetedSupplementV1({
       claims: [{
-        citationHints: ["K2"],
         targetDimensionId: "D2",
         text: "Alpha is bounded."
       }, {
-        citationHints: ["K3"],
         targetDimensionId: "D3",
         text: "Gamma removes duplicates."
       }],
@@ -236,11 +233,9 @@ describe("target-addressed Knowledge correction", () => {
   it("keeps accepted base state immutable and admits only target-matched deltas", () => {
     const supplement = decodeKnowledgeTargetedSupplementV1({
       claims: [{
-        citationHints: ["K2"],
         targetDimensionId: "D2",
         text: "Beta preserves order."
       }, {
-        citationHints: ["K3"],
         targetDimensionId: "D3",
         text: "Gamma removes duplicates."
       }],
