@@ -42,7 +42,9 @@ import {
 } from "./openRagAnswerEvaluate";
 import {
   decodeOpenRagAnswerReplaySnapshot,
+  getOpenRagAnswerReplayFailureTrace,
   isOpenRagAnswerOperationSequence,
+  type OpenRagRawProviderOutput,
   type OpenRagAnswerReplaySnapshot
 } from "./openRagAnswerReplay";
 
@@ -82,6 +84,9 @@ export type OpenRagProductAnswer = Readonly<{
   coverage: "complete" | "none" | "partial";
   facts: OpenRagAnswerObservedFacts;
   operationCount: number;
+  /** Present only when the benchmark itself owns the provider call. Product
+   * execution deliberately exposes no raw provider payload. */
+  rawProviderOutputs?: readonly OpenRagRawProviderOutput[];
   replaySnapshot: OpenRagAnswerReplaySnapshot;
   stageRecords: readonly OpenRagAnswerStageRecord[];
 }>;
@@ -508,8 +513,24 @@ function privateAnswerRecord(
     acceptedResults: answer.acceptedResults,
     citedEvidence: answer.citedEvidence,
     judgeRawResults: judgeProducts.map(({ rawResult }) => rawResult),
+    rawProviderOutputs: answer.rawProviderOutputs ?? null,
     replaySnapshot: answer.replaySnapshot,
-    schemaVersion: 1
+    schemaVersion: 2
+  });
+}
+
+function privateReplayFailureRecord(
+  error: unknown
+): Readonly<Record<string, unknown>> | undefined {
+  const trace = getOpenRagAnswerReplayFailureTrace(error);
+  if (!trace) return undefined;
+  return Object.freeze({
+    acceptedResults: trace.acceptedResults,
+    rawProviderOutputs: trace.rawProviderOutputs,
+    recordKind: "replay_failure_trace",
+    replaySnapshot: trace.replaySnapshot,
+    schemaVersion: 1,
+    stageRecords: trace.stageRecords
   });
 }
 
@@ -520,11 +541,16 @@ function assertProductAnswerIntegrity(
 ): void {
   const operations = answer.acceptedResults.map(({ operation }) => operation);
   const stages = answer.stageRecords.map(({ stage }) => stage);
+  const rawProviderOutputs = answer.rawProviderOutputs;
   if (!answer.answerText.trim() || answer.answerText.includes("\u0000") ||
     Buffer.byteLength(answer.answerText, "utf8") > 2 * 1_024 * 1_024 ||
-    answer.operationCount < 3 || answer.operationCount > 6 ||
+    answer.operationCount < 3 || answer.operationCount > 7 ||
     operations.length !== answer.operationCount || stages.length !== answer.operationCount ||
     operations.some((operation, index) => operation !== stages[index]) ||
+    (rawProviderOutputs !== undefined &&
+      (rawProviderOutputs.length !== answer.operationCount ||
+        rawProviderOutputs.some((raw, index) =>
+          raw.ordinal !== index + 1 || raw.operation !== operations[index]))) ||
     !isOpenRagAnswerOperationSequence(answer.replaySnapshot.contracts, operations) ||
     answer.replaySnapshot.contracts.coverageAuditorContractVersion !==
       manifest.engine.coverageAuditorContractVersion ||
@@ -634,9 +660,11 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
         assertProductAnswerIntegrity(answer, benchmarkCase, manifest);
       } catch (error) {
         const code = errorCode(error);
+        const privateRecord = privateReplayFailureRecord(error);
         await input.checkpoint.writeFailure({
           caseId: benchmarkCase.caseId,
           code,
+          ...(privateRecord ? { privateRecord } : {}),
           repeatOrdinal,
           stage: manifest.mode === "replay" ? "replay" : "answer"
         });

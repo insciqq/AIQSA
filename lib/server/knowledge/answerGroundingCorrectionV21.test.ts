@@ -8,15 +8,23 @@ import type {
   KnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
 import {
+  decodeKnowledgeTargetedSupplementV2,
+  decodeKnowledgeTargetedSupplementV3,
   decodeKnowledgeTargetedSupplementV1,
   decodeKnowledgeTargetedSupplementFailureV1,
+  isKnowledgeAnswerTargetedSupplementSchemaV2,
+  knowledgeAnswerTargetedSupplementSchemaV2,
   knowledgeTargetableMissingDimensionsV1,
   knowledgeTargetedEvidenceAtomIndexV1,
+  knowledgeTargetedSupplementClaimLimitsV2,
   knowledgeTargetedSupplementFitsV1,
   mergeKnowledgeGroundedCorrectionV1,
+  mergeKnowledgeTargetedSupplementV2,
   mergeKnowledgeTargetedSupplementV1,
   knowledgeTargetedSupplementFailureV1,
-  validateKnowledgeTargetedSupplementV1
+  validateKnowledgeTargetedSupplementV1,
+  validateKnowledgeTargetedSupplementV2,
+  validateKnowledgeTargetedSupplementV3
 } from "./answerGroundingCorrectionV21";
 
 const primary = decodeKnowledgeAnswerDraftV21({
@@ -112,6 +120,90 @@ describe("target-addressed Knowledge correction", () => {
       primaryClaimCount: 0,
       targetableDimensionCount: 2
     })).toBe(false);
+  });
+
+  it("versions literal mathematical underscores independently from the V2 wire shape", () => {
+    const output = {
+      targets: {
+        D2: ["The maps X̃×_X Y and X̃×_X Z preserve the square."],
+        D3: ["Gamma removes duplicates."]
+      },
+      version: 2
+    } as const;
+    const input = {
+      availableHandles: ["K1", "K2", "K3"],
+      missingDimensions: missing,
+      primaryDraft: primary
+    } as const;
+    expect(validateKnowledgeTargetedSupplementV2(output, input)).toEqual({
+      kind: "rejected",
+      reason: "draft_claim_text_invalid"
+    });
+    expect(validateKnowledgeTargetedSupplementV3(output, input)).toMatchObject({
+      kind: "accepted",
+      value: { version: 2 }
+    });
+    expect(decodeKnowledgeTargetedSupplementV2(output, input)).toBeNull();
+    expect(decodeKnowledgeTargetedSupplementV3(output, input)).not.toBeNull();
+  });
+
+  it("reserves a bounded claim group for every missing target", () => {
+    const targets = [
+      dimension("D2", "K2", "missing"),
+      dimension("D3", "K3", "missing"),
+      dimension("D4", "K4", "missing"),
+      dimension("D5", "K5", "missing")
+    ];
+    const limits = knowledgeTargetedSupplementClaimLimitsV2({
+      primaryClaimCount: 1,
+      targetDimensions: targets
+    });
+    expect(limits).toEqual([
+      { maxClaims: 3, targetDimensionId: "D2" },
+      { maxClaims: 3, targetDimensionId: "D3" },
+      { maxClaims: 3, targetDimensionId: "D4" },
+      { maxClaims: 3, targetDimensionId: "D5" }
+    ]);
+    const schema = knowledgeAnswerTargetedSupplementSchemaV2({
+      primaryClaimCount: 1,
+      targetDimensions: targets
+    });
+    expect(isKnowledgeAnswerTargetedSupplementSchemaV2(schema)).toBe(true);
+    expect(schema).toMatchObject({
+      properties: {
+        targets: {
+          required: ["D2", "D3", "D4", "D5"]
+        }
+      }
+    });
+    const input = {
+      availableHandles: ["K1", "K2", "K3", "K4", "K5"],
+      missingDimensions: targets,
+      primaryDraft: primary
+    } as const;
+    expect(validateKnowledgeTargetedSupplementV2({
+      targets: {
+        D2: ["D2 fact one.", "D2 fact two.", "D2 fact three."],
+        D3: ["D3 fact one.", "D3 fact two.", "D3 fact three."],
+        D4: ["D4 fact one.", "D4 fact two.", "D4 fact three."]
+      },
+      version: 2
+    }, input)).toEqual({ kind: "rejected", reason: "draft_target_set_invalid" });
+    const accepted = decodeKnowledgeTargetedSupplementV2({
+      targets: {
+        D2: ["D2 fact one.", "D2 fact two."],
+        D3: ["D3 fact one."],
+        D4: ["D4 fact one.", "D4 fact two.", "D4 fact three."],
+        D5: ["D5 fact one."]
+      },
+      version: 2
+    }, input);
+    expect(accepted?.bindings.map(({ targetDimensionId }) => targetDimensionId))
+      .toEqual(["D2", "D2", "D3", "D4", "D4", "D4", "D5"]);
+    expect(mergeKnowledgeTargetedSupplementV2({
+      primaryDraft: primary,
+      supplement: accepted!
+    }).bindings.at(-1)).toEqual({ claimId: "C8", targetDimensionId: "D5" });
   });
 
   it("projects only exact immutable atoms assigned to correction targets", () => {

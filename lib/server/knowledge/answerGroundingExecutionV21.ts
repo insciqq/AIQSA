@@ -192,7 +192,7 @@ export async function acceptedOperation(input: Readonly<{
   lifecycle: KnowledgeProviderDispatchLifecycle;
   modelRunId: string;
   operation: KnowledgeAnswerOperationV21;
-  ordinal: OperationOrdinal;
+  ordinal: OperationOrdinal | 7;
   recoveryProviderResponseId?: string | null;
   shouldAbort(error: unknown): boolean;
 }>): Promise<Readonly<{

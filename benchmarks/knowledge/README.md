@@ -63,7 +63,17 @@ refuses to run while the code-owned
 V21 rollout is not at 100%. This prevents a V20 product answer from being
 reported under a V21 manifest. Keep that activation candidate unpublished
 until the acceptance gate passes; frozen replay remains available while the
-production default is V20.
+production default is V20. The current replay pin is Snapshot V14 / Grounding
+Evidence V30 with the
+`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1`
+pipeline. It retains delimiter-aware claim validation and deterministic removal
+of only provenance-disjoint surplus support edges. During the bounded delta
+pass, every supplemental claim is adjudicated atomically, while an ordered set
+of supported claims bound to the same target may collectively entail one
+compound Scope dimension. Unknown, unrelated, redundant, or unsupported edges
+still fail closed. Snapshot V13 / Evidence V29 retain the historical
+single-claim whole-target delta contract; Snapshot V12 / Evidence V28 retain
+the historical all-or-nothing edge validation.
 
 Run a focused, non-scoreable case first:
 
@@ -117,18 +127,26 @@ alias, or reference answer.
 Every settled case writes a hash-only resumable outcome plus a private replay
 record containing the exact evidence dispatch, source/version/artifact
 bindings, grounding contract versions, accepted grounding outputs, answer,
-cited evidence, and judge raw result. Both output and replay input are
+cited evidence, and judge raw result. Frozen-evidence replay additionally
+captures each raw structured provider payload before server validation, so a
+rejected operation remains diagnosable. Raw payloads stay out of product
+persistence and content-safe outcomes; private artifacts are written mode
+`0600`. Both output and replay input are
 refused unless they are beneath ignored `.aiqsa/`,
 `benchmarks/knowledge/.data/`, or `benchmarks/knowledge/results/` paths.
 
-A judge/provider failure remains content-free in the public failure record;
-when the answer stage completed, its private answer and replay snapshot are
-still persisted for diagnosis before fail-fast exit.
+A judge/provider failure remains content-free in the public failure record.
+When replay raises after a provider response, a non-enumerable error envelope
+carries the partial accepted stages and every returned raw payload, including
+the rejected stage, into the private failure checkpoint before fail-fast exit.
+When the answer stage completed, its private answer and replay snapshot are
+likewise persisted if the judge fails.
 
 Replay schema V2 preserves exact V20 recovery and supports the current V21
 four-call `Draft -> blind Scope -> append-only completeness -> Selector` normal
 path, six-call correction path, one adjacent structural validation repair for
-Scope, completeness, or initial Selector, and a six-call hard cap. Scope and
+Scope, completeness, or initial Selector, and a seven-call hard cap that keeps
+both correction slots available after any one repair. Scope and
 completeness never receive Draft or Selector
 content. It reviews the exact bounded atom ledger grouped by evidence handle,
 returns one record per handle containing zero or more local findings that are
@@ -152,10 +170,14 @@ provenance. The final Selector independently
 chooses factual support and enforces immutable target provenance. Supplement's
 sole factual input is a complete bounded D-to-exact-atom projection derived
 from the accepted Scope; the full manifest, unrelated handles, and primary
-Draft are absent. It returns target ID and claim text, while the server derives
-advisory Draft handles from the target atoms. An oversized projection disables
-correction instead of being truncated. This performs no retrieval or semantic
-server reduction. It is a delta:
+Draft are absent. It returns only exact D-keyed claim groups, while the server
+derives advisory Draft handles from each target's atoms. The strict request-specific
+schema requires one non-empty bounded claim group for every exact target D and
+divides the global claim capacity across groups, so an early target cannot
+consume a later target's required slot. The server flattens accepted groups in
+immutable Scope order. An oversized projection disables correction instead of
+being truncated. This performs no retrieval or semantic server reduction. It
+is a delta:
 the accepted base, including Scope eligibility, remains immutable and a target
 can close only through its own supported supplemental claim. Completeness pins
 the exact initial Scope hash; Selector and every later request pin the canonical

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { decodeKnowledgeAnswerDraftV21 } from "./answerGroundingV21";
 import {
   knowledgeAnswerTargetedSupplementPromptV1,
-  knowledgeGroundedDeltaSelectorPromptV1
+  knowledgeAnswerTargetedSupplementPromptV2,
+  knowledgeGroundedDeltaSelectorPromptV1,
+  knowledgeGroundedDeltaSelectorPromptV2
 } from "./answerGroundingCorrectionPromptV21";
 import {
   knowledgeCoverageEvidenceFromManifestV6,
@@ -141,6 +143,25 @@ describe("targeted correction prompts", () => {
     expect(prompt.systemPrompt).toContain("deterministic complete projection");
   });
 
+  it("pins every target to an explicit grouped claim capacity", () => {
+    const { draft, evidence, request, selector } = fixture();
+    const prompt = knowledgeAnswerTargetedSupplementPromptV2({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    const payload = JSON.parse(prompt.userPrompt) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      targetClaimLimits: [{ maxClaims: 12, targetDimensionId: "D2" }],
+      targetingMode: "exact_missing_dimension_groups",
+      version: 2
+    });
+    expect(prompt.systemPrompt).toContain("required key of targets");
+    expect(prompt.systemPrompt).toContain("Never spend another target's capacity");
+  });
+
   it("fails closed rather than projecting incomplete target evidence", () => {
     const { request, selector } = fixture();
     expect(() => knowledgeAnswerTargetedSupplementPromptV1({
@@ -169,6 +190,33 @@ describe("targeted correction prompts", () => {
       selectorPass: "final_delta"
     });
     expect(prompt.systemPrompt).toContain("baseSelector is immutable");
+  });
+
+  it("keeps historical single-claim delta semantics and makes support sets collective now", () => {
+    const { correctedDraft, evidence, manifest, request, scope, selector } = fixture();
+    const input = {
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      evidenceManifest: manifest.message,
+      initialSelector: selector,
+      request,
+      scope
+    } as const;
+    const historical = knowledgeGroundedDeltaSelectorPromptV1(input);
+    const current = knowledgeGroundedDeltaSelectorPromptV2(input);
+    expect(historical.systemPrompt).toContain(
+      "A targeted claim still needs semantic entailment and must answer the complete"
+    );
+    expect(historical.systemPrompt).not.toContain("collective support set");
+    expect(current.systemPrompt).toContain("contract version=\"2\"");
+    expect(current.systemPrompt).toContain("collective support set");
+    expect(current.systemPrompt).toContain("their union must semantically answer");
+    expect(current.systemPrompt).toContain("Every mapped claim must be independently entailed");
+    expect(JSON.parse(current.userPrompt)).toMatchObject({
+      correctionTargets: [{ claimId: "C2", targetDimensionId: "D2" }],
+      selectorPass: "final_delta"
+    });
   });
 
   it("rejects an incomplete or cross-target delta prompt before dispatch", () => {

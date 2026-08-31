@@ -85,6 +85,7 @@ type OpenRagAnswerQuestionBundle = Readonly<{
 
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const safeIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/u;
+const pipelineIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,511}$/u;
 const caseIdPattern = /^doc-[0-9]{3}-q[1-8]$/u;
 const aliasPattern = /^doc-[0-9]{3}$/u;
 const adapterPattern = /^[a-z][a-z0-9_]{0,63}$/u;
@@ -207,7 +208,8 @@ function decodeEnginePin(value: unknown): OpenRagAnswerEnginePin | null {
       boundedInteger(value.coverageAuditorContractVersion, 1, 10_000) === null ||
     typeof value.evidencePackingVersion !== "string" ||
       !safeIdPattern.test(value.evidencePackingVersion) ||
-    typeof value.pipelineVersion !== "string" || !safeIdPattern.test(value.pipelineVersion) ||
+    typeof value.pipelineVersion !== "string" ||
+      !pipelineIdPattern.test(value.pipelineVersion) ||
     typeof value.profileRevisionId !== "string" ||
       !safeIdPattern.test(value.profileRevisionId)) return null;
   const reranker = value.reranker === null ? null : decodeModelPin(value.reranker);

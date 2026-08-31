@@ -1448,8 +1448,8 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
           ...Array.from({ length: completenessCount }, () => completeness),
           ...Array.from({ length: selectorCount }, () => selector)
         ];
-        if (base.length <= 6) allowedSequences.push(base);
-        if (base.length + 2 <= 6) {
+        if (base.length <= 7) allowedSequences.push(base);
+        if (base.length + 2 <= 7) {
           allowedSequences.push(
             [...base, supplement],
             [...base, supplement, finalSelector]

@@ -230,11 +230,11 @@ export function decodeOpenRagAnswerOutcome(
     value.classification !== null && (typeof value.classification !== "string" ||
       !failureClassifications.has(value.classification as OpenRagFailureClassification)) ||
     !Array.isArray(value.stageRecords) || value.stageRecords.length < 3 ||
-      value.stageRecords.length > 6 ||
+      value.stageRecords.length > 7 ||
     !Array.isArray(value.diagnosticJudgeRuns) || value.diagnosticJudgeRuns.length > 10) {
     throw new Error(code);
   }
-  const operationCount = boundedInteger(value.operationCount, 6);
+  const operationCount = boundedInteger(value.operationCount, 7);
   const stageRecords = value.stageRecords.map(decodeStage);
   const judgment = value.judgment === null ? null : decodeJudgeStage(value.judgment);
   const diagnosticJudgeRuns = value.diagnosticJudgeRuns.map(decodeJudgeStage);

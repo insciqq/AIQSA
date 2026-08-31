@@ -5,8 +5,10 @@ import {
 } from "./answerGroundingV21";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
+  decodeKnowledgeGroundedSelectorSupportEdgesV1,
   deriveKnowledgeCoverageV6,
   knowledgeGroundedSelectorPromptV21,
+  normalizeKnowledgeGroundedSelectorSupportEdgesV1,
   validateKnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
 import {
@@ -119,6 +121,91 @@ describe("Knowledge Grounded Selector V21", () => {
       requestCoverage: "partial",
       supportedContentCount: 1
     });
+  });
+
+  it("prunes only provenance-disjoint surplus support edges in the current protocol", () => {
+    const { evidence, request, scope } = fixture();
+    const draft = decodeKnowledgeAnswerDraftV21({
+      claims: [{
+        citationHints: ["K1"],
+        text: "The Atlas controller enforces a bounded queue."
+      }, {
+        citationHints: ["K2"],
+        text: "A separate source discusses an optional illustration."
+      }],
+      version: 1
+    }, { availableHandles: ["K1", "K2"] })!;
+    const output = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }, {
+        id: "C2",
+        supportHandles: ["K2"],
+        verdict: "supported"
+      }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1", "C2"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+
+    expect(validateKnowledgeGroundedSelectorV21(output, {
+      draft,
+      evidence,
+      request,
+      scope
+    })).toEqual({ kind: "rejected", reason: "selector_dimension_invalid" });
+    const normalized = normalizeKnowledgeGroundedSelectorSupportEdgesV1(output, {
+      draft,
+      evidence,
+      request,
+      scope
+    });
+    expect(normalized?.coverage).toEqual([
+      { id: "D1", status: "covered", supportIds: ["C1"] },
+      { id: "D2", status: "missing", supportIds: [] }
+    ]);
+    expect(decodeKnowledgeGroundedSelectorSupportEdgesV1(output, {
+      draft,
+      evidence,
+      request,
+      scope
+    })?.coverage[0]?.supportIds).toEqual(["C1"]);
+  });
+
+  it("does not invent support when every edge is disjoint or unknown", () => {
+    const { draft, evidence, request, scope } = fixture();
+    const base = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    for (const output of [{
+      ...base,
+      claims: [{ id: "C1", supportHandles: ["K2"], verdict: "supported" }]
+    }, {
+      ...base,
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C999"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }]
+    }]) {
+      expect(normalizeKnowledgeGroundedSelectorSupportEdgesV1(output, {
+        draft,
+        evidence,
+        request,
+        scope
+      })).toBeNull();
+    }
   });
 
   it("excludes only positive Scope findings that fail exact-atom eligibility", () => {

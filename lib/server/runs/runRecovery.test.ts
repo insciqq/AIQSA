@@ -327,7 +327,7 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
       sessionId: "evidence-session-v21",
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
-      version: 24 as const
+      version: 30 as const
     }
   };
 }
@@ -1869,6 +1869,90 @@ describe("run recovery", () => {
     expectedReasoningEfforts: [],
     snapshotVersion: 7
   }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 8
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 9
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 10
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 11
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 12
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 13
+  }, {
     current: true,
     executionPolicy: {
       auditorReasoningEffort: "high",
@@ -1881,7 +1965,7 @@ describe("run recovery", () => {
       version: 1
     } as const,
     expectedReasoningEfforts: ["high", "high", "medium"],
-    snapshotVersion: 8
+    snapshotVersion: 14
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -1904,7 +1988,43 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 8
+      ...(snapshotVersion === 14
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" as const
+          }
+        : snapshotVersion === 13
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" as const
+          }
+        : snapshotVersion === 12
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" as const
+          }
+        : snapshotVersion === 11
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" as const
+          }
+        : snapshotVersion === 10
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" as const
+          }
+        : snapshotVersion === 9
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" as const
+          }
+        : snapshotVersion === 8
         ? {
             executionPolicy: executionPolicy!,
             protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const
@@ -1980,7 +2100,7 @@ describe("run recovery", () => {
             requests.push(request);
             return {
               ...providerResult,
-              finalText: JSON.stringify(snapshotVersion === 8 && requests.length === 1
+              finalText: JSON.stringify(current && requests.length === 1
                 ? {
                     evidenceUnits: [{
                       findings: [{
@@ -1994,9 +2114,9 @@ describe("run recovery", () => {
                     unsupportedDimensions: [],
                     version: 6
                   }
-                : snapshotVersion === 8 && requests.length === 2
+                : current && requests.length === 2
                   ? { additions: [], version: 1 }
-                : snapshotVersion === 8
+                : current
                   ? {
                       claims: [{
                         id: "C1",

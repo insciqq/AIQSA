@@ -6,10 +6,14 @@ import {
 } from "../../lib/server/knowledge/answerGroundingV5";
 import { packKnowledgeEvidenceDispatchManifest } from
   "../../lib/server/knowledge/evidenceDispatchManifest";
-import type { OpenRagAnswerCase } from "./openRagAnswerContract";
+import {
+  decodeOpenRagAnswerEnginePin,
+  type OpenRagAnswerCase
+} from "./openRagAnswerContract";
 import {
   createOpenRagAnswerReplaySnapshot,
   decodeOpenRagAnswerReplaySnapshot,
+  getOpenRagAnswerReplayFailureTrace,
   isOpenRagAnswerOperationSequence,
   openRagAnswerReplayMatchesReasoningControl,
   replayOpenRagAnswerSnapshot
@@ -138,14 +142,16 @@ function v21Origin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 24,
-      pipelineVersion:
-        "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_settlement_v6",
+      groundingEvidenceVersion: 30,
+      pipelineVersion: currentV21PipelineVersion,
       selectorContractVersion: 21,
       settlementVersion: 6
     })
   });
 }
+
+const currentV21PipelineVersion =
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_settlement_v6";
 
 const v21ExecutionPolicy = Object.freeze({
   auditorReasoningEffort: "medium",
@@ -159,6 +165,16 @@ const v21ExecutionPolicy = Object.freeze({
 } as const);
 
 describe("OpenRAG frozen-evidence replay", () => {
+  it("admits bounded append-only pipeline identities beyond generic IDs", () => {
+    expect(currentV21PipelineVersion.length).toBeGreaterThan(200);
+    expect(decodeOpenRagAnswerEnginePin(v21Origin().engine).pipelineVersion)
+      .toBe(currentV21PipelineVersion);
+    expect(() => decodeOpenRagAnswerEnginePin({
+      ...v21Origin().engine,
+      pipelineVersion: `p${"x".repeat(512)}`
+    })).toThrow("open_rag_answer_engine_pin_invalid");
+  });
+
   it("runs only the V20 answer stages over the immutable dispatch", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
@@ -355,6 +371,18 @@ describe("OpenRAG frozen-evidence replay", () => {
       coverage: "complete",
       operationCount: 4
     });
+    expect(result.rawProviderOutputs.map(({ operation, ordinal }) => ({
+      operation,
+      ordinal
+    }))).toEqual([
+      { operation: "knowledge_answer_draft_v21", ordinal: 1 },
+      { operation: "knowledge_coverage_scope_v6", ordinal: 2 },
+      { operation: "knowledge_coverage_scope_completeness_v1", ordinal: 3 },
+      { operation: "knowledge_grounded_selector_v21", ordinal: 4 }
+    ]);
+    expect(result.rawProviderOutputs[0]?.output).toMatchObject({
+      claims: [{ text: "Atlas retains completed exports for 30 days." }]
+    });
     expect(result.finalText).toContain("30 days");
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "medium")).toBe(true);
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "low")).toBe(false);
@@ -452,10 +480,10 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
       "knowledge_answer_draft_supplement_v21"
-    ])).toBe(false);
+    ])).toBe(true);
   });
 
-  it("reports the final bounded Scope validation reason without raw output", async () => {
+  it("reports the bounded Scope reason and retains its raw failure trace privately", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -471,18 +499,51 @@ describe("OpenRAG frozen-evidence replay", () => {
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
       transport: "native_strict"
     });
-    await expect(replayOpenRagAnswerSnapshot({
-      executeStructuredOutput: async (_execution, request) => {
-        if (request.name === "knowledge_answer_draft_v21") {
-          return {
-            claims: [{ citationHints: ["K1"], text: "Retained for 30 days." }],
-            version: 1
-          };
+    let failure: unknown;
+    try {
+      await replayOpenRagAnswerSnapshot({
+        executeStructuredOutput: async (_execution, request) => {
+          if (request.name === "knowledge_answer_draft_v21") {
+            return {
+              claims: [{ citationHints: ["K1"], text: "Retained for 30 days." }],
+              version: 1
+            };
+          }
+          return {};
+        },
+        snapshot: frozen
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "open_rag_replay_coverage_scope_shape_invalid"
+    );
+    expect(JSON.stringify(failure)).not.toContain("Retained for 30 days");
+    const trace = getOpenRagAnswerReplayFailureTrace(failure);
+    expect(trace?.acceptedResults.map(({ operation }) => operation)).toEqual([
+      "knowledge_answer_draft_v21",
+      "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_v6"
+    ]);
+    expect(trace?.rawProviderOutputs.map(({ operation, output }) => ({
+      operation,
+      output
+    }))).toEqual([
+      {
+        operation: "knowledge_answer_draft_v21",
+        output: {
+          claims: [{ citationHints: ["K1"], text: "Retained for 30 days." }],
+          version: 1
         }
-        return {};
       },
-      snapshot: frozen
-    })).rejects.toThrow("open_rag_replay_coverage_scope_shape_invalid");
+      { operation: "knowledge_coverage_scope_v6", output: {} },
+      { operation: "knowledge_coverage_scope_v6", output: {} }
+    ]);
+    expect(trace?.replaySnapshot).toEqual(frozen);
+    expect(trace?.stageRecords).toHaveLength(3);
   });
 
   it("allows a supported stage override while attesting inherited roles", () => {

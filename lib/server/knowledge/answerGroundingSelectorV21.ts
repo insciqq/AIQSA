@@ -237,6 +237,90 @@ export function decodeKnowledgeGroundedSelectorV21(
   return validation.kind === "accepted" ? validation.value : null;
 }
 
+/** Canonicalizes only Selector support edges whose impossibility is proven by
+ * the immutable provenance graph. Unknown IDs, malformed support nodes, and a
+ * covered dimension with no remaining overlapping support stay fail-closed.
+ * Historical decoders deliberately keep the strict V21 behavior above. */
+export function normalizeKnowledgeGroundedSelectorSupportEdgesV1(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeGroundedSelectorV21>[1]
+): Readonly<Record<string, unknown>> | null {
+  const strictValidation = validateKnowledgeGroundedSelectorV21(value, input);
+  if (strictValidation.kind === "accepted") {
+    return value as Readonly<Record<string, unknown>>;
+  }
+  if (strictValidation.reason !== "selector_dimension_invalid" || !record(value) ||
+    !Array.isArray(value.claims) || !Array.isArray(value.extractIds) ||
+    !Array.isArray(value.coverage) ||
+    value.coverage.length !== input.scope.scope.length) return null;
+
+  const supportHandlesById = new Map<string, ReadonlySet<string>>();
+  for (const claim of value.claims) {
+    if (!record(claim) || typeof claim.id !== "string" ||
+      claim.verdict !== "supported" || !Array.isArray(claim.supportHandles) ||
+      !claim.supportHandles.every((handle) => typeof handle === "string") ||
+      supportHandlesById.has(claim.id)) continue;
+    supportHandlesById.set(claim.id, new Set(claim.supportHandles as string[]));
+  }
+  const literalById = new Map(knowledgeSelectorLiteralExtractIndexV2(input.evidence).items
+    .map((item) => [item.id, item] as const));
+  for (const extractId of value.extractIds) {
+    if (typeof extractId !== "string" || supportHandlesById.has(extractId)) return null;
+    const literal = literalById.get(extractId);
+    if (!literal) return null;
+    supportHandlesById.set(extractId, new Set([literal.handle]));
+  }
+
+  let changed = false;
+  const coverage: Record<string, unknown>[] = [];
+  for (const [index, candidate] of value.coverage.entries()) {
+    const scoped = input.scope.scope[index];
+    if (!scoped || !record(candidate) ||
+      !exactKeys(candidate, ["id", "status", "supportIds"]) ||
+      candidate.id !== scoped.id ||
+      candidate.status !== "covered" && candidate.status !== "excluded" &&
+        candidate.status !== "missing" ||
+      !Array.isArray(candidate.supportIds) ||
+      !candidate.supportIds.every((id) => typeof id === "string")) return null;
+    if (candidate.status !== "covered") {
+      coverage.push(candidate);
+      continue;
+    }
+    const supportIds = (candidate.supportIds as string[]).filter((id) => {
+      const handles = supportHandlesById.get(id);
+      if (!handles) return false;
+      return [...handles].some((handle) => scoped.evidenceHandles.includes(handle));
+    });
+    if (candidate.supportIds.some((id) => !supportHandlesById.has(id as string)) ||
+      supportIds.length === 0) return null;
+    if (supportIds.length === candidate.supportIds.length) {
+      coverage.push(candidate);
+      continue;
+    }
+    changed = true;
+    coverage.push(Object.freeze({
+      ...candidate,
+      supportIds: Object.freeze(supportIds)
+    }));
+  }
+  if (!changed) return null;
+  const normalized = Object.freeze({
+    ...value,
+    coverage: Object.freeze(coverage)
+  });
+  return validateKnowledgeGroundedSelectorV21(normalized, input).kind === "accepted"
+    ? normalized
+    : null;
+}
+
+export function decodeKnowledgeGroundedSelectorSupportEdgesV1(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeGroundedSelectorV21>[1]
+): KnowledgeGroundedSelectorV21 | null {
+  const normalized = normalizeKnowledgeGroundedSelectorSupportEdgesV1(value, input);
+  return normalized ? decodeKnowledgeGroundedSelectorV21(normalized, input) : null;
+}
+
 export function deriveKnowledgeCoverageV6(
   selector: KnowledgeGroundedSelectorV21
 ): KnowledgeCoverageDerivationV6 {

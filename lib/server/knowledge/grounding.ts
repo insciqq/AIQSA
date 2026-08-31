@@ -80,6 +80,12 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V21 = 21 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22 = 22 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23 = 23 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V24 = 24 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V25 = 25 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V26 = 26 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V27 = 27 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V28 = 28 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V29 = 29 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 = 30 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -585,6 +591,76 @@ export type KnowledgeGroundingEvidenceV24 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V24;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV25 = Omit<
+  KnowledgeGroundingOperationEvidenceV24,
+  "ordinal"
+> & Readonly<{
+  ordinal: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+}>;
+
+export type KnowledgeGroundingEvidenceV25 = Omit<
+  KnowledgeGroundingEvidenceV24,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV25[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V25;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV26 =
+  KnowledgeGroundingOperationEvidenceV25;
+
+export type KnowledgeGroundingEvidenceV26 = Omit<
+  KnowledgeGroundingEvidenceV25,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV26[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V26;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV27 =
+  KnowledgeGroundingOperationEvidenceV26;
+
+export type KnowledgeGroundingEvidenceV27 = Omit<
+  KnowledgeGroundingEvidenceV26,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV27[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V27;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV28 =
+  KnowledgeGroundingOperationEvidenceV27;
+
+export type KnowledgeGroundingEvidenceV28 = Omit<
+  KnowledgeGroundingEvidenceV27,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV28[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V28;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV29 =
+  KnowledgeGroundingOperationEvidenceV28;
+
+export type KnowledgeGroundingEvidenceV29 = Omit<
+  KnowledgeGroundingEvidenceV28,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV29[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V29;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV30 =
+  KnowledgeGroundingOperationEvidenceV29;
+
+export type KnowledgeGroundingEvidenceV30 = Omit<
+  KnowledgeGroundingEvidenceV29,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV30[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -604,7 +680,13 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV21
   | KnowledgeGroundingEvidenceV22
   | KnowledgeGroundingEvidenceV23
-  | KnowledgeGroundingEvidenceV24;
+  | KnowledgeGroundingEvidenceV24
+  | KnowledgeGroundingEvidenceV25
+  | KnowledgeGroundingEvidenceV26
+  | KnowledgeGroundingEvidenceV27
+  | KnowledgeGroundingEvidenceV28
+  | KnowledgeGroundingEvidenceV29
+  | KnowledgeGroundingEvidenceV30;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -2036,7 +2118,8 @@ type KnowledgeGroundingV24Input = Omit<
 }>;
 
 function validGroundingOperationV24(
-  operation: KnowledgeGroundingOperationEvidenceV24,
+  operation: KnowledgeGroundingOperationEvidenceV24 |
+    KnowledgeGroundingOperationEvidenceV25,
   ordinal: number
 ): boolean {
   const purpose = operation.role === "primary"
@@ -2220,6 +2303,233 @@ export function groundSettledKnowledgeAnswerV24(
     supportedClaimCount: input.settlement.supportedClaimCount,
     unsupportedClaimCount: input.settlement.unsupportedClaimCount,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V24
+  });
+}
+
+type KnowledgeGroundingV25Input = Omit<
+  KnowledgeGroundingV24Input,
+  "operations"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV25[];
+}>;
+
+/** V25 attests Snapshot V9's repair-reserved execution budget. It preserves
+ * V24's content-free append-only completeness contract while allowing one
+ * validation repair followed by the bounded Supplement/final-Selector pair. */
+export function groundSettledKnowledgeAnswerV25(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV25 {
+  const roleSequences: KnowledgeGroundingOperationEvidenceV25["role"][][] = [];
+  for (const scopeRepair of [false, true]) {
+    for (const completenessRepair of [false, true]) {
+      for (const selectorRepair of [false, true]) {
+        const base: KnowledgeGroundingOperationEvidenceV25["role"][] = [
+          "primary",
+          "scope",
+          ...(scopeRepair ? ["scope_repair" as const] : []),
+          "scope_completeness",
+          ...(completenessRepair ? ["scope_completeness_repair" as const] : []),
+          "initial",
+          ...(selectorRepair ? ["repair" as const] : [])
+        ];
+        if (base.length <= 7) roleSequences.push(base);
+        if (base.length + 2 <= 7) {
+          roleSequences.push([...base, "supplement"], [...base, "supplement", "final"]);
+        }
+      }
+    }
+  }
+  const roles = input.operations.map(({ role }) => role);
+  const validSequence = roleSequences.some((sequence) =>
+    JSON.stringify(sequence) === JSON.stringify(roles));
+  const operationsValid = validSequence && input.operations.every((operation, index) =>
+    validGroundingOperationV24(operation, index + 1));
+  const scope = input.operations.find(({ role }) => role === "scope_repair") ??
+    input.operations.find(({ role }) => role === "scope");
+  const completeness = input.operations.find(
+    ({ role }) => role === "scope_completeness_repair"
+  ) ?? input.operations.find(({ role }) => role === "scope_completeness");
+  const initialSelector = input.operations.find(({ role }) => role === "repair") ??
+    input.operations.find(({ role }) => role === "initial");
+  const scopeRepairAttempted = roles.includes("scope_repair");
+  const completenessRepairAttempted = roles.includes("scope_completeness_repair");
+  const selectorRepairAttempted = roles.includes("repair");
+  const correctionAttempted = roles.includes("supplement");
+  const correctionSucceeded = roles.includes("final");
+  const eligibleDimensionCount = input.coverage.coveredDimensionCount +
+    input.coverage.missingDimensionCount;
+  const supportedContentCount = input.settlement.supportedClaimCount +
+    (input.settlement.finalizationMode === "evidence_only" ||
+      input.settlement.finalizationMode === "selected_claims_with_evidence" ? 1 : 0);
+  const initialCoverage = supportedContentCount === 0 ||
+    input.coverage.coveredDimensionCount === 0
+    ? "none"
+    : input.coverage.missingDimensionCount === 0
+      ? "complete"
+      : "partial";
+  const settlementCoverageValid = correctionSucceeded
+    ? supportedContentCount === 0
+      ? input.settlement.requestCoverage === "none"
+      : input.settlement.requestCoverage === "partial" ||
+        input.settlement.requestCoverage === "complete"
+    : input.settlement.requestCoverage === initialCoverage;
+  const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(
+    input.executionPolicy
+  );
+  if (input.contracts.draftContractVersion !== 21 ||
+    input.contracts.selectorContractVersion !== 21 ||
+    input.contracts.coverageAuditorContractVersion !== 6 ||
+    input.contracts.settlementVersion !== 6 || !operationsValid || !scope ||
+    !completeness || !initialSelector ||
+    input.completeness.payloadHash !== completeness.acceptedResultHash ||
+    input.coverage.selectorPayloadHash !== initialSelector.acceptedResultHash ||
+    !Number.isSafeInteger(input.completeness.initialDimensionCount) ||
+    input.completeness.initialDimensionCount < 1 ||
+    input.completeness.initialDimensionCount > 8 ||
+    !Number.isSafeInteger(input.completeness.addedDimensionCount) ||
+    input.completeness.addedDimensionCount < 0 ||
+    input.completeness.initialDimensionCount +
+      input.completeness.addedDimensionCount !== input.coverageScope.dimensionCount ||
+    !/^[0-9a-f]{64}$/u.test(input.completeness.initialScopePayloadHash) ||
+    !/^[0-9a-f]{64}$/u.test(input.completeness.payloadHash) ||
+    !Number.isSafeInteger(input.coverageScope.dimensionCount) ||
+    input.coverageScope.dimensionCount < 1 || input.coverageScope.dimensionCount > 8 ||
+    !/^[0-9a-f]{64}$/u.test(input.coverageScope.payloadHash) ||
+    !Number.isSafeInteger(input.coverage.coveredDimensionCount) ||
+    input.coverage.coveredDimensionCount < 0 ||
+    !Number.isSafeInteger(input.coverage.missingDimensionCount) ||
+    input.coverage.missingDimensionCount < 0 ||
+    !Number.isSafeInteger(input.coverage.excludedDimensionCount) ||
+    input.coverage.excludedDimensionCount < 0 ||
+    eligibleDimensionCount + input.coverage.excludedDimensionCount !==
+      input.coverageScope.dimensionCount ||
+    !/^[0-9a-f]{64}$/u.test(input.coverage.selectorPayloadHash) ||
+    input.scopeRepairSucceeded !== scopeRepairAttempted ||
+    input.completenessRepairSucceeded !== completenessRepairAttempted ||
+    input.selectorRepairSucceeded !== selectorRepairAttempted ||
+    correctionSucceeded && !correctionAttempted ||
+    correctionAttempted && input.coverage.missingDimensionCount === 0 ||
+    !settlementCoverageValid || !executionPolicy ||
+    !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash) ||
+    !/^[0-9a-f]{64}$/u.test(input.modelPinFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.providerPinFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.answerBindingFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.executionPolicyFingerprint) ||
+    input.executionPolicyFingerprint !== knowledgeAnswerHash(executionPolicy) ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || input.operations.some((operation) => {
+      const usage = decodeKnowledgeProviderAttemptUsage(operation.usage);
+      return !usage || usage.inputTokens === null || usage.outputTokens === null;
+    })) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted repair-budgeted Scope-completeness grounding evidence is invalid"
+    );
+  }
+  const operations = Object.freeze(input.operations.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    answerBindingFingerprint: input.answerBindingFingerprint,
+    completeness: Object.freeze({ ...input.completeness, status: "accepted" as const }),
+    completenessRepairAttempted,
+    completenessRepairSucceeded: input.completenessRepairSucceeded,
+    contracts: Object.freeze({ ...input.contracts }),
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionAttempted,
+    correctionSucceeded,
+    coverage: Object.freeze({ ...input.coverage, status: "accepted" as const }),
+    coverageScope: Object.freeze({
+      ...input.coverageScope,
+      status: "accepted" as const
+    }),
+    draftClaimCount: input.draftClaimCount,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    executionPolicy,
+    executionPolicyFingerprint: input.executionPolicyFingerprint,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    modelPinFingerprint: input.modelPinFingerprint,
+    operations,
+    originalAnswerHash: input.operations[0]!.acceptedResultHash,
+    outcome: input.settlement.outcome,
+    providerPinFingerprint: input.providerPinFingerprint,
+    receiptHash: knowledgeEvidenceReceiptHash(input.evidence),
+    requestCoverage: input.settlement.requestCoverage,
+    scopeRepairAttempted,
+    scopeRepairSucceeded: input.scopeRepairSucceeded,
+    selectorRepairAttempted,
+    selectorRepairSucceeded: input.selectorRepairSucceeded,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V25
+  });
+}
+
+/** V26 distinguishes Snapshot V10's deterministic claim-surface recovery from
+ * V25. The content-free operation and seven-call budget invariants are
+ * otherwise byte-for-byte identical. */
+export function groundSettledKnowledgeAnswerV26(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV26 {
+  const grounded = groundSettledKnowledgeAnswerV25(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V26
+  });
+}
+
+/** V27 distinguishes Snapshot V11's exact target-group handoff from V26. The
+ * content-free operation and seven-call budget invariants remain identical. */
+export function groundSettledKnowledgeAnswerV27(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV27 {
+  const grounded = groundSettledKnowledgeAnswerV26(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V27
+  });
+}
+
+/** V28 distinguishes Snapshot V12's delimiter-aware plain-claim validation
+ * from V27. Receipt content and seven-call invariants remain unchanged. */
+export function groundSettledKnowledgeAnswerV28(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV28 {
+  const grounded = groundSettledKnowledgeAnswerV27(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V28
+  });
+}
+
+/** V29 distinguishes Snapshot V13's deterministic Selector support-edge
+ * canonicalization from V28. Receipt content and seven-call invariants remain
+ * unchanged. */
+export function groundSettledKnowledgeAnswerV29(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV29 {
+  const grounded = groundSettledKnowledgeAnswerV28(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V29
+  });
+}
+
+/** V30 distinguishes Snapshot V14's collective target-support mapping from
+ * V29. Receipt content and seven-call invariants remain unchanged. */
+export function groundSettledKnowledgeAnswerV30(
+  input: KnowledgeGroundingV25Input
+): KnowledgeGroundingEvidenceV30 {
+  const grounded = groundSettledKnowledgeAnswerV29(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30
   });
 }
 
