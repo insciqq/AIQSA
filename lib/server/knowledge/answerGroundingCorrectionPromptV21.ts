@@ -22,9 +22,9 @@ export const KNOWLEDGE_TARGETED_SUPPLEMENT_CONTRACT_V1 = Object.freeze([
   '<aiqsa_knowledge_targeted_supplement_contract version="1">',
   "Every returned candidate must include targetDimensionId naming exactly one supplied positive missing dimension. The target is a task address, never evidence or permission to copy its description.",
   "Every supplied dimension is a positive missing target with evidence provenance. Return at least one independently checkable evidence-derived candidate for every supplied dimension.",
-  "A candidate's citationHints must overlap its target dimension's immutable evidenceHandles. This provenance overlap is only a search boundary: derive the complete claim from the manifest and do not substitute an adjacent fact from the same handle.",
+  "Use each target dimension's immutable evidenceHandles as the primary search boundary and derive its complete claim from the manifest; do not substitute an adjacent fact from the same handle. citationHints are advisory routing metadata, not proof, and must name only available manifest handles.",
   "Do not repeat a primary Draft claim. Keep candidates grouped by their semantic target, but split independently falsifiable assertions into separate claims carrying the same targetDimensionId when needed.",
-  "The server validates exact target coverage and provenance, assigns claim IDs, and preserves the target binding for the final delta Selector.",
+  "The server validates exact target coverage and global citation-hint validity, assigns claim IDs, and preserves the target binding. The final delta Selector independently chooses factual support, enforces provenance overlap, and alone may close a target.",
   "Do not create, remove, merge, rename, or reinterpret target dimensions.",
   "</aiqsa_knowledge_targeted_supplement_contract>"
 ].join("\n"));
@@ -41,7 +41,7 @@ export const KNOWLEDGE_GROUNDED_DELTA_SELECTOR_CONTRACT_V1 = Object.freeze([
 ].join("\n"));
 
 const TARGETED_SUPPLEMENT_TASK_REMINDER =
-  "Return novel evidence-derived candidates for every positive missing D target, with exact targetDimensionId and provenance overlap.";
+  "Return novel evidence-derived candidates for every positive missing D target, with exact targetDimensionId; use the target's immutable provenance as the primary search boundary.";
 const DELTA_SELECTOR_TASK_REMINDER =
   "Preserve the accepted base and adjudicate only target-addressed supplemental deltas for previously missing dimensions.";
 

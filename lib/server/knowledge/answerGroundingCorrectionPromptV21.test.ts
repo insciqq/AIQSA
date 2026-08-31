@@ -107,6 +107,8 @@ describe("targeted correction prompts", () => {
     });
     expect(prompt.systemPrompt).toContain("targetDimensionId");
     expect(prompt.systemPrompt).toContain("never evidence");
+    expect(prompt.systemPrompt).toContain("advisory routing metadata, not proof");
+    expect(prompt.systemPrompt).toContain("final delta Selector independently chooses");
   });
 
   it("pins immutable base state and claim-to-dimension bindings into final delta", () => {

@@ -881,6 +881,40 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 
+  it("lets the final Selector own support when a targeted Draft hint is advisory", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+        ? {
+            output: {
+              claims: [{
+                citationHints: ["K1"],
+                targetDimensionId: "D2",
+                text: "Beta removes duplicates."
+              }],
+              version: 1
+            },
+            providerResponseId: "response-advisory-targeted-hint",
+            usage
+          }
+        : baseline(operation));
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+    expect(result.operations).toHaveLength(5);
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "complete",
+      supportedClaimCount: 2
+    });
+    expect(recorder.entries.get(4)?.acceptedResult).toMatchObject({
+      claims: [{ citationHints: ["K1"] }]
+    });
+    expect(recorder.entries.get(5)?.acceptedResult).toMatchObject({
+      claims: [{ supportHandles: ["K1"] }, { supportHandles: ["K2"] }]
+    });
+  });
+
   it("records a targeted supplement failure and stops before final selection", async () => {
     const recorder = lifecycleRecorder();
     const baseline = currentExecution(false);
