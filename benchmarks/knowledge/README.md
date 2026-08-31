@@ -137,9 +137,11 @@ there is no negative-atom echo or second model-owned positive-to-Scope reduction
 A repair receives unchanged authority inputs plus only the bounded
 validation-reason enum; provider failures are not retried. Correction starts
 only when both remaining calls fit. Every supplemental claim names exactly one
-initially missing positive Scope target and overlaps its immutable provenance.
-The final Selector is a delta: the accepted base remains immutable and a target
-can close only through its own supported supplemental claim. Every later request
+initially missing positive Scope target; its citation hints are advisory and
+remain bounded to available manifest handles. The final Selector independently
+chooses factual support and enforces immutable target provenance. It is a delta:
+the accepted base remains immutable and a target can close only through its own
+supported supplemental claim. Every later request
 pins the exact accepted Scope result hash. Selector coverage requires each
 covered support ID to overlap that immutable scope through canonical evidence
 handles. Replay

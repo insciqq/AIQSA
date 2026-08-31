@@ -171,10 +171,10 @@ export function knowledgeTargetedSupplementFitsV1(input: Readonly<{
 }
 
 /** Validates a task-addressed corrective Draft. Every positive missing Scope
- * dimension receives at least one novel candidate, and each candidate's hints
- * must overlap that dimension's immutable provenance. The overlap is only a
- * structural routing constraint; the final Selector still owns entailment and
- * semantic coverage. */
+ * dimension receives at least one novel candidate. targetDimensionId is the
+ * exact server task address; Draft citation hints remain globally valid
+ * advisory metadata, while the final Selector owns factual support,
+ * provenance overlap, and semantic coverage. */
 export function validateKnowledgeTargetedSupplementV1(
   value: unknown,
   input: Readonly<{
@@ -212,12 +212,6 @@ export function validateKnowledgeTargetedSupplementV1(
     ]) || typeof candidate.targetDimensionId !== "string" ||
       !dimensionById.has(candidate.targetDimensionId)) {
       return rejected("draft_target_shape_invalid");
-    }
-    const dimension = dimensionById.get(candidate.targetDimensionId)!;
-    if (!Array.isArray(candidate.citationHints) ||
-      !candidate.citationHints.some((handle) =>
-        typeof handle === "string" && dimension.evidenceHandles.includes(handle))) {
-      return rejected("draft_target_evidence_invalid");
     }
     rawClaims.push({
       citationHints: candidate.citationHints,
