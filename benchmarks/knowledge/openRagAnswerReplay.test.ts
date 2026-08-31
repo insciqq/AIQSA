@@ -136,12 +136,12 @@ function v21Origin() {
     ...legacy,
     engine: Object.freeze({
       ...legacy.engine,
-      coverageAuditorContractVersion: 5,
+      coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 21,
+      groundingEvidenceVersion: 22,
       pipelineVersion:
-        "knowledge_answer_draft_v21_scope_v5_selector_v20_settlement_v6",
-      selectorContractVersion: 20,
+        "knowledge_answer_draft_v21_scope_v6_selector_v21_settlement_v6",
+      selectorContractVersion: 21,
       settlementVersion: 6
     })
   });
@@ -307,19 +307,19 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 1
         };
       }
-      if (request.name === "knowledge_coverage_scope_v5") {
+      if (request.name === "knowledge_coverage_scope_v6") {
         return {
-          evidenceMap: [{
-            answerAtomIds: ["A1"],
+          evidenceUnits: [{
+            findings: [{
+              description: "State the completed-export retention period.",
+              evidenceAtomIds: ["A1"],
+              requestAnchor: "How long are completed exports retained?"
+            }],
             handle: "K1"
           }],
-          scope: [{
-            description: "State the completed-export retention period.",
-            evidenceAtomIds: ["A1"],
-            id: "D1",
-            requestAnchor: "How long are completed exports retained?"
-          }],
-          version: 5
+          jointFindings: [],
+          unsupportedDimensions: [],
+          version: 6
         };
       }
       return {
@@ -338,14 +338,14 @@ describe("OpenRAG frozen-evidence replay", () => {
 
     expect(executeStructuredOutput.mock.calls.map(([, request]) => request.name)).toEqual([
       "knowledge_answer_draft_v21",
-      "knowledge_coverage_scope_v5",
-      "knowledge_grounded_selector_v20"
+      "knowledge_coverage_scope_v6",
+      "knowledge_grounded_selector_v21"
     ]);
     expect(result).toMatchObject({
       contracts: {
-        coverageAuditorContractVersion: 5,
+        coverageAuditorContractVersion: 6,
         draftContractVersion: 21,
-        selectorContractVersion: 20,
+        selectorContractVersion: 21,
         settlementVersion: 6
       },
       coverage: "complete",
@@ -383,20 +383,20 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 1
         };
       }
-      if (request.name === "knowledge_coverage_scope_v5") {
+      if (request.name === "knowledge_coverage_scope_v6") {
         if (scopeCalls++ === 0) return {};
         return {
-          evidenceMap: [{
-            answerAtomIds: ["A1"],
+          evidenceUnits: [{
+            findings: [{
+              description: "State the completed-export retention period.",
+              evidenceAtomIds: ["A1"],
+              requestAnchor: "How long are completed exports retained?"
+            }],
             handle: "K1"
           }],
-          scope: [{
-            description: "State the completed-export retention period.",
-            evidenceAtomIds: ["A1"],
-            id: "D1",
-            requestAnchor: "How long are completed exports retained?"
-          }],
-          version: 5
+          jointFindings: [],
+          unsupportedDimensions: [],
+          version: 6
         };
       }
       return {
@@ -416,7 +416,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.operationCount).toBe(4);
     const scopeRequests = executeStructuredOutput.mock.calls
       .map(([, request]) => request)
-      .filter(({ name }) => name === "knowledge_coverage_scope_v5");
+      .filter(({ name }) => name === "knowledge_coverage_scope_v6");
     expect(scopeRequests).toHaveLength(2);
     expect(JSON.parse(scopeRequests[0]!.userPrompt)).toMatchObject({
       repairReason: null,
@@ -428,21 +428,21 @@ describe("OpenRAG frozen-evidence replay", () => {
     });
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_coverage_scope_v5",
-      "knowledge_coverage_scope_v5",
-      "knowledge_grounded_selector_v20"
+      "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_v6",
+      "knowledge_grounded_selector_v21"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_grounded_selector_v20",
-      "knowledge_coverage_scope_v5"
+      "knowledge_grounded_selector_v21",
+      "knowledge_coverage_scope_v6"
     ])).toBe(false);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_coverage_scope_v5",
-      "knowledge_coverage_scope_v5",
-      "knowledge_grounded_selector_v20",
-      "knowledge_grounded_selector_v20",
+      "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_v6",
+      "knowledge_grounded_selector_v21",
+      "knowledge_grounded_selector_v21",
       "knowledge_answer_draft_supplement_v21"
     ])).toBe(false);
   });

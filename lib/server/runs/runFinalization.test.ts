@@ -322,9 +322,9 @@ describe("run finalization", () => {
     const result = await finalizeRunCompletion({
       ...completionInput(repository),
       knowledgeAnswerContracts: {
-        coverageAuditorContractVersion: 5,
+        coverageAuditorContractVersion: 6,
         draftContractVersion: 21,
-        selectorContractVersion: 20,
+        selectorContractVersion: 21,
         settlementVersion: 6
       },
       result: { ...completionInput(repository).result, finalText: "hidden operation output" }

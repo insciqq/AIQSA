@@ -94,7 +94,7 @@ import {
   type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
 import { executeKnowledgeAnswerGroundingV21 } from
-  "../knowledge/answerGroundingExecutionV21ScopeV5";
+  "../knowledge/answerGroundingExecutionV21ScopeV6";
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
 import {
@@ -1378,7 +1378,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: runId });
         const groundingUnavailable = !input.knowledgeProviderDispatch ||
           (pipeline === "v20_v16" && !input.repository.groundKnowledgeAnswerV5) ||
-          (pipeline === "v21_scope_v5" && !input.repository.groundKnowledgeAnswerV21);
+          (pipeline === "v21_scope_v6" && !input.repository.groundKnowledgeAnswerV21);
         if (groundingUnavailable) {
           throw new RunPipelineError(
             pipeline === "v20_v16"
@@ -1399,7 +1399,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const reasoningEffort = typeof normalizedRequest.params.reasoningEffort === "string"
           ? normalizedRequest.params.reasoningEffort
           : null;
-        const groundingExecutionPolicy = pipeline === "v21_scope_v5"
+        const groundingExecutionPolicy = pipeline === "v21_scope_v6"
           ? resolveKnowledgeGroundingExecutionPolicyV1({
               inheritedReasoningEffort: reasoningEffort,
               modelCapabilities: normalizedRequest.modelCapabilities,
@@ -1438,16 +1438,16 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             ? "native_strict"
             : "provider_neutral_json"
         } as const;
-        const operationResult = pipeline === "v21_scope_v5"
+        const operationResult = pipeline === "v21_scope_v6"
           ? await executeKnowledgeAnswerGroundingV21(executionInput)
           : await executeKnowledgeAnswerGroundingV8(executionInput);
         const contractConflict = pipeline === "v20_v16"
           ? operationResult.contracts.draftContractVersion !== 20 ||
             operationResult.contracts.selectorContractVersion !== 16
           : operationResult.contracts.draftContractVersion !== 21 ||
-            operationResult.contracts.selectorContractVersion !== 20 ||
+            operationResult.contracts.selectorContractVersion !== 21 ||
             !("coverageAuditorContractVersion" in operationResult.contracts) ||
-            operationResult.contracts.coverageAuditorContractVersion !== 5 ||
+            operationResult.contracts.coverageAuditorContractVersion !== 6 ||
             operationResult.contracts.settlementVersion !== 6;
         if (contractConflict) {
           throw new RunPipelineError(
@@ -1472,11 +1472,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           contracts: operationResult.contracts,
           result: {
             finalText: "",
-            finalProviderResponsePreview: pipeline === "v21_scope_v5"
+            finalProviderResponsePreview: pipeline === "v21_scope_v6"
               ? {
-                  coverageAuditorContractVersion: 5,
+                  coverageAuditorContractVersion: 6,
                   draftContractVersion: 21,
-                  selectorContractVersion: 20,
+                  selectorContractVersion: 21,
                   settlementVersion: 6,
                   structuredKnowledgeAnswer: true
                 }

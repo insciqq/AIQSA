@@ -57,8 +57,8 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests the current V21 Draft / blind Coverage Scope V5 /
-Selector V20 / settlement V6 candidate and refuses to run while the code-owned
+The live answer lane attests the current V21 Draft / blind Coverage Scope V6 /
+Selector V21 / settlement V6 candidate and refuses to run while the code-owned
 V21 rollout is not at 100%. This prevents a V20 product answer from being
 reported under a V21 manifest. Keep that activation candidate unpublished
 until the acceptance gate passes; frozen replay remains available while the

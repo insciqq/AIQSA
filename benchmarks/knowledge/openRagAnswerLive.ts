@@ -13,7 +13,7 @@ import {
   decodeKnowledgeAnswerOperationRequestSnapshotV1
 } from "../../lib/server/knowledge/answerGroundingV5";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
@@ -29,7 +29,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V21 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -675,13 +675,13 @@ async function loadProductAnswer(input: Readonly<{
   }
   const operations = dispatches.map(({ attempt }) => attempt.purpose);
   const isV21 = input.origin.engine.coverageAuditorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.coverageAuditorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.coverageAuditorContractVersion &&
     input.origin.engine.draftContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.draftContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.draftContractVersion &&
     input.origin.engine.selectorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.selectorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.selectorContractVersion &&
     input.origin.engine.settlementVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.settlementVersion;
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.settlementVersion;
   if (!isOpenRagAnswerOperationSequence(Object.freeze({
     coverageAuditorContractVersion: input.origin.engine.coverageAuditorContractVersion,
     draftContractVersion: input.origin.engine.draftContractVersion,
@@ -1225,10 +1225,10 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V21,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22,
         parserProfileVersion: revision.pdfParserProfileVersion,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v5_selector_v20_settlement_v6",
+          "knowledge_answer_draft_v21_scope_v6_selector_v21_settlement_v6",
         profileRevisionId: revision.id,
         profileRevisionNumber: revision.revisionNumber,
         rankingProfileVersion: KNOWLEDGE_RANKING_PROFILE_VERSION,
