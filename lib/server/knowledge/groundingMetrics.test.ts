@@ -195,8 +195,17 @@ function evidenceV22(durationMs: number): KnowledgeGroundingEvidenceV22 {
 }
 
 function evidenceV23(durationMs: number): KnowledgeGroundingEvidenceV23 {
+  const historical = evidenceV22(durationMs);
   return {
-    ...evidenceV22(durationMs),
+    ...historical,
+    coverage: {
+      ...historical.coverage,
+      excludedDimensionCount: 1
+    },
+    coverageScope: {
+      ...historical.coverageScope,
+      dimensionCount: 3
+    },
     version: 23
   } as unknown as KnowledgeGroundingEvidenceV23;
 }
@@ -220,6 +229,7 @@ describe("Knowledge grounding operational metrics", () => {
       selectorSupported: 4,
       selectorUnsupported: 2,
       totalCoverageDimensions: 4,
+      totalExcludedCoverageDimensions: 0,
       totalMissingCoverageDimensions: 2
     });
     expect(metrics.stages.auditor.calls).toBe(1);

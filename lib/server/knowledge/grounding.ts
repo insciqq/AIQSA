@@ -536,8 +536,15 @@ export type KnowledgeGroundingOperationEvidenceV23 =
 
 export type KnowledgeGroundingEvidenceV23 = Omit<
   KnowledgeGroundingEvidenceV22,
-  "operations" | "version"
+  "coverage" | "operations" | "version"
 > & Readonly<{
+  coverage: Readonly<{
+    coveredDimensionCount: number;
+    excludedDimensionCount: number;
+    missingDimensionCount: number;
+    selectorPayloadHash: string;
+    status: "accepted";
+  }>;
   operations: readonly KnowledgeGroundingOperationEvidenceV23[];
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23;
 }>;
@@ -1918,15 +1925,61 @@ export function groundSettledKnowledgeAnswerV22(input: Omit<Parameters<
   });
 }
 
+type KnowledgeGroundingV23Input = Omit<
+  Parameters<typeof groundSettledKnowledgeAnswerV22>[0],
+  "coverage"
+> & Readonly<{
+  coverage: Readonly<{
+    coveredDimensionCount: number;
+    excludedDimensionCount: number;
+    missingDimensionCount: number;
+    selectorPayloadHash: string;
+  }>;
+}>;
+
 /** V23 is the content-free attestation for Snapshot V7's target-addressed,
- * monotonic correction delta. V22 remains the exact historical Scope V6
- * full-recomputation receipt and is never reinterpreted. */
+ * monotonic correction delta and Selector-owned Scope eligibility. V22 remains
+ * the exact historical Scope V6 full-recomputation receipt and is never
+ * reinterpreted. */
 export function groundSettledKnowledgeAnswerV23(
-  input: Parameters<typeof groundSettledKnowledgeAnswerV22>[0]
+  input: KnowledgeGroundingV23Input
 ): KnowledgeGroundingEvidenceV23 {
-  const historical = groundSettledKnowledgeAnswerV22(input);
+  const excludedDimensionCount = input.coverage.excludedDimensionCount;
+  const eligibleDimensionCount = input.coverage.coveredDimensionCount +
+    input.coverage.missingDimensionCount;
+  if (!Number.isSafeInteger(excludedDimensionCount) || excludedDimensionCount < 0 ||
+    eligibleDimensionCount + excludedDimensionCount !==
+      input.coverageScope.dimensionCount) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted eligibility-aware Knowledge grounding evidence is invalid"
+    );
+  }
+  // V22 validates every shared operation, pin, hash, usage, and settlement
+  // invariant. Its historical two-state coverage view receives only eligible
+  // dimensions. The all-excluded case uses one synthetic missing slot solely
+  // for that private validator; the returned V23 projection is always exact.
+  const historical = groundSettledKnowledgeAnswerV22({
+    ...input,
+    coverage: Object.freeze({
+      coveredDimensionCount: input.coverage.coveredDimensionCount,
+      missingDimensionCount: eligibleDimensionCount === 0
+        ? 1
+        : input.coverage.missingDimensionCount,
+      selectorPayloadHash: input.coverage.selectorPayloadHash
+    }),
+    coverageScope: Object.freeze({
+      ...input.coverageScope,
+      dimensionCount: eligibleDimensionCount === 0 ? 1 : eligibleDimensionCount
+    })
+  });
   return Object.freeze({
     ...historical,
+    coverage: Object.freeze({ ...input.coverage, status: "accepted" as const }),
+    coverageScope: Object.freeze({
+      ...input.coverageScope,
+      status: "accepted" as const
+    }),
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23
   });
 }

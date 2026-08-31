@@ -36,7 +36,11 @@ type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
   contradictedClaimCount: number;
   correctionAttempted: boolean;
   correctionSucceeded: boolean;
-  coverage: Readonly<{ missingDimensionCount: number; status: "accepted" }>;
+  coverage: Readonly<{
+    excludedDimensionCount?: number;
+    missingDimensionCount: number;
+    status: "accepted";
+  }>;
   coverageScope: Readonly<{ dimensionCount: number; status: "accepted" }>;
   draftClaimCount: number;
   operations: readonly Readonly<{
@@ -78,6 +82,7 @@ export type KnowledgeGroundingOperationalMetrics = Readonly<{
   selectorUnsupported: number;
   stages: Readonly<Record<KnowledgeGroundingStage, KnowledgeGroundingStageOperationalMetrics>>;
   totalCoverageDimensions: number;
+  totalExcludedCoverageDimensions: number;
   totalMissingCoverageDimensions: number;
 }>;
 
@@ -107,6 +112,7 @@ export function aggregateKnowledgeGroundingMetrics(
   let selectorSupported = 0;
   let selectorUnsupported = 0;
   let totalCoverageDimensions = 0;
+  let totalExcludedCoverageDimensions = 0;
   let totalMissingCoverageDimensions = 0;
   for (const evidence of evidences) {
     coverage[evidence.requestCoverage] += 1;
@@ -119,6 +125,9 @@ export function aggregateKnowledgeGroundingMetrics(
     totalCoverageDimensions += evidence.version === 18
       ? evidence.audit.dimensionCount
       : evidence.coverageScope.dimensionCount;
+    totalExcludedCoverageDimensions += evidence.version === 23
+      ? evidence.coverage.excludedDimensionCount ?? 0
+      : 0;
     totalMissingCoverageDimensions += evidence.version === 18
       ? evidence.audit.missingDimensionCount
       : evidence.coverage.missingDimensionCount;
@@ -157,6 +166,7 @@ export function aggregateKnowledgeGroundingMetrics(
     selectorUnsupported,
     stages: Object.freeze(stages),
     totalCoverageDimensions,
+    totalExcludedCoverageDimensions,
     totalMissingCoverageDimensions
   });
 }
@@ -189,6 +199,8 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
     !counter(value.coverageScope.dimensionCount) || !record(value.coverage) ||
     value.coverage.status !== "accepted" ||
     !counter(value.coverage.missingDimensionCount))) return false;
+  if (value.version === 23 && (!record(value.coverage) ||
+    !counter(value.coverage.excludedDimensionCount))) return false;
   return value.operations.length >= 3 && value.operations.length <= 6 &&
     value.operations.every((operation) => record(operation) &&
       groundingStages.includes(operation.role as KnowledgeGroundingStage) &&

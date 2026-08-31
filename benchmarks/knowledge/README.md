@@ -134,6 +134,12 @@ already final Scope dimensions, plus bounded cross-handle joint findings and
 explicit unsupported request facets. The server validates exact unit identity,
 atom provenance, anchors, and bounds, then materializes every finding losslessly;
 there is no negative-atom echo or second model-owned positive-to-Scope reduction.
+Selector receives a de-duplicated exact-text index for the atoms assigned to
+Scope and independently filters positive findings whose descriptions are not
+entailed by those atoms or are not material direct requirements of the request.
+Those findings are `excluded` from correction, settlement, and the coverage
+denominator. A requested unsupported facet has no atom IDs and can never be
+excluded; it remains `missing`.
 A repair receives unchanged authority inputs plus only the bounded
 validation-reason enum; provider failures are not retried. Correction starts
 only when both remaining calls fit. Every supplemental candidate names exactly
@@ -146,8 +152,8 @@ Draft are absent. It returns target ID and claim text, while the server derives
 advisory Draft handles from the target atoms. An oversized projection disables
 correction instead of being truncated. This performs no retrieval or semantic
 server reduction. It is a delta:
-the accepted base remains immutable and a target can close only through its own
-supported supplemental claim. Every later request
+the accepted base, including Scope eligibility, remains immutable and a target
+can close only through its own supported supplemental claim. Every later request
 pins the exact accepted Scope result hash. Selector coverage requires each
 covered support ID to overlap that immutable scope through canonical evidence
 handles. Replay

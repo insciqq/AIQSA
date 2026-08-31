@@ -27,7 +27,7 @@ const primary = decodeKnowledgeAnswerDraftV21({
 function dimension(
   id: string,
   handle: string | null,
-  status: "covered" | "missing",
+  status: "covered" | "excluded" | "missing",
   supportIds: readonly string[] = []
 ): KnowledgeCoverageDimensionV6 {
   return Object.freeze({
@@ -264,7 +264,8 @@ describe("target-addressed Knowledge correction", () => {
       })]),
       coverage: Object.freeze([
         dimension("D1", "K1", "covered", ["C1"]),
-        ...missing
+        ...missing,
+        dimension("D5", "K3", "excluded")
       ])
     });
     const final = selector({
@@ -285,7 +286,8 @@ describe("target-addressed Knowledge correction", () => {
         dimension("D1", "K1", "missing"),
         dimension("D2", "K2", "covered", ["C2"]),
         dimension("D3", "K3", "covered", ["C2"]),
-        dimension("D4", null, "missing")
+        dimension("D4", null, "missing"),
+        dimension("D5", "K3", "covered", ["C3"])
       ])
     });
     const corrected = mergeKnowledgeGroundedCorrectionV1({
@@ -326,6 +328,10 @@ describe("target-addressed Knowledge correction", () => {
     }, {
       id: "D4",
       status: "missing",
+      supportIds: []
+    }, {
+      id: "D5",
+      status: "excluded",
       supportIds: []
     }]);
   });
