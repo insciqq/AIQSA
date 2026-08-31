@@ -136,12 +136,12 @@ function v21Origin() {
     ...legacy,
     engine: Object.freeze({
       ...legacy.engine,
-      coverageAuditorContractVersion: 4,
+      coverageAuditorContractVersion: 5,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 20,
+      groundingEvidenceVersion: 21,
       pipelineVersion:
-        "knowledge_answer_draft_v21_scope_v4_selector_v19_settlement_v6",
-      selectorContractVersion: 19,
+        "knowledge_answer_draft_v21_scope_v5_selector_v20_settlement_v6",
+      selectorContractVersion: 20,
       settlementVersion: 6
     })
   });
@@ -307,12 +307,11 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 1
         };
       }
-      if (request.name === "knowledge_coverage_scope_v4") {
+      if (request.name === "knowledge_coverage_scope_v5") {
         return {
-          evidenceReview: [{
+          evidenceMap: [{
             answerAtomIds: ["A1"],
-            handle: "K1",
-            otherAtomIds: []
+            handle: "K1"
           }],
           scope: [{
             description: "State the completed-export retention period.",
@@ -320,7 +319,7 @@ describe("OpenRAG frozen-evidence replay", () => {
             id: "D1",
             requestAnchor: "How long are completed exports retained?"
           }],
-          version: 4
+          version: 5
         };
       }
       return {
@@ -339,14 +338,14 @@ describe("OpenRAG frozen-evidence replay", () => {
 
     expect(executeStructuredOutput.mock.calls.map(([, request]) => request.name)).toEqual([
       "knowledge_answer_draft_v21",
-      "knowledge_coverage_scope_v4",
-      "knowledge_grounded_selector_v19"
+      "knowledge_coverage_scope_v5",
+      "knowledge_grounded_selector_v20"
     ]);
     expect(result).toMatchObject({
       contracts: {
-        coverageAuditorContractVersion: 4,
+        coverageAuditorContractVersion: 5,
         draftContractVersion: 21,
-        selectorContractVersion: 19,
+        selectorContractVersion: 20,
         settlementVersion: 6
       },
       coverage: "complete",
@@ -384,13 +383,12 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 1
         };
       }
-      if (request.name === "knowledge_coverage_scope_v4") {
+      if (request.name === "knowledge_coverage_scope_v5") {
         if (scopeCalls++ === 0) return {};
         return {
-          evidenceReview: [{
+          evidenceMap: [{
             answerAtomIds: ["A1"],
-            handle: "K1",
-            otherAtomIds: []
+            handle: "K1"
           }],
           scope: [{
             description: "State the completed-export retention period.",
@@ -398,7 +396,7 @@ describe("OpenRAG frozen-evidence replay", () => {
             id: "D1",
             requestAnchor: "How long are completed exports retained?"
           }],
-          version: 4
+          version: 5
         };
       }
       return {
@@ -418,7 +416,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.operationCount).toBe(4);
     const scopeRequests = executeStructuredOutput.mock.calls
       .map(([, request]) => request)
-      .filter(({ name }) => name === "knowledge_coverage_scope_v4");
+      .filter(({ name }) => name === "knowledge_coverage_scope_v5");
     expect(scopeRequests).toHaveLength(2);
     expect(JSON.parse(scopeRequests[0]!.userPrompt)).toMatchObject({
       repairReason: null,
@@ -430,21 +428,21 @@ describe("OpenRAG frozen-evidence replay", () => {
     });
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_coverage_scope_v4",
-      "knowledge_coverage_scope_v4",
-      "knowledge_grounded_selector_v19"
+      "knowledge_coverage_scope_v5",
+      "knowledge_coverage_scope_v5",
+      "knowledge_grounded_selector_v20"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_grounded_selector_v19",
-      "knowledge_coverage_scope_v4"
+      "knowledge_grounded_selector_v20",
+      "knowledge_coverage_scope_v5"
     ])).toBe(false);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_coverage_scope_v4",
-      "knowledge_coverage_scope_v4",
-      "knowledge_grounded_selector_v19",
-      "knowledge_grounded_selector_v19",
+      "knowledge_coverage_scope_v5",
+      "knowledge_coverage_scope_v5",
+      "knowledge_grounded_selector_v20",
+      "knowledge_grounded_selector_v20",
       "knowledge_answer_draft_supplement_v21"
     ])).toBe(false);
   });

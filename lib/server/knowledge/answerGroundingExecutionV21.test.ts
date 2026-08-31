@@ -16,8 +16,8 @@ import {
   type KnowledgeAnswerOperationExecutionV21
 } from "./answerGroundingExecutionV21";
 import {
-  executeKnowledgeAnswerGroundingV21 as executeKnowledgeAnswerGroundingV21ScopeV4
-} from "./answerGroundingExecutionV21ScopeV4";
+  executeKnowledgeAnswerGroundingV21 as executeKnowledgeAnswerGroundingV21ScopeV5
+} from "./answerGroundingExecutionV21ScopeV5";
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
@@ -30,14 +30,14 @@ import {
   decodeKnowledgeCoverageAuditPromptV2
 } from "./coverageAuditV2";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
-  decodeKnowledgeCoverageScopePromptV4,
-  knowledgeCoverageEvidenceFromManifestV4
-} from "./coverageScopeV4";
+  KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+  decodeKnowledgeCoverageScopePromptV5,
+  knowledgeCoverageEvidenceFromManifestV5
+} from "./coverageScopeV5";
 import {
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
-} from "./answerGroundingSelectorV19";
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20
+} from "./answerGroundingSelectorV20";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "./groundingExecutionPolicy";
 
@@ -770,14 +770,12 @@ describe("V21 audited Knowledge answer execution", () => {
 
 function scopeOutput(complete: boolean) {
   return {
-    evidenceReview: [{
+    evidenceMap: [{
       answerAtomIds: ["A1"],
-      handle: "K1",
-      otherAtomIds: []
+      handle: "K1"
     }, {
       answerAtomIds: complete ? [] : ["A2"],
-      handle: "K2",
-      otherAtomIds: complete ? ["A2"] : []
+      handle: "K2"
     }],
     scope: [{
       description: "Explain alpha.",
@@ -790,11 +788,11 @@ function scopeOutput(complete: boolean) {
       id: "D2",
       requestAnchor: "beta"
     }])],
-    version: 4
+    version: 5
   };
 }
 
-function selectorV19Output(complete: boolean) {
+function selectorV20Output(complete: boolean) {
   return {
     claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
     coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] },
@@ -809,13 +807,13 @@ function currentExecution(complete: boolean) {
   return vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
     output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
       ? draftOutput()
-      : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
+      : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION
         ? scopeOutput(complete)
-        : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
-          ? selectorV19Output(complete)
+        : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20
+          ? selectorV20Output(complete)
           : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
             ? draftOutput("Beta removes duplicates.", "K2")
-            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20
               ? finalSelectorOutput()
               : (() => { throw new Error("unexpected_current_operation"); })(),
     providerResponseId: `response-${operation.name}`,
@@ -823,16 +821,16 @@ function currentExecution(complete: boolean) {
   }));
 }
 
-describe("V21 exhaustive atom-review Coverage Scope execution", () => {
-  it("runs Draft, atom-reviewed Scope, then Selector and pins the Scope hash", async () => {
+describe("V21 sparse unit-map Coverage Scope execution", () => {
+  it("runs Draft, sparse unit-mapped Scope, then Selector and pins its hash", async () => {
     const recorder = lifecycleRecorder();
-    const result = await executeKnowledgeAnswerGroundingV21ScopeV4(
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV5(
       pipelineInput(recorder.lifecycle, currentExecution(true))
     );
     expect(result.operations.map(({ operation }) => operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+      KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20
     ]);
     expect(result.settlement).toMatchObject({
       outcome: "answered",
@@ -840,9 +838,9 @@ describe("V21 exhaustive atom-review Coverage Scope execution", () => {
     });
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(snapshots.every(({ version }) => version === 4)).toBe(true);
+    expect(snapshots.every(({ version }) => version === 5)).toBe(true);
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(true));
-    expect(snapshots.map((snapshot) => snapshot.version === 4
+    expect(snapshots.map((snapshot) => snapshot.version === 5
       ? snapshot.coverageScopePayloadHash
       : null)).toEqual([null, null, acceptedScopeHash]);
     const scopePayload = JSON.parse(snapshots[1]!.userPrompt) as Record<string, unknown>;
@@ -853,15 +851,15 @@ describe("V21 exhaustive atom-review Coverage Scope execution", () => {
 
   it("uses the same immutable Scope for correction and final selection", async () => {
     const recorder = lifecycleRecorder();
-    const result = await executeKnowledgeAnswerGroundingV21ScopeV4(
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV5(
       pipelineInput(recorder.lifecycle, currentExecution(false))
     );
     expect(result.operations.map(({ operation }) => operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19,
+      KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20,
       KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20
     ]);
     expect(result.settlement).toMatchObject({
       outcome: "answered",
@@ -871,7 +869,7 @@ describe("V21 exhaustive atom-review Coverage Scope execution", () => {
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(false));
-    expect(snapshots.slice(2).every((snapshot) => snapshot.version === 4 &&
+    expect(snapshots.slice(2).every((snapshot) => snapshot.version === 5 &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 
@@ -882,30 +880,30 @@ describe("V21 exhaustive atom-review Coverage Scope execution", () => {
     const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
       output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
         ? draftOutput()
-        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION
           ? scopeCalls++ === 0 ? {} : scopeOutput(false)
-          : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
-            ? selectorCalls++ === 0 ? {} : selectorV19Output(false)
+          : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20
+            ? selectorCalls++ === 0 ? {} : selectorV20Output(false)
             : (() => { throw new Error("unexpected_current_operation"); })(),
       providerResponseId: `response-${operation.name}`,
       usage
     }));
-    const result = await executeKnowledgeAnswerGroundingV21ScopeV4(
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV5(
       pipelineInput(recorder.lifecycle, execute)
     );
     expect(result.operations.map(({ operation }) => operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
-      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+      KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+      KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20
     ]);
     expect(result.settlement.requestCoverage).toBe("partial");
     const packed = manifest();
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(decodeKnowledgeCoverageScopePromptV4({
-      evidence: knowledgeCoverageEvidenceFromManifestV4(packed),
+    expect(decodeKnowledgeCoverageScopePromptV5({
+      evidence: knowledgeCoverageEvidenceFromManifestV5(packed),
       evidenceManifest: packed.message,
       request,
       systemPrompt: snapshots[2]!.systemPrompt,
@@ -919,7 +917,7 @@ describe("V21 exhaustive atom-review Coverage Scope execution", () => {
       selectorPass: "repair"
     });
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(false));
-    expect(snapshots.slice(3).every((snapshot) => snapshot.version === 4 &&
+    expect(snapshots.slice(3).every((snapshot) => snapshot.version === 5 &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 });

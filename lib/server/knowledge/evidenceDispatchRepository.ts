@@ -27,11 +27,11 @@ import {
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
-import { KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION } from "./coverageScopeV4";
+import { KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION } from "./coverageScopeV5";
 import {
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
-} from "./answerGroundingSelectorV19";
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20
+} from "./answerGroundingSelectorV20";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
@@ -82,6 +82,9 @@ export type KnowledgeProviderAttemptPurpose =
   | "knowledge_coverage_scope_v4"
   | "knowledge_grounded_selector_v19"
   | "knowledge_grounded_selector_final_v19"
+  | "knowledge_coverage_scope_v5"
+  | "knowledge_grounded_selector_v20"
+  | "knowledge_grounded_selector_final_v20"
   | "knowledge_coverage_planner_v20"
   | "knowledge_answer_draft_v20"
   | "knowledge_answer_draft_supplement_v20"
@@ -481,8 +484,11 @@ function answerOperationContractVersion(
     purpose === "knowledge_grounded_selector_final_v18") return 18;
   if (purpose === "knowledge_grounded_selector_v19" ||
     purpose === "knowledge_grounded_selector_final_v19") return 19;
+  if (purpose === "knowledge_grounded_selector_v20" ||
+    purpose === "knowledge_grounded_selector_final_v20") return 20;
   if (purpose === "knowledge_coverage_scope_v3") return 3;
   if (purpose === "knowledge_coverage_scope_v4") return 4;
+  if (purpose === "knowledge_coverage_scope_v5") return 5;
   if (purpose === "knowledge_coverage_auditor_v2") return 2;
   if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
@@ -589,9 +595,12 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
     value === "knowledge_grounded_selector_final_v18" ||
     value === "knowledge_grounded_selector_v19" ||
     value === "knowledge_grounded_selector_final_v19" ||
+    value === "knowledge_grounded_selector_v20" ||
+    value === "knowledge_grounded_selector_final_v20" ||
     value === "knowledge_coverage_auditor_v2" ||
     value === "knowledge_coverage_scope_v3" ||
     value === "knowledge_coverage_scope_v4" ||
+    value === "knowledge_coverage_scope_v5" ||
     value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
@@ -654,9 +663,12 @@ function validReservationPurpose(value: unknown): value is KnowledgeProviderAtte
     value === "knowledge_grounded_selector_final_v18" ||
     value === "knowledge_grounded_selector_v19" ||
     value === "knowledge_grounded_selector_final_v19" ||
+    value === "knowledge_grounded_selector_v20" ||
+    value === "knowledge_grounded_selector_final_v20" ||
     value === "knowledge_coverage_auditor_v2" ||
     value === "knowledge_coverage_scope_v3" ||
     value === "knowledge_coverage_scope_v4" ||
+    value === "knowledge_coverage_scope_v5" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
@@ -1379,7 +1391,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads the exact current V21 atom-review scope protocol. Scope and initial
+/** Loads the exact current V21 sparse unit-map scope protocol. Scope and initial
  * Selector may each occur twice only as their single adjacent structural
  * repair. Every later operation pins the final accepted Scope result hash. */
 export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
@@ -1397,10 +1409,10 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const dispatches = operationRows.map(storedDispatch);
   const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
   const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
-  const scope = KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION;
-  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19;
+  const scope = KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION;
+  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20;
   const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
-  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19;
+  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20;
   const allowedSequences: KnowledgeAnswerOperationV21[][] = [];
   for (const scopeCount of [1, 2] as const) {
     for (const selectorCount of [1, 2] as const) {
@@ -1435,7 +1447,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   if (dispatches.some((dispatch, index) =>
     dispatch.attempt.ordinal !== index + 1 ||
     dispatch.attempt.providerBindingKey !== "answer" || !terminal(dispatch) ||
-    !requests[index] || requests[index]!.version !== 4 ||
+    !requests[index] || requests[index]!.version !== 5 ||
     requests[index]!.operation !== purposeSequence[index] ||
     requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
     canonicalJson(dispatch.draft) !== canonicalManifest)) {
@@ -1461,7 +1473,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const finalScopeIndex = scopeRepairIndex ?? initialScopeIndex;
   if (!coverageScopePayloadHash || dispatches.some((_dispatch, index) => {
     const request = requests[index]!;
-    if (request.version !== 4) return true;
+    if (request.version !== 5) return true;
     const consumesScope = index > finalScopeIndex;
     return consumesScope
       ? request.coverageScopePayloadHash !== coverageScopePayloadHash

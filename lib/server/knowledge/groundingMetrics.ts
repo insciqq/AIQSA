@@ -47,7 +47,7 @@ type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
   requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
   supportedClaimCount: number;
   unsupportedClaimCount: number;
-  version: 19 | 20;
+  version: 19 | 20 | 21;
 }>;
 
 type KnowledgeGroundingMetricsEvidence = KnowledgeGroundingMetricsEvidenceV18 |
@@ -173,7 +173,7 @@ function counter(value: unknown): value is number {
  * projection and never returns arbitrary JSON fields. */
 function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvidence {
   if (!record(value) || value.version !== 18 && value.version !== 19 &&
-    value.version !== 20 ||
+    value.version !== 20 && value.version !== 21 ||
     typeof value.correctionAttempted !== "boolean" ||
     typeof value.correctionSucceeded !== "boolean" ||
     !counter(value.draftClaimCount) || !counter(value.contradictedClaimCount) ||
@@ -197,7 +197,7 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
 
 const METRICS_ROW_LIMIT = 10_000;
 
-/** Loads V18-V20 content-free receipts; malformed rows are ignored. */
+/** Loads V18-V21 content-free receipts; malformed rows are ignored. */
 export async function loadKnowledgeGroundingOperationalMetrics(
   client: Pick<PrismaClient, "knowledgeGroundingResult">,
   input: Readonly<{ limit?: number; since?: Date }> = {}
@@ -210,7 +210,7 @@ export async function loadKnowledgeGroundingOperationalMetrics(
     take: limit,
     where: {
       evidence: { not: Prisma.AnyNull },
-      version: { in: [18, 19, 20] },
+      version: { in: [18, 19, 20, 21] },
       ...(input.since ? { createdAt: { gte: input.since } } : {})
     }
   });

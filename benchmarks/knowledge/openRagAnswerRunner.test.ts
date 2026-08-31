@@ -444,12 +444,12 @@ describe("OpenRAG answer fail-fast schedule", () => {
     const runManifest = manifest(cases, {
       engine: {
         ...legacyManifest.engine,
-        coverageAuditorContractVersion: 4,
+        coverageAuditorContractVersion: 5,
         draftContractVersion: 21,
-        groundingEvidenceVersion: 20,
+        groundingEvidenceVersion: 21,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v4_selector_v19_settlement_v6",
-        selectorContractVersion: 19,
+          "knowledge_answer_draft_v21_scope_v5_selector_v20_settlement_v6",
+        selectorContractVersion: 20,
         settlementVersion: 6
       }
     });
@@ -464,11 +464,11 @@ describe("OpenRAG answer fail-fast schedule", () => {
       });
       const sequence = [
         "knowledge_answer_draft_v21",
-        "knowledge_coverage_scope_v4",
-        "knowledge_coverage_scope_v4",
-        "knowledge_grounded_selector_v19",
+        "knowledge_coverage_scope_v5",
+        "knowledge_coverage_scope_v5",
+        "knowledge_grounded_selector_v20",
         "knowledge_answer_draft_supplement_v21",
-        "knowledge_grounded_selector_final_v19"
+        "knowledge_grounded_selector_final_v20"
       ];
       return {
         ...product,
@@ -477,9 +477,9 @@ describe("OpenRAG answer fail-fast schedule", () => {
         replaySnapshot: {
           ...product.replaySnapshot,
           contracts: {
-            coverageAuditorContractVersion: 4,
+            coverageAuditorContractVersion: 5,
             draftContractVersion: 21,
-            selectorContractVersion: 19,
+            selectorContractVersion: 20,
             settlementVersion: 6
           }
         },
