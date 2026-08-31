@@ -55,6 +55,13 @@ import {
   knowledgeCoverageScopePromptV6
 } from "./coverageScopeV6";
 import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
+  knowledgeCoverageScopeCompletenessPromptV1
+} from "./coverageScopeCompletenessV1";
+import {
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
@@ -1279,7 +1286,14 @@ describe("Knowledge evidence dispatch repository", () => {
       request,
       scopePass: "repair"
     });
-    const scopePayloadHash = knowledgeAnswerHash(rawScope);
+    const scopePayloadHash = knowledgeAnswerHash(acceptedScope);
+    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV1({
+      acceptedScope,
+      completenessPass: "initial",
+      evidence,
+      evidenceManifest: currentManifest.message,
+      request
+    });
     const selectorPrompt = knowledgeGroundedSelectorPromptV21({
       draft: acceptedDraft,
       evidence,
@@ -1291,7 +1305,7 @@ describe("Knowledge evidence dispatch repository", () => {
     const common = {
       evidenceReceiptHash: currentManifest.manifestHash,
       executionPolicy,
-      protocol: "scope_v6_targeted_delta_v3" as const,
+      protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const,
       transport: "native_strict" as const
     };
     const snapshots = [
@@ -1324,6 +1338,16 @@ describe("Knowledge evidence dispatch repository", () => {
       }),
       createKnowledgeAnswerOperationRequestSnapshotV21({
         ...common,
+        contractVersion: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
+        coverageScopePayloadHash: scopePayloadHash,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+        schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
+        systemPrompt: completenessPrompt.systemPrompt,
+        userPrompt: completenessPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV21({
+        ...common,
         contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
         coverageScopePayloadHash: scopePayloadHash,
         maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
@@ -1337,6 +1361,7 @@ describe("Knowledge evidence dispatch repository", () => {
       rawDraft,
       knowledgeCoverageScopeFailureV6("coverage_scope_shape_invalid"),
       rawScope,
+      { additions: [], version: 1 },
       rawSelector
     ] as const;
     for (const [index, snapshot] of snapshots.entries()) {
@@ -1388,15 +1413,18 @@ describe("Knowledge evidence dispatch repository", () => {
     })).resolves.toMatchObject({
       draft: { attempt: { ordinal: 1 } },
       finalSelector: null,
+      initialCompleteness: { attempt: { ordinal: 4 } },
       initialScope: { attempt: { ordinal: 2 } },
-      initialSelector: { attempt: { ordinal: 4 } },
+      initialSelector: { attempt: { ordinal: 5 } },
+      completeness: { attempt: { ordinal: 4 } },
+      completenessRepair: null,
       scope: { attempt: { ordinal: 3 } },
       scopeRepair: { attempt: { ordinal: 3 } },
       selectorRepair: null,
       supplementalDraft: null
     });
 
-    const selectorAttempt = fake.state.attempts[3]!;
+    const selectorAttempt = fake.state.attempts[4]!;
     selectorAttempt.acceptedRequest = {
       ...object(selectorAttempt.acceptedRequest),
       coverageScopePayloadHash: "f".repeat(64)

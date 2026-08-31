@@ -9,6 +9,8 @@ const groundingStages = Object.freeze([
   "auditor_repair",
   "scope",
   "scope_repair",
+  "scope_completeness",
+  "scope_completeness_repair",
   "supplement",
   "final"
 ] as const);
@@ -33,6 +35,10 @@ type KnowledgeGroundingMetricsEvidenceV18 = Readonly<{
 }>;
 
 type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
+  completeness?: Readonly<{
+    addedDimensionCount: number;
+    status: "accepted";
+  }>;
   contradictedClaimCount: number;
   correctionAttempted: boolean;
   correctionSucceeded: boolean;
@@ -51,7 +57,7 @@ type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
   requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
   supportedClaimCount: number;
   unsupportedClaimCount: number;
-  version: 19 | 20 | 21 | 22 | 23;
+  version: 19 | 20 | 21 | 22 | 23 | 24;
 }>;
 
 type KnowledgeGroundingMetricsEvidence = KnowledgeGroundingMetricsEvidenceV18 |
@@ -77,6 +83,7 @@ export type KnowledgeGroundingOperationalMetrics = Readonly<{
   draftClaims: number;
   modelOperations: number;
   pipelineVersion21: number;
+  scopeCompletenessAccepted: number;
   selectorContradicted: number;
   selectorSupported: number;
   selectorUnsupported: number;
@@ -84,6 +91,7 @@ export type KnowledgeGroundingOperationalMetrics = Readonly<{
   totalCoverageDimensions: number;
   totalExcludedCoverageDimensions: number;
   totalMissingCoverageDimensions: number;
+  totalScopeCompletenessAdditions: number;
 }>;
 
 function percentile(sorted: readonly number[], ratio: number): number | null {
@@ -114,6 +122,7 @@ export function aggregateKnowledgeGroundingMetrics(
   let totalCoverageDimensions = 0;
   let totalExcludedCoverageDimensions = 0;
   let totalMissingCoverageDimensions = 0;
+  let totalScopeCompletenessAdditions = 0;
   for (const evidence of evidences) {
     coverage[evidence.requestCoverage] += 1;
     correctionAttempted += Number(evidence.correctionAttempted);
@@ -125,12 +134,15 @@ export function aggregateKnowledgeGroundingMetrics(
     totalCoverageDimensions += evidence.version === 18
       ? evidence.audit.dimensionCount
       : evidence.coverageScope.dimensionCount;
-    totalExcludedCoverageDimensions += evidence.version === 23
+    totalExcludedCoverageDimensions += evidence.version === 23 || evidence.version === 24
       ? evidence.coverage.excludedDimensionCount ?? 0
       : 0;
     totalMissingCoverageDimensions += evidence.version === 18
       ? evidence.audit.missingDimensionCount
       : evidence.coverage.missingDimensionCount;
+    totalScopeCompletenessAdditions += evidence.version === 24
+      ? evidence.completeness?.addedDimensionCount ?? 0
+      : 0;
     modelOperations += evidence.operations.length;
     for (const operation of evidence.operations) {
       const stage = stageValues[operation.role];
@@ -161,13 +173,15 @@ export function aggregateKnowledgeGroundingMetrics(
     draftClaims,
     modelOperations,
     pipelineVersion21: evidences.length,
+    scopeCompletenessAccepted: evidences.filter(({ version }) => version === 24).length,
     selectorContradicted,
     selectorSupported,
     selectorUnsupported,
     stages: Object.freeze(stages),
     totalCoverageDimensions,
     totalExcludedCoverageDimensions,
-    totalMissingCoverageDimensions
+    totalMissingCoverageDimensions,
+    totalScopeCompletenessAdditions
   });
 }
 
@@ -184,7 +198,7 @@ function counter(value: unknown): value is number {
 function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvidence {
   if (!record(value) || value.version !== 18 && value.version !== 19 &&
     value.version !== 20 && value.version !== 21 && value.version !== 22 &&
-    value.version !== 23 ||
+    value.version !== 23 && value.version !== 24 ||
     typeof value.correctionAttempted !== "boolean" ||
     typeof value.correctionSucceeded !== "boolean" ||
     !counter(value.draftClaimCount) || !counter(value.contradictedClaimCount) ||
@@ -199,8 +213,11 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
     !counter(value.coverageScope.dimensionCount) || !record(value.coverage) ||
     value.coverage.status !== "accepted" ||
     !counter(value.coverage.missingDimensionCount))) return false;
-  if (value.version === 23 && (!record(value.coverage) ||
+  if ((value.version === 23 || value.version === 24) && (!record(value.coverage) ||
     !counter(value.coverage.excludedDimensionCount))) return false;
+  if (value.version === 24 && (!record(value.completeness) ||
+    value.completeness.status !== "accepted" ||
+    !counter(value.completeness.addedDimensionCount))) return false;
   return value.operations.length >= 3 && value.operations.length <= 6 &&
     value.operations.every((operation) => record(operation) &&
       groundingStages.includes(operation.role as KnowledgeGroundingStage) &&
@@ -210,7 +227,7 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
 
 const METRICS_ROW_LIMIT = 10_000;
 
-/** Loads V18-V23 content-free receipts; malformed rows are ignored. */
+/** Loads V18-V24 content-free receipts; malformed rows are ignored. */
 export async function loadKnowledgeGroundingOperationalMetrics(
   client: Pick<PrismaClient, "knowledgeGroundingResult">,
   input: Readonly<{ limit?: number; since?: Date }> = {}
@@ -223,7 +240,7 @@ export async function loadKnowledgeGroundingOperationalMetrics(
     take: limit,
     where: {
       evidence: { not: Prisma.AnyNull },
-      version: { in: [18, 19, 20, 21, 22, 23] },
+      version: { in: [18, 19, 20, 21, 22, 23, 24] },
       ...(input.since ? { createdAt: { gte: input.since } } : {})
     }
   });

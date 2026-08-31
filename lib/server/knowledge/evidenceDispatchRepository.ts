@@ -30,6 +30,9 @@ import {
 } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION } from "./coverageScopeV6";
 import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+} from "./coverageScopeCompletenessV1";
+import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
 } from "./answerGroundingSelectorV21";
@@ -87,6 +90,7 @@ export type KnowledgeProviderAttemptPurpose =
   | "knowledge_grounded_selector_v20"
   | "knowledge_grounded_selector_final_v20"
   | "knowledge_coverage_scope_v6"
+  | "knowledge_coverage_scope_completeness_v1"
   | "knowledge_grounded_selector_v21"
   | "knowledge_grounded_selector_final_v21"
   | "knowledge_coverage_planner_v20"
@@ -224,8 +228,11 @@ export type StoredKnowledgeAnswerGroundingOperations = Readonly<{
 }>;
 
 export type StoredKnowledgeAnswerGroundingOperationsV21 = Readonly<{
+  completeness: StoredKnowledgeEvidenceDispatch;
+  completenessRepair: StoredKnowledgeEvidenceDispatch | null;
   draft: StoredKnowledgeEvidenceDispatch;
   finalSelector: StoredKnowledgeEvidenceDispatch | null;
+  initialCompleteness: StoredKnowledgeEvidenceDispatch;
   initialScope: StoredKnowledgeEvidenceDispatch;
   initialSelector: StoredKnowledgeEvidenceDispatch;
   scope: StoredKnowledgeEvidenceDispatch;
@@ -496,6 +503,7 @@ function answerOperationContractVersion(
   if (purpose === "knowledge_coverage_scope_v4") return 4;
   if (purpose === "knowledge_coverage_scope_v5") return 5;
   if (purpose === "knowledge_coverage_scope_v6") return 6;
+  if (purpose === "knowledge_coverage_scope_completeness_v1") return 1;
   if (purpose === "knowledge_coverage_auditor_v2") return 2;
   if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
@@ -611,6 +619,7 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
     value === "knowledge_coverage_scope_v4" ||
     value === "knowledge_coverage_scope_v5" ||
     value === "knowledge_coverage_scope_v6" ||
+    value === "knowledge_coverage_scope_completeness_v1" ||
     value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
@@ -682,6 +691,7 @@ function validReservationPurpose(value: unknown): value is KnowledgeProviderAtte
     value === "knowledge_coverage_scope_v4" ||
     value === "knowledge_coverage_scope_v5" ||
     value === "knowledge_coverage_scope_v6" ||
+    value === "knowledge_coverage_scope_completeness_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
@@ -1404,9 +1414,10 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads the exact current V21 positive-finding scope protocol. Scope and initial
- * Selector may each occur twice only as their single adjacent structural
- * repair. Every later operation pins the final accepted Scope result hash. */
+/** Loads the exact current V21 positive-finding plus append-only completeness
+ * protocol. Scope, completeness, and initial Selector may each occur twice only
+ * as their single adjacent structural repair. Every later operation pins the
+ * merged accepted Scope hash. */
 export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
   input: Readonly<{ modelRunId: string }>
@@ -1423,23 +1434,27 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
   const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
   const scope = KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION;
+  const completeness = KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION;
   const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21;
   const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
   const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
   const allowedSequences: KnowledgeAnswerOperationV21[][] = [];
   for (const scopeCount of [1, 2] as const) {
-    for (const selectorCount of [1, 2] as const) {
-      const base: KnowledgeAnswerOperationV21[] = [
-        draft,
-        ...Array.from({ length: scopeCount }, () => scope),
-        ...Array.from({ length: selectorCount }, () => selector)
-      ];
-      allowedSequences.push(base);
-      if (base.length + 2 <= 6) {
-        allowedSequences.push(
-          [...base, supplement],
-          [...base, supplement, finalSelector]
-        );
+    for (const completenessCount of [1, 2] as const) {
+      for (const selectorCount of [1, 2] as const) {
+        const base: KnowledgeAnswerOperationV21[] = [
+          draft,
+          ...Array.from({ length: scopeCount }, () => scope),
+          ...Array.from({ length: completenessCount }, () => completeness),
+          ...Array.from({ length: selectorCount }, () => selector)
+        ];
+        if (base.length <= 6) allowedSequences.push(base);
+        if (base.length + 2 <= 6) {
+          allowedSequences.push(
+            [...base, supplement],
+            [...base, supplement, finalSelector]
+          );
+        }
       }
     }
   }
@@ -1482,16 +1497,45 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     repositoryError("stored_manifest_invalid");
   }
   const scopeDispatch = scopeRepairDispatch ?? initialScopeDispatch;
-  const coverageScopePayloadHash = scopeDispatch.attempt.resultHash;
   const finalScopeIndex = scopeRepairIndex ?? initialScopeIndex;
-  if (!coverageScopePayloadHash || dispatches.some((_dispatch, index) => {
-    const request = requests[index]!;
-    if (!isCurrentKnowledgeAnswerOperationSnapshotV21(request)) return true;
-    const consumesScope = index > finalScopeIndex;
-    return consumesScope
-      ? request.coverageScopePayloadHash !== coverageScopePayloadHash
-      : request.coverageScopePayloadHash !== null;
-  })) repositoryError("stored_manifest_invalid");
+  const completenessIndexes = purposeSequence.flatMap((purpose, index) =>
+    purpose === completeness ? [index] : []);
+  const initialCompletenessIndex = completenessIndexes[0];
+  const completenessRepairIndex = completenessIndexes[1] ?? null;
+  const initialCompletenessDispatch = initialCompletenessIndex === undefined
+    ? undefined
+    : dispatches[initialCompletenessIndex];
+  const completenessRepairDispatch = completenessRepairIndex === null
+    ? null
+    : dispatches[completenessRepairIndex] ?? null;
+  if (!initialCompletenessDispatch || initialCompletenessIndex !== finalScopeIndex + 1 ||
+    completenessIndexes.length < 1 || completenessIndexes.length > 2 ||
+    completenessRepairIndex !== null &&
+      completenessRepairIndex !== initialCompletenessIndex + 1) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const completenessDispatch = completenessRepairDispatch ?? initialCompletenessDispatch;
+  const finalCompletenessIndex = completenessRepairIndex ?? initialCompletenessIndex;
+  const initialSelectorIndex = finalCompletenessIndex + 1;
+  const completenessRequest = requests[initialCompletenessIndex];
+  const selectorRequest = requests[initialSelectorIndex];
+  if (!completenessRequest ||
+    !isCurrentKnowledgeAnswerOperationSnapshotV21(completenessRequest) ||
+    !selectorRequest || !isCurrentKnowledgeAnswerOperationSnapshotV21(selectorRequest)) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const initialScopePayloadHash = completenessRequest.coverageScopePayloadHash;
+  const mergedScopePayloadHash = selectorRequest.coverageScopePayloadHash;
+  if (!initialScopePayloadHash || !mergedScopePayloadHash ||
+    dispatches.some((_dispatch, index) => {
+      const request = requests[index]!;
+      if (!isCurrentKnowledgeAnswerOperationSnapshotV21(request)) return true;
+      if (index <= finalScopeIndex) return request.coverageScopePayloadHash !== null;
+      if (index <= finalCompletenessIndex) {
+        return request.coverageScopePayloadHash !== initialScopePayloadHash;
+      }
+      return request.coverageScopePayloadHash !== mergedScopePayloadHash;
+    })) repositoryError("stored_manifest_invalid");
   const selectorDispatches = dispatches.filter(({ attempt }) =>
     attempt.purpose === selector);
   const supplementDispatch = dispatches.find(({ attempt }) =>
@@ -1499,8 +1543,11 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const finalSelectorDispatch = dispatches.find(({ attempt }) =>
     attempt.purpose === finalSelector) ?? null;
   return deepFreeze({
+    completeness: completenessDispatch,
+    completenessRepair: completenessRepairDispatch,
     draft: dispatches[0]!,
     finalSelector: finalSelectorDispatch,
+    initialCompleteness: initialCompletenessDispatch,
     initialScope: initialScopeDispatch,
     initialSelector: selectorDispatches[0]!,
     scope: scopeDispatch,

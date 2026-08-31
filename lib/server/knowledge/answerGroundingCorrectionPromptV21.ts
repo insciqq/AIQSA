@@ -9,6 +9,7 @@ import {
 import {
   knowledgeGroundedSelectorPromptV21,
   type KnowledgeCoverageDimensionV6,
+  type KnowledgeCoverageScopeValidationProtocolV21,
   type KnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
 import {
@@ -109,6 +110,7 @@ export function knowledgeGroundedDeltaSelectorPromptV1(input: Readonly<{
   repairReason?: KnowledgeSelectorValidationFailureReason;
   request: string;
   scope: KnowledgeCoverageScopeV6;
+  scopeProtocol?: KnowledgeCoverageScopeValidationProtocolV21;
 }>): Readonly<{ systemPrompt: string; userPrompt: string }> {
   const draft = input.draft;
   if (input.repairReason !== undefined || isKnowledgeDraftMalformed(draft)) {
@@ -150,6 +152,7 @@ export function knowledgeGroundedDeltaSelectorPromptV1(input: Readonly<{
     evidenceManifest: input.evidenceManifest,
     request: input.request,
     scope: input.scope,
+    ...(input.scopeProtocol ? { scopeProtocol: input.scopeProtocol } : {}),
     selectorPass: "final"
   });
   const payload = JSON.parse(base.userPrompt) as Record<string, unknown>;

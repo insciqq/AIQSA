@@ -438,7 +438,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
     expect(checkpoint.outcomes.size).toBe(0);
   });
 
-  it("accepts the six-operation V21 Scope repair and correction sequence", async () => {
+  it("accepts the six-operation V21 completeness and correction sequence", async () => {
     const cases = [benchmarkCase(1)];
     const legacyManifest = manifest(cases);
     const runManifest = manifest(cases, {
@@ -446,9 +446,9 @@ describe("OpenRAG answer fail-fast schedule", () => {
         ...legacyManifest.engine,
         coverageAuditorContractVersion: 6,
         draftContractVersion: 21,
-        groundingEvidenceVersion: 23,
+        groundingEvidenceVersion: 24,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v3_settlement_v6",
+          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_settlement_v6",
         selectorContractVersion: 21,
         settlementVersion: 6
       }
@@ -465,7 +465,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
       const sequence = [
         "knowledge_answer_draft_v21",
         "knowledge_coverage_scope_v6",
-        "knowledge_coverage_scope_v6",
+        "knowledge_coverage_scope_completeness_v1",
         "knowledge_grounded_selector_v21",
         "knowledge_answer_draft_supplement_v21",
         "knowledge_grounded_selector_final_v21"

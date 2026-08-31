@@ -138,9 +138,9 @@ function v21Origin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 23,
+      groundingEvidenceVersion: 24,
       pipelineVersion:
-        "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v3_settlement_v6",
+        "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_settlement_v6",
       selectorContractVersion: 21,
       settlementVersion: 6
     })
@@ -281,7 +281,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V21 Draft, blind Scope, Selector path over frozen evidence", async () => {
+  it("runs the current V21 Draft, Scope, completeness, Selector path", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -322,6 +322,9 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 6
         };
       }
+      if (request.name === "knowledge_coverage_scope_completeness_v1") {
+        return { additions: [], version: 1 };
+      }
       return {
         claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
         coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
@@ -339,6 +342,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(executeStructuredOutput.mock.calls.map(([, request]) => request.name)).toEqual([
       "knowledge_answer_draft_v21",
       "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21"
     ]);
     expect(result).toMatchObject({
@@ -349,7 +353,7 @@ describe("OpenRAG frozen-evidence replay", () => {
         settlementVersion: 6
       },
       coverage: "complete",
-      operationCount: 3
+      operationCount: 4
     });
     expect(result.finalText).toContain("30 days");
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "medium")).toBe(true);
@@ -399,6 +403,9 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 6
         };
       }
+      if (request.name === "knowledge_coverage_scope_completeness_v1") {
+        return { additions: [], version: 1 };
+      }
       return {
         claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
         coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
@@ -413,7 +420,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       snapshot: frozen
     });
 
-    expect(result.operationCount).toBe(4);
+    expect(result.operationCount).toBe(5);
     const scopeRequests = executeStructuredOutput.mock.calls
       .map(([, request]) => request)
       .filter(({ name }) => name === "knowledge_coverage_scope_v6");
@@ -430,6 +437,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_answer_draft_v21",
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_v6",
+      "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
@@ -441,7 +449,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_answer_draft_v21",
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_v6",
-      "knowledge_grounded_selector_v21",
+      "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
       "knowledge_answer_draft_supplement_v21"
     ])).toBe(false);
