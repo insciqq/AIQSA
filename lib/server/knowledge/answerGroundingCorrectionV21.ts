@@ -2,11 +2,14 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_LIMITS,
   KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS,
   isKnowledgeDraftMalformed,
+  knowledgeAnswerHash,
   mergeKnowledgeAnswerDraftsV1,
   validateKnowledgeAnswerDraftSupplementV1,
+  validateKnowledgeAnswerDraftSupplementV2,
   type KnowledgeAnswerDraftSelectorInput,
   type KnowledgeAnswerDraftV5,
   type KnowledgeAnswerDraftValidationFailureReason,
+  type KnowledgeAnswerDraftValidationV6,
   type KnowledgeGroundedSelectorClaimV3
 } from "./answerGroundingV5";
 import type {
@@ -17,6 +20,7 @@ import { knowledgeCoverageEvidenceAtomIndexV1 } from "./coverageScopeV4";
 import type { KnowledgeCoverageEvidenceV6 } from "./coverageScopeV6";
 
 export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1 = 1 as const;
+export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 = 2 as const;
 
 export const KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1 = Object.freeze({
   maxAtoms: 128,
@@ -55,6 +59,12 @@ export const KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1 = Object.freeze({
   type: "object"
 } satisfies Readonly<Record<string, unknown>>);
 
+const targetedClaimTextSchemaV2 = Object.freeze({
+  maxLength: KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaimCodePoints,
+  minLength: 1,
+  type: "string"
+});
+
 export type KnowledgeTargetedSupplementClaimBindingV1 = Readonly<{
   claimId: string;
   targetDimensionId: string;
@@ -64,6 +74,17 @@ export type KnowledgeTargetedSupplementV1 = Readonly<{
   bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
   draft: KnowledgeAnswerDraftV5;
   version: typeof KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1;
+}>;
+
+export type KnowledgeTargetedSupplementV2 = Readonly<{
+  bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
+  draft: KnowledgeAnswerDraftV5;
+  version: typeof KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2;
+}>;
+
+export type KnowledgeTargetedSupplementClaimLimitV2 = Readonly<{
+  maxClaims: number;
+  targetDimensionId: string;
 }>;
 
 export type KnowledgeTargetedEvidenceAtomIndexV1 = Readonly<{
@@ -93,6 +114,18 @@ export type KnowledgeTargetedSupplementFailureV1 = Readonly<{
 export type KnowledgeTargetedSupplementValidationFailureReasonV1 =
   | KnowledgeAnswerDraftValidationFailureReason
   | KnowledgeTargetedSupplementFailureReasonV1;
+
+type KnowledgeTargetedSupplementValidationInputV1 = Readonly<{
+  availableHandles: ReadonlySet<string> | readonly string[];
+  forbiddenIdentityFragments?: readonly string[];
+  missingDimensions: readonly KnowledgeCoverageDimensionV6[];
+  primaryDraft: KnowledgeAnswerDraftSelectorInput;
+}>;
+
+type KnowledgeTargetedSupplementDraftValidatorV1 = (
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeAnswerDraftSupplementV1>[1]
+) => KnowledgeAnswerDraftValidationV6;
 
 export type KnowledgeTargetedSupplementValidationV1 =
   | Readonly<{ kind: "accepted"; value: KnowledgeTargetedSupplementV1 }>
@@ -167,6 +200,128 @@ export function knowledgeTargetableMissingDimensionsV1(
   ));
 }
 
+/** Splits the immutable global Supplement claim budget across every target.
+ * Each target receives at least one slot and capacities differ by at most one,
+ * so an earlier target cannot consume the slots required by a later target. */
+export function knowledgeTargetedSupplementClaimLimitsV2(input: Readonly<{
+  primaryClaimCount: number;
+  targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+}>): readonly KnowledgeTargetedSupplementClaimLimitV2[] | null {
+  const targetable = knowledgeTargetableMissingDimensionsV1(input.targetDimensions);
+  const targetIds = new Set(targetable.map(({ id }) => id));
+  const available = Math.min(
+    KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS,
+    KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims - input.primaryClaimCount
+  );
+  if (!Number.isSafeInteger(input.primaryClaimCount) || input.primaryClaimCount < 1 ||
+    targetable.length !== input.targetDimensions.length || targetable.length < 1 ||
+    targetIds.size !== targetable.length || targetable.some(({ id }) =>
+      !targetIdPattern.test(id)) || available < targetable.length) return null;
+  const base = Math.floor(available / targetable.length);
+  const remainder = available % targetable.length;
+  return Object.freeze(targetable.map(({ id }, index) => Object.freeze({
+    maxClaims: base + (index < remainder ? 1 : 0),
+    targetDimensionId: id
+  })));
+}
+
+/** Builds a request-specific strict schema whose required object keys are the
+ * exact missing Scope IDs. Grouping preserves task identity while still
+ * allowing several independently checkable claims for one dimension. */
+export function knowledgeAnswerTargetedSupplementSchemaV2(input: Readonly<{
+  primaryClaimCount: number;
+  targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+}>): Readonly<Record<string, unknown>> {
+  const limits = knowledgeTargetedSupplementClaimLimitsV2(input);
+  if (!limits) throw new Error("knowledge_targeted_supplement_schema_invalid");
+  const properties = Object.freeze(Object.fromEntries(limits.map((limit) => [
+    limit.targetDimensionId,
+    Object.freeze({
+      items: targetedClaimTextSchemaV2,
+      maxItems: limit.maxClaims,
+      minItems: 1,
+      type: "array"
+    })
+  ])));
+  return Object.freeze({
+    additionalProperties: false,
+    properties: Object.freeze({
+      targets: Object.freeze({
+        additionalProperties: false,
+        properties,
+        required: Object.freeze(limits.map(({ targetDimensionId }) =>
+          targetDimensionId)),
+        type: "object"
+      }),
+      version: Object.freeze({
+        const: KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2,
+        type: "integer"
+      })
+    }),
+    required: Object.freeze(["version", "targets"]),
+    type: "object"
+  });
+}
+
+/** Recognizes only the bounded fair-allocation schema family used by V2. The
+ * exact target IDs and primary-Draft capacity are reconstructed and byte-
+ * compared during recovery. */
+export function isKnowledgeAnswerTargetedSupplementSchemaV2(
+  value: unknown
+): value is Readonly<Record<string, unknown>> {
+  if (!record(value) || !exactKeys(value, [
+    "additionalProperties",
+    "properties",
+    "required",
+    "type"
+  ]) || value.additionalProperties !== false || value.type !== "object" ||
+    !Array.isArray(value.required) || !sameStrings(value.required as string[], [
+      "version",
+      "targets"
+    ]) || !record(value.properties) || !exactKeys(value.properties, [
+      "targets",
+      "version"
+    ])) return false;
+  const version = value.properties.version;
+  const targets = value.properties.targets;
+  if (!record(version) || !exactKeys(version, ["const", "type"]) ||
+    version.const !== KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 ||
+    version.type !== "integer" || !record(targets) || !exactKeys(targets, [
+      "additionalProperties",
+      "properties",
+      "required",
+      "type"
+    ]) || targets.additionalProperties !== false || targets.type !== "object" ||
+    !record(targets.properties) || !Array.isArray(targets.required)) return false;
+  const ids = Object.keys(targets.properties);
+  if (ids.length < 1 || ids.length > 8 || !sameStrings(
+    targets.required as string[],
+    ids
+  ) || ids.some((id, index) => !targetIdPattern.test(id) || index > 0 &&
+    Number(id.slice(1)) <= Number(ids[index - 1]!.slice(1)))) return false;
+  const capacities: number[] = [];
+  for (const id of ids) {
+    const schema = targets.properties[id];
+    if (!record(schema) || !exactKeys(schema, [
+      "items",
+      "maxItems",
+      "minItems",
+      "type"
+    ]) || schema.type !== "array" || schema.minItems !== 1 ||
+      !Number.isSafeInteger(schema.maxItems) || Number(schema.maxItems) < 1 ||
+      Number(schema.maxItems) > KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS ||
+      knowledgeAnswerHash(schema.items) !==
+        knowledgeAnswerHash(targetedClaimTextSchemaV2)) return false;
+    capacities.push(Number(schema.maxItems));
+  }
+  const total = capacities.reduce((sum, capacity) => sum + capacity, 0);
+  const base = Math.floor(total / capacities.length);
+  const remainder = total % capacities.length;
+  return total <= KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS &&
+    capacities.every((capacity, index) =>
+      capacity === base + (index < remainder ? 1 : 0));
+}
+
 /** Projects only the exact Scope atoms assigned to positive correction
  * targets. The projection is deterministic, lossless, and bounded; it adds no
  * retrieval or semantic server inference. Returning null disables correction
@@ -235,14 +390,10 @@ export function knowledgeTargetedSupplementFitsV1(input: Readonly<{
  * provenance: the server derives advisory Draft hints from that target's exact
  * immutable Scope handles, while the final Selector owns factual support,
  * provenance overlap, and semantic coverage. */
-export function validateKnowledgeTargetedSupplementV1(
+function validateKnowledgeTargetedSupplementWithDraftValidatorV1(
   value: unknown,
-  input: Readonly<{
-    availableHandles: ReadonlySet<string> | readonly string[];
-    forbiddenIdentityFragments?: readonly string[];
-    missingDimensions: readonly KnowledgeCoverageDimensionV6[];
-    primaryDraft: KnowledgeAnswerDraftSelectorInput;
-  }>
+  input: KnowledgeTargetedSupplementValidationInputV1,
+  validateDraft: KnowledgeTargetedSupplementDraftValidatorV1
 ): KnowledgeTargetedSupplementValidationV1 {
   if (isKnowledgeDraftMalformed(input.primaryDraft) || !record(value) ||
     !exactKeys(value, ["version", "claims"]) ||
@@ -280,7 +431,7 @@ export function validateKnowledgeTargetedSupplementV1(
     claim.targetDimensionId === dimension.id))) {
     return rejected("draft_target_set_invalid");
   }
-  const validation = validateKnowledgeAnswerDraftSupplementV1({
+  const validation = validateDraft({
     claims: rawClaims.map(({ targetDimensionId, text }) => ({
       citationHints: dimensionById.get(targetDimensionId)!.evidenceHandles,
       text
@@ -309,6 +460,28 @@ export function validateKnowledgeTargetedSupplementV1(
   });
 }
 
+export function validateKnowledgeTargetedSupplementV1(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV1 {
+  return validateKnowledgeTargetedSupplementWithDraftValidatorV1(
+    value,
+    input,
+    validateKnowledgeAnswerDraftSupplementV1
+  );
+}
+
+function validateKnowledgeTargetedSupplementCommonMarkV1(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV1 {
+  return validateKnowledgeTargetedSupplementWithDraftValidatorV1(
+    value,
+    input,
+    validateKnowledgeAnswerDraftSupplementV2
+  );
+}
+
 export function decodeKnowledgeTargetedSupplementV1(
   value: unknown,
   input: Parameters<typeof validateKnowledgeTargetedSupplementV1>[1]
@@ -317,12 +490,117 @@ export function decodeKnowledgeTargetedSupplementV1(
   return validation.kind === "accepted" ? validation.value : null;
 }
 
+/** Validates the grouped V2 handoff. Exact target keys are mandatory and each
+ * target is independently bounded before claims are flattened in immutable
+ * Scope order for the existing semantic Draft validator. */
+function validateKnowledgeTargetedSupplementGroupedV2(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1,
+  validateDraft: (
+    value: unknown,
+    input: KnowledgeTargetedSupplementValidationInputV1
+  ) => KnowledgeTargetedSupplementValidationV1
+): KnowledgeTargetedSupplementValidationV2 {
+  if (isKnowledgeDraftMalformed(input.primaryDraft) || !record(value) ||
+    !exactKeys(value, ["version", "targets"]) ||
+    value.version !== KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 ||
+    !record(value.targets)) return rejectedV2("draft_target_shape_invalid");
+  const limits = knowledgeTargetedSupplementClaimLimitsV2({
+    primaryClaimCount: input.primaryDraft.claims.length,
+    targetDimensions: knowledgeTargetableMissingDimensionsV1(input.missingDimensions)
+  });
+  if (!limits) return rejectedV2("draft_target_set_invalid");
+  const ids = limits.map(({ targetDimensionId }) => targetDimensionId);
+  if (!exactKeys(value.targets, ids)) return rejectedV2("draft_target_set_invalid");
+  const claims: Array<Readonly<{ targetDimensionId: string; text: unknown }>> = [];
+  for (const limit of limits) {
+    const targetClaims = value.targets[limit.targetDimensionId];
+    if (!Array.isArray(targetClaims) || targetClaims.length < 1 ||
+      targetClaims.length > limit.maxClaims) {
+      return rejectedV2("draft_target_shape_invalid");
+    }
+    for (const text of targetClaims) {
+      claims.push(Object.freeze({
+        targetDimensionId: limit.targetDimensionId,
+        text
+      }));
+    }
+  }
+  const validation = validateDraft({
+    claims,
+    version: KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1
+  }, input);
+  return validation.kind === "rejected"
+    ? rejectedV2(validation.reason)
+    : Object.freeze({
+        kind: "accepted" as const,
+        value: Object.freeze({
+          bindings: validation.value.bindings,
+          draft: validation.value.draft,
+          version: KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2
+        })
+      });
+}
+
+export function validateKnowledgeTargetedSupplementV2(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV2 {
+  return validateKnowledgeTargetedSupplementGroupedV2(
+    value,
+    input,
+    validateKnowledgeTargetedSupplementV1
+  );
+}
+
+/** Current grouped handoff retains the V2 wire shape while applying the
+ * CommonMark-aware claim-text contract selected by the enclosing pipeline. */
+export function validateKnowledgeTargetedSupplementV3(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV2 {
+  return validateKnowledgeTargetedSupplementGroupedV2(
+    value,
+    input,
+    validateKnowledgeTargetedSupplementCommonMarkV1
+  );
+}
+
+export type KnowledgeTargetedSupplementValidationV2 =
+  | Readonly<{ kind: "accepted"; value: KnowledgeTargetedSupplementV2 }>
+  | Readonly<{
+      kind: "rejected";
+      reason: KnowledgeTargetedSupplementValidationFailureReasonV1;
+    }>;
+
+function rejectedV2(
+  reason: KnowledgeTargetedSupplementValidationFailureReasonV1
+): KnowledgeTargetedSupplementValidationV2 {
+  return Object.freeze({ kind: "rejected", reason });
+}
+
+export function decodeKnowledgeTargetedSupplementV2(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeTargetedSupplementV2>[1]
+): KnowledgeTargetedSupplementV2 | null {
+  const validation = validateKnowledgeTargetedSupplementV2(value, input);
+  return validation.kind === "accepted" ? validation.value : null;
+}
+
+export function decodeKnowledgeTargetedSupplementV3(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeTargetedSupplementV3>[1]
+): KnowledgeTargetedSupplementV2 | null {
+  const validation = validateKnowledgeTargetedSupplementV3(value, input);
+  return validation.kind === "accepted" ? validation.value : null;
+}
+
 /** Rebase the locally assigned Supplement claim IDs after the immutable primary
  * Draft. Validation guarantees no semantic-text deduplication or truncation can
  * occur, so the target binding remains lossless. */
 export function mergeKnowledgeTargetedSupplementV1(input: Readonly<{
   primaryDraft: KnowledgeAnswerDraftSelectorInput;
-  supplement: KnowledgeTargetedSupplementV1;
+  supplement: KnowledgeTargetedSupplementV1 | KnowledgeTargetedSupplementV2;
 }>): KnowledgeMergedTargetedSupplementV1 {
   if (isKnowledgeDraftMalformed(input.primaryDraft)) {
     throw new Error("knowledge_targeted_supplement_primary_invalid");
@@ -345,6 +623,13 @@ export function mergeKnowledgeTargetedSupplementV1(input: Readonly<{
       }))),
     draft: merged
   });
+}
+
+export function mergeKnowledgeTargetedSupplementV2(input: Readonly<{
+  primaryDraft: KnowledgeAnswerDraftSelectorInput;
+  supplement: KnowledgeTargetedSupplementV2;
+}>): KnowledgeMergedTargetedSupplementV1 {
+  return mergeKnowledgeTargetedSupplementV1(input);
 }
 
 function immutableClaim(claim: KnowledgeGroundedSelectorClaimV3) {

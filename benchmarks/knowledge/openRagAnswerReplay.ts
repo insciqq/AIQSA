@@ -30,6 +30,8 @@ import {
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import { executeKnowledgeAnswerGroundingV21 } from
   "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV6";
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 } from
+  "../../lib/server/knowledge/grounding";
 import {
   decodeKnowledgeCoverageScopeFailureV6
 } from "../../lib/server/knowledge/coverageScopeV6";
@@ -123,8 +125,51 @@ export type OpenRagAnswerReplayResult = Readonly<{
   coverage: "complete" | "none" | "partial";
   finalText: string;
   operationCount: number;
+  rawProviderOutputs: readonly OpenRagRawProviderOutput[];
   stageRecords: readonly OpenRagAnswerStageRecord[];
 }>;
+
+export type OpenRagRawProviderOutput = Readonly<{
+  operation: string;
+  ordinal: number;
+  output: Readonly<Record<string, unknown>>;
+  providerResponseId: string | null;
+}>;
+
+export type OpenRagAnswerReplayFailureTrace = Readonly<{
+  acceptedResults: readonly Readonly<{
+    operation: string;
+    output: Readonly<Record<string, unknown>>;
+  }>[];
+  rawProviderOutputs: readonly OpenRagRawProviderOutput[];
+  replaySnapshot: OpenRagAnswerReplaySnapshot;
+  stageRecords: readonly OpenRagAnswerStageRecord[];
+}>;
+
+const replayFailureTraces = new WeakMap<Error, OpenRagAnswerReplayFailureTrace>();
+
+/** Keeps benchmark-owned raw outputs available to the private checkpoint path
+ * without making them enumerable error fields or product-facing state. */
+export class OpenRagAnswerReplayExecutionError extends Error {
+  constructor(cause: unknown, trace: OpenRagAnswerReplayFailureTrace) {
+    super(cause instanceof Error ? cause.message : "open_rag_replay_execution_failed", {
+      cause
+    });
+    this.name = "OpenRagAnswerReplayExecutionError";
+    replayFailureTraces.set(this, Object.freeze({
+      acceptedResults: Object.freeze([...trace.acceptedResults]),
+      rawProviderOutputs: Object.freeze([...trace.rawProviderOutputs]),
+      replaySnapshot: trace.replaySnapshot,
+      stageRecords: Object.freeze([...trace.stageRecords])
+    }));
+  }
+}
+
+export function getOpenRagAnswerReplayFailureTrace(
+  error: unknown
+): OpenRagAnswerReplayFailureTrace | null {
+  return error instanceof Error ? replayFailureTraces.get(error) ?? null : null;
+}
 
 export type OpenRagReplayStructuredExecutor = (
   snapshot: ProviderExecutionSnapshot,
@@ -345,9 +390,9 @@ export function isOpenRagAnswerOperationSequence(
           ),
           ...Array.from({ length: selectorPasses }, () => pair.selectorOperation)
         ];
-        return base.length > 6 ? [] : [
+        return base.length > 7 ? [] : [
           base,
-          ...(base.length + 2 <= 6
+          ...(base.length + 2 <= 7
             ? [
                 [...base, pair.supplementalDraftOperation],
                 [...base, pair.supplementalDraftOperation, pair.finalSelectorOperation]
@@ -540,7 +585,8 @@ export function decodeOpenRagAnswerReplaySnapshot(
   if (value.executionPolicy !== null && !executionPolicy ||
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
-    pipeline === "v21_scope_v6" && (engine.groundingEvidenceVersion !== 24 ||
+    pipeline === "v21_scope_v6" &&
+      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 ||
       engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==
@@ -655,6 +701,46 @@ function replayLifecycle(captured: CapturedOperation[]): KnowledgeProviderDispat
   return lifecycle as unknown as KnowledgeProviderDispatchLifecycle;
 }
 
+function orderedCapturedOperations(
+  captured: readonly CapturedOperation[]
+): readonly CapturedOperation[] {
+  return Object.freeze([...captured].sort((left, right) => left.ordinal - right.ordinal));
+}
+
+function capturedAcceptedResults(
+  captured: readonly CapturedOperation[]
+): OpenRagAnswerReplayFailureTrace["acceptedResults"] {
+  return Object.freeze(orderedCapturedOperations(captured).map(
+    ({ acceptedResult, operation }) => Object.freeze({
+      operation,
+      output: acceptedResult
+    })
+  ));
+}
+
+function capturedStageRecords(
+  captured: readonly CapturedOperation[]
+): readonly OpenRagAnswerStageRecord[] {
+  return Object.freeze(orderedCapturedOperations(captured).map(
+    (operation): OpenRagAnswerStageRecord => {
+      const usage = normalizeTokenUsage(operation.usage);
+      return Object.freeze({
+        durationMs: operation.durationMs,
+        providerResponseId: operation.providerResponseId,
+        requestHash: sha256Canonical(operation.acceptedRequest),
+        resultHash: sha256Canonical(operation.acceptedResult),
+        stage: operation.operation,
+        usage: Object.freeze({
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          reasoningTokens: usage.reasoningTokens,
+          totalTokens: usage.totalTokens
+        })
+      });
+    }
+  ));
+}
+
 function settleCapturedV20(
   snapshot: OpenRagAnswerReplaySnapshot,
   captured: readonly CapturedOperation[]
@@ -759,6 +845,7 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
 }>): Promise<OpenRagAnswerReplayResult> {
   const snapshot = decodeOpenRagAnswerReplaySnapshot(input.snapshot);
   const captured: CapturedOperation[] = [];
+  const rawProviderOutputs: OpenRagRawProviderOutput[] = [];
   const lifecycle = replayLifecycle(captured);
   const modelRunId = `open-rag-replay:${randomUUID()}`;
   const evidenceBindings = snapshot.evidenceBindings.map((binding) => Object.freeze({
@@ -790,34 +877,39 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
         timeoutMs: 15 * 60 * 1_000
       }
     );
+    rawProviderOutputs.push(Object.freeze({
+      operation: request.name,
+      ordinal: rawProviderOutputs.length + 1,
+      output,
+      providerResponseId
+    }));
     return Object.freeze({ output, providerResponseId, usage });
   };
-  const pipeline = replayPipeline(snapshot.contracts);
-  if (!pipeline) throw new Error("open_rag_replay_contract_invalid");
-  let operations: readonly Readonly<{ operation: string }>[];
-  let settlement: ReturnType<typeof settleKnowledgeAnswerV5>;
-  if (pipeline === "v20_v16") {
-    const result = await executeKnowledgeAnswerGroundingV8({
-      authorize,
-      contractPair: KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
-      draft: snapshot.evidence,
-      evidenceBindings,
-      execute,
-      forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
-      lifecycle,
-      modelRunId,
-      reasoningEffort: snapshot.reasoningEffort,
-      request: snapshot.request,
-      routeInstruction: snapshot.routeInstruction,
-      shouldAbort,
-      transport: snapshot.transport
-    });
-    operations = result.operations;
-    settlement = settleCapturedV20(snapshot, captured);
-  } else {
-    let result: Awaited<ReturnType<typeof executeKnowledgeAnswerGroundingV21>>;
-    try {
-      result = await executeKnowledgeAnswerGroundingV21({
+  const run = async (): Promise<OpenRagAnswerReplayResult> => {
+    const pipeline = replayPipeline(snapshot.contracts);
+    if (!pipeline) throw new Error("open_rag_replay_contract_invalid");
+    let operations: readonly Readonly<{ operation: string }>[];
+    let settlement: ReturnType<typeof settleKnowledgeAnswerV5>;
+    if (pipeline === "v20_v16") {
+      const result = await executeKnowledgeAnswerGroundingV8({
+        authorize,
+        contractPair: KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
+        draft: snapshot.evidence,
+        evidenceBindings,
+        execute,
+        forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
+        lifecycle,
+        modelRunId,
+        reasoningEffort: snapshot.reasoningEffort,
+        request: snapshot.request,
+        routeInstruction: snapshot.routeInstruction,
+        shouldAbort,
+        transport: snapshot.transport
+      });
+      operations = result.operations;
+      settlement = settleCapturedV20(snapshot, captured);
+    } else {
+      const result = await executeKnowledgeAnswerGroundingV21({
         authorize,
         draft: snapshot.evidence,
         evidenceBindings,
@@ -833,58 +925,53 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
         shouldAbort,
         transport: snapshot.transport
       });
-    } catch (error) {
-      const lastScope = [...captured].reverse().find((operation) =>
-        operation.operation ===
-          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.coverageAuditorOperation);
-      const acceptedScopeFailure = lastScope
-        ? decodeKnowledgeCoverageScopeFailureV6(lastScope.acceptedResult)
-        : null;
-      if (error instanceof Error &&
-        error.message === "knowledge_coverage_scope_unaccepted" &&
-        acceptedScopeFailure) {
-        throw new Error(`open_rag_replay_${acceptedScopeFailure.reason}`, {
-          cause: error
-        });
-      }
-      throw error;
+      operations = result.operations;
+      settlement = result.settlement;
     }
-    operations = result.operations;
-    settlement = result.settlement;
+    const ordered = orderedCapturedOperations(captured);
+    if (ordered.length !== operations.length ||
+      rawProviderOutputs.length !== ordered.length ||
+      ordered.some((operation, index) =>
+        operation.operation !== operations[index]?.operation ||
+        operation.operation !== rawProviderOutputs[index]?.operation ||
+        operation.ordinal !== rawProviderOutputs[index]?.ordinal) ||
+      !isOpenRagAnswerOperationSequence(
+        snapshot.contracts,
+        ordered.map(({ operation }) => operation)
+      )) {
+      throw new Error("open_rag_replay_operation_set_invalid");
+    }
+    return Object.freeze({
+      acceptedResults: capturedAcceptedResults(ordered),
+      citedEvidence: citedEvidence(settlement.finalText, snapshot.evidence),
+      contracts: snapshot.contracts,
+      coverage: settlement.requestCoverage,
+      finalText: settlement.finalText,
+      operationCount: operations.length,
+      rawProviderOutputs: Object.freeze([...rawProviderOutputs]),
+      stageRecords: capturedStageRecords(ordered)
+    });
+  };
+
+  try {
+    return await run();
+  } catch (error) {
+    const lastScope = [...captured].reverse().find((operation) =>
+      operation.operation ===
+        KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.coverageAuditorOperation);
+    const acceptedScopeFailure = lastScope
+      ? decodeKnowledgeCoverageScopeFailureV6(lastScope.acceptedResult)
+      : null;
+    const mappedError = error instanceof Error &&
+      error.message === "knowledge_coverage_scope_unaccepted" &&
+      acceptedScopeFailure
+      ? new Error(`open_rag_replay_${acceptedScopeFailure.reason}`, { cause: error })
+      : error;
+    throw new OpenRagAnswerReplayExecutionError(mappedError, Object.freeze({
+      acceptedResults: capturedAcceptedResults(captured),
+      rawProviderOutputs: Object.freeze([...rawProviderOutputs]),
+      replaySnapshot: snapshot,
+      stageRecords: capturedStageRecords(captured)
+    }));
   }
-  const ordered = [...captured].sort((left, right) => left.ordinal - right.ordinal);
-  if (ordered.length !== operations.length ||
-    ordered.some((operation, index) =>
-      operation.operation !== operations[index]?.operation) ||
-    !isOpenRagAnswerOperationSequence(
-      snapshot.contracts,
-      ordered.map(({ operation }) => operation)
-    )) {
-    throw new Error("open_rag_replay_operation_set_invalid");
-  }
-  return Object.freeze({
-    acceptedResults: Object.freeze(ordered.map(({ acceptedResult, operation }) =>
-      Object.freeze({ operation, output: acceptedResult }))),
-    citedEvidence: citedEvidence(settlement.finalText, snapshot.evidence),
-    contracts: snapshot.contracts,
-    coverage: settlement.requestCoverage,
-    finalText: settlement.finalText,
-    operationCount: operations.length,
-    stageRecords: Object.freeze(ordered.map((operation): OpenRagAnswerStageRecord => {
-      const usage = normalizeTokenUsage(operation.usage);
-      return Object.freeze({
-        durationMs: operation.durationMs,
-        providerResponseId: operation.providerResponseId,
-        requestHash: sha256Canonical(operation.acceptedRequest),
-        resultHash: sha256Canonical(operation.acceptedResult),
-        stage: operation.operation,
-        usage: Object.freeze({
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          reasoningTokens: usage.reasoningTokens,
-          totalTokens: usage.totalTokens
-        })
-      });
-    }))
-  });
 }

@@ -5,7 +5,13 @@ import type {
   KnowledgeGroundingEvidenceV21,
   KnowledgeGroundingEvidenceV22,
   KnowledgeGroundingEvidenceV23,
-  KnowledgeGroundingEvidenceV24
+  KnowledgeGroundingEvidenceV24,
+  KnowledgeGroundingEvidenceV25,
+  KnowledgeGroundingEvidenceV26,
+  KnowledgeGroundingEvidenceV27,
+  KnowledgeGroundingEvidenceV28,
+  KnowledgeGroundingEvidenceV29,
+  KnowledgeGroundingEvidenceV30
 } from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
@@ -237,6 +243,72 @@ function evidenceV24(durationMs: number): KnowledgeGroundingEvidenceV24 {
   } as unknown as KnowledgeGroundingEvidenceV24;
 }
 
+function evidenceV25(durationMs: number): KnowledgeGroundingEvidenceV25 {
+  const historical = evidenceV24(durationMs);
+  const [primary, scope, completeness, initial] = historical.operations;
+  return {
+    ...historical,
+    completenessRepairAttempted: false,
+    completenessRepairSucceeded: false,
+    correctionAttempted: true,
+    correctionSucceeded: true,
+    operations: [primary, scope, {
+      ...scope,
+      operationId: "operation-scope-repair",
+      ordinal: 3,
+      role: "scope_repair"
+    }, { ...completeness, ordinal: 4 }, { ...initial, ordinal: 5 }, {
+      ...primary,
+      operationId: "operation-supplement",
+      ordinal: 6,
+      role: "supplement"
+    }, {
+      ...initial,
+      operationId: "operation-final",
+      ordinal: 7,
+      role: "final"
+    }],
+    scopeRepairAttempted: true,
+    scopeRepairSucceeded: true,
+    version: 25
+  } as unknown as KnowledgeGroundingEvidenceV25;
+}
+
+function evidenceV26(durationMs: number): KnowledgeGroundingEvidenceV26 {
+  return {
+    ...evidenceV25(durationMs),
+    version: 26
+  } as KnowledgeGroundingEvidenceV26;
+}
+
+function evidenceV27(durationMs: number): KnowledgeGroundingEvidenceV27 {
+  return {
+    ...evidenceV26(durationMs),
+    version: 27
+  } as KnowledgeGroundingEvidenceV27;
+}
+
+function evidenceV28(durationMs: number): KnowledgeGroundingEvidenceV28 {
+  return {
+    ...evidenceV27(durationMs),
+    version: 28
+  } as KnowledgeGroundingEvidenceV28;
+}
+
+function evidenceV29(durationMs: number): KnowledgeGroundingEvidenceV29 {
+  return {
+    ...evidenceV28(durationMs),
+    version: 29
+  } as KnowledgeGroundingEvidenceV29;
+}
+
+function evidenceV30(durationMs: number): KnowledgeGroundingEvidenceV30 {
+  return {
+    ...evidenceV29(durationMs),
+    version: 30
+  } as KnowledgeGroundingEvidenceV30;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
     const metrics = aggregateKnowledgeGroundingMetrics([
@@ -282,17 +354,29 @@ describe("Knowledge grounding operational metrics", () => {
   });
 
   it("counts append-only Scope completeness without projecting its private additions", () => {
-    const metrics = aggregateKnowledgeGroundingMetrics([evidenceV24(100)]);
-    expect(metrics.scopeCompletenessAccepted).toBe(1);
-    expect(metrics.totalScopeCompletenessAdditions).toBe(2);
-    expect(metrics.stages.scope_completeness.calls).toBe(1);
+    const metrics = aggregateKnowledgeGroundingMetrics([
+      evidenceV24(100),
+      evidenceV25(100),
+      evidenceV26(100),
+      evidenceV27(100),
+      evidenceV28(100),
+      evidenceV29(100),
+      evidenceV30(100)
+    ]);
+    expect(metrics.scopeCompletenessAccepted).toBe(7);
+    expect(metrics.totalScopeCompletenessAdditions).toBe(14);
+    expect(metrics.stages.scope_completeness.calls).toBe(7);
+    expect(metrics.stages.scope_repair.calls).toBe(6);
+    expect(metrics.stages.final.calls).toBe(6);
     expect(JSON.stringify(metrics)).not.toContain("PRIVATE");
   });
 
-  it("loads only structurally valid V18-V24 metric receipts", async () => {
+  it("loads only structurally valid V18-V30 metric receipts", async () => {
     const findMany = async (query: unknown) => {
       expect(query).toMatchObject({
-        where: { version: { in: [18, 19, 20, 21, 22, 23, 24] } }
+        where: {
+          version: { in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30] }
+        }
       });
       return [
         { evidence: evidence(100) },
@@ -301,13 +385,20 @@ describe("Knowledge grounding operational metrics", () => {
         { evidence: evidenceV22(100) },
         { evidence: evidenceV23(100) },
         { evidence: evidenceV24(100) },
+        { evidence: evidenceV25(100) },
+        { evidence: evidenceV26(100) },
+        { evidence: evidenceV27(100) },
+        { evidence: evidenceV28(100) },
+        { evidence: evidenceV29(100) },
+        { evidence: evidenceV30(100) },
+        { evidence: { ...evidenceV25(100), version: 24 } },
         { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
       ];
     };
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
     } as never, { limit: 5 });
-    expect(metrics.answers).toBe(6);
-    expect(metrics.modelOperations).toBe(19);
+    expect(metrics.answers).toBe(12);
+    expect(metrics.modelOperations).toBe(61);
   });
 });

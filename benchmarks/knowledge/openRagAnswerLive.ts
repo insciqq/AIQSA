@@ -30,7 +30,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V24 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -671,7 +671,7 @@ async function loadProductAnswer(input: Readonly<{
     if (!dispatch) break;
     dispatches.push(dispatch);
   }
-  if (dispatches.length < 3 || dispatches.length > 6) {
+  if (dispatches.length < 3 || dispatches.length > 7) {
     throw new Error("open_rag_answer_operation_set_invalid");
   }
   const operations = dispatches.map(({ attempt }) => attempt.purpose);
@@ -1002,6 +1002,7 @@ function createLiveRuntime(input: Readonly<{
           selectorRejectedReferenceAxis: null
         }),
         operationCount: result.operationCount,
+        rawProviderOutputs: result.rawProviderOutputs,
         replaySnapshot: snapshot,
         stageRecords: result.stageRecords
       });
@@ -1226,7 +1227,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V24,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30,
         parserProfileVersion: revision.pdfParserProfileVersion,
         pipelineVersion: KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
         profileRevisionId: revision.id,

@@ -36,13 +36,13 @@ import {
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
 import {
-  KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
-  decodeKnowledgeTargetedSupplementV1,
-  mergeKnowledgeTargetedSupplementV1
+  knowledgeAnswerTargetedSupplementSchemaV2,
+  decodeKnowledgeTargetedSupplementV2,
+  mergeKnowledgeTargetedSupplementV2
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeAnswerTargetedSupplementPromptV1,
-  knowledgeGroundedDeltaSelectorPromptV1
+  knowledgeAnswerTargetedSupplementPromptV2,
+  knowledgeGroundedDeltaSelectorPromptV2
 } from "./answerGroundingCorrectionPromptV21";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
@@ -51,6 +51,7 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
   decodeKnowledgeCoverageScopeV6,
   knowledgeCoverageEvidenceFromManifestV6,
+  knowledgeCoverageScopeFailureV6,
   knowledgeCoverageScopePromptV6
 } from "./coverageScopeV6";
 import {
@@ -1146,7 +1147,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("reconstructs append-only Scope completeness into Evidence V24", async () => {
+  it("reconstructs collective target support into Evidence V30", async () => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1249,6 +1250,13 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       scopePass: "initial"
     });
+    const repairScopePrompt = knowledgeCoverageScopePromptV6({
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      repairReason: "coverage_scope_shape_invalid",
+      request,
+      scopePass: "repair"
+    });
     const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV1({
       acceptedScope: acceptedScope!,
       completenessPass: "initial",
@@ -1267,7 +1275,8 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const,
+      protocol:
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" as const,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1287,6 +1296,15 @@ describe("Knowledge Evidence v2 repository projection", () => {
       schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
       systemPrompt: initialScopePrompt.systemPrompt,
       userPrompt: initialScopePrompt.userPrompt
+    });
+    const repairScopeRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
+      systemPrompt: repairScopePrompt.systemPrompt,
+      userPrompt: repairScopePrompt.userPrompt
     });
     const coverageScopePayloadHash = knowledgeAnswerHash(acceptedScope);
     const completenessRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1311,30 +1329,30 @@ describe("Knowledge Evidence v2 repository projection", () => {
     });
     const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector!);
     const rawSupplement = {
-      claims: [{
-        targetDimensionId: "D2",
-        text: "The retention period starts after completion."
-      }],
-      version: 1
+      targets: {
+        D2: ["The retention period starts after completion."]
+      },
+      version: 2
     };
-    const acceptedSupplement = decodeKnowledgeTargetedSupplementV1(rawSupplement, {
+    const acceptedSupplement = decodeKnowledgeTargetedSupplementV2(rawSupplement, {
       availableHandles: ["K1"],
       missingDimensions,
       primaryDraft: acceptedDraft!
     });
     expect(acceptedSupplement).not.toBeNull();
-    const merged = mergeKnowledgeTargetedSupplementV1({
+    const merged = mergeKnowledgeTargetedSupplementV2({
       primaryDraft: acceptedDraft!,
       supplement: acceptedSupplement!
     });
     const mergedDraft = merged.draft;
-    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
+    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV2({
       auditDimensions: missingDimensions,
       evidence: selectorEvidence,
+      primaryClaimCount: acceptedDraft!.claims.length,
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV1({
+    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV2({
       bindings: merged.bindings,
       draft: mergedDraft,
       evidence: selectorEvidence,
@@ -1349,7 +1367,10 @@ describe("Knowledge Evidence v2 repository projection", () => {
       coverageScopePayloadHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      schema: KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
+      schema: knowledgeAnswerTargetedSupplementSchemaV2({
+        primaryClaimCount: acceptedDraft!.claims.length,
+        targetDimensions: missingDimensions
+      }),
       systemPrompt: supplementPrompt.systemPrompt,
       userPrompt: supplementPrompt.userPrompt
     });
@@ -1388,37 +1409,46 @@ describe("Knowledge Evidence v2 repository projection", () => {
       }),
       v21AttemptRow({
         acceptedRequest: initialScopeRequest,
-        acceptedResult: rawScope,
+        acceptedResult: knowledgeCoverageScopeFailureV6(
+          "coverage_scope_shape_invalid"
+        ),
         draft: dispatchDraft,
         ordinal: 2,
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+      }),
+      v21AttemptRow({
+        acceptedRequest: repairScopeRequest,
+        acceptedResult: rawScope,
+        draft: dispatchDraft,
+        ordinal: 3,
         purpose: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
       }),
       v21AttemptRow({
         acceptedRequest: completenessRequest,
         acceptedResult: { additions: [], version: 1 },
         draft: dispatchDraft,
-        ordinal: 3,
+        ordinal: 4,
         purpose: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
       }),
       v21AttemptRow({
         acceptedRequest: selectorRequest,
         acceptedResult: rawSelector,
         draft: dispatchDraft,
-        ordinal: 4,
+        ordinal: 5,
         purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
       }),
       v21AttemptRow({
         acceptedRequest: supplementRequest,
         acceptedResult: rawSupplement,
         draft: dispatchDraft,
-        ordinal: 5,
+        ordinal: 6,
         purpose: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
       }),
       v21AttemptRow({
         acceptedRequest: finalRequest,
         acceptedResult: rawFinalSelector,
         draft: dispatchDraft,
-        ordinal: 6,
+        ordinal: 7,
         purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
       })
     ];
@@ -1457,8 +1487,10 @@ describe("Knowledge Evidence v2 repository projection", () => {
         "- The retention period starts after completion. [K1]"
       ].join("\n"),
       requestCoverage: "complete",
+      scopeRepairAttempted: true,
+      scopeRepairSucceeded: true,
       supportedClaimCount: 2,
-      version: 24
+      version: 30
     });
     expect(result.grounding).toMatchObject({
       answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
@@ -1470,6 +1502,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       result.grounding.operations.map(({ role }) => role)).toEqual([
       "primary",
       "scope",
+      "scope_repair",
       "scope_completeness",
       "initial",
       "supplement",
@@ -1480,7 +1513,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       userPrompt: "{}"
     };
     await expect(groundKnowledgeRunAnswerV21(client(row(), {
-      attempts: attempts.map((attempt, index) => index === 2
+      attempts: attempts.map((attempt, index) => index === 3
         ? {
             ...attempt,
             acceptedRequest: conflictingCompletenessRequest,

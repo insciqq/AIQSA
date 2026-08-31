@@ -1305,7 +1305,8 @@ describe("Knowledge evidence dispatch repository", () => {
     const common = {
       evidenceReceiptHash: currentManifest.manifestHash,
       executionPolicy,
-      protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const,
+      protocol:
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" as const,
       transport: "native_strict" as const
     };
     const snapshots = [

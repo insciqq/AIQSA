@@ -19,6 +19,7 @@ import {
   mergeKnowledgeAnswerDraftsV1,
   validateKnowledgeAnswerDraftSupplementV1,
   validateKnowledgeAnswerDraftV6,
+  validateKnowledgeAnswerDraftV7,
   type KnowledgeAnswerDraftSelectorInput,
   type KnowledgeAnswerDraftV5,
   type KnowledgeAnswerDraftValidationV6,
@@ -113,7 +114,8 @@ import {
   type KnowledgeGroundingExecutionRole
 } from "./groundingExecutionPolicy";
 import {
-  KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1
+  KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
+  isKnowledgeAnswerTargetedSupplementSchemaV2
 } from "./answerGroundingCorrectionV21";
 
 export type { KnowledgeSupportedAnswerViewV1 } from "./coverageAuditV1";
@@ -123,9 +125,9 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION = 17 as const;
 export const KNOWLEDGE_ANSWER_DRAFT_V21_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION = 6 as const;
-export const KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21 = 8 as const;
+export const KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21 = 14 as const;
 export const KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 =
-  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_settlement_v6" as const;
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_settlement_v6" as const;
 
 export type KnowledgeAnswerV21ContractVersions = Readonly<{
   coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION;
@@ -463,6 +465,125 @@ export type KnowledgeAnswerOperationRequestSnapshotV21V8 = Readonly<{
   tools: "none";
   transport: "native_strict" | "provider_neutral_json";
   userPrompt: string;
+  version: 8;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V9 = Readonly<{
+  contractVersion: 1 | 6 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  pipeline: "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 9;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V10 = Readonly<{
+  contractVersion: 1 | 6 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  pipeline:
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 10;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V11 = Readonly<{
+  contractVersion: 1 | 6 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  pipeline:
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 11;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V12 = Readonly<{
+  contractVersion: 1 | 6 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  pipeline:
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 12;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V13 = Readonly<{
+  contractVersion: 1 | 6 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  pipeline:
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 13;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V14 = Readonly<{
+  contractVersion: 1 | 6 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+  pipeline:
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
   version: typeof KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21;
 }>;
 
@@ -474,11 +595,17 @@ export type KnowledgeAnswerOperationRequestSnapshotV21 =
   | KnowledgeAnswerOperationRequestSnapshotV21V5
   | KnowledgeAnswerOperationRequestSnapshotV21V6
   | KnowledgeAnswerOperationRequestSnapshotV21V7
-  | KnowledgeAnswerOperationRequestSnapshotV21V8;
+  | KnowledgeAnswerOperationRequestSnapshotV21V8
+  | KnowledgeAnswerOperationRequestSnapshotV21V9
+  | KnowledgeAnswerOperationRequestSnapshotV21V10
+  | KnowledgeAnswerOperationRequestSnapshotV21V11
+  | KnowledgeAnswerOperationRequestSnapshotV21V12
+  | KnowledgeAnswerOperationRequestSnapshotV21V13
+  | KnowledgeAnswerOperationRequestSnapshotV21V14;
 
 export function isCurrentKnowledgeAnswerOperationSnapshotV21(
   value: KnowledgeAnswerOperationRequestSnapshotV21
-): value is KnowledgeAnswerOperationRequestSnapshotV21V8 {
+): value is KnowledgeAnswerOperationRequestSnapshotV21V14 {
   return value.version === KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21;
 }
 
@@ -861,7 +988,13 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
   maxOutputTokens: number;
   operation: KnowledgeAnswerOperationV21;
   protocol?: "scope_v3" | "scope_v4" | "scope_v5" | "scope_v6" |
-    "scope_v6_targeted_delta_v3" | "scope_v6_completeness_v1_targeted_delta_v4";
+    "scope_v6_targeted_delta_v3" | "scope_v6_completeness_v1_targeted_delta_v4" |
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" |
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" |
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" |
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" |
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" |
+    "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1";
   reasoningEffort?: string | null;
   schema: Readonly<Record<string, unknown>>;
   systemPrompt: string;
@@ -870,7 +1003,19 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
 }>): KnowledgeAnswerOperationRequestSnapshotV21 {
   const scopeProtocol = input.protocol ?? null;
   const scopedProtocol = scopeProtocol !== null;
-  const metadata = scopeProtocol === "scope_v6_completeness_v1_targeted_delta_v4"
+  const metadata = scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" ||
+    scopeProtocol === "scope_v6_completeness_v1_targeted_delta_v4"
     ? scopeV6CompletenessOperationMetadata(input.operation)
     : scopeProtocol === "scope_v6_targeted_delta_v3"
     ? scopeV6TargetedDeltaOperationMetadata(input.operation)
@@ -888,17 +1033,40 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
   const executionPolicy = input.executionPolicy === undefined
     ? null
     : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
+  const dynamicTargetSchema = (scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" ||
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1") &&
+    input.operation === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
   if (scopeProtocol !== null && scopeProtocol !== "scope_v3" &&
       scopeProtocol !== "scope_v4" && scopeProtocol !== "scope_v5" &&
       scopeProtocol !== "scope_v6" &&
       scopeProtocol !== "scope_v6_targeted_delta_v3" &&
-      scopeProtocol !== "scope_v6_completeness_v1_targeted_delta_v4" || !metadata ||
+      scopeProtocol !== "scope_v6_completeness_v1_targeted_delta_v4" &&
+      scopeProtocol !==
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" &&
+      scopeProtocol !==
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" &&
+      scopeProtocol !==
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" &&
+      scopeProtocol !==
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" &&
+      scopeProtocol !==
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" &&
+      scopeProtocol !==
+        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" || !metadata ||
     metadata.contractVersion !== input.contractVersion ||
     scopedProtocol && (!executionPolicy || input.auditPayloadHash !== undefined) ||
     !scopedProtocol && input.coverageScopePayloadHash !== undefined ||
     input.executionPolicy !== undefined && !executionPolicy ||
     input.executionPolicy !== undefined && input.reasoningEffort !== undefined ||
-    knowledgeAnswerHash(metadata.schema) !== knowledgeAnswerHash(input.schema) ||
+    (!dynamicTargetSchema &&
+      knowledgeAnswerHash(metadata.schema) !== knowledgeAnswerHash(input.schema) ||
+      dynamicTargetSchema && !isKnowledgeAnswerTargetedSupplementSchemaV2(input.schema)) ||
     (scopedProtocol
       ? metadata.requiresPayload !== (coverageScopePayloadHash !== null)
       : metadata.requiresPayload !== (auditPayloadHash !== null)) ||
@@ -939,7 +1107,84 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
     userPrompt: input.userPrompt
   };
   const snapshot: KnowledgeAnswerOperationRequestSnapshotV21 =
-    scopeProtocol === "scope_v6_completeness_v1_targeted_delta_v4"
+    scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 1 | 6 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          pipeline:
+            "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" as const,
+          version: KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21
+        })
+      : scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 1 | 6 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          pipeline:
+            "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" as const,
+          version: 13 as const
+        })
+      : scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 1 | 6 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          pipeline:
+            "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" as const,
+          version: 12 as const
+        })
+      : scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 1 | 6 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          pipeline:
+            "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" as const,
+          version: 11 as const
+        })
+      : scopeProtocol ===
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 1 | 6 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          pipeline:
+            "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" as const,
+          version: 10 as const
+        })
+      : scopeProtocol === "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 1 | 6 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
+          pipeline:
+            "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" as const,
+          version: 9 as const
+        })
+      : scopeProtocol === "scope_v6_completeness_v1_targeted_delta_v4"
       ? Object.freeze({
           ...snapshotBase,
           contractVersion: input.contractVersion as 1 | 6 | 21,
@@ -948,7 +1193,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
           name: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
           operation: input.operation as KnowledgeAnswerOperationScopeV6CompletenessV1,
           pipeline: "scope_v6_completeness_v1_targeted_delta_v4" as const,
-          version: KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21
+          version: 8 as const
         })
       : scopeProtocol === "scope_v6_targeted_delta_v3"
       ? Object.freeze({
@@ -1031,8 +1276,12 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
 ): KnowledgeAnswerOperationRequestSnapshotV21 | null {
   if (!record(value) || value.version !== 1 && value.version !== 2 &&
     value.version !== 3 && value.version !== 4 && value.version !== 5 &&
-    value.version !== 6 && value.version !== 7 && value.version !== 8) return null;
-  const metadata = value.version === 8
+    value.version !== 6 && value.version !== 7 && value.version !== 8 &&
+    value.version !== 9 && value.version !== 10 && value.version !== 11 &&
+    value.version !== 12 && value.version !== 13 && value.version !== 14) return null;
+  const metadata = value.version === 8 || value.version === 9 || value.version === 10 ||
+    value.version === 11 || value.version === 12 || value.version === 13 ||
+    value.version === 14
     ? scopeV6CompletenessOperationMetadata(value.operation)
     : value.version === 7
     ? scopeV6TargetedDeltaOperationMetadata(value.operation)
@@ -1045,6 +1294,9 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     : value.version === 3
       ? scopeV3OperationMetadata(value.operation)
       : legacyV21OperationMetadata(value.operation);
+  const dynamicTargetSchema = (value.version === 11 || value.version === 12 ||
+    value.version === 13 || value.version === 14) &&
+    value.operation === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
   const expectedKeys = value.version === 1 ? [
     "version",
     "operation",
@@ -1095,7 +1347,9 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     "pipeline"
   ];
   const payloadHash = value.version === 3 || value.version === 4 || value.version === 5 ||
-    value.version === 6 || value.version === 7 || value.version === 8
+    value.version === 6 || value.version === 7 || value.version === 8 ||
+    value.version === 9 || value.version === 10 || value.version === 11 ||
+    value.version === 12 || value.version === 13 || value.version === 14
     ? value.coverageScopePayloadHash
     : value.auditPayloadHash;
   if (!exactKeys(value, expectedKeys) || !metadata || value.name !== value.operation ||
@@ -1107,11 +1361,24 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     value.version === 7 && value.pipeline !== "scope_v6_targeted_delta_v3" ||
     value.version === 8 &&
       value.pipeline !== "scope_v6_completeness_v1_targeted_delta_v4" ||
+    value.version === 9 && value.pipeline !==
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" ||
+    value.version === 10 && value.pipeline !==
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" ||
+    value.version === 11 && value.pipeline !==
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" ||
+    value.version === 12 && value.pipeline !==
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" ||
+    value.version === 13 && value.pipeline !==
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" ||
+    value.version === 14 && value.pipeline !==
+      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" ||
     value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
     value.tools !== "none" || !record(value.schema) ||
     typeof value.schemaHash !== "string" ||
     knowledgeAnswerHash(value.schema) !== value.schemaHash ||
-    knowledgeAnswerHash(metadata.schema) !== value.schemaHash ||
+    (!dynamicTargetSchema && knowledgeAnswerHash(metadata.schema) !== value.schemaHash ||
+      dynamicTargetSchema && !isKnowledgeAnswerTargetedSupplementSchemaV2(value.schema)) ||
     typeof value.systemPrompt !== "string" || !value.systemPrompt.trim() ||
     typeof value.userPrompt !== "string" || !value.userPrompt.trim() ||
     typeof value.evidenceReceiptHash !== "string" ||
@@ -1152,7 +1419,13 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     KnowledgeAnswerOperationRequestSnapshotV21V5 |
     KnowledgeAnswerOperationRequestSnapshotV21V6 |
     KnowledgeAnswerOperationRequestSnapshotV21V7 |
-    KnowledgeAnswerOperationRequestSnapshotV21V8);
+    KnowledgeAnswerOperationRequestSnapshotV21V8 |
+    KnowledgeAnswerOperationRequestSnapshotV21V9 |
+    KnowledgeAnswerOperationRequestSnapshotV21V10 |
+    KnowledgeAnswerOperationRequestSnapshotV21V11 |
+    KnowledgeAnswerOperationRequestSnapshotV21V12 |
+    KnowledgeAnswerOperationRequestSnapshotV21V13 |
+    KnowledgeAnswerOperationRequestSnapshotV21V14);
 }
 
 export const KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V21 = Object.freeze([
@@ -1334,6 +1607,21 @@ export function decodeKnowledgeAnswerDraftV21(
   input: Parameters<typeof validateKnowledgeAnswerDraftV21>[1]
 ): KnowledgeAnswerDraftV5 | null {
   const validation = validateKnowledgeAnswerDraftV21(value, input);
+  return validation.kind === "accepted" ? validation.value : null;
+}
+
+export function validateKnowledgeAnswerDraftV21CommonMarkV1(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeAnswerDraftV7>[1]
+): KnowledgeAnswerDraftValidationV6 {
+  return validateKnowledgeAnswerDraftV7(value, input);
+}
+
+export function decodeKnowledgeAnswerDraftV21CommonMarkV1(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeAnswerDraftV21CommonMarkV1>[1]
+): KnowledgeAnswerDraftV5 | null {
+  const validation = validateKnowledgeAnswerDraftV21CommonMarkV1(value, input);
   return validation.kind === "accepted" ? validation.value : null;
 }
 
@@ -1915,7 +2203,10 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
 }> | null {
   const payloadHash = input.snapshot.version === 3 || input.snapshot.version === 4 ||
     input.snapshot.version === 5 || input.snapshot.version === 6 ||
-    input.snapshot.version === 7 || input.snapshot.version === 8
+    input.snapshot.version === 7 || input.snapshot.version === 8 ||
+    input.snapshot.version === 9 || input.snapshot.version === 10 ||
+    input.snapshot.version === 11 || input.snapshot.version === 12 ||
+    input.snapshot.version === 13 || input.snapshot.version === 14
     ? input.snapshot.coverageScopePayloadHash
     : input.snapshot.auditPayloadHash;
   if (input.snapshot.operation !== KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 ||
@@ -1954,7 +2245,43 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
       evidenceReceiptHash: input.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(input.snapshot.version === 8
+      ...(input.snapshot.version === 14
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1" as const
+          }
+        : input.snapshot.version === 13
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1" as const
+          }
+        : input.snapshot.version === 12
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1" as const
+          }
+        : input.snapshot.version === 11
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1" as const
+          }
+        : input.snapshot.version === 10
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1" as const
+          }
+        : input.snapshot.version === 9
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1" as const
+          }
+        : input.snapshot.version === 8
         ? {
             executionPolicy: input.snapshot.executionPolicy,
             protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const
