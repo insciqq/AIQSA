@@ -33,7 +33,7 @@ import {
   settleKnowledgeAnswerV21FromFinalSelector,
   validateKnowledgeAnswerDraftSupplementV21,
   validateKnowledgeAnswerDraftV21,
-  type KnowledgeAnswerOperationScopeV5,
+  type KnowledgeAnswerOperationScopeV6,
   type KnowledgeAnswerV21ContractVersions
 } from "./answerGroundingV21";
 import {
@@ -43,45 +43,45 @@ import {
   type OperationOrdinalV21
 } from "./answerGroundingExecutionV21";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V5,
-  KNOWLEDGE_COVERAGE_SCOPE_V5_CONTRACT_VERSION,
-  KNOWLEDGE_COVERAGE_SCOPE_V5_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
-  decodeKnowledgeCoverageScopeFailureV5,
-  decodeKnowledgeCoverageScopeV5,
-  isKnowledgeCoverageScopeValidationFailureReasonV5,
-  knowledgeCoverageEvidenceFromManifestV5,
-  knowledgeCoverageScopeFailureV5,
-  knowledgeCoverageScopePromptV5,
-  validateKnowledgeCoverageScopeV5,
-  type KnowledgeCoverageScopeFailureReasonV5,
-  type KnowledgeCoverageScopeValidationFailureReasonV5
-} from "./coverageScopeV5";
+  KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+  decodeKnowledgeCoverageScopeFailureV6,
+  decodeKnowledgeCoverageScopeV6,
+  isKnowledgeCoverageScopeValidationFailureReasonV6,
+  knowledgeCoverageEvidenceFromManifestV6,
+  knowledgeCoverageScopeFailureV6,
+  knowledgeCoverageScopePromptV6,
+  validateKnowledgeCoverageScopeV6,
+  type KnowledgeCoverageScopeFailureReasonV6,
+  type KnowledgeCoverageScopeValidationFailureReasonV6
+} from "./coverageScopeV6";
 import {
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20,
-  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V20,
-  KNOWLEDGE_GROUNDED_SELECTOR_V20_CONTRACT_VERSION,
-  KNOWLEDGE_GROUNDED_SELECTOR_V20_MAX_OUTPUT_TOKENS,
-  decodeKnowledgeGroundedSelectorFailureV20,
-  decodeKnowledgeGroundedSelectorV20,
-  deriveKnowledgeCoverageV5,
-  knowledgeCoverageMissingDimensionsV5,
-  knowledgeGroundedSelectorPromptV20,
-  knowledgeGroundedSelectorV20Fallback,
-  validateKnowledgeGroundedSelectorV20,
-  type KnowledgeGroundedSelectorFailureReasonV20,
-  type KnowledgeGroundedSelectorV20
-} from "./answerGroundingSelectorV20";
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
+  KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
+  decodeKnowledgeGroundedSelectorFailureV21,
+  decodeKnowledgeGroundedSelectorV21,
+  deriveKnowledgeCoverageV6,
+  knowledgeCoverageMissingDimensionsV6,
+  knowledgeGroundedSelectorPromptV21,
+  knowledgeGroundedSelectorV21Fallback,
+  validateKnowledgeGroundedSelectorV21,
+  type KnowledgeGroundedSelectorFailureReasonV21,
+  type KnowledgeGroundedSelectorV21
+} from "./answerGroundingSelectorV21";
 import {
   decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
   type KnowledgeGroundingEffectiveExecutionPolicyV1
 } from "./groundingExecutionPolicy";
 
-export type KnowledgeAnswerGroundingExecutionV21ScopeV5Result = Readonly<{
+export type KnowledgeAnswerGroundingExecutionV21ScopeV6Result = Readonly<{
   contracts: KnowledgeAnswerV21ContractVersions;
   operations: readonly Readonly<{
-    operation: KnowledgeAnswerOperationScopeV5;
+    operation: KnowledgeAnswerOperationScopeV6;
     ordinal: OperationOrdinalV21;
     providerResponseId: string | null;
     usage: ModelRunUsage;
@@ -93,7 +93,7 @@ function operationRecord(value: unknown): Readonly<Record<string, unknown>> {
   return value as Readonly<Record<string, unknown>>;
 }
 
-function selectorFallbackReason(error: unknown): KnowledgeGroundedSelectorFailureReasonV20 {
+function selectorFallbackReason(error: unknown): KnowledgeGroundedSelectorFailureReasonV21 {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   if (name === "timeouterror" || message.includes("timeout") ||
@@ -107,7 +107,7 @@ function selectorFallbackReason(error: unknown): KnowledgeGroundedSelectorFailur
   return "selector_provider_error";
 }
 
-function scopeFallbackReason(error: unknown): KnowledgeCoverageScopeFailureReasonV5 {
+function scopeFallbackReason(error: unknown): KnowledgeCoverageScopeFailureReasonV6 {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   if (name === "timeouterror" || message.includes("timeout") ||
@@ -121,10 +121,10 @@ function scopeFallbackReason(error: unknown): KnowledgeCoverageScopeFailureReaso
   return "coverage_scope_provider_error";
 }
 
-/** Executes Draft -> sparse unit-mapped Coverage Scope -> Selector. Scope remains
- * a physically separate request/evidence-only operation; the model reviews every
- * source atom, returns only positives, and omission supplies the deterministic
- * negative disposition before reduction. Every downstream request pins the
+/** Executes Draft -> positive-finding Coverage Scope -> Selector. Scope remains
+ * a physically separate request/evidence-only operation. Every accepted positive
+ * unit or joint finding is materialized losslessly as a final dimension; there is
+ * no second model-owned atom-to-scope projection. Every downstream request pins the
  * accepted result hash. One adjacent structural repair is allowed per Scope and
  * initial Selector, and one correction keeps the six-call hard cap. */
 export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
@@ -145,7 +145,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
   transport: "native_strict" | "provider_neutral_json";
-}>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV5Result> {
+}>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const inheritedReasoningEffort = input.reasoningEffort ?? null;
   const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(
     input.executionPolicy ?? Object.freeze({
@@ -164,14 +164,14 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     throw new Error("knowledge_grounding_execution_policy_invalid");
   }
   const requestExecutionPolicy = { executionPolicy } as const;
-  const evidence = knowledgeCoverageEvidenceFromManifestV5(input.draft);
+  const evidence = knowledgeCoverageEvidenceFromManifestV6(input.draft);
   const handles = evidence.map(({ handle }) => handle);
   const operations: Array<
-    KnowledgeAnswerGroundingExecutionV21ScopeV5Result["operations"][number]
+    KnowledgeAnswerGroundingExecutionV21ScopeV6Result["operations"][number]
   > = [];
   const pushOperation = (
     ordinal: OperationOrdinalV21,
-    operation: KnowledgeAnswerOperationScopeV5,
+    operation: KnowledgeAnswerOperationScopeV6,
     result: Readonly<{
       providerResponseId: string | null;
       usage: ModelRunUsage;
@@ -189,7 +189,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   };
   const result = (
     settlement: KnowledgeAnswerSettlementV5
-  ): KnowledgeAnswerGroundingExecutionV21ScopeV5Result => Object.freeze({
+  ): KnowledgeAnswerGroundingExecutionV21ScopeV6Result => Object.freeze({
     contracts: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
     operations: Object.freeze([...operations]),
     settlement
@@ -207,7 +207,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
     ...requestExecutionPolicy,
-    protocol: "scope_v5",
+    protocol: "scope_v6",
     schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
     systemPrompt: draftPrompt.systemPrompt,
     transport: input.transport,
@@ -247,9 +247,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   const runScope = async (
     ordinal: OperationOrdinalV21,
     scopePass: "initial" | "repair",
-    repairReason?: KnowledgeCoverageScopeValidationFailureReasonV5
+    repairReason?: KnowledgeCoverageScopeValidationFailureReasonV6
   ) => {
-    const prompt = knowledgeCoverageScopePromptV5({
+    const prompt = knowledgeCoverageScopePromptV6({
       evidence,
       evidenceManifest: input.draft.message,
       ...(repairReason ? { repairReason } : {}),
@@ -257,29 +257,29 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       scopePass
     });
     const request = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V5_CONTRACT_VERSION,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
       evidenceReceiptHash: input.draft.manifestHash,
-      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V5_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
       ...requestExecutionPolicy,
-      protocol: "scope_v5",
-      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V5,
+      protocol: "scope_v6",
+      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
       userPrompt: prompt.userPrompt
     });
     const operation = await acceptedOperation({
       acceptedFailure: (error) => operationRecord(
-        knowledgeCoverageScopeFailureV5(scopeFallbackReason(error))
+        knowledgeCoverageScopeFailureV6(scopeFallbackReason(error))
       ),
       acceptedOutput: (output) => {
-        const validation = validateKnowledgeCoverageScopeV5(output, {
+        const validation = validateKnowledgeCoverageScopeV6(output, {
           evidence,
           request: input.request
         });
         return operationRecord(validation.kind === "accepted"
           ? output
-          : knowledgeCoverageScopeFailureV5(validation.reason));
+          : knowledgeCoverageScopeFailureV6(validation.reason));
       },
       acceptedRequest: request,
       authorize: input.authorize,
@@ -288,22 +288,22 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       execute: input.execute,
       lifecycle: input.lifecycle,
       modelRunId: input.modelRunId,
-      operation: KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
       ordinal,
       recoveryProviderResponseId: input.recoveryProviderResponseIds?.[ordinal],
       shouldAbort: input.shouldAbort
     });
-    pushOperation(ordinal, KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION, operation);
+    pushOperation(ordinal, KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION, operation);
     return operation;
   };
 
   let scopeOrdinal: OperationOrdinalV21 = 2;
   let scopeOperation = await runScope(scopeOrdinal, "initial");
-  const initialScopeFailure = decodeKnowledgeCoverageScopeFailureV5(
+  const initialScopeFailure = decodeKnowledgeCoverageScopeFailureV6(
     scopeOperation.acceptedResult
   );
   if (initialScopeFailure &&
-    isKnowledgeCoverageScopeValidationFailureReasonV5(initialScopeFailure.reason)) {
+    isKnowledgeCoverageScopeValidationFailureReasonV6(initialScopeFailure.reason)) {
     scopeOrdinal = 3;
     scopeOperation = await runScope(
       scopeOrdinal,
@@ -311,10 +311,10 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       initialScopeFailure.reason
     );
   }
-  if (decodeKnowledgeCoverageScopeFailureV5(scopeOperation.acceptedResult)) {
+  if (decodeKnowledgeCoverageScopeFailureV6(scopeOperation.acceptedResult)) {
     throw new Error("knowledge_coverage_scope_unaccepted");
   }
-  const scope = decodeKnowledgeCoverageScopeV5(scopeOperation.acceptedResult, {
+  const scope = decodeKnowledgeCoverageScopeV6(scopeOperation.acceptedResult, {
     evidence,
     request: input.request
   });
@@ -323,13 +323,13 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
 
   const runSelector = async (selectorInput: Readonly<{
     draft: KnowledgeAnswerDraftSelectorInput;
-    operation: typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20 |
-      typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20;
+    operation: typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 |
+      typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
     ordinal: OperationOrdinalV21;
     repairReason?: KnowledgeSelectorValidationFailureReason;
     selectorPass: "final" | "initial" | "repair";
   }>) => {
-    const prompt = knowledgeGroundedSelectorPromptV20({
+    const prompt = knowledgeGroundedSelectorPromptV21({
       draft: selectorInput.draft,
       evidence,
       evidenceManifest: input.draft.message,
@@ -341,24 +341,24 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       selectorPass: selectorInput.selectorPass
     });
     const request = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V20_CONTRACT_VERSION,
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
       coverageScopePayloadHash,
       evidenceReceiptHash: input.draft.manifestHash,
-      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V20_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
       operation: selectorInput.operation,
       ...requestExecutionPolicy,
-      protocol: "scope_v5",
-      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V20,
+      protocol: "scope_v6",
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
       userPrompt: prompt.userPrompt
     });
     const operation = await acceptedOperation({
       acceptedFailure: (error) => operationRecord(
-        knowledgeGroundedSelectorV20Fallback(selectorFallbackReason(error))
+        knowledgeGroundedSelectorV21Fallback(selectorFallbackReason(error))
       ),
       acceptedOutput: (output) => {
-        const validation = validateKnowledgeGroundedSelectorV20(output, {
+        const validation = validateKnowledgeGroundedSelectorV21(output, {
           draft: selectorInput.draft,
           evidence,
           request: input.request,
@@ -366,7 +366,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         });
         return operationRecord(validation.kind === "accepted"
           ? output
-          : knowledgeGroundedSelectorV20Fallback(validation.reason));
+          : knowledgeGroundedSelectorV21Fallback(validation.reason));
       },
       acceptedRequest: request,
       authorize: input.authorize,
@@ -387,16 +387,16 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   let selectorOrdinal = (scopeOrdinal + 1) as OperationOrdinalV21;
   let selectorOperation = await runSelector({
     draft: primaryDraft,
-    operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20,
+    operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
     ordinal: selectorOrdinal,
     selectorPass: "initial"
   });
-  let selectorFailure = decodeKnowledgeGroundedSelectorFailureV20(
+  let selectorFailure = decodeKnowledgeGroundedSelectorFailureV21(
     selectorOperation.acceptedResult
   );
-  let acceptedSelector: KnowledgeGroundedSelectorV20 | null = selectorFailure
+  let acceptedSelector: KnowledgeGroundedSelectorV21 | null = selectorFailure
     ? null
-    : decodeKnowledgeGroundedSelectorV20(selectorOperation.acceptedResult, {
+    : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
         draft: primaryDraft,
         evidence,
         request: input.request,
@@ -411,17 +411,17 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     if (selectorOrdinal > 6) throw new Error("knowledge_answer_operation_limit_exceeded");
     selectorOperation = await runSelector({
       draft: primaryDraft,
-      operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V20,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
       ordinal: selectorOrdinal,
       repairReason: selectorFailure.reason,
       selectorPass: "repair"
     });
-    selectorFailure = decodeKnowledgeGroundedSelectorFailureV20(
+    selectorFailure = decodeKnowledgeGroundedSelectorFailureV21(
       selectorOperation.acceptedResult
     );
     acceptedSelector = selectorFailure
       ? null
-      : decodeKnowledgeGroundedSelectorV20(selectorOperation.acceptedResult, {
+      : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
           draft: primaryDraft,
           evidence,
           request: input.request,
@@ -433,7 +433,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }
   if (!acceptedSelector) throw new Error("knowledge_grounded_selector_result_invalid");
 
-  const coverage = deriveKnowledgeCoverageV5(acceptedSelector);
+  const coverage = deriveKnowledgeCoverageV6(acceptedSelector);
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
     ? 0
     : primaryDraft.claims.length;
@@ -449,7 +449,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }
 
   const supplementOrdinal = (selectorOrdinal + 1) as OperationOrdinalV21;
-  const missingDimensions = knowledgeCoverageMissingDimensionsV5(acceptedSelector);
+  const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector);
   const supplementPrompt = knowledgeAnswerDraftPromptV21({
     auditDimensions: missingDimensions,
     draftPass: "supplement",
@@ -465,7 +465,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
     ...requestExecutionPolicy,
-    protocol: "scope_v5",
+    protocol: "scope_v6",
     schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
     systemPrompt: supplementPrompt.systemPrompt,
     transport: input.transport,
@@ -522,13 +522,13 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (finalOrdinal > 6) throw new Error("knowledge_answer_operation_limit_exceeded");
   const finalOperation = await runSelector({
     draft: finalDraft,
-    operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V20,
+    operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
     ordinal: finalOrdinal,
     selectorPass: "final"
   });
-  const finalSelector = decodeKnowledgeGroundedSelectorFailureV20(
+  const finalSelector = decodeKnowledgeGroundedSelectorFailureV21(
     finalOperation.acceptedResult
-  ) ? null : decodeKnowledgeGroundedSelectorV20(finalOperation.acceptedResult, {
+  ) ? null : decodeKnowledgeGroundedSelectorV21(finalOperation.acceptedResult, {
       draft: finalDraft,
       evidence,
       request: input.request,

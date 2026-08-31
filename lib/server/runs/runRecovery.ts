@@ -74,7 +74,7 @@ import {
   type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
 import { executeKnowledgeAnswerGroundingV21 } from
-  "../knowledge/answerGroundingExecutionV21ScopeV5";
+  "../knowledge/answerGroundingExecutionV21ScopeV6";
 import {
   decodeKnowledgeAnswerDraftPrompt,
   decodeKnowledgeAnswerOperationRequestSnapshotV1,
@@ -2935,7 +2935,7 @@ async function recoverKnowledgeAnswerGrounding(
 ): Promise<void> {
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
-  let pipeline: "v20_v16" | "v21_scope_v5";
+  let pipeline: "v20_v16" | "v21_scope_v6";
   if (input.draftDispatch) {
     if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
       if (input.draftDispatch.attempt.ordinal !== 1 ||
@@ -2966,7 +2966,7 @@ async function recoverKnowledgeAnswerGrounding(
           "The saved Knowledge draft protocol is retired."
         );
       }
-      pipeline = "v21_scope_v5";
+      pipeline = "v21_scope_v6";
       seed = Object.freeze({
         draft: input.draftDispatch.draft,
         evidenceBindings: [
@@ -3036,7 +3036,7 @@ async function recoverKnowledgeAnswerGrounding(
   } else {
     seed = input.seed;
     pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: input.runId });
-    if (pipeline === "v21_scope_v5") {
+    if (pipeline === "v21_scope_v6") {
       if (!seed.modelCapabilities) {
         throw new ToolLoopRecoveryError(
           "knowledge_answer_contract_failed",
@@ -3054,7 +3054,7 @@ async function recoverKnowledgeAnswerGrounding(
     }
   }
   const groundingUnavailable = !deps.knowledgeProviderDispatch ||
-    (pipeline === "v21_scope_v5"
+    (pipeline === "v21_scope_v6"
       ? !deps.repository.groundKnowledgeAnswerV21
       : !deps.repository.groundKnowledgeAnswerV5);
   if (groundingUnavailable) {
@@ -3251,7 +3251,7 @@ async function recoverKnowledgeAnswerGrounding(
     shouldAbort: () => input.signal.aborted,
     transport: seed.transport
   } as const;
-  const operationResult = pipeline === "v21_scope_v5"
+  const operationResult = pipeline === "v21_scope_v6"
     ? await executeKnowledgeAnswerGroundingV21({
         ...groundingInput,
         recoveryProviderResponseIds: input.control.providerResponseId

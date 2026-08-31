@@ -21,17 +21,17 @@ import {
   type KnowledgeAnswerOperationExecutionV8
 } from "../../lib/server/knowledge/answerGroundingExecutionV5";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
   type KnowledgeAnswerOperationRequestSnapshotV21
 } from "../../lib/server/knowledge/answerGroundingV21";
 import {
   type KnowledgeAnswerOperationExecutionV21
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import { executeKnowledgeAnswerGroundingV21 } from
-  "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV5";
+  "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV6";
 import {
-  decodeKnowledgeCoverageScopeFailureV5
-} from "../../lib/server/knowledge/coverageScopeV5";
+  decodeKnowledgeCoverageScopeFailureV6
+} from "../../lib/server/knowledge/coverageScopeV6";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -217,7 +217,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function replayPipeline(
   contracts: OpenRagAnswerReplayContracts
-): "v20_v16" | "v21_scope_v5" | null {
+): "v20_v16" | "v21_scope_v6" | null {
   if (contracts.coverageAuditorContractVersion === null &&
     contracts.draftContractVersion ===
       KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftContractVersion &&
@@ -225,14 +225,14 @@ function replayPipeline(
       KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.selectorContractVersion &&
     contracts.settlementVersion === 5) return "v20_v16";
   if (contracts.coverageAuditorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.coverageAuditorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.coverageAuditorContractVersion &&
     contracts.draftContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.draftContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.draftContractVersion &&
     contracts.selectorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.selectorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.selectorContractVersion &&
     contracts.settlementVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.settlementVersion) {
-    return "v21_scope_v5";
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.settlementVersion) {
+    return "v21_scope_v6";
   }
   return null;
 }
@@ -328,8 +328,8 @@ export function isOpenRagAnswerOperationSequence(
       [...base, pair.supplementalDraftOperation!, pair.finalSelectorOperation!]
     ].some((candidate) => exactSequence(operations, candidate));
   }
-  if (pipeline === "v21_scope_v5") {
-    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5;
+  if (pipeline === "v21_scope_v6") {
+    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6;
     const candidates = [1, 2].flatMap((scopePasses) => [1, 2].flatMap(
       (selectorPasses) => {
         const base = [
@@ -532,7 +532,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
   if (value.executionPolicy !== null && !executionPolicy ||
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
-    pipeline === "v21_scope_v5" && (engine.groundingEvidenceVersion !== 21 ||
+    pipeline === "v21_scope_v6" && (engine.groundingEvidenceVersion !== 22 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==
       contracts.coverageAuditorContractVersion ||
@@ -827,9 +827,9 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
     } catch (error) {
       const lastScope = [...captured].reverse().find((operation) =>
         operation.operation ===
-          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V20_SCOPE_V5.coverageAuditorOperation);
+          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6.coverageAuditorOperation);
       const acceptedScopeFailure = lastScope
-        ? decodeKnowledgeCoverageScopeFailureV5(lastScope.acceptedResult)
+        ? decodeKnowledgeCoverageScopeFailureV6(lastScope.acceptedResult)
         : null;
       if (error instanceof Error &&
         error.message === "knowledge_coverage_scope_unaccepted" &&
