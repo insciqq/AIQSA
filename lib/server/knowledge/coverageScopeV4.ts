@@ -319,7 +319,7 @@ export function knowledgeCoverageEvidenceFromManifestV4(
   })));
 }
 
-function knowledgeCoverageEvidenceContextV1(
+export function knowledgeCoverageEvidenceContextV1(
   evidence: readonly KnowledgeCoverageEvidenceV4[]
 ): KnowledgeCoverageEvidenceContextV1 {
   return Object.freeze({

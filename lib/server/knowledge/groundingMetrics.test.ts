@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type {
   KnowledgeGroundingEvidenceV18,
-  KnowledgeGroundingEvidenceV19
+  KnowledgeGroundingEvidenceV19,
+  KnowledgeGroundingEvidenceV21
 } from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
@@ -137,6 +138,33 @@ function evidenceV19(durationMs: number): KnowledgeGroundingEvidenceV19 {
   } as unknown as KnowledgeGroundingEvidenceV19;
 }
 
+function evidenceV21(durationMs: number): KnowledgeGroundingEvidenceV21 {
+  const historical = evidenceV19(durationMs);
+  return {
+    ...historical,
+    contracts: {
+      coverageAuditorContractVersion: 5,
+      draftContractVersion: 21,
+      selectorContractVersion: 20,
+      settlementVersion: 6
+    },
+    operations: historical.operations.map((operation) => operation.role === "scope"
+      ? {
+          ...operation,
+          contractVersion: 5,
+          purpose: "knowledge_coverage_scope_v5"
+        }
+      : operation.role === "initial"
+        ? {
+            ...operation,
+            contractVersion: 20,
+            purpose: "knowledge_grounded_selector_v20"
+          }
+        : operation),
+    version: 21
+  } as unknown as KnowledgeGroundingEvidenceV21;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
     const metrics = aggregateKnowledgeGroundingMetrics([
@@ -180,16 +208,22 @@ describe("Knowledge grounding operational metrics", () => {
     expect(serialized).not.toContain(hash);
   });
 
-  it("loads only structurally valid V18/V19 metric receipts", async () => {
-    const findMany = async () => [
-      { evidence: evidence(100) },
-      { evidence: evidenceV19(100) },
-      { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
-    ];
+  it("loads only structurally valid V18-V21 metric receipts", async () => {
+    const findMany = async (query: unknown) => {
+      expect(query).toMatchObject({
+        where: { version: { in: [18, 19, 20, 21] } }
+      });
+      return [
+        { evidence: evidence(100) },
+        { evidence: evidenceV19(100) },
+        { evidence: evidenceV21(100) },
+        { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
+      ];
+    };
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
-    } as never, { limit: 2 });
-    expect(metrics.answers).toBe(2);
-    expect(metrics.modelOperations).toBe(6);
+    } as never, { limit: 4 });
+    expect(metrics.answers).toBe(3);
+    expect(metrics.modelOperations).toBe(9);
   });
 });
