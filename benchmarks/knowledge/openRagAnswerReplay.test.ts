@@ -10,6 +10,7 @@ import type { OpenRagAnswerCase } from "./openRagAnswerContract";
 import {
   createOpenRagAnswerReplaySnapshot,
   decodeOpenRagAnswerReplaySnapshot,
+  openRagAnswerReplayMatchesReasoningControl,
   replayOpenRagAnswerSnapshot
 } from "./openRagAnswerReplay";
 
@@ -41,10 +42,12 @@ function snapshot(): ProviderExecutionSnapshot {
       adapterKind: "openai_responses_compatible",
       answerSelectable: true,
       capabilities: {
+        defaultReasoningEffort: "low",
         nativePdfInput: false,
         nativeSearch: false,
         pdf: false,
-        reasoning: false,
+        reasoning: true,
+        reasoningEfforts: ["low", "medium", "high"],
         streaming: true,
         vision: false
       },
@@ -344,6 +347,40 @@ describe("OpenRAG frozen-evidence replay", () => {
       operationCount: 3
     });
     expect(result.finalText).toContain("30 days");
+    expect(openRagAnswerReplayMatchesReasoningControl(frozen, "medium")).toBe(true);
+    expect(openRagAnswerReplayMatchesReasoningControl(frozen, "low")).toBe(false);
+  });
+
+  it("allows a supported stage override while attesting inherited roles", () => {
+    const frozen = createOpenRagAnswerReplaySnapshot({
+      answerExecutionSnapshot: snapshot(),
+      capturedAt: "2026-08-31T00:00:00.000Z",
+      case: benchmarkCase,
+      evidence: evidence(),
+      evidenceBindings: evidenceBindings(),
+      executionPolicy: Object.freeze({
+        ...v21ExecutionPolicy,
+        overriddenRoles: Object.freeze(["selector"] as const),
+        selectorReasoningEffort: "high"
+      }),
+      forbiddenIdentityFragments: [],
+      origin: v21Origin(),
+      originalRunId: "run-original-v21-override",
+      reasoningEffort: null,
+      request: benchmarkCase.question,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      transport: "native_strict"
+    });
+
+    expect(openRagAnswerReplayMatchesReasoningControl(frozen, "medium")).toBe(true);
+    expect(openRagAnswerReplayMatchesReasoningControl(frozen, "high")).toBe(false);
+    expect(openRagAnswerReplayMatchesReasoningControl(Object.freeze({
+      ...frozen,
+      executionPolicy: Object.freeze({
+        ...frozen.executionPolicy!,
+        selectorReasoningEffort: "ultra"
+      })
+    }), "medium")).toBe(false);
   });
 
   it("rejects any snapshot identity or evidence mutation", () => {
