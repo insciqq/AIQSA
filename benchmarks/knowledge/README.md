@@ -76,8 +76,10 @@ npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
 Add `--preflight-only` to validate the dataset, ignored paths, session,
 codex-lb pins, and either the live Base/profile/source snapshot or the frozen
-replay origin manifest without making a provider request or creating a
-checkpoint.
+replay origin manifest. Frozen replay preflight also locks the exact admitted
+credential version and proves that its envelope is decryptable by the runner's
+trusted runtime. This validation makes no provider/network request and creates
+no checkpoint.
 `--judge-repeat N` is diagnostic: the first frozen judgment remains official
 and later judgments never rewrite it. `--no-judge` runs answer-stage diagnosis
 only. All of these modes are non-scoreable. A scoreable run requires exactly

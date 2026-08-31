@@ -43,6 +43,7 @@ import {
   loadTechnicalProviderRole
 } from "../../lib/server/providerRuntime/admission";
 import {
+  assertAcceptedStructuredOutputSnapshotExecutable,
   createAcceptedStructuredOutputSnapshotExecutor
 } from "../../lib/server/providerRuntime/structuredOutputExecutor";
 import {
@@ -1303,6 +1304,10 @@ async function livePreflight(
         answerAdmission.pin.executionSnapshotHash) {
       throw new Error("open_rag_answer_replay_model_mismatch");
     }
+    await assertAcceptedStructuredOutputSnapshotExecutable(
+      prisma,
+      replaySnapshot.answerExecutionSnapshot
+    );
   }
   const retrieval = replaySnapshot
     ? Object.freeze({ baseId: null, origin: replaySnapshot.origin })

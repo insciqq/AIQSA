@@ -33,12 +33,82 @@ type AcceptedStructuredOutputExecutorOptions = Readonly<{
   encryptionKey?: () => Buffer;
 }>;
 
+type AcceptedStructuredOutputSnapshotBinding = Readonly<{
+  authenticationMode: ReturnType<typeof providerAuthenticationMode>;
+  lockCredential(expectNoAuth: boolean): Promise<string | null>;
+  snapshot: ProviderExecutionSnapshot;
+}>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function noAuthEvidence(value: unknown): boolean {
   return isRecord(value) && value.authenticationMode === "none";
+}
+
+function createAcceptedStructuredOutputSnapshotBinding(
+  client: RuntimeClient,
+  executionSnapshot: ProviderExecutionSnapshot,
+  options: AcceptedStructuredOutputExecutorOptions
+): AcceptedStructuredOutputSnapshotBinding {
+  const encryptionKey = options.encryptionKey ?? getSecretEncryptionKey;
+  const snapshot = normalizeProviderExecutionSnapshot(executionSnapshot);
+  if (
+    snapshot.model.adapterKind === "fake" ||
+    !supportsStructuredOutputAdapter(snapshot.model.adapterKind) ||
+    snapshot.model.modelClass !== "answer" ||
+    !snapshot.credentialId ||
+    !snapshot.credentialVersionId
+  ) {
+    throw new Error("structured_output_not_supported");
+  }
+  const credentialId = snapshot.credentialId;
+  const credentialVersionId = snapshot.credentialVersionId;
+  const authenticationMode = providerAuthenticationMode(snapshot.connection);
+  const lockCredential = async (expectNoAuth: boolean): Promise<string | null> =>
+    client.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<LockedCredentialVersion[]>(Prisma.sql`
+        SELECT "credentialId", "id", "revokedAt", "secretEnvelope", "testEvidence"
+        FROM "ProviderCredentialVersion"
+        WHERE "credentialId" = ${credentialId}
+          AND "id" = ${credentialVersionId}
+        FOR SHARE
+      `);
+      const version = rows[0];
+      if (
+        !version || version.revokedAt ||
+        version.credentialId !== credentialId ||
+        version.id !== credentialVersionId ||
+        expectNoAuth !== noAuthEvidence(version.testEvidence) ||
+        expectNoAuth !== (version.secretEnvelope === null)
+      ) throw new Error("credential_revoked");
+      return version.secretEnvelope === null
+        ? null
+        : decryptProviderCredentialSecret({
+            credentialId,
+            envelope: version.secretEnvelope,
+            key: encryptionKey(),
+            valueId: credentialVersionId
+          });
+    });
+  return Object.freeze({ authenticationMode, lockCredential, snapshot });
+}
+
+/** Verifies that an accepted immutable snapshot still resolves to the exact
+ * non-revoked credential version and that its envelope is decryptable in this
+ * runtime. No provider adapter or network transport is invoked. */
+export async function assertAcceptedStructuredOutputSnapshotExecutable(
+  client: RuntimeClient,
+  executionSnapshot: ProviderExecutionSnapshot,
+  options: AcceptedStructuredOutputExecutorOptions = {}
+): Promise<void> {
+  const binding = createAcceptedStructuredOutputSnapshotBinding(
+    client,
+    executionSnapshot,
+    options
+  );
+  await binding.lockCredential(binding.authenticationMode === "none");
 }
 
 /** Executes one bounded strict-schema request from an immutable execution
@@ -49,69 +119,34 @@ export function createAcceptedStructuredOutputSnapshotExecutor(
   client: RuntimeClient,
   options: AcceptedStructuredOutputExecutorOptions = {}
 ) {
-  const encryptionKey = options.encryptionKey ?? getSecretEncryptionKey;
   return async (
     executionSnapshot: ProviderExecutionSnapshot,
     request: ProviderStructuredOutputRequest,
     executionOptions: ProviderStructuredOutputOptions = {}
   ): Promise<Record<string, unknown>> => {
-    const snapshot = normalizeProviderExecutionSnapshot(executionSnapshot);
-    if (
-      snapshot.model.adapterKind === "fake" ||
-      !supportsStructuredOutputAdapter(snapshot.model.adapterKind) ||
-      snapshot.model.modelClass !== "answer" ||
-      !snapshot.credentialId ||
-      !snapshot.credentialVersionId
-    ) {
-      throw new Error("structured_output_not_supported");
-    }
-    const credentialId = snapshot.credentialId;
-    const credentialVersionId = snapshot.credentialVersionId;
-    const authenticationMode = providerAuthenticationMode(snapshot.connection);
-    const lockCredential = async (expectNoAuth: boolean): Promise<string | null> =>
-      client.$transaction(async (tx) => {
-        const rows = await tx.$queryRaw<LockedCredentialVersion[]>(Prisma.sql`
-          SELECT "credentialId", "id", "revokedAt", "secretEnvelope", "testEvidence"
-          FROM "ProviderCredentialVersion"
-          WHERE "credentialId" = ${credentialId}
-            AND "id" = ${credentialVersionId}
-          FOR SHARE
-        `);
-        const version = rows[0];
-        if (
-          !version || version.revokedAt ||
-          version.credentialId !== credentialId ||
-          version.id !== credentialVersionId ||
-          expectNoAuth !== noAuthEvidence(version.testEvidence) ||
-          expectNoAuth !== (version.secretEnvelope === null)
-        ) throw new Error("credential_revoked");
-        return version.secretEnvelope === null
-          ? null
-          : decryptProviderCredentialSecret({
-              credentialId,
-              envelope: version.secretEnvelope,
-              key: encryptionKey(),
-              valueId: credentialVersionId
-            });
-      });
-    const baseFetch = options.createFetch?.(snapshot.connection) ??
-      createProviderSafeFetch({ configuration: snapshot.connection });
-    const fetchFn: typeof fetch = authenticationMode === "none"
+    const binding = createAcceptedStructuredOutputSnapshotBinding(
+      client,
+      executionSnapshot,
+      options
+    );
+    const baseFetch = options.createFetch?.(binding.snapshot.connection) ??
+      createProviderSafeFetch({ configuration: binding.snapshot.connection });
+    const fetchFn: typeof fetch = binding.authenticationMode === "none"
       ? async (fetchRequest, init) => {
-          await lockCredential(true);
+          await binding.lockCredential(true);
           return baseFetch(fetchRequest, init);
         }
       : baseFetch;
     const runtime = createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn },
-      secret: authenticationMode === "none"
+      secret: binding.authenticationMode === "none"
         ? null
         : async () => {
-            const secret = await lockCredential(false);
+            const secret = await binding.lockCredential(false);
             if (secret === null) throw new Error("credential_revoked");
             return secret;
           },
-      snapshot
+      snapshot: binding.snapshot
     });
     if (!runtime.structuredOutputAdapter) {
       throw new Error("structured_output_not_supported");
