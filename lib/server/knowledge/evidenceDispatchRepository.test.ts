@@ -40,23 +40,26 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
-  buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftV21,
-  decodeKnowledgeGroundedSelectorV17,
-  knowledgeAnswerDraftPromptV21,
-  knowledgeGroundedSelectorPromptV17
+  knowledgeAnswerDraftPromptV21
 } from "./answerGroundingV21";
 import {
-  KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
-  knowledgeCoverageAuditFailureV2,
-  knowledgeCoverageAuditPromptV2
-} from "./coverageAuditV2";
+  KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3,
+  knowledgeCoverageScopeFailureV3,
+  knowledgeCoverageScopePromptV3
+} from "./coverageScopeV3";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
+  KNOWLEDGE_GROUNDED_SELECTOR_V18_MAX_OUTPUT_TOKENS,
+  decodeKnowledgeGroundedSelectorV18,
+  knowledgeGroundedSelectorPromptV18
+} from "./answerGroundingSelectorV18";
 
 const NOW = new Date("2026-08-19T10:00:00.000Z");
 const LEASE = new Date("2026-08-19T10:05:00.000Z");
@@ -1202,12 +1205,22 @@ describe("Knowledge evidence dispatch repository", () => {
     });
   });
 
-  it("loads the exact V21 Draft, Selector, and Auditor sequence", async () => {
+  it("loads the exact V21 Draft, blind Scope repair, and Selector sequence", async () => {
     const fake = createFakePrisma();
     const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
     const currentManifest = draft();
     const request = "How long is the verified value retained?";
     const evidence = knowledgeSelectorEvidenceFromManifest(currentManifest);
+    const executionPolicy = {
+      auditorReasoningEffort: "low",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: [],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const;
     const rawDraft = {
       claims: [{ citationHints: ["K1"], text: "The verified value is retained." }],
       version: 1
@@ -1215,93 +1228,106 @@ describe("Knowledge evidence dispatch repository", () => {
     const acceptedDraft = decodeKnowledgeAnswerDraftV21(rawDraft, {
       availableHandles: ["K1"]
     })!;
-    const rawSelector = {
-      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-      extractIds: [],
-      insufficientReason: "not_applicable",
-      version: 1
-    };
-    const acceptedSelector = decodeKnowledgeGroundedSelectorV17(rawSelector, {
-      draft: acceptedDraft,
-      evidence
-    })!;
-    const supportedView = buildKnowledgeSupportedAnswerViewV1({
-      draft: acceptedDraft,
-      evidence,
-      selector: acceptedSelector
-    });
-    const audit = {
-      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+    const acceptedScope = {
       scope: [{
         description: "State how long the verified value is retained.",
         evidenceHandles: ["K1"],
         id: "D1",
         requestAnchor: "How long"
       }],
-      version: 2
+      version: 3
+    } as const;
+    const rawSelector = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
     };
+    expect(decodeKnowledgeGroundedSelectorV18(rawSelector, {
+      draft: acceptedDraft,
+      evidence,
+      request,
+      scope: acceptedScope
+    })).not.toBeNull();
     const draftPrompt = knowledgeAnswerDraftPromptV21({
       draftPass: "primary",
       evidenceManifest: currentManifest.message,
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const selectorPrompt = knowledgeGroundedSelectorPromptV17({
+    const initialScopePrompt = knowledgeCoverageScopePromptV3({
+      evidence,
+      evidenceManifest: currentManifest.message,
+      request,
+      scopePass: "initial"
+    });
+    const repairScopePrompt = knowledgeCoverageScopePromptV3({
+      evidence,
+      evidenceManifest: currentManifest.message,
+      repairReason: "coverage_scope_shape_invalid",
+      request,
+      scopePass: "repair"
+    });
+    const scopePayloadHash = knowledgeAnswerHash(acceptedScope);
+    const selectorPrompt = knowledgeGroundedSelectorPromptV18({
       draft: acceptedDraft,
       evidence,
       evidenceManifest: currentManifest.message,
       request,
+      scope: acceptedScope,
       selectorPass: "initial"
     });
-    const auditPrompt = knowledgeCoverageAuditPromptV2({
-      auditPass: "initial",
-      evidence,
-      evidenceManifest: currentManifest.message,
-      request,
-      selectorState: {
-        contradictedClaimCount: 0,
-        selectedLiteralCount: 0,
-        supportedClaimCount: 1,
-        unsupportedClaimCount: 0
-      },
-      supportedView
-    });
+    const common = {
+      evidenceReceiptHash: currentManifest.manifestHash,
+      executionPolicy,
+      protocol: "scope_v3" as const,
+      transport: "native_strict" as const
+    };
     const snapshots = [
       createKnowledgeAnswerOperationRequestSnapshotV21({
+        ...common,
         contractVersion: 21,
-        evidenceReceiptHash: currentManifest.manifestHash,
         maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
         operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
         schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
         systemPrompt: draftPrompt.systemPrompt,
-        transport: "native_strict",
         userPrompt: draftPrompt.userPrompt
       }),
       createKnowledgeAnswerOperationRequestSnapshotV21({
-        contractVersion: 17,
-        evidenceReceiptHash: currentManifest.manifestHash,
-        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
-        operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-        schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
-        systemPrompt: selectorPrompt.systemPrompt,
-        transport: "native_strict",
-        userPrompt: selectorPrompt.userPrompt
+        ...common,
+        contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
+        schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3,
+        systemPrompt: initialScopePrompt.systemPrompt,
+        userPrompt: initialScopePrompt.userPrompt
       }),
       createKnowledgeAnswerOperationRequestSnapshotV21({
-        contractVersion: 2,
-        evidenceReceiptHash: currentManifest.manifestHash,
-        maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-        operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-        schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
-        systemPrompt: auditPrompt.systemPrompt,
-        transport: "native_strict",
-        userPrompt: auditPrompt.userPrompt
+        ...common,
+        contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
+        schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3,
+        systemPrompt: repairScopePrompt.systemPrompt,
+        userPrompt: repairScopePrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV21({
+        ...common,
+        contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
+        coverageScopePayloadHash: scopePayloadHash,
+        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V18_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
+        schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V18,
+        systemPrompt: selectorPrompt.systemPrompt,
+        userPrompt: selectorPrompt.userPrompt
       })
     ] as const;
     const results = [
       rawDraft,
-      rawSelector,
-      knowledgeCoverageAuditFailureV2("coverage_audit_shape_invalid")
+      knowledgeCoverageScopeFailureV3("coverage_scope_shape_invalid"),
+      acceptedScope,
+      rawSelector
     ] as const;
     for (const [index, snapshot] of snapshots.entries()) {
       const ordinal = index + 1;
@@ -1350,92 +1376,24 @@ describe("Knowledge evidence dispatch repository", () => {
     await expect(loadSettledKnowledgeAnswerGroundingOperationsV21(fake.client, {
       modelRunId: "run-1"
     })).resolves.toMatchObject({
-      auditor: { attempt: { purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } },
-      auditorRepair: null,
-      draft: { attempt: { purpose: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } },
+      draft: { attempt: { ordinal: 1 } },
       finalSelector: null,
-      initialAuditor: {
-        attempt: { purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION }
-      },
-      initialSelector: {
-        attempt: { purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17 }
-      },
+      initialScope: { attempt: { ordinal: 2 } },
+      initialSelector: { attempt: { ordinal: 4 } },
+      scope: { attempt: { ordinal: 3 } },
+      scopeRepair: { attempt: { ordinal: 3 } },
       selectorRepair: null,
       supplementalDraft: null
     });
 
-    const repairPrompt = knowledgeCoverageAuditPromptV2({
-      auditPass: "repair",
-      evidence,
-      evidenceManifest: currentManifest.message,
-      repairReason: "coverage_audit_shape_invalid",
-      request,
-      selectorState: {
-        contradictedClaimCount: 0,
-        selectedLiteralCount: 0,
-        supportedClaimCount: 1,
-        unsupportedClaimCount: 0
-      },
-      supportedView
-    });
-    const repairSnapshot = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: 2,
-      evidenceReceiptHash: currentManifest.manifestHash,
-      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
-      systemPrompt: repairPrompt.systemPrompt,
-      transport: "native_strict",
-      userPrompt: repairPrompt.userPrompt
-    });
-    const repairInput: ReserveKnowledgeEvidenceDispatchInput = {
-      acceptedRequest: repairSnapshot,
-      checkpointHash: "4".repeat(64),
-      contractVersion: repairSnapshot.contractVersion,
-      draft: currentManifest,
-      estimatedUsage: usage(),
-      evidenceBindings: [{
-        dispatchEvidenceId: "dispatch-evidence-1",
-        evidenceItemId: "evidence-item-1"
-      }],
-      evidenceReceiptHash: currentManifest.manifestHash,
-      idempotencyKey: "run:answer:v21:4",
-      leaseExpiresAt: LEASE,
-      leaseToken: "lease:worker:v21:4",
-      modelRunId: "run-1",
-      now: NOW,
-      ordinal: 4,
-      providerBindingKey: "answer",
-      purpose: repairSnapshot.operation,
-      requestHash: knowledgeAnswerHash(repairSnapshot),
-      retrievalSessionId: "session-1",
-      roundIndex: 0
+    const selectorAttempt = fake.state.attempts[3]!;
+    selectorAttempt.acceptedRequest = {
+      ...object(selectorAttempt.acceptedRequest),
+      coverageScopePayloadHash: "f".repeat(64)
     };
-    const reservedRepair = await repository.reserve(repairInput);
-    const repairIdentity = identity(repairInput, reservedRepair.dispatch.attempt.id);
-    await repository.dispatch({
-      ...repairIdentity,
-      dispatchedAt: DISPATCHED,
-      leaseExpiresAt: DISPATCH_LEASE,
-      leaseToken: repairInput.leaseToken
-    });
-    await repository.settle({
-      ...repairIdentity,
-      acceptedResult: audit,
-      actualUsage: usage(),
-      leaseToken: repairInput.leaseToken,
-      providerResponseId: "provider-response-v21-4",
-      resultAcceptedAt: new Date("2026-08-19T10:01:30.000Z"),
-      resultHash: knowledgeAnswerHash(audit),
-      settledAt: SETTLED
-    });
     await expect(loadSettledKnowledgeAnswerGroundingOperationsV21(fake.client, {
       modelRunId: "run-1"
-    })).resolves.toMatchObject({
-      auditor: { attempt: { ordinal: 4 } },
-      auditorRepair: { attempt: { ordinal: 4 } },
-      initialAuditor: { attempt: { ordinal: 3 } }
-    });
+    })).rejects.toThrow("knowledge_evidence_dispatch_stored_manifest_invalid");
   });
 
   it("maps a one-based draft result reference to a zero-based durable evidence link", async () => {

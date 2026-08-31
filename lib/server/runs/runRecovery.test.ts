@@ -264,23 +264,40 @@ function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer
 function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer [K1]") {
   return {
     grounding: {
-      audit: {
+      answerBindingFingerprint: "0".repeat(64),
+      contracts: {
+        coverageAuditorContractVersion: 3 as const,
+        draftContractVersion: 21 as const,
+        selectorContractVersion: 18 as const,
+        settlementVersion: 6 as const
+      },
+      coverage: {
         coveredDimensionCount: 1,
-        dimensionCount: 1,
         missingDimensionCount: 0,
-        payloadHash: "1".repeat(64),
+        selectorPayloadHash: "1".repeat(64),
         status: "accepted" as const
       },
-      contracts: {
-        coverageAuditorContractVersion: 2 as const,
-        draftContractVersion: 21 as const,
-        selectorContractVersion: 17 as const,
-        settlementVersion: 6 as const
+      coverageScope: {
+        dimensionCount: 1,
+        payloadHash: "8".repeat(64),
+        status: "accepted" as const
       },
       correctionAttempted: false,
       correctionSucceeded: false,
       contradictedClaimCount: 0,
+      draftClaimCount: 1,
       evidenceReceiptHash: "2".repeat(64),
+      executionPolicy: {
+        auditorReasoningEffort: "high",
+        draftReasoningEffort: "low",
+        egressDestination: "answer_provider" as const,
+        overriddenRoles: ["auditor"] as const,
+        providerBindingKey: "answer" as const,
+        selectorReasoningEffort: "low",
+        supplementReasoningEffort: "low",
+        version: 1 as const
+      },
+      executionPolicyFingerprint: "9".repeat(64),
       fallbackReason: null,
       finalAnswerHash: "3".repeat(64),
       finalText,
@@ -293,12 +310,14 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
       providerPinFingerprint: "6".repeat(64),
       receiptHash: "7".repeat(64),
       requestCoverage: "complete" as const,
+      scopeRepairAttempted: false,
+      scopeRepairSucceeded: false,
       selectorRepairAttempted: false,
       selectorRepairSucceeded: false,
       sessionId: "evidence-session-v21",
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
-      version: 17 as const
+      version: 19 as const
     }
   };
 }
@@ -1751,10 +1770,12 @@ describe("run recovery", () => {
   });
 
   it.each([{
+    current: false,
     executionPolicy: undefined,
-    expectedReasoningEfforts: [undefined, undefined],
+    expectedReasoningEfforts: [],
     snapshotVersion: 1
   }, {
+    current: false,
     executionPolicy: {
       auditorReasoningEffort: "high",
       draftReasoningEffort: "low",
@@ -1765,10 +1786,24 @@ describe("run recovery", () => {
       supplementReasoningEffort: "low",
       version: 1
     } as const,
-    expectedReasoningEfforts: ["medium", "high"],
+    expectedReasoningEfforts: [],
     snapshotVersion: 2
-  }])("recovers persisted V21 snapshot V$snapshotVersion regardless of disabled rollout",
-    async ({ executionPolicy, expectedReasoningEfforts }) => {
+  }, {
+    current: true,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: ["high", "medium"],
+    snapshotVersion: 3
+  }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
+    async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
     const dispatch = knowledgeProviderDispatchRecorder("dispatch");
     const acceptedDraft = {
@@ -1789,7 +1824,9 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(executionPolicy ? { executionPolicy } : {}),
+      ...(snapshotVersion === 3
+        ? { executionPolicy: executionPolicy!, protocol: "scope_v3" as const }
+        : executionPolicy ? { executionPolicy } : {}),
       schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
       systemPrompt: primaryPrompt.systemPrompt,
       transport: "provider_neutral_json",
@@ -1847,27 +1884,33 @@ describe("run recovery", () => {
             requests.push(request);
             return {
               ...providerResult,
-              finalText: JSON.stringify(requests.length === 1
+              finalText: JSON.stringify(snapshotVersion === 3 && requests.length === 1
                 ? {
-                    claims: [{
-                      id: "C1",
-                      supportHandles: ["K1"],
-                      verdict: "supported"
-                    }],
-                    extractIds: [],
-                    insufficientReason: "not_applicable",
-                    version: 1
-                  }
-                : {
-                    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
                     scope: [{
                       description: "Answer the exact saved request.",
                       evidenceHandles: ["K1"],
                       id: "D1",
                       requestAnchor: "remember this"
                     }],
-                    version: 2
-                  }),
+                    version: 3
+                  }
+                : snapshotVersion === 3
+                  ? {
+                      claims: [{
+                        id: "C1",
+                        supportHandles: ["K1"],
+                        verdict: "supported"
+                      }],
+                      coverage: [{
+                        id: "D1",
+                        status: "covered",
+                        supportIds: ["C1"]
+                      }],
+                      extractIds: [],
+                      insufficientReason: "not_applicable",
+                      version: 1
+                    }
+                  : {}),
               providerResponseId: `response-v21-${requests.length}`
             };
           }
@@ -1877,23 +1920,41 @@ describe("run recovery", () => {
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(expectedReasoningEfforts.length);
     expect(requests.map(({ params }) => params.reasoningEffort))
       .toEqual(expectedReasoningEfforts);
-    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
-    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      contractVersion: 17,
-      ordinal: 2,
-      purpose: "knowledge_grounded_selector_v17"
-    }));
-    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      contractVersion: 2,
-      ordinal: 3,
-      purpose: "knowledge_coverage_auditor_v2"
-    }));
-    expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
-    expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });
-    expect(harness.state.completed?.finalText).toBe("Recovered audited answer [K1]");
+    if (current) {
+      expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
+      expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1,
+        expect.objectContaining({
+          contractVersion: 3,
+          ordinal: 2,
+          purpose: "knowledge_coverage_scope_v3"
+        }));
+      expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2,
+        expect.objectContaining({
+          contractVersion: 18,
+          ordinal: 3,
+          purpose: "knowledge_grounded_selector_v18"
+        }));
+      expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
+      expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });
+      expect(harness.state.completed?.finalText).toBe("Recovered audited answer [K1]");
+      expect(harness.state.failed).toEqual([]);
+    } else {
+      expect(dispatch.lifecycle.prepare).not.toHaveBeenCalled();
+      expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
+      expect(groundKnowledgeAnswerV21).not.toHaveBeenCalled();
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.failed).toEqual([{
+        assistantMessageId: "assistant-1",
+        error: {
+          code: "knowledge_answer_contract_failed",
+          message: "The Knowledge answer did not satisfy the required output contract."
+        },
+        runId
+      }]);
+    }
   });
 
   it("rebuilds full-context evidence before starting Draft V5 without retrieval", async () => {

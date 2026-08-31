@@ -16,10 +16,17 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-  type KnowledgeAnswerOperationV21,
+  type KnowledgeAnswerOperationScopeV3,
+  type KnowledgeAnswerOperationAuditV2,
+  type KnowledgeAnswerV21AuditV2ContractVersions,
   type KnowledgeAnswerV21ContractVersions
 } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV2";
+import { KNOWLEDGE_COVERAGE_SCOPE_OPERATION } from "./coverageScopeV3";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
+} from "./answerGroundingSelectorV18";
 import {
   decodeKnowledgeProviderAttemptUsage,
   type KnowledgeProviderAttemptUsage
@@ -42,6 +49,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V15 = 15 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION = 16 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V17 = 17 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18 = 18 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19 = 19 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -346,7 +354,7 @@ export type KnowledgeGroundingOperationEvidenceV17 = Readonly<{
   operationId: string;
   ordinal: 1 | 2 | 3 | 4 | 5 | 6;
   providerRequestId: string | null;
-  purpose: KnowledgeAnswerOperationV21;
+  purpose: KnowledgeAnswerOperationAuditV2;
   role: "auditor" | "auditor_repair" | "final" | "initial" | "primary" |
     "repair" | "supplement";
   usage: KnowledgeProviderAttemptUsage;
@@ -360,7 +368,7 @@ export type KnowledgeGroundingEvidenceV17 = Readonly<{
     payloadHash: string;
     status: "accepted";
   }>;
-  contracts: KnowledgeAnswerV21ContractVersions;
+  contracts: KnowledgeAnswerV21AuditV2ContractVersions;
   correctionAttempted: boolean;
   correctionSucceeded: boolean;
   contradictedClaimCount: number;
@@ -396,6 +404,42 @@ export type KnowledgeGroundingEvidenceV18 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV19 = Readonly<{
+  acceptedRequestHash: string;
+  acceptedResultHash: string;
+  contractVersion: 3 | 18 | 21;
+  durationMs: number;
+  operationId: string;
+  ordinal: 1 | 2 | 3 | 4 | 5 | 6;
+  providerRequestId: string | null;
+  purpose: KnowledgeAnswerOperationScopeV3;
+  role: "final" | "initial" | "primary" | "repair" | "scope" |
+    "scope_repair" | "supplement";
+  usage: KnowledgeProviderAttemptUsage;
+}>;
+
+export type KnowledgeGroundingEvidenceV19 = Omit<
+  KnowledgeGroundingEvidenceV18,
+  "audit" | "contracts" | "operations" | "version"
+> & Readonly<{
+  contracts: KnowledgeAnswerV21ContractVersions;
+  coverage: Readonly<{
+    coveredDimensionCount: number;
+    missingDimensionCount: number;
+    selectorPayloadHash: string;
+    status: "accepted";
+  }>;
+  coverageScope: Readonly<{
+    dimensionCount: number;
+    payloadHash: string;
+    status: "accepted";
+  }>;
+  operations: readonly KnowledgeGroundingOperationEvidenceV19[];
+  scopeRepairAttempted: boolean;
+  scopeRepairSucceeded: boolean;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -409,7 +453,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV15
   | KnowledgeGroundingEvidenceV16
   | KnowledgeGroundingEvidenceV17
-  | KnowledgeGroundingEvidenceV18;
+  | KnowledgeGroundingEvidenceV18
+  | KnowledgeGroundingEvidenceV19;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -1205,7 +1250,7 @@ export function groundSettledKnowledgeAnswerV17(input: Readonly<{
     missingDimensionCount: number;
     payloadHash: string;
   }>;
-  contracts: KnowledgeAnswerV21ContractVersions;
+  contracts: KnowledgeAnswerV21AuditV2ContractVersions;
   evidence: KnowledgeEvidencePackage;
   evidenceReceiptHash: string;
   modelPinFingerprint: string;
@@ -1346,6 +1391,185 @@ export function groundSettledKnowledgeAnswerV18(input: Parameters<
     executionPolicy,
     executionPolicyFingerprint: input.executionPolicyFingerprint,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18
+  });
+}
+
+function validGroundingOperationV19(
+  operation: KnowledgeGroundingOperationEvidenceV19,
+  ordinal: number,
+  role: KnowledgeGroundingOperationEvidenceV19["role"]
+): boolean {
+  const purpose = role === "primary"
+    ? KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+    : role === "scope" || role === "scope_repair"
+      ? KNOWLEDGE_COVERAGE_SCOPE_OPERATION
+      : role === "initial" || role === "repair"
+        ? KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
+        : role === "supplement"
+          ? KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+          : KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18;
+  const contractVersion = role === "primary" || role === "supplement"
+    ? 21
+    : role === "scope" || role === "scope_repair"
+      ? 3
+      : 18;
+  return operation.ordinal === ordinal && operation.role === role &&
+    operation.purpose === purpose && operation.contractVersion === contractVersion &&
+    validOperationId(operation.operationId) && validDuration(operation.durationMs) &&
+    /^[0-9a-f]{64}$/u.test(operation.acceptedRequestHash) &&
+    /^[0-9a-f]{64}$/u.test(operation.acceptedResultHash) &&
+    (operation.providerRequestId === null || operation.providerRequestId.length <= 1_024);
+}
+
+/** Content-free V19 provenance for the physically separated blind Scope
+ * protocol. Private scope, Draft, verdicts, mappings, and answer text remain
+ * outside the persisted receipt; hashes, counts, pins, and settlement
+ * aggregates are sufficient for recovery and operations. */
+export function groundSettledKnowledgeAnswerV19(input: Readonly<{
+  answerBindingFingerprint: string;
+  contracts: KnowledgeAnswerV21ContractVersions;
+  coverage: Readonly<{
+    coveredDimensionCount: number;
+    missingDimensionCount: number;
+    selectorPayloadHash: string;
+  }>;
+  coverageScope: Readonly<{
+    dimensionCount: number;
+    payloadHash: string;
+  }>;
+  draftClaimCount: number;
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  executionPolicyFingerprint: string;
+  modelPinFingerprint: string;
+  operations: readonly KnowledgeGroundingOperationEvidenceV19[];
+  providerPinFingerprint: string;
+  scopeRepairSucceeded: boolean;
+  selectorRepairSucceeded: boolean;
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV19 {
+  const roleSequences: KnowledgeGroundingOperationEvidenceV19["role"][][] = [];
+  for (const scopeRepair of [false, true]) {
+    for (const selectorRepair of [false, true]) {
+      const base: KnowledgeGroundingOperationEvidenceV19["role"][] = [
+        "primary",
+        "scope",
+        ...(scopeRepair ? ["scope_repair" as const] : []),
+        "initial",
+        ...(selectorRepair ? ["repair" as const] : [])
+      ];
+      roleSequences.push(base);
+      if (base.length + 2 <= 6) {
+        roleSequences.push([...base, "supplement"], [...base, "supplement", "final"]);
+      }
+    }
+  }
+  const roles = input.operations.map(({ role }) => role);
+  const validSequence = roleSequences.some((sequence) =>
+    JSON.stringify(sequence) === JSON.stringify(roles));
+  const operationsValid = validSequence && input.operations.every((operation, index) =>
+    validGroundingOperationV19(operation, index + 1, roles[index]!));
+  const scope = input.operations.find(({ role }) => role === "scope_repair") ??
+    input.operations.find(({ role }) => role === "scope");
+  const initialSelector = input.operations.find(({ role }) => role === "repair") ??
+    input.operations.find(({ role }) => role === "initial");
+  const correctionAttempted = roles.includes("supplement");
+  const correctionSucceeded = roles.includes("final");
+  const scopeRepairAttempted = roles.includes("scope_repair");
+  const selectorRepairAttempted = roles.includes("repair");
+  const supportedContentCount = input.settlement.supportedClaimCount +
+    (input.settlement.finalizationMode === "evidence_only" ||
+      input.settlement.finalizationMode === "selected_claims_with_evidence" ? 1 : 0);
+  const initialCoverage = supportedContentCount === 0 ||
+    input.coverage.coveredDimensionCount === 0
+    ? "none"
+    : input.coverage.missingDimensionCount === 0
+      ? "complete"
+      : "partial";
+  const settlementCoverageValid = correctionSucceeded
+    ? supportedContentCount === 0
+      ? input.settlement.requestCoverage === "none"
+      : input.settlement.requestCoverage === "partial" ||
+        input.settlement.requestCoverage === "complete"
+    : input.settlement.requestCoverage === initialCoverage;
+  const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(
+    input.executionPolicy
+  );
+  if (input.contracts.draftContractVersion !== 21 ||
+    input.contracts.selectorContractVersion !== 18 ||
+    input.contracts.coverageAuditorContractVersion !== 3 ||
+    input.contracts.settlementVersion !== 6 || !operationsValid || !scope ||
+    !initialSelector || input.coverageScope.payloadHash !== scope.acceptedResultHash ||
+    input.coverage.selectorPayloadHash !== initialSelector.acceptedResultHash ||
+    !Number.isSafeInteger(input.coverageScope.dimensionCount) ||
+    input.coverageScope.dimensionCount < 1 || input.coverageScope.dimensionCount > 8 ||
+    !Number.isSafeInteger(input.coverage.coveredDimensionCount) ||
+    input.coverage.coveredDimensionCount < 0 ||
+    !Number.isSafeInteger(input.coverage.missingDimensionCount) ||
+    input.coverage.missingDimensionCount < 0 ||
+    input.coverage.coveredDimensionCount + input.coverage.missingDimensionCount !==
+      input.coverageScope.dimensionCount ||
+    input.scopeRepairSucceeded !== scopeRepairAttempted ||
+    input.selectorRepairSucceeded !== selectorRepairAttempted ||
+    correctionSucceeded && !correctionAttempted ||
+    correctionAttempted && input.coverage.missingDimensionCount === 0 ||
+    !settlementCoverageValid || !executionPolicy ||
+    !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash) ||
+    !/^[0-9a-f]{64}$/u.test(input.modelPinFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.providerPinFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.answerBindingFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.executionPolicyFingerprint) ||
+    input.executionPolicyFingerprint !== knowledgeAnswerHash(executionPolicy) ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || input.operations.some((operation) => {
+      const usage = decodeKnowledgeProviderAttemptUsage(operation.usage);
+      return !usage || usage.inputTokens === null || usage.outputTokens === null;
+    })) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted blind-scope Knowledge grounding evidence is invalid"
+    );
+  }
+  const operations = Object.freeze(input.operations.map((operation) => Object.freeze({
+    ...operation,
+    usage: Object.freeze({ ...operation.usage })
+  })));
+  return Object.freeze({
+    answerBindingFingerprint: input.answerBindingFingerprint,
+    contracts: Object.freeze({ ...input.contracts }),
+    correctionAttempted,
+    correctionSucceeded,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    coverage: Object.freeze({ ...input.coverage, status: "accepted" as const }),
+    coverageScope: Object.freeze({
+      ...input.coverageScope,
+      status: "accepted" as const
+    }),
+    draftClaimCount: input.draftClaimCount,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    executionPolicy,
+    executionPolicyFingerprint: input.executionPolicyFingerprint,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    modelPinFingerprint: input.modelPinFingerprint,
+    operations,
+    originalAnswerHash: input.operations[0]!.acceptedResultHash,
+    outcome: input.settlement.outcome,
+    providerPinFingerprint: input.providerPinFingerprint,
+    receiptHash: knowledgeEvidenceReceiptHash(input.evidence),
+    requestCoverage: input.settlement.requestCoverage,
+    scopeRepairAttempted,
+    scopeRepairSucceeded: input.scopeRepairSucceeded,
+    selectorRepairAttempted,
+    selectorRepairSucceeded: input.selectorRepairSucceeded,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19
   });
 }
 

@@ -250,26 +250,43 @@ describe("run finalization", () => {
     }));
   });
 
-  it("routes the exact V21 contract snapshot only to the audited finalizer", async () => {
+  it("routes the exact V21 Scope contract snapshot only to its finalizer", async () => {
     const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
     const grounding = {
-      audit: {
+      answerBindingFingerprint: "0".repeat(64),
+      contracts: {
+        coverageAuditorContractVersion: 3 as const,
+        draftContractVersion: 21 as const,
+        selectorContractVersion: 18 as const,
+        settlementVersion: 6 as const
+      },
+      coverage: {
         coveredDimensionCount: 1,
-        dimensionCount: 1,
         missingDimensionCount: 0,
-        payloadHash: "a".repeat(64),
+        selectorPayloadHash: "a".repeat(64),
         status: "accepted" as const
       },
-      contracts: {
-        coverageAuditorContractVersion: 2 as const,
-        draftContractVersion: 21 as const,
-        selectorContractVersion: 17 as const,
-        settlementVersion: 6 as const
+      coverageScope: {
+        dimensionCount: 1,
+        payloadHash: "2".repeat(64),
+        status: "accepted" as const
       },
       correctionAttempted: false,
       correctionSucceeded: false,
       contradictedClaimCount: 0,
+      draftClaimCount: 1,
       evidenceReceiptHash: "b".repeat(64),
+      executionPolicy: {
+        auditorReasoningEffort: "high",
+        draftReasoningEffort: "low",
+        egressDestination: "answer_provider" as const,
+        overriddenRoles: ["auditor"] as const,
+        providerBindingKey: "answer" as const,
+        selectorReasoningEffort: "low",
+        supplementReasoningEffort: "low",
+        version: 1 as const
+      },
+      executionPolicyFingerprint: "3".repeat(64),
       fallbackReason: null,
       finalAnswerHash: "c".repeat(64),
       finalText: "Audited supported claim. [K1]",
@@ -282,12 +299,14 @@ describe("run finalization", () => {
       providerPinFingerprint: "f".repeat(64),
       receiptHash: "1".repeat(64),
       requestCoverage: "complete" as const,
+      scopeRepairAttempted: false,
+      scopeRepairSucceeded: false,
       selectorRepairAttempted: false,
       selectorRepairSucceeded: false,
       sessionId: "evidence-session-1",
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
-      version: 17 as const
+      version: 19 as const
     };
     const groundKnowledgeAnswerV5 = vi.fn<NonNullable<
       RunRepository["groundKnowledgeAnswerV5"]
@@ -303,9 +322,9 @@ describe("run finalization", () => {
     const result = await finalizeRunCompletion({
       ...completionInput(repository),
       knowledgeAnswerContracts: {
-        coverageAuditorContractVersion: 2,
+        coverageAuditorContractVersion: 3,
         draftContractVersion: 21,
-        selectorContractVersion: 17,
+        selectorContractVersion: 18,
         settlementVersion: 6
       },
       result: { ...completionInput(repository).result, finalText: "hidden operation output" }

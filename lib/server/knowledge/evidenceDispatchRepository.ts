@@ -24,12 +24,14 @@ import {
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
-import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV2";
+import { KNOWLEDGE_COVERAGE_SCOPE_OPERATION } from "./coverageScopeV3";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
+} from "./answerGroundingSelectorV18";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
@@ -74,6 +76,9 @@ export type KnowledgeProviderAttemptPurpose =
   | "knowledge_grounded_selector_v17"
   | "knowledge_grounded_selector_final_v17"
   | "knowledge_coverage_auditor_v2"
+  | "knowledge_coverage_scope_v3"
+  | "knowledge_grounded_selector_v18"
+  | "knowledge_grounded_selector_final_v18"
   | "knowledge_coverage_planner_v20"
   | "knowledge_answer_draft_v20"
   | "knowledge_answer_draft_supplement_v20"
@@ -209,12 +214,12 @@ export type StoredKnowledgeAnswerGroundingOperations = Readonly<{
 }>;
 
 export type StoredKnowledgeAnswerGroundingOperationsV21 = Readonly<{
-  auditor: StoredKnowledgeEvidenceDispatch;
-  auditorRepair: StoredKnowledgeEvidenceDispatch | null;
   draft: StoredKnowledgeEvidenceDispatch;
   finalSelector: StoredKnowledgeEvidenceDispatch | null;
-  initialAuditor: StoredKnowledgeEvidenceDispatch;
+  initialScope: StoredKnowledgeEvidenceDispatch;
   initialSelector: StoredKnowledgeEvidenceDispatch;
+  scope: StoredKnowledgeEvidenceDispatch;
+  scopeRepair: StoredKnowledgeEvidenceDispatch | null;
   selectorRepair: StoredKnowledgeEvidenceDispatch | null;
   supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
 }>;
@@ -469,6 +474,9 @@ function answerOperationContractVersion(
     purpose === "knowledge_answer_draft_supplement_v21") return 21;
   if (purpose === "knowledge_grounded_selector_v17" ||
     purpose === "knowledge_grounded_selector_final_v17") return 17;
+  if (purpose === "knowledge_grounded_selector_v18" ||
+    purpose === "knowledge_grounded_selector_final_v18") return 18;
+  if (purpose === "knowledge_coverage_scope_v3") return 3;
   if (purpose === "knowledge_coverage_auditor_v2") return 2;
   if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
@@ -571,7 +579,10 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
     value === "knowledge_answer_draft_supplement_v21" ||
     value === "knowledge_grounded_selector_v17" ||
     value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_grounded_selector_v18" ||
+    value === "knowledge_grounded_selector_final_v18" ||
     value === "knowledge_coverage_auditor_v2" ||
+    value === "knowledge_coverage_scope_v3" ||
     value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
@@ -630,7 +641,10 @@ function validReservationPurpose(value: unknown): value is KnowledgeProviderAtte
     value === "knowledge_answer_draft_supplement_v21" ||
     value === "knowledge_grounded_selector_v17" ||
     value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_grounded_selector_v18" ||
+    value === "knowledge_grounded_selector_final_v18" ||
     value === "knowledge_coverage_auditor_v2" ||
+    value === "knowledge_coverage_scope_v3" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
@@ -1353,10 +1367,9 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads one exact V21 answer protocol. Selector and Auditor purposes may each
- * occur twice only as their single adjacent structural-validation repair. Audit
- * payload consumers pin the final accepted Auditor result hash, so recovery
- * cannot reinterpret or replace accepted dimensions. */
+/** Loads one exact V21 scope protocol. Scope and initial Selector purposes may
+ * each occur twice only as their single adjacent structural-validation repair.
+ * Every later operation pins the final accepted blind Scope result hash. */
 export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
   input: Readonly<{ modelRunId: string }>
@@ -1372,22 +1385,27 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const dispatches = operationRows.map(storedDispatch);
   const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
   const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
-  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17;
-  const auditor = KNOWLEDGE_COVERAGE_AUDITOR_OPERATION;
+  const scope = KNOWLEDGE_COVERAGE_SCOPE_OPERATION;
+  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18;
   const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
-  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17;
-  const allowedSequences: readonly (readonly KnowledgeAnswerOperationV21[])[] = [
-    [draft, selector, auditor],
-    [draft, selector, auditor, auditor],
-    [draft, selector, auditor, supplement],
-    [draft, selector, auditor, supplement, finalSelector],
-    [draft, selector, auditor, auditor, supplement],
-    [draft, selector, auditor, auditor, supplement, finalSelector],
-    [draft, selector, selector, auditor],
-    [draft, selector, selector, auditor, auditor],
-    [draft, selector, selector, auditor, supplement],
-    [draft, selector, selector, auditor, supplement, finalSelector]
-  ];
+  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18;
+  const allowedSequences: KnowledgeAnswerOperationV21[][] = [];
+  for (const scopeCount of [1, 2] as const) {
+    for (const selectorCount of [1, 2] as const) {
+      const base: KnowledgeAnswerOperationV21[] = [
+        draft,
+        ...Array.from({ length: scopeCount }, () => scope),
+        ...Array.from({ length: selectorCount }, () => selector)
+      ];
+      allowedSequences.push(base);
+      if (base.length + 2 <= 6) {
+        allowedSequences.push(
+          [...base, supplement],
+          [...base, supplement, finalSelector]
+        );
+      }
+    }
+  }
   if (!allowedSequences.some((sequence) =>
     canonicalJson(sequence) === canonicalJson(purposeSequence))) {
     repositoryError("stored_manifest_invalid");
@@ -1405,35 +1423,37 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   if (dispatches.some((dispatch, index) =>
     dispatch.attempt.ordinal !== index + 1 ||
     dispatch.attempt.providerBindingKey !== "answer" || !terminal(dispatch) ||
-    !requests[index] || requests[index]!.operation !== purposeSequence[index] ||
+    !requests[index] || requests[index]!.version !== 3 ||
+    requests[index]!.operation !== purposeSequence[index] ||
     requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
     canonicalJson(dispatch.draft) !== canonicalManifest)) {
     repositoryError("stored_manifest_invalid");
   }
-  const auditorIndexes = purposeSequence.flatMap((purpose, index) =>
-    purpose === auditor ? [index] : []);
-  const initialAuditorIndex = auditorIndexes[0];
-  const auditorRepairIndex = auditorIndexes[1] ?? null;
-  const initialAuditorDispatch = initialAuditorIndex === undefined
+  const scopeIndexes = purposeSequence.flatMap((purpose, index) =>
+    purpose === scope ? [index] : []);
+  const initialScopeIndex = scopeIndexes[0];
+  const scopeRepairIndex = scopeIndexes[1] ?? null;
+  const initialScopeDispatch = initialScopeIndex === undefined
     ? undefined
-    : dispatches[initialAuditorIndex];
-  const auditorRepairDispatch = auditorRepairIndex === null
+    : dispatches[initialScopeIndex];
+  const scopeRepairDispatch = scopeRepairIndex === null
     ? null
-    : dispatches[auditorRepairIndex] ?? null;
-  if (!initialAuditorDispatch || initialAuditorIndex < 2 || initialAuditorIndex > 3 ||
-    auditorIndexes.length < 1 || auditorIndexes.length > 2 ||
-    auditorRepairIndex !== null && auditorRepairIndex !== initialAuditorIndex + 1) {
+    : dispatches[scopeRepairIndex] ?? null;
+  if (!initialScopeDispatch || initialScopeIndex !== 1 ||
+    scopeIndexes.length < 1 || scopeIndexes.length > 2 ||
+    scopeRepairIndex !== null && scopeRepairIndex !== initialScopeIndex + 1) {
     repositoryError("stored_manifest_invalid");
   }
-  const auditorDispatch = auditorRepairDispatch ?? initialAuditorDispatch;
-  const auditPayloadHash = auditorDispatch.attempt.resultHash;
-  if (!auditPayloadHash || dispatches.some((dispatch, index) => {
+  const scopeDispatch = scopeRepairDispatch ?? initialScopeDispatch;
+  const coverageScopePayloadHash = scopeDispatch.attempt.resultHash;
+  const finalScopeIndex = scopeRepairIndex ?? initialScopeIndex;
+  if (!coverageScopePayloadHash || dispatches.some((_dispatch, index) => {
     const request = requests[index]!;
-    const consumesAudit = dispatch.attempt.purpose === supplement ||
-      dispatch.attempt.purpose === finalSelector;
-    return consumesAudit
-      ? request.auditPayloadHash !== auditPayloadHash
-      : request.auditPayloadHash !== null;
+    if (request.version !== 3) return true;
+    const consumesScope = index > finalScopeIndex;
+    return consumesScope
+      ? request.coverageScopePayloadHash !== coverageScopePayloadHash
+      : request.coverageScopePayloadHash !== null;
   })) repositoryError("stored_manifest_invalid");
   const selectorDispatches = dispatches.filter(({ attempt }) =>
     attempt.purpose === selector);
@@ -1442,12 +1462,12 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const finalSelectorDispatch = dispatches.find(({ attempt }) =>
     attempt.purpose === finalSelector) ?? null;
   return deepFreeze({
-    auditor: auditorDispatch,
-    auditorRepair: auditorRepairDispatch,
     draft: dispatches[0]!,
     finalSelector: finalSelectorDispatch,
-    initialAuditor: initialAuditorDispatch,
+    initialScope: initialScopeDispatch,
     initialSelector: selectorDispatches[0]!,
+    scope: scopeDispatch,
+    scopeRepair: scopeRepairDispatch,
     selectorRepair: selectorDispatches[1] ?? null,
     supplementalDraft: supplementDispatch
   });

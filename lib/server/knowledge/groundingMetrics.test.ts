@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { KnowledgeGroundingEvidenceV18 } from "./grounding";
+import type {
+  KnowledgeGroundingEvidenceV18,
+  KnowledgeGroundingEvidenceV19
+} from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
   loadKnowledgeGroundingOperationalMetrics
@@ -93,14 +96,59 @@ function evidence(durationMs: number): KnowledgeGroundingEvidenceV18 {
   } as unknown as KnowledgeGroundingEvidenceV18;
 }
 
+function evidenceV19(durationMs: number): KnowledgeGroundingEvidenceV19 {
+  const historical = evidence(durationMs);
+  return {
+    ...historical,
+    contracts: {
+      coverageAuditorContractVersion: 3,
+      draftContractVersion: 21,
+      selectorContractVersion: 18,
+      settlementVersion: 6
+    },
+    coverage: {
+      coveredDimensionCount: 1,
+      missingDimensionCount: 1,
+      selectorPayloadHash: hash,
+      status: "accepted"
+    },
+    coverageScope: {
+      dimensionCount: 2,
+      payloadHash: hash,
+      status: "accepted"
+    },
+    operations: historical.operations.map((operation) => operation.role === "auditor"
+      ? {
+          ...operation,
+          contractVersion: 3,
+          purpose: "knowledge_coverage_scope_v3",
+          role: "scope" as const
+        }
+      : operation.role === "initial"
+        ? {
+            ...operation,
+            contractVersion: 18,
+            purpose: "knowledge_grounded_selector_v18"
+          }
+        : operation),
+    scopeRepairAttempted: false,
+    scopeRepairSucceeded: false,
+    version: 19
+  } as unknown as KnowledgeGroundingEvidenceV19;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
-    const metrics = aggregateKnowledgeGroundingMetrics([evidence(100), evidence(300)]);
+    const metrics = aggregateKnowledgeGroundingMetrics([
+      evidence(100),
+      evidenceV19(300)
+    ]);
     expect(metrics).toMatchObject({
       answers: 2,
-      auditAccepted: 2,
+      auditAccepted: 1,
       correctionAttempted: 2,
       correctionSucceeded: 0,
+      coverageScopeAccepted: 1,
       draftClaims: 8,
       modelOperations: 6,
       pipelineVersion21: 2,
@@ -110,6 +158,8 @@ describe("Knowledge grounding operational metrics", () => {
       totalCoverageDimensions: 4,
       totalMissingCoverageDimensions: 2
     });
+    expect(metrics.stages.auditor.calls).toBe(1);
+    expect(metrics.stages.scope.calls).toBe(1);
     expect(metrics.coverage).toEqual({ complete: 0, none: 0, partial: 2 });
     expect(metrics.stages.primary).toEqual({
       calls: 2,
@@ -130,15 +180,16 @@ describe("Knowledge grounding operational metrics", () => {
     expect(serialized).not.toContain(hash);
   });
 
-  it("loads only structurally valid V18 metric receipts", async () => {
+  it("loads only structurally valid V18/V19 metric receipts", async () => {
     const findMany = async () => [
       { evidence: evidence(100) },
+      { evidence: evidenceV19(100) },
       { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
     ];
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
     } as never, { limit: 2 });
-    expect(metrics.answers).toBe(1);
-    expect(metrics.modelOperations).toBe(3);
+    expect(metrics.answers).toBe(2);
+    expect(metrics.modelOperations).toBe(6);
   });
 });

@@ -21,16 +21,17 @@ import {
   type KnowledgeAnswerOperationExecutionV8
 } from "../../lib/server/knowledge/answerGroundingExecutionV5";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3,
   type KnowledgeAnswerOperationRequestSnapshotV21
 } from "../../lib/server/knowledge/answerGroundingV21";
 import {
-  executeKnowledgeAnswerGroundingV21,
   type KnowledgeAnswerOperationExecutionV21
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
+import { executeKnowledgeAnswerGroundingV21 } from
+  "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV3";
 import {
-  decodeKnowledgeCoverageAuditFailureV2
-} from "../../lib/server/knowledge/coverageAuditV2";
+  decodeKnowledgeCoverageScopeFailureV3
+} from "../../lib/server/knowledge/coverageScopeV3";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -216,7 +217,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function replayPipeline(
   contracts: OpenRagAnswerReplayContracts
-): "v20_v16" | "v21_audit_v2" | null {
+): "v20_v16" | "v21_scope_v3" | null {
   if (contracts.coverageAuditorContractVersion === null &&
     contracts.draftContractVersion ===
       KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftContractVersion &&
@@ -224,14 +225,14 @@ function replayPipeline(
       KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.selectorContractVersion &&
     contracts.settlementVersion === 5) return "v20_v16";
   if (contracts.coverageAuditorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.coverageAuditorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.coverageAuditorContractVersion &&
     contracts.draftContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.draftContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.draftContractVersion &&
     contracts.selectorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.selectorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.selectorContractVersion &&
     contracts.settlementVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.settlementVersion) {
-    return "v21_audit_v2";
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.settlementVersion) {
+    return "v21_scope_v3";
   }
   return null;
 }
@@ -327,29 +328,26 @@ export function isOpenRagAnswerOperationSequence(
       [...base, pair.supplementalDraftOperation!, pair.finalSelectorOperation!]
     ].some((candidate) => exactSequence(operations, candidate));
   }
-  if (pipeline === "v21_audit_v2") {
-    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2;
-    const base = [pair.draftOperation, pair.selectorOperation];
-    const repaired = [...base, pair.selectorOperation];
-    const candidates = [base, repaired].flatMap((prefix) => [
-      [pair.coverageAuditorOperation],
-      [pair.coverageAuditorOperation, pair.coverageAuditorOperation]
-    ].flatMap((auditPasses) => {
-      const audited = [...prefix, ...auditPasses];
-      return [
-        audited,
-        ...(audited.length + 2 <= 6
-          ? [
-              [...audited, pair.supplementalDraftOperation],
-              [
-                ...audited,
-                pair.supplementalDraftOperation,
-                pair.finalSelectorOperation
+  if (pipeline === "v21_scope_v3") {
+    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3;
+    const candidates = [1, 2].flatMap((scopePasses) => [1, 2].flatMap(
+      (selectorPasses) => {
+        const base = [
+          pair.draftOperation,
+          ...Array.from({ length: scopePasses }, () => pair.coverageAuditorOperation),
+          ...Array.from({ length: selectorPasses }, () => pair.selectorOperation)
+        ];
+        return [
+          base,
+          ...(base.length + 2 <= 6
+            ? [
+                [...base, pair.supplementalDraftOperation],
+                [...base, pair.supplementalDraftOperation, pair.finalSelectorOperation]
               ]
-            ]
-          : [])
-      ];
-    }));
+            : [])
+        ];
+      }
+    ));
     return candidates.some((candidate) => exactSequence(operations, candidate));
   }
   return false;
@@ -534,11 +532,8 @@ export function decodeOpenRagAnswerReplaySnapshot(
   if (value.executionPolicy !== null && !executionPolicy ||
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
-    pipeline === "v21_audit_v2" && (engine.groundingEvidenceVersion === 18
-      ? !executionPolicy || value.reasoningEffort !== null
-      : engine.groundingEvidenceVersion === 17
-        ? executionPolicy !== null
-        : true) ||
+    pipeline === "v21_scope_v3" && (engine.groundingEvidenceVersion !== 19 ||
+      !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==
       contracts.coverageAuditorContractVersion ||
     engine.draftContractVersion !== contracts.draftContractVersion ||
@@ -830,16 +825,16 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
         transport: snapshot.transport
       });
     } catch (error) {
-      const lastAudit = [...captured].reverse().find((operation) =>
+      const lastScope = [...captured].reverse().find((operation) =>
         operation.operation ===
-          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.coverageAuditorOperation);
-      const acceptedAuditFailure = lastAudit
-        ? decodeKnowledgeCoverageAuditFailureV2(lastAudit.acceptedResult)
+          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.coverageAuditorOperation);
+      const acceptedScopeFailure = lastScope
+        ? decodeKnowledgeCoverageScopeFailureV3(lastScope.acceptedResult)
         : null;
       if (error instanceof Error &&
-        error.message === "knowledge_coverage_audit_unaccepted" &&
-        acceptedAuditFailure) {
-        throw new Error(`open_rag_replay_${acceptedAuditFailure.reason}`, {
+        error.message === "knowledge_coverage_scope_unaccepted" &&
+        acceptedScopeFailure) {
+        throw new Error(`open_rag_replay_${acceptedScopeFailure.reason}`, {
           cause: error
         });
       }

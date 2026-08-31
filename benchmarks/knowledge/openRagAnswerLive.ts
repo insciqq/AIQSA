@@ -13,7 +13,7 @@ import {
   decodeKnowledgeAnswerOperationRequestSnapshotV1
 } from "../../lib/server/knowledge/answerGroundingV5";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3,
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
@@ -28,7 +28,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -674,13 +674,13 @@ async function loadProductAnswer(input: Readonly<{
   }
   const operations = dispatches.map(({ attempt }) => attempt.purpose);
   const isV21 = input.origin.engine.coverageAuditorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.coverageAuditorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.coverageAuditorContractVersion &&
     input.origin.engine.draftContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.draftContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.draftContractVersion &&
     input.origin.engine.selectorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.selectorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.selectorContractVersion &&
     input.origin.engine.settlementVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.settlementVersion;
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3.settlementVersion;
   if (!isOpenRagAnswerOperationSequence(Object.freeze({
     coverageAuditorContractVersion: input.origin.engine.coverageAuditorContractVersion,
     draftContractVersion: input.origin.engine.draftContractVersion,
@@ -715,7 +715,7 @@ async function loadProductAnswer(input: Readonly<{
           snapshot: draftRequest
         })
       : null;
-    if (!draftRequest || draftRequest.version !== 2 || !decodedPrompt) {
+    if (!draftRequest || draftRequest.version !== 3 || !decodedPrompt) {
       throw new Error("open_rag_answer_replay_prompt_invalid");
     }
     executionPolicy = draftRequest.executionPolicy;
@@ -836,8 +836,8 @@ async function loadProductAnswer(input: Readonly<{
     isRecord(groundingEvidenceRecord.contracts)
     ? groundingEvidenceRecord.contracts
     : null;
-  const audit = groundingEvidenceRecord && isRecord(groundingEvidenceRecord.audit)
-    ? groundingEvidenceRecord.audit
+  const audit = groundingEvidenceRecord && isRecord(groundingEvidenceRecord.coverage)
+    ? groundingEvidenceRecord.coverage
     : null;
   const auditMissingCount = audit && Number.isSafeInteger(audit.missingDimensionCount) &&
     Number(audit.missingDimensionCount) >= 0
@@ -1223,9 +1223,10 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19,
         parserProfileVersion: revision.pdfParserProfileVersion,
-        pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v2_settlement_v6",
+        pipelineVersion:
+          "knowledge_answer_draft_v21_scope_v3_selector_v18_settlement_v6",
         profileRevisionId: revision.id,
         profileRevisionNumber: revision.revisionNumber,
         rankingProfileVersion: KNOWLEDGE_RANKING_PROFILE_VERSION,
