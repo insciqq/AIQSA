@@ -119,9 +119,12 @@ when the answer stage completed, its private answer and replay snapshot are
 still persisted for diagnosis before fail-fast exit.
 
 Replay schema V2 preserves exact V20 recovery and supports the current V21
-three-call normal path, five-call correction path, and six-call
-repair-plus-correction cap. Replay runs answer-grounding and optional judge
-stages only. Its origin
+three-call normal path, five-call correction path, one adjacent structural
+validation repair for either Selector or Auditor, and a six-call hard cap.
+An Auditor repair receives unchanged authority inputs plus only the bounded
+validation-reason enum; provider failures are not retried, and correction
+starts only when both remaining calls fit. Replay runs answer-grounding and
+optional judge stages only. Its origin
 Base/source/engine pins come from the immutable snapshot, so no live Base or
 retrieval state is consulted:
 

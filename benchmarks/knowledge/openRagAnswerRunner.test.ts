@@ -465,7 +465,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
       const sequence = [
         "knowledge_answer_draft_v21",
         "knowledge_grounded_selector_v17",
-        "knowledge_grounded_selector_v17",
+        "knowledge_coverage_auditor_v1",
         "knowledge_coverage_auditor_v1",
         "knowledge_answer_draft_supplement_v21",
         "knowledge_grounded_selector_final_v17"

@@ -7,6 +7,7 @@ import type {
 import {
   KnowledgeAnswerOperationDeferredError
 } from "./answerGroundingExecutionV5";
+import { knowledgeSelectorEvidenceFromManifest } from "./answerGroundingV5";
 import {
   executeKnowledgeAnswerGroundingV21,
   type KnowledgeAnswerOperationExecutionV21
@@ -18,7 +19,10 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
   decodeKnowledgeAnswerOperationRequestSnapshotV21
 } from "./answerGroundingV21";
-import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV1";
+import {
+  KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+  decodeKnowledgeCoverageAuditPromptV1
+} from "./coverageAuditV1";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "./groundingExecutionPolicy";
 
@@ -564,7 +568,41 @@ describe("V21 audited Knowledge answer execution", () => {
     }
   });
 
-  it("records malformed Audit and fails closed without correction or publication", async () => {
+  it("uses one bounded Auditor validation repair over the same authority inputs", async () => {
+    const recorder = lifecycleRecorder();
+    let auditCalls = 0;
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => {
+      const output = operation.name === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+        ? auditCalls++ === 0 ? {} : completeAuditOutput()
+        : outputForOperation(operation.name, true);
+      return { output, providerResponseId: `response-${operation.name}`, usage };
+    });
+    const result = await executeKnowledgeAnswerGroundingV21(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+    ]);
+    const packed = manifest();
+    const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      recorder.entries.get(4)!.acceptedRequest
+    )!;
+    expect(decodeKnowledgeCoverageAuditPromptV1({
+      evidence: knowledgeSelectorEvidenceFromManifest(packed),
+      evidenceManifest: packed.message,
+      request,
+      systemPrompt: repairRequest.systemPrompt,
+      userPrompt: repairRequest.userPrompt
+    })).toMatchObject({
+      auditPass: "repair",
+      repairReason: "coverage_audit_shape_invalid"
+    });
+  });
+
+  it("records both malformed Audit passes and fails closed without correction", async () => {
     const recorder = lifecycleRecorder();
     const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
       output: operation.name === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
@@ -580,8 +618,80 @@ describe("V21 audited Knowledge answer execution", () => {
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!.operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
       KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
       KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
     ]);
+  });
+
+  it("does not retry an Auditor provider failure", async () => {
+    const recorder = lifecycleRecorder();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => {
+      if (operation.name === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION) {
+        throw new TypeError("auditor transport failed");
+      }
+      return {
+        output: outputForOperation(operation.name, true),
+        providerResponseId: `response-${operation.name}`,
+        usage
+      };
+    });
+    try {
+      await expect(executeKnowledgeAnswerGroundingV21(
+        pipelineInput(recorder.lifecycle, execute)
+      )).rejects.toThrow("knowledge_coverage_audit_unaccepted");
+      expect(execute).toHaveBeenCalledTimes(3);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("uses all six calls for Auditor repair followed by one correction", async () => {
+    const recorder = lifecycleRecorder();
+    let auditCalls = 0;
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => {
+      const output = operation.name === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+        ? auditCalls++ === 0 ? {} : partialAuditOutput()
+        : outputForOperation(operation.name);
+      return { output, providerResponseId: `response-${operation.name}`, usage };
+    });
+    const result = await executeKnowledgeAnswerGroundingV21(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17
+    ]);
+  });
+
+  it("does not start correction after both Selector and Auditor repairs consume the cap", async () => {
+    const recorder = lifecycleRecorder();
+    let selectorCalls = 0;
+    let auditCalls = 0;
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => {
+      let output: Readonly<Record<string, unknown>> = outputForOperation(operation.name);
+      if (operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17 &&
+        selectorCalls++ === 0) output = {};
+      if (operation.name === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION) {
+        output = auditCalls++ === 0 ? {} : partialAuditOutput();
+      }
+      return { output, providerResponseId: `response-${operation.name}`, usage };
+    });
+    const result = await executeKnowledgeAnswerGroundingV21(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+    ]);
+    expect(result.settlement.requestCoverage).toBe("partial");
   });
 
   for (const interruptedOrdinal of [1, 2, 3, 4, 5] as const) {

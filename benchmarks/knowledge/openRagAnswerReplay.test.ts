@@ -10,6 +10,7 @@ import type { OpenRagAnswerCase } from "./openRagAnswerContract";
 import {
   createOpenRagAnswerReplaySnapshot,
   decodeOpenRagAnswerReplaySnapshot,
+  isOpenRagAnswerOperationSequence,
   openRagAnswerReplayMatchesReasoningControl,
   replayOpenRagAnswerSnapshot
 } from "./openRagAnswerReplay";
@@ -349,6 +350,127 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "medium")).toBe(true);
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "low")).toBe(false);
+  });
+
+  it("re-asks one structurally invalid V21 Auditor result with unchanged evidence", async () => {
+    const frozen = createOpenRagAnswerReplaySnapshot({
+      answerExecutionSnapshot: snapshot(),
+      capturedAt: "2026-08-31T00:00:00.000Z",
+      case: benchmarkCase,
+      evidence: evidence(),
+      evidenceBindings: evidenceBindings(),
+      executionPolicy: v21ExecutionPolicy,
+      forbiddenIdentityFragments: [],
+      origin: v21Origin(),
+      originalRunId: "run-original-v21-audit-repair",
+      reasoningEffort: null,
+      request: benchmarkCase.question,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      transport: "native_strict"
+    });
+    let auditCalls = 0;
+    const executeStructuredOutput = vi.fn(async (_execution, request) => {
+      if (request.name === "knowledge_answer_draft_v21") {
+        return {
+          claims: [{
+            citationHints: ["K1"],
+            text: "Atlas retains completed exports for 30 days."
+          }],
+          version: 1
+        };
+      }
+      if (request.name === "knowledge_grounded_selector_v17") {
+        return {
+          claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+          extractIds: [],
+          insufficientReason: "not_applicable",
+          version: 1
+        };
+      }
+      if (auditCalls++ === 0) return {};
+      return {
+        dimensions: [{
+          description: "State the completed-export retention period.",
+          evidenceHintHandles: [],
+          id: "D1",
+          requestAnchor: "How long are completed exports retained?",
+          status: "covered",
+          supportIds: ["C1"]
+        }],
+        version: 1
+      };
+    });
+
+    const result = await replayOpenRagAnswerSnapshot({
+      executeStructuredOutput,
+      snapshot: frozen
+    });
+
+    expect(result.operationCount).toBe(4);
+    const auditRequests = executeStructuredOutput.mock.calls
+      .map(([, request]) => request)
+      .filter(({ name }) => name === "knowledge_coverage_auditor_v1");
+    expect(auditRequests).toHaveLength(2);
+    expect(JSON.parse(auditRequests[0]!.userPrompt)).toMatchObject({
+      auditPass: "initial",
+      repairReason: null
+    });
+    expect(JSON.parse(auditRequests[1]!.userPrompt)).toMatchObject({
+      auditPass: "repair",
+      repairReason: "coverage_audit_shape_invalid"
+    });
+    expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
+      "knowledge_answer_draft_v21",
+      "knowledge_grounded_selector_v17",
+      "knowledge_coverage_auditor_v1",
+      "knowledge_coverage_auditor_v1"
+    ])).toBe(true);
+    expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
+      "knowledge_answer_draft_v21",
+      "knowledge_grounded_selector_v17",
+      "knowledge_grounded_selector_v17",
+      "knowledge_coverage_auditor_v1",
+      "knowledge_coverage_auditor_v1",
+      "knowledge_answer_draft_supplement_v21"
+    ])).toBe(false);
+  });
+
+  it("reports the final bounded Auditor validation reason without raw output", async () => {
+    const frozen = createOpenRagAnswerReplaySnapshot({
+      answerExecutionSnapshot: snapshot(),
+      capturedAt: "2026-08-31T00:00:00.000Z",
+      case: benchmarkCase,
+      evidence: evidence(),
+      evidenceBindings: evidenceBindings(),
+      executionPolicy: v21ExecutionPolicy,
+      forbiddenIdentityFragments: [],
+      origin: v21Origin(),
+      originalRunId: "run-original-v21-audit-failure",
+      reasoningEffort: null,
+      request: benchmarkCase.question,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      transport: "native_strict"
+    });
+    await expect(replayOpenRagAnswerSnapshot({
+      executeStructuredOutput: async (_execution, request) => {
+        if (request.name === "knowledge_answer_draft_v21") {
+          return {
+            claims: [{ citationHints: ["K1"], text: "Retained for 30 days." }],
+            version: 1
+          };
+        }
+        if (request.name === "knowledge_grounded_selector_v17") {
+          return {
+            claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+            extractIds: [],
+            insufficientReason: "not_applicable",
+            version: 1
+          };
+        }
+        return {};
+      },
+      snapshot: frozen
+    })).rejects.toThrow("open_rag_replay_coverage_audit_shape_invalid");
   });
 
   it("allows a supported stage override while attesting inherited roles", () => {

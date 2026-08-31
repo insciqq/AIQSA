@@ -6,6 +6,7 @@ const groundingStages = Object.freeze([
   "initial",
   "repair",
   "auditor",
+  "auditor_repair",
   "supplement",
   "final"
 ] as const);

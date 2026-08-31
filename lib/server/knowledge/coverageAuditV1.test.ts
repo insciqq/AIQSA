@@ -272,6 +272,7 @@ describe("Coverage Auditor V1 contracts", () => {
 
   it("round-trips the canonical prompt without benchmark metadata", () => {
     const prompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "initial",
       evidence,
       evidenceManifest: "<private_knowledge_evidence>bounded</private_knowledge_evidence>",
       request,
@@ -291,6 +292,38 @@ describe("Coverage Auditor V1 contracts", () => {
       request,
       ...prompt
     })).toEqual({
+      auditPass: "initial",
+      repairReason: null,
+      selectorState: {
+        contradictedClaimCount: 0,
+        selectedLiteralCount: 0,
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 1
+      },
+      supportedView
+    });
+    const repairPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "repair",
+      evidence,
+      evidenceManifest: "<private_knowledge_evidence>bounded</private_knowledge_evidence>",
+      repairReason: "coverage_audit_anchor_invalid",
+      request,
+      selectorState: {
+        contradictedClaimCount: 0,
+        selectedLiteralCount: 0,
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 1
+      },
+      supportedView
+    });
+    expect(decodeKnowledgeCoverageAuditPromptV1({
+      evidence,
+      evidenceManifest: "<private_knowledge_evidence>bounded</private_knowledge_evidence>",
+      request,
+      ...repairPrompt
+    })).toEqual({
+      auditPass: "repair",
+      repairReason: "coverage_audit_anchor_invalid",
       selectorState: {
         contradictedClaimCount: 0,
         selectedLiteralCount: 0,
@@ -306,9 +339,25 @@ describe("Coverage Auditor V1 contracts", () => {
       ...prompt
     })).toBeNull();
     expect(() => knowledgeCoverageAuditPromptV1({
+      auditPass: "initial",
       evidence,
       evidenceManifest: "<private_knowledge_evidence>bounded</private_knowledge_evidence>",
       referenceAnswer: "forbidden evaluator authority",
+      request,
+      supportedView
+    } as never)).toThrow("knowledge_coverage_audit_prompt_invalid");
+    expect(() => knowledgeCoverageAuditPromptV1({
+      auditPass: "repair",
+      evidence,
+      evidenceManifest: "<private_knowledge_evidence>bounded</private_knowledge_evidence>",
+      request,
+      supportedView
+    } as never)).toThrow("knowledge_coverage_audit_prompt_invalid");
+    expect(() => knowledgeCoverageAuditPromptV1({
+      auditPass: "initial",
+      evidence,
+      evidenceManifest: "<private_knowledge_evidence>bounded</private_knowledge_evidence>",
+      repairReason: "coverage_audit_shape_invalid",
       request,
       supportedView
     } as never)).toThrow("knowledge_coverage_audit_prompt_invalid");
