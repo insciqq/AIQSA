@@ -139,7 +139,10 @@ validation-reason enum; provider failures are not retried. Correction starts
 only when both remaining calls fit. Every supplemental claim names exactly one
 initially missing positive Scope target; its citation hints are advisory and
 remain bounded to available manifest handles. The final Selector independently
-chooses factual support and enforces immutable target provenance. It is a delta:
+chooses factual support and enforces immutable target provenance. Supplement
+also receives a complete bounded D-to-exact-atom projection derived from the
+accepted Scope; an oversized projection disables correction instead of being
+truncated. This performs no retrieval or semantic server reduction. It is a delta:
 the accepted base remains immutable and a target can close only through its own
 supported supplemental claim. Every later request
 pins the exact accepted Scope result hash. Selector coverage requires each

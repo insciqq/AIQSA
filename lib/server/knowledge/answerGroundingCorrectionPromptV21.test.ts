@@ -93,9 +93,10 @@ function fixture() {
 
 describe("targeted correction prompts", () => {
   it("makes exact D targets explicit without treating them as evidence", () => {
-    const { draft, manifest, request, selector } = fixture();
+    const { draft, evidence, manifest, request, selector } = fixture();
     const prompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: [selector.coverage[1]!],
+      evidence,
       evidenceManifest: manifest.message,
       primaryDraft: draft,
       request,
@@ -103,12 +104,37 @@ describe("targeted correction prompts", () => {
     });
     const payload = JSON.parse(prompt.userPrompt) as Record<string, unknown>;
     expect(payload).toMatchObject({
+      targetEvidenceAtomIndex: {
+        atoms: [{
+          handle: "K1",
+          id: "A2",
+          text: "Beta preserves order."
+        }],
+        targets: [{
+          evidenceAtomIds: ["A2"],
+          targetDimensionId: "D2"
+        }],
+        version: 1
+      },
       targetingMode: "exact_missing_dimension"
     });
     expect(prompt.systemPrompt).toContain("targetDimensionId");
     expect(prompt.systemPrompt).toContain("never evidence");
     expect(prompt.systemPrompt).toContain("advisory routing metadata, not proof");
     expect(prompt.systemPrompt).toContain("final delta Selector independently chooses");
+    expect(prompt.systemPrompt).toContain("deterministic complete projection");
+  });
+
+  it("fails closed rather than projecting incomplete target evidence", () => {
+    const { draft, manifest, request, selector } = fixture();
+    expect(() => knowledgeAnswerTargetedSupplementPromptV1({
+      auditDimensions: [selector.coverage[1]!],
+      evidence: [],
+      evidenceManifest: manifest.message,
+      primaryDraft: draft,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    })).toThrow("knowledge_targeted_supplement_prompt_invalid");
   });
 
   it("pins immutable base state and claim-to-dimension bindings into final delta", () => {

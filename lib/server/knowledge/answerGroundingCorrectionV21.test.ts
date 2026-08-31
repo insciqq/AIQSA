@@ -11,6 +11,7 @@ import {
   decodeKnowledgeTargetedSupplementV1,
   decodeKnowledgeTargetedSupplementFailureV1,
   knowledgeTargetableMissingDimensionsV1,
+  knowledgeTargetedEvidenceAtomIndexV1,
   knowledgeTargetedSupplementFitsV1,
   mergeKnowledgeGroundedCorrectionV1,
   mergeKnowledgeTargetedSupplementV1,
@@ -110,6 +111,64 @@ describe("target-addressed Knowledge correction", () => {
       primaryClaimCount: 0,
       targetableDimensionCount: 2
     })).toBe(false);
+  });
+
+  it("projects only exact immutable atoms assigned to correction targets", () => {
+    const target = dimension("D2", "K2", "missing");
+    expect(knowledgeTargetedEvidenceAtomIndexV1({
+      evidence: [{
+        exactExcerpt: "Alpha is bounded. Beta preserves order.",
+        handle: "K2"
+      }],
+      targetDimensions: [target]
+    })).toEqual({
+      atoms: [{
+        handle: "K2",
+        id: "A2",
+        text: "Beta preserves order."
+      }],
+      targets: [{
+        evidenceAtomIds: ["A2"],
+        targetDimensionId: "D2"
+      }],
+      version: 1
+    });
+    expect(knowledgeTargetedEvidenceAtomIndexV1({
+      evidence: [{ exactExcerpt: "Alpha is bounded.", handle: "K2" }],
+      targetDimensions: [target]
+    })).toBeNull();
+  });
+
+  it("disables correction instead of truncating an oversized atom projection", () => {
+    const atomIds = (start: number, count: number) => Object.freeze(
+      Array.from({ length: count }, (_, index) => `A${start + index}`)
+    );
+    const target = (
+      id: string,
+      evidenceAtomIds: readonly string[]
+    ): KnowledgeCoverageDimensionV6 => Object.freeze({
+      description: `Explain ${id}.`,
+      evidenceAtomIds,
+      evidenceHandles: Object.freeze(["K1"]),
+      id,
+      requestAnchor: "Explain",
+      status: "missing",
+      supportIds: Object.freeze([])
+    });
+    expect(knowledgeTargetedEvidenceAtomIndexV1({
+      evidence: [{
+        exactExcerpt: Array.from(
+          { length: 129 },
+          (_, index) => `Fact ${index + 1}.`
+        ).join(" "),
+        handle: "K1"
+      }],
+      targetDimensions: [
+        target("D1", atomIds(1, 43)),
+        target("D2", atomIds(44, 43)),
+        target("D3", atomIds(87, 43))
+      ]
+    })).toBeNull();
   });
 
   it("keeps hints advisory while rejecting missing targets and primary duplicates", () => {
