@@ -12,7 +12,7 @@ function fixture() {
     candidates: [{
       ambiguity: "none",
       evidenceId: "provider-call:result:1",
-      exactExcerpt: "The construction is finite. It also has an ample line bundle.",
+      exactExcerpt: "The Atlas pipeline enforces a bounded queue. It preserves input ordering.",
       fileName: "result.md",
       handle: "K1",
       locator: "section=Result",
@@ -33,22 +33,22 @@ function fixture() {
     promptFragmentVersion: 1,
     runtimeVersion: 1
   });
-  const request = "What properties of the construction follow from the result?";
+  const request = "What guarantees of the Atlas pipeline follow from the result?";
   return {
     evidence: knowledgeSelectorEvidenceFromManifest(manifest),
     manifest,
     request,
     scope: {
       scope: [{
-        description: "State that the construction is finite.",
+        description: "State that the Atlas pipeline enforces a bounded queue.",
         evidenceHandles: ["K1"],
         id: "D1",
-        requestAnchor: "properties"
+        requestAnchor: "guarantees"
       }, {
-        description: "State that the construction has an ample line bundle.",
+        description: "State that the Atlas pipeline preserves input ordering.",
         evidenceHandles: ["K1"],
         id: "D2",
-        requestAnchor: "properties"
+        requestAnchor: "guarantees"
       }],
       version: 3
     } as const

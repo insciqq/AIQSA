@@ -20,7 +20,7 @@ const evidence: readonly KnowledgeSelectorEvidenceV1[] = Object.freeze([
     handle: "K1"
   }),
   Object.freeze({
-    exactExcerpt: "The construction is finite, and its pulled-back line bundle is ample.",
+    exactExcerpt: "The controller bounds queue depth and preserves arrival order.",
     handle: "K2"
   }),
   Object.freeze({
@@ -29,14 +29,14 @@ const evidence: readonly KnowledgeSelectorEvidenceV1[] = Object.freeze([
   })
 ]);
 
-const request = "How does the construction establish its properties and preserve ampleness?";
+const request = "How does the controller enforce its guarantees and preserve arrival order?";
 
 const supportedView: KnowledgeSupportedAnswerViewV1 = Object.freeze({
   claims: Object.freeze([
     Object.freeze({
       id: "C1",
       supportHandles: Object.freeze(["K2"]),
-      text: "The construction is finite."
+      text: "The controller bounds queue depth."
     }),
     Object.freeze({
       id: "C2",
@@ -55,15 +55,15 @@ function coequalAudit(): unknown {
       supportIds: []
     }],
     scope: [{
-      description: "State the direct property established for the construction.",
+      description: "State how the controller bounds queue depth.",
       evidenceHandles: ["K2"],
       id: "D1",
-      requestAnchor: "establish its properties"
+      requestAnchor: "enforce its guarantees"
     }, {
-      description: "State how the construction preserves ampleness.",
+      description: "State how the controller preserves arrival order.",
       evidenceHandles: ["K2"],
       id: "D2",
-      requestAnchor: "preserve ampleness"
+      requestAnchor: "preserve arrival order"
     }],
     version: 2
   };
@@ -110,7 +110,7 @@ describe("Coverage Auditor V2 contracts", () => {
     ]);
     expect(deriveKnowledgeCoverageV2(audit!)).toEqual({
       coveredDimensionCount: 1,
-      missingInformation: ["State how the construction preserves ampleness."],
+      missingInformation: ["State how the controller preserves arrival order."],
       requestCoverage: "partial",
       supportedContentCount: 1
     });

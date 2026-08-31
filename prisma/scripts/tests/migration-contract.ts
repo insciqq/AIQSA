@@ -52,6 +52,8 @@ const KNOWLEDGE_ANSWER_AUDIT_V21_MIGRATION =
   "20260831030000_knowledge_answer_audit_v21";
 const KNOWLEDGE_COVERAGE_SCOPE_V3_MIGRATION =
   "20260831043000_knowledge_coverage_scope_v3";
+const KNOWLEDGE_COVERAGE_ATOMS_V4_MIGRATION =
+  "20260831060000_knowledge_coverage_atoms_v4";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
@@ -1086,6 +1088,11 @@ function runKnowledgeH2DurableDispatchMigrationProof(
     coverageScopeV3Index > answerAuditV21Index,
     "Knowledge Coverage Scope V3 migration is missing",
   );
+  const coverageAtomsV4Index = committed.indexOf(KNOWLEDGE_COVERAGE_ATOMS_V4_MIGRATION);
+  assert.ok(
+    coverageAtomsV4Index > coverageScopeV3Index,
+    "Knowledge Coverage atom review V4 migration is missing",
+  );
   const probeParent = join(repositoryRoot, ".aiqsa");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
@@ -1311,11 +1318,11 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'KnowledgeProviderAttempt_answer_result_state_check'
           )
           AND convalidated
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_v3%'
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_grounded_selector%1[0-8]%';
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_v[34]%'
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_grounded_selector%1[0-9]%';
       `),
       "2",
-      "Blind Scope V3 and Selector V18 are missing from durable attempt constraints",
+      "Atom-review Scope V4 and Selector V19 are missing from durable constraints",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1323,11 +1330,13 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         WHERE schemaname = 'public'
           AND indexname IN (
             'KnowledgeProviderAttempt_v21_scope_request_key',
-            'KnowledgeProviderAttempt_v21_selector_v18_request_key'
+            'KnowledgeProviderAttempt_v21_selector_v18_request_key',
+            'KnowledgeProviderAttempt_v21_scope_v4_request_key',
+            'KnowledgeProviderAttempt_v21_selector_v19_request_key'
           );
       `),
-      "2",
-      "Blind Scope V3 structural-repair request uniqueness is missing",
+      "4",
+      "Scope V3/V4 structural-repair request uniqueness is missing",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1339,6 +1348,17 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       `),
       "1",
       "Grounding Evidence V19 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%20%';
+      `),
+      "1",
+      "Grounding Evidence V20 is missing from the durable evidence constraint",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1948,71 +1968,71 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       ) VALUES
         (
           'knowledge-v21-scope-initial', 'knowledge-h2-run-2', 'answer', 10, 0,
-          'knowledge_coverage_scope_v3', 3, repeat('a', 64),
-          '{"version":3,"operation":"knowledge_coverage_scope_v3","pass":"initial"}'::jsonb,
+          'knowledge_coverage_scope_v4', 4, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_coverage_scope_v4","pass":"initial"}'::jsonb,
           'knowledge-v21-scope-initial-key', repeat('a', 64), repeat('a', 64),
           'reserved', '{}'::jsonb, 'knowledge-v21-scope-initial-lease',
           CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         ),
         (
           'knowledge-v21-scope-repair', 'knowledge-h2-run-2', 'answer', 11, 0,
-          'knowledge_coverage_scope_v3', 3, repeat('a', 64),
-          '{"version":3,"operation":"knowledge_coverage_scope_v3","pass":"repair"}'::jsonb,
+          'knowledge_coverage_scope_v4', 4, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_coverage_scope_v4","pass":"repair"}'::jsonb,
           'knowledge-v21-scope-repair-key', repeat('b', 64), repeat('b', 64),
           'reserved', '{}'::jsonb, 'knowledge-v21-scope-repair-lease',
           CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         ),
         (
           'knowledge-v21-selector-v18-initial', 'knowledge-h2-run-2', 'answer', 12, 0,
-          'knowledge_grounded_selector_v18', 18, repeat('a', 64),
-          '{"version":3,"operation":"knowledge_grounded_selector_v18","pass":"initial"}'::jsonb,
+          'knowledge_grounded_selector_v19', 19, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_grounded_selector_v19","pass":"initial"}'::jsonb,
           'knowledge-v21-selector-v18-initial-key', repeat('c', 64), repeat('c', 64),
           'reserved', '{}'::jsonb, 'knowledge-v21-selector-v18-initial-lease',
           CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         ),
         (
           'knowledge-v21-selector-v18-repair', 'knowledge-h2-run-2', 'answer', 13, 0,
-          'knowledge_grounded_selector_v18', 18, repeat('a', 64),
-          '{"version":3,"operation":"knowledge_grounded_selector_v18","pass":"repair"}'::jsonb,
+          'knowledge_grounded_selector_v19', 19, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_grounded_selector_v19","pass":"repair"}'::jsonb,
           'knowledge-v21-selector-v18-repair-key', repeat('d', 64), repeat('d', 64),
           'reserved', '{}'::jsonb, 'knowledge-v21-selector-v18-repair-lease',
           CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         ),
         (
           'knowledge-v21-selector-v18-final', 'knowledge-h2-run-2', 'answer', 14, 0,
-          'knowledge_grounded_selector_final_v18', 18, repeat('a', 64),
-          '{"version":3,"operation":"knowledge_grounded_selector_final_v18"}'::jsonb,
+          'knowledge_grounded_selector_final_v19', 19, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_grounded_selector_final_v19"}'::jsonb,
           'knowledge-v21-selector-v18-final-key', repeat('e', 64), repeat('e', 64),
           'reserved', '{}'::jsonb, 'knowledge-v21-selector-v18-final-lease',
           CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         );
-      SELECT 'knowledge-v21-scope-v3-sequence-ready';
+      SELECT 'knowledge-v21-scope-v4-sequence-ready';
     `);
     assert.equal(
       psqlScalar(database, `
         SELECT count(*) FROM "KnowledgeProviderAttempt"
         WHERE "modelRunId" = 'knowledge-h2-run-2'
           AND purpose IN (
-            'knowledge_coverage_scope_v3',
-            'knowledge_grounded_selector_v18',
-            'knowledge_grounded_selector_final_v18'
+            'knowledge_coverage_scope_v4',
+            'knowledge_grounded_selector_v19',
+            'knowledge_grounded_selector_final_v19'
           );
       `),
       "5",
-      "V21 blind Scope, one repair, and Selector V18 sequence was not accepted",
+      "V21 atom-review Scope, one repair, and Selector V19 sequence was not accepted",
     );
     for (const duplicate of [{
       id: "knowledge-v21-scope-duplicate",
-      index: "KnowledgeProviderAttempt_v21_scope_request_key",
-      purpose: "knowledge_coverage_scope_v3",
+      index: "KnowledgeProviderAttempt_v21_scope_v4_request_key",
+      purpose: "knowledge_coverage_scope_v4",
       requestHash: "a",
-      version: 3,
+      version: 4,
     }, {
       id: "knowledge-v21-selector-v18-duplicate",
-      index: "KnowledgeProviderAttempt_v21_selector_v18_request_key",
-      purpose: "knowledge_grounded_selector_v18",
+      index: "KnowledgeProviderAttempt_v21_selector_v19_request_key",
+      purpose: "knowledge_grounded_selector_v19",
       requestHash: "c",
-      version: 18,
+      version: 19,
     }] as const) {
       const duplicateCurrentRequest = compose([
         "exec", "-T", POSTGRES_SERVICE,
@@ -2050,23 +2070,23 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
         evidence
       ) VALUES (
-        'knowledge-h2-session-2', 19, 'answered', repeat('6', 64), repeat('7', 64),
-        '{"version":19,"contracts":{"draftContractVersion":21,"selectorContractVersion":18,"coverageAuditorContractVersion":3,"settlementVersion":6}}'::jsonb
+        'knowledge-h2-session-2', 20, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":20,"contracts":{"draftContractVersion":21,"selectorContractVersion":19,"coverageAuditorContractVersion":4,"settlementVersion":6}}'::jsonb
       );
-      SELECT 'knowledge-v21-grounding-evidence-v19-ready';
+      SELECT 'knowledge-v21-grounding-evidence-v20-ready';
     `);
     assert.equal(
       psqlScalar(database, `
         SELECT count(*) FROM "KnowledgeGroundingResult"
-        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 19;
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 20;
       `),
       "1",
-      "Grounding Evidence V19 was not durably accepted",
+      "Grounding Evidence V20 was not durably accepted",
     );
     psqlScalar(database, `
       DELETE FROM "KnowledgeGroundingResult"
-      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 19;
-      SELECT 'knowledge-v21-grounding-evidence-v19-cleaned';
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 20;
+      SELECT 'knowledge-v21-grounding-evidence-v20-cleaned';
     `);
     psqlScalar(database, `
       INSERT INTO "KnowledgeGroundingResult" (

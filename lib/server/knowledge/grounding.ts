@@ -17,9 +17,11 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
   type KnowledgeAnswerOperationScopeV3,
+  type KnowledgeAnswerOperationScopeV4,
   type KnowledgeAnswerOperationAuditV2,
   type KnowledgeAnswerV21AuditV2ContractVersions,
-  type KnowledgeAnswerV21ContractVersions
+  type KnowledgeAnswerV21ContractVersions,
+  type KnowledgeAnswerV21ScopeV3ContractVersions
 } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV2";
 import { KNOWLEDGE_COVERAGE_SCOPE_OPERATION } from "./coverageScopeV3";
@@ -27,6 +29,11 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
 } from "./answerGroundingSelectorV18";
+import { KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION } from "./coverageScopeV4";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+} from "./answerGroundingSelectorV19";
 import {
   decodeKnowledgeProviderAttemptUsage,
   type KnowledgeProviderAttemptUsage
@@ -50,6 +57,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION = 16 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V17 = 17 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18 = 18 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19 = 19 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V20 = 20 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -422,7 +430,7 @@ export type KnowledgeGroundingEvidenceV19 = Omit<
   KnowledgeGroundingEvidenceV18,
   "audit" | "contracts" | "operations" | "version"
 > & Readonly<{
-  contracts: KnowledgeAnswerV21ContractVersions;
+  contracts: KnowledgeAnswerV21ScopeV3ContractVersions;
   coverage: Readonly<{
     coveredDimensionCount: number;
     missingDimensionCount: number;
@@ -440,6 +448,28 @@ export type KnowledgeGroundingEvidenceV19 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV20 = Readonly<{
+  acceptedRequestHash: string;
+  acceptedResultHash: string;
+  contractVersion: 4 | 19 | 21;
+  durationMs: number;
+  operationId: string;
+  ordinal: 1 | 2 | 3 | 4 | 5 | 6;
+  providerRequestId: string | null;
+  purpose: KnowledgeAnswerOperationScopeV4;
+  role: KnowledgeGroundingOperationEvidenceV19["role"];
+  usage: KnowledgeProviderAttemptUsage;
+}>;
+
+export type KnowledgeGroundingEvidenceV20 = Omit<
+  KnowledgeGroundingEvidenceV19,
+  "contracts" | "operations" | "version"
+> & Readonly<{
+  contracts: KnowledgeAnswerV21ContractVersions;
+  operations: readonly KnowledgeGroundingOperationEvidenceV20[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V20;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -454,7 +484,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV16
   | KnowledgeGroundingEvidenceV17
   | KnowledgeGroundingEvidenceV18
-  | KnowledgeGroundingEvidenceV19;
+  | KnowledgeGroundingEvidenceV19
+  | KnowledgeGroundingEvidenceV20;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -1427,7 +1458,7 @@ function validGroundingOperationV19(
  * aggregates are sufficient for recovery and operations. */
 export function groundSettledKnowledgeAnswerV19(input: Readonly<{
   answerBindingFingerprint: string;
-  contracts: KnowledgeAnswerV21ContractVersions;
+  contracts: KnowledgeAnswerV21ScopeV3ContractVersions;
   coverage: Readonly<{
     coveredDimensionCount: number;
     missingDimensionCount: number;
@@ -1570,6 +1601,86 @@ export function groundSettledKnowledgeAnswerV19(input: Readonly<{
     supportedClaimCount: input.settlement.supportedClaimCount,
     unsupportedClaimCount: input.settlement.unsupportedClaimCount,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19
+  });
+}
+
+function validGroundingOperationV20(
+  operation: KnowledgeGroundingOperationEvidenceV20,
+  ordinal: number
+): boolean {
+  const purpose = operation.role === "primary"
+    ? KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+    : operation.role === "scope" || operation.role === "scope_repair"
+      ? KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
+      : operation.role === "initial" || operation.role === "repair"
+        ? KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+        : operation.role === "supplement"
+          ? KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+          : KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19;
+  const contractVersion = operation.role === "primary" ||
+    operation.role === "supplement"
+    ? 21
+    : operation.role === "scope" || operation.role === "scope_repair"
+      ? 4
+      : 19;
+  return operation.ordinal === ordinal && operation.purpose === purpose &&
+    operation.contractVersion === contractVersion;
+}
+
+/** V20 retains the content-free V19 receipt while attesting the exhaustive
+ * evidence-atom review contract and its V19 Selector consumer. */
+export function groundSettledKnowledgeAnswerV20(input: Omit<Parameters<
+  typeof groundSettledKnowledgeAnswerV19
+>[0], "contracts" | "operations"> & Readonly<{
+  contracts: KnowledgeAnswerV21ContractVersions;
+  operations: readonly KnowledgeGroundingOperationEvidenceV20[];
+}>): KnowledgeGroundingEvidenceV20 {
+  if (input.contracts.draftContractVersion !== 21 ||
+    input.contracts.selectorContractVersion !== 19 ||
+    input.contracts.coverageAuditorContractVersion !== 4 ||
+    input.contracts.settlementVersion !== 6 ||
+    !input.operations.every((operation, index) =>
+      validGroundingOperationV20(operation, index + 1))) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted atom-review Knowledge grounding evidence is invalid"
+    );
+  }
+  const historicalOperations: KnowledgeGroundingOperationEvidenceV19[] =
+    input.operations.map((operation) => {
+      const scope = operation.role === "scope" || operation.role === "scope_repair";
+      const selector = operation.role === "initial" || operation.role === "repair" ||
+        operation.role === "final";
+      return Object.freeze({
+        ...operation,
+        contractVersion: scope ? 3 as const : selector ? 18 as const : 21 as const,
+        purpose: scope
+          ? KNOWLEDGE_COVERAGE_SCOPE_OPERATION
+          : operation.role === "initial" || operation.role === "repair"
+            ? KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
+            : operation.role === "final"
+              ? KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18
+              : operation.purpose
+      }) as KnowledgeGroundingOperationEvidenceV19;
+    });
+  const historical = groundSettledKnowledgeAnswerV19({
+    ...input,
+    contracts: Object.freeze({
+      coverageAuditorContractVersion: 3,
+      draftContractVersion: 21,
+      selectorContractVersion: 18,
+      settlementVersion: 6
+    }),
+    operations: Object.freeze(historicalOperations)
+  });
+  return Object.freeze({
+    ...historical,
+    contracts: Object.freeze({ ...input.contracts }),
+    operations: Object.freeze(input.operations.map((operation) => Object.freeze({
+      ...operation,
+      usage: Object.freeze({ ...operation.usage })
+    }))),
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V20
   });
 }
 

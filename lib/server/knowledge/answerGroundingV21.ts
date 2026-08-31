@@ -59,12 +59,24 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3
 } from "./coverageScopeV3";
 import {
+  KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V4,
+  KNOWLEDGE_COVERAGE_SCOPE_V4_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
+} from "./coverageScopeV4";
+import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V18,
   KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
   type KnowledgeGroundedSelectorV18
 } from "./answerGroundingSelectorV18";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V19,
+  KNOWLEDGE_GROUNDED_SELECTOR_V19_CONTRACT_VERSION,
+  type KnowledgeGroundedSelectorV19
+} from "./answerGroundingSelectorV19";
 import {
   decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
   knowledgeGroundingReasoningEffortForRoleV1,
@@ -81,10 +93,17 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION = 6 as const;
 
 export type KnowledgeAnswerV21ContractVersions = Readonly<{
-  coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION;
+  coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_SCOPE_V4_CONTRACT_VERSION;
   draftContractVersion: typeof KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION;
-  selectorContractVersion: typeof KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION;
+  selectorContractVersion: typeof KNOWLEDGE_GROUNDED_SELECTOR_V19_CONTRACT_VERSION;
   settlementVersion: typeof KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION;
+}>;
+
+export type KnowledgeAnswerV21ScopeV3ContractVersions = Readonly<{
+  coverageAuditorContractVersion: 3;
+  draftContractVersion: 21;
+  selectorContractVersion: 18;
+  settlementVersion: 6;
 }>;
 
 export type KnowledgeAnswerV21AuditV2ContractVersions = Readonly<{
@@ -101,10 +120,17 @@ export const KNOWLEDGE_ANSWER_V21_AUDIT_V2_CONTRACT_VERSIONS = Object.freeze({
   settlementVersion: KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION
 } as const satisfies KnowledgeAnswerV21AuditV2ContractVersions);
 
-export const KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS = Object.freeze({
+export const KNOWLEDGE_ANSWER_V21_SCOPE_V3_CONTRACT_VERSIONS = Object.freeze({
   coverageAuditorContractVersion: KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
   draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
+  settlementVersion: KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION
+} as const satisfies KnowledgeAnswerV21ScopeV3ContractVersions);
+
+export const KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS = Object.freeze({
+  coverageAuditorContractVersion: KNOWLEDGE_COVERAGE_SCOPE_V4_CONTRACT_VERSION,
+  draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+  selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V19_CONTRACT_VERSION,
   settlementVersion: KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION
 } as const satisfies KnowledgeAnswerV21ContractVersions);
 
@@ -141,6 +167,18 @@ export const KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V18_SCOPE_V3 = Object.freeze({
   supplementalDraftOperation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
 } as const);
 
+export const KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V19_SCOPE_V4 = Object.freeze({
+  coverageAuditorContractVersion: KNOWLEDGE_COVERAGE_SCOPE_V4_CONTRACT_VERSION,
+  coverageAuditorOperation: KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
+  draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+  draftOperation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  finalSelectorOperation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19,
+  selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V19_CONTRACT_VERSION,
+  selectorOperation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19,
+  settlementVersion: KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION,
+  supplementalDraftOperation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+} as const);
+
 export const KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21 = KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V6;
 export const KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21 =
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V7;
@@ -163,8 +201,15 @@ export type KnowledgeAnswerOperationScopeV3 =
   | typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
   | typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18;
 
+export type KnowledgeAnswerOperationScopeV4 =
+  | typeof KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+  | typeof KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+  | typeof KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
+  | typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+  | typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19;
+
 export type KnowledgeAnswerOperationV21 = KnowledgeAnswerOperationAuditV2 |
-  KnowledgeAnswerOperationScopeV3;
+  KnowledgeAnswerOperationScopeV3 | KnowledgeAnswerOperationScopeV4;
 
 export type KnowledgeAnswerOperationRequestSnapshotV21V1 = Readonly<{
   auditPayloadHash: string | null;
@@ -220,10 +265,30 @@ export type KnowledgeAnswerOperationRequestSnapshotV21V3 = Readonly<{
   version: 3;
 }>;
 
+export type KnowledgeAnswerOperationRequestSnapshotV21V4 = Readonly<{
+  contractVersion: 4 | 19 | 21;
+  coverageScopePayloadHash: string | null;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationScopeV4;
+  operation: KnowledgeAnswerOperationScopeV4;
+  pipeline: "scope_v4";
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 4;
+}>;
+
 export type KnowledgeAnswerOperationRequestSnapshotV21 =
   | KnowledgeAnswerOperationRequestSnapshotV21V1
   | KnowledgeAnswerOperationRequestSnapshotV21V2
-  | KnowledgeAnswerOperationRequestSnapshotV21V3;
+  | KnowledgeAnswerOperationRequestSnapshotV21V3
+  | KnowledgeAnswerOperationRequestSnapshotV21V4;
 
 export type KnowledgeGroundedSelectorFailureReasonV17 = Exclude<
   KnowledgeAnswerFallbackReason,
@@ -425,6 +490,43 @@ function scopeV3OperationMetadata(operation: unknown): Readonly<{
   return null;
 }
 
+function scopeV4OperationMetadata(operation: unknown): Readonly<{
+  contractVersion: 4 | 19 | 21;
+  requiresPayload: boolean;
+  schema: Readonly<Record<string, unknown>>;
+}> | null {
+  if (operation === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      requiresPayload: false,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21
+    });
+  }
+  if (operation === KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V4_CONTRACT_VERSION,
+      requiresPayload: false,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V4
+    });
+  }
+  if (operation === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19 ||
+    operation === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V19_CONTRACT_VERSION,
+      requiresPayload: true,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V19
+    });
+  }
+  if (operation === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      requiresPayload: true,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21
+    });
+  }
+  return null;
+}
+
 export function knowledgeAnswerOperationExecutionRoleV21(
   operation: KnowledgeAnswerOperationV21
 ): KnowledgeGroundingExecutionRole {
@@ -437,44 +539,52 @@ export function knowledgeAnswerOperationExecutionRoleV21(
     case KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17:
     case KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18:
     case KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18:
+    case KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19:
+    case KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19:
       return "selector";
     case KNOWLEDGE_COVERAGE_AUDITOR_OPERATION:
     case KNOWLEDGE_COVERAGE_SCOPE_OPERATION:
+    case KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION:
       return "auditor";
   }
 }
 
 export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly<{
   auditPayloadHash?: string | null;
-  contractVersion: 1 | 2 | 3 | 17 | 18 | 21;
+  contractVersion: 1 | 2 | 3 | 4 | 17 | 18 | 19 | 21;
   coverageScopePayloadHash?: string | null;
   evidenceReceiptHash: string;
   executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
   maxOutputTokens: number;
   operation: KnowledgeAnswerOperationV21;
-  protocol?: "scope_v3";
+  protocol?: "scope_v3" | "scope_v4";
   reasoningEffort?: string | null;
   schema: Readonly<Record<string, unknown>>;
   systemPrompt: string;
   transport: KnowledgeAnswerOperationRequestSnapshotV21["transport"];
   userPrompt: string;
 }>): KnowledgeAnswerOperationRequestSnapshotV21 {
-  const currentProtocol = input.protocol === "scope_v3";
-  const metadata = currentProtocol
-    ? scopeV3OperationMetadata(input.operation)
-    : legacyV21OperationMetadata(input.operation);
+  const scopeProtocol = input.protocol ?? null;
+  const scopedProtocol = scopeProtocol !== null;
+  const metadata = scopeProtocol === "scope_v4"
+    ? scopeV4OperationMetadata(input.operation)
+    : scopeProtocol === "scope_v3"
+      ? scopeV3OperationMetadata(input.operation)
+      : legacyV21OperationMetadata(input.operation);
   const auditPayloadHash = input.auditPayloadHash ?? null;
   const coverageScopePayloadHash = input.coverageScopePayloadHash ?? null;
   const executionPolicy = input.executionPolicy === undefined
     ? null
     : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
-  if (!metadata || metadata.contractVersion !== input.contractVersion ||
-    currentProtocol && (!executionPolicy || input.auditPayloadHash !== undefined) ||
-    !currentProtocol && input.coverageScopePayloadHash !== undefined ||
+  if (scopeProtocol !== null && scopeProtocol !== "scope_v3" &&
+      scopeProtocol !== "scope_v4" || !metadata ||
+    metadata.contractVersion !== input.contractVersion ||
+    scopedProtocol && (!executionPolicy || input.auditPayloadHash !== undefined) ||
+    !scopedProtocol && input.coverageScopePayloadHash !== undefined ||
     input.executionPolicy !== undefined && !executionPolicy ||
     input.executionPolicy !== undefined && input.reasoningEffort !== undefined ||
     knowledgeAnswerHash(metadata.schema) !== knowledgeAnswerHash(input.schema) ||
-    (currentProtocol
+    (scopedProtocol
       ? metadata.requiresPayload !== (coverageScopePayloadHash !== null)
       : metadata.requiresPayload !== (auditPayloadHash !== null)) ||
     auditPayloadHash !== null && !/^[0-9a-f]{64}$/u.test(auditPayloadHash) ||
@@ -513,8 +623,20 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
     transport: input.transport,
     userPrompt: input.userPrompt
   };
-  const snapshot: KnowledgeAnswerOperationRequestSnapshotV21 = currentProtocol
-    ? Object.freeze({
+  const snapshot: KnowledgeAnswerOperationRequestSnapshotV21 =
+    scopeProtocol === "scope_v4"
+      ? Object.freeze({
+          ...snapshotBase,
+          contractVersion: input.contractVersion as 4 | 19 | 21,
+          coverageScopePayloadHash,
+          executionPolicy: executionPolicy!,
+          name: input.operation as KnowledgeAnswerOperationScopeV4,
+          operation: input.operation as KnowledgeAnswerOperationScopeV4,
+          pipeline: "scope_v4" as const,
+          version: 4 as const
+        })
+      : scopeProtocol === "scope_v3"
+        ? Object.freeze({
         ...snapshotBase,
         contractVersion: input.contractVersion as 3 | 18 | 21,
         coverageScopePayloadHash,
@@ -524,20 +646,20 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
         pipeline: "scope_v3" as const,
         version: 3 as const
       })
-    : executionPolicy
-      ? Object.freeze({
-          ...snapshotBase,
-          auditPayloadHash,
-          contractVersion: input.contractVersion as 1 | 2 | 17 | 21,
-          executionPolicy,
-          version: 2 as const
-        }) as KnowledgeAnswerOperationRequestSnapshotV21V2
-      : Object.freeze({
-          ...snapshotBase,
-          auditPayloadHash,
-          contractVersion: input.contractVersion as 1 | 2 | 17 | 21,
-          version: 1 as const
-        }) as KnowledgeAnswerOperationRequestSnapshotV21V1;
+        : executionPolicy
+          ? Object.freeze({
+              ...snapshotBase,
+              auditPayloadHash,
+              contractVersion: input.contractVersion as 1 | 2 | 17 | 21,
+              executionPolicy,
+              version: 2 as const
+            }) as KnowledgeAnswerOperationRequestSnapshotV21V2
+          : Object.freeze({
+              ...snapshotBase,
+              auditPayloadHash,
+              contractVersion: input.contractVersion as 1 | 2 | 17 | 21,
+              version: 1 as const
+            }) as KnowledgeAnswerOperationRequestSnapshotV21V1;
   if (Buffer.byteLength(knowledgeAnswerCanonicalJson(snapshot), "utf8") >
     KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES) {
     throw new Error("knowledge_answer_operation_request_invalid");
@@ -549,10 +671,12 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
   value: unknown
 ): KnowledgeAnswerOperationRequestSnapshotV21 | null {
   if (!record(value) || value.version !== 1 && value.version !== 2 &&
-    value.version !== 3) return null;
-  const metadata = value.version === 3
-    ? scopeV3OperationMetadata(value.operation)
-    : legacyV21OperationMetadata(value.operation);
+    value.version !== 3 && value.version !== 4) return null;
+  const metadata = value.version === 4
+    ? scopeV4OperationMetadata(value.operation)
+    : value.version === 3
+      ? scopeV3OperationMetadata(value.operation)
+      : legacyV21OperationMetadata(value.operation);
   const expectedKeys = value.version === 1 ? [
     "version",
     "operation",
@@ -602,12 +726,13 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     "executionPolicy",
     "pipeline"
   ];
-  const payloadHash = value.version === 3
+  const payloadHash = value.version === 3 || value.version === 4
     ? value.coverageScopePayloadHash
     : value.auditPayloadHash;
   if (!exactKeys(value, expectedKeys) || !metadata || value.name !== value.operation ||
     value.contractVersion !== metadata.contractVersion ||
     value.version === 3 && value.pipeline !== "scope_v3" ||
+    value.version === 4 && value.pipeline !== "scope_v4" ||
     value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
     value.tools !== "none" || !record(value.schema) ||
     typeof value.schemaHash !== "string" ||
@@ -648,7 +773,8 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     ...value,
     executionPolicy
   } as unknown as KnowledgeAnswerOperationRequestSnapshotV21V2 |
-    KnowledgeAnswerOperationRequestSnapshotV21V3);
+    KnowledgeAnswerOperationRequestSnapshotV21V3 |
+    KnowledgeAnswerOperationRequestSnapshotV21V4);
 }
 
 export const KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V21 = Object.freeze([
@@ -1320,7 +1446,8 @@ export function settleKnowledgeAnswerV21FromAudit(input: Readonly<{
 export function settleKnowledgeAnswerV21FromFinalSelector(input: Readonly<{
   draft: KnowledgeAnswerDraftSelectorInput;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
-  selector: KnowledgeGroundedSelectorFinalV17 | KnowledgeGroundedSelectorV18;
+  selector: KnowledgeGroundedSelectorFinalV17 | KnowledgeGroundedSelectorV18 |
+    KnowledgeGroundedSelectorV19;
 }>): KnowledgeAnswerSettlementV5 {
   const supportedView = buildKnowledgeSupportedAnswerViewV1({
     draft: input.draft,
@@ -1410,7 +1537,7 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
   request: string;
   routeInstruction: string;
 }> | null {
-  const payloadHash = input.snapshot.version === 3
+  const payloadHash = input.snapshot.version === 3 || input.snapshot.version === 4
     ? input.snapshot.coverageScopePayloadHash
     : input.snapshot.auditPayloadHash;
   if (input.snapshot.operation !== KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 ||
@@ -1449,7 +1576,12 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
       evidenceReceiptHash: input.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(input.snapshot.version === 3
+      ...(input.snapshot.version === 4
+        ? {
+            executionPolicy: input.snapshot.executionPolicy,
+            protocol: "scope_v4" as const
+          }
+        : input.snapshot.version === 3
         ? {
             executionPolicy: input.snapshot.executionPolicy,
             protocol: "scope_v3" as const
