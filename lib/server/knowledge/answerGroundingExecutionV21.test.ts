@@ -16,8 +16,8 @@ import {
   type KnowledgeAnswerOperationExecutionV21
 } from "./answerGroundingExecutionV21";
 import {
-  executeKnowledgeAnswerGroundingV21 as executeKnowledgeAnswerGroundingV21ScopeV3
-} from "./answerGroundingExecutionV21ScopeV3";
+  executeKnowledgeAnswerGroundingV21 as executeKnowledgeAnswerGroundingV21ScopeV4
+} from "./answerGroundingExecutionV21ScopeV4";
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
@@ -30,13 +30,14 @@ import {
   decodeKnowledgeCoverageAuditPromptV2
 } from "./coverageAuditV2";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
-  decodeKnowledgeCoverageScopePromptV3
-} from "./coverageScopeV3";
+  KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
+  decodeKnowledgeCoverageScopePromptV4,
+  knowledgeCoverageEvidenceFromManifestV4
+} from "./coverageScopeV4";
 import {
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
-} from "./answerGroundingSelectorV18";
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+} from "./answerGroundingSelectorV19";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "./groundingExecutionPolicy";
 
@@ -345,7 +346,7 @@ describe("V21 audited Knowledge answer execution", () => {
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     expect(new Set(snapshots.map(({ evidenceReceiptHash }) => evidenceReceiptHash)).size)
       .toBe(1);
-    expect(snapshots.every((snapshot) => snapshot.version !== 3 &&
+    expect(snapshots.every((snapshot) => "auditPayloadHash" in snapshot &&
       snapshot.auditPayloadHash === null)).toBe(true);
   });
 
@@ -425,16 +426,16 @@ describe("V21 audited Knowledge answer execution", () => {
     const supplementSnapshot = decodeKnowledgeAnswerOperationRequestSnapshotV21(
       recorder.entries.get(4)!.acceptedRequest
     );
-    const auditHash = supplementSnapshot?.version === 3
-      ? null
-      : supplementSnapshot?.auditPayloadHash;
+    const auditHash = supplementSnapshot && "auditPayloadHash" in supplementSnapshot
+      ? supplementSnapshot.auditPayloadHash
+      : null;
     expect(auditHash).toMatch(/^[0-9a-f]{64}$/u);
     const finalSnapshot = decodeKnowledgeAnswerOperationRequestSnapshotV21(
       recorder.entries.get(5)!.acceptedRequest
     );
-    expect(finalSnapshot?.version === 3
-      ? null
-      : finalSnapshot?.auditPayloadHash).toBe(auditHash);
+    expect(finalSnapshot && "auditPayloadHash" in finalSnapshot
+      ? finalSnapshot.auditPayloadHash
+      : null).toBe(auditHash);
   });
 
   it("rejects recovery when a persisted Supplement is pinned to another Audit", async () => {
@@ -769,22 +770,31 @@ describe("V21 audited Knowledge answer execution", () => {
 
 function scopeOutput(complete: boolean) {
   return {
+    evidenceReview: [{
+      answerAtomIds: ["A1"],
+      handle: "K1",
+      otherAtomIds: []
+    }, {
+      answerAtomIds: complete ? [] : ["A2"],
+      handle: "K2",
+      otherAtomIds: complete ? ["A2"] : []
+    }],
     scope: [{
       description: "Explain alpha.",
-      evidenceHandles: ["K1"],
+      evidenceAtomIds: ["A1"],
       id: "D1",
       requestAnchor: "alpha"
     }, ...(complete ? [] : [{
       description: "Explain beta.",
-      evidenceHandles: ["K2"],
+      evidenceAtomIds: ["A2"],
       id: "D2",
       requestAnchor: "beta"
     }])],
-    version: 3
+    version: 4
   };
 }
 
-function selectorV18Output(complete: boolean) {
+function selectorV19Output(complete: boolean) {
   return {
     claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
     coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] },
@@ -799,13 +809,13 @@ function currentExecution(complete: boolean) {
   return vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
     output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
       ? draftOutput()
-      : operation.name === KNOWLEDGE_COVERAGE_SCOPE_OPERATION
+      : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
         ? scopeOutput(complete)
-        : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
-          ? selectorV18Output(complete)
+        : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+          ? selectorV19Output(complete)
           : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
             ? draftOutput("Beta removes duplicates.", "K2")
-            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19
               ? finalSelectorOutput()
               : (() => { throw new Error("unexpected_current_operation"); })(),
     providerResponseId: `response-${operation.name}`,
@@ -813,16 +823,16 @@ function currentExecution(complete: boolean) {
   }));
 }
 
-describe("V21 blind Coverage Scope execution", () => {
-  it("runs Draft, blind Scope, then Selector and pins the accepted Scope hash", async () => {
+describe("V21 exhaustive atom-review Coverage Scope execution", () => {
+  it("runs Draft, atom-reviewed Scope, then Selector and pins the Scope hash", async () => {
     const recorder = lifecycleRecorder();
-    const result = await executeKnowledgeAnswerGroundingV21ScopeV3(
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV4(
       pipelineInput(recorder.lifecycle, currentExecution(true))
     );
     expect(result.operations.map(({ operation }) => operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
+      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
     ]);
     expect(result.settlement).toMatchObject({
       outcome: "answered",
@@ -830,9 +840,9 @@ describe("V21 blind Coverage Scope execution", () => {
     });
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(snapshots.every(({ version }) => version === 3)).toBe(true);
+    expect(snapshots.every(({ version }) => version === 4)).toBe(true);
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(true));
-    expect(snapshots.map((snapshot) => snapshot.version === 3
+    expect(snapshots.map((snapshot) => snapshot.version === 4
       ? snapshot.coverageScopePayloadHash
       : null)).toEqual([null, null, acceptedScopeHash]);
     const scopePayload = JSON.parse(snapshots[1]!.userPrompt) as Record<string, unknown>;
@@ -843,15 +853,15 @@ describe("V21 blind Coverage Scope execution", () => {
 
   it("uses the same immutable Scope for correction and final selection", async () => {
     const recorder = lifecycleRecorder();
-    const result = await executeKnowledgeAnswerGroundingV21ScopeV3(
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV4(
       pipelineInput(recorder.lifecycle, currentExecution(false))
     );
     expect(result.operations.map(({ operation }) => operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
+      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19,
       KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V19
     ]);
     expect(result.settlement).toMatchObject({
       outcome: "answered",
@@ -861,7 +871,7 @@ describe("V21 blind Coverage Scope execution", () => {
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(false));
-    expect(snapshots.slice(2).every((snapshot) => snapshot.version === 3 &&
+    expect(snapshots.slice(2).every((snapshot) => snapshot.version === 4 &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 
@@ -872,29 +882,30 @@ describe("V21 blind Coverage Scope execution", () => {
     const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
       output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
         ? draftOutput()
-        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_OPERATION
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION
           ? scopeCalls++ === 0 ? {} : scopeOutput(false)
-          : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
-            ? selectorCalls++ === 0 ? {} : selectorV18Output(false)
+          : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
+            ? selectorCalls++ === 0 ? {} : selectorV19Output(false)
             : (() => { throw new Error("unexpected_current_operation"); })(),
       providerResponseId: `response-${operation.name}`,
       usage
     }));
-    const result = await executeKnowledgeAnswerGroundingV21ScopeV3(
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV4(
       pipelineInput(recorder.lifecycle, execute)
     );
     expect(result.operations.map(({ operation }) => operation)).toEqual([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
-      KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
-      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
+      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
+      KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V19
     ]);
     expect(result.settlement.requestCoverage).toBe("partial");
     const packed = manifest();
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(decodeKnowledgeCoverageScopePromptV3({
+    expect(decodeKnowledgeCoverageScopePromptV4({
+      evidence: knowledgeCoverageEvidenceFromManifestV4(packed),
       evidenceManifest: packed.message,
       request,
       systemPrompt: snapshots[2]!.systemPrompt,
@@ -908,7 +919,7 @@ describe("V21 blind Coverage Scope execution", () => {
       selectorPass: "repair"
     });
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(false));
-    expect(snapshots.slice(3).every((snapshot) => snapshot.version === 3 &&
+    expect(snapshots.slice(3).every((snapshot) => snapshot.version === 4 &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 });

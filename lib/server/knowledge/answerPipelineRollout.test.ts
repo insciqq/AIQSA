@@ -19,7 +19,7 @@ describe("Knowledge answer pipeline rollout", () => {
     expect(selectKnowledgeAnswerPipelineForNewRun({
       modelRunId: "run-canary-1",
       rollout: { defaultPipeline: "v20_v16", v21CanaryBasisPoints: 10_000, version: 1 }
-    })).toBe("v21_scope_v3");
+    })).toBe("v21_scope_v4");
     const rollout = {
       defaultPipeline: "v20_v16" as const,
       v21CanaryBasisPoints: 5_000,

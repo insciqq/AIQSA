@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
-import { knowledgeSelectorEvidenceFromManifest } from "./answerGroundingV5";
 import { decodeKnowledgeAnswerDraftV21 } from "./answerGroundingV21";
 import {
-  deriveKnowledgeCoverageV3,
-  knowledgeGroundedSelectorPromptV18,
-  validateKnowledgeGroundedSelectorV18
-} from "./answerGroundingSelectorV18";
+  deriveKnowledgeCoverageV4,
+  knowledgeGroundedSelectorPromptV19,
+  validateKnowledgeGroundedSelectorV19
+} from "./answerGroundingSelectorV19";
+import {
+  knowledgeCoverageEvidenceFromManifestV4,
+  validateKnowledgeCoverageScopeV4
+} from "./coverageScopeV4";
+import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
 
 function fixture() {
   const manifest = packKnowledgeEvidenceDispatchManifest({
@@ -44,11 +47,11 @@ function fixture() {
     header: '<private_knowledge_evidence version="4">',
     maximumBytes: 16_384,
     maximumTokens: 4_096,
-    profileId: "fixture:selector-v18",
+    profileId: "fixture:selector-v19",
     promptFragmentVersion: 1,
     runtimeVersion: 1
   });
-  const evidence = knowledgeSelectorEvidenceFromManifest(manifest);
+  const evidence = knowledgeCoverageEvidenceFromManifestV4(manifest);
   const request = "What guarantees of the Atlas pipeline follow from the result?";
   const draft = decodeKnowledgeAnswerDraftV21({
     claims: [{
@@ -57,27 +60,37 @@ function fixture() {
     }],
     version: 1
   }, { availableHandles: ["K1", "K2"] })!;
-  const scope = {
+  const scopeValidation = validateKnowledgeCoverageScopeV4({
+    evidenceReview: [{
+      answerAtomIds: ["A1", "A2"],
+      handle: "K1",
+      otherAtomIds: []
+    }, {
+      answerAtomIds: [],
+      handle: "K2",
+      otherAtomIds: ["A3"]
+    }],
     scope: [{
       description: "State that the Atlas pipeline enforces a bounded queue.",
-      evidenceHandles: ["K1"],
+      evidenceAtomIds: ["A1"],
       id: "D1",
       requestAnchor: "guarantees"
     }, {
       description: "State that the Atlas pipeline preserves input ordering.",
-      evidenceHandles: ["K1"],
+      evidenceAtomIds: ["A2"],
       id: "D2",
       requestAnchor: "guarantees"
     }],
-    version: 3
-  } as const;
-  return { draft, evidence, manifest, request, scope };
+    version: 4
+  }, { evidence, request });
+  if (scopeValidation.kind !== "accepted") throw new Error("fixture_scope_invalid");
+  return { draft, evidence, manifest, request, scope: scopeValidation.value };
 }
 
-describe("Knowledge Grounded Selector V18", () => {
-  it("keeps same-evidence conclusions as separate coverage decisions", () => {
+describe("Knowledge Grounded Selector V19", () => {
+  it("retains immutable atom provenance in separate coverage decisions", () => {
     const { draft, evidence, request, scope } = fixture();
-    const validation = validateKnowledgeGroundedSelectorV18({
+    const validation = validateKnowledgeGroundedSelectorV19({
       claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
       coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
         id: "D2",
@@ -90,17 +103,17 @@ describe("Knowledge Grounded Selector V18", () => {
     }, { draft, evidence, request, scope });
     expect(validation.kind).toBe("accepted");
     if (validation.kind !== "accepted") return;
-    expect(deriveKnowledgeCoverageV3(validation.value)).toEqual({
+    expect(validation.value.coverage.map(({ evidenceAtomIds }) => evidenceAtomIds))
+      .toEqual([["A1"], ["A2"]]);
+    expect(deriveKnowledgeCoverageV4(validation.value)).toEqual({
       coveredDimensionCount: 1,
-      missingInformation: [
-        "State that the Atlas pipeline preserves input ordering."
-      ],
+      missingInformation: ["State that the Atlas pipeline preserves input ordering."],
       requestCoverage: "partial",
       supportedContentCount: 1
     });
   });
 
-  it("rejects coverage mappings without canonical support-handle overlap", () => {
+  it("rejects a coverage mapping without canonical handle overlap", () => {
     const { draft, evidence, request, scope } = fixture();
     const disjointScope = {
       ...scope,
@@ -109,7 +122,7 @@ describe("Knowledge Grounded Selector V18", () => {
         evidenceHandles: ["K2"]
       }]
     } as const;
-    expect(validateKnowledgeGroundedSelectorV18({
+    expect(validateKnowledgeGroundedSelectorV19({
       claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
       coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
         id: "D2",
@@ -121,14 +134,14 @@ describe("Knowledge Grounded Selector V18", () => {
       version: 1
     }, { draft, evidence, request, scope: disjointScope })).toMatchObject({
       kind: "rejected",
-      reason: "selector_dimension_invalid"
+      reason: "selector_malformed"
     });
   });
 
-  it("pins the immutable scope into initial and final prompts", () => {
+  it("pins the immutable atom-derived scope into initial and final prompts", () => {
     const { draft, evidence, manifest, request, scope } = fixture();
     for (const selectorPass of ["initial", "final"] as const) {
-      const prompt = knowledgeGroundedSelectorPromptV18({
+      const prompt = knowledgeGroundedSelectorPromptV19({
         draft,
         evidence,
         evidenceManifest: manifest.message,
