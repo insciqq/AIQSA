@@ -43,7 +43,6 @@ import {
   KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
   KNOWLEDGE_COVERAGE_AUDIT_PAYLOAD_VERSION,
   decodeKnowledgeCoverageAuditV2,
-  deriveKnowledgeCoverageV2,
   knowledgeCoverageAuditDimensionsV2,
   type KnowledgeCoverageAuditDimensionV2,
   type KnowledgeCoverageAuditV2,
@@ -99,6 +98,7 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
+  type KnowledgeCoverageDimensionV6,
   type KnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
 import {
@@ -120,7 +120,7 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION = 6 as const;
 export const KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21 = 7 as const;
 export const KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 =
-  "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v2_settlement_v6" as const;
+  "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v3_settlement_v6" as const;
 
 export type KnowledgeAnswerV21ContractVersions = Readonly<{
   coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION;
@@ -427,7 +427,7 @@ export type KnowledgeAnswerOperationRequestSnapshotV21V7 = Readonly<{
   maxOutputTokens: number;
   name: KnowledgeAnswerOperationScopeV6;
   operation: KnowledgeAnswerOperationScopeV6;
-  pipeline: "scope_v6_targeted_delta_v2";
+  pipeline: "scope_v6_targeted_delta_v3";
   reasoningEffort: string | null;
   schema: Readonly<Record<string, unknown>>;
   schemaHash: string;
@@ -816,7 +816,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
   maxOutputTokens: number;
   operation: KnowledgeAnswerOperationV21;
   protocol?: "scope_v3" | "scope_v4" | "scope_v5" | "scope_v6" |
-    "scope_v6_targeted_delta_v2";
+    "scope_v6_targeted_delta_v3";
   reasoningEffort?: string | null;
   schema: Readonly<Record<string, unknown>>;
   systemPrompt: string;
@@ -825,7 +825,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
 }>): KnowledgeAnswerOperationRequestSnapshotV21 {
   const scopeProtocol = input.protocol ?? null;
   const scopedProtocol = scopeProtocol !== null;
-  const metadata = scopeProtocol === "scope_v6_targeted_delta_v2"
+  const metadata = scopeProtocol === "scope_v6_targeted_delta_v3"
     ? scopeV6TargetedDeltaOperationMetadata(input.operation)
     : scopeProtocol === "scope_v6"
       ? scopeV6OperationMetadata(input.operation)
@@ -844,7 +844,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
   if (scopeProtocol !== null && scopeProtocol !== "scope_v3" &&
       scopeProtocol !== "scope_v4" && scopeProtocol !== "scope_v5" &&
       scopeProtocol !== "scope_v6" &&
-      scopeProtocol !== "scope_v6_targeted_delta_v2" || !metadata ||
+      scopeProtocol !== "scope_v6_targeted_delta_v3" || !metadata ||
     metadata.contractVersion !== input.contractVersion ||
     scopedProtocol && (!executionPolicy || input.auditPayloadHash !== undefined) ||
     !scopedProtocol && input.coverageScopePayloadHash !== undefined ||
@@ -891,7 +891,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
     userPrompt: input.userPrompt
   };
   const snapshot: KnowledgeAnswerOperationRequestSnapshotV21 =
-    scopeProtocol === "scope_v6_targeted_delta_v2"
+    scopeProtocol === "scope_v6_targeted_delta_v3"
       ? Object.freeze({
           ...snapshotBase,
           contractVersion: input.contractVersion as 6 | 21,
@@ -899,7 +899,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
           executionPolicy: executionPolicy!,
           name: input.operation as KnowledgeAnswerOperationScopeV6,
           operation: input.operation as KnowledgeAnswerOperationScopeV6,
-          pipeline: "scope_v6_targeted_delta_v2" as const,
+          pipeline: "scope_v6_targeted_delta_v3" as const,
           version: KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21
         })
       : scopeProtocol === "scope_v6"
@@ -1043,7 +1043,7 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     value.version === 4 && value.pipeline !== "scope_v4" ||
     value.version === 5 && value.pipeline !== "scope_v5" ||
     value.version === 6 && value.pipeline !== "scope_v6" ||
-    value.version === 7 && value.pipeline !== "scope_v6_targeted_delta_v2" ||
+    value.version === 7 && value.pipeline !== "scope_v6_targeted_delta_v3" ||
     value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
     value.tools !== "none" || !record(value.schema) ||
     typeof value.schemaHash !== "string" ||
@@ -1540,8 +1540,11 @@ export function mergeKnowledgeAnswerDraftsV21(input: Readonly<{
   return mergeKnowledgeAnswerDraftsV1(input);
 }
 
+type KnowledgeSettlementCoverageDimensionV21 = KnowledgeCoverageAuditDimensionV2 |
+  KnowledgeCoverageDimensionV6;
+
 function validAuditDimensions(
-  dimensions: readonly KnowledgeCoverageAuditDimensionV2[],
+  dimensions: readonly KnowledgeSettlementCoverageDimensionV21[],
   supportedView: KnowledgeSupportedAnswerViewV1
 ): boolean {
   const supportHandlesById = new Map([
@@ -1559,17 +1562,20 @@ function validAuditDimensions(
         requestAnchor: dimension.requestAnchor
       }) &&
       uniqueStrings(dimension.supportIds) &&
+      (dimension.status !== "excluded" ||
+        "evidenceAtomIds" in dimension && dimension.evidenceAtomIds.length > 0) &&
       dimension.supportIds.every((id) => {
         const supportHandles = supportHandlesById.get(id);
         return supportHandles !== undefined && [...supportHandles].some((handle) =>
           dimension.evidenceHandles.includes(handle));
       }) &&
       (dimension.status === "covered" && dimension.supportIds.length >= 1 ||
-        dimension.status === "missing" && dimension.supportIds.length === 0));
+        (dimension.status === "missing" || dimension.status === "excluded") &&
+          dimension.supportIds.length === 0));
 }
 
 function legacySelectorForCoverage(input: Readonly<{
-  coverage: readonly KnowledgeCoverageAuditDimensionV2[];
+  coverage: readonly KnowledgeSettlementCoverageDimensionV21[];
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   requestCoverage: "complete" | "none" | "partial";
   selector: KnowledgeGroundedSelectorV17;
@@ -1635,7 +1641,7 @@ function citations(handles: readonly string[]): string {
 }
 
 function v21Settlement(input: Readonly<{
-  coverage: readonly KnowledgeCoverageAuditDimensionV2[];
+  coverage: readonly KnowledgeSettlementCoverageDimensionV21[];
   draft: KnowledgeAnswerDraftSelectorInput;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   selector: KnowledgeGroundedSelectorV17;
@@ -1644,27 +1650,18 @@ function v21Settlement(input: Readonly<{
   if (!validAuditDimensions(input.coverage, input.supportedView)) {
     throw new Error("knowledge_answer_v21_settlement_invalid");
   }
-  const audit = Object.freeze({
-    coverage: Object.freeze(input.coverage.map(({ id, status, supportIds }) =>
-      Object.freeze({ id, status, supportIds: Object.freeze([...supportIds]) }))),
-    scope: Object.freeze(input.coverage.map(({
-      description,
-      evidenceHandles,
-      id,
-      requestAnchor
-    }) => Object.freeze({
-      description,
-      evidenceHandles: Object.freeze([...evidenceHandles]),
-      id,
-      requestAnchor
-    }))),
-    version: KNOWLEDGE_COVERAGE_AUDIT_PAYLOAD_VERSION
-  });
-  const derivation = deriveKnowledgeCoverageV2(audit);
+  const covered = input.coverage.filter(({ status }) => status === "covered");
+  const missing = input.coverage.filter(({ status }) => status === "missing");
+  const supportedContentCount = new Set(covered.flatMap(({ supportIds }) => supportIds)).size;
+  const requestCoverage = supportedContentCount === 0
+    ? "none" as const
+    : missing.length === 0
+      ? "complete" as const
+      : "partial" as const;
   const selector = legacySelectorForCoverage({
     coverage: input.coverage,
     evidence: input.evidence,
-    requestCoverage: derivation.requestCoverage,
+    requestCoverage,
     selector: input.selector
   });
   const contradictedClaimCount = input.selector.claims.filter(
@@ -1714,7 +1711,7 @@ function v21Settlement(input: Readonly<{
           : rendered.join(" ");
       }).join("\n\n")
     : [...claimLines, ...extractLines].map((line) => `- ${line}`).join("\n");
-  const finalText = derivation.requestCoverage === "partial"
+  const finalText = requestCoverage === "partial"
     ? `${text}\n\n${KNOWLEDGE_PARTIAL_COVERAGE_NOTE}`
     : text;
   return Object.freeze({
@@ -1728,7 +1725,7 @@ function v21Settlement(input: Readonly<{
         : "selected_claims",
     groundingStatus: "verified",
     outcome: "answered",
-    requestCoverage: derivation.requestCoverage,
+    requestCoverage,
     supportedClaimCount: supportedClaims.length,
     unsupportedClaimCount
   });
@@ -1896,7 +1893,7 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
       ...(input.snapshot.version === 7
         ? {
             executionPolicy: input.snapshot.executionPolicy,
-            protocol: "scope_v6_targeted_delta_v2" as const
+            protocol: "scope_v6_targeted_delta_v3" as const
           }
         : input.snapshot.version === 6
         ? {

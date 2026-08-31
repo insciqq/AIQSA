@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { decodeKnowledgeAnswerDraftV21 } from "./answerGroundingV21";
 import {
+  decodeKnowledgeAnswerDraftV21,
+  settleKnowledgeAnswerV21FromFinalSelector
+} from "./answerGroundingV21";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
   deriveKnowledgeCoverageV6,
   knowledgeGroundedSelectorPromptV21,
   validateKnowledgeGroundedSelectorV21
@@ -82,6 +86,15 @@ function fixture() {
 }
 
 describe("Knowledge Grounded Selector V21", () => {
+  it("exposes covered, excluded, and missing as strict output branches", () => {
+    expect(KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21.properties.coverage.items.oneOf
+      .map(({ properties }) => properties.status.const)).toEqual([
+        "covered",
+        "excluded",
+        "missing"
+      ]);
+  });
+
   it("retains positive-finding atom provenance in separate coverage decisions", () => {
     const { draft, evidence, request, scope } = fixture();
     const validation = validateKnowledgeGroundedSelectorV21({
@@ -101,10 +114,99 @@ describe("Knowledge Grounded Selector V21", () => {
       .toEqual([["A1"], ["A2"]]);
     expect(deriveKnowledgeCoverageV6(validation.value)).toEqual({
       coveredDimensionCount: 1,
+      excludedDimensionCount: 0,
       missingInformation: ["State that the Atlas controller preserves input ordering."],
       requestCoverage: "partial",
       supportedContentCount: 1
     });
+  });
+
+  it("excludes only positive Scope findings that fail exact-atom eligibility", () => {
+    const { draft, evidence, request, scope } = fixture();
+    const validation = validateKnowledgeGroundedSelectorV21({
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "excluded",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    }, { draft, evidence, request, scope });
+    expect(validation.kind).toBe("accepted");
+    if (validation.kind !== "accepted") return;
+    expect(deriveKnowledgeCoverageV6(validation.value)).toEqual({
+      coveredDimensionCount: 1,
+      excludedDimensionCount: 1,
+      missingInformation: [],
+      requestCoverage: "complete",
+      supportedContentCount: 1
+    });
+
+    const unsupportedScope = validateKnowledgeCoverageScopeV6({
+      evidenceUnits: [{ findings: [], handle: "K1" }, {
+        findings: [],
+        handle: "K2"
+      }],
+      jointFindings: [],
+      unsupportedDimensions: [{
+        description: "State the controller's latency guarantee.",
+        requestAnchor: "guarantees"
+      }],
+      version: 6
+    }, { evidence, request });
+    expect(unsupportedScope.kind).toBe("accepted");
+    if (unsupportedScope.kind !== "accepted") return;
+    expect(validateKnowledgeGroundedSelectorV21({
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "excluded", supportIds: [] }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    }, { draft, evidence, request, scope: unsupportedScope.value })).toEqual({
+      kind: "rejected",
+      reason: "selector_dimension_invalid"
+    });
+  });
+
+  it("keeps excluded supported content out of settlement", () => {
+    const { evidence, request, scope } = fixture();
+    const currentDraft = decodeKnowledgeAnswerDraftV21({
+      claims: [{
+        citationHints: ["K1"],
+        text: "The Atlas controller enforces a bounded queue."
+      }, {
+        citationHints: ["K1"],
+        text: "The Atlas controller preserves input ordering."
+      }],
+      version: 1
+    }, { availableHandles: ["K1", "K2"] })!;
+    const validation = validateKnowledgeGroundedSelectorV21({
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }, {
+        id: "C2",
+        supportHandles: ["K1"],
+        verdict: "supported"
+      }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "excluded",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    }, { draft: currentDraft, evidence, request, scope });
+    expect(validation.kind).toBe("accepted");
+    if (validation.kind !== "accepted") return;
+    const settlement = settleKnowledgeAnswerV21FromFinalSelector({
+      draft: currentDraft,
+      evidence,
+      selector: validation.value
+    });
+    expect(settlement.requestCoverage).toBe("complete");
+    expect(settlement.finalText).toContain("bounded queue");
+    expect(settlement.finalText).not.toContain("input ordering");
   });
 
   it("pins the immutable V6 scope into initial and final prompts", () => {
@@ -120,6 +222,18 @@ describe("Knowledge Grounded Selector V21", () => {
       });
       const payload = JSON.parse(prompt.userPrompt) as Record<string, unknown>;
       expect(payload.coverageScope).toEqual(scope);
+      expect(payload.scopeEvidenceAtomIndex).toEqual({
+        items: [{
+          handle: "K1",
+          id: "A1",
+          text: "The Atlas controller enforces a bounded queue."
+        }, {
+          handle: "K1",
+          id: "A2",
+          text: "It preserves input ordering."
+        }],
+        version: 1
+      });
       expect(payload.selectorPass).toBe(selectorPass);
     }
   });

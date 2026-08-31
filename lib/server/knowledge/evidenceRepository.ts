@@ -1625,7 +1625,7 @@ export async function groundKnowledgeRunAnswerV21(
   }
   const requestExecutionPolicy = {
     executionPolicy: primaryRequest.executionPolicy,
-    protocol: "scope_v6_targeted_delta_v2" as const
+    protocol: "scope_v6_targeted_delta_v3" as const
   };
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
@@ -2026,6 +2026,9 @@ export async function groundKnowledgeRunAnswerV21(
     coverage: {
       coveredDimensionCount: acceptedSelector.coverage.filter(
         ({ status }) => status === "covered"
+      ).length,
+      excludedDimensionCount: acceptedSelector.coverage.filter(
+        ({ status }) => status === "excluded"
       ).length,
       missingDimensionCount: acceptedSelector.coverage.filter(
         ({ status }) => status === "missing"

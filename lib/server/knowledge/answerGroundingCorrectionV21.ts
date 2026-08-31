@@ -355,11 +355,11 @@ function immutableClaim(claim: KnowledgeGroundedSelectorClaimV3) {
   });
 }
 
-/** Applies the final Selector as a delta. Initial support and covered Scope
- * decisions are immutable; only supplement claim verdicts and mappings for
- * dimensions that were initially missing can be added. A new mapping is
- * admitted only when the final Selector chose a supported claim explicitly
- * targeted to that same dimension. */
+/** Applies the final Selector as a delta. Initial support, covered Scope, and
+ * eligibility decisions are immutable; only supplement claim verdicts and
+ * mappings for dimensions that were initially missing can be added. A new
+ * mapping is admitted only when the final Selector chose a supported claim
+ * explicitly targeted to that same dimension. */
 export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
   bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
   finalSelector: KnowledgeGroundedSelectorV21;
@@ -401,7 +401,7 @@ export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
       !sameStrings(initialDimension.evidenceAtomIds, finalDimension.evidenceAtomIds)) {
       throw new Error("knowledge_grounded_correction_invalid");
     }
-    if (initialDimension.status === "covered") {
+    if (initialDimension.status !== "missing") {
       return Object.freeze({
         ...initialDimension,
         evidenceAtomIds: Object.freeze([...initialDimension.evidenceAtomIds]),

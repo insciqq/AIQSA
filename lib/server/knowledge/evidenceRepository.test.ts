@@ -1261,7 +1261,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol: "scope_v6_targeted_delta_v2" as const,
+      protocol: "scope_v6_targeted_delta_v3" as const,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1426,6 +1426,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result.grounding).toMatchObject({
       coverage: {
         coveredDimensionCount: 1,
+        excludedDimensionCount: 0,
         missingDimensionCount: 1,
         status: "accepted"
       },

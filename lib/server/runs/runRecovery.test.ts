@@ -273,6 +273,7 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
       },
       coverage: {
         coveredDimensionCount: 1,
+        excludedDimensionCount: 0,
         missingDimensionCount: 0,
         selectorPayloadHash: "1".repeat(64),
         status: "accepted" as const
@@ -1883,7 +1884,7 @@ describe("run recovery", () => {
       ...(snapshotVersion === 7
         ? {
             executionPolicy: executionPolicy!,
-            protocol: "scope_v6_targeted_delta_v2" as const
+            protocol: "scope_v6_targeted_delta_v3" as const
           }
         : snapshotVersion === 6
         ? { executionPolicy: executionPolicy!, protocol: "scope_v6" as const }
