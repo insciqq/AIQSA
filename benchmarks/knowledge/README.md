@@ -57,6 +57,12 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
+The live answer lane attests the current V21 Draft / V17 Selector / Auditor V1 /
+settlement V6 candidate and refuses to run while the code-owned V21 rollout is
+not at 100%. This prevents a V20 product answer from being reported under a V21
+manifest. Keep that activation candidate unpublished until the acceptance gate
+passes; frozen replay remains available while the production default is V20.
+
 Run a focused, non-scoreable case first:
 
 ```bash
@@ -108,7 +114,10 @@ A judge/provider failure remains content-free in the public failure record;
 when the answer stage completed, its private answer and replay snapshot are
 still persisted for diagnosis before fail-fast exit.
 
-Replay runs answer-grounding and optional judge stages only. Its origin
+Replay schema V2 preserves exact V20 recovery and supports the current V21
+three-call normal path, five-call correction path, and six-call
+repair-plus-correction cap. Replay runs answer-grounding and optional judge
+stages only. Its origin
 Base/source/engine pins come from the immutable snapshot, so no live Base or
 retrieval state is consulted:
 

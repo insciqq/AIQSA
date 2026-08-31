@@ -308,6 +308,10 @@ describe("V21 audited Knowledge answer execution", () => {
       KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
       KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
     ]);
+    expect(result.settlement).toMatchObject({
+      outcome: "answered",
+      requestCoverage: "complete"
+    });
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     expect(new Set(snapshots.map(({ evidenceReceiptHash }) => evidenceReceiptHash)).size)

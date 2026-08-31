@@ -21,9 +21,21 @@ import {
   type KnowledgeAnswerOperationExecutionV8
 } from "../../lib/server/knowledge/answerGroundingExecutionV5";
 import {
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1,
+  type KnowledgeAnswerOperationRequestSnapshotV21
+} from "../../lib/server/knowledge/answerGroundingV21";
+import {
+  executeKnowledgeAnswerGroundingV21,
+  type KnowledgeAnswerOperationExecutionV21
+} from "../../lib/server/knowledge/answerGroundingExecutionV21";
+import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
+import {
+  decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
+  type KnowledgeGroundingEffectiveExecutionPolicyV1
+} from "../../lib/server/knowledge/groundingExecutionPolicy";
 import type { KnowledgeProviderDispatchLifecycle } from
   "../../lib/server/knowledge/providerDispatchLifecycle";
 import type {
@@ -44,7 +56,14 @@ import {
 } from "./openRagAnswerContract";
 import type { OpenRagAnswerStageRecord } from "./openRagAnswerCheckpoint";
 
-export const OPEN_RAG_ANSWER_REPLAY_SCHEMA_VERSION = 1 as const;
+export const OPEN_RAG_ANSWER_REPLAY_SCHEMA_VERSION = 2 as const;
+
+export type OpenRagAnswerReplayContracts = Readonly<{
+  coverageAuditorContractVersion: number | null;
+  draftContractVersion: number;
+  selectorContractVersion: number;
+  settlementVersion: number;
+}>;
 
 export type OpenRagAnswerReplayEvidenceBinding = Readonly<{
   dispatchEvidenceId: string;
@@ -65,12 +84,10 @@ export type OpenRagAnswerReplaySnapshot = Readonly<{
   answerExecutionSnapshot: ProviderExecutionSnapshot;
   capturedAt: string;
   case: OpenRagAnswerCase;
-  contracts: Readonly<{
-    draftContractVersion: number;
-    selectorContractVersion: number;
-  }>;
+  contracts: OpenRagAnswerReplayContracts;
   evidence: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings: readonly OpenRagAnswerReplayEvidenceBinding[];
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1 | null;
   forbiddenIdentityFragments: readonly string[];
   origin: OpenRagAnswerReplayOrigin;
   originalRunId: string;
@@ -94,10 +111,7 @@ export type OpenRagAnswerReplayResult = Readonly<{
     providerEvidenceTruncated: false;
     sourceLabel: string | null;
   }>[];
-  contracts: Readonly<{
-    draftContractVersion: number;
-    selectorContractVersion: number;
-  }>;
+  contracts: OpenRagAnswerReplayContracts;
   coverage: "complete" | "none" | "partial";
   finalText: string;
   operationCount: number;
@@ -111,7 +125,9 @@ export type OpenRagReplayStructuredExecutor = (
 ) => Promise<Record<string, unknown>>;
 
 type CapturedOperation = Readonly<{
-  acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV1;
+  acceptedRequest:
+    | KnowledgeAnswerOperationRequestSnapshotV1
+    | KnowledgeAnswerOperationRequestSnapshotV21;
   acceptedResult: Readonly<Record<string, unknown>>;
   durationMs: number;
   operation: string;
@@ -127,6 +143,7 @@ const snapshotKeys = Object.freeze([
   "contracts",
   "evidence",
   "evidenceBindings",
+  "executionPolicy",
   "forbiddenIdentityFragments",
   "origin",
   "originalRunId",
@@ -138,8 +155,10 @@ const snapshotKeys = Object.freeze([
   "transport"
 ] as const);
 const contractKeys = Object.freeze([
+  "coverageAuditorContractVersion",
   "draftContractVersion",
-  "selectorContractVersion"
+  "selectorContractVersion",
+  "settlementVersion"
 ] as const);
 const evidenceBindingKeys = Object.freeze([
   "dispatchEvidenceId",
@@ -186,6 +205,84 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
     keys.every((key) => Object.hasOwn(value, key));
 }
 
+function replayPipeline(
+  contracts: OpenRagAnswerReplayContracts
+): "v20_v16" | "v21_audit_v1" | null {
+  if (contracts.coverageAuditorContractVersion === null &&
+    contracts.draftContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftContractVersion &&
+    contracts.selectorContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.selectorContractVersion &&
+    contracts.settlementVersion === 5) return "v20_v16";
+  if (contracts.coverageAuditorContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.coverageAuditorContractVersion &&
+    contracts.draftContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.draftContractVersion &&
+    contracts.selectorContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.selectorContractVersion &&
+    contracts.settlementVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.settlementVersion) {
+    return "v21_audit_v1";
+  }
+  return null;
+}
+
+function exactSequence(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export function isOpenRagAnswerOperationSequence(
+  contracts: OpenRagAnswerReplayContracts,
+  operations: readonly string[]
+): boolean {
+  const pipeline = replayPipeline(contracts);
+  if (pipeline === "v20_v16") {
+    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
+    const base = [
+      pair.coveragePlannerOperation!,
+      pair.draftOperation,
+      pair.selectorOperation
+    ];
+    return [
+      base,
+      [...base, pair.finalSelectorOperation!],
+      [...base, pair.supplementalDraftOperation!],
+      [...base, pair.supplementalDraftOperation!, pair.finalSelectorOperation!]
+    ].some((candidate) => exactSequence(operations, candidate));
+  }
+  if (pipeline === "v21_audit_v1") {
+    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1;
+    const base = [pair.draftOperation, pair.selectorOperation];
+    const repaired = [...base, pair.selectorOperation];
+    return [base, repaired].some((prefix) => [
+      [...prefix, pair.coverageAuditorOperation],
+      [...prefix, pair.coverageAuditorOperation, pair.supplementalDraftOperation],
+      [
+        ...prefix,
+        pair.coverageAuditorOperation,
+        pair.supplementalDraftOperation,
+        pair.finalSelectorOperation
+      ]
+    ].some((candidate) => exactSequence(operations, candidate)));
+  }
+  return false;
+}
+
+function contractsFromEngine(
+  engine: OpenRagAnswerEnginePin
+): OpenRagAnswerReplayContracts {
+  const contracts = Object.freeze({
+    coverageAuditorContractVersion: engine.coverageAuditorContractVersion,
+    draftContractVersion: engine.draftContractVersion,
+    selectorContractVersion: engine.selectorContractVersion,
+    settlementVersion: engine.settlementVersion
+  });
+  if (!replayPipeline(contracts)) {
+    throw new Error("open_rag_answer_replay_snapshot_invalid");
+  }
+  return contracts;
+}
+
 function decodeCase(value: unknown): OpenRagAnswerCase | null {
   if (!isRecord(value) || !hasExactKeys(value, caseKeys) ||
     typeof value.caseId !== "string" || !/^doc-[0-9]{3}-q[1-8]$/u.test(value.caseId) ||
@@ -229,24 +326,27 @@ export function createOpenRagAnswerReplaySnapshot(
 ): OpenRagAnswerReplaySnapshot {
   const evidence = decodeKnowledgeEvidenceDispatchManifestDraft(input.evidence);
   if (!evidence) throw new Error("open_rag_answer_replay_snapshot_invalid");
+  const engine = decodeOpenRagAnswerEnginePin(input.origin.engine);
+  const executionPolicy = input.executionPolicy === null
+    ? null
+    : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
+  if (input.executionPolicy !== null && !executionPolicy) {
+    throw new Error("open_rag_answer_replay_snapshot_invalid");
+  }
   const body = Object.freeze({
     ...input,
     answerExecutionSnapshot: normalizeProviderExecutionSnapshot(
       input.answerExecutionSnapshot
     ),
-    contracts: Object.freeze({
-      draftContractVersion:
-        KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftContractVersion,
-      selectorContractVersion:
-        KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.selectorContractVersion
-    }),
+    contracts: contractsFromEngine(engine),
     evidence,
     evidenceBindings: Object.freeze(input.evidenceBindings.map((binding) =>
       Object.freeze({ ...binding }))),
     forbiddenIdentityFragments: Object.freeze([...input.forbiddenIdentityFragments]),
+    executionPolicy,
     origin: Object.freeze({
       baseFingerprint: input.origin.baseFingerprint,
-      engine: decodeOpenRagAnswerEnginePin(input.origin.engine),
+      engine,
       sourceBindingFingerprint: input.origin.sourceBindingFingerprint
     }),
     schemaVersion: OPEN_RAG_ANSWER_REPLAY_SCHEMA_VERSION
@@ -271,10 +371,11 @@ export function decodeOpenRagAnswerReplaySnapshot(
       Buffer.byteLength(value.routeInstruction, "utf8") > 16 * 1_024 ||
     value.routeInstruction !== KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION ||
     !isRecord(value.contracts) || !hasExactKeys(value.contracts, contractKeys) ||
-    value.contracts.draftContractVersion !==
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftContractVersion ||
-    value.contracts.selectorContractVersion !==
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.selectorContractVersion ||
+    value.contracts.coverageAuditorContractVersion !== null &&
+      !Number.isSafeInteger(value.contracts.coverageAuditorContractVersion) ||
+    !Number.isSafeInteger(value.contracts.draftContractVersion) ||
+    !Number.isSafeInteger(value.contracts.selectorContractVersion) ||
+    !Number.isSafeInteger(value.contracts.settlementVersion) ||
     value.reasoningEffort !== null && (typeof value.reasoningEffort !== "string" ||
       !value.reasoningEffort.trim() || value.reasoningEffort.length > 32) ||
     value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
@@ -300,6 +401,14 @@ export function decodeOpenRagAnswerReplaySnapshot(
   }
   const replayCase = decodeCase(value.case);
   const evidence = decodeKnowledgeEvidenceDispatchManifestDraft(value.evidence);
+  const contracts = Object.freeze({
+    coverageAuditorContractVersion:
+      value.contracts.coverageAuditorContractVersion as number | null,
+    draftContractVersion: Number(value.contracts.draftContractVersion),
+    selectorContractVersion: Number(value.contracts.selectorContractVersion),
+    settlementVersion: Number(value.contracts.settlementVersion)
+  });
+  const pipeline = replayPipeline(contracts);
   let answerExecutionSnapshot: ProviderExecutionSnapshot;
   let engine: OpenRagAnswerEnginePin;
   try {
@@ -308,7 +417,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
   } catch {
     throw new Error(code);
   }
-  if (!replayCase || !evidence) throw new Error(code);
+  if (!replayCase || !evidence || !pipeline) throw new Error(code);
   if (value.request !== replayCase.question) throw new Error(code);
   const evidenceBindings = (value.evidenceBindings as Record<string, string>[]).map(
     (binding): OpenRagAnswerReplayEvidenceBinding => Object.freeze({
@@ -332,8 +441,22 @@ export function decodeOpenRagAnswerReplaySnapshot(
       evidenceByHandle.get(binding.handle)?.evidenceId !== binding.dispatchEvidenceId)) {
     throw new Error(code);
   }
-  if (engine.draftContractVersion !== value.contracts.draftContractVersion ||
-    engine.selectorContractVersion !== value.contracts.selectorContractVersion ||
+  const executionPolicy = value.executionPolicy === null
+    ? null
+    : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(value.executionPolicy);
+  if (value.executionPolicy !== null && !executionPolicy ||
+    pipeline === "v20_v16" && (executionPolicy !== null ||
+      engine.groundingEvidenceVersion !== 16) ||
+    pipeline === "v21_audit_v1" && (engine.groundingEvidenceVersion === 18
+      ? !executionPolicy || value.reasoningEffort !== null
+      : engine.groundingEvidenceVersion === 17
+        ? executionPolicy !== null
+        : true) ||
+    engine.coverageAuditorContractVersion !==
+      contracts.coverageAuditorContractVersion ||
+    engine.draftContractVersion !== contracts.draftContractVersion ||
+    engine.selectorContractVersion !== contracts.selectorContractVersion ||
+    engine.settlementVersion !== contracts.settlementVersion ||
     engine.evidencePackingVersion !== evidence.packingVersion) {
     throw new Error(code);
   }
@@ -341,12 +464,10 @@ export function decodeOpenRagAnswerReplaySnapshot(
     answerExecutionSnapshot,
     capturedAt: value.capturedAt,
     case: replayCase,
-    contracts: Object.freeze({
-      draftContractVersion: value.contracts.draftContractVersion as number,
-      selectorContractVersion: value.contracts.selectorContractVersion as number
-    }),
+    contracts,
     evidence,
     evidenceBindings: Object.freeze(evidenceBindings),
+    executionPolicy,
     forbiddenIdentityFragments: Object.freeze([
       ...value.forbiddenIdentityFragments as string[]
     ]),
@@ -370,7 +491,9 @@ export function decodeOpenRagAnswerReplaySnapshot(
 
 function replayLifecycle(captured: CapturedOperation[]): KnowledgeProviderDispatchLifecycle {
   const preparedById = new Map<string, Readonly<{
-    acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV1;
+    acceptedRequest:
+      | KnowledgeAnswerOperationRequestSnapshotV1
+      | KnowledgeAnswerOperationRequestSnapshotV21;
     operation: string;
     ordinal: number;
     startedAt: number;
@@ -388,7 +511,9 @@ function replayLifecycle(captured: CapturedOperation[]): KnowledgeProviderDispat
       if (!input.acceptedRequest) throw new Error("open_rag_replay_request_missing");
       const attemptId = randomUUID();
       preparedById.set(attemptId, {
-        acceptedRequest: input.acceptedRequest as KnowledgeAnswerOperationRequestSnapshotV1,
+        acceptedRequest: input.acceptedRequest as
+          | KnowledgeAnswerOperationRequestSnapshotV1
+          | KnowledgeAnswerOperationRequestSnapshotV21,
         operation: input.purpose,
         ordinal: input.ordinal,
         startedAt: Date.now()
@@ -539,60 +664,98 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
   const snapshot = decodeOpenRagAnswerReplaySnapshot(input.snapshot);
   const captured: CapturedOperation[] = [];
   const lifecycle = replayLifecycle(captured);
-  const result = await executeKnowledgeAnswerGroundingV8({
-    authorize: async () => {
-      if (input.signal?.aborted) throw input.signal.reason;
-    },
-    contractPair: KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
-    draft: snapshot.evidence,
-    evidenceBindings: snapshot.evidenceBindings.map((binding) => Object.freeze({
-      dispatchEvidenceId: binding.dispatchEvidenceId,
-      evidenceItemId: binding.evidenceItemId
-    })),
-    execute: async (request, options): Promise<KnowledgeAnswerOperationExecutionV8> => {
-      let providerResponseId: string | null = options.providerResponseId;
-      let usage = zeroUsage;
-      const output = await input.executeStructuredOutput(
-        snapshot.answerExecutionSnapshot,
-        request,
-        {
-          onProviderResponseId: (value) => {
-            providerResponseId = value;
-          },
-          onUsage: (value) => {
-            usage = value;
-          },
-          ...(input.signal ? { signal: input.signal } : {}),
-          timeoutMs: 15 * 60 * 1_000
-        }
-      );
-      return Object.freeze({ output, providerResponseId, usage });
-    },
-    forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
-    lifecycle,
-    modelRunId: `open-rag-replay:${randomUUID()}`,
-    reasoningEffort: snapshot.reasoningEffort,
-    request: snapshot.request,
-    routeInstruction: snapshot.routeInstruction,
-    shouldAbort: (error) => input.signal?.aborted === true ||
-      error instanceof DOMException && error.name === "AbortError",
-    transport: snapshot.transport
-  });
+  const modelRunId = `open-rag-replay:${randomUUID()}`;
+  const evidenceBindings = snapshot.evidenceBindings.map((binding) => Object.freeze({
+    dispatchEvidenceId: binding.dispatchEvidenceId,
+    evidenceItemId: binding.evidenceItemId
+  }));
+  const authorize = async () => {
+    if (input.signal?.aborted) throw input.signal.reason;
+  };
+  const shouldAbort = (error: unknown) => input.signal?.aborted === true ||
+    error instanceof DOMException && error.name === "AbortError";
+  const execute = async (
+    request: ProviderStructuredOutputRequest,
+    options: Readonly<{ providerResponseId: string | null }>
+  ): Promise<KnowledgeAnswerOperationExecutionV8 & KnowledgeAnswerOperationExecutionV21> => {
+    let providerResponseId: string | null = options.providerResponseId;
+    let usage = zeroUsage;
+    const output = await input.executeStructuredOutput(
+      snapshot.answerExecutionSnapshot,
+      request,
+      {
+        onProviderResponseId: (value) => {
+          providerResponseId = value;
+        },
+        onUsage: (value) => {
+          usage = value;
+        },
+        ...(input.signal ? { signal: input.signal } : {}),
+        timeoutMs: 15 * 60 * 1_000
+      }
+    );
+    return Object.freeze({ output, providerResponseId, usage });
+  };
+  const pipeline = replayPipeline(snapshot.contracts);
+  if (!pipeline) throw new Error("open_rag_replay_contract_invalid");
+  let operations: readonly Readonly<{ operation: string }>[];
+  let settlement: ReturnType<typeof settleKnowledgeAnswerV5>;
+  if (pipeline === "v20_v16") {
+    const result = await executeKnowledgeAnswerGroundingV8({
+      authorize,
+      contractPair: KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
+      draft: snapshot.evidence,
+      evidenceBindings,
+      execute,
+      forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
+      lifecycle,
+      modelRunId,
+      reasoningEffort: snapshot.reasoningEffort,
+      request: snapshot.request,
+      routeInstruction: snapshot.routeInstruction,
+      shouldAbort,
+      transport: snapshot.transport
+    });
+    operations = result.operations;
+    settlement = settleCapturedV20(snapshot, captured);
+  } else {
+    const result = await executeKnowledgeAnswerGroundingV21({
+      authorize,
+      draft: snapshot.evidence,
+      evidenceBindings,
+      execute,
+      forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
+      lifecycle,
+      modelRunId,
+      ...(snapshot.executionPolicy
+        ? { executionPolicy: snapshot.executionPolicy }
+        : { reasoningEffort: snapshot.reasoningEffort }),
+      request: snapshot.request,
+      routeInstruction: snapshot.routeInstruction,
+      shouldAbort,
+      transport: snapshot.transport
+    });
+    operations = result.operations;
+    settlement = result.settlement;
+  }
   const ordered = [...captured].sort((left, right) => left.ordinal - right.ordinal);
-  if (ordered.length !== result.operations.length ||
+  if (ordered.length !== operations.length ||
     ordered.some((operation, index) =>
-      operation.operation !== result.operations[index]?.operation)) {
+      operation.operation !== operations[index]?.operation) ||
+    !isOpenRagAnswerOperationSequence(
+      snapshot.contracts,
+      ordered.map(({ operation }) => operation)
+    )) {
     throw new Error("open_rag_replay_operation_set_invalid");
   }
-  const settlement = settleCapturedV20(snapshot, captured);
   return Object.freeze({
     acceptedResults: Object.freeze(ordered.map(({ acceptedResult, operation }) =>
       Object.freeze({ operation, output: acceptedResult }))),
     citedEvidence: citedEvidence(settlement.finalText, snapshot.evidence),
-    contracts: result.contracts,
+    contracts: snapshot.contracts,
     coverage: settlement.requestCoverage,
     finalText: settlement.finalText,
-    operationCount: result.operations.length,
+    operationCount: operations.length,
     stageRecords: Object.freeze(ordered.map((operation): OpenRagAnswerStageRecord => {
       const usage = normalizeTokenUsage(operation.usage);
       return Object.freeze({
