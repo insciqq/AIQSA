@@ -136,13 +136,16 @@ atom provenance, anchors, and bounds, then materializes every finding losslessly
 there is no negative-atom echo or second model-owned positive-to-Scope reduction.
 A repair receives unchanged authority inputs plus only the bounded
 validation-reason enum; provider failures are not retried. Correction starts
-only when both remaining calls fit. Every supplemental claim names exactly one
-initially missing positive Scope target; its citation hints are advisory and
-remain bounded to available manifest handles. The final Selector independently
-chooses factual support and enforces immutable target provenance. Supplement
-also receives a complete bounded D-to-exact-atom projection derived from the
-accepted Scope; an oversized projection disables correction instead of being
-truncated. This performs no retrieval or semantic server reduction. It is a delta:
+only when both remaining calls fit. Every supplemental candidate names exactly
+one initially missing positive Scope target and carries no model-owned
+provenance. The final Selector independently
+chooses factual support and enforces immutable target provenance. Supplement's
+sole factual input is a complete bounded D-to-exact-atom projection derived
+from the accepted Scope; the full manifest, unrelated handles, and primary
+Draft are absent. It returns target ID and claim text, while the server derives
+advisory Draft handles from the target atoms. An oversized projection disables
+correction instead of being truncated. This performs no retrieval or semantic
+server reduction. It is a delta:
 the accepted base remains immutable and a target can close only through its own
 supported supplemental claim. Every later request
 pins the exact accepted Scope result hash. Selector coverage requires each

@@ -1261,7 +1261,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol: "scope_v6_targeted_delta_v1" as const,
+      protocol: "scope_v6_targeted_delta_v2" as const,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1305,7 +1305,6 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector!);
     const rawSupplement = {
       claims: [{
-        citationHints: ["K1"],
         targetDimensionId: "D2",
         text: "The retention period starts after completion."
       }],
@@ -1325,8 +1324,6 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: missingDimensions,
       evidence: selectorEvidence,
-      evidenceManifest: dispatchDraft.message,
-      primaryDraft: acceptedDraft!,
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });

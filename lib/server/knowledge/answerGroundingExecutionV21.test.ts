@@ -814,7 +814,6 @@ function currentExecution(complete: boolean) {
           : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
             ? {
                 claims: [{
-                  citationHints: ["K2"],
                   targetDimensionId: "D2",
                   text: "Beta removes duplicates."
                 }],
@@ -888,26 +887,10 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
   });
 
-  it("lets the final Selector own support when a targeted Draft hint is advisory", async () => {
+  it("derives supplemental Draft provenance from the immutable target", async () => {
     const recorder = lifecycleRecorder();
-    const baseline = currentExecution(false);
-    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> =>
-      operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
-        ? {
-            output: {
-              claims: [{
-                citationHints: ["K1"],
-                targetDimensionId: "D2",
-                text: "Beta removes duplicates."
-              }],
-              version: 1
-            },
-            providerResponseId: "response-advisory-targeted-hint",
-            usage
-          }
-        : baseline(operation));
     const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
-      pipelineInput(recorder.lifecycle, execute)
+      pipelineInput(recorder.lifecycle, currentExecution(false))
     );
     expect(result.operations).toHaveLength(5);
     expect(result.settlement).toMatchObject({
@@ -915,10 +898,15 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       supportedClaimCount: 2
     });
     expect(recorder.entries.get(4)?.acceptedResult).toMatchObject({
-      claims: [{ citationHints: ["K1"] }]
+      claims: [{ targetDimensionId: "D2" }]
     });
-    expect(recorder.entries.get(5)?.acceptedResult).toMatchObject({
-      claims: [{ supportHandles: ["K1"] }, { supportHandles: ["K2"] }]
+    const finalRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      recorder.entries.get(5)?.acceptedRequest
+    );
+    expect(JSON.parse(finalRequest!.userPrompt)).toMatchObject({
+      draft: {
+        claims: [{ citationHints: ["K1"] }, { citationHints: ["K2"] }]
+      }
     });
   });
 
@@ -930,7 +918,6 @@ describe("V21 positive-finding Coverage Scope execution", () => {
         ? {
             output: {
               claims: [{
-                citationHints: ["K1"],
                 targetDimensionId: "D1",
                 text: "Alpha preserves order."
               }],
@@ -1000,11 +987,9 @@ describe("V21 positive-finding Coverage Scope execution", () => {
             : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
               ? {
                   claims: [{
-                    citationHints: ["K2"],
                     targetDimensionId: "D2",
                     text: "Beta removes duplicates."
                   }, {
-                    citationHints: ["K2"],
                     targetDimensionId: "D3",
                     text: "Beta preserves stability."
                   }],

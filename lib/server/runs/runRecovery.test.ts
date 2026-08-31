@@ -1883,7 +1883,7 @@ describe("run recovery", () => {
       ...(snapshotVersion === 7
         ? {
             executionPolicy: executionPolicy!,
-            protocol: "scope_v6_targeted_delta_v1" as const
+            protocol: "scope_v6_targeted_delta_v2" as const
           }
         : snapshotVersion === 6
         ? { executionPolicy: executionPolicy!, protocol: "scope_v6" as const }

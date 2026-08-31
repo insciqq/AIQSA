@@ -448,7 +448,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
         draftContractVersion: 21,
         groundingEvidenceVersion: 23,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v1_settlement_v6",
+          "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v2_settlement_v6",
         selectorContractVersion: 21,
         settlementVersion: 6
       }

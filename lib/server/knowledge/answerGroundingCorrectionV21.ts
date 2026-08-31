@@ -29,13 +29,6 @@ const claimIdPattern = /^C(?:[1-9]|1\d|2[0-4])$/u;
 const targetedClaimSchema = Object.freeze({
   additionalProperties: false,
   properties: {
-    citationHints: {
-      items: { pattern: "^K[1-9]\\d{0,3}$", type: "string" },
-      maxItems: KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxCitationHints,
-      minItems: 1,
-      type: "array",
-      uniqueItems: true
-    },
     targetDimensionId: { pattern: "^D[1-8]$", type: "string" },
     text: {
       maxLength: KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaimCodePoints,
@@ -43,7 +36,7 @@ const targetedClaimSchema = Object.freeze({
       type: "string"
     }
   },
-  required: ["targetDimensionId", "text", "citationHints"],
+  required: ["targetDimensionId", "text"],
   type: "object"
 });
 
@@ -238,9 +231,9 @@ export function knowledgeTargetedSupplementFitsV1(input: Readonly<{
 }
 
 /** Validates a task-addressed corrective Draft. Every positive missing Scope
- * dimension receives at least one novel candidate. targetDimensionId is the
- * exact server task address; Draft citation hints remain globally valid
- * advisory metadata, while the final Selector owns factual support,
+ * dimension receives at least one novel candidate. The model returns no
+ * provenance: the server derives advisory Draft hints from that target's exact
+ * immutable Scope handles, while the final Selector owns factual support,
  * provenance overlap, and semantic coverage. */
 export function validateKnowledgeTargetedSupplementV1(
   value: unknown,
@@ -267,21 +260,18 @@ export function validateKnowledgeTargetedSupplementV1(
     return rejected("draft_target_set_invalid");
   }
   const rawClaims: Array<Readonly<{
-    citationHints: unknown;
     targetDimensionId: string;
     text: unknown;
   }>> = [];
   for (const candidate of value.claims) {
     if (!record(candidate) || !exactKeys(candidate, [
       "targetDimensionId",
-      "text",
-      "citationHints"
+      "text"
     ]) || typeof candidate.targetDimensionId !== "string" ||
       !dimensionById.has(candidate.targetDimensionId)) {
       return rejected("draft_target_shape_invalid");
     }
     rawClaims.push({
-      citationHints: candidate.citationHints,
       targetDimensionId: candidate.targetDimensionId,
       text: candidate.text
     });
@@ -291,7 +281,10 @@ export function validateKnowledgeTargetedSupplementV1(
     return rejected("draft_target_set_invalid");
   }
   const validation = validateKnowledgeAnswerDraftSupplementV1({
-    claims: rawClaims.map(({ citationHints, text }) => ({ citationHints, text })),
+    claims: rawClaims.map(({ targetDimensionId, text }) => ({
+      citationHints: dimensionById.get(targetDimensionId)!.evidenceHandles,
+      text
+    })),
     version: 1
   }, {
     availableHandles: input.availableHandles,
