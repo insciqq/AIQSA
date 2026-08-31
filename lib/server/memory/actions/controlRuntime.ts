@@ -36,20 +36,20 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v22";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v23";
 export const MEMORY_CONTROL_REASONING_EFFORT = "low" as const;
 export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v22",
-  promptVersion: "memory-control-prompt-v25",
+  policyVersion: "memory-control-policy-v23",
+  promptVersion: "memory-control-prompt-v26",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
     reasoningEffort: MEMORY_CONTROL_REASONING_EFFORT,
     reasoningOutputTokenFloor: MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
-    version: 20
+    version: 21
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
@@ -321,7 +321,7 @@ export function memoryControlAcceptedOutputHash(
   return memoryExecutionSha256({ inputHash, intentHash, version: 3 });
 }
 
-export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 7 as const;
+export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 8 as const;
 
 export type MemoryReadOnlyControlReuseProof = Readonly<{
   acceptedOutputHash: string;

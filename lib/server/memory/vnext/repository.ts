@@ -28,8 +28,13 @@ import {
   persistMemoryFactDependencies
 } from "../learning/dependencies/repository";
 import { persistMemoryCandidateEntities } from "../learning/entities/repository";
+import {
+  memoryLegacyIdentityIsUnambiguous,
+  registerMemoryIdentityCompatibility
+} from "../learning/identity/compatibility";
 
 type LockedFact = Readonly<{
+  canonicalKey: string;
   currentVersionId: string | null;
   id: string;
   lastConfirmedAt: Date | null;
@@ -221,18 +226,56 @@ async function lockedFact(
   tx: MemoryTransaction,
   userId: string,
   scopeId: string,
-  canonicalKey: string
-): Promise<LockedFact | null> {
+  candidate: MemoryExtractedCandidate,
+  now: Date
+): Promise<Readonly<{
+  fact: LockedFact | null;
+  legacyWriteBlocked: boolean;
+}>> {
+  await registerMemoryIdentityCompatibility(tx, {
+    containerId: scopeId,
+    legacyCanonicalKey: candidate.legacyCanonicalKey,
+    namespace: "FACT",
+    now,
+    unicodeCanonicalKey: candidate.unicodeCanonicalKey,
+    userId
+  });
+  const legacyIsUnambiguous = await memoryLegacyIdentityIsUnambiguous(tx, {
+    containerId: scopeId,
+    legacyCanonicalKey: candidate.legacyCanonicalKey,
+    namespace: "FACT",
+    unicodeCanonicalKey: candidate.unicodeCanonicalKey,
+    userId
+  });
+  const canonicalKeys = candidate.legacyCanonicalKey ===
+    candidate.unicodeCanonicalKey
+    ? [candidate.unicodeCanonicalKey]
+    : legacyIsUnambiguous
+      ? [candidate.unicodeCanonicalKey, candidate.legacyCanonicalKey]
+      : [candidate.unicodeCanonicalKey];
   const rows = await tx.$queryRaw<LockedFact[]>(Prisma.sql`
-    SELECT "id", "currentVersionId", "lastConfirmedAt", "movedToFactId",
+    SELECT "id", "canonicalKey", "currentVersionId", "lastConfirmedAt",
+      "movedToFactId",
       "state"::text AS "state"
     FROM "MemoryFact"
     WHERE "userId" = ${userId}
       AND "scopeId" = ${scopeId}
-      AND "canonicalKey" = ${canonicalKey}
+      AND "canonicalKey" IN (${Prisma.join(canonicalKeys)})
+    ORDER BY CASE "canonicalKey"
+      WHEN ${candidate.unicodeCanonicalKey} THEN 0
+      ELSE 1
+    END
     FOR UPDATE
   `);
-  return rows[0] ?? null;
+  const fact = rows[0] ?? null;
+  return {
+    fact,
+    legacyWriteBlocked:
+      fact === null &&
+      candidate.identityProfile === "LEGACY_V1" &&
+      candidate.legacyCanonicalKey !== candidate.unicodeCanonicalKey &&
+      !legacyIsUnambiguous
+  };
 }
 
 function normalizedStoredValue(version: StoredVersion) {
@@ -248,10 +291,19 @@ function normalizedStoredValue(version: StoredVersion) {
 
 function sameValue(
   version: StoredVersion,
-  candidate: MemoryExtractedCandidate
+  candidate: MemoryExtractedCandidate,
+  factCanonicalKey: string
 ): boolean {
+  const structuredValue = factCanonicalKey === candidate.legacyCanonicalKey
+    ? candidate.legacyProposedValue
+    : factCanonicalKey === candidate.unicodeCanonicalKey
+      ? candidate.unicodeProposedValue
+      : candidate.proposedValue;
   return memorySha256(normalizedStoredValue(version)) ===
-    memorySha256(memoryFactNormalizedValue(candidate));
+    memorySha256({
+      ...memoryFactNormalizedValue(candidate),
+      structuredValue
+    });
 }
 
 async function attachEvidence(
@@ -471,6 +523,7 @@ async function matchingPendingVersion(
   tx: MemoryTransaction,
   userId: string,
   factId: string,
+  factCanonicalKey: string,
   candidate: MemoryExtractedCandidate
 ): Promise<StoredVersion | null> {
   const pending = await tx.memoryFactVersion.findMany({
@@ -489,7 +542,8 @@ async function matchingPendingVersion(
     },
     where: { factId, state: "PENDING_RELATION", userId }
   }) as StoredVersion[];
-  return pending.find((version) => sameValue(version, candidate)) ?? null;
+  return pending.find((version) =>
+    sameValue(version, candidate, factCanonicalKey)) ?? null;
 }
 
 async function materializeExpiredCurrent(
@@ -853,18 +907,23 @@ async function createObservation(
       semanticAdjudication.resolvedTargetVersionId,
       now
     );
-    if (!target) return { attachedEvidence: 0, createdVersions: 0 };
-    return reinforceTarget(
-      tx,
-      settings,
-      claim,
-      plan,
-      candidate,
-      evidence[0]!,
-      bindingId,
-      now,
-      target
-    );
+    if (target) {
+      return reinforceTarget(
+        tx,
+        settings,
+        claim,
+        plan,
+        candidate,
+        evidence[0]!,
+        bindingId,
+        now,
+        target
+      );
+    }
+    // An exact target can have crossed its TTL after adjudication. SLOT
+    // identity must fall through to the canonical locked path, which alone
+    // may materialize that exact expired version and create a fresh one.
+    // Stale/non-current targets still fail its target/pointer revalidation.
   }
   // A proposition with a model-selected target may only converge through the
   // revalidated reinforcement path above. Other pointer operations belong to
@@ -875,12 +934,20 @@ async function createObservation(
     semanticAdjudication.resolvedTargetVersionId !== null) {
     return { attachedEvidence: 0, createdVersions: 0 };
   }
-  const fact = await lockedFact(
+  const factLookup = await lockedFact(
     tx,
     settings.userId,
     scope.id,
-    candidate.canonicalKey
+    candidate,
+    now
   );
+  // Once one legacy key is known to represent multiple complete Unicode
+  // identities, rollback may continue to read/reinforce an existing Unicode
+  // fact but must never create or merge through the ambiguous legacy key.
+  if (factLookup.legacyWriteBlocked) {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
+  const fact = factLookup.fact;
   if (!fact) {
     const correctionTarget = await correctionTargetVersionId(
       tx,
@@ -983,7 +1050,7 @@ async function createObservation(
     );
   }
 
-  if (sameValue(active, candidate)) {
+  if (sameValue(active, candidate, fact.canonicalKey)) {
     const explicitTargetMatch =
       semanticAdjudication?.resolvedTargetVersionId === active.id && [
         "REINFORCE",
@@ -1033,6 +1100,7 @@ async function createObservation(
     tx,
     settings.userId,
     fact.id,
+    fact.canonicalKey,
     candidate
   );
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");

@@ -91,7 +91,7 @@ ops/backup/create.sh /secure/aiqsa-backups
 ops/backup/restore.sh --verify-only /secure/aiqsa-backups/aiqsa-backup-TIMESTAMP
 ```
 
-Use an existing protected directory, copy verified bundles to encrypted off-host storage, and back up `AIQSA_ENCRYPTION_KEY` plus `AIQSA_MEMORY_FINGERPRINT_KEYRING` separately from those bundles. The helper stops and restores the web and Memory-worker roles around a durable lease fence; restore validates only the bundle's non-secret key IDs against the separately recovered keyring. The bundled helper supports the bundled private MinIO storage; external S3 requires its own consistent object-backup procedure coordinated with PostgreSQL.
+Use an existing protected directory, copy verified bundles to encrypted off-host storage, and back up `AIQSA_ENCRYPTION_KEY`, `AIQSA_MEMORY_FINGERPRINT_KEYRING`, and `AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY` separately from those bundles. The helper stops and restores the web and Memory-worker roles around a durable lease fence; restore validates only the bundle's non-secret key IDs against the separately recovered keyring. The OpenSearch index is derived and rebuilt after restore rather than backed up. The bundled helper supports the bundled private MinIO storage; external S3 requires its own consistent object-backup procedure coordinated with PostgreSQL.
 
 Disaster recovery is deliberately two-step. Provision a unique private
 `aiqsa-restore-*` project with
@@ -135,6 +135,12 @@ is a non-destructive Knowledge profile pointer restore.
 Existing users, settings, chats, and uploaded objects remain in the configured
 volumes. Pin `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` in `.env` when a fixed
 release is preferred over `latest`.
+
+Personal Memory's derived OpenSearch lexical index has a separate
+[rollout and recovery runbook](ops/opensearch/README.md). Keep reads on
+`POSTGRES` until its aggregate integrity and shadow qualification gates pass;
+the runbook covers stable canary progression, immediate rollback, rebuild,
+restore, deletion verification, and routing-key rotation.
 
 For automated backups, use the colocated [systemd timer templates](ops/systemd/README.md). Restore operations accept only unique disposable review projects and never overwrite canonical live services.
 

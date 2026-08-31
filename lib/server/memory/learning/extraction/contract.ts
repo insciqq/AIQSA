@@ -3,9 +3,14 @@ import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTextLanguage } from "../../history/language";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
+import {
+  MEMORY_DEFAULT_IDENTITY_PROFILE,
+  MEMORY_IDENTITY_PROFILES,
+  type MemoryIdentityProfile
+} from "../identity/normalization";
 
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
-  "memory-fact-extraction-vnext-v7";
+  "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
   "memory-fact-extraction-policy-v11";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
@@ -232,6 +237,7 @@ export type MemoryFactContextRef = Readonly<{
 export type MemoryFactExtractionInput = Readonly<{
   contextRefs: readonly MemoryFactContextRef[];
   folderId: string | null;
+  identityProfile: MemoryIdentityProfile;
   inputHash: string;
   messages: readonly MemoryFactInputMessage[];
   source: MemoryFactSourceIdentity;
@@ -308,10 +314,18 @@ export type MemoryExtractedCandidate = Readonly<{
   expectedAt: string | null;
   expiresAt: string | null;
   id: string;
+  identityProfile: MemoryIdentityProfile;
   identityKind: "PROPOSITION" | "SLOT";
-  identityVersion: "proposition-v1" | "slot-v2" | "slot-v3";
+  identityVersion:
+    | "proposition-v1"
+    | "proposition-v2"
+    | "slot-v2"
+    | "slot-v3"
+    | "slot-v4";
   importance: number;
   languageCode: MemoryTextLanguage;
+  legacyCanonicalKey: string;
+  legacyProposedValue: unknown;
   modality:
     | "CONSIDERATION"
     | "CONSTRAINT"
@@ -344,6 +358,8 @@ export type MemoryExtractedCandidate = Readonly<{
   /** Set only by the transactional entity materializer before semantic apply. */
   subjectEntityId?: string | null;
   temporalResolutionEvidence: Readonly<Record<string, unknown>> | null;
+  unicodeCanonicalKey: string;
+  unicodeProposedValue: unknown;
   validFrom: string | null;
   validTo: string | null;
 }>;
@@ -369,7 +385,8 @@ function validCounter(value: unknown): value is number {
 }
 
 export function memoryFactExtractionJobFingerprint(
-  source: MemoryFactSourceIdentity
+  source: MemoryFactSourceIdentity,
+  identityProfile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE
 ): string {
   if (
     !validIdentity(source.activeLeafMessageId) ||
@@ -384,10 +401,36 @@ export function memoryFactExtractionJobFingerprint(
   return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}${memorySha256({
     chatId: source.chatId,
     memoryGenerationSnapshot: source.memoryGenerationSnapshot,
+    identityProfile,
     pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
     sourceMessageId: source.sourceMessageId,
     userId: source.userId
   })}`;
+}
+
+export function memoryFactExtractionIdentityProfile(
+  job: MemoryJobDescriptor
+): MemoryIdentityProfile | null {
+  for (const profile of MEMORY_IDENTITY_PROFILES) {
+    try {
+      if (job.idempotencyFingerprint === memoryFactExtractionJobFingerprint(
+        {
+          activeLeafMessageId: job.activeLeafMessageId!,
+          branchGeneration: job.branchGeneration!,
+          chatId: job.chatId!,
+          memoryGenerationSnapshot: job.memoryGenerationSnapshot,
+          sourceHash: job.sourceHash!,
+          sourceMessageId: job.sourceMessageId!,
+          sourceRevision: job.sourceRevision!,
+          userId: job.userId
+        },
+        profile
+      )) return profile;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function memoryFactExtractionClaimIsValid(
@@ -410,11 +453,7 @@ export function memoryFactExtractionClaimIsValid(
     sourceRevision: job.sourceRevision,
     userId: job.userId
   };
-  try {
-    return job.idempotencyFingerprint === memoryFactExtractionJobFingerprint(source);
-  } catch {
-    return false;
-  }
+  return memoryFactExtractionIdentityProfile({ ...job, ...source }) !== null;
 }
 
 export function memoryFactExtractionInputHash(
@@ -448,7 +487,12 @@ export function memoryFactCandidateId(
     semanticFrame: _semanticFrame,
     temporalNormalization: _temporalNormalization,
     expirationIntent: _expirationIntent,
+    identityProfile: _identityProfile,
+    legacyCanonicalKey: _legacyCanonicalKey,
+    legacyProposedValue: _legacyProposedValue,
     temporary: _temporary,
+    unicodeCanonicalKey: _unicodeCanonicalKey,
+    unicodeProposedValue: _unicodeProposedValue,
     ...identity
   } = candidate;
   return memorySha256({

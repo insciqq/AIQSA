@@ -231,9 +231,10 @@ function validModeContract(
 
 /**
  * Produces only bounded syntax-level query material. It intentionally performs
- * no general language, topic, spelling, or semantic intent inference. The one
- * deliberate language-aware exception is the bounded deterministic EN/RU
- * calendar parser carried beside, never instead of, the original query.
+ * no general language, topic, spelling, or semantic intent inference. The
+ * numeric calendar parser is language-neutral and is carried beside, never
+ * instead of, the original query; natural-language bounds arrive only through
+ * structured control fields.
  * Every non-empty Unicode query is eligible; a null lexical projection merely
  * means PostgreSQL FTS has no token to consume while vector and recency lanes
  * still run with the normalized raw query.

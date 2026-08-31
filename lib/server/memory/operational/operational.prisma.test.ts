@@ -64,10 +64,10 @@ describe("Memory operational PostgreSQL contracts", () => {
             digestIncremental: 1,
             digestNoop: 2,
             contextualProviderRequests: 1,
-            contextualFallbackEn: 2,
+            contextualFallbackDeclared: 2,
             contextualFallbackUnsupportedNumber: 2,
-            contextualGeneratedOther: 4,
-            contextualGeneratedRu: 6,
+            contextualGeneratedDeclared: 4,
+            contextualGeneratedMixed: 6,
             contextualRoundsFallback: 2,
             contextualRoundsGenerated: 6,
             embeddingBatchItems: 16,
@@ -106,13 +106,13 @@ describe("Memory operational PostgreSQL contracts", () => {
           count: 2
         }],
         contextualLanguageCounts: [{
-          code: "contextualFallbackEn",
+          code: "contextualFallbackDeclared",
           count: 2
         }, {
-          code: "contextualGeneratedOther",
+          code: "contextualGeneratedDeclared",
           count: 4
         }, {
-          code: "contextualGeneratedRu",
+          code: "contextualGeneratedMixed",
           count: 6
         }],
         contextualRoundsFallback: 2,
@@ -160,23 +160,27 @@ describe("Memory operational PostgreSQL contracts", () => {
 
   it("rejects non-allowlisted durable operational values at the DB boundary", async () => {
     const userId = await createOwner();
-    const jobId = randomUUID();
     try {
-      await expect(prisma.memoryJob.create({
-        data: {
-          id: jobId,
-          idempotencyFingerprint: memorySha256({ jobId, userId }),
-          kind: "INDEX_HISTORY",
-          memoryGenerationSnapshot: 0,
-          memoryRevisionSnapshot: 0,
-          operationalCounters: {
-            privateContent: "must-not-persist"
-          } as Prisma.InputJsonObject,
-          pipelineVersion: "memory-operational-test-v1",
-          state: "SUCCEEDED",
-          userId
-        }
-      })).rejects.toThrow(/MemoryJob_operational_counters_check/u);
+      for (const operationalCounters of [{
+        privateContent: "must-not-persist"
+      }, {
+        contextualGeneratedEn: 1
+      }]) {
+        const jobId = randomUUID();
+        await expect(prisma.memoryJob.create({
+          data: {
+            id: jobId,
+            idempotencyFingerprint: memorySha256({ jobId, userId }),
+            kind: "INDEX_HISTORY",
+            memoryGenerationSnapshot: 0,
+            memoryRevisionSnapshot: 0,
+            operationalCounters: operationalCounters as Prisma.InputJsonObject,
+            pipelineVersion: "memory-operational-test-v1",
+            state: "SUCCEEDED",
+            userId
+          }
+        })).rejects.toThrow(/MemoryJob_operational_counters_check/u);
+      }
     } finally {
       await cleanupOwner(userId);
     }

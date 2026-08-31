@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { normalizeMemoryLexicalProjection } from
   "../../../domain/memory/retrieval/lexical";
 
-export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_EN_RU_TRIGRAM_V4";
-export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v4";
+export const MEMORY_LEXICAL_ANALYSIS_PROFILE = "UNICODE_ICU_NGRAM_V1";
+export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v5";
 export const MEMORY_LEXICAL_CHUNKING_VERSION = "memory-no-chunking-v1";
 export const MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION =
-  "memory-personal-retrieval-v6-lexical";
+  "memory-personal-retrieval-v7-lexical";
 
 function canonicalJson(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();

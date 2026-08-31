@@ -29,7 +29,7 @@ import {
 } from "./digest";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   memorySha256,
   normalizeMemorySearchText
@@ -1925,7 +1925,7 @@ describe("Memory lexical history index persistence", () => {
           exactSafeText: rounds[0]!.rawSafeText,
           finalScore: 0.9,
           itemType: "RECALL_ROUND",
-          laneRanks: { HISTORY_RECALL_FTS_SIMPLE: 1 },
+          laneRanks: { HISTORY_RECALL_LEXICAL_UNICODE: 1 },
           projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
           recallRoundId: rounds[0]!.id,
           recallRoundSegmentId: segments[0]!.id,
@@ -1966,7 +1966,7 @@ describe("Memory lexical history index persistence", () => {
           exactSafeText: corruptText,
           finalScore: 0.9,
           itemType: "RECALL_ROUND",
-          laneRanks: { HISTORY_RECALL_FTS_SIMPLE: 1 },
+          laneRanks: { HISTORY_RECALL_LEXICAL_UNICODE: 1 },
           projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
           recallRoundId: rounds[0]!.id,
           recallRoundSegmentId: segments[0]!.id,
@@ -2402,7 +2402,7 @@ describe("Memory lexical history index persistence", () => {
           generation: (nextGeneration._max.generation ?? -1) + 1,
           indexMode: "HYBRID",
           indexedThroughMemoryRevision: afterRollback.memoryRevision,
-          languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+          languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
           normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
           retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
           roundProjectionVersion: activeSegmentGeneration.roundProjectionVersion,

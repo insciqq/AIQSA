@@ -77,4 +77,31 @@ describe("Memory pause intervals", () => {
     expect(text).not.toContain('authority_source_message."updatedAt" <>');
     expect(text).not.toContain("LEFT JOIN");
   });
+
+  it.each([
+    ["chunk", memoryHistoryChunkSourceAuthorityPredicate({
+      boundedCandidateSourceLookup: true,
+      chat: "source_chat",
+      checkpoint: "checkpoint"
+    })],
+    ["round", memoryHistoryRoundSourceAuthorityPredicate({
+      boundedCandidateSourceLookup: true,
+      chat: "source_chat",
+      checkpoint: "checkpoint"
+    })]
+  ])("keeps bounded %s authority lookups parameterized by source identity", (
+    _kind,
+    sql
+  ) => {
+    const text = sql.strings.join("?");
+
+    expect(text.match(/FROM LATERAL \(/gu)).toHaveLength(2);
+    expect(text).toMatch(
+      /FROM "MemoryRecall(?:Chunk|Round)Message" AS bounded_source_map/u
+    );
+    expect(text).toMatch(
+      /bounded_source_map\."(?:chunk|round)Id" = "(?:chunk|round)"\."id"/u
+    );
+    expect(text).toContain("OFFSET 0");
+  });
 });

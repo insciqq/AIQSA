@@ -22,11 +22,15 @@ import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate
 } from "../persistence/pauseIntervals";
+import {
+  MEMORY_READ_BUDGET_MS,
+  withMemoryReadBudget
+} from "./readBudget";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
   "memory-personal-retrieval-v8-vector";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v10-memory-profile-v2";
+  "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v11-memory-profile-v3";
 export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
   1024: 0.55,
   1536: 0.55
@@ -1289,10 +1293,16 @@ export async function searchMemoryVectorLanes(
 export function createPrismaMemoryVectorRepository(client: PrismaClient = prisma) {
   return Object.freeze({
     resolveActiveProfile(userId: string) {
-      return resolveActiveProfileWith(client, userId);
+      return withMemoryReadBudget(
+        client,
+        MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
+        (tx) => resolveActiveProfileWith(tx, userId)
+      );
     },
     async search(input: MemoryVectorSearchInput): Promise<MemoryVectorSearchResult> {
-      return client.$transaction(
+      return withMemoryReadBudget(
+        client,
+        MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
         (tx) => searchMemoryVectorLanes(createPrismaLaneExecutor(tx), input),
         { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
       );

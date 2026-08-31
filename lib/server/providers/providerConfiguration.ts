@@ -614,8 +614,17 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const openRouterRouting = value.openRouterRouting === undefined
     ? undefined
     : normalizeOpenRouterRouting(value.openRouterRouting);
-  if ((adapterKind === "openrouter_chat_completions" ||
-    adapterKind === "openrouter_rerank") !== Boolean(openRouterRouting)) {
+  const openRouterRoutingRequired = adapterKind === "openrouter_chat_completions" ||
+    adapterKind === "openrouter_rerank";
+  const openRouterRoutingAllowed = openRouterRoutingRequired || (
+    adapterKind === "openai_embeddings_compatible" &&
+    modelClass === "embedding" &&
+    embedding?.providerFamily === "openrouter"
+  );
+  if (
+    openRouterRoutingRequired && !openRouterRouting ||
+    openRouterRouting && !openRouterRoutingAllowed
+  ) {
     throw new ProviderConfigurationError("provider_routing_invalid");
   }
   const defaultParams = openRouterRouting && adapterKind === "openrouter_chat_completions"

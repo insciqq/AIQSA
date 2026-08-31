@@ -41,7 +41,8 @@ const vNextFactExtractionPipelines = new Set([
   "memory-fact-extraction-vnext-v4",
   "memory-fact-extraction-vnext-v5",
   "memory-fact-extraction-vnext-v6",
-  "memory-fact-extraction-vnext-v7"
+  "memory-fact-extraction-vnext-v7",
+  "memory-fact-extraction-vnext-v8"
 ]);
 const relationPipeline = "memory-fact-relation-v2";
 

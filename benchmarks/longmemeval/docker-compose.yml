@@ -15,12 +15,32 @@ services:
       AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: "64"
       AIQSA_MEMORY_JOB_PARALLELISM: "8"
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "4"
+      AIQSA_MEMORY_LEXICAL_BACKEND: OPENSEARCH
+      AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: 20260831-lme-v7-r2
       DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
       NODE_OPTIONS: "--max-old-space-size=2560"
     mem_limit: ${AIQSA_MEMORY_BENCHMARK_APP_MEMORY_LIMIT:-4g}
     ports: !override
       - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}:3000"
     restart: unless-stopped
+
+  memory-search-worker:
+    container_name: aiqsa-memory-benchmark-second-memory-search-worker
+    environment:
+      AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: 20260831-lme-v7-r2
+      AIQSA_MEMORY_OPENSEARCH_PROJECTION_BATCH: "100"
+      AIQSA_MEMORY_OPENSEARCH_PROJECTION_INTERVAL_MS: "500"
+      AIQSA_MEMORY_OPENSEARCH_VERIFICATION_BATCH: "16"
+      DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
+    cpus: 1.0
+
+  knowledge-search-worker:
+    profiles: ["benchmark-disabled"]
+
+  opensearch:
+    container_name: aiqsa-memory-benchmark-second-opensearch
+    ports: !override
+      - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_OPENSEARCH_PORT:-19237}:9200"
 
   docling:
     container_name: aiqsa-memory-benchmark-second-docling
@@ -44,6 +64,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U aiqsa_benchmark -d aiqsa_memory_benchmark"]
     ports: !override
       - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_POSTGRES_PORT:-55437}:5432"
+    volumes: !override
+      - postgres18_dev_data:/var/lib/postgresql
 
   minio:
     container_name: aiqsa-memory-benchmark-second-minio
@@ -57,15 +79,37 @@ services:
 networks:
   default:
     name: aiqsa-memory-benchmark-second-default
+    ipam: !override
+      config:
+        - subnet: 192.168.112.0/24
   mcp-control:
     name: aiqsa-memory-benchmark-second-mcp-control
     internal: true
+    ipam: !override
+      config:
+        - subnet: 192.168.113.0/24
   parser-control:
     name: aiqsa-memory-benchmark-second-parser-control
     internal: true
+    ipam: !override
+      config:
+        - subnet: 192.168.114.0/24
+  search-control:
+    name: aiqsa-memory-benchmark-second-search-control
+    internal: true
+    ipam: !override
+      config:
+        - subnet: 192.168.115.0/24
+  search-diagnostic:
+    name: aiqsa-memory-benchmark-second-search-diagnostic
+    ipam: !override
+      config:
+        - subnet: 192.168.116.0/24
 
 volumes:
   minio_dev_data:
     name: aiqsa-memory-benchmark-second-minio
-  postgres_dev_data:
-    name: aiqsa-memory-benchmark-second-postgres
+  postgres18_dev_data:
+    name: aiqsa-memory-benchmark-second_postgres18_dev_data
+  opensearch_dev_data:
+    name: aiqsa-memory-benchmark-second-opensearch

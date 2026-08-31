@@ -1043,7 +1043,7 @@ describe("Prisma Memory fact consolidation", () => {
         });
       await expect(prisma.memorySearchEntry.count({
         where: { factVersionId: factA.currentVersionId, userId }
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
 
       settingsNow = resumedAt;
       await settingsRepository.patch(userId, {
@@ -1173,7 +1173,7 @@ describe("Prisma Memory fact consolidation", () => {
     }
   });
 
-  it("atomically adds and reinforces one logical fact without duplicate support", async () => {
+  it("atomically adds and reinforces one legacy fact without a vNext projection", async () => {
     const userId = await createOwner("add-reinforce");
     try {
       const first = await createCandidate({
@@ -1230,7 +1230,7 @@ describe("Prisma Memory fact consolidation", () => {
       })).resolves.toMatchObject({ operation: "ADD", state: "APPLIED" });
       await expect(prisma.memorySearchEntry.count({
         where: { factVersionId: fact.currentVersionId, userId }
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
 
       const repeated = await createCandidate({
         createdAt: new Date("2026-08-11T09:00:00.000Z"),
@@ -1627,7 +1627,7 @@ describe("Prisma Memory fact consolidation", () => {
       })).resolves.toMatchObject({ state: "RETRACTED", systemTo: expect.any(Date) });
       await expect(prisma.memorySearchEntry.count({
         where: { factVersionId: teaVersionId, userId }
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
 
       await mutateSource(userId, tea.chatId, {
         mutations: ["BRANCH_PATH_CHANGE"],

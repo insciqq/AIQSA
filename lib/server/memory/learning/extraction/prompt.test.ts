@@ -155,6 +155,7 @@ describe("Memory semantic-frame extraction prompt", () => {
         text: "The current saved option is cedar."
       }],
       folderId: null,
+      identityProfile: "UNICODE_V2",
       inputHash: "b".repeat(64),
       messages: [{
         contentHash: memorySha256(priorText),

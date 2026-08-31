@@ -8,7 +8,7 @@ import {
 import type { MemoryExecutionRole } from "../execution/roles";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../persistence/lexical";
@@ -195,7 +195,7 @@ export async function readMemoryCapabilityOperationalState(
     generation.state === "ACTIVE" &&
     (indexMode === "HYBRID" || indexMode === "LEXICAL_ONLY") &&
     generation.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
-    generation.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    generation.languageProfile === MEMORY_LEXICAL_ANALYSIS_PROFILE &&
     generation.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
     generation.retrievalPipelineVersion === expectedRetrievalPipeline
   );

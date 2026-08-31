@@ -26,11 +26,12 @@ import {
   MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
   MEMORY_RETRIEVAL_TARGETED_DIGEST_CHATS,
   MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT,
+  MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS,
   MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS,
   MEMORY_TEMPORAL_QUERY_MAX_MATCHED_EXPRESSIONS,
   MEMORY_TEMPORAL_QUERY_EXPRESSION_TYPES,
   MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
-  MEMORY_TRIGRAM_QUERY_MAX_TERMS,
+  MEMORY_NGRAM_QUERY_MAX_TERMS,
   analyzeMemoryLexicalQuery,
   memoryRetrievalEvidenceRootKey,
   memoryRetrievalLaneLimit,
@@ -60,13 +61,14 @@ import {
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
+import { memoryUserTestimonyText } from "../history/userTestimony";
 import {
   memoryRedactionHasMeaningfulRemainder,
   redactMemorySecrets
 } from "../explicit/safety";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256
@@ -91,19 +93,92 @@ import {
   type MemoryVectorLaneEvidence,
   type MemoryVectorProfile
 } from "./vector";
+import {
+  MEMORY_READ_BUDGET_MS,
+  MemoryReadBudgetError,
+  withMemoryReadBudget
+} from "./readBudget";
+import {
+  MEMORY_LEXICAL_PROVIDER_MAX_CANDIDATES_PER_VARIANT,
+  MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES,
+  assertMemoryLexicalSearchResult,
+  hasAcceptedCompleteMemoryLexicalVariant,
+  memoryLexicalProjectionReadinessScope,
+  type MemoryLexicalCandidateProvider,
+  type MemoryLexicalLaneEvidence,
+  type MemoryLexicalProviderBackend,
+  type MemoryLexicalProviderEvidence,
+  type MemoryLexicalRawCandidate,
+  type MemoryLexicalSearchRequest,
+  type MemoryLexicalSearchResult
+} from "./lexical/contract";
+import {
+  isPostgresUnicodeMemoryLexicalLane,
+  type PostgresUnicodeMemoryLexicalLane
+} from "./lexical/postgresUnicodeProvider";
+import {
+  defaultMemoryLexicalCutoverRuntime,
+  supportsMemoryLexicalCanonicalGuardFallback
+} from "./lexical/cutover";
+import {
+  defaultMemoryLexicalShadowRuntime,
+  isShadowedMemoryLexicalLane,
+  memoryLexicalShadowLaneReceipt,
+  type MemoryLexicalShadowLaneReceipt,
+  type MemoryLexicalShadowRuntime,
+  type MemoryLexicalShadowStage
+} from "./lexical/shadow";
+
+export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v39";
+  "memory-local-retrieval-repository-v46";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
-const MEMORY_TRIGRAM_FALLBACK_MAX_TERMS = 8;
-const MEMORY_TRIGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
-const MEMORY_FTS_AUTHORITY_PREFILTER_MAX_PER_VARIANT = 500;
-const memoryCyrillicTerm = /\p{Script=Cyrillic}/u;
+const MEMORY_NGRAM_FALLBACK_MAX_TERMS = 8;
+const MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
+const MEMORY_LEXICAL_AUTHORITY_PREFILTER_MAX_PER_VARIANT = 500;
+const MEMORY_EXACT_AUTHORITY_PREFILTER_MAX_CANDIDATES = 500;
+const MEMORY_LEXICAL_NGRAM_AUTHORITY_OVERFETCH_MULTIPLIER = 8;
 
 const denseOnlyRetrieval = Symbol("memory-dense-only-retrieval");
 type MemoryLocalRetrievalInternalInput = MemoryLocalRetrievalInput & Readonly<{
   [denseOnlyRetrieval]?: true;
 }>;
+
+type MemorySearchEntryRelation =
+  | "BOUNDED_CANDIDATES"
+  | "PERSISTED";
+
+function memorySearchEntryRelationSql(
+  relation: MemorySearchEntryRelation
+): Prisma.Sql {
+  return relation === "BOUNDED_CANDIDATES"
+    ? Prisma.sql`candidate_entries AS entry`
+    : Prisma.sql`"MemorySearchEntry" AS entry`;
+}
+
+function memorySearchEntryNormalizedTextSql(
+  relation: MemorySearchEntryRelation
+): Prisma.Sql {
+  return relation !== "PERSISTED"
+    ? Prisma.sql`NULL::text`
+    : Prisma.sql`entry."normalizedSearchText"`;
+}
+
+function memorySearchEntrySimpleVectorSql(
+  relation: MemorySearchEntryRelation
+): Prisma.Sql {
+  return relation !== "PERSISTED"
+    ? Prisma.sql`NULL::tsvector`
+    : Prisma.sql`entry."searchVectorSimple"`;
+}
+
+function boundedMemorySearchEntryColumnsSql(): Prisma.Sql {
+  return Prisma.sql`entry."id", entry."userId", entry."indexGenerationId",
+    entry."itemType", entry."factVersionId", entry."recallChunkId",
+    entry."recallRoundId", entry."recallRoundSegmentId", entry."toolEventId",
+    entry."safeContentHash"`;
+}
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -115,7 +190,7 @@ export type MemoryLocalRetrievalSnapshot = Readonly<{
   decayEnabled: boolean;
   decayPolicyVersion: string | null;
   folderId: string | null;
-  historySuppressionIdentitySnapshot: string | null;
+  historyAuthorityRevision: number | null;
   indexMode: "HYBRID" | "LEXICAL_ONLY" | null;
   contextualKeyPolicyVersion?: string | null;
   memoryGeneration: number;
@@ -130,6 +205,11 @@ export type MemoryLocalRetrievalSnapshot = Readonly<{
   useMemoryFacts: boolean;
   userId: string;
 }>;
+
+const memoryLexicalReadinessScopes = new WeakMap<
+  MemoryLocalRetrievalSnapshot,
+  object
+>();
 
 export type MemoryLocalVectorQuery = Readonly<{
   minimumScore: number;
@@ -172,6 +252,7 @@ export type MemoryLocalRetrievalResult = Readonly<{
   core: readonly MemoryCoreCandidate[];
   digestEvidence?: MemoryDigestRetrievalEvidence;
   laneResults: readonly MemoryLaneResult[];
+  lexicalEvidence: readonly MemoryLexicalLaneEvidence[];
   lexicalFailures: readonly MemoryRetrievalLane[];
   lexicalState: "DEGRADED" | "DISABLED" | "FAILED" | "READY";
   snapshot: MemoryLocalRetrievalSnapshot;
@@ -268,10 +349,12 @@ type CandidateRow = Readonly<{
   validTo: Date | null;
 }>;
 
-type AggregationSessionRoundRow = Readonly<{
+type SessionCompletionRow = Readonly<{
   evidenceRootHash: string;
   itemId: string;
   languageCode: string;
+  matchedSegmentId: string | null;
+  matchedSegmentPosition: string | null;
   occurredFrom: Date;
   occurredTo: Date;
   parentChunkId: string;
@@ -298,6 +381,10 @@ type ExpandedRow = Readonly<{
   patternSupportingEvidence: Prisma.JsonValue;
   supportingEvidence: Prisma.JsonValue;
   supportingItemId: string | null;
+}>;
+
+type UserSegmentExpandedRow = ExpandedRow & Readonly<{
+  userSpans: Prisma.JsonValue;
 }>;
 
 const opaqueTokenPattern = /^[^\u0000-\u0020\u007f]{1,256}$/u;
@@ -517,6 +604,26 @@ function safeMemoryProjectionText(value: string): string | null {
   return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 
+/**
+ * Segment offsets are UTF-16 indices produced by the TypeScript projector;
+ * PostgreSQL substring offsets count Unicode code points. Slice only here so
+ * supplementary characters cannot move an authority boundary. The SQL query
+ * supplies spans only after role/source-map joins have matched canonically.
+ */
+function projectUserTestimonyExpandedRow(
+  row: UserSegmentExpandedRow
+): ExpandedRow | null {
+  const safeText = memoryUserTestimonyText(row.safeText, row.userSpans);
+  if (!safeText) return null;
+  const { userSpans: _userSpans, ...expanded } = row;
+  return {
+    ...expanded,
+    retrievalHint: null,
+    safeText,
+    supportingEvidence: []
+  };
+}
+
 function decodedContextualEvidence(row: ExpandedRow): Readonly<{
   retrievalHint: string | null;
   supportingEvidence: NonNullable<MemoryExpandedCandidate["supportingEvidence"]>;
@@ -657,53 +764,99 @@ function valuesSql(values: readonly string[]): Prisma.Sql {
   return Prisma.join(values.map((value) => Prisma.sql`${value}`));
 }
 
+function boundedMemorySearchEntryCandidatesSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  candidatePredicate: Prisma.Sql
+): Prisma.Sql {
+  if (!snapshot.activeGenerationId) {
+    throw new Error("memory_retrieval_snapshot_invalid");
+  }
+  return Prisma.sql`candidate_entries AS MATERIALIZED (
+    SELECT ${boundedMemorySearchEntryColumnsSql()}
+    FROM "MemorySearchEntry" AS entry
+    WHERE entry."userId" = ${snapshot.userId}
+      AND entry."indexGenerationId" = ${snapshot.activeGenerationId}
+      AND (${candidatePredicate})
+  )`;
+}
+
+function memoryRoundSearchEntryItemTypePredicate(
+  snapshot: MemoryLocalRetrievalSnapshot
+): Prisma.Sql {
+  return snapshot.roundSegmentProjectionVersion ===
+    MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
+    ? Prisma.sql`entry."itemType" =
+        'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"`
+    : Prisma.sql`entry."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"`;
+}
+
 function expectedGenerationPipeline(indexMode: "HYBRID" | "LEXICAL_ONLY"): string {
   return indexMode === "HYBRID"
     ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
     : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION;
 }
 
-async function historySuppressionIdentity(
-  client: PrismaClient,
-  userId: string,
-  now: Date
-): Promise<string> {
-  const [barriers, pauseIntervals, suppressions] = await Promise.all([
-    client.memorySourceBarrier.findMany({
-      orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
-      select: { id: true, kind: true, memoryGeneration: true, sourceCreatedAtCutoff: true },
-      where: { explicitOverrideAllowed: false, userId }
-    }),
-    client.memoryPauseInterval.findMany({
-      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
-      select: {
-        id: true,
-        memoryGeneration: true,
-        pausedAt: true,
-        resumedAt: true,
-        scope: true
-      },
-      where: { scope: { in: ["MASTER", "SEARCH_HISTORY"] }, userId }
-    }),
-    client.memorySuppression.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: {
-        canonicalKeyHash: true,
-        deletionGeneration: true,
-        expiresAt: true,
-        fingerprintKeyVersion: true,
-        id: true,
-        normalizedValueHash: true,
-        normalizationVersion: true,
-        scope: true,
-        sourceBranchGeneration: true,
-        sourceChatId: true,
-        sourceMessageId: true
-      },
-      where: { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], userId }
-    })
-  ]);
-  return memorySha256({ barriers, pauseIntervals, suppressions });
+const memoryLocalRetrievalSnapshotKeys = Object.freeze([
+  "activeGenerationId",
+  "assistantId",
+  "chatId",
+  "chatMemoryMode",
+  "contextualKeyPolicyVersion",
+  "decayEnabled",
+  "decayPolicyVersion",
+  "folderId",
+  "historyAuthorityRevision",
+  "indexMode",
+  "memoryGeneration",
+  "memoryRevision",
+  "reason",
+  "referenceChatHistory",
+  "repositoryVersion",
+  "roundProjectionVersion",
+  "roundSegmentProjectionVersion",
+  "settingsRevision",
+  "status",
+  "useMemoryFacts",
+  "userId"
+] as const);
+
+function nullableToken(value: unknown): value is string | null {
+  return value === null || validToken(value);
+}
+
+function snapshotAuthorityFingerprint(snapshot: MemoryLocalRetrievalSnapshot): string {
+  const keys = Object.keys(snapshot).sort();
+  if (
+    keys.length !== memoryLocalRetrievalSnapshotKeys.length ||
+    keys.some((key, index) => key !== memoryLocalRetrievalSnapshotKeys[index]) ||
+    !nullableToken(snapshot.activeGenerationId) ||
+    !nullableToken(snapshot.assistantId) ||
+    !validToken(snapshot.chatId) ||
+    !["EXCLUDED", "NORMAL", "TEMPORARY"].includes(snapshot.chatMemoryMode) ||
+    !nullableToken(snapshot.contextualKeyPolicyVersion ?? null) ||
+    typeof snapshot.decayEnabled !== "boolean" ||
+    !nullableToken(snapshot.decayPolicyVersion) ||
+    !nullableToken(snapshot.folderId) ||
+    (snapshot.historyAuthorityRevision !== null && (
+      !Number.isSafeInteger(snapshot.historyAuthorityRevision) ||
+      snapshot.historyAuthorityRevision < 0
+    )) ||
+    !["HYBRID", "LEXICAL_ONLY", null].includes(snapshot.indexMode) ||
+    !Number.isSafeInteger(snapshot.memoryGeneration) || snapshot.memoryGeneration < 0 ||
+    !Number.isSafeInteger(snapshot.memoryRevision) || snapshot.memoryRevision < 0 ||
+    !validToken(snapshot.reason) ||
+    typeof snapshot.referenceChatHistory !== "boolean" ||
+    snapshot.repositoryVersion !== MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION ||
+    !nullableToken(snapshot.roundProjectionVersion ?? null) ||
+    !nullableToken(snapshot.roundSegmentProjectionVersion ?? null) ||
+    !Number.isSafeInteger(snapshot.settingsRevision) || snapshot.settingsRevision < 0 ||
+    !["DISABLED", "READY", "UNAVAILABLE"].includes(snapshot.status) ||
+    typeof snapshot.useMemoryFacts !== "boolean" ||
+    !validToken(snapshot.userId)
+  ) throw new Error("memory_retrieval_snapshot_invalid");
+  return memorySha256(Object.fromEntries(
+    memoryLocalRetrievalSnapshotKeys.map((key) => [key, snapshot[key]])
+  ));
 }
 
 async function loadSnapshot(
@@ -715,7 +868,10 @@ async function loadSnapshot(
     (input.assistantId !== null && !validToken(input.assistantId)) ||
     !(input.now instanceof Date) || !Number.isFinite(input.now.getTime())
   ) throw new Error("memory_retrieval_context_invalid");
-  const rows = await client.$queryRaw<SnapshotRow[]>(Prisma.sql`
+  const rows = await withMemoryReadBudget(
+    client,
+    MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
+    (tx) => tx.$queryRaw<SnapshotRow[]>(Prisma.sql`
     SELECT
       owner."status"::text AS "ownerStatus",
       current_chat."id" AS "chatId",
@@ -754,7 +910,8 @@ async function loadSnapshot(
       AND generation."id" = settings."activeIndexGenerationId"
     WHERE owner."id" = ${input.userId}
     LIMIT 1
-  `);
+    `)
+  );
   const row = rows[0];
   if (!row || row.ownerStatus !== "active" || row.chatId !== input.chatId) {
     throw new Error("memory_retrieval_context_unavailable");
@@ -767,13 +924,16 @@ async function loadSnapshot(
     : null;
   const useMemoryFacts = row.useMemoryFacts === true;
   const referenceChatHistory = row.referenceChatHistory === true;
+  const memoryRevision = Number.isSafeInteger(row.memoryRevision)
+    ? Number(row.memoryRevision)
+    : 0;
   const indexMode = row.generationIndexMode;
   const generationReady = useMemoryFacts && row.activeIndexGenerationId !== null &&
     row.generationId === row.activeIndexGenerationId &&
     row.generationState === "ACTIVE" &&
     (indexMode === "HYBRID" || indexMode === "LEXICAL_ONLY") &&
     row.generationChunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
-    row.generationLanguageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    row.generationLanguageProfile === MEMORY_LEXICAL_ANALYSIS_PROFILE &&
     row.generationNormalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
     row.generationPipelineVersion === expectedGenerationPipeline(indexMode);
   const base = {
@@ -784,15 +944,15 @@ async function loadSnapshot(
       ? row.chatMemoryMode
       : "NORMAL",
     decayEnabled: row.decayEnabled === true,
-    decayPolicyVersion: row.decayPolicyVersion,
+    decayPolicyVersion: row.decayPolicyVersion ?? null,
     folderId: row.chatFolderId,
-    historySuppressionIdentitySnapshot: null,
+    historyAuthorityRevision: referenceChatHistory ? memoryRevision : null,
     indexMode: generationReady ? indexMode : null,
     contextualKeyPolicyVersion: generationReady
       ? row.generationContextualKeyPolicyVersion
       : null,
     memoryGeneration: Number.isSafeInteger(row.memoryGeneration) ? Number(row.memoryGeneration) : 0,
-    memoryRevision: Number.isSafeInteger(row.memoryRevision) ? Number(row.memoryRevision) : 0,
+    memoryRevision,
     referenceChatHistory,
     repositoryVersion: MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION,
     roundProjectionVersion: generationReady
@@ -811,15 +971,8 @@ async function loadSnapshot(
   if (!useMemoryFacts) {
     return { ...base, reason: "memory_paused", status: "DISABLED" };
   }
-  const suppressionIdentity = useMemoryFacts && referenceChatHistory
-    ? await historySuppressionIdentity(client, input.userId, input.now)
-    : null;
-  if (suppressionIdentity !== null && !fingerprintPattern.test(suppressionIdentity)) {
-    throw new Error("memory_retrieval_snapshot_invalid");
-  }
   return {
     ...base,
-    historySuppressionIdentitySnapshot: suppressionIdentity,
     reason: generationReady ? "ready" : "memory_index_unavailable",
     status: "READY"
   };
@@ -1177,7 +1330,8 @@ function factEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   searchAuthority: "DIRECT" | "INDEXED" = "INDEXED",
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
   if (searchAuthority === "INDEXED" &&
     (!snapshot.activeGenerationId || !snapshot.indexMode)) {
@@ -1185,7 +1339,7 @@ function factEligibleSelect(
   }
   const source = searchAuthority === "INDEXED"
     ? Prisma.sql`
-        FROM "MemorySearchEntry" AS entry
+        FROM ${memorySearchEntryRelationSql(entryRelation)}
         INNER JOIN "UserMemorySettings" AS settings
           ON settings."userId" = entry."userId" AND settings."useMemoryFacts" = TRUE
           AND settings."activeIndexGenerationId" = ${snapshot.activeGenerationId}
@@ -1195,7 +1349,7 @@ function factEligibleSelect(
           AND generation."id" = entry."indexGenerationId"
           AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
           AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
-          AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+          AND generation."languageProfile" = ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
           AND generation."normalizationVersion" =
             ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
           AND generation."retrievalPipelineVersion" =
@@ -1215,20 +1369,11 @@ function factEligibleSelect(
     ? Prisma.sql`entry."safeContentHash"`
     : Prisma.sql`NULL::text`;
   const normalizedSearchText = searchAuthority === "INDEXED"
-    ? Prisma.sql`entry."normalizedSearchText"`
+    ? memorySearchEntryNormalizedTextSql(entryRelation)
     : Prisma.sql`version."normalizedSearchText"`;
   const searchVector = searchAuthority === "INDEXED"
-    ? Prisma.sql`entry."searchVectorSimple"`
+    ? memorySearchEntrySimpleVectorSql(entryRelation)
     : Prisma.sql`NULL::tsvector`;
-  const searchVectorEnglish = searchAuthority === "INDEXED"
-    ? Prisma.sql`entry."searchVectorEnglish"`
-    : Prisma.sql`NULL::tsvector`;
-  const searchVectorRussian = searchAuthority === "INDEXED"
-    ? Prisma.sql`entry."searchVectorRussian"`
-    : Prisma.sql`NULL::tsvector`;
-  const trigramSearchText = searchAuthority === "INDEXED"
-    ? Prisma.sql`entry."trigramSearchText"`
-    : Prisma.sql`NULL::text`;
   const indexedEntry = searchAuthority === "INDEXED"
     ? Prisma.sql`AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"`
     : Prisma.sql``;
@@ -1238,9 +1383,6 @@ function factEligibleSelect(
       SELECT ${factColumns(entryId, Prisma.sql`NULL::text`, safeContentHash)},
         ${normalizedSearchText} AS "normalizedSearchText",
         ${searchVector} AS "searchVectorSimple",
-        ${searchVectorEnglish} AS "searchVectorEnglish",
-        ${searchVectorRussian} AS "searchVectorRussian",
-        ${trigramSearchText} AS "trigramSearchText",
         (fact."id" = root_fact."id") AS "canonicalSource"
       ${source}
     AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
@@ -1351,7 +1493,11 @@ async function loadCore(
   snapshot: MemoryLocalRetrievalSnapshot
 ): Promise<readonly MemoryCoreCandidate[]> {
   if (!snapshot.useMemoryFacts || snapshot.status !== "READY") return [];
-  const rows = await client.$queryRaw<CoreRow[]>(coreSql(snapshot));
+  const rows = await withMemoryReadBudget(
+    client,
+    MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
+    (tx) => tx.$queryRaw<CoreRow[]>(coreSql(snapshot))
+  );
   return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
     const safeText = safeMemoryProjectionText(row.safeText);
     if (!safeText) return [];
@@ -1392,9 +1538,10 @@ async function loadCore(
 function historyDigestEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  boundedCandidateSourceLookup = false
 ): Prisma.Sql {
-  if (!snapshot.historySuppressionIdentitySnapshot) {
+  if (snapshot.historyAuthorityRevision === null) {
     throw new Error("memory_retrieval_snapshot_invalid");
   }
   return Prisma.sql`
@@ -1433,10 +1580,7 @@ function historyDigestEligibleSelect(
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", digest."occurredFrom", digest."occurredTo",
       digest."normalizedSafeSearchText" AS "normalizedSearchText",
-      to_tsvector('simple', digest."normalizedSafeSearchText") AS "searchVectorSimple",
-      NULL::tsvector AS "searchVectorEnglish",
-      NULL::tsvector AS "searchVectorRussian",
-      NULL::text AS "trigramSearchText"
+      to_tsvector('simple', digest."normalizedSafeSearchText") AS "searchVectorSimple"
     FROM "ChatMemoryDigest" AS digest
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = digest."userId"
@@ -1472,6 +1616,7 @@ function historyDigestEligibleSelect(
         'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        boundedCandidateSourceLookup,
         chat: "source_chat",
         checkpoint: "checkpoint"
       })}
@@ -1567,9 +1712,10 @@ function historyDigestEligibleSelect(
 function historyChunkEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
-  if (!snapshot.activeGenerationId || !snapshot.historySuppressionIdentitySnapshot) {
+  if (!snapshot.activeGenerationId || snapshot.historyAuthorityRevision === null) {
     throw new Error("memory_retrieval_snapshot_invalid");
   }
   return Prisma.sql`
@@ -1606,10 +1752,10 @@ function historyChunkEligibleSelect(
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", chunk."occurredFrom", chunk."occurredTo",
-      entry."normalizedSearchText", entry."searchVectorSimple",
-      entry."searchVectorEnglish", entry."searchVectorRussian",
-      entry."trigramSearchText"
-    FROM "MemorySearchEntry" AS entry
+      ${memorySearchEntryNormalizedTextSql(entryRelation)} AS
+        "normalizedSearchText",
+      ${memorySearchEntrySimpleVectorSql(entryRelation)} AS "searchVectorSimple"
+    FROM ${memorySearchEntryRelationSql(entryRelation)}
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
       AND settings."useMemoryFacts" = TRUE
@@ -1620,7 +1766,7 @@ function historyChunkEligibleSelect(
       AND generation."id" = entry."indexGenerationId"
       AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
       AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
-      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
       AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
       AND generation."retrievalPipelineVersion" =
         ${expectedGenerationPipeline(snapshot.indexMode!)}
@@ -1647,6 +1793,7 @@ function historyChunkEligibleSelect(
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
       AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        boundedCandidateSourceLookup: entryRelation === "BOUNDED_CANDIDATES",
         chat: "source_chat",
         checkpoint: "checkpoint"
       })}
@@ -1659,9 +1806,10 @@ function historyChunkEligibleSelect(
 function historyLegacyRoundEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
-  if (!snapshot.activeGenerationId || !snapshot.historySuppressionIdentitySnapshot) {
+  if (!snapshot.activeGenerationId || snapshot.historyAuthorityRevision === null) {
     throw new Error("memory_retrieval_snapshot_invalid");
   }
   return Prisma.sql`
@@ -1698,10 +1846,10 @@ function historyLegacyRoundEligibleSelect(
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", round."occurredFrom", round."occurredTo",
-      entry."normalizedSearchText", entry."searchVectorSimple",
-      entry."searchVectorEnglish", entry."searchVectorRussian",
-      entry."trigramSearchText"
-    FROM "MemorySearchEntry" AS entry
+      ${memorySearchEntryNormalizedTextSql(entryRelation)} AS
+        "normalizedSearchText",
+      ${memorySearchEntrySimpleVectorSql(entryRelation)} AS "searchVectorSimple"
+    FROM ${memorySearchEntryRelationSql(entryRelation)}
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
       AND settings."useMemoryFacts" = TRUE
@@ -1713,7 +1861,7 @@ function historyLegacyRoundEligibleSelect(
       AND generation."id" = entry."indexGenerationId"
       AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
       AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
-      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
       AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
       AND generation."retrievalPipelineVersion" =
         ${expectedGenerationPipeline(snapshot.indexMode!)}
@@ -1752,6 +1900,7 @@ function historyLegacyRoundEligibleSelect(
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
       AND ${memoryHistoryRoundSourceAuthorityPredicate({
+        boundedCandidateSourceLookup: entryRelation === "BOUNDED_CANDIDATES",
         chat: "source_chat",
         checkpoint: "checkpoint"
       })}
@@ -1764,9 +1913,10 @@ function historyLegacyRoundEligibleSelect(
 function historySegmentRoundEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
-  if (!snapshot.activeGenerationId || !snapshot.historySuppressionIdentitySnapshot) {
+  if (!snapshot.activeGenerationId || snapshot.historyAuthorityRevision === null) {
     throw new Error("memory_retrieval_snapshot_invalid");
   }
   return Prisma.sql`
@@ -1803,10 +1953,10 @@ function historySegmentRoundEligibleSelect(
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", segment."occurredFrom", segment."occurredTo",
-      entry."normalizedSearchText", entry."searchVectorSimple",
-      entry."searchVectorEnglish", entry."searchVectorRussian",
-      entry."trigramSearchText"
-    FROM "MemorySearchEntry" AS entry
+      ${memorySearchEntryNormalizedTextSql(entryRelation)} AS
+        "normalizedSearchText",
+      ${memorySearchEntrySimpleVectorSql(entryRelation)} AS "searchVectorSimple"
+    FROM ${memorySearchEntryRelationSql(entryRelation)}
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
       AND settings."useMemoryFacts" = TRUE
@@ -1818,7 +1968,7 @@ function historySegmentRoundEligibleSelect(
       AND generation."id" = entry."indexGenerationId"
       AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
       AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
-      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
       AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
       AND generation."retrievalPipelineVersion" =
         ${expectedGenerationPipeline(snapshot.indexMode!)}
@@ -1872,6 +2022,7 @@ function historySegmentRoundEligibleSelect(
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
       AND ${memoryHistoryRoundSourceAuthorityPredicate({
+        boundedCandidateSourceLookup: entryRelation === "BOUNDED_CANDIDATES",
         chat: "source_chat",
         checkpoint: "checkpoint"
       })}
@@ -1884,20 +2035,22 @@ function historySegmentRoundEligibleSelect(
 function historyRoundEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
   return snapshot.roundSegmentProjectionVersion ===
     MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
-    ? historySegmentRoundEligibleSelect(snapshot, plan, candidatePredicate)
-    : historyLegacyRoundEligibleSelect(snapshot, plan, candidatePredicate);
+    ? historySegmentRoundEligibleSelect(snapshot, plan, candidatePredicate, entryRelation)
+    : historyLegacyRoundEligibleSelect(snapshot, plan, candidatePredicate, entryRelation);
 }
 
 function toolEventEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
-  if (!snapshot.activeGenerationId || !snapshot.historySuppressionIdentitySnapshot) {
+  if (!snapshot.activeGenerationId || snapshot.historyAuthorityRevision === null) {
     throw new Error("memory_retrieval_snapshot_invalid");
   }
   return Prisma.sql`
@@ -1937,10 +2090,11 @@ function toolEventEligibleSelect(
       NULL::timestamp AS "expiresAt", NULL::timestamp AS "validFrom",
       NULL::timestamp AS "validTo", NULL::timestamp AS "systemFrom",
       tool_event."occurredAt" AS "occurredFrom",
-      tool_event."occurredAt" AS "occurredTo", entry."normalizedSearchText",
-      entry."searchVectorSimple", entry."searchVectorEnglish",
-      entry."searchVectorRussian", entry."trigramSearchText"
-    FROM "MemorySearchEntry" AS entry
+      tool_event."occurredAt" AS "occurredTo",
+      ${memorySearchEntryNormalizedTextSql(entryRelation)} AS
+        "normalizedSearchText",
+      ${memorySearchEntrySimpleVectorSql(entryRelation)} AS "searchVectorSimple"
+    FROM ${memorySearchEntryRelationSql(entryRelation)}
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
       AND settings."useMemoryFacts" = TRUE
@@ -1952,7 +2106,7 @@ function toolEventEligibleSelect(
       AND generation."id" = entry."indexGenerationId"
       AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
       AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
-      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
       AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
       AND generation."retrievalPipelineVersion" =
         ${expectedGenerationPipeline(snapshot.indexMode!)}
@@ -2061,7 +2215,8 @@ function historyEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
-  sourceChatIds?: readonly string[]
+  sourceChatIds?: readonly string[],
+  entryRelation: MemorySearchEntryRelation = "PERSISTED"
 ): Prisma.Sql {
   if (sourceChatIds && (
     sourceChatIds.length < 1 ||
@@ -2082,15 +2237,18 @@ function historyEligibleSelect(
     SELECT * FROM (${historyChunkEligibleSelect(
       snapshot,
       plan,
-      boundedCandidatePredicate
+      boundedCandidatePredicate,
+      entryRelation
     )} UNION ALL ${historyRoundEligibleSelect(
       snapshot,
       plan,
-      boundedCandidatePredicate
+      boundedCandidatePredicate,
+      entryRelation
     )} UNION ALL ${toolEventEligibleSelect(
       snapshot,
       plan,
-      boundedCandidatePredicate
+      boundedCandidatePredicate,
+      entryRelation
     )}) AS history_projection
   `;
   return sourceChatIds
@@ -2255,6 +2413,44 @@ function candidateColumns(
   `;
 }
 
+function historySearchEntryItemTypePredicate(): Prisma.Sql {
+  return Prisma.sql`entry."itemType" IN (
+    'RECALL_CHUNK'::"MemorySearchItemType",
+    'RECALL_ROUND'::"MemorySearchItemType",
+    'RECALL_ROUND_SEGMENT'::"MemorySearchItemType",
+    'TOOL_EVENT'::"MemorySearchItemType"
+  )`;
+}
+
+function historySearchEntrySourcePredicate(
+  sourceChatIds?: readonly string[]
+): Prisma.Sql {
+  if (!sourceChatIds) return Prisma.sql`TRUE`;
+  return Prisma.sql`(
+    (entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType" AND EXISTS (
+      SELECT 1 FROM "MemoryRecallChunk" AS candidate_chunk
+      WHERE candidate_chunk."userId" = entry."userId"
+        AND candidate_chunk."id" = entry."recallChunkId"
+        AND candidate_chunk."chatId" IN (${valuesSql(sourceChatIds)})
+    )) OR
+    (entry."itemType" IN (
+      'RECALL_ROUND'::"MemorySearchItemType",
+      'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+    ) AND EXISTS (
+      SELECT 1 FROM "MemoryRecallRound" AS candidate_round
+      WHERE candidate_round."userId" = entry."userId"
+        AND candidate_round."id" = entry."recallRoundId"
+        AND candidate_round."chatId" IN (${valuesSql(sourceChatIds)})
+    )) OR
+    (entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType" AND EXISTS (
+      SELECT 1 FROM "MemoryToolEvent" AS candidate_tool_event
+      WHERE candidate_tool_event."userId" = entry."userId"
+        AND candidate_tool_event."id" = entry."toolEventId"
+        AND candidate_tool_event."chatId" IN (${valuesSql(sourceChatIds)})
+    ))
+  )`;
+}
+
 function exactSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
@@ -2262,21 +2458,7 @@ function exactSql(
   limit: number,
   sourceChatIds?: readonly string[]
 ): Prisma.Sql {
-  const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(
-        snapshot,
-        plan,
-        "DIRECT",
-        Prisma.sql`version."normalizedSearchText" = ${plan.normalizedExactQuery}`
-      )
-    : historyEligibleSelect(
-        snapshot,
-        plan,
-        Prisma.sql`entry."normalizedSearchText" = ${plan.normalizedExactQuery}`,
-        sourceChatIds
-      );
-  return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${eligible})
+  const exactResult = Prisma.sql`
     SELECT ${candidateColumns(
       Prisma.sql`1.0`,
       Prisma.sql`eligible."matchedEntityRole"`,
@@ -2284,6 +2466,43 @@ function exactSql(
     )} FROM eligible
     WHERE eligible."normalizedSearchText" = ${plan.normalizedExactQuery}
     ORDER BY eligible."itemId" LIMIT ${limit}
+  `;
+  if (itemType === "FACT_VERSION") {
+    const eligible = factEligibleSelect(
+      snapshot,
+      plan,
+      "DIRECT",
+      Prisma.sql`version."normalizedSearchText" = ${plan.normalizedExactQuery}`
+    );
+    return Prisma.sql`
+      WITH eligible AS MATERIALIZED (${eligible})
+      ${exactResult}
+    `;
+  }
+  if (!snapshot.activeGenerationId) {
+    throw new Error("memory_retrieval_snapshot_invalid");
+  }
+  const eligible = historyEligibleSelect(
+    snapshot,
+    plan,
+    Prisma.sql`TRUE`,
+    sourceChatIds,
+    "BOUNDED_CANDIDATES"
+  );
+  return Prisma.sql`
+    WITH candidate_entries AS MATERIALIZED (
+      SELECT ${boundedMemorySearchEntryColumnsSql()}
+      FROM "MemorySearchEntry" AS entry
+      WHERE entry."userId" = ${snapshot.userId}
+        AND entry."indexGenerationId" = ${snapshot.activeGenerationId}
+        AND ${historySearchEntryItemTypePredicate()}
+        AND entry."normalizedSearchText" = ${plan.normalizedExactQuery}
+        AND ${historySearchEntrySourcePredicate(sourceChatIds)}
+      ORDER BY entry."id"
+      LIMIT ${MEMORY_EXACT_AUTHORITY_PREFILTER_MAX_CANDIDATES}
+    ),
+    eligible AS MATERIALIZED (${eligible})
+    ${exactResult}
   `;
 }
 
@@ -2421,13 +2640,17 @@ async function hasPotentialEntityAlias(
 ): Promise<boolean> {
   const { terms } = plannedEntityTerms(plan);
   if (terms.length === 0) return false;
-  return await client.memoryEntityAlias.findFirst({
-    select: { id: true },
-    where: {
-      normalizedAlias: { in: [...terms] },
-      userId: snapshot.userId
-    }
-  }) !== null;
+  return await withMemoryReadBudget(
+    client,
+    MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
+    (tx) => tx.memoryEntityAlias.findFirst({
+      select: { id: true },
+      where: {
+        normalizedAlias: { in: [...terms] },
+        userId: snapshot.userId
+      }
+    })
+  ) !== null;
 }
 
 function profileSql(
@@ -2470,8 +2693,7 @@ function distinctiveFtsTerms(terms: readonly string[]): readonly string[] {
     .map(({ term }) => term);
 }
 
-type MemorySemanticLexicalTermKind =
-  "ENGLISH" | "RUSSIAN" | "SIMPLE" | "TRIGRAM";
+type MemorySemanticLexicalTermKind = "NGRAM" | "UNICODE";
 
 /** Preserves bounded evidence from every semantic query variant instead of
  * letting a verbose rewrite evict the original user's distinctive terms. */
@@ -2489,17 +2711,15 @@ function memorySemanticLexicalTermVariants(
   const texts = plan.semanticQueryVariants.length > 0
     ? plan.semanticQueryVariants.map(({ text }) => text)
     : plan.lexicalQuery ? [plan.lexicalQuery] : [];
-  const maximumTerms = kind === "TRIGRAM"
-    ? Math.min(MEMORY_TRIGRAM_QUERY_MAX_TERMS, MEMORY_TRIGRAM_FALLBACK_MAX_TERMS)
+  const maximumTerms = kind === "NGRAM"
+    ? Math.min(MEMORY_NGRAM_QUERY_MAX_TERMS, MEMORY_NGRAM_FALLBACK_MAX_TERMS)
     : MEMORY_LEXICAL_QUERY_MAX_TERMS;
   const candidates = texts.map((text, variantOrdinal) => {
     const analysis = analyzeMemoryLexicalQuery(text);
-    const terms = kind === "TRIGRAM"
-      ? distinctiveFtsTerms(analysis.trigramTerms)
-          .slice(0, MEMORY_TRIGRAM_FALLBACK_MAX_TERMS_PER_VARIANT)
-      : distinctiveFtsTerms(kind === "SIMPLE"
-          ? analysis.simpleTerms
-          : kind === "ENGLISH" ? analysis.englishTerms : analysis.russianTerms);
+    const terms = kind === "NGRAM"
+      ? distinctiveFtsTerms(analysis.ngramTerms)
+          .slice(0, MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT)
+      : distinctiveFtsTerms(analysis.logicalTerms);
     return { terms, variantOrdinal };
   });
   const selectedByVariant = candidates.map(() =>
@@ -2537,6 +2757,92 @@ function memorySemanticLexicalTermVariants(
   return selectedByVariant.flat();
 }
 
+function providerTermKind(
+  lane: PostgresUnicodeMemoryLexicalLane
+): MemorySemanticLexicalTermKind {
+  if (lane === "FACT_LEXICAL_NGRAM" || lane === "HISTORY_RECALL_LEXICAL_NGRAM") {
+    return "NGRAM";
+  }
+  return "UNICODE";
+}
+
+function memoryLexicalSearchRequest(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  lane: PostgresUnicodeMemoryLexicalLane,
+  finalLimit: number,
+  admittedLimit: number,
+  sourceChatIds?: readonly string[],
+  deadlineAtMs = Date.now() + MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE
+): MemoryLexicalSearchRequest {
+  if (!snapshot.activeGenerationId || !plan.lexicalQuery) {
+    throw new Error("memory_retrieval_snapshot_invalid");
+  }
+  const readinessScope = memoryLexicalReadinessScopes.get(snapshot);
+  if (!readinessScope) throw new Error("memory_retrieval_snapshot_invalid");
+  const texts = plan.semanticQueryVariants.length > 0
+    ? plan.semanticQueryVariants.map(({ text }) => text)
+    : [plan.lexicalQuery];
+  const termsByVariant = new Map<number, string[]>();
+  for (const { term, variantOrdinal } of memorySemanticLexicalTermVariants(
+    plan,
+    providerTermKind(lane)
+  )) {
+    const terms = termsByVariant.get(variantOrdinal) ?? [];
+    terms.push(term);
+    termsByVariant.set(variantOrdinal, terms);
+  }
+  const variants = texts.map((text, ordinal) => Object.freeze({
+    logicalTerms: Object.freeze((termsByVariant.get(ordinal) ?? []).map(
+      (value, termOrdinal) => Object.freeze({
+        characterLength: Array.from(value).length,
+        ordinal: termOrdinal,
+        value
+      })
+    )),
+    normalizedText: analyzeMemoryLexicalQuery(text).normalized,
+    ordinal
+  }));
+  if (variants.every(({ logicalTerms }) => logicalTerms.length === 0)) {
+    throw new Error("memory_retrieval_lane_invalid");
+  }
+  if (!Number.isSafeInteger(admittedLimit) || admittedLimit < 1 ||
+    admittedLimit > finalLimit) {
+    throw new Error("memory_retrieval_lane_invalid");
+  }
+  const ngram = lane === "FACT_LEXICAL_NGRAM" ||
+    lane === "HISTORY_RECALL_LEXICAL_NGRAM";
+  // Authority filters and source-diverse selection need headroom, but the
+  // canonical PostgreSQL rejoin must not inherit the provider's maximum for
+  // every semantic variant. Share one bounded overfetch pool across variants.
+  const ngramAuthorityCandidateBudget = Math.min(
+    MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES,
+    admittedLimit * MEMORY_LEXICAL_NGRAM_AUTHORITY_OVERFETCH_MULTIPLIER
+  );
+  const candidateLimitPerVariant = ngram
+    ? Math.min(
+        MEMORY_LEXICAL_PROVIDER_MAX_CANDIDATES_PER_VARIANT,
+        Math.ceil(ngramAuthorityCandidateBudget / variants.length)
+      )
+    : Math.min(
+        MEMORY_LEXICAL_PROVIDER_MAX_CANDIDATES_PER_VARIANT,
+        finalLimit * 2
+      );
+  return Object.freeze({
+    [memoryLexicalProjectionReadinessScope]: readinessScope,
+    activeGenerationId: snapshot.activeGenerationId,
+    analysisProfileVersion: MEMORY_LEXICAL_ANALYSIS_PROFILE,
+    candidateLimitPerVariant,
+    deadlineAtMs,
+    finalLimit,
+    itemFamily: lane.startsWith("FACT_") ? "FACT" : "HISTORY",
+    memoryRevisionSnapshot: snapshot.memoryRevision,
+    ...(sourceChatIds ? { sourceChatIds: Object.freeze([...sourceChatIds]) } : {}),
+    userId: snapshot.userId,
+    variants: Object.freeze(variants)
+  });
+}
+
 type MemoryFtsLaneSettings = Readonly<{
   configuration: Prisma.Sql;
   entryVector: Prisma.Sql;
@@ -2548,25 +2854,11 @@ function ftsLaneSettings(
   lane: MemoryRetrievalLane
 ): MemoryFtsLaneSettings {
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  if (lane === "FACT_FTS_SIMPLE" || lane === "HISTORY_RECALL_FTS_SIMPLE") {
+  if (lane === "FACT_LEXICAL_UNICODE" || lane === "HISTORY_RECALL_LEXICAL_UNICODE") {
     return {
       configuration: Prisma.sql`'simple'::regconfig`,
       entryVector: Prisma.sql`entry."searchVectorSimple"`,
-      termVariants: memorySemanticLexicalTermVariants(plan, "SIMPLE")
-    };
-  }
-  if (lane === "FACT_FTS_ENGLISH" || lane === "HISTORY_RECALL_FTS_ENGLISH") {
-    return {
-      configuration: Prisma.sql`'english'::regconfig`,
-      entryVector: Prisma.sql`entry."searchVectorEnglish"`,
-      termVariants: memorySemanticLexicalTermVariants(plan, "ENGLISH")
-    };
-  }
-  if (lane === "FACT_FTS_RUSSIAN" || lane === "HISTORY_RECALL_FTS_RUSSIAN") {
-    return {
-      configuration: Prisma.sql`'russian'::regconfig`,
-      entryVector: Prisma.sql`entry."searchVectorRussian"`,
-      termVariants: memorySemanticLexicalTermVariants(plan, "RUSSIAN")
+      termVariants: memorySemanticLexicalTermVariants(plan, "UNICODE")
     };
   }
   throw new Error("memory_retrieval_lane_invalid");
@@ -2588,47 +2880,29 @@ function ftsSql(
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const itemTypePredicate = itemType === "FACT_VERSION"
     ? Prisma.sql`entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"`
-    : Prisma.sql`entry."itemType" IN (
-        'RECALL_CHUNK'::"MemorySearchItemType",
-        'RECALL_ROUND'::"MemorySearchItemType",
-        'RECALL_ROUND_SEGMENT'::"MemorySearchItemType",
-        'TOOL_EVENT'::"MemorySearchItemType"
-      )`;
-  const sourcePredicate = !sourceChatIds
+    : historySearchEntryItemTypePredicate();
+  const sourcePredicate = itemType === "FACT_VERSION"
     ? Prisma.sql`TRUE`
-    : Prisma.sql`(
-        (entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType" AND EXISTS (
-          SELECT 1 FROM "MemoryRecallChunk" AS candidate_chunk
-          WHERE candidate_chunk."userId" = entry."userId"
-            AND candidate_chunk."id" = entry."recallChunkId"
-            AND candidate_chunk."chatId" IN (${valuesSql(sourceChatIds)})
-        )) OR
-        (entry."itemType" IN (
-          'RECALL_ROUND'::"MemorySearchItemType",
-          'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
-        ) AND EXISTS (
-          SELECT 1 FROM "MemoryRecallRound" AS candidate_round
-          WHERE candidate_round."userId" = entry."userId"
-            AND candidate_round."id" = entry."recallRoundId"
-            AND candidate_round."chatId" IN (${valuesSql(sourceChatIds)})
-        )) OR
-        (entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType" AND EXISTS (
-          SELECT 1 FROM "MemoryToolEvent" AS candidate_tool_event
-          WHERE candidate_tool_event."userId" = entry."userId"
-            AND candidate_tool_event."id" = entry."toolEventId"
-            AND candidate_tool_event."chatId" IN (${valuesSql(sourceChatIds)})
-        ))
-      )`;
+    : historySearchEntrySourcePredicate(sourceChatIds);
   const perVariantCandidateLimit = Math.min(
-    MEMORY_FTS_AUTHORITY_PREFILTER_MAX_PER_VARIANT,
+    MEMORY_LEXICAL_AUTHORITY_PREFILTER_MAX_PER_VARIANT,
     limit * 2
   );
-  const candidatePredicate = Prisma.sql`entry."id" IN (
-    SELECT matching_entries."entryId" FROM matching_entries
-  )`;
   const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
-    : historyEligibleSelect(snapshot, plan, candidatePredicate, sourceChatIds);
+    ? factEligibleSelect(
+        snapshot,
+        plan,
+        "INDEXED",
+        Prisma.sql`TRUE`,
+        "BOUNDED_CANDIDATES"
+      )
+    : historyEligibleSelect(
+        snapshot,
+        plan,
+        Prisma.sql`TRUE`,
+        sourceChatIds,
+        "BOUNDED_CANDIDATES"
+      );
   return Prisma.sql`
     WITH query_terms AS MATERIALIZED (
       SELECT DISTINCT term, "variantOrdinal",
@@ -2674,6 +2948,14 @@ function ftsSql(
       SELECT DISTINCT bounded_entry_matches."entryId"
       FROM bounded_entry_matches
     ),
+    candidate_entries AS MATERIALIZED (
+      SELECT ${boundedMemorySearchEntryColumnsSql()}
+      FROM matching_entries AS matching_entry
+      INNER JOIN "MemorySearchEntry" AS entry
+        ON entry."id" = matching_entry."entryId"
+      WHERE entry."userId" = ${snapshot.userId}
+        AND entry."indexGenerationId" = ${snapshot.activeGenerationId}
+    ),
     eligible AS MATERIALIZED (${eligible}),
     matched_variants AS MATERIALIZED (
       SELECT eligible.*, term_match."variantOrdinal",
@@ -2682,86 +2964,6 @@ function ftsSql(
       FROM eligible
       INNER JOIN bounded_entry_matches AS term_match
         ON term_match."entryId" = eligible."entryId"
-    ),
-    ranked_variants AS MATERIALIZED (
-      SELECT matched_variants.*,
-        ROW_NUMBER() OVER (
-          PARTITION BY matched_variants."variantOrdinal"
-          ORDER BY matched_variants."maximumMatchedTermLength" DESC,
-            matched_variants."matchedTermCount" DESC,
-            matched_variants."rankScore" DESC, matched_variants."itemId"
-        )::integer AS "rankWithinVariant"
-      FROM matched_variants
-    ),
-    balanced_candidates AS MATERIALIZED (
-      SELECT DISTINCT ON (ranked_variants."itemType", ranked_variants."itemId")
-        ranked_variants.*
-      FROM ranked_variants
-      ORDER BY ranked_variants."itemType", ranked_variants."itemId",
-        ranked_variants."rankWithinVariant", ranked_variants."variantOrdinal"
-    )
-    SELECT ${candidateColumns(Prisma.sql`eligible."rankScore"`)}
-    FROM balanced_candidates AS eligible
-    ORDER BY eligible."rankWithinVariant", eligible."variantOrdinal",
-      eligible."maximumMatchedTermLength" DESC,
-      eligible."matchedTermCount" DESC, eligible."rankScore" DESC,
-      eligible."itemId" LIMIT ${limit}
-  `;
-}
-
-function trigramSql(
-  snapshot: MemoryLocalRetrievalSnapshot,
-  plan: MemoryRetrievalPlan,
-  itemType: "FACT_VERSION" | "RECALL_CHUNK",
-  limit: number,
-  sourceChatIds?: readonly string[]
-): Prisma.Sql {
-  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const termVariants = memorySemanticLexicalTermVariants(plan, "TRIGRAM");
-  const terms = termVariants.map(({ term }) => term);
-  const variantOrdinals = termVariants.map(({ variantOrdinal }) => variantOrdinal);
-  if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
-  const indexedMatches = terms.flatMap((term) => [
-    Prisma.sql`${term} <% entry."trigramSearchText"`,
-    ...(memoryCyrillicTerm.test(term)
-      ? [Prisma.sql`aiqsa_memory_transliterate_ru(${term}) <%
-          entry."trigramSearchText"`]
-      : [])
-  ]);
-  const candidatePredicate = Prisma.sql`(${Prisma.join(indexedMatches, " OR ")})`;
-  const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
-    : historyEligibleSelect(snapshot, plan, candidatePredicate, sourceChatIds);
-  return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${eligible}),
-    query_terms AS MATERIALIZED (
-      SELECT DISTINCT variant.term, requested."variantOrdinal",
-        char_length(variant.term)::integer AS "termLength"
-      FROM unnest(${terms}::text[], ${variantOrdinals}::integer[])
-        AS requested(term, "variantOrdinal")
-      CROSS JOIN LATERAL (
-        VALUES (requested.term), (aiqsa_memory_transliterate_ru(requested.term))
-      ) AS variant(term)
-      WHERE char_length(variant.term) >= 3
-    ),
-    matched_variants AS MATERIALIZED (
-      SELECT eligible.*, term_match."variantOrdinal",
-        term_match."matchedTermCount", term_match."maximumMatchedTermLength",
-        term_match."rankScore"
-      FROM eligible
-      CROSS JOIN LATERAL (
-        SELECT query_terms."variantOrdinal",
-          COUNT(*)::integer AS "matchedTermCount",
-          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
-            "maximumMatchedTermLength",
-          COALESCE(SUM(word_similarity(
-            query_terms.term,
-            eligible."trigramSearchText"
-          )), 0.0)::double precision AS "rankScore"
-        FROM query_terms
-        WHERE query_terms.term <% eligible."trigramSearchText"
-        GROUP BY query_terms."variantOrdinal"
-      ) AS term_match
     ),
     ranked_variants AS MATERIALIZED (
       SELECT matched_variants.*,
@@ -2798,7 +3000,7 @@ function targetedDigestFtsSql(
     throw new Error("memory_retrieval_lane_invalid");
   }
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const termVariants = memorySemanticLexicalTermVariants(plan, "SIMPLE");
+  const termVariants = memorySemanticLexicalTermVariants(plan, "UNICODE");
   const terms = termVariants.map(({ term }) => term);
   const variantOrdinals = termVariants.map(({ variantOrdinal }) => variantOrdinal);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
@@ -2880,6 +3082,130 @@ function recentSql(
   `;
 }
 
+function memoryLexicalRawCandidatesSql(
+  candidates: readonly MemoryLexicalRawCandidate[]
+): Prisma.Sql {
+  if (candidates.length === 0) {
+    throw new Error("memory_lexical_search_result_invalid");
+  }
+  return Prisma.join(candidates.map((candidate) => Prisma.sql`(
+    ${candidate.searchEntryId}::text,
+    ${candidate.safeContentHash}::text,
+    ${candidate.variantOrdinal}::integer,
+    ${candidate.rankWithinVariant}::integer,
+    ${candidate.matchedTermCount}::integer,
+    ${candidate.maximumMatchedTermLength}::integer,
+    ${candidate.backendScore}::double precision
+  )`));
+}
+
+function boundMemoryLexicalCanonicalSearchResult(
+  result: MemoryLexicalSearchResult
+): MemoryLexicalSearchResult {
+  if (result.candidates.length <=
+    MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES) return result;
+  const candidates = Object.freeze([...result.candidates].sort((left, right) =>
+    left.rankWithinVariant - right.rankWithinVariant ||
+    left.variantOrdinal - right.variantOrdinal ||
+    right.maximumMatchedTermLength - left.maximumMatchedTermLength ||
+    right.matchedTermCount - left.matchedTermCount ||
+    right.backendScore - left.backendScore ||
+    left.searchEntryId.localeCompare(right.searchEntryId)
+  ).slice(0, MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES));
+  return Object.freeze({
+    candidates,
+    evidence: Object.freeze({
+      ...result.evidence,
+      rawCandidateCount: candidates.length
+    })
+  });
+}
+
+/** Re-authorizes provider identities through the existing canonical selectors.
+ * Provider rank evidence affects ordering only after owner, generation, hash,
+ * source, suppression, safety, lifecycle, and current-version fences pass. */
+function memoryLexicalCanonicalRejoinSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  lane: PostgresUnicodeMemoryLexicalLane,
+  candidates: readonly MemoryLexicalRawCandidate[],
+  limit: number,
+  sourceChatIds?: readonly string[]
+): Prisma.Sql {
+  const eligible = lane.startsWith("FACT_")
+    ? factEligibleSelect(
+        snapshot,
+        plan,
+        "INDEXED",
+        Prisma.sql`TRUE`,
+        "BOUNDED_CANDIDATES"
+      )
+    : historyEligibleSelect(
+        snapshot,
+        plan,
+        Prisma.sql`TRUE`,
+        sourceChatIds,
+        "BOUNDED_CANDIDATES"
+      );
+  return Prisma.sql`
+    WITH lexical_raw_candidates (
+      "searchEntryId", "safeContentHash", "variantOrdinal",
+      "providerRankWithinVariant", "matchedTermCount",
+      "maximumMatchedTermLength", "rankScore"
+    ) AS MATERIALIZED (
+      VALUES ${memoryLexicalRawCandidatesSql(candidates)}
+    ),
+    lexical_candidate_entry_ids AS MATERIALIZED (
+      SELECT DISTINCT lexical_candidate."searchEntryId",
+        lexical_candidate."safeContentHash"
+      FROM lexical_raw_candidates AS lexical_candidate
+    ),
+    candidate_entries AS MATERIALIZED (
+      SELECT ${boundedMemorySearchEntryColumnsSql()}
+      FROM lexical_candidate_entry_ids AS lexical_candidate
+      INNER JOIN "MemorySearchEntry" AS entry
+        ON entry."id" = lexical_candidate."searchEntryId"
+        AND entry."safeContentHash" = lexical_candidate."safeContentHash"
+      WHERE entry."userId" = ${snapshot.userId}
+        AND entry."indexGenerationId" = ${snapshot.activeGenerationId}
+    ),
+    eligible AS MATERIALIZED (${eligible}),
+    matched_variants AS MATERIALIZED (
+      SELECT eligible.*, lexical_candidate."variantOrdinal",
+        lexical_candidate."matchedTermCount",
+        lexical_candidate."maximumMatchedTermLength",
+        lexical_candidate."rankScore"
+      FROM eligible
+      INNER JOIN lexical_raw_candidates AS lexical_candidate
+        ON lexical_candidate."searchEntryId" = eligible."entryId"
+        AND lexical_candidate."safeContentHash" = eligible."safeContentHash"
+    ),
+    ranked_variants AS MATERIALIZED (
+      SELECT matched_variants.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY matched_variants."variantOrdinal"
+          ORDER BY matched_variants."maximumMatchedTermLength" DESC,
+            matched_variants."matchedTermCount" DESC,
+            matched_variants."rankScore" DESC, matched_variants."itemId"
+        )::integer AS "rankWithinVariant"
+      FROM matched_variants
+    ),
+    balanced_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (ranked_variants."itemType", ranked_variants."itemId")
+        ranked_variants.*
+      FROM ranked_variants
+      ORDER BY ranked_variants."itemType", ranked_variants."itemId",
+        ranked_variants."rankWithinVariant", ranked_variants."variantOrdinal"
+    )
+    SELECT ${candidateColumns(Prisma.sql`eligible."rankScore"`)}
+    FROM balanced_candidates AS eligible
+    ORDER BY eligible."rankWithinVariant", eligible."variantOrdinal",
+      eligible."maximumMatchedTermLength" DESC,
+      eligible."matchedTermCount" DESC, eligible."rankScore" DESC,
+      eligible."itemId" LIMIT ${limit}
+  `;
+}
+
 async function queryLane(
   client: PrismaClient,
   lane: MemoryRetrievalLane,
@@ -2887,6 +3213,10 @@ async function queryLane(
   sql: Prisma.Sql,
   options: Readonly<{
     maximumRows?: number;
+    preserveExplicitJoinOrder?: boolean;
+    readBudgetMs?: number;
+    recordCanonicalEntryIds?: (entryIds: readonly string[]) => void;
+    recordCounts?: (rawCandidateCount: number, canonicalAcceptedCount: number) => void;
     sourceDiversity?: boolean;
   }> = {}
 ): Promise<MemoryLaneResult> {
@@ -2894,7 +3224,12 @@ async function queryLane(
     /* aiqsa_memory_retrieval_lane:${Prisma.raw(lane)} */
     ${sql}
   `;
-  const rows = await client.$queryRaw<CandidateRow[]>(taggedSql);
+  const rows = await withMemoryReadBudget(
+    client,
+    options.readBudgetMs ?? MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
+    (tx) => tx.$queryRaw<CandidateRow[]>(taggedSql),
+    { preserveExplicitJoinOrder: options.preserveExplicitJoinOrder }
+  );
   const maximumRows = options.maximumRows ?? limit;
   if (!Number.isSafeInteger(maximumRows) || maximumRows < limit ||
     maximumRows > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
@@ -2905,6 +3240,16 @@ async function queryLane(
   if (new Set(exactKeys).size !== decoded.length) {
     throw new Error("memory_retrieval_result_invalid");
   }
+  if (options.recordCanonicalEntryIds) {
+    const entryIds = decoded.map(({ entryId }) => {
+      if (!entryId) throw new Error("memory_retrieval_result_invalid");
+      return entryId;
+    });
+    if (new Set(entryIds).size !== entryIds.length) {
+      throw new Error("memory_retrieval_result_invalid");
+    }
+    options.recordCanonicalEntryIds(Object.freeze(entryIds));
+  }
   const byPublicItem = new Map<string, MemoryLaneCandidate>();
   for (const candidate of decoded) {
     const key = `${candidate.itemType}:${candidate.itemId}`;
@@ -2913,8 +3258,9 @@ async function queryLane(
   const collapsed = [...byPublicItem.values()];
   const candidates = options.sourceDiversity
     ? selectMemorySourceDiverseLaneCandidates(collapsed, limit)
-    : collapsed;
+    : collapsed.slice(0, limit);
   if (candidates.length > limit) throw new Error("memory_retrieval_result_invalid");
+  options.recordCounts?.(rows.length, candidates.length);
   return { candidates, lane };
 }
 
@@ -2965,10 +3311,8 @@ function localLexicalLanes(
         lanes.push("FACT_TEMPORAL_FILTERED", "FACT_TEMPORAL_UNRESTRICTED");
       }
       if (indexed && lexical) {
-        lanes.push("FACT_FTS_SIMPLE");
-        if (lexical.hasLatin) lanes.push("FACT_FTS_ENGLISH");
-        if (lexical.hasCyrillic) lanes.push("FACT_FTS_RUSSIAN");
-        if (lexical.trigramTerms.length > 0) lanes.push("FACT_TRIGRAM");
+        lanes.push("FACT_LEXICAL_UNICODE");
+        if (lexical.ngramTerms.length > 0) lanes.push("FACT_LEXICAL_NGRAM");
       }
       if (indexed && plan.recencyRequested) lanes.push("FACT_RECENT");
     }
@@ -2982,7 +3326,7 @@ function localLexicalLanes(
       );
     }
     if (plan.mode === "HISTORY_OVERVIEW") {
-      if (lexical) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
+      if (lexical) lanes.push("HISTORY_RECALL_LEXICAL_UNICODE");
       lanes.push("HISTORY_RECALL_RECENT");
     } else {
       lanes.push("HISTORY_RECALL_EXACT");
@@ -2990,10 +3334,10 @@ function localLexicalLanes(
         lanes.push("HISTORY_DIGEST_FTS_SIMPLE");
       }
       if (lexical) {
-        lanes.push("HISTORY_RECALL_FTS_SIMPLE");
-        if (lexical.hasLatin) lanes.push("HISTORY_RECALL_FTS_ENGLISH");
-        if (lexical.hasCyrillic) lanes.push("HISTORY_RECALL_FTS_RUSSIAN");
-        if (lexical.trigramTerms.length > 0) lanes.push("HISTORY_RECALL_TRIGRAM");
+        lanes.push("HISTORY_RECALL_LEXICAL_UNICODE");
+        if (lexical.ngramTerms.length > 0) {
+          lanes.push("HISTORY_RECALL_LEXICAL_NGRAM");
+        }
       }
       if (plan.recencyRequested) lanes.push("HISTORY_RECALL_RECENT");
     }
@@ -3004,6 +3348,33 @@ function localLexicalLanes(
   return lanes.sort((left, right) =>
     (priority.get(left) ?? Number.MAX_SAFE_INTEGER) -
     (priority.get(right) ?? Number.MAX_SAFE_INTEGER));
+}
+
+async function prepareMemoryLexicalProviderReadiness(input: Readonly<{
+  plan: MemoryRetrievalPlan;
+  providerForLane: MemoryLexicalProviderForLane;
+  snapshot: MemoryLocalRetrievalSnapshot;
+}>): Promise<void> {
+  const lane = localLexicalLanes(input.snapshot, input.plan).find(
+    isPostgresUnicodeMemoryLexicalLane
+  );
+  if (!lane) return;
+  const provider = input.providerForLane(lane);
+  if (!provider.prepare) return;
+  const request = memoryLexicalSearchRequest(
+    input.snapshot,
+    input.plan,
+    lane,
+    memoryRetrievalLaneLimit(lane, input.plan.aggregationRequested),
+    memoryRetrievalLaneLimit(lane, input.plan.aggregationRequested)
+  );
+  try {
+    await provider.prepare(request);
+  } catch {
+    // Preparation is candidate-free and optional. The subsequent provider
+    // search consumes the same cached proof and owns normal degraded evidence,
+    // fallback, and circuit-breaker accounting.
+  }
 }
 
 function allocatedLimit(
@@ -3041,12 +3412,9 @@ function laneSql(
   if (lane.endsWith("_EXACT")) {
     return exactSql(snapshot, plan, itemType, limit, sourceChatIds);
   }
-  if (lane.endsWith("_FTS_SIMPLE") || lane.endsWith("_FTS_ENGLISH") ||
-    lane.endsWith("_FTS_RUSSIAN")) {
+  if (plan.mode === "HISTORY_OVERVIEW" &&
+    lane === "HISTORY_RECALL_LEXICAL_UNICODE") {
     return ftsSql(snapshot, plan, lane, itemType, limit, sourceChatIds);
-  }
-  if (lane.endsWith("_TRIGRAM")) {
-    return trigramSql(snapshot, plan, itemType, limit, sourceChatIds);
   }
   if (lane.endsWith("_RECENT")) return recentSql(snapshot, plan, itemType, limit);
   throw new Error("memory_retrieval_lane_contract_invalid");
@@ -3055,27 +3423,24 @@ function laneSql(
 type MemoryRetrievalLaneTask =
   Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number];
 
-function queryMatchedPrimaryLane(lane: MemoryRetrievalLane): boolean {
-  return lane === "FACT_ENTITY" || lane === "HISTORY_DIGEST_FTS_SIMPLE" ||
-    lane === "HISTORY_INTRA_CHAT_RAW" || lane.endsWith("_EXACT") ||
-    lane.includes("_FTS_") || lane.endsWith("_VECTOR");
-}
-
-/** Fuzzy text recovery is a bounded fallback, not an always-on peer of the
- * exact, FTS, digest, and dense retrievers. A primary candidate in the same
- * source family proves that the query already has a query-matched route. */
-export function shouldRunMemoryTrigramFallback(
+/** Transliteration/n-gram recovery is a bounded lexical fallback. It is
+ * suppressed only when the corresponding Unicode/folded provider produced a
+ * complete variant that survived canonical rejoin. Independent exact, dense,
+ * digest, or partial lexical candidates cannot prove lexical query coverage. */
+export function shouldRunMemoryNgramFallback(
   lane: MemoryRetrievalLane,
-  laneResults: readonly MemoryLaneResult[]
+  laneResults: readonly MemoryLaneResult[],
+  completePrimaryLanes: ReadonlySet<MemoryRetrievalLane>
 ): boolean {
-  if (lane !== "FACT_TRIGRAM" && lane !== "HISTORY_RECALL_TRIGRAM") {
-    throw new Error("memory_trigram_fallback_lane_invalid");
+  if (lane !== "FACT_LEXICAL_NGRAM" && lane !== "HISTORY_RECALL_LEXICAL_NGRAM") {
+    throw new Error("memory_ngram_fallback_lane_invalid");
   }
-  const factFamily = lane === "FACT_TRIGRAM";
-  return !laneResults.some((result) =>
-    result.candidates.length > 0 && queryMatchedPrimaryLane(result.lane) &&
-    (factFamily ? result.lane.startsWith("FACT_") :
-      result.lane.startsWith("HISTORY_")));
+  const primaryLane = lane === "FACT_LEXICAL_NGRAM"
+    ? "FACT_LEXICAL_UNICODE"
+    : "HISTORY_RECALL_LEXICAL_UNICODE";
+  const primary = laneResults.find((result) => result.lane === primaryLane);
+  return !primary || primary.candidates.length === 0 ||
+    !completePrimaryLanes.has(primaryLane);
 }
 
 const memoryExecutionLanePriority = new Map<MemoryRetrievalLane, number>(
@@ -3087,7 +3452,496 @@ function orderedExecutionLaneResults(
 ): readonly MemoryLaneResult[] {
   return [...laneResults].sort((left, right) =>
     (memoryExecutionLanePriority.get(left.lane) ?? Number.MAX_SAFE_INTEGER) -
-    (memoryExecutionLanePriority.get(right.lane) ?? Number.MAX_SAFE_INTEGER));
+      (memoryExecutionLanePriority.get(right.lane) ?? Number.MAX_SAFE_INTEGER));
+}
+
+const MEMORY_LEXICAL_EVIDENCE_MAX_DURATION_MS = 60_000;
+
+function lexicalMatchMode(
+  lane: MemoryRetrievalLane
+): MemoryLexicalLaneEvidence["matchMode"] {
+  if (lane.endsWith("_LEXICAL_NGRAM")) return "NGRAM";
+  if (lane.endsWith("_LEXICAL_UNICODE")) return "UNICODE";
+  return null;
+}
+
+type MemoryLexicalEvidenceRecorder = Readonly<{
+  complete(entry: MemoryLexicalLaneEvidence): MemoryLexicalLaneEvidence | null;
+  counts(rawCandidateCount: number, canonicalAcceptedCount: number): void;
+  failure(error: unknown): MemoryLexicalLaneEvidence | null;
+  settled(): MemoryLexicalLaneEvidence | null;
+  success(): MemoryLexicalLaneEvidence | null;
+}>;
+
+function createLexicalEvidenceRecorder(
+  evidence: MemoryLexicalLaneEvidence[],
+  lane: MemoryRetrievalLane,
+  requestedLimit: number,
+  providerBackend: MemoryLexicalProviderBackend = "POSTGRES"
+): MemoryLexicalEvidenceRecorder {
+  const backend: MemoryLexicalProviderEvidence["backend"] =
+    providerBackend === "OPENSEARCH" ? "OPENSEARCH" : "POSTGRES";
+  const startedAt = Date.now();
+  let canonicalAcceptedCount = 0;
+  let rawCandidateCount = 0;
+  let recorded = false;
+  const record = (
+    failureCode: MemoryLexicalLaneEvidence["failureCode"]
+  ): MemoryLexicalLaneEvidence | null => {
+    if (recorded) return null;
+    recorded = true;
+    const durationMs = Math.min(
+      MEMORY_LEXICAL_EVIDENCE_MAX_DURATION_MS,
+      Math.max(0, Date.now() - startedAt)
+    );
+    const entry = Object.freeze({
+      backend,
+      canonicalAcceptedCount,
+      durationMs,
+      failureCode,
+      fallbackUsed: lane.endsWith("_LEXICAL_NGRAM"),
+      lane,
+      matchMode: lexicalMatchMode(lane),
+      opaqueId: null,
+      projectionCaughtUp: backend === "POSTGRES" ? true : null,
+      projectionEventLag: null,
+      projectionRevisionLag: null,
+      projectionVisibleAgeMs: null,
+      rawCandidateCount,
+      rejectedAuthorityCount: 0,
+      rejectedGenerationCount: 0,
+      rejectedHashCount: 0,
+      requestedLimit,
+      timedOut: failureCode === "memory_lexical_settle_timeout" ||
+        failureCode === "memory_read_lock_timeout" ||
+        failureCode === "memory_read_statement_timeout"
+    });
+    evidence.push(entry);
+    return entry;
+  };
+  return Object.freeze({
+    complete(entry) {
+      if (recorded) return null;
+      recorded = true;
+      evidence.push(Object.freeze(entry));
+      return entry;
+    },
+    counts(raw, accepted) {
+      if (!Number.isSafeInteger(raw) || raw < 0 ||
+        !Number.isSafeInteger(accepted) || accepted < 0 || accepted > raw) {
+        throw new Error("memory_lexical_evidence_invalid");
+      }
+      rawCandidateCount = raw;
+      canonicalAcceptedCount = accepted;
+    },
+    failure(error) {
+      return record(error instanceof MemoryReadBudgetError
+        ? error.code
+        : "memory_lexical_lane_unavailable");
+    },
+    settled() {
+      return record("memory_lexical_settle_timeout");
+    },
+    success() {
+      return record(null);
+    }
+  });
+}
+
+export type MemoryLexicalProviderForLane = (
+  lane: PostgresUnicodeMemoryLexicalLane
+) => MemoryLexicalCandidateProvider;
+
+type MemoryLexicalRejectionCounts = Readonly<{
+  rejectedAuthorityCount: number;
+  rejectedGenerationCount: number;
+  rejectedHashCount: number;
+}>;
+
+type MemoryLexicalRejectionRow = Readonly<{
+  actualGenerationId: string | null;
+  actualSafeContentHash: string | null;
+  actualUserId: string | null;
+  expectedSafeContentHash: string;
+  searchEntryId: string;
+}>;
+
+/** Classifies only opaque provider identities. Canonical selector failures
+ * that are not an exact generation/hash mismatch remain authority failures;
+ * no Memory text or public item identity is materialized. */
+export async function classifyMemoryLexicalCanonicalRejections(input: Readonly<{
+  acceptedSearchEntryIds: readonly string[];
+  candidates: readonly MemoryLexicalRawCandidate[];
+  client: PrismaClient;
+  deadlineAtMs: number;
+  snapshot: MemoryLocalRetrievalSnapshot;
+}>): Promise<MemoryLexicalRejectionCounts> {
+  const byEntry = new Map<string, string>();
+  for (const candidate of input.candidates) {
+    const current = byEntry.get(candidate.searchEntryId);
+    if (current !== undefined && current !== candidate.safeContentHash) {
+      throw new Error("memory_lexical_search_result_invalid");
+    }
+    byEntry.set(candidate.searchEntryId, candidate.safeContentHash);
+  }
+  if (byEntry.size === 0) return Object.freeze({
+    rejectedAuthorityCount: 0,
+    rejectedGenerationCount: 0,
+    rejectedHashCount: 0
+  });
+  const acceptedIds = new Set(input.acceptedSearchEntryIds);
+  if (acceptedIds.size !== input.acceptedSearchEntryIds.length ||
+    input.acceptedSearchEntryIds.some((entryId) => !byEntry.has(entryId))) {
+    throw new Error("memory_lexical_search_result_invalid");
+  }
+  const values = [...byEntry].map(([searchEntryId, safeContentHash]) =>
+    Prisma.sql`(${searchEntryId}::text, ${safeContentHash}::text)`);
+  const remainingMs = Math.min(
+    MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
+    input.deadlineAtMs - Date.now()
+  );
+  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1) {
+    throw new MemoryReadBudgetError("memory_read_statement_timeout");
+  }
+  const rows = await withMemoryReadBudget(
+    input.client,
+    remainingMs,
+    (tx) => tx.$queryRaw<MemoryLexicalRejectionRow[]>(Prisma.sql`
+      /* aiqsa_memory_retrieval_lane:OPENSEARCH_CANONICAL_REJECTION_AUDIT */
+      WITH lexical_candidates (
+        "searchEntryId", "expectedSafeContentHash"
+      ) AS MATERIALIZED (
+        VALUES ${Prisma.join(values)}
+      )
+      SELECT
+        lexical_candidates."searchEntryId",
+        lexical_candidates."expectedSafeContentHash",
+        entry."userId" AS "actualUserId",
+        entry."indexGenerationId" AS "actualGenerationId",
+        entry."safeContentHash" AS "actualSafeContentHash"
+      FROM lexical_candidates
+      LEFT JOIN "MemorySearchEntry" AS entry
+        ON entry."id" = lexical_candidates."searchEntryId"
+      ORDER BY lexical_candidates."searchEntryId"
+    `)
+  );
+  if (rows.length !== byEntry.size || new Set(rows.map(({ searchEntryId }) =>
+    searchEntryId)).size !== rows.length) {
+    throw new Error("memory_lexical_search_result_invalid");
+  }
+  let rejectedAuthorityCount = 0;
+  let rejectedGenerationCount = 0;
+  let rejectedHashCount = 0;
+  for (const row of rows) {
+    if (row.expectedSafeContentHash !== byEntry.get(row.searchEntryId)) {
+      throw new Error("memory_lexical_search_result_invalid");
+    }
+    if (acceptedIds.has(row.searchEntryId)) continue;
+    if (row.actualUserId !== input.snapshot.userId) {
+      rejectedAuthorityCount += 1;
+    } else if (row.actualGenerationId !== input.snapshot.activeGenerationId) {
+      rejectedGenerationCount += 1;
+    } else if (row.actualSafeContentHash !== row.expectedSafeContentHash) {
+      rejectedHashCount += 1;
+    } else {
+      rejectedAuthorityCount += 1;
+    }
+  }
+  return Object.freeze({
+    rejectedAuthorityCount,
+    rejectedGenerationCount,
+    rejectedHashCount
+  });
+}
+
+async function queryProviderBackedLexicalLane(input: Readonly<{
+  client: PrismaClient;
+  deadlineAtMs?: number;
+  lane: PostgresUnicodeMemoryLexicalLane;
+  limit: number;
+  plan: MemoryRetrievalPlan;
+  provider: MemoryLexicalCandidateProvider;
+  queryLimit: number;
+  snapshot: MemoryLocalRetrievalSnapshot;
+  sourceChatIds?: readonly string[];
+  sourceDiversity: boolean;
+}>): Promise<Readonly<{
+  completeVariantAccepted: boolean;
+  evidence: MemoryLexicalLaneEvidence;
+  rawCandidates: readonly MemoryLexicalRawCandidate[];
+  result: MemoryLaneResult;
+}>> {
+  const startedAt = Date.now();
+  const request = memoryLexicalSearchRequest(
+    input.snapshot,
+    input.plan,
+    input.lane,
+    input.queryLimit,
+    input.limit,
+    input.sourceChatIds,
+    input.deadlineAtMs
+  );
+  let searched = await input.provider.search(request);
+  assertMemoryLexicalSearchResult(request, searched, input.provider.backend);
+  searched = boundMemoryLexicalCanonicalSearchResult(searched);
+  assertMemoryLexicalSearchResult(request, searched, input.provider.backend);
+  if (searched.evidence.lane !== input.lane) {
+    throw new Error("memory_lexical_search_result_invalid");
+  }
+  const canonicalize = async (
+    current: MemoryLexicalSearchResult
+  ): Promise<Readonly<{
+    acceptedCount: number;
+    acceptedSearchEntryIds: readonly string[];
+    result: MemoryLaneResult;
+  }>> => {
+    let acceptedCount = 0;
+    let acceptedSearchEntryIds: readonly string[] = Object.freeze([]);
+    const readBudgetMs = input.deadlineAtMs === undefined
+      ? MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION
+      : Math.min(
+          MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
+          request.deadlineAtMs - Date.now()
+        );
+    if (current.candidates.length > 0 &&
+      (!Number.isSafeInteger(readBudgetMs) || readBudgetMs < 1)) {
+      throw new MemoryReadBudgetError("memory_read_statement_timeout");
+    }
+    const result = current.candidates.length === 0
+      ? { candidates: [], lane: input.lane } satisfies MemoryLaneResult
+      : await queryLane(
+          input.client,
+          input.lane,
+          input.limit,
+          memoryLexicalCanonicalRejoinSql(
+            input.snapshot,
+            input.plan,
+            input.lane,
+            current.candidates,
+            current.candidates.length,
+            input.sourceChatIds
+          ),
+          {
+            maximumRows: Math.max(input.limit, current.candidates.length),
+            preserveExplicitJoinOrder: true,
+            readBudgetMs,
+            recordCanonicalEntryIds(entryIds) {
+              acceptedSearchEntryIds = entryIds;
+              acceptedCount = entryIds.length;
+            },
+            sourceDiversity: input.sourceDiversity
+          }
+        );
+    if (acceptedCount > current.candidates.length) {
+      throw new Error("memory_lexical_search_result_invalid");
+    }
+    return Object.freeze({ acceptedCount, acceptedSearchEntryIds, result });
+  };
+  let canonical = await canonicalize(searched);
+  const rejections = searched.evidence.backend === "OPENSEARCH"
+    ? await classifyMemoryLexicalCanonicalRejections({
+        acceptedSearchEntryIds: canonical.acceptedSearchEntryIds,
+        candidates: searched.candidates,
+        client: input.client,
+        deadlineAtMs: input.deadlineAtMs ??
+          Date.now() + MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
+        snapshot: input.snapshot
+      })
+    : Object.freeze({
+        rejectedAuthorityCount: 0,
+        rejectedGenerationCount: 0,
+        rejectedHashCount: 0
+      });
+  const rejectedCandidateCount = rejections.rejectedAuthorityCount +
+    rejections.rejectedGenerationCount + rejections.rejectedHashCount;
+  if (searched.evidence.backend === "OPENSEARCH" &&
+    searched.evidence.failureCode === null &&
+    searched.evidence.projectionCaughtUp === true &&
+    searched.candidates.length > 0 && canonical.acceptedCount === 0 &&
+    rejectedCandidateCount > 0 &&
+    supportsMemoryLexicalCanonicalGuardFallback(input.provider)) {
+    searched = await input.provider.fallbackAfterCanonicalGuard(
+      request,
+      searched.evidence
+    );
+    assertMemoryLexicalSearchResult(request, searched, "POSTGRES");
+    searched = boundMemoryLexicalCanonicalSearchResult(searched);
+    assertMemoryLexicalSearchResult(request, searched, "POSTGRES");
+    if (searched.evidence.lane !== input.lane) {
+      throw new Error("memory_lexical_search_result_invalid");
+    }
+    canonical = await canonicalize(searched);
+  }
+  return Object.freeze({
+    completeVariantAccepted: hasAcceptedCompleteMemoryLexicalVariant({
+      acceptedSearchEntryIds: canonical.acceptedSearchEntryIds,
+      candidates: searched.candidates,
+      request
+    }),
+    evidence: Object.freeze({
+      ...searched.evidence,
+      canonicalAcceptedCount: canonical.acceptedCount,
+      durationMs: Math.min(60_000, Math.max(0, Date.now() - startedAt)),
+      ...rejections
+    }),
+    rawCandidates: searched.candidates,
+    result: canonical.result
+  });
+}
+
+function orderedLexicalEvidence(
+  evidence: readonly MemoryLexicalLaneEvidence[]
+): readonly MemoryLexicalLaneEvidence[] {
+  return Object.freeze([...evidence].sort((left, right) =>
+    left.lane.localeCompare(right.lane) ||
+    left.backend.localeCompare(right.backend) ||
+    left.requestedLimit - right.requestedLimit ||
+    (left.failureCode ?? "").localeCompare(right.failureCode ?? "") ||
+    left.rawCandidateCount - right.rawCandidateCount ||
+    left.canonicalAcceptedCount - right.canonicalAcceptedCount ||
+    left.durationMs - right.durationMs));
+}
+
+type MemoryLexicalShadowLaneSpec = Readonly<{
+  lane: PostgresUnicodeMemoryLexicalLane;
+  limit: number;
+  queryLimit: number;
+  sourceDiversity: boolean;
+}>;
+
+type MemoryLexicalShadowLaneExecution = Readonly<{
+  completeVariantAccepted: boolean;
+  evidence: MemoryLexicalLaneEvidence;
+  rawCandidates: readonly MemoryLexicalRawCandidate[];
+  result: MemoryLaneResult;
+}>;
+
+async function executeMemoryLexicalShadowLane(input: Readonly<{
+  client: PrismaClient;
+  deadlineAtMs: number;
+  plan: MemoryRetrievalPlan;
+  runtime: MemoryLexicalShadowRuntime;
+  snapshot: MemoryLocalRetrievalSnapshot;
+  sourceChatIds?: readonly string[];
+  spec: MemoryLexicalShadowLaneSpec;
+}>): Promise<MemoryLexicalShadowLaneExecution> {
+  try {
+    return await queryProviderBackedLexicalLane({
+      client: input.client,
+      deadlineAtMs: input.deadlineAtMs,
+      lane: input.spec.lane,
+      limit: input.spec.limit,
+      plan: input.plan,
+      provider: input.runtime.providerForLane(input.spec.lane),
+      queryLimit: input.spec.queryLimit,
+      snapshot: input.snapshot,
+      sourceChatIds: input.sourceChatIds,
+      sourceDiversity: input.spec.sourceDiversity
+    });
+  } catch (error) {
+    const evidence: MemoryLexicalLaneEvidence[] = [];
+    const recorder = createLexicalEvidenceRecorder(
+      evidence,
+      input.spec.lane,
+      input.spec.queryLimit,
+      "OPENSEARCH"
+    );
+    const recorded = recorder.failure(error);
+    if (!recorded) throw new Error("memory_lexical_evidence_invalid");
+    return Object.freeze({
+      completeVariantAccepted: false,
+      evidence: recorded,
+      rawCandidates: Object.freeze([]),
+      result: Object.freeze({ candidates: Object.freeze([]), lane: input.spec.lane })
+    });
+  }
+}
+
+function shadowLaneReceipt(input: Readonly<{
+  execution: MemoryLexicalShadowLaneExecution;
+  postgresEvidence: readonly MemoryLexicalLaneEvidence[];
+  referenceResults: readonly MemoryLaneResult[];
+}>): MemoryLexicalShadowLaneReceipt {
+  const lane = input.execution.result.lane;
+  if (!isShadowedMemoryLexicalLane(lane)) {
+    throw new Error("memory_lexical_shadow_lane_invalid");
+  }
+  const reference = input.referenceResults.find((result) => result.lane === lane);
+  const postgres = input.postgresEvidence.find((entry) =>
+    entry.backend === "POSTGRES" && entry.lane === lane);
+  return memoryLexicalShadowLaneReceipt({
+    candidate: input.execution.result.candidates,
+    lane,
+    openSearchCandidates: input.execution.rawCandidates,
+    openSearchEvidence: input.execution.evidence,
+    postgresCanonicalAcceptedCount:
+      postgres?.canonicalAcceptedCount ?? reference?.candidates.length ?? 0,
+    postgresRawCandidateCount:
+      postgres?.rawCandidateCount ?? reference?.candidates.length ?? 0,
+    reference: reference?.candidates ?? []
+  });
+}
+
+function scheduleMemoryLexicalShadowStage(input: Readonly<{
+  client: PrismaClient;
+  plan: MemoryRetrievalPlan;
+  postgresEvidence: readonly MemoryLexicalLaneEvidence[];
+  referenceResults: readonly MemoryLaneResult[];
+  runtime: MemoryLexicalShadowRuntime | null;
+  snapshot: MemoryLocalRetrievalSnapshot;
+  sourceChatIds?: readonly string[];
+  specs: readonly MemoryLexicalShadowLaneSpec[];
+  stage: MemoryLexicalShadowStage;
+}>): void {
+  if (!input.runtime || input.specs.length === 0) return;
+  input.runtime.submit({
+    stage: input.stage,
+    async work(deadlineAtMs) {
+      const primarySpecs = input.specs.filter(({ lane }) =>
+        lane.endsWith("_LEXICAL_UNICODE"));
+      const primary = await Promise.all(primarySpecs.map((spec) =>
+        executeMemoryLexicalShadowLane({
+          client: input.client,
+          deadlineAtMs,
+          plan: input.plan,
+          runtime: input.runtime!,
+          snapshot: input.snapshot,
+          sourceChatIds: input.sourceChatIds,
+          spec
+        })));
+      const completePrimaryLanes = new Set<MemoryRetrievalLane>(primary
+        .filter(({ completeVariantAccepted }) => completeVariantAccepted)
+        .map(({ result }) => result.lane));
+      const fallbackSpecs = input.specs.filter(({ lane }) =>
+        lane.endsWith("_LEXICAL_NGRAM") && primary.some((execution) =>
+          execution.result.lane.startsWith(lane.startsWith("FACT_")
+            ? "FACT_"
+            : "HISTORY_") && execution.evidence.failureCode === null &&
+          execution.evidence.projectionCaughtUp === true) &&
+        shouldRunMemoryNgramFallback(
+          lane,
+          primary.map(({ result }) => result),
+          completePrimaryLanes
+        ));
+      const fallback = await Promise.all(fallbackSpecs.map((spec) =>
+        executeMemoryLexicalShadowLane({
+          client: input.client,
+          deadlineAtMs,
+          plan: input.plan,
+          runtime: input.runtime!,
+          snapshot: input.snapshot,
+          sourceChatIds: input.sourceChatIds,
+          spec
+        })));
+      return [...primary, ...fallback]
+        .map((execution) => shadowLaneReceipt({
+          execution,
+          postgresEvidence: input.postgresEvidence,
+          referenceResults: input.referenceResults
+        }))
+        .sort((left, right) => left.lane.localeCompare(right.lane));
+    }
+  });
 }
 
 function pushLexicalTasks(
@@ -3096,14 +3950,22 @@ function pushLexicalTasks(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   allocation: MemoryRetrievalLaneLimitAllocation,
+  evidence: MemoryLexicalLaneEvidence[],
+  providerForLane: MemoryLexicalProviderForLane,
   executionTier: "BASELINE" | "ENRICHED" = "ENRICHED"
 ): Readonly<{
+  completePrimaryLanes(): ReadonlySet<MemoryRetrievalLane>;
   deferredTasks: readonly MemoryRetrievalLaneTask[];
+  evidence(): readonly MemoryLexicalLaneEvidence[];
   failures(): readonly MemoryRetrievalLane[];
+  shadowSpecs: readonly MemoryLexicalShadowLaneSpec[];
   state(): MemoryLocalRetrievalResult["lexicalState"];
 }> {
+  const completePrimaryLanes = new Set<MemoryRetrievalLane>();
   const failures: MemoryRetrievalLane[] = [];
+  const executionEvidence: MemoryLexicalLaneEvidence[] = [];
   const deferredTasks: MemoryRetrievalLaneTask[] = [];
+  const shadowSpecs: MemoryLexicalShadowLaneSpec[] = [];
   const lanes = localLexicalLanes(snapshot, plan);
   for (const lane of lanes) {
     const limit = allocatedLimit(allocation, lane, plan.aggregationRequested);
@@ -3112,47 +3974,100 @@ function pushLexicalTasks(
     const queryLimit = sourceDiversity
       ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
       : limit;
-    const sql = laneSql(snapshot, plan, lane, queryLimit);
+    const providerBacked = plan.mode !== "HISTORY_OVERVIEW" &&
+      isPostgresUnicodeMemoryLexicalLane(lane);
+    const provider = providerBacked ? providerForLane(lane) : null;
+    const sql = providerBacked ? null : laneSql(snapshot, plan, lane, queryLimit);
+    const recorder = createLexicalEvidenceRecorder(
+      evidence,
+      lane,
+      queryLimit,
+      provider?.backend
+    );
+    if (isShadowedMemoryLexicalLane(lane)) shadowSpecs.push(Object.freeze({
+      lane,
+      limit,
+      queryLimit,
+      sourceDiversity
+    }));
     const task: MemoryRetrievalLaneTask = {
       executionId: `${executionTier}:${lane}`,
       async execute() {
         try {
           if (lane === "FACT_ENTITY" &&
             !await hasPotentialEntityAlias(client, snapshot, plan)) {
+            const recorded = recorder.success();
+            if (recorded) executionEvidence.push(recorded);
             return { candidates: [], lane };
           }
-          return await queryLane(client, lane, limit, sql, {
+          if (provider && isPostgresUnicodeMemoryLexicalLane(lane)) {
+            const queried = await queryProviderBackedLexicalLane({
+              client,
+              lane,
+              limit,
+              plan,
+              provider,
+              queryLimit,
+              snapshot,
+              sourceDiversity
+            });
+            if (queried.completeVariantAccepted) completePrimaryLanes.add(lane);
+            const recorded = recorder.complete(queried.evidence);
+            if (recorded) executionEvidence.push(recorded);
+            return queried.result;
+          }
+          if (!sql) throw new Error("memory_retrieval_lane_contract_invalid");
+          const result = await queryLane(client, lane, limit, sql, {
             maximumRows: queryLimit,
+            recordCounts: recorder.counts,
             sourceDiversity
           });
-        } catch {
-          failures.push(lane);
+          const recorded = recorder.success();
+          if (recorded) executionEvidence.push(recorded);
+          return result;
+        } catch (error) {
+          const recorded = recorder.failure(error);
+          if (recorded) {
+            executionEvidence.push(recorded);
+            failures.push(lane);
+          }
           return { candidates: [], lane };
         }
       },
       lane,
       onUnavailable() {
-        failures.push(lane);
+        const recorded = recorder.settled();
+        if (recorded) {
+          executionEvidence.push(recorded);
+          failures.push(lane);
+        }
       }
     };
-    if (lane === "FACT_TRIGRAM" || lane === "HISTORY_RECALL_TRIGRAM") {
+    if (lane === "FACT_LEXICAL_NGRAM" || lane === "HISTORY_RECALL_LEXICAL_NGRAM") {
       deferredTasks.push(task);
     } else {
       tasks.push(task);
     }
   }
   return {
+    completePrimaryLanes: () => new Set(completePrimaryLanes),
     deferredTasks: Object.freeze(deferredTasks),
+    evidence: () => orderedLexicalEvidence(executionEvidence),
     failures: () => [...failures].sort((left, right) => left.localeCompare(right)),
+    shadowSpecs: Object.freeze(shadowSpecs),
     state: () => lanes.length === 0 ? "DISABLED" : failures.length === 0 ? "READY"
       : failures.length === lanes.length ? "FAILED" : "DEGRADED"
   };
 }
 
-function vectorScoreSql(hits: readonly Readonly<{ entryId: string; score: number }>[]): Prisma.Sql {
-  return Prisma.sql`CASE eligible."entryId"
-    ${Prisma.join(hits.map((hit) => Prisma.sql`WHEN ${hit.entryId} THEN ${hit.score}`), " ")}
-    ELSE -1.0::double precision END`;
+function vectorRawCandidatesSql(
+  hits: readonly Readonly<{ entryId: string; score: number }>[]
+): Prisma.Sql {
+  if (hits.length === 0) throw new Error("memory_vector_search_result_invalid");
+  return Prisma.join(hits.map((hit) => Prisma.sql`(
+    ${hit.entryId}::text,
+    ${hit.score}::double precision
+  )`));
 }
 
 function vectorMetadataSql(
@@ -3168,20 +4083,38 @@ function vectorMetadataSql(
         snapshot,
         plan,
         "INDEXED",
-        Prisma.sql`entry."id" IN (${valuesSql(hits.map((hit) => hit.entryId))})`
+        Prisma.sql`TRUE`,
+        "BOUNDED_CANDIDATES"
       )
     : historyEligibleSelect(
         snapshot,
         plan,
-        Prisma.sql`entry."id" IN (${valuesSql(hits.map((hit) => hit.entryId))})`,
-        sourceChatIds
+        Prisma.sql`TRUE`,
+        sourceChatIds,
+        "BOUNDED_CANDIDATES"
       );
-  const score = vectorScoreSql(hits);
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${eligible})
-    SELECT ${candidateColumns(score)} FROM eligible
-    WHERE eligible."entryId" IN (${valuesSql(hits.map((hit) => hit.entryId))})
-    ORDER BY ${score} DESC, eligible."itemId" LIMIT ${limit}
+    WITH vector_raw_candidates ("searchEntryId", "rankScore") AS MATERIALIZED (
+      VALUES ${vectorRawCandidatesSql(hits)}
+    ),
+    candidate_entries AS MATERIALIZED (
+      SELECT ${boundedMemorySearchEntryColumnsSql()}
+      FROM vector_raw_candidates AS vector_candidate
+      INNER JOIN "MemorySearchEntry" AS entry
+        ON entry."id" = vector_candidate."searchEntryId"
+      WHERE entry."userId" = ${snapshot.userId}
+        AND entry."indexGenerationId" = ${snapshot.activeGenerationId}
+    ),
+    eligible AS MATERIALIZED (${eligible}),
+    matched_candidates AS MATERIALIZED (
+      SELECT eligible.*, vector_candidate."rankScore"
+      FROM eligible
+      INNER JOIN vector_raw_candidates AS vector_candidate
+        ON vector_candidate."searchEntryId" = eligible."entryId"
+    )
+    SELECT ${candidateColumns(Prisma.sql`eligible."rankScore"`)}
+    FROM matched_candidates AS eligible
+    ORDER BY eligible."rankScore" DESC, eligible."itemId" LIMIT ${limit}
   `;
 }
 
@@ -3286,6 +4219,7 @@ function pushVectorTasks(
         return hits.length === 0 ? { candidates: [], lane }
           : queryLane(client, lane, laneLimit,
               vectorMetadataSql(snapshot, input.plan, itemType, hits, laneLimit), {
+                readBudgetMs: MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
                 sourceDiversity: input.plan.aggregationRequested &&
                   lane === "HISTORY_RECALL_VECTOR"
               });
@@ -3431,7 +4365,10 @@ type MemoryDigestIntraChatStageResult = Readonly<{
 
 async function executeDigestIntraChatStage(input: Readonly<{
   client: PrismaClient;
+  lexicalEvidence: MemoryLexicalLaneEvidence[];
+  providerForLane: MemoryLexicalProviderForLane;
   retrievalInput: MemoryLocalRetrievalInput;
+  shadowRuntime: MemoryLexicalShadowRuntime | null;
   snapshot: MemoryLocalRetrievalSnapshot;
   laneResults: readonly MemoryLaneResult[];
   settleSignal?: AbortSignal;
@@ -3473,19 +4410,54 @@ async function executeDigestIntraChatStage(input: Readonly<{
     rawLimit * 2
   );
   const tasks: MemoryRetrievalLaneTask[] = [];
-  const deferredTrigramTasks: MemoryRetrievalLaneTask[] = [];
+  const completePrimaryLanes = new Set<MemoryRetrievalLane>();
+  const deferredNgramTasks: MemoryRetrievalLaneTask[] = [];
+  const executionEvidence: MemoryLexicalLaneEvidence[] = [];
   const lexicalFailures: MemoryRetrievalLane[] = [];
+  const shadowSpecs: MemoryLexicalShadowLaneSpec[] = [];
   const lexicalLanes = localLexicalLanes(
     input.snapshot,
     input.retrievalInput.plan
   ).filter((lane) => lane.startsWith("HISTORY_RECALL_") &&
     lane !== "HISTORY_RECALL_RECENT");
   for (const lane of lexicalLanes) {
+    const provider = isPostgresUnicodeMemoryLexicalLane(lane)
+      ? input.providerForLane(lane)
+      : null;
+    const recorder = createLexicalEvidenceRecorder(
+      input.lexicalEvidence,
+      lane,
+      queryLimit,
+      provider?.backend
+    );
+    if (isShadowedMemoryLexicalLane(lane)) shadowSpecs.push(Object.freeze({
+      lane,
+      limit: queryLimit,
+      queryLimit,
+      sourceDiversity: true
+    }));
     const task: MemoryRetrievalLaneTask = {
       executionId: `INTRA_CHAT:${lane}`,
       async execute() {
         try {
-          return await queryLane(
+          if (provider && isPostgresUnicodeMemoryLexicalLane(lane)) {
+            const queried = await queryProviderBackedLexicalLane({
+              client: input.client,
+              lane,
+              limit: queryLimit,
+              plan: input.retrievalInput.plan,
+              provider,
+              queryLimit,
+              snapshot: input.snapshot,
+              sourceChatIds: selectedSourceChatIds,
+              sourceDiversity: true
+            });
+            if (queried.completeVariantAccepted) completePrimaryLanes.add(lane);
+            const recorded = recorder.complete(queried.evidence);
+            if (recorded) executionEvidence.push(recorded);
+            return queried.result;
+          }
+          const result = await queryLane(
             input.client,
             lane,
             queryLimit,
@@ -3496,19 +4468,34 @@ async function executeDigestIntraChatStage(input: Readonly<{
               queryLimit,
               selectedSourceChatIds
             ),
-            { maximumRows: queryLimit, sourceDiversity: true }
+            {
+              maximumRows: queryLimit,
+              recordCounts: recorder.counts,
+              sourceDiversity: true
+            }
           );
-        } catch {
-          lexicalFailures.push(lane);
+          const recorded = recorder.success();
+          if (recorded) executionEvidence.push(recorded);
+          return result;
+        } catch (error) {
+          const recorded = recorder.failure(error);
+          if (recorded) {
+            executionEvidence.push(recorded);
+            lexicalFailures.push(lane);
+          }
           return { candidates: [], lane };
         }
       },
       lane,
       onUnavailable() {
-        lexicalFailures.push(lane);
+        const recorded = recorder.settled();
+        if (recorded) {
+          executionEvidence.push(recorded);
+          lexicalFailures.push(lane);
+        }
       }
     };
-    if (lane === "HISTORY_RECALL_TRIGRAM") deferredTrigramTasks.push(task);
+    if (lane === "HISTORY_RECALL_LEXICAL_NGRAM") deferredNgramTasks.push(task);
     else tasks.push(task);
   }
 
@@ -3584,7 +4571,11 @@ async function executeDigestIntraChatStage(input: Readonly<{
               rawLimit,
               selectedSourceChatIds
             ),
-            { maximumRows: rawLimit, sourceDiversity: true }
+            {
+              maximumRows: rawLimit,
+              readBudgetMs: MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
+              sourceDiversity: true
+            }
           );
         } catch {
           vectorState = "DEGRADED";
@@ -3600,27 +4591,42 @@ async function executeDigestIntraChatStage(input: Readonly<{
     MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
     input.settleSignal
   );
-  const runnableTrigramTasks = deferredTrigramTasks.filter((task) =>
-    shouldRunMemoryTrigramFallback(task.lane, primaryStageResults));
-  const trigramResults = runnableTrigramTasks.length > 0
+  const runnableNgramTasks = deferredNgramTasks.filter((task) =>
+    shouldRunMemoryNgramFallback(
+      task.lane,
+      primaryStageResults,
+      completePrimaryLanes
+    ));
+  const trigramResults = runnableNgramTasks.length > 0
     ? await executeMemoryRetrievalLaneTasks(
-        runnableTrigramTasks,
+        runnableNgramTasks,
         MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
         input.settleSignal
       )
     : [];
-  const trigramByExecutionId = new Map(runnableTrigramTasks.map((task, index) => [
+  const trigramByExecutionId = new Map(runnableNgramTasks.map((task, index) => [
     task.executionId!,
     trigramResults[index]!
   ]));
   const stageResults = orderedExecutionLaneResults([
     ...primaryStageResults,
-    ...deferredTrigramTasks.map((task) =>
+    ...deferredNgramTasks.map((task) =>
       trigramByExecutionId.get(task.executionId!) ?? {
         candidates: [],
         lane: task.lane
       })
   ]);
+  scheduleMemoryLexicalShadowStage({
+    client: input.client,
+    plan: input.retrievalInput.plan,
+    postgresEvidence: executionEvidence,
+    referenceResults: stageResults,
+    runtime: input.shadowRuntime,
+    snapshot: input.snapshot,
+    sourceChatIds: selectedSourceChatIds,
+    specs: shadowSpecs,
+    stage: "INTRA_CHAT"
+  });
   const selectedRaw = selectMemoryIntraChatRawCandidates({
     laneResults: stageResults,
     perChatLimit,
@@ -3811,10 +4817,16 @@ function chunkExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(
+    WITH ${boundedMemorySearchEntryCandidatesSql(
+      snapshot,
+      Prisma.sql`entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
+        AND entry."recallChunkId" IN (${valuesSql(ids)})`
+    )},
+    eligible AS MATERIALIZED (${historyChunkEligibleSelect(
       snapshot,
       plan,
-      Prisma.sql`entry."recallChunkId" IN (${valuesSql(ids)})`
+      Prisma.sql`TRUE`,
+      "BOUNDED_CANDIDATES"
     )})
     SELECT eligible."itemId", eligible."itemType", chunk."safeProjectedText" AS "safeText",
       'RECALL_CHUNK_SAFE_PROJECTED_TEXT'::text AS "projectionKind",
@@ -3834,10 +4846,16 @@ function toolEventExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(
+    WITH ${boundedMemorySearchEntryCandidatesSql(
+      snapshot,
+      Prisma.sql`entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType"
+        AND entry."toolEventId" IN (${valuesSql(ids)})`
+    )},
+    eligible AS MATERIALIZED (${toolEventEligibleSelect(
       snapshot,
       plan,
-      Prisma.sql`entry."toolEventId" IN (${valuesSql(ids)})`
+      Prisma.sql`TRUE`,
+      "BOUNDED_CANDIDATES"
     )})
     SELECT eligible."itemId", eligible."itemType",
       tool_event."safeProjectedText" AS "safeText",
@@ -3863,10 +4881,16 @@ function rawRoundExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(
+    WITH ${boundedMemorySearchEntryCandidatesSql(
+      snapshot,
+      Prisma.sql`${memoryRoundSearchEntryItemTypePredicate(snapshot)}
+        AND entry."recallRoundId" IN (${valuesSql(ids)})`
+    )},
+    eligible AS MATERIALIZED (${historyRoundEligibleSelect(
       snapshot,
       plan,
-      Prisma.sql`entry."recallRoundId" IN (${valuesSql(ids)})`
+      Prisma.sql`TRUE`,
+      "BOUNDED_CANDIDATES"
     )})
     SELECT DISTINCT ON (eligible."itemId")
       eligible."itemId", eligible."itemType",
@@ -3892,16 +4916,60 @@ type RoundSegmentSelection = Readonly<{ itemId: string; segmentId: string }>;
 function segmentRoundExpansionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  selections: readonly RoundSegmentSelection[]
+  selections: readonly RoundSegmentSelection[],
+  evidenceView: "FULL" | "USER_TESTIMONY" = "FULL"
 ): Prisma.Sql {
+  const userSpanColumn = evidenceView === "USER_TESTIMONY"
+    ? Prisma.sql`, user_spans."spans" AS "userSpans"`
+    : Prisma.sql``;
+  const userSpanJoin = evidenceView === "USER_TESTIMONY"
+    ? Prisma.sql`
+      INNER JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object(
+          'ordinal', segment_message."ordinal",
+          'start', segment_message."segmentStartOffset",
+          'end', segment_message."segmentEndOffset"
+        ) ORDER BY segment_message."ordinal") AS "spans"
+        FROM "MemoryRecallRoundSegmentMessage" AS segment_message
+        INNER JOIN "MemoryRecallRoundMessage" AS round_message
+          ON round_message."userId" = segment_message."userId"
+          AND round_message."chatId" = segment_message."chatId"
+          AND round_message."roundId" = segment_message."roundId"
+          AND round_message."messageId" = segment_message."messageId"
+          AND round_message."ordinal" = segment_message."ordinal"
+          AND round_message."role" = segment_message."role"
+          AND round_message."safeTextHash" = segment_message."safeTextHash"
+          AND round_message."sourceMessageContentHash" =
+            segment_message."sourceMessageContentHash"
+          AND round_message."sourceMessageUpdatedAt" =
+            segment_message."sourceMessageUpdatedAt"
+        WHERE segment_message."userId" = ${snapshot.userId}
+          AND segment_message."chatId" = current_round."chatId"
+          AND segment_message."roundId" = current_round."id"
+          AND segment_message."segmentId" = segment."id"
+          AND segment_message."role" = 'user'
+          AND segment_message."sourceStartOffset" >= round_message."sourceStartOffset"
+          AND segment_message."sourceEndOffset" <= round_message."sourceEndOffset"
+          AND segment_message."sourceEndOffset" > segment_message."sourceStartOffset"
+          AND segment_message."segmentEndOffset" > segment_message."segmentStartOffset"
+        HAVING COUNT(*) BETWEEN 1 AND 32
+      ) AS user_spans ON TRUE`
+    : Prisma.sql``;
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(
+    WITH ${boundedMemorySearchEntryCandidatesSql(
       snapshot,
-      plan,
-      Prisma.sql`(entry."recallRoundId", entry."recallRoundSegmentId") IN (
+      Prisma.sql`entry."itemType" =
+          'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+        AND (entry."recallRoundId", entry."recallRoundSegmentId") IN (
         ${Prisma.join(selections.map(({ itemId, segmentId }) =>
           Prisma.sql`(${itemId}, ${segmentId})`))}
       )`
+    )},
+    eligible AS MATERIALIZED (${historySegmentRoundEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`TRUE`,
+      "BOUNDED_CANDIDATES"
     )}),
     selected("itemId", "segmentId") AS (VALUES ${Prisma.join(
       selections.map(({ itemId, segmentId }) => Prisma.sql`(${itemId}, ${segmentId})`)
@@ -3919,7 +4987,7 @@ function segmentRoundExpansionSql(
       CASE WHEN segment."contextualKeyState" = 'GENERATED'
           AND dependencies."allValid"
         THEN dependencies."supportingEvidence" ELSE '[]'::jsonb
-      END AS "supportingEvidence"
+      END AS "supportingEvidence"${userSpanColumn}
     FROM eligible
     INNER JOIN selected
       ON selected."itemId" = eligible."itemId"
@@ -3934,6 +5002,7 @@ function segmentRoundExpansionSql(
       AND current_round."supportingRoundIds" = segment."supportingRoundIds"
       AND (segment."contextualKeyState" <> 'GENERATED'
         OR current_round."contextualKeyState" = 'GENERATED')
+    ${userSpanJoin}
     LEFT JOIN LATERAL (
       SELECT
         COUNT(*) = cardinality(segment."supportingRoundIds")
@@ -3980,6 +5049,7 @@ function segmentRoundExpansionSql(
         AND dependency_checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
         AND dependency_checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
         AND ${memoryHistoryRoundSourceAuthorityPredicate({
+          boundedCandidateSourceLookup: true,
           chat: "dependency_source_chat",
           checkpoint: "dependency_checkpoint"
         })}
@@ -4029,7 +5099,8 @@ function digestExpansionSql(
     WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(
       snapshot,
       plan,
-      Prisma.sql`chunk."id" IN (${valuesSql(ids)})`
+      Prisma.sql`chunk."id" IN (${valuesSql(ids)})`,
+      true
     )})
     SELECT eligible."itemId", eligible."itemType",
       digest."safeDigestText" AS "safeText",
@@ -4049,14 +5120,14 @@ function digestExpansionSql(
   `;
 }
 
-function aggregationSessionScore(candidates: readonly MemoryRankedCandidate[]): number {
+function sessionEvidenceScore(candidates: readonly MemoryRankedCandidate[]): number {
   const top = candidates.slice(0, 3).map(({ finalScore }) => finalScore);
   const best = Math.max(...top);
   const average = top.reduce((sum, value) => sum + value, 0) / top.length;
   return Math.min(1, best + average * 0.1);
 }
 
-function aggregationSessionLaneRanks(
+function sessionEvidenceLaneRanks(
   candidates: readonly MemoryRankedCandidate[]
 ): MemoryRankedCandidate["laneRanks"] {
   const laneRanks: Partial<Record<MemoryRetrievalLane, number>> = {};
@@ -4069,8 +5140,9 @@ function aggregationSessionLaneRanks(
   return laneRanks;
 }
 
-export function selectMemoryAggregationSessionRepresentatives(
-  candidates: readonly MemoryRankedCandidate[]
+function selectMemorySessionRepresentatives(
+  candidates: readonly MemoryRankedCandidate[],
+  limit: number
 ): readonly MemoryRankedCandidate[] {
   type SourceGroup = Readonly<{
     candidates: readonly MemoryRankedCandidate[];
@@ -4091,24 +5163,47 @@ export function selectMemoryAggregationSessionRepresentatives(
   });
   return ([...groups.values()] as SourceGroup[])
     .sort((left, right) =>
-      aggregationSessionScore(right.candidates) -
-        aggregationSessionScore(left.candidates) ||
+      sessionEvidenceScore(right.candidates) -
+        sessionEvidenceScore(left.candidates) ||
       left.firstIndex - right.firstIndex ||
       left.sourceChatId.localeCompare(right.sourceChatId))
-    .slice(0, MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS)
+    .slice(0, limit)
     .map((group) => {
       const representative = group.candidates[0]!;
-      const laneRanks = aggregationSessionLaneRanks(group.candidates);
+      const laneRanks = sessionEvidenceLaneRanks(group.candidates);
       return {
         ...representative,
         featureSnapshot: {
           ...representative.featureSnapshot,
           laneCount: Object.keys(laneRanks).length
         },
-        finalScore: aggregationSessionScore(group.candidates),
+        finalScore: sessionEvidenceScore(group.candidates),
         laneRanks
       };
     });
+}
+
+export function selectMemoryAggregationSessionRepresentatives(
+  candidates: readonly MemoryRankedCandidate[]
+): readonly MemoryRankedCandidate[] {
+  return selectMemorySessionRepresentatives(
+    candidates,
+    MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS
+  );
+}
+
+/**
+ * Selects a small source-session frontier after semantic ordering. The later
+ * completion query may add exact user-authored episodes from those sessions
+ * but cannot introduce an unrelated source.
+ */
+export function selectMemoryTargetedSessionRepresentatives(
+  candidates: readonly MemoryRankedCandidate[]
+): readonly MemoryRankedCandidate[] {
+  return selectMemorySessionRepresentatives(
+    candidates,
+    MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS
+  );
 }
 
 function aggregationDigestCandidatesSql(
@@ -4120,7 +5215,8 @@ function aggregationDigestCandidatesSql(
     WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(
       snapshot,
       plan,
-      Prisma.sql`digest."chatId" IN (${valuesSql(sourceChatIds)})`
+      Prisma.sql`digest."chatId" IN (${valuesSql(sourceChatIds)})`,
+      true
     )})
     SELECT ${candidateColumns(Prisma.sql`0.0::double precision`)}
     FROM eligible
@@ -4142,10 +5238,21 @@ function aggregationSessionRoundCompletionSql(
   sourceChatIds: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyRoundEligibleSelect(
+    WITH ${boundedMemorySearchEntryCandidatesSql(
+      snapshot,
+      Prisma.sql`${memoryRoundSearchEntryItemTypePredicate(snapshot)}
+        AND EXISTS (
+          SELECT 1 FROM "MemoryRecallRound" AS candidate_round
+          WHERE candidate_round."userId" = entry."userId"
+            AND candidate_round."id" = entry."recallRoundId"
+            AND candidate_round."chatId" IN (${valuesSql(sourceChatIds)})
+        )`
+    )},
+    eligible AS MATERIALIZED (${historyRoundEligibleSelect(
       snapshot,
       plan,
-      Prisma.sql`source_chat."id" IN (${valuesSql(sourceChatIds)})`
+      Prisma.sql`TRUE`,
+      "BOUNDED_CANDIDATES"
     )}),
     eligible_rounds AS MATERIALIZED (
       SELECT DISTINCT eligible."itemId", eligible."sourceChatId"
@@ -4175,30 +5282,143 @@ function aggregationSessionRoundCompletionSql(
         AND memory_round."chatId" = eligible_rounds."sourceChatId"
     )
     SELECT "itemId", "parentChunkId", "sourceChatId", "sourceFolderId",
-      "sourceAssistantId", "evidenceRootHash", "languageCode", "occurredFrom",
-      "occurredTo", "roundOrdinal", "safetyClass"
+      "sourceAssistantId", "evidenceRootHash", "languageCode",
+      NULL::text AS "matchedSegmentId", NULL::text AS "matchedSegmentPosition",
+      "occurredFrom", "occurredTo", "roundOrdinal", "safetyClass"
     FROM ranked_rounds
     WHERE "sourceOrdinal" <= ${MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT}
     ORDER BY "sourceChatId", "roundOrdinal", "itemId"
   `;
 }
 
-export type MemoryAggregationSessionCompletion = Readonly<{
+/**
+ * Expands only already selected targeted source sessions into a bounded
+ * chronological floor of exact user-authored episodes. Segment/message joins
+ * are rechecked against the canonical round source map so role metadata cannot
+ * turn assistant text into user testimony. The later expansion query repeats
+ * the full authority rejoin before any text reaches the reranker or reader.
+ */
+function targetedSessionUserCompletionSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  sourceChatIds: readonly string[]
+): Prisma.Sql {
+  return Prisma.sql`
+    WITH ${boundedMemorySearchEntryCandidatesSql(
+      snapshot,
+      Prisma.sql`entry."itemType" =
+          'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+        AND EXISTS (
+          SELECT 1 FROM "MemoryRecallRound" AS candidate_round
+          WHERE candidate_round."userId" = entry."userId"
+            AND candidate_round."id" = entry."recallRoundId"
+            AND candidate_round."chatId" IN (${valuesSql(sourceChatIds)})
+        )`
+    )},
+    eligible AS MATERIALIZED (${historySegmentRoundEligibleSelect(
+      snapshot,
+      plan,
+      Prisma.sql`TRUE`,
+      "BOUNDED_CANDIDATES"
+    )}),
+    user_round_segments AS MATERIALIZED (
+      SELECT DISTINCT ON (eligible."itemId")
+        memory_round."id" AS "itemId",
+        memory_round."parentChunkId",
+        memory_round."chatId" AS "sourceChatId",
+        memory_round."sourceFolderId",
+        memory_round."sourceAssistantId",
+        memory_round."evidenceRootHash",
+        segment."languageCode",
+        segment."id" AS "matchedSegmentId",
+        segment."position" AS "matchedSegmentPosition",
+        segment."occurredFrom",
+        segment."occurredTo",
+        memory_round."roundOrdinal",
+        segment."safetyClass"::text AS "safetyClass"
+      FROM eligible
+      INNER JOIN "MemoryRecallRoundSegment" AS segment
+        ON segment."userId" = ${snapshot.userId}
+        AND segment."roundId" = eligible."itemId"
+        AND segment."id" = eligible."matchedSegmentId"
+      INNER JOIN "MemoryRecallRound" AS memory_round
+        ON memory_round."userId" = segment."userId"
+        AND memory_round."id" = segment."roundId"
+        AND memory_round."chatId" = eligible."sourceChatId"
+      WHERE eligible."sourceChatId" IN (${valuesSql(sourceChatIds)})
+        AND EXISTS (
+          SELECT 1
+          FROM "MemoryRecallRoundSegmentMessage" AS segment_message
+          INNER JOIN "MemoryRecallRoundMessage" AS round_message
+            ON round_message."userId" = segment_message."userId"
+            AND round_message."chatId" = segment_message."chatId"
+            AND round_message."roundId" = segment_message."roundId"
+            AND round_message."messageId" = segment_message."messageId"
+            AND round_message."ordinal" = segment_message."ordinal"
+            AND round_message."role" = segment_message."role"
+            AND round_message."safeTextHash" = segment_message."safeTextHash"
+            AND round_message."sourceMessageContentHash" =
+              segment_message."sourceMessageContentHash"
+            AND round_message."sourceMessageUpdatedAt" =
+              segment_message."sourceMessageUpdatedAt"
+          WHERE segment_message."userId" = ${snapshot.userId}
+            AND segment_message."chatId" = memory_round."chatId"
+            AND segment_message."roundId" = memory_round."id"
+            AND segment_message."segmentId" = segment."id"
+            AND segment_message."role" = 'user'
+            AND segment_message."sourceStartOffset" >=
+              round_message."sourceStartOffset"
+            AND segment_message."sourceEndOffset" <=
+              round_message."sourceEndOffset"
+            AND segment_message."sourceEndOffset" >
+              segment_message."sourceStartOffset"
+            AND segment_message."segmentEndOffset" >
+              segment_message."segmentStartOffset"
+        )
+      ORDER BY eligible."itemId", segment."segmentOrdinal", segment."id"
+    ),
+    ranked_user_rounds AS (
+      SELECT user_round_segments.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY user_round_segments."sourceChatId"
+          ORDER BY user_round_segments."roundOrdinal",
+            user_round_segments."itemId"
+        ) AS "sourceOrdinal"
+      FROM user_round_segments
+    )
+    SELECT "itemId", "parentChunkId", "sourceChatId", "sourceFolderId",
+      "sourceAssistantId", "evidenceRootHash", "languageCode",
+      "matchedSegmentId", "matchedSegmentPosition", "occurredFrom",
+      "occurredTo", "roundOrdinal", "safetyClass"
+    FROM ranked_user_rounds
+    WHERE "sourceOrdinal" <= ${MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT}
+    ORDER BY "sourceChatId", "roundOrdinal", "itemId"
+  `;
+}
+
+export type MemorySessionEvidenceCompletion = Readonly<{
   candidates: readonly MemoryRankedCandidate[];
   sourceChatCount: number;
 }>;
 
-function decodeMemoryAggregationSessionCompletion(
-  rows: readonly AggregationSessionRoundRow[],
-  selectedSources: readonly MemoryRankedCandidate[]
-): MemoryAggregationSessionCompletion {
+function decodeMemorySessionEvidenceCompletion(
+  rows: readonly SessionCompletionRow[],
+  selectedSources: readonly MemoryRankedCandidate[],
+  aggregationRequested: boolean
+): MemorySessionEvidenceCompletion {
+  const sourceLimit = aggregationRequested
+    ? MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS
+    : MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS;
+  const perSourceLimit = aggregationRequested
+    ? MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT
+    : MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT;
   const selectedBySource = new Map<string, MemoryRankedCandidate>();
   for (const selected of selectedSources) {
     if (selected.itemType === "FACT_VERSION") continue;
     const sourceChatId = selected.metadata.sourceChatId;
     if (!sourceChatId || selectedBySource.has(sourceChatId)) continue;
     selectedBySource.set(sourceChatId, selected);
-    if (selectedBySource.size >= MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS) break;
+    if (selectedBySource.size >= sourceLimit) break;
   }
   const sourceOrder = new Map([...selectedBySource.keys()].map((sourceChatId, index) =>
     [sourceChatId, index]));
@@ -4211,6 +5431,8 @@ function decodeMemoryAggregationSessionCompletion(
   for (const row of rows) {
     const selected = selectedBySource.get(row.sourceChatId);
     const sourceCount = countsBySource.get(row.sourceChatId) ?? 0;
+    const hasSegment = row.matchedSegmentId !== null ||
+      row.matchedSegmentPosition !== null;
     if (
       !selected || !validToken(row.itemId) || !validToken(row.parentChunkId) ||
       !validToken(row.sourceChatId) ||
@@ -4223,12 +5445,20 @@ function decodeMemoryAggregationSessionCompletion(
       !validDate(row.occurredFrom) || !validDate(row.occurredTo) ||
       row.occurredTo < row.occurredFrom ||
       (row.safetyClass !== "NORMAL" && row.safetyClass !== "SENSITIVE") ||
+      (aggregationRequested
+        ? hasSegment
+        : !hasSegment || !validToken(row.matchedSegmentId) ||
+          row.matchedSegmentPosition === null ||
+          !roundSegmentPositions.has(row.matchedSegmentPosition)) ||
       seenItems.has(row.itemId) ||
-      sourceCount >= MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT
-    ) throw new Error("memory_aggregation_session_completion_result_invalid");
+      sourceCount >= perSourceLimit
+    ) throw new Error("memory_session_completion_result_invalid");
     seenItems.add(row.itemId);
     countsBySource.set(row.sourceChatId, sourceCount + 1);
-    const selectionReason = `${selected.selectionReason}+aggregation_session_completion`;
+    const completionReason = aggregationRequested
+      ? "aggregation_session_completion"
+      : "targeted_session_completion_user_evidence";
+    const selectionReason = `${selected.selectionReason}+${completionReason}`;
     decoded.push({
       candidate: {
         ...selected,
@@ -4238,10 +5468,12 @@ function decodeMemoryAggregationSessionCompletion(
           deterministicMatches: [],
           directFactAuthority: false
         },
+        ...(aggregationRequested ? {} : { historyEvidenceView: "USER_TESTIMONY" as const }),
         itemId: row.itemId,
         itemType: "RECALL_ROUND",
-        matchedSegmentId: null,
-        matchedSegmentPosition: null,
+        matchedSegmentId: row.matchedSegmentId,
+        matchedSegmentPosition: row.matchedSegmentPosition as
+          MemoryRankedCandidate["matchedSegmentPosition"],
         metadata: {
           ...selected.metadata,
           dedupeKey: `history:${row.evidenceRootHash}`,
@@ -4258,7 +5490,7 @@ function decodeMemoryAggregationSessionCompletion(
         },
         selectionReason: selectionReason.length <= 128
           ? selectionReason
-          : "aggregation_session_completion"
+          : completionReason
       },
       roundOrdinal: row.roundOrdinal
     });
@@ -4530,6 +5762,7 @@ function emptyResult(
     core,
     digestEvidence: emptyDigestEvidence,
     laneResults: [],
+    lexicalEvidence: [],
     lexicalFailures: [],
     lexicalState: "DISABLED",
     snapshot,
@@ -4547,19 +5780,31 @@ function validRankedSegmentIdentity(candidate: MemoryRankedCandidate): boolean {
     roundSegmentPositions.has(position);
 }
 
+function validRankedHistoryEvidenceView(candidate: MemoryRankedCandidate): boolean {
+  if (candidate.historyEvidenceView === undefined) return true;
+  return candidate.historyEvidenceView === "USER_TESTIMONY" &&
+    candidate.itemType === "RECALL_ROUND" && Boolean(candidate.matchedSegmentId);
+}
+
 function partitionRoundExpansionCandidates(
   candidates: readonly MemoryRankedCandidate[]
 ): Readonly<{
   legacyIds: readonly string[];
   segments: readonly RoundSegmentSelection[];
+  userSegments: readonly RoundSegmentSelection[];
 }> {
   const rounds = candidates.filter((candidate) => candidate.itemType === "RECALL_ROUND");
   return {
     legacyIds: rounds.flatMap((candidate) =>
       candidate.matchedSegmentId ? [] : [candidate.itemId]),
-    segments: rounds.flatMap((candidate) => candidate.matchedSegmentId
+    segments: rounds.flatMap((candidate) =>
+      candidate.matchedSegmentId && candidate.historyEvidenceView === undefined
       ? [{ itemId: candidate.itemId, segmentId: candidate.matchedSegmentId }]
-      : [])
+      : []),
+    userSegments: rounds.flatMap((candidate) =>
+      candidate.matchedSegmentId && candidate.historyEvidenceView === "USER_TESTIMONY"
+        ? [{ itemId: candidate.itemId, segmentId: candidate.matchedSegmentId }]
+        : [])
   };
 }
 
@@ -4603,8 +5848,58 @@ async function settleMemoryLocalRead<T>(
   }
 }
 
-export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient = prisma) {
-  const issuedSnapshots = new WeakSet<MemoryLocalRetrievalSnapshot>();
+export type PrismaLocalMemoryRetrievalRepositoryDependencies = Readonly<{
+  lexicalCandidateProviderForLane?: MemoryLexicalProviderForLane;
+  lexicalShadowRuntime?: MemoryLexicalShadowRuntime | null;
+}>;
+
+export function createPrismaLocalMemoryRetrievalRepository(
+  client: PrismaClient = prisma,
+  dependencies: PrismaLocalMemoryRetrievalRepositoryDependencies = {}
+) {
+  const defaultLexicalRuntime = dependencies.lexicalCandidateProviderForLane
+    ? null
+    : defaultMemoryLexicalCutoverRuntime(client);
+  const providerForLane: MemoryLexicalProviderForLane =
+    dependencies.lexicalCandidateProviderForLane ??
+    defaultLexicalRuntime!.providerForLane;
+  const lexicalShadowRuntime = dependencies.lexicalShadowRuntime === undefined
+    ? defaultMemoryLexicalShadowRuntime(client)
+    : dependencies.lexicalShadowRuntime;
+  type IssuedSnapshotMetadata = Readonly<{ authorityFingerprint: string }>;
+  const issuedSnapshots = new WeakMap<
+    MemoryLocalRetrievalSnapshot,
+    IssuedSnapshotMetadata
+  >();
+  const issueSnapshot = (
+    snapshot: MemoryLocalRetrievalSnapshot
+  ): MemoryLocalRetrievalSnapshot => {
+    const authorityFingerprint = snapshotAuthorityFingerprint(snapshot);
+    const frozen = Object.freeze(snapshot);
+    issuedSnapshots.set(frozen, Object.freeze({ authorityFingerprint }));
+    memoryLexicalReadinessScopes.set(frozen, Object.freeze({}));
+    return frozen;
+  };
+  const reusableSnapshot = (
+    snapshot: MemoryLocalRetrievalSnapshot,
+    input: MemoryLocalRetrievalInput
+  ): boolean => {
+    const issued = issuedSnapshots.get(snapshot);
+    if (!issued) return false;
+    try {
+      return issued.authorityFingerprint === snapshotAuthorityFingerprint(snapshot) &&
+        snapshot.userId === input.userId && snapshot.chatId === input.chatId &&
+        snapshot.assistantId === input.assistantId;
+    } catch {
+      return false;
+    }
+  };
+  const canonicalRead = <Row>(sql: Prisma.Sql): Promise<Row[]> =>
+    withMemoryReadBudget(
+      client,
+      MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
+      (tx) => tx.$queryRaw<Row[]>(sql)
+    );
   const repository = {
     async expand(
       snapshot: MemoryLocalRetrievalSnapshot,
@@ -4618,7 +5913,8 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES) ||
         new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
           candidates.length || candidates.some((candidate) =>
-          !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate))
+          !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate) ||
+          !validRankedHistoryEvidenceView(candidate))
       ) throw new Error("memory_expansion_contract_invalid");
       const factIds = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION")
         .map((candidate) => candidate.itemId);
@@ -4633,23 +5929,24 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const roundSelections = partitionRoundExpansionCandidates(candidates);
       if ((chunkIds.length > 0 || toolEventIds.length > 0 ||
         roundSelections.legacyIds.length > 0 ||
-        roundSelections.segments.length > 0) &&
+        roundSelections.segments.length > 0 || roundSelections.userSegments.length > 0) &&
         (!snapshot.activeGenerationId || !snapshot.indexMode)) {
         throw new Error("memory_expansion_contract_invalid");
       }
+      if (candidates.length === 0) return [];
       const queries: Promise<ExpandedRow[]>[] = [];
-      if (factIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+      if (factIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         currentFactExpansionSql(snapshot, plan, factIds)));
-      if (digestChunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+      if (digestChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         digestExpansionSql(snapshot, plan, digestChunkIds)));
-      if (rawChunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+      if (rawChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         plan.mode === "HISTORY_OVERVIEW"
           ? digestExpansionSql(snapshot, plan, rawChunkIds)
           : chunkExpansionSql(snapshot, plan, rawChunkIds)));
-      if (toolEventIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+      if (toolEventIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         toolEventExpansionSql(snapshot, plan, toolEventIds)));
       if (roundSelections.legacyIds.length > 0) {
-        queries.push(client.$queryRaw<ExpandedRow[]>(rawRoundExpansionSql(
+        queries.push(canonicalRead<ExpandedRow>(rawRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.legacyIds
@@ -4659,11 +5956,22 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         }))));
       }
       if (roundSelections.segments.length > 0) {
-        queries.push(client.$queryRaw<ExpandedRow[]>(segmentRoundExpansionSql(
+        queries.push(canonicalRead<ExpandedRow>(segmentRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.segments
         )));
+      }
+      if (roundSelections.userSegments.length > 0) {
+        queries.push(canonicalRead<UserSegmentExpandedRow>(segmentRoundExpansionSql(
+          snapshot,
+          plan,
+          roundSelections.userSegments,
+          "USER_TESTIMONY"
+        )).then((rows) => rows.flatMap((row) => {
+          const projected = projectUserTestimonyExpandedRow(row);
+          return projected ? [projected] : [];
+        })));
       }
       return orderedExpandedCandidates(candidates, (await Promise.all(queries)).flat());
     },
@@ -4679,7 +5987,8 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         candidates.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
         new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
           candidates.length || candidates.some((candidate) =>
-          !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate))
+          !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate) ||
+          candidate.historyEvidenceView !== undefined)
       ) throw new Error("memory_aggregation_navigation_contract_invalid");
       const factIds = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION")
         .map((candidate) => candidate.itemId);
@@ -4690,19 +5999,20 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const roundSelections = partitionRoundExpansionCandidates(candidates);
       if ((chunkIds.length > 0 || toolEventIds.length > 0 ||
         roundSelections.legacyIds.length > 0 ||
-        roundSelections.segments.length > 0) &&
+        roundSelections.segments.length > 0 || roundSelections.userSegments.length > 0) &&
         (!snapshot.activeGenerationId || !snapshot.indexMode)) {
         throw new Error("memory_aggregation_navigation_contract_invalid");
       }
+      if (candidates.length === 0) return [];
       const initialQueries: Promise<ExpandedRow[]>[] = [];
-      if (factIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+      if (factIds.length > 0) initialQueries.push(canonicalRead<ExpandedRow>(
         currentFactExpansionSql(snapshot, plan, factIds)));
-      if (chunkIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+      if (chunkIds.length > 0) initialQueries.push(canonicalRead<ExpandedRow>(
         digestExpansionSql(snapshot, plan, chunkIds)));
-      if (toolEventIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+      if (toolEventIds.length > 0) initialQueries.push(canonicalRead<ExpandedRow>(
         toolEventExpansionSql(snapshot, plan, toolEventIds)));
       if (roundSelections.legacyIds.length > 0) {
-        initialQueries.push(client.$queryRaw<ExpandedRow[]>(rawRoundExpansionSql(
+        initialQueries.push(canonicalRead<ExpandedRow>(rawRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.legacyIds
@@ -4712,11 +6022,14 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         }))));
       }
       if (roundSelections.segments.length > 0) {
-        initialQueries.push(client.$queryRaw<ExpandedRow[]>(segmentRoundExpansionSql(
+        initialQueries.push(canonicalRead<ExpandedRow>(segmentRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.segments
         )));
+      }
+      if (roundSelections.userSegments.length > 0) {
+        throw new Error("memory_aggregation_navigation_contract_invalid");
       }
       const initialRows = (await Promise.all(initialQueries)).flat();
       const digestChunkIds = new Set(initialRows.flatMap((row) =>
@@ -4726,7 +6039,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const rawFallbackIds = chunkIds.filter((itemId) => !digestChunkIds.has(itemId));
       const rawFallbackRows = rawFallbackIds.length === 0
         ? []
-        : await client.$queryRaw<ExpandedRow[]>(
+        : await canonicalRead<ExpandedRow>(
             chunkExpansionSql(snapshot, plan, rawFallbackIds));
       return orderedExpandedCandidates(candidates, [...initialRows, ...rawFallbackRows]);
     },
@@ -4748,7 +6061,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const representatives = selectMemoryAggregationSessionRepresentatives(candidates);
       if (representatives.length === 0) return facts;
       const sourceChatIds = representatives.map(({ metadata }) => metadata.sourceChatId!);
-      const rows = await client.$queryRaw<CandidateRow[]>(
+      const rows = await canonicalRead<CandidateRow>(
         aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds)
       );
       const bySource = new Map<string, MemoryLaneCandidate>();
@@ -4773,44 +6086,54 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       return [...facts, ...history];
     },
 
-    async completeAggregationSessionEvidence(
+    async completeSessionEvidence(
       snapshot: MemoryLocalRetrievalSnapshot,
       plan: MemoryRetrievalPlan,
       selectedSources: readonly MemoryRankedCandidate[]
-    ): Promise<MemoryAggregationSessionCompletion> {
+    ): Promise<MemorySessionEvidenceCompletion> {
+      const candidateLimit = plan.aggregationRequested
+        ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
+        : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES;
+      const sourceLimit = plan.aggregationRequested
+        ? MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS
+        : MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS;
+      const perSourceLimit = plan.aggregationRequested
+        ? MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT
+        : MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT;
       if (
         snapshot.status !== "READY" ||
-        !plan.aggregationRequested || plan.mode !== "PAST_CHAT_SEARCH" ||
-        selectedSources.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+        plan.mode !== "PAST_CHAT_SEARCH" || selectedSources.length > candidateLimit ||
         new Set(selectedSources.map((candidate) =>
           `${candidate.itemType}:${candidate.itemId}`)).size !== selectedSources.length ||
         selectedSources.some((candidate) => !validToken(candidate.itemId))
-      ) throw new Error("memory_aggregation_session_completion_contract_invalid");
+      ) throw new Error("memory_session_completion_contract_invalid");
       const sourceChatIds = [...new Set(selectedSources.flatMap((candidate) =>
         candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
-          ? [candidate.metadata.sourceChatId]
-          : []))].slice(0, MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS);
+          ? [candidate.metadata.sourceChatId] : []))].slice(0, sourceLimit);
       if (sourceChatIds.length === 0) return Object.freeze({
         candidates: Object.freeze([]),
         sourceChatCount: 0
       });
       if (sourceChatIds.some((sourceChatId) => !validToken(sourceChatId))) {
-        throw new Error("memory_aggregation_session_completion_contract_invalid");
+        throw new Error("memory_session_completion_contract_invalid");
       }
-      const rows = await client.$queryRaw<AggregationSessionRoundRow[]>(
-        aggregationSessionRoundCompletionSql(snapshot, plan, sourceChatIds)
+      const rows = await canonicalRead<SessionCompletionRow>(
+        plan.aggregationRequested
+          ? aggregationSessionRoundCompletionSql(snapshot, plan, sourceChatIds)
+          : targetedSessionUserCompletionSql(snapshot, plan, sourceChatIds)
       );
-      if (rows.length > sourceChatIds.length *
-        MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT) {
-        throw new Error("memory_aggregation_session_completion_result_invalid");
+      if (rows.length > sourceChatIds.length * perSourceLimit) {
+        throw new Error("memory_session_completion_result_invalid");
       }
-      return decodeMemoryAggregationSessionCompletion(rows, selectedSources);
+      return decodeMemorySessionEvidenceCompletion(
+        rows,
+        selectedSources,
+        plan.aggregationRequested
+      );
     },
 
     async snapshot(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalSnapshot> {
-      const snapshot = await loadSnapshot(client, input);
-      issuedSnapshots.add(snapshot);
-      return snapshot;
+      return issueSnapshot(await loadSnapshot(client, input));
     },
 
     async retrieve(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalResult> {
@@ -4819,21 +6142,24 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (denseOnly && (!input.vector || input.baselinePlan)) {
         throw new Error("memory_dense_retrieval_contract_invalid");
       }
-      const snapshot = input.sourceSnapshot ?? await loadSnapshot(client, input);
+      const snapshot = input.sourceSnapshot ?? issueSnapshot(await loadSnapshot(client, input));
       if (input.sourceSnapshot) {
-        if (!issuedSnapshots.has(snapshot) || snapshot.userId !== input.userId ||
-          snapshot.chatId !== input.chatId || snapshot.assistantId !== input.assistantId ||
-          snapshot.repositoryVersion !== MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION) {
+        if (!reusableSnapshot(snapshot, input)) {
           throw new Error("memory_retrieval_source_snapshot_invalid");
         }
-      } else {
-        issuedSnapshots.add(snapshot);
       }
       if (input.baselinePlan &&
         !validBaselinePlan(input.baselinePlan, input.plan, snapshot)) {
         throw new Error("memory_retrieval_baseline_plan_invalid");
       }
       if (snapshot.status !== "READY") return emptyResult(snapshot);
+      if (!denseOnly && input.plan.queryPresent) {
+        await prepareMemoryLexicalProviderReadiness({
+          plan: input.plan,
+          providerForLane,
+          snapshot
+        });
+      }
       const core = !denseOnly && input.plan.applyResponsePreferences
         ? await settleMemoryLocalRead(
             input.settleSignal,
@@ -4845,6 +6171,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         return emptyResult(snapshot, core, input.vector ? "DISABLED" : "NOT_CONFIGURED");
       }
       const tasks: Array<Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number]> = [];
+      const lexicalEvidence: MemoryLexicalLaneEvidence[] = [];
       const vectorEvidence: MemoryVectorLaneEvidence[] = [];
       const lexicalExecutions: Array<ReturnType<typeof pushLexicalTasks>> = [];
       const vectorExecutions: Array<ReturnType<typeof pushVectorTasks>> = [];
@@ -4868,6 +6195,8 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
             snapshot,
             separateBaseline,
             baselineAllocation,
+            lexicalEvidence,
+            providerForLane,
             "BASELINE"
           );
           lexicalExecutions.push(baselineLexicalExecution);
@@ -4898,6 +6227,8 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
             snapshot,
             input.plan,
             enrichedAllocation,
+            lexicalEvidence,
+            providerForLane,
             "ENRICHED"
           );
           lexicalExecutions.push(enrichedLexicalExecution);
@@ -4941,7 +6272,11 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       ];
       const runnableDeferredTasks = deferredStages.flatMap(({ execution, laneResults }) =>
         execution.deferredTasks.filter((task) =>
-          shouldRunMemoryTrigramFallback(task.lane, laneResults)));
+          shouldRunMemoryNgramFallback(
+            task.lane,
+            laneResults,
+            execution.completePrimaryLanes()
+          )));
       const deferredResults = runnableDeferredTasks.length > 0
         ? await executeMemoryRetrievalLaneTasks(
             runnableDeferredTasks,
@@ -4972,6 +6307,30 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         enrichedLexicalExecution,
         enrichedLaneResults
       );
+      if (separateBaseline && baselineLexicalExecution) {
+        scheduleMemoryLexicalShadowStage({
+          client,
+          plan: separateBaseline,
+          postgresEvidence: baselineLexicalExecution.evidence(),
+          referenceResults: baselineLaneResults,
+          runtime: lexicalShadowRuntime,
+          snapshot,
+          specs: baselineLexicalExecution.shadowSpecs,
+          stage: "BASELINE"
+        });
+      }
+      if (enrichedLexicalExecution) {
+        scheduleMemoryLexicalShadowStage({
+          client,
+          plan: input.plan,
+          postgresEvidence: enrichedLexicalExecution.evidence(),
+          referenceResults: enrichedLaneResults,
+          runtime: lexicalShadowRuntime,
+          snapshot,
+          specs: enrichedLexicalExecution.shadowSpecs,
+          stage: "ENRICHED"
+        });
+      }
       const stageLexicalStates: MemoryLocalRetrievalResult["lexicalState"][] = [];
       const stageVectorStates: MemoryLocalRetrievalResult["vectorState"][] = [];
       const stageLexicalFailures: MemoryRetrievalLane[] = [];
@@ -4979,7 +6338,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         const baselineStage = await executeDigestIntraChatStage({
           client,
           laneResults: baselineLaneResults,
+          lexicalEvidence,
+          providerForLane,
           retrievalInput: { ...input, plan: separateBaseline },
+          shadowRuntime: lexicalShadowRuntime,
           settleSignal: input.settleSignal,
           snapshot,
           vectorEvidence
@@ -4994,7 +6356,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const enrichedStage = await executeDigestIntraChatStage({
         client,
         laneResults: enrichedLaneResults,
+        lexicalEvidence,
+        providerForLane,
         retrievalInput: input,
+        shadowRuntime: lexicalShadowRuntime,
         settleSignal: input.settleSignal,
         snapshot,
         vectorEvidence
@@ -5050,6 +6415,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         core,
         digestEvidence: enrichedStage.digestEvidence,
         laneResults: suppressDigestCandidatesWithRawEvidence(sourceFamily.laneResults),
+        lexicalEvidence: orderedLexicalEvidence(lexicalEvidence),
         lexicalFailures,
         lexicalState,
         snapshot,

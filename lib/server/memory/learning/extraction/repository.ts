@@ -41,6 +41,7 @@ import {
   MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
+  memoryFactExtractionIdentityProfile,
   memoryFactEvidenceFingerprint,
   memoryFactExtractionInputHash,
   memoryFactExtractionOutputHash,
@@ -715,6 +716,12 @@ async function prepareWith(
       decision: { errorCode: "memory_fact_job_invalid", status: "CANCELLED" }
     };
   }
+  const identityProfile = memoryFactExtractionIdentityProfile(job);
+  if (identityProfile === null) {
+    return {
+      decision: { errorCode: "memory_fact_job_invalid", status: "CANCELLED" }
+    };
+  }
   const source = await loadBoundSource(tx, job);
   if (!source) return { decision: staleDecision };
   const context = await loadBoundContext(tx, job, source);
@@ -800,6 +807,7 @@ async function prepareWith(
   const withoutInputHash: Omit<MemoryFactExtractionInput, "inputHash"> = {
     contextRefs,
     folderId: source.chat.folderId,
+    identityProfile,
     messages: selected,
     source: sourceIdentity,
     sourceProjectionHash,
@@ -822,22 +830,27 @@ async function candidateIsSuppressed(
   candidate: MemoryExtractedCandidate
 ): Promise<boolean> {
   for (const evidence of candidate.evidence) {
-    const matches = await findMatchingMemorySuppressions(
-      tx,
-      keyring,
-      input.source.userId,
-      {
-        canonicalKey: candidate.canonicalKey,
-        category: candidate.category,
-        normalizedValue: candidate.displayText,
-        source: {
-          branchGeneration: input.source.branchGeneration,
-          chatId: input.source.chatId,
-          messageId: evidence.messageId
+    for (const canonicalKey of new Set([
+      candidate.unicodeCanonicalKey,
+      candidate.legacyCanonicalKey
+    ])) {
+      const matches = await findMatchingMemorySuppressions(
+        tx,
+        keyring,
+        input.source.userId,
+        {
+          canonicalKey,
+          category: candidate.category,
+          normalizedValue: candidate.displayText,
+          source: {
+            branchGeneration: input.source.branchGeneration,
+            chatId: input.source.chatId,
+            messageId: evidence.messageId
+          }
         }
-      }
-    );
-    if (matches.length > 0) return true;
+      );
+      if (matches.length > 0) return true;
+    }
   }
   return false;
 }
@@ -896,7 +909,20 @@ function planIsValid(plan: MemoryFactExtractionPlan): boolean {
     ordinals.every((ordinal) => Number.isSafeInteger(ordinal) &&
       ordinal >= 0 && ordinal < MEMORY_FACT_MAX_PACKET_CANDIDATES) &&
     orderedOrdinals.every((ordinal, index) => ordinal === index) &&
-    plan.candidates.every(({ id }) => /^[a-f0-9]{64}$/u.test(id)) &&
+    plan.candidates.every((candidate) =>
+      /^[a-f0-9]{64}$/u.test(candidate.id) &&
+      candidate.identityProfile === plan.input.identityProfile &&
+      candidate.canonicalKey === (
+        plan.input.identityProfile === "LEGACY_V1"
+          ? candidate.legacyCanonicalKey
+          : candidate.unicodeCanonicalKey
+      ) && (
+        candidate.identityProfile === "LEGACY_V1"
+          ? candidate.identityVersion === "proposition-v1" ||
+            candidate.identityVersion === "slot-v2"
+          : candidate.identityVersion === "proposition-v2" ||
+            candidate.identityVersion === "slot-v4"
+      )) &&
     plan.rejections.every(({ reasonCode }) => stagedRejectionCodes.has(reasonCode)) &&
     memoryFactExtractionOutputHash(
       plan.input,

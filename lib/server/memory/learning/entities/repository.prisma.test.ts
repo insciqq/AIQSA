@@ -394,10 +394,13 @@ function candidate(quote: string, entity: MemoryFactCandidateEntity): MemoryExtr
     expirationIntent: "NONE",
     expiresAt: null,
     id: memorySha256({ quote }),
+    identityProfile: "LEGACY_V1",
     identityKind: "PROPOSITION",
     identityVersion: "proposition-v1",
     importance: 0.8,
     languageCode: "en",
+    legacyCanonicalKey: `proposition:v1:${memorySha256(quote)}`,
+    legacyProposedValue: { statement: quote },
     modality: "EVENT",
     negated: false,
     occurredAt: null,
@@ -421,6 +424,8 @@ function candidate(quote: string, entity: MemoryFactCandidateEntity): MemoryExtr
     subjectKey: null,
     temporalNormalization: { kind: "NONE" },
     temporalResolutionEvidence: null,
+    unicodeCanonicalKey: `proposition:v2:${memorySha256(quote)}`,
+    unicodeProposedValue: { statement: quote },
     validFrom: null,
     validTo: null
   };
@@ -436,9 +441,13 @@ function productCandidate(
     dimensionKey: null,
     identityKind: "SLOT",
     identityVersion: "slot-v2",
+    legacyCanonicalKey: "slot:v2:device:fixture:product_status:_",
+    legacyProposedValue: { schema: "product-status-v1", state: "owned" },
     predicateKey: "product_status",
     proposedValue: { schema: "product-status-v1", state: "owned" },
-    subjectKey: "device:fixture"
+    subjectKey: "device:fixture",
+    unicodeCanonicalKey: "slot:v4:device:fixture:product_status:_",
+    unicodeProposedValue: { schema: "product-status-v1", state: "owned" }
   };
 }
 

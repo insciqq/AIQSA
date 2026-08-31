@@ -2753,7 +2753,7 @@ describe("PREPARING run orchestration", () => {
               exactSafeText: history.chunkText,
               finalScore: 0.91,
               itemType: "RECALL_CHUNK",
-              laneRanks: { HISTORY_RECALL_FTS_ENGLISH: 1 },
+              laneRanks: { HISTORY_RECALL_LEXICAL_UNICODE: 1 },
               projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
               recallChunkId: history.chunkId,
               selectionReason: "history_recall_fts_english"
@@ -2917,7 +2917,7 @@ describe("PREPARING run orchestration", () => {
                   exactSafeText: history.chunkText,
                   finalScore: 0.91,
                   itemType: "RECALL_CHUNK" as const,
-                  laneRanks: { HISTORY_RECALL_FTS_ENGLISH: 1 },
+                  laneRanks: { HISTORY_RECALL_LEXICAL_UNICODE: 1 },
                   projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT" as const,
                   recallChunkId: history.chunkId,
                   selectionReason: "history_recall_fts_english"
@@ -3120,7 +3120,7 @@ describe("PREPARING run orchestration", () => {
               exactSafeText: history.chunkText,
               finalScore: 0.91,
               itemType: "RECALL_CHUNK",
-              laneRanks: { HISTORY_RECALL_FTS_ENGLISH: 1 },
+              laneRanks: { HISTORY_RECALL_LEXICAL_UNICODE: 1 },
               projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
               recallChunkId: history.chunkId,
               selectionReason: "history_recall_fts_english"

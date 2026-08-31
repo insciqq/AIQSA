@@ -57,6 +57,7 @@ services:
       ANTHROPIC_API_KEY: ""
       CUSTOM_OPENAI_API_KEY: ""
       DATABASE_URL: postgresql://${AIQSA_RESTORE_POSTGRES_USER:-aiqsa_restore}:${AIQSA_RESTORE_POSTGRES_PASSWORD:?Set a disposable restore database password}@postgres-restore:5432/${AIQSA_RESTORE_POSTGRES_DB:-aiqsa_restore}?schema=public
+      DEEPSEEK_API_KEY: ""
       GEMINI_API_KEY: ""
       GOOGLE_API_KEY: ""
       NEXT_TELEMETRY_DISABLED: "1"

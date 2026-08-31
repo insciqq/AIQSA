@@ -16,6 +16,10 @@ import { memoryPersonalEvidenceRowPredicate } from "../persistence/eligibility";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import {
+  memoryLegacyIdentityIsUnambiguous,
+  registerMemoryIdentityCompatibility
+} from "../learning/identity/compatibility";
+import {
   advanceMemoryMutation,
   lockMemorySettings,
   type LockedMemorySettings,
@@ -497,14 +501,17 @@ async function loadStagedExecution(
 function patternIdentityKey(
   clusterKey: string,
   reasonCode: string,
-  entityIds: readonly string[]
+  entityIds: readonly string[],
+  version: 1 | 2
 ): string {
-  return `prop:v1:${memorySha256({
+  return `prop:v${version}:${memorySha256({
     clusterKey,
-    domain: "aiqsa.memory.pattern-identity",
+    domain: version === 1
+      ? "aiqsa.memory.pattern-identity"
+      : "aiqsa.memory.pattern-identity-v2",
     entityIds: [...entityIds].sort(),
     reasonCode,
-    version: 1
+    version
   })}`;
 }
 
@@ -781,7 +788,32 @@ export function createPrismaMemorySynthesisRepository(
         const proposedCanonicalKey = patternIdentityKey(
           cluster.key,
           pattern.reasonCode,
-          entityIds
+          entityIds,
+          2
+        );
+        const legacyCanonicalKey = patternIdentityKey(
+          cluster.key,
+          pattern.reasonCode,
+          entityIds,
+          1
+        );
+        await registerMemoryIdentityCompatibility(tx, {
+          containerId: scope.id,
+          legacyCanonicalKey,
+          namespace: "FACT",
+          now,
+          unicodeCanonicalKey: proposedCanonicalKey,
+          userId: claim.userId
+        });
+        const legacyIsUnambiguous = await memoryLegacyIdentityIsUnambiguous(
+          tx,
+          {
+            containerId: scope.id,
+            legacyCanonicalKey,
+            namespace: "FACT",
+            unicodeCanonicalKey: proposedCanonicalKey,
+            userId: claim.userId
+          }
         );
         let fact: Readonly<{
           canonicalKey: string;
@@ -795,6 +827,16 @@ export function createPrismaMemorySynthesisRepository(
             userId: claim.userId
           }
         });
+        if (!fact && legacyIsUnambiguous) {
+          fact = await tx.memoryFact.findFirst({
+            select: { canonicalKey: true, currentVersionId: true, id: true },
+            where: {
+              canonicalKey: legacyCanonicalKey,
+              scopeId: scope.id,
+              userId: claim.userId
+            }
+          });
+        }
         if (!fact) {
           const duplicate = await tx.$queryRaw<Array<{
             canonicalKey: string;
@@ -848,7 +890,7 @@ export function createPrismaMemorySynthesisRepository(
               category: "patterns",
               id: factId,
               identityKind: "PROPOSITION",
-              identityVersion: "proposition-v1",
+              identityVersion: "proposition-v2",
               scopeId: scope.id,
               state: "ORPHANED",
               userId: claim.userId

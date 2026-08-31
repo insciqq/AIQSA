@@ -271,9 +271,9 @@ describe("recall round projection", () => {
     expect(normalizeMemoryLanguageCode("sr-cyrl")).toBe("sr-Cyrl");
     expect(normalizeMemoryLanguageCode("mul")).toBe("mixed");
     expect(normalizeMemoryLanguageCode("not_a_language")).toBeNull();
-    expect(memoryQualificationLanguageBucket("es")).toBe("other");
-    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("other");
-    expect(memoryQualificationLanguageBucket("en-GB")).toBe("en");
+    expect(memoryQualificationLanguageBucket("es")).toBe("declared");
+    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("declared");
+    expect(memoryQualificationLanguageBucket("en-GB")).toBe("declared");
   });
 
   it("batches opaque contextual requests and rejects reordered provider handles", () => {

@@ -36,6 +36,7 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import type { MemoryExecutionOwner } from "../execution/owner";
 import { memorySha256 } from "../persistence/lexical";
 import {
+  MEMORY_EMBEDDING_PROFILE,
   MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
   renderMemoryQueryEmbeddingText
 } from "../embedding/contract";
@@ -69,7 +70,7 @@ import {
 } from "../../admin/providers/approvedRerankers";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
-  "memory-query-embedding-v8";
+  "memory-query-embedding-v11";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v30";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 1;
@@ -98,8 +99,8 @@ export const MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS =
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
-  policyVersion: "memory-query-embedding-policy-v8",
-  promptVersion: "memory-query-instruction-v2",
+  policyVersion: "memory-query-embedding-policy-v11",
+  promptVersion: MEMORY_EMBEDDING_PROFILE.queryInstructionVersion,
   // This field binds the generated vector to the active index space. Request
   // count/retry policy is already frozen by pipelineVersion/policyVersion and
   // must not replace the vector retrieval fingerprint.
@@ -816,8 +817,6 @@ function embeddingSnapshotMatchesProfile(
     embedding?.targetDimension === profile.dimension &&
     provider.connectionId === profile.connectionId &&
     provider.providerModelId === profile.providerModelId &&
-    snapshot.compatibilityRequirement.configFingerprint ===
-      profile.configurationFingerprint &&
     snapshot.compatibilityRequirement.vectorSpaceFingerprint ===
       profile.vectorSpaceFingerprint &&
     snapshot.compatibilityRequirement.retrievalConfigFingerprint ===
@@ -1463,6 +1462,7 @@ async function runQueryEmbeddingAttempt(
       // The Memory instruction is part of the versioned Memory profile.
       // Use document mode so a mutable provider-level query template
       // cannot prepend a second, domain-inappropriate instruction.
+      latencyClass: "interactive",
       mode: "document",
       signal: attempt.signal,
       texts: [renderedQuery]

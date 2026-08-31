@@ -249,6 +249,12 @@ export type MemoryRankedCandidate = Readonly<{
   entryId: string | null;
   featureSnapshot: MemoryRetrievalFeatureSnapshot;
   finalScore: number;
+  /**
+   * A bounded authoritative view requested only after a source session has
+   * already been selected. Ordinary retrieval keeps the complete projection;
+   * USER_TESTIMONY retains exact user-authored spans for episodic expansion.
+   */
+  historyEvidenceView?: "USER_TESTIMONY";
   itemId: string;
   itemType: MemoryRetrievalItemType;
   laneRanks: Readonly<Partial<Record<MemoryRetrievalLane, number>>>;
@@ -361,7 +367,7 @@ export type MemoryPackedItem = Readonly<{
   sourceChatId: string | null;
   sourceSessionHandle: string | null;
   speakerScope: MemoryPackedSpeakerScope;
-  status: MemoryPackedStatus;
+  recordStatus: MemoryPackedStatus;
   supportingEvidence?: readonly Readonly<{
     documentTime: string;
     itemId: string;

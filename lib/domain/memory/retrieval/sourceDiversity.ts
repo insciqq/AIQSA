@@ -62,3 +62,54 @@ export function orderMemoryCandidatesWithSoftSourceDiversity<T>(
     ? candidate
     : ordered[sourceIndex++]!);
 }
+
+/**
+ * Traverses each relevance-ranked source as a bounded neighborhood: its first
+ * primary hit, then one linked evidence child, before the remaining global
+ * tail. Null-source candidates keep their original slots. This makes a source
+ * expansion reachable under a token budget without promoting every child or
+ * allowing one prolific source to occupy the whole prefix.
+ */
+export function orderMemoryCandidatesWithLinkedEvidenceCoverage<T>(
+  candidates: readonly T[],
+  sourceChatId: (candidate: T) => string | null,
+  linkedEvidence: (candidate: T) => boolean
+): readonly T[] {
+  type Entry = Readonly<{
+    candidate: T;
+    index: number;
+    linked: boolean;
+    source: string;
+  }>;
+  const groups = new Map<string, Entry[]>();
+  const sourceEntries: Entry[] = [];
+  candidates.forEach((candidate, index) => {
+    const source = sourceChatId(candidate);
+    if (source === null) return;
+    const entry = { candidate, index, linked: linkedEvidence(candidate), source };
+    sourceEntries.push(entry);
+    const group = groups.get(source);
+    if (group) group.push(entry);
+    else groups.set(source, [entry]);
+  });
+  if (sourceEntries.length < 2 || !sourceEntries.some(({ linked }) => linked)) {
+    return candidates;
+  }
+  const selected = new Set<number>();
+  const ordered: Entry[] = [];
+  const append = (entry: Entry | undefined): void => {
+    if (!entry || selected.has(entry.index)) return;
+    selected.add(entry.index);
+    ordered.push(entry);
+  };
+  for (const group of groups.values()) {
+    append(group.find(({ linked }) => !linked) ?? group[0]);
+    append(group.find(({ linked }) => linked));
+  }
+  for (const entry of sourceEntries) append(entry);
+
+  let sourceIndex = 0;
+  return candidates.map((candidate) => sourceChatId(candidate) === null
+    ? candidate
+    : ordered[sourceIndex++]!.candidate);
+}

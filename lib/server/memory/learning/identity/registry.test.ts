@@ -157,4 +157,42 @@ describe("language-neutral Memory identity registry", () => {
       value: { ...emptyValue, state: "maybe_owned" }
     })).toThrowError(new MemoryIdentityError("memory_fact_identity_invalid"));
   });
+
+  it("moves colliding legacy SLOT components into distinct Unicode identities", () => {
+    const proposal = (dimensionKey: string) => ({
+      identity: identity({
+        dimensionKey,
+        mode: "SLOT",
+        predicateKey: "preference",
+        subject: {
+          canonicalLabel: null,
+          entityType: "PERSON_SELF" as const,
+          qualifiers: { brand: null, model: null }
+        }
+      }),
+      memoryType: "PREFERENCE",
+      semanticFrame: frame,
+      statement: "opaque preference",
+      value: { ...emptyValue, value: "concise" }
+    });
+    const legacyAscii = resolveMemoryIdentity(
+      proposal("topic:caf"),
+      "LEGACY_V1"
+    );
+    const legacyUnicode = resolveMemoryIdentity(
+      proposal("topic:cafè"),
+      "LEGACY_V1"
+    );
+    const unicodeAscii = resolveMemoryIdentity(
+      proposal("topic:caf"),
+      "UNICODE_V2"
+    );
+    const unicodeLabel = resolveMemoryIdentity(
+      proposal("topic:cafè"),
+      "UNICODE_V2"
+    );
+    expect(legacyUnicode.canonicalKey).toBe(legacyAscii.canonicalKey);
+    expect(unicodeLabel.canonicalKey).not.toBe(unicodeAscii.canonicalKey);
+    expect(unicodeLabel.identityVersion).toBe("slot-v4");
+  });
 });

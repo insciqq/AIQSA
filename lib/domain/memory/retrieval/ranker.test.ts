@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { planMemoryRetrieval } from "./planner";
 import { fuseMemoryRetrievalCandidates } from "./ranker";
-import { orderMemoryCandidatesWithSoftSourceDiversity } from "./sourceDiversity";
+import {
+  orderMemoryCandidatesWithLinkedEvidenceCoverage,
+  orderMemoryCandidatesWithSoftSourceDiversity
+} from "./sourceDiversity";
 import type { MemoryCandidateMetadata, MemoryLaneCandidate } from "./contracts";
 import type { MemoryRetrievalLane } from "./config";
 
@@ -58,6 +61,48 @@ describe("soft source diversity", () => {
       ["a-1", "a-2", "b-1"],
       (candidate) => candidate.slice(0, 1)
     )).toEqual(["a-1", "b-1", "a-2"]);
+  });
+});
+
+describe("linked source evidence coverage", () => {
+  it("pairs one linked child with each source anchor before the global tail", () => {
+    const candidates = [
+      { id: "a-anchor", linked: false, source: "a" },
+      { id: "fact", linked: false, source: null },
+      { id: "a-tail", linked: false, source: "a" },
+      { id: "b-anchor", linked: false, source: "b" },
+      { id: "c-anchor", linked: false, source: "c" },
+      { id: "a-user", linked: true, source: "a" },
+      { id: "b-user", linked: true, source: "b" },
+      { id: "c-user", linked: true, source: "c" }
+    ];
+
+    const ordered = orderMemoryCandidatesWithLinkedEvidenceCoverage(
+      candidates,
+      ({ source }) => source,
+      ({ linked }) => linked
+    );
+
+    expect(ordered.map(({ id }) => id)).toEqual([
+      "a-anchor",
+      "fact",
+      "a-user",
+      "b-anchor",
+      "b-user",
+      "c-anchor",
+      "c-user",
+      "a-tail"
+    ]);
+    expect(new Set(ordered)).toEqual(new Set(candidates));
+  });
+
+  it("keeps the original order when no linked evidence exists", () => {
+    const candidates = ["a-1", "b-1", "a-2"];
+    expect(orderMemoryCandidatesWithLinkedEvidenceCoverage(
+      candidates,
+      (candidate) => candidate.slice(0, 1),
+      () => false
+    )).toBe(candidates);
   });
 });
 
@@ -132,27 +177,27 @@ function toolEventCandidate(id: string, rawScore: number): MemoryLaneCandidate {
 describe("relative-rank Memory fusion", () => {
   it("uses only lane position and RRF, never raw score scale", () => {
     const first = fuseMemoryRetrievalCandidates(plan, [
-      { lane: "FACT_FTS_SIMPLE", candidates: [candidate("a", "FACT_FTS_SIMPLE", 0.0001), candidate("b", "FACT_FTS_SIMPLE", 999)] },
+      { lane: "FACT_LEXICAL_UNICODE", candidates: [candidate("a", "FACT_LEXICAL_UNICODE", 0.0001), candidate("b", "FACT_LEXICAL_UNICODE", 999)] },
       { lane: "FACT_VECTOR", candidates: [candidate("a", "FACT_VECTOR", -0.9), candidate("b", "FACT_VECTOR", 1)] }
     ], now);
     expect(first.map(({ itemId }) => itemId)).toEqual(["a", "b"]);
     expect(first[0]?.finalScore).toBe(first[0]?.rrfScore);
   });
 
-  it("fuses English, Russian, and trigram ranks as independent signals", () => {
-    const multilingual = candidate("multilingual", "FACT_FTS_ENGLISH", 0.000001);
+  it("fuses generic Unicode, n-gram, and dense ranks as independent signals", () => {
+    const multilingual = candidate("multilingual", "FACT_LEXICAL_UNICODE", 0.000001);
     const ranked = fuseMemoryRetrievalCandidates(plan, [{
       candidates: [multilingual],
-      lane: "FACT_FTS_ENGLISH"
+      lane: "FACT_LEXICAL_UNICODE"
     }, {
-      candidates: [{ ...multilingual, lane: "FACT_FTS_RUSSIAN", rawScore: 1_000_000 }],
-      lane: "FACT_FTS_RUSSIAN"
+      candidates: [{ ...multilingual, lane: "FACT_VECTOR", rawScore: 1_000_000 }],
+      lane: "FACT_VECTOR"
     }, {
-      candidates: [{ ...multilingual, lane: "FACT_TRIGRAM", rawScore: -1_000_000 }],
-      lane: "FACT_TRIGRAM"
+      candidates: [{ ...multilingual, lane: "FACT_LEXICAL_NGRAM", rawScore: -1_000_000 }],
+      lane: "FACT_LEXICAL_NGRAM"
     }, {
-      candidates: [candidate("raw-scale-decoy", "FACT_FTS_SIMPLE", Number.MAX_VALUE)],
-      lane: "FACT_FTS_SIMPLE"
+      candidates: [candidate("raw-scale-decoy", "FACT_ENTITY", Number.MAX_VALUE)],
+      lane: "FACT_ENTITY"
     }], now);
 
     expect(ranked.map(({ itemId }) => itemId)).toEqual([
@@ -160,9 +205,9 @@ describe("relative-rank Memory fusion", () => {
     ]);
     expect(ranked[0]?.rrfScore).toBeCloseTo((1 + 1 + 0.85) / 61);
     expect(ranked[0]?.laneRanks).toEqual({
-      FACT_FTS_ENGLISH: 1,
-      FACT_FTS_RUSSIAN: 1,
-      FACT_TRIGRAM: 1
+      FACT_LEXICAL_NGRAM: 1,
+      FACT_LEXICAL_UNICODE: 1,
+      FACT_VECTOR: 1
     });
   });
 
@@ -178,9 +223,9 @@ describe("relative-rank Memory fusion", () => {
     expect(weighted[0]!.rrfScore).toBeCloseTo(1.2 / 61);
     expect(weighted[1]!.rrfScore).toBeCloseTo(1 / 61);
 
-    const explicit = candidate("explicit", "FACT_FTS_SIMPLE", 0);
+    const explicit = candidate("explicit", "FACT_LEXICAL_UNICODE", 0);
     const tied = fuseMemoryRetrievalCandidates(plan, [{
-      lane: "FACT_FTS_SIMPLE",
+      lane: "FACT_LEXICAL_UNICODE",
       candidates: [{
         ...explicit,
         metadata: {
@@ -199,14 +244,14 @@ describe("relative-rank Memory fusion", () => {
 
   it("uses deterministic temporal overlap only as a confidence-aware tie-break", () => {
     const temporalPlan = planMemoryRetrieval({
-      currentUserText: "what happened yesterday",
+      currentUserText: "2026-08-12",
       now,
       temporalIntent: "ANY",
       timeZone: "UTC"
     });
     const inside = {
       ...historyCandidate("inside", 0),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const outside = {
       ...historyCandidate("outside", 999),
@@ -235,7 +280,7 @@ describe("relative-rank Memory fusion", () => {
           occurredTo: new Date("2026-08-12T13:00:00.000Z")
         }
       }],
-      lane: "HISTORY_RECALL_FTS_SIMPLE"
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE"
     }, {
       candidates: [{
         ...endedAtStart,
@@ -257,9 +302,9 @@ describe("relative-rank Memory fusion", () => {
   });
 
   it("demotes inferred synthesis below equally ranked direct facts", () => {
-    const synthesized = candidate("pattern", "FACT_FTS_SIMPLE", 1);
+    const synthesized = candidate("pattern", "FACT_LEXICAL_UNICODE", 1);
     const ranked = fuseMemoryRetrievalCandidates(plan, [{
-      lane: "FACT_FTS_SIMPLE",
+      lane: "FACT_LEXICAL_UNICODE",
       candidates: [{
         ...synthesized,
         metadata: {
@@ -269,7 +314,7 @@ describe("relative-rank Memory fusion", () => {
           sourceAuthority: "SYNTHESIS",
           synthesisDepth: 1
         }
-      }, candidate("direct", "FACT_FTS_SIMPLE", 0.9)]
+      }, candidate("direct", "FACT_LEXICAL_UNICODE", 0.9)]
     }], now);
 
     expect(ranked.map(({ itemId }) => itemId)).toEqual(["direct", "pattern"]);
@@ -277,10 +322,10 @@ describe("relative-rank Memory fusion", () => {
   });
 
   it("keeps supporting observations retrievable below equal HIGH authority", () => {
-    const high = candidate("high", "FACT_FTS_SIMPLE", 0.1);
+    const high = candidate("high", "FACT_LEXICAL_UNICODE", 0.1);
     const supporting = candidate("supporting", "FACT_VECTOR", 0.9);
     const ranked = fuseMemoryRetrievalCandidates(plan, [{
-      lane: "FACT_FTS_SIMPLE",
+      lane: "FACT_LEXICAL_UNICODE",
       candidates: [{
         ...high,
         metadata: { ...high.metadata, confidence: 1 }
@@ -328,7 +373,7 @@ describe("relative-rank Memory fusion", () => {
     const evidenceRootHash = "a".repeat(64);
     const chunk = {
       ...historyCandidate("chunk-1", 0.8),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const roundBase = historyCandidate("round-1", 0.9);
     const round = {
@@ -350,7 +395,7 @@ describe("relative-rank Memory fusion", () => {
           sourceChatId: "chat-shared-root"
         }
       }],
-      lane: "HISTORY_RECALL_FTS_SIMPLE"
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE"
     }, {
       candidates: [round],
       lane: "HISTORY_RECALL_VECTOR"
@@ -362,7 +407,7 @@ describe("relative-rank Memory fusion", () => {
       itemId: "round-1",
       itemType: "RECALL_ROUND",
       laneRanks: {
-        HISTORY_RECALL_FTS_SIMPLE: 1,
+        HISTORY_RECALL_LEXICAL_UNICODE: 1,
         HISTORY_RECALL_VECTOR: 1
       }
     });
@@ -459,8 +504,8 @@ describe("relative-rank Memory fusion", () => {
       }
     });
     const ranked = fuseMemoryRetrievalCandidates(pastChatPlan, [{
-      candidates: [segment("overlap-segment-a", "HISTORY_RECALL_FTS_SIMPLE")],
-      lane: "HISTORY_RECALL_FTS_SIMPLE"
+      candidates: [segment("overlap-segment-a", "HISTORY_RECALL_LEXICAL_UNICODE")],
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE"
     }, {
       candidates: [segment("overlap-segment-b", "HISTORY_RECALL_VECTOR")],
       lane: "HISTORY_RECALL_VECTOR"
@@ -469,7 +514,7 @@ describe("relative-rank Memory fusion", () => {
     expect(ranked).toHaveLength(1);
     expect(ranked[0]?.matchedSegmentId).toMatch(/^overlap-segment-[ab]$/u);
     expect(ranked[0]?.laneRanks).toEqual({
-      HISTORY_RECALL_FTS_SIMPLE: 1,
+      HISTORY_RECALL_LEXICAL_UNICODE: 1,
       HISTORY_RECALL_VECTOR: 1
     });
     expect(ranked[0]?.featureSnapshot.laneCount).toBe(2);
@@ -497,7 +542,7 @@ describe("relative-rank Memory fusion", () => {
   it("lets aggregation coverage candidates from a second history lane reach fusion", () => {
     const ftsCandidates = Array.from({ length: 30 }, (_, index) => {
       const value = historyCandidate(`fts-${index}`, 1 - index / 100);
-      return { ...value, lane: "HISTORY_RECALL_FTS_SIMPLE" as const };
+      return { ...value, lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const };
     });
     const vectorCandidates = Array.from({ length: 30 }, (_, index) => {
       const value = historyCandidate(`vector-${index}`, 1 - index / 100);
@@ -505,7 +550,7 @@ describe("relative-rank Memory fusion", () => {
     });
     const ranked = fuseMemoryRetrievalCandidates(aggregationPlan, [{
       candidates: ftsCandidates,
-      lane: "HISTORY_RECALL_FTS_SIMPLE"
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE"
     }, {
       candidates: vectorCandidates,
       lane: "HISTORY_RECALL_VECTOR"

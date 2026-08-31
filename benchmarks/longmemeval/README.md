@@ -69,9 +69,15 @@ be reviewed manually before the disposable user is deleted.
 
 The overlay has an explicit compose name, container names, network names,
 volume names, database identity, and loopback-only ports. Its defaults are app
-`3137`, PostgreSQL `55437`, MinIO `19100`, and MinIO console `19101`; it does not
-share state with the default development installation. The benchmark overlay
-runs at most eight Memory jobs globally and four per benchmark user. The
+`3137`, PostgreSQL `55437`, OpenSearch `19237`, MinIO `19100`, and MinIO console
+`19101`; it does not share state with the default development installation.
+The frozen v7 qualification runs Memory lexical retrieval on OpenSearch-primary
+and keeps PostgreSQL fallback available, but any observed fallback, dirty
+projection, or non-OpenSearch candidate-provider lane fails that case before
+judging. Canonical exact/entity and deferred digest authority lanes remain
+PostgreSQL and are reported separately from this cutover health. The
+benchmark overlay runs at most eight Memory jobs globally and four per
+benchmark user. The
 per-user bound preserves provider parallelism without building a same-owner
 commit queue or an embedding burst large enough to make transport outcomes
 ambiguous. The policy supports higher ceilings for controlled load tests, but
@@ -94,19 +100,43 @@ deliberately does not rerun seed: an app restart must preserve an in-flight
 benchmark user's non-empty Memory generation. The benchmark overlay also uses
 a bounded 4 GiB container with a 2.5 GiB Node old-space ceiling and restarts
 the same app automatically after an OOM/process exit.
+It explicitly binds PostgreSQL 18 data to
+`aiqsa-memory-benchmark-second_postgres18_dev_data`; a legacy PostgreSQL 16
+volume must be logically upgraded, never mounted into the PostgreSQL 18
+container. Restored prepared sources are promoted to the current cache
+fingerprint only after the runner verifies the exact transcript, query
+isolation, every active history projection version, and every successful
+history execution-binding version. Its hybrid generation is reused only when
+the active revision, every retrieval/chunk/contextual version, embedding
+deployment/document-vector-space identity, and every entry state match the
+current runtime contract. An exact historical execution snapshot may prove a
+metadata-only embedding configuration change compatible; a real document-space
+change rebuilds that layer. OpenSearch is always reconstructed from the
+canonical PostgreSQL outbox.
+
+After a logical restore and its migrations, quarantine unfinished derived work
+before the first app start. The command fails closed for non-benchmark owners,
+active query runs, or unexpected job kinds; settled source and hybrid cache
+remain untouched:
 
 ```bash
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml run --rm -T app sh -c "npm run db:migrate:deploy && npm run db:seed"
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml up -d app
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts ensure
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-luna
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-embedding qwen/qwen3-embedding-8b
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker voyageai/rerank-2.5
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml run --rm -T --no-deps app \
+  npx tsx benchmarks/longmemeval/prepareRestoredCache.ts \
+  --confirm RESTORED_PREPARED_CACHE
+```
+
+```bash
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml run --rm -T app sh -c "npm run db:migrate:deploy && npm run db:seed"
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml up -d app memory-search-worker
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts ensure
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-luna
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-embedding qwen/qwen3-embedding-8b
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker voyageai/rerank-2.5
 ```
 
 Do not repeat the bootstrap command while benchmark users exist. Restart only
-the app with `docker compose -f docker-compose.dev.yml -f
+the app with `docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f
 benchmarks/longmemeval/docker-compose.yml restart app`; its durable Memory jobs
 remain authoritative and are reclaimed only after their existing leases expire.
 
@@ -124,15 +154,30 @@ FU-09's original content-free selection remains frozen as the provenance-only
 `qualifications/fu09-blind-50-v1.json`. Reader-first `v1` through `v5` preserve
 the diagnostic waves before the hybrid control-fallback, packed-evidence rejoin,
 and reader-deadline settlement fixes. The current qualification is
-`qualifications/fu2-reader-first-blind-50-v6.json`: it reuses the exact 50
+`qualifications/fu2-reader-first-blind-50-v7.json`: it reuses the exact 50
 case IDs across all six upstream categories while freezing Luna, the official
-profile, the ordered three-model reranker route and per-model floors, case
-concurrency two, session concurrency sixteen, and all other runtime bounds.
-Run it with `--qualification-manifest fu2-reader-first-blind-50-v6`; selection
-or runtime override flags are rejected when the manifest is present. Both the
-old single-Qwen runtime manifest and reader-first `v1` through `v5` fail closed for new runs. The
-paid/disposable guards remain mandatory and no manifest authorizes provider
-traffic by itself.
+profile, OpenSearch-primary lexical retrieval, the ordered three-model
+reranker route and per-model floors, case concurrency two, session concurrency
+sixteen, and all other runtime bounds. It binds the Git `HEAD` and a
+deterministic executable-worktree digest; mutable result, task, upstream, and
+manifest paths are excluded from that digest. Run it with the exact lexical
+environment below; selection or runtime override flags are rejected when the
+manifest is present:
+
+```bash
+AIQSA_MEMORY_LEXICAL_BACKEND=OPENSEARCH \
+AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID=20260831-lme-v7-r2 \
+AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
+AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
+AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
+npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE \
+  --qualification-manifest fu2-reader-first-blind-50-v7 \
+  --output results/fu2-reader-first-blind-50-v7
+```
+
+The old single-Qwen manifest and reader-first `v1` through `v6` fail closed for
+new runs. Paid/disposable guards remain mandatory and no manifest authorizes
+provider traffic by itself.
 
 Use repeated `--question-id ID` arguments for an explicit ad hoc set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.
@@ -176,12 +221,33 @@ the runner emit `case_complete` or `case_failed`; at batch completion it rebuild
 `answers.jsonl` in frozen selection order from the latest attempt for each case.
 Resume an interrupted run with the identical selection, semantic runtime, and
 output directory by adding `--resume`. Terminal cases are skipped by default;
-add `--retry-unhealthy` to rerun only execution failures and completed non-`USED`
-Memory outcomes while retaining every prior attempt. For an explicitly internal,
+add `--retry-unhealthy` to rerun only execution failures, completed non-`USED`
+Memory outcomes, or failed OpenSearch cutover evidence while retaining every
+prior attempt. `--single-wave` admits at most one fixed case-concurrency wave,
+emits `benchmark_paused` after that wave settles, and exits without producing a
+premature aggregate. Repeat it with `--resume` after an app-only restart to keep
+the development-server heap bounded without changing the checkpoint identity
+or durable prepared cache. For an explicitly internal,
 non-leaderboard resume, `--resume-case-concurrency N` may change only independent
 case scheduling; the override is recorded in the summary and every attempt.
 These resume controls do not weaken the paid/disposable guards or permit any
 other qualification-manifest override.
+
+The v7 qualification judges each completed answer immediately with the
+unchanged official evaluator and atomically binds the private verdict to the
+answer hash and checkpoint attempt under `case-evaluations/`. A runtime
+failure, unhealthy OpenSearch cutover observation, or incorrect verdict stops
+admission of new cases; already-started work is allowed to settle safely. On
+resume, a missing verdict is recovered before new work, while an existing
+verdict is never purchased again. A product-code change invalidates the frozen
+worktree digest and requires a new homogeneous manifest. After all 50 cases
+settle, build the aggregate without another provider call:
+
+```bash
+npx tsx benchmarks/longmemeval/evaluate.ts \
+  benchmarks/longmemeval/results/fu2-reader-first-blind-50-v7/answers.jsonl \
+  --reuse-case-evaluations
+```
 
 To verify the selected OpenRouter embedding deployment accepts a ten-input
 batch without exposing input or vector content, run the guarded capability
@@ -215,7 +281,10 @@ has `memoryOutcome=USED`; `DEGRADED`, `FAILED_SAFE`, `EMPTY`, and `DISABLED`
 all block qualification. The evaluator reports the gate independently without
 changing the unchanged upstream label or accuracy. Such a result must be
 diagnosed and rerun cleanly rather than accepted because its answer happened
-to score correctly.
+to score correctly. Every answer summary and `case_complete` event also carries
+the nullable content-free `memoryDegradationCode`, so an operator can
+distinguish a query-embedding fallback from lexical, vector, or authority
+failures without exposing query or Memory content.
 
 Install the official evaluator dependencies and grade the answer with the
 upstream `gpt-4o-2024-08-06` evaluator:
@@ -239,5 +308,5 @@ Stop this stack with the same two compose files. Add `--volumes` only when the
 benchmark database and object store are intentionally disposable:
 
 ```bash
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml down
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml down
 ```

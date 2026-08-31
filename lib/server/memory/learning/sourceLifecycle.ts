@@ -11,6 +11,7 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   memoryFactExtractionJobFingerprint
 } from "./extraction/contract";
+import { loadMemoryIdentityWriteProfile } from "./identity/config";
 import { invalidateMemoryFactExtractionStaging } from "./extraction/repository";
 import { normalizeMemoryFactsForSourceMutation } from "./consolidation/normalization";
 import { retractUnsupportedAutomaticMemoryEntities } from "./entities/lifecycle";
@@ -164,6 +165,7 @@ export async function applyMemoryLearningSourceMutation(
   if (!settings.useMemoryFacts || !settings.learnAutomatically) return;
   const sourceMessageId = await settledDirectUserMessageId(tx, event);
   if (!sourceMessageId) return;
+  const identityProfile = loadMemoryIdentityWriteProfile();
   await enqueueMemoryJob(tx, settings, {
     idempotencyFingerprint: memoryFactExtractionJobFingerprint({
       activeLeafMessageId: event.snapshot.activeLeafMessageId!,
@@ -174,7 +176,7 @@ export async function applyMemoryLearningSourceMutation(
       sourceMessageId,
       sourceRevision: event.snapshot.memorySourceRevision,
       userId: event.snapshot.userId
-    }),
+    }, identityProfile),
     kind: "EXTRACT_FACTS",
     pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
     source: {

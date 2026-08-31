@@ -656,13 +656,18 @@ function decodeObservation(
   if (temporalProposal.expirationIntent === "EXPLICIT" &&
     temporal.expiresAt === null) fail("memory_fact_expiration_evidence_invalid");
   if (temporary && temporal.expiresAt === null) fail("memory_fact_temporary");
-  const resolvedIdentity = resolveMemoryIdentity({
+  const identityInput = {
     identity: identityProposal,
     memoryType,
     semanticFrame: frame,
     statement,
     value: valueProposal
-  });
+  } as const;
+  const unicodeIdentity = resolveMemoryIdentity(identityInput, "UNICODE_V2");
+  const legacyIdentity = resolveMemoryIdentity(identityInput, "LEGACY_V1");
+  const resolvedIdentity = input.identityProfile === "LEGACY_V1"
+    ? legacyIdentity
+    : unicodeIdentity;
   const correction = frame.polarity === "CORRECTION" ||
     frame.changeIntent === "CORRECTION";
   if (confidenceBand === "MEDIUM" && (
@@ -678,21 +683,45 @@ function decodeObservation(
     resolvedIdentity.identityKind !== "PROPOSITION") {
     fail("memory_fact_entity_unsupported");
   }
-  const supportingCanonicalKey = confidenceBand === "MEDIUM"
+  const supportingInput = {
+    expectedAt: temporal.expectedAt,
+    occurredAt: temporal.occurredAt,
+    statement,
+    validFrom: temporal.validFrom,
+    validTo: temporal.validTo
+  } as const;
+  const unicodeSupportingCanonicalKey = confidenceBand === "MEDIUM"
     ? memorySupportingPropositionCanonicalKey({
-        expectedAt: temporal.expectedAt,
-        occurredAt: temporal.occurredAt,
-        statement,
-        validFrom: temporal.validFrom,
-        validTo: temporal.validTo
-      }) ?? fail()
+        ...supportingInput
+      }, "UNICODE_V2") ?? fail()
     : null;
-  const supportingStatement = confidenceBand === "MEDIUM"
-    ? normalizeMemoryProposition(statement) ?? fail()
+  const legacySupportingCanonicalKey = confidenceBand === "MEDIUM"
+    ? memorySupportingPropositionCanonicalKey({
+        ...supportingInput
+      }, "LEGACY_V1") ?? fail()
     : null;
+  const unicodeSupportingStatement = confidenceBand === "MEDIUM"
+    ? normalizeMemoryProposition(statement, "UNICODE_V2") ?? fail()
+    : null;
+  const legacySupportingStatement = confidenceBand === "MEDIUM"
+    ? normalizeMemoryProposition(statement, "LEGACY_V1") ?? fail()
+    : null;
+  const supportingValue = (normalizedStatement: string) => ({
+    authority: "supporting",
+    normalizedStatement,
+    schema: "supporting-observation-v1"
+  });
+  const unicodeProposedValue = unicodeSupportingStatement === null
+    ? unicodeIdentity.structuredValue
+    : supportingValue(unicodeSupportingStatement);
+  const legacyProposedValue = legacySupportingStatement === null
+    ? legacyIdentity.structuredValue
+    : supportingValue(legacySupportingStatement);
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     candidateRef,
-    canonicalKey: supportingCanonicalKey ?? resolvedIdentity.canonicalKey,
+    canonicalKey: input.identityProfile === "LEGACY_V1"
+      ? legacySupportingCanonicalKey ?? legacyIdentity.canonicalKey
+      : unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
     category: resolvedIdentity.category,
     confidence: confidenceBand === "MEDIUM"
       ? MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE
@@ -711,21 +740,21 @@ function decodeObservation(
     expirationIntent: temporalProposal.expirationIntent,
     expiresAt: temporal.expiresAt,
     futureUseful: true,
+    identityProfile: input.identityProfile,
     identityKind: resolvedIdentity.identityKind,
     identityVersion: resolvedIdentity.identityVersion,
     importance: confidenceBand === "MEDIUM" ? 0.4 : 0.65,
     languageCode: source.languageCode,
+    legacyCanonicalKey:
+      legacySupportingCanonicalKey ?? legacyIdentity.canonicalKey,
+    legacyProposedValue,
     modality: modality(memoryType),
     negated: false,
     occurredAt: temporal.occurredAt,
     predicateKey: resolvedIdentity.predicateKey,
-    proposedValue: supportingStatement === null
-      ? resolvedIdentity.structuredValue
-      : {
-          authority: "supporting",
-          normalizedStatement: supportingStatement,
-          schema: "supporting-observation-v1"
-        },
+    proposedValue: input.identityProfile === "LEGACY_V1"
+      ? legacyProposedValue
+      : unicodeProposedValue,
     quote,
     rawTemporalExpression: temporal.rawExpression,
     reasonCode: null,
@@ -739,6 +768,9 @@ function decodeObservation(
     temporary,
     temporalNormalization: temporalProposal.normalization,
     temporalResolutionEvidence: temporal.resolutionEvidence,
+    unicodeCanonicalKey:
+      unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
+    unicodeProposedValue,
     validFrom: temporal.validFrom,
     validTo: temporal.validTo
   };
@@ -859,8 +891,15 @@ function decodeLegacyCandidate(
     source.text.indexOf(quote, firstOccurrence + quote.length) >= 0) {
     fail("memory_fact_evidence_ambiguous");
   }
-  const canonicalKey = memoryPropositionCanonicalKey(statement);
-  if (!canonicalKey) fail();
+  const legacyCanonicalKey = memoryPropositionCanonicalKey(
+    statement,
+    "LEGACY_V1"
+  );
+  const unicodeCanonicalKey = memoryPropositionCanonicalKey(
+    statement,
+    "UNICODE_V2"
+  );
+  if (!legacyCanonicalKey || !unicodeCanonicalKey) fail();
   const evidence = exactEvidence(input, { occurrenceIndex: 0, text: quote });
   const semanticFrame: MemorySemanticFrame = {
     assertionStatus: "ASSERTED",
@@ -873,7 +912,7 @@ function decodeLegacyCandidate(
   };
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     candidateRef: "legacy-0",
-    canonicalKey,
+    canonicalKey: legacyCanonicalKey,
     category,
     confidence: 1,
     confidenceBand: "HIGH",
@@ -890,10 +929,15 @@ function decodeLegacyCandidate(
     expirationIntent: "NONE",
     expiresAt: null,
     futureUseful: true,
+    identityProfile: "LEGACY_V1",
     identityKind: "PROPOSITION",
     identityVersion: "proposition-v1",
     importance: 0.5,
     languageCode: source.languageCode,
+    legacyCanonicalKey,
+    legacyProposedValue: responsePreference === null
+      ? { correction, statement }
+      : { correction, responsePreference, statement },
     modality: legacyModality(category),
     negated: false,
     occurredAt: null,
@@ -914,6 +958,10 @@ function decodeLegacyCandidate(
     temporary: false,
     temporalNormalization: { kind: "NONE" },
     temporalResolutionEvidence: null,
+    unicodeCanonicalKey,
+    unicodeProposedValue: responsePreference === null
+      ? { correction, statement }
+      : { correction, responsePreference, statement },
     validFrom: null,
     validTo: null
   };

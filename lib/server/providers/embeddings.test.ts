@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createOpenAICompatibleEmbeddingAdapter,
   EmbeddingAdapterError,
-  MAX_EMBEDDING_BATCH_INPUTS
+  MAX_EMBEDDING_BATCH_INPUTS,
+  OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS
 } from "./embeddings";
 import { createFakeEmbeddingAdapter } from "@/tests/support/embeddings";
 import {
@@ -120,6 +121,147 @@ describe("OpenAI-compatible embeddings", () => {
       .toBeCloseTo(1, 12);
     expect(result.usage).toEqual({ inputTokens: 0, totalTokens: 0 });
     expect(result.requestId).toBe("embedding-request-1");
+  });
+
+  it("pins the ordered Qwen document route and falls back only inside it", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection,
+      model: {
+        ...embeddingModel(),
+        openRouterRouting: {
+          mode: "only_selected",
+          providers: ["nebius", "deepinfra"]
+        }
+      },
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await adapter.embed({ mode: "document", texts: ["one"] });
+
+    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+    expect(body.provider).toEqual({
+      allow_fallbacks: true,
+      data_collection: "deny",
+      only: ["nebius", "deepinfra"],
+      order: ["nebius", "deepinfra"]
+    });
+  });
+
+  it("keeps a successful interactive query on the primary provider", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection,
+      model: {
+        ...embeddingModel(),
+        openRouterRouting: {
+          mode: "only_selected",
+          providers: ["nebius", "deepinfra"]
+        }
+      },
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await adapter.embed({ mode: "query", texts: ["one"] });
+
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+    expect(body.provider).toEqual({
+      allow_fallbacks: false,
+      data_collection: "deny",
+      only: ["nebius"],
+      order: ["nebius"]
+    });
+  });
+
+  it("hedges an interactive pre-instructed query onto the next selected provider", async () => {
+    vi.useFakeTimers();
+    try {
+      let primarySignal: AbortSignal | undefined;
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        const provider = body.provider as { only: string[] };
+        if (provider.only[0] === "nebius") {
+          primarySignal = init?.signal ?? undefined;
+          return new Promise<Response>((_resolve, reject) => {
+            const rejectFromSignal = () => reject(primarySignal?.reason);
+            if (primarySignal?.aborted) rejectFromSignal();
+            else primarySignal?.addEventListener("abort", rejectFromSignal, { once: true });
+          });
+        }
+        return providerResponse([vector(4_096)]);
+      });
+      const adapter = createOpenAICompatibleEmbeddingAdapter({
+        connection: openRouterConnection,
+        model: {
+          ...embeddingModel(),
+          openRouterRouting: {
+            mode: "only_selected",
+            providers: ["nebius", "deepinfra"]
+          }
+        },
+        network: { fetchFn, retry: { maxAttempts: 1 } },
+        secret: "openrouter-key"
+      });
+
+      const pending = adapter.embed({
+        latencyClass: "interactive",
+        mode: "document",
+        texts: ["pre-instructed query"]
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchFn).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(
+        OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS
+      );
+
+      await expect(pending).resolves.toMatchObject({
+        model: "qwen/qwen3-embedding-8b"
+      });
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+      expect(bodies.map((body) => body.provider)).toEqual([
+        {
+          allow_fallbacks: false,
+          data_collection: "deny",
+          only: ["nebius"],
+          order: ["nebius"]
+        },
+        {
+          allow_fallbacks: false,
+          data_collection: "deny",
+          only: ["deepinfra"],
+          order: ["deepinfra"]
+        }
+      ]);
+      expect(primarySignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps explicit Automatic OpenRouter embedding routing unrestricted", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection,
+      model: {
+        ...embeddingModel(),
+        openRouterRouting: { mode: "automatic", providers: [] }
+      },
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await adapter.embed({ mode: "document", texts: ["one"] });
+
+    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+    expect(body.provider).toEqual({
+      allow_fallbacks: true,
+      data_collection: "deny"
+    });
   });
 
   it("accepts OpenRouter's exact unnamespaced response slug", async () => {

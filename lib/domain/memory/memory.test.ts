@@ -5,6 +5,27 @@ import {
 } from "./safety";
 import { memoryCounterEffectFor } from "./counters";
 
+const historyVisibilityAuthorityAudit = [
+  ["master pause", "MEMORY_MASTER_PAUSE", "memoryRevision"],
+  ["master resume", "MEMORY_VISIBLE_SETTING_CHANGE", "memoryRevision"],
+  ["history pause", "MEMORY_VISIBLE_SETTING_CHANGE", "memoryRevision"],
+  ["history resume", "MEMORY_VISIBLE_SETTING_CHANGE", "memoryRevision"],
+  ["source barrier", "FORGET_OR_BULK_CLEAR", "memoryRevision"],
+  ["suppression or forget", "FORGET_OR_BULK_CLEAR", "memoryRevision"],
+  ["source hard delete", "SOURCE_HARD_DELETE", "memoryRevision"],
+  ["source exclude", "SOURCE_EXCLUDE", "memoryRevision"],
+  ["source resume", "SOURCE_RESUME", "memoryRevision"],
+  ["chunk visibility settlement", "CHUNK_VISIBILITY_CHANGE", "memoryRevision"],
+  ["generation activation", "INDEX_GENERATION_ACTIVATION", "memoryRevision"],
+  ["history-visible settings", "MEMORY_VISIBLE_SETTING_CHANGE", "memoryRevision"],
+  ["folder move", "FOLDER_MOVE", "memoryRevision"],
+  ["assistant access change", "ASSISTANT_ACCESS_CHANGE", "memoryRevision"],
+  ["scope target delete", "SCOPE_TARGET_DELETE", "memoryRevision"],
+  ["active branch change", "BRANCH_PATH_CHANGE", "sourceRevision"],
+  ["normal source append", "NORMAL_APPEND", "sourceRevision"],
+  ["terminal source settlement", "TERMINAL_SETTLEMENT", "sourceRevision"]
+] as const;
+
 describe("Memory sensitivity and mutation-intent safety", () => {
   it("rejects secret-tainted derivative plaintext", () => {
     expect(memoryDerivativePlaintextAllowed("NORMAL", false)).toBe(true);
@@ -51,4 +72,11 @@ describe("Memory sensitivity and mutation-intent safety", () => {
       sourceRevision: false
     });
   });
+
+  it.each(historyVisibilityAuthorityAudit)(
+    "routes %s through %s and advances bounded %s authority",
+    (_path, mutation, counter) => {
+      expect(memoryCounterEffectFor(mutation)[counter]).not.toBe(false);
+    }
+  );
 });

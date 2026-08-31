@@ -1,10 +1,8 @@
 export type MemoryTextLanguage = string;
 
 export type MemoryQualificationLanguageBucket =
-  | "en"
+  | "declared"
   | "mixed"
-  | "other"
-  | "ru"
   | "und";
 
 const languageCodePattern = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/u;
@@ -40,17 +38,6 @@ export function memoryQualificationLanguageBucket(
   languageCode: string
 ): MemoryQualificationLanguageBucket {
   const normalized = normalizeMemoryLanguageCode(languageCode)?.toLowerCase() ?? "und";
-  if (normalized === "mixed" || normalized === "mul") return "mixed";
-  if (!normalized || normalized === "auto" || normalized === "und") return "und";
-
-  try {
-    const language = new Intl.Locale(normalized).language.toLowerCase();
-    if (language === "en") return "en";
-    if (language === "ru") return "ru";
-    if (language === "mul") return "mixed";
-    if (language === "und") return "und";
-    return "other";
-  } catch {
-    return "und";
-  }
+  if (normalized === "mixed") return "mixed";
+  return normalized === "und" ? "und" : "declared";
 }

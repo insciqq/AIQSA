@@ -8,6 +8,9 @@ import { detachExpiredMemoryExecutionBindings } from "../execution/lifecycle";
 import { pruneUnreferencedMemoryEntities } from "../learning/entities/lifecycle";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
 import {
+  enqueueMemoryLexicalProjectionUserPurgeInTransaction
+} from "../searchProjection/repository";
+import {
   parseAccountMemoryDeletionClaim,
   type AccountMemoryDeletionClaim
 } from "./contract";
@@ -47,12 +50,13 @@ async function assertGlobalOwnersSettled(
 async function assertFence(
   tx: Prisma.TransactionClient,
   claim: AccountMemoryDeletionClaim
-): Promise<void> {
+): Promise<number> {
   const [row] = await tx.$queryRaw<Array<{
     activeIndexGenerationId: string | null;
     decayEnabled: boolean;
     embeddingProviderModelId: string | null;
     learnAutomatically: boolean;
+    memoryRevision: number;
     ownerStatus: string;
     referenceChatHistory: boolean;
     synthesisEnabled: boolean;
@@ -63,6 +67,7 @@ async function assertFence(
       settings."decayEnabled",
       settings."embeddingProviderModelId",
       settings."learnAutomatically",
+      settings."memoryRevision",
       owner."status"::text AS "ownerStatus",
       settings."referenceChatHistory",
       settings."synthesisEnabled",
@@ -81,10 +86,12 @@ async function assertFence(
     row.learnAutomatically ||
     row.synthesisEnabled ||
     row.activeIndexGenerationId !== null ||
-    row.embeddingProviderModelId !== null
+    row.embeddingProviderModelId !== null ||
+    !Number.isSafeInteger(row.memoryRevision) || row.memoryRevision < 0
   ) {
     throw new MemoryCoordinatorError("memory_account_deletion_fence_invalid", true);
   }
+  return row.memoryRevision;
 }
 
 async function cancelUndispatchedWork(
@@ -177,6 +184,7 @@ async function purgeReusableAndPrivateMemory(
   await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
   await tx.memoryOperationReceipt.deleteMany({ where: { userId } });
   await tx.memoryAuxiliarySemanticCall.deleteMany({ where: { userId } });
+  await tx.memoryIdentityCompatibility.deleteMany({ where: { userId } });
   await tx.memoryFactVersionRelation.deleteMany({ where: { userId } });
   await tx.memoryFactVersionSourceDependency.deleteMany({ where: { userId } });
   await tx.memoryEntityAliasSupport.deleteMany({ where: { userId } });
@@ -294,7 +302,7 @@ async function purgeReusableAndPrivateMemory(
  * obligation, and usage-backed detached execution evidence are the only
  * permitted Memory residues.
  */
-export async function inspectAccountMemoryDeletionResiduals(
+export async function inspectAccountMemoryDeletionCanonicalResiduals(
   tx: Prisma.TransactionClient,
   input: Readonly<{ deletionId: string; userId: string }>
 ): Promise<readonly string[]> {
@@ -339,6 +347,7 @@ export async function inspectAccountMemoryDeletionResiduals(
       UNION ALL SELECT 'candidate-messages', COUNT(*)::integer FROM "MemoryCandidateMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-decisions', COUNT(*)::integer FROM "MemoryCandidateDecision" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'facts', COUNT(*)::integer FROM "MemoryFact" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'identity-compatibility', COUNT(*)::integer FROM "MemoryIdentityCompatibility" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'versions', COUNT(*)::integer FROM "MemoryFactVersion" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'version-relations', COUNT(*)::integer FROM "MemoryFactVersionRelation" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'fact-extraction-executions', COUNT(*)::integer FROM "MemoryFactExtractionExecution" WHERE "userId" = ${input.userId}
@@ -427,11 +436,80 @@ export async function inspectAccountMemoryDeletionResiduals(
   return rows.map((row) => row.owner);
 }
 
+async function inspectAccountMemoryDeletionProjectionObligation(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<readonly string[]> {
+  const purges = await tx.memoryLexicalProjectionEvent.findMany({
+    orderBy: { sequence: "asc" },
+    select: { sequence: true },
+    where: { operation: "PURGE_USER", userId }
+  });
+  if (purges.length !== 1) return ["lexical-projection-purge-obligation"];
+  const later = await tx.memoryLexicalProjectionEvent.count({
+    where: { sequence: { gt: purges[0]!.sequence }, userId }
+  });
+  return later === 0 ? [] : ["lexical-projection-purge-order"];
+}
+
+export async function inspectAccountMemoryDeletionProjectionResiduals(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<readonly string[]> {
+  const rows = await tx.$queryRaw<ResidualRow[]>(Prisma.sql`
+    SELECT owner, residual FROM (
+      SELECT 'lexical-projection-states' AS owner, COUNT(*)::integer AS residual
+      FROM "MemoryLexicalProjectionState"
+      WHERE "userId" = ${userId}
+      UNION ALL
+      SELECT 'lexical-projection-events' AS owner,
+        CASE
+          WHEN COUNT(*) = 1 AND COUNT(*) FILTER (
+            WHERE "operation" = 'PURGE_USER'::"MemoryLexicalProjectionOperation"
+              AND "state" = 'SUCCEEDED'::"MemoryLexicalProjectionEventState"
+              AND "completedAt" IS NOT NULL
+              AND "indexGenerationId" IS NULL
+              AND "searchEntryId" IS NULL
+          ) = 1 THEN 0
+          ELSE 1
+        END::integer AS residual
+      FROM "MemoryLexicalProjectionEvent"
+      WHERE "userId" = ${userId}
+    ) AS projection
+    WHERE residual <> 0
+    ORDER BY owner
+  `);
+  if (rows.some((row) => !Number.isSafeInteger(row.residual) || row.residual < 0)) {
+    throw new MemoryCoordinatorError("memory_account_deletion_audit_invalid", true);
+  }
+  return rows.map((row) => row.owner);
+}
+
+/**
+ * Audits the final pre-user-delete state. Canonical Memory rows must already
+ * be gone and the derived lexical projection must retain only its succeeded
+ * terminal purge receipt.
+ */
+export async function inspectAccountMemoryDeletionResiduals(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ deletionId: string; userId: string }>
+): Promise<readonly string[]> {
+  const [canonical, projection] = await Promise.all([
+    inspectAccountMemoryDeletionCanonicalResiduals(tx, input),
+    inspectAccountMemoryDeletionProjectionResiduals(tx, input.userId)
+  ]);
+  return [...canonical, ...projection];
+}
+
 export async function assertAccountMemoryDeletionComplete(
   tx: Prisma.TransactionClient,
   input: Readonly<{ deletionId: string; userId: string }>
 ): Promise<void> {
-  if ((await inspectAccountMemoryDeletionResiduals(tx, input)).length > 0) {
+  const [canonical, projectionObligation] = await Promise.all([
+    inspectAccountMemoryDeletionCanonicalResiduals(tx, input),
+    inspectAccountMemoryDeletionProjectionObligation(tx, input.userId)
+  ]);
+  if (canonical.length > 0 || projectionObligation.length > 0) {
     throw new MemoryCoordinatorError("memory_account_deletion_incomplete", true);
   }
 }
@@ -442,11 +520,15 @@ async function applyAccountMemoryDeletion(
   now: Date
 ): Promise<void> {
   await tx.$executeRaw(Prisma.sql`SET CONSTRAINTS ALL DEFERRED`);
-  await assertFence(tx, claim);
+  const memoryRevision = await assertFence(tx, claim);
   await assertGlobalOwnersSettled(tx, claim.userId);
   await cancelUndispatchedWork(tx, claim.userId, now);
   await assertExecutionsSafeToPurge(tx, claim.userId, now);
   await purgeReusableAndPrivateMemory(tx, claim, now);
+  await enqueueMemoryLexicalProjectionUserPurgeInTransaction(tx, {
+    memoryRevision,
+    userId: claim.userId
+  });
   await assertAccountMemoryDeletionComplete(tx, {
     deletionId: claim.id,
     userId: claim.userId

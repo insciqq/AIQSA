@@ -5,10 +5,6 @@ import {
   decodeMemoryContextualKeyOutputs
 } from "../../lib/server/memory/history/contextualKeys";
 import {
-  memoryQualificationLanguageBucket,
-  type MemoryQualificationLanguageBucket
-} from "../../lib/server/memory/history/language";
-import {
   applyMemoryRecallRoundContextualKeysWithDiagnostics,
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   type MemoryContextualFallbackReason,
@@ -20,6 +16,7 @@ export const CONTEXTUAL_KEY_QUALIFICATION_VERSION = 1 as const;
 
 type DependencyClass = "CURRENT_ONLY" | "PRIOR_DEPENDENT";
 type LengthClass = "LONG" | "SHORT";
+type QualificationLanguageBucket = "en" | "mixed" | "other" | "ru" | "und";
 type RedactionClass = "NOT_NEEDED" | "REDACTED";
 
 type Seed = Readonly<{
@@ -184,13 +181,19 @@ type EvaluatedCase = Readonly<{
   fallbackReasons: readonly MemoryContextualFallbackReason[];
   generated: boolean;
   id: string;
-  languageBucket: MemoryQualificationLanguageBucket;
+  languageBucket: QualificationLanguageBucket;
   lengthClass: LengthClass;
   missingDependency: boolean;
   query: string;
   rawText: string;
   redactionClass: RedactionClass;
 }>;
+
+function qualificationLanguageBucket(languageCode: string): QualificationLanguageBucket {
+  if (languageCode === "en" || languageCode === "ru" ||
+    languageCode === "mixed" || languageCode === "und") return languageCode;
+  return "other";
+}
 
 function evaluateCases(cases: readonly QualificationCase[]): readonly EvaluatedCase[] {
   const outputs = decodeFixtureOutputs(cases);
@@ -226,7 +229,7 @@ function evaluateCases(cases: readonly QualificationCase[]): readonly EvaluatedC
         .map(({ reason }) => reason)),
       generated,
       id: candidate.id,
-      languageBucket: memoryQualificationLanguageBucket(candidate.languageCode),
+      languageBucket: qualificationLanguageBucket(candidate.languageCode),
       lengthClass: candidate.lengthClass,
       missingDependency: candidate.dependencyClass === "PRIOR_DEPENDENT" && generated &&
         !current.supportingRoundIds.includes(priorId),
@@ -246,10 +249,10 @@ function rankedIds(
   cases: readonly EvaluatedCase[],
   projection: "contextualText" | "rawText"
 ): readonly string[] {
-  const queryTerms = new Set(analyzeMemoryLexicalQuery(query).simpleTerms);
+  const queryTerms = new Set(analyzeMemoryLexicalQuery(query).logicalTerms);
   return cases.map((candidate) => {
     const documentTerms = new Set(
-      analyzeMemoryLexicalQuery(candidate[projection]).simpleTerms
+      analyzeMemoryLexicalQuery(candidate[projection]).logicalTerms
     );
     const score = [...queryTerms].filter((term) => documentTerms.has(term)).length;
     return { id: candidate.id, score };

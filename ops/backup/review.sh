@@ -176,6 +176,11 @@ audit_values="$(postgres_query "
     (SELECT count(*) FROM \"MemoryJob\"
       WHERE \"state\" = 'CLAIMED'::\"MemoryJobState\"
         OR \"leaseToken\" IS NOT NULL OR \"leaseExpiresAt\" IS NOT NULL),
+    (SELECT count(*) FROM \"MemoryLexicalProjectionEvent\"
+      WHERE \"state\" = 'CLAIMED'::\"MemoryLexicalProjectionEventState\"
+        OR \"leaseToken\" IS NOT NULL OR \"leaseExpiresAt\" IS NOT NULL),
+    (SELECT count(*) FROM \"MemoryLexicalProjectionState\"
+      WHERE \"status\" = 'READY'::\"MemoryLexicalProjectionStatus\"),
     (SELECT count(*)
       FROM \"MemoryExecutionBinding\"
       WHERE \"state\" IN (
@@ -283,9 +288,10 @@ audit_values="$(postgres_query "
   die "Restore review blocked: deletion/barrier audit failed."
 audit_values="${audit_values//[[:space:]]/}"
 
-[[ "$audit_values" =~ ^[0-9]+(,[0-9]+){13}$ ]] ||
+[[ "$audit_values" =~ ^[0-9]+(,[0-9]+){15}$ ]] ||
   die "Restore review blocked: deletion/barrier audit returned invalid evidence."
 IFS=',' read -r unresolved account_obligations deletion_leases job_leases \
+  projection_leases projection_ready \
   unsafe_executions invalid_barrier_owners missing_barrier_obligations \
   missing_barrier_targets knowledge_unresolved knowledge_leases \
   knowledge_pending_objects missing_knowledge_obligations \
@@ -298,6 +304,10 @@ IFS=',' read -r unresolved account_obligations deletion_leases job_leases \
   die "Restore review blocked: a deletion lease remains live."
 [[ "$job_leases" -eq 0 ]] ||
   die "Restore review blocked: a Memory job lease remains live."
+[[ "$projection_leases" -eq 0 ]] ||
+  die "Restore review blocked: a Memory projection lease remains live."
+[[ "$projection_ready" -eq 0 ]] ||
+  die "Restore review blocked: restored Memory projection readiness was retained."
 [[ "$unsafe_executions" -eq 0 ]] ||
   die "Restore review blocked: provider execution recovery remains unresolved."
 [[ "$invalid_barrier_owners" -eq 0 ]] ||

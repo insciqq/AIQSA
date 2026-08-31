@@ -378,7 +378,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       "lexical_apply"
     ]);
     expect(result.operationalCounters).toMatchObject({
-      contextualGeneratedEn: 1,
+      contextualGeneratedDeclared: 1,
       contextualProviderRequests: 1,
       contextualRoundsFallback: 0,
       contextualRoundsGenerated: 1,
@@ -432,14 +432,14 @@ describe("Memory INDEX_HISTORY handler", () => {
 
     expect(attached.work).toMatchObject({
       contextualFallbackReasonCounts: { UNSUPPORTED_NUMBER: 1 },
-      contextualLanguageCounts: { fallback: { en: 1 }, generated: {} },
+      contextualLanguageCounts: { fallback: { declared: 1 }, generated: {} },
       contextualRoundsFallback: 1,
       contextualRoundsGenerated: 0
     });
-    expect(memoryQualificationLanguageBucket("en-US")).toBe("en");
-    expect(memoryQualificationLanguageBucket("ru")).toBe("ru");
-    expect(memoryQualificationLanguageBucket("es")).toBe("other");
-    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("other");
+    expect(memoryQualificationLanguageBucket("en-US")).toBe("declared");
+    expect(memoryQualificationLanguageBucket("ru")).toBe("declared");
+    expect(memoryQualificationLanguageBucket("es")).toBe("declared");
+    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("declared");
     expect(memoryQualificationLanguageBucket("mixed")).toBe("mixed");
     expect(memoryQualificationLanguageBucket("mul")).toBe("mixed");
     expect(memoryQualificationLanguageBucket("und")).toBe("und");

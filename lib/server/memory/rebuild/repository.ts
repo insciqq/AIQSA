@@ -14,6 +14,8 @@ import type {
 import { prisma } from "../../prisma";
 import type { MemoryJobClaim } from "../coordinator/types";
 import {
+  memoryItemEmbeddingPinFromSnapshot,
+  memoryItemEmbeddingGenerationMatchesPin,
   type MemoryItemEmbeddingPin
 } from "../embedding/contract";
 import { enqueueMemoryEmbeddingBatchItems } from "../embedding/enqueue";
@@ -44,14 +46,10 @@ import {
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import { persistMemoryRecallRoundSegmentProjection } from
   "../history/segmentPersistence";
-import {
-  memoryRedactionHasMeaningfulRemainder,
-  redactMemorySecrets
-} from "../explicit/safety";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
@@ -67,11 +65,15 @@ import {
 import {
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "../retrieval/vector";
+import { buildMemoryFactSearchIdentity } from
+  "../persistence/factSearchIdentity";
 import {
+  memoryProviderSnapshotVectorSpaceFingerprint,
   memoryVectorSpaceFingerprint,
   requireAcceptedMemoryUtilityPolicy,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
+import { parseMemoryExecutionSnapshot } from "../execution/snapshot";
 import { requireAdminAcceptedMemoryDestination } from "../execution/adminConsent";
 import { resolveMemoryEgressConsentMode } from "../execution/consentMode";
 import { MemoryExecutionError } from "../execution/errors";
@@ -83,6 +85,10 @@ import {
   type MemoryShadowRebuildOperation
 } from "./contract";
 import { MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS } from "./wake";
+import {
+  advanceMemoryLexicalProjectionRevisionFence,
+  initializeMemoryLexicalProjectionState
+} from "../searchProjection/repository";
 
 type CurrentSearchItemType = Extract<
   MemorySearchItemType,
@@ -194,11 +200,11 @@ type ToolEventRow = Readonly<{
   languageCode: string;
   modelRunId: string;
   modelRunToolCallId: string;
-  normalizedSafeSearchText: string;
   projectionVersion: string;
   redactionReasonCodes: string[];
   redactionState: string;
   safetyClass: string;
+  safeProjectedText: string;
   sourcePayloadHash: string;
 }>;
 
@@ -266,12 +272,18 @@ export type MemoryGenerationRollbackResult = Readonly<{
     | "settings_revision_conflict";
 }>;
 
+export type MemoryCompatibleActiveGenerationPromotion = Readonly<{
+  generationId: string | null;
+  kind: "already_current" | "busy" | "incompatible" | "promoted";
+}>;
+
 const nonterminalJobStates: readonly MemoryJobState[] = [
   "CLAIMED",
   "QUEUED",
   "RETRYABLE_FAILED",
   "WAITING_FOR_EGRESS_CONSENT"
 ];
+const COMPATIBLE_GENERATION_PROMOTION_TIMEOUT_MS = 120_000;
 
 async function shadowCutoverHasBlockingJobs(
   tx: MemoryTransaction,
@@ -539,38 +551,13 @@ async function eligibleFacts(
     rows
   );
   return rows.flatMap((row) => {
-    const redaction = redactMemorySecrets(row.displayText);
-    if (redaction.containsSecret &&
-      !memoryRedactionHasMeaningfulRemainder(row.displayText, redaction)) return [];
-    const safeDisplayText = redaction.redactedText;
-    const normalizedSearchText = normalizeMemorySearchText(safeDisplayText);
-    if (!normalizedSearchText) return [];
     const sources = sourceSnapshots.get(row.versionId) ?? [];
-    if (row.sourceMode === "AUTOMATIC" && sources.length === 0) return [];
+    const identity = buildMemoryFactSearchIdentity(row, sources);
+    if (!identity) return [];
     return [{
+      ...identity,
       itemId: row.versionId,
-      itemType: "FACT_VERSION" as const,
-      languageCode: row.languageCode,
-      safeContentHash: memorySha256({
-        displayText: safeDisplayText,
-        structuredValue: row.structuredValue
-      }),
-      normalizedSearchText,
-      safetyIdentitySnapshot: memorySha256({
-        sensitivityClass: row.sensitivityClass,
-        sources
-      }),
-      sourceIdentitySnapshot: memorySha256({
-        factId: row.factId,
-        sourceMode: row.sourceMode,
-        sources,
-        versionId: row.versionId
-      }),
-      suppressionIdentitySnapshot: memorySha256({
-        canonicalKey: row.canonicalKey,
-        category: row.category,
-        normalizedValue: normalizedSearchText
-      })
+      itemType: "FACT_VERSION" as const
     }];
   });
 }
@@ -1016,7 +1003,7 @@ async function eligibleToolEvents(
     SELECT tool_event."assistantMessageId", tool_event."chatId",
       tool_event."contentHash", tool_event."evidenceRootHash", tool_event."id",
       tool_event."languageCode", tool_event."modelRunId",
-      tool_event."modelRunToolCallId", tool_event."normalizedSafeSearchText",
+      tool_event."modelRunToolCallId", tool_event."safeProjectedText",
       tool_event."projectionVersion", tool_event."redactionReasonCodes",
       tool_event."redactionState"::text AS "redactionState",
       tool_event."safetyClass"::text AS "safetyClass",
@@ -1126,7 +1113,7 @@ async function eligibleToolEvents(
       itemId: row.id,
       itemType: "TOOL_EVENT",
       languageCode: row.languageCode,
-      normalizedSearchText: row.normalizedSafeSearchText,
+      normalizedSearchText: normalizeMemorySearchText(row.safeProjectedText),
       safeContentHash: row.contentHash,
       safetyIdentitySnapshot: memorySha256({
         projectionVersion: row.projectionVersion,
@@ -1254,6 +1241,65 @@ async function existingGenerationEntries(
   });
 }
 
+async function cloneGenerationEntries(
+  tx: MemoryTransaction,
+  input: Readonly<{
+    now: Date;
+    sourceGenerationId: string;
+    targetGenerationId: string;
+    userId: string;
+  }>
+): Promise<number> {
+  return tx.$executeRaw(Prisma.sql`
+    INSERT INTO "MemorySearchEntry" (
+      "id",
+      "userId",
+      "indexGenerationId",
+      "itemType",
+      "factVersionId",
+      "recallChunkId",
+      "recallRoundId",
+      "recallRoundSegmentId",
+      "toolEventId",
+      "normalizedSearchText",
+      "safeContentHash",
+      "languageCode",
+      "safetyIdentitySnapshot",
+      "sourceIdentitySnapshot",
+      "suppressionIdentitySnapshot",
+      "embedding",
+      "embeddingDimension",
+      "embeddingState",
+      "createdAt",
+      "updatedAt"
+    )
+    SELECT
+      gen_random_uuid()::text,
+      source."userId",
+      ${input.targetGenerationId},
+      source."itemType",
+      source."factVersionId",
+      source."recallChunkId",
+      source."recallRoundId",
+      source."recallRoundSegmentId",
+      source."toolEventId",
+      source."normalizedSearchText",
+      source."safeContentHash",
+      source."languageCode",
+      source."safetyIdentitySnapshot",
+      source."sourceIdentitySnapshot",
+      source."suppressionIdentitySnapshot",
+      source."embedding",
+      source."embeddingDimension",
+      source."embeddingState",
+      ${input.now},
+      ${input.now}
+    FROM "MemorySearchEntry" AS source
+    WHERE source."userId" = ${input.userId}
+      AND source."indexGenerationId" = ${input.sourceGenerationId}
+  `);
+}
+
 function generationEntriesMatch(
   generation: GenerationConfiguration,
   existing: readonly ExistingEntry[],
@@ -1365,17 +1411,14 @@ async function cutoverInventoryWith(
   const existing = active
     ? await existingGenerationEntries(tx, settings.userId, active.id)
     : [];
-  const embeddingCompatible = active !== null &&
-    await targetEmbeddingConfigurationIsCurrent(tx, settings, active);
+  const embeddingCompatibility = active === null
+    ? null
+    : await targetEmbeddingCompatibility(tx, settings, active);
   const runtimeCompatible = active !== null &&
-    active.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    active.languageProfile === MEMORY_LEXICAL_ANALYSIS_PROFILE &&
     active.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
-    active.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
-    generationAcceptsRoundSegments(active) &&
-    active.retrievalPipelineVersion === (active.indexMode === "HYBRID"
-      ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
-      : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION) &&
-    embeddingCompatible;
+    generationNonLexicalRuntimeCompatible(active) &&
+    embeddingCompatibility?.kind === "exact";
   return {
     activeGenerationId: active?.id ?? null,
     activeIndexMode: active?.indexMode ?? null,
@@ -1401,6 +1444,16 @@ async function cutoverInventoryWith(
       generationEntriesMatch(active, existing, items),
     settingsRevision: settings.settingsRevision
   };
+}
+
+function generationNonLexicalRuntimeCompatible(
+  generation: GenerationConfiguration
+): boolean {
+  return generation.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
+    generationAcceptsRoundSegments(generation) &&
+    generation.retrievalPipelineVersion === (generation.indexMode === "HYBRID"
+      ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+      : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION);
 }
 
 function targetData(item: SearchIdentity, userId: string, generationId: string) {
@@ -1521,7 +1574,7 @@ function generationConfigurationMatches(
   settings: LockedMemorySettings
 ): boolean {
   const common = source.id !== target.id &&
-    target.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    target.languageProfile === MEMORY_LEXICAL_ANALYSIS_PROFILE &&
     target.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
     target.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
     generationAcceptsRoundSegments(target);
@@ -1542,25 +1595,90 @@ function generationConfigurationMatches(
       : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION);
 }
 
-async function targetEmbeddingConfigurationIsCurrent(
+type TargetEmbeddingCompatibility =
+  | Readonly<{ kind: "exact"; pin: MemoryItemEmbeddingPin | null }>
+  | Readonly<{ kind: "metadata_upgrade"; pin: MemoryItemEmbeddingPin }>;
+
+async function targetEmbeddingCompatibility(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   target: GenerationConfiguration
-): Promise<boolean> {
+): Promise<TargetEmbeddingCompatibility | null> {
   if (target.indexMode === "LEXICAL_ONLY") {
     return target.embeddingConnectionId === null &&
       target.embeddingProviderModelId === null &&
       target.embeddingConfigurationFingerprint === null &&
       target.embeddingDimension === null &&
-      target.vectorSpaceFingerprint === null;
+      target.vectorSpaceFingerprint === null
+      ? { kind: "exact", pin: null }
+      : null;
   }
   const current = await currentEmbeddingPin(tx, settings);
-  return current !== null &&
-    target.embeddingConnectionId === current.connectionId &&
-    target.embeddingProviderModelId === current.providerModelId &&
-    target.embeddingConfigurationFingerprint === current.configurationFingerprint &&
-    target.embeddingDimension === current.dimension &&
-    target.vectorSpaceFingerprint === current.vectorSpaceFingerprint;
+  if (!current) return null;
+  if (memoryItemEmbeddingGenerationMatchesPin(target, current)) {
+    return { kind: "exact", pin: current };
+  }
+  if (
+    !target.embeddingConfigurationFingerprint ||
+    !target.vectorSpaceFingerprint ||
+    target.embeddingConnectionId !== current.connectionId ||
+    target.embeddingProviderModelId !== current.providerModelId ||
+    target.embeddingDimension !== current.dimension
+  ) {
+    return null;
+  }
+
+  const bindings = await tx.memoryExecutionBinding.findMany({
+    orderBy: [{ completedAt: "desc" }, { id: "desc" }],
+    select: { secretFreeExecutionSnapshot: true },
+    take: 16,
+    where: {
+      acceptedOutputHash: { not: null },
+      connectionId: target.embeddingConnectionId,
+      logicalRole: "MEMORY_DOCUMENT_EMBED",
+      providerModelId: target.embeddingProviderModelId,
+      secretFreeExecutionSnapshot: {
+        equals: target.embeddingConfigurationFingerprint,
+        path: ["compatibilityRequirement", "configFingerprint"]
+      },
+      state: "SUCCEEDED",
+      userId: settings.userId
+    }
+  });
+  for (const binding of bindings) {
+    try {
+      const snapshot = parseMemoryExecutionSnapshot(
+        binding.secretFreeExecutionSnapshot
+      );
+      const historical = memoryItemEmbeddingPinFromSnapshot(snapshot);
+      if (
+        !historical ||
+        historical.configurationFingerprint !==
+          target.embeddingConfigurationFingerprint ||
+        !memoryItemEmbeddingGenerationMatchesPin(target, historical) ||
+        memoryProviderSnapshotVectorSpaceFingerprint(
+          snapshot.providerExecutionSnapshot
+        ) !== current.vectorSpaceFingerprint
+      ) {
+        continue;
+      }
+      return { kind: "metadata_upgrade", pin: current };
+    } catch (error) {
+      if (!(error instanceof MemoryExecutionError) ||
+        error.code !== "memory_execution_snapshot_invalid") {
+        throw error;
+      }
+    }
+  }
+  return null;
+}
+
+async function targetEmbeddingVectorSpaceIsCurrent(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  target: GenerationConfiguration
+): Promise<boolean> {
+  return await targetEmbeddingCompatibility(tx, settings, target) !== null;
 }
 
 async function currentEmbeddingPin(
@@ -1723,7 +1841,7 @@ async function applyShadowCatchUp(
     return;
   }
   if (!diff.complete) return;
-  if (!(await targetEmbeddingConfigurationIsCurrent(tx, settings, target))) {
+  if (!(await targetEmbeddingVectorSpaceIsCurrent(tx, settings, target))) {
     await failShadowGeneration(
       tx,
       claim.userId,
@@ -1757,6 +1875,12 @@ async function applyShadowCatchUp(
     where: { id: target.id }
   });
   await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
+  await advanceMemoryLexicalProjectionRevisionFence(tx, {
+    indexGenerationId: target.id,
+    now,
+    targetMemoryRevision: settings.memoryRevision,
+    userId: claim.userId
+  });
   const superseded = await tx.memoryIndexGeneration.updateMany({
     data: { state: "SUPERSEDED", supersededAt: now },
     where: { id: source.id, state: "ACTIVE", userId: claim.userId }
@@ -1792,23 +1916,29 @@ function configurationData(
   const lexicalConfiguration = {
     chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
     contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-    languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+    languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
     normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
     roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
     roundSegmentProjectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
   } as const;
   if (operation === "REBUILD_SEARCH_INDEX") {
+    if (pin && source.indexMode !== "HYBRID") {
+      throw new Error("memory_rebuild_embedding_metadata_upgrade_invalid");
+    }
     return {
       ...lexicalConfiguration,
-      embeddingConfigurationFingerprint: source.embeddingConfigurationFingerprint,
-      embeddingConnectionId: source.embeddingConnectionId,
-      embeddingDimension: source.embeddingDimension,
-      embeddingProviderModelId: source.embeddingProviderModelId,
+      embeddingConfigurationFingerprint:
+        pin?.configurationFingerprint ?? source.embeddingConfigurationFingerprint,
+      embeddingConnectionId: pin?.connectionId ?? source.embeddingConnectionId,
+      embeddingDimension: pin?.dimension ?? source.embeddingDimension,
+      embeddingProviderModelId:
+        pin?.providerModelId ?? source.embeddingProviderModelId,
       indexMode: source.indexMode,
       retrievalPipelineVersion: source.indexMode === "HYBRID"
         ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
         : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
-      vectorSpaceFingerprint: source.vectorSpaceFingerprint
+      vectorSpaceFingerprint:
+        pin?.vectorSpaceFingerprint ?? source.vectorSpaceFingerprint
     } as const;
   }
   if (!pin) throw new Error("memory_rebuild_embedding_pin_missing");
@@ -1930,6 +2060,143 @@ export function createPrismaMemoryRebuildRepository(
   }
 
   return Object.freeze({
+    async promoteCompatibleActiveGeneration(
+      userId: string,
+      now = new Date()
+    ): Promise<MemoryCompatibleActiveGenerationPromotion> {
+      if (!Number.isFinite(now.getTime())) {
+        throw new Error("memory_rebuild_promotion_clock_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const active = settings.activeIndexGenerationId
+          ? await tx.memoryIndexGeneration.findFirst({
+              where: {
+                id: settings.activeIndexGenerationId,
+                state: "ACTIVE",
+                userId
+              }
+            }) as GenerationConfiguration | null
+          : null;
+        if (!active) return { generationId: null, kind: "incompatible" } as const;
+        const embeddingCompatibility = await targetEmbeddingCompatibility(
+          tx,
+          settings,
+          active
+        );
+        if (active.languageProfile === MEMORY_LEXICAL_ANALYSIS_PROFILE &&
+          active.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
+          generationNonLexicalRuntimeCompatible(active) &&
+          embeddingCompatibility?.kind === "exact") {
+          return { generationId: active.id, kind: "already_current" } as const;
+        }
+        if (!generationNonLexicalRuntimeCompatible(active) ||
+          !embeddingCompatibility ||
+          active.indexedThroughMemoryRevision !== settings.memoryRevision) {
+          return { generationId: active.id, kind: "incompatible" } as const;
+        }
+        const [activeJobs, shadowGenerations] = await Promise.all([
+          tx.memoryJob.count({
+            where: { state: { in: [...nonterminalJobStates] }, userId }
+          }),
+          tx.memoryIndexGeneration.count({
+            where: { state: { in: ["BUILDING", "CATCHING_UP", "READY"] }, userId }
+          })
+        ]);
+        if (activeJobs > 0 || shadowGenerations > 0 ||
+          await shadowCutoverHasBlockingJobs(
+          tx,
+          userId,
+          settings.memoryGeneration
+        )) {
+          return { generationId: active.id, kind: "busy" } as const;
+        }
+        const [items, existing, historyProjectionComplete] = await Promise.all([
+          enumerateEligibleItems(tx, settings, now),
+          existingGenerationEntries(tx, userId, active.id),
+          currentHistoryProjectionIsComplete(tx, settings)
+        ]);
+        if (!historyProjectionComplete ||
+          !generationEntriesMatch(active, existing, items)) {
+          return { generationId: active.id, kind: "incompatible" } as const;
+        }
+
+        const maximum = await tx.memoryIndexGeneration.aggregate({
+          _max: { generation: true },
+          where: { userId }
+        });
+        await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
+        const replacementId = randomUUID();
+        const replacement = await tx.memoryIndexGeneration.create({
+          data: {
+            ...configurationData(
+              active,
+              "REBUILD_SEARCH_INDEX",
+              embeddingCompatibility.kind === "metadata_upgrade"
+                ? embeddingCompatibility.pin
+                : null
+            ),
+            generation: (maximum._max.generation ?? -1) + 1,
+            id: replacementId,
+            indexedThroughMemoryRevision: 0,
+            sourceIndexGenerationId: active.id,
+            state: "BUILDING",
+            targetMemoryRevision: settings.memoryRevision,
+            userId
+          }
+        }) as GenerationConfiguration;
+        await initializeMemoryLexicalProjectionState(tx, {
+          indexGenerationId: replacement.id,
+          targetMemoryRevision: settings.memoryRevision,
+          userId
+        });
+        const clonedEntries = await cloneGenerationEntries(tx, {
+          now,
+          sourceGenerationId: active.id,
+          targetGenerationId: replacement.id,
+          userId
+        });
+        const replacementEntries = await existingGenerationEntries(
+          tx,
+          userId,
+          replacement.id
+        );
+        if (clonedEntries !== existing.length ||
+          !generationEntriesMatch(replacement, replacementEntries, items)) {
+          throw new Error("memory_rebuild_promotion_clone_invalid");
+        }
+
+        const superseded = await tx.memoryIndexGeneration.updateMany({
+          data: { state: "SUPERSEDED", supersededAt: now },
+          where: { id: active.id, state: "ACTIVE", userId }
+        });
+        const activated = await tx.memoryIndexGeneration.updateMany({
+          data: {
+            activatedAt: now,
+            indexedThroughMemoryRevision: settings.memoryRevision,
+            readyAt: now,
+            state: "ACTIVE"
+          },
+          where: { id: replacement.id, state: "BUILDING", userId }
+        });
+        const selected = await tx.userMemorySettings.updateMany({
+          data: { activeIndexGenerationId: replacement.id },
+          where: {
+            activeIndexGenerationId: active.id,
+            memoryGeneration: settings.memoryGeneration,
+            memoryRevision: settings.memoryRevision,
+            userId
+          }
+        });
+        if (superseded.count !== 1 || activated.count !== 1 || selected.count !== 1) {
+          throw new Error("memory_rebuild_promotion_fence_failed");
+        }
+        settings.activeIndexGenerationId = replacement.id;
+        return { generationId: replacement.id, kind: "promoted" } as const;
+      }, {
+        deadlineAtMs: Date.now() + COMPATIBLE_GENERATION_PROMOTION_TIMEOUT_MS
+      });
+    },
+
     inventory(
       userId: string,
       now = new Date()
@@ -1979,11 +2246,11 @@ export function createPrismaMemoryRebuildRepository(
         if (
           !active || !target || active.id === target.id ||
           !targetProjectionCompatible ||
-          target.languageProfile !== MEMORY_LEXICAL_LANGUAGE_PROFILE ||
+          target.languageProfile !== MEMORY_LEXICAL_ANALYSIS_PROFILE ||
           target.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
           target.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
           target.retrievalPipelineVersion !== expectedPipeline ||
-          !await targetEmbeddingConfigurationIsCurrent(tx, settings, target)
+          !await targetEmbeddingVectorSpaceIsCurrent(tx, settings, target)
         ) {
           return {
             activeGenerationId: settings.activeIndexGenerationId,
@@ -2005,6 +2272,12 @@ export function createPrismaMemoryRebuildRepository(
         }
         const now = input.now ?? new Date();
         await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
+        await advanceMemoryLexicalProjectionRevisionFence(tx, {
+          indexGenerationId: target.id,
+          now,
+          targetMemoryRevision: settings.memoryRevision,
+          userId
+        });
         const superseded = await tx.memoryIndexGeneration.updateMany({
           data: { state: "SUPERSEDED", supersededAt: now },
           where: { id: active.id, state: "ACTIVE", userId }
@@ -2093,6 +2366,11 @@ export function createPrismaMemoryRebuildRepository(
             targetMemoryRevision: settings.memoryRevision,
             userId
           }
+        });
+        await initializeMemoryLexicalProjectionState(tx, {
+          indexGenerationId: generationId,
+          targetMemoryRevision: settings.memoryRevision,
+          userId
         });
         const queued = await enqueueMemoryJob(tx, settings, {
           idempotencyFingerprint: memoryShadowRebuildJobFingerprint({

@@ -93,11 +93,13 @@ import { createPrismaMemorySettingsRepository } from
   "../../lib/server/memory/persistence/settings";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION
 } from "../../lib/server/memory/persistence/lexical";
 import { createRerankerModelRoleResolver } from
   "../../lib/server/providerRuntime/rerankerModelRole";
+import { normalizeProviderModelConfiguration } from
+  "../../lib/server/providers/providerConfiguration";
 import { createPrismaMemoryRebuildRepository } from
   "../../lib/server/memory/rebuild/repository";
 import { createMemoryRebuildService } from
@@ -145,12 +147,14 @@ import {
   longMemEvalEmbeddingBatchSizeDistribution,
   longMemEvalExpectedUtilityModelIds,
   longMemEvalHybridRebuildFailed,
+  longMemEvalLexicalCutoverHealthy,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
   longMemEvalQuestionPrompt,
   longMemEvalSettledImportTurns,
   mapConcurrentOrdered,
+  mapConcurrentOrderedWaves,
   parseLongMemEvalDate,
   resolveBenchmarkOutputDirectory,
   sanitizeLongMemEvalRetrievalAudit,
@@ -174,12 +178,19 @@ import {
   type LongMemEvalCheckpointOutcome
 } from "./checkpoint";
 import {
+  readLongMemEvalCaseEvaluation,
+  settleLongMemEvalCaseEvaluation,
+  type LongMemEvalCaseEvaluation
+} from "./caseEvaluation";
+import {
   assertLongMemEvalQualificationDataset,
   decodeLongMemEvalQualificationManifestId,
   loadLongMemEvalQualificationManifest,
   type LongMemEvalQualificationManifest,
   type LongMemEvalQualificationManifestId
 } from "./qualification";
+import { assertLongMemEvalQualificationRevision } from
+  "./qualificationRevision";
 import {
   LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
   LONGMEMEVAL_PREPARED_CASE_EMAIL_SUFFIX,
@@ -188,6 +199,7 @@ import {
   longMemEvalPreparedCaseBuildingEmail,
   longMemEvalPreparedCaseDisplayName,
   longMemEvalPreparedCaseFingerprint,
+  longMemEvalPreparedCaseReadyFingerprint,
   longMemEvalPreparedCaseReadyEmail
 } from "./preparedCaseCache";
 
@@ -203,6 +215,10 @@ const defaultQualificationSystemModelId = "gpt-5.6-luna" satisfies
   LongMemEvalSystemModelId;
 const qualificationSystemReasoningEffort = "medium";
 const qualificationEmbeddingModelId = "qwen/qwen3-embedding-8b";
+const qualificationEmbeddingProviderOrder = Object.freeze([
+  "nebius",
+  "deepinfra"
+] as const);
 const legacyQualificationRerankerModelId = "qwen/qwen3-reranker-8b";
 const qualificationPrimaryRerankerDeployment = (() => {
   const deployment = approvedRerankerDeployments.find(({ preset }) => preset.default);
@@ -262,6 +278,7 @@ type CliOptions = Readonly<{
   debugMemory: boolean;
   forceDreamDiagnostic: boolean;
   indexTimeoutMs: number;
+  onlineEvaluation: boolean;
   outputDirectory: string;
   profile: LongMemEvalProfile;
   qualificationManifestId: LongMemEvalQualificationManifestId | null;
@@ -273,6 +290,7 @@ type CliOptions = Readonly<{
   sampleSize: number;
   seed: string | undefined;
   sessionConcurrency: number;
+  singleWave: boolean;
   systemModelId: LongMemEvalSystemModelId;
 }>;
 
@@ -296,7 +314,11 @@ type ProviderRoles = Readonly<{
     id: string;
     upstreamModelId: LongMemEvalSystemModelId;
   }>;
-  qwen: Readonly<{ connectionId: string; id: string }>;
+  qwen: Readonly<{
+    connectionId: string;
+    id: string;
+    providerOrder: readonly string[];
+  }>;
 }>;
 
 type BenchmarkIdentity = Readonly<{
@@ -316,7 +338,9 @@ type ImportedHistory = Readonly<{
 type PreparedCaseCacheEvidence = Readonly<{
   cacheVersion: string;
   hybridCacheHit: boolean;
+  sourceBuildRecovered: boolean;
   sourceCacheHit: boolean;
+  sourceCompatibilityPromoted: boolean;
   sourceFingerprint: string;
 }>;
 
@@ -351,6 +375,7 @@ type CaseSummary = Readonly<{
     costMicros: number;
     inputTokens: number;
     memoryContextTokens: number;
+    memoryDegradationCode: string | null;
     memoryItems: number;
     memoryOutcome: string;
     outputTokens: number;
@@ -435,6 +460,7 @@ function parseCli(argv: readonly string[]): CliOptions {
   let debugMemory = false;
   let forceDreamDiagnostic = false;
   let indexTimeoutMinutes = 45;
+  let onlineEvaluation = false;
   let output = `results/${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
   let profile: LongMemEvalProfile = "official";
   let qualificationManifestId: LongMemEvalQualificationManifestId | null = null;
@@ -447,6 +473,7 @@ function parseCli(argv: readonly string[]): CliOptions {
   let sampleSize = 1;
   let seed: string | undefined;
   let sessionConcurrency = 16;
+  let singleWave = false;
   let systemModelId: LongMemEvalSystemModelId = defaultQualificationSystemModelId;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -483,6 +510,10 @@ function parseCli(argv: readonly string[]): CliOptions {
         if (!next?.trim()) throw new Error("longmemeval_output_invalid");
         output = next;
         index += 1;
+        break;
+      case "--online-evaluation":
+        qualificationOverridePresent = true;
+        onlineEvaluation = true;
         break;
       case "--profile":
         qualificationOverridePresent = true;
@@ -541,6 +572,9 @@ function parseCli(argv: readonly string[]): CliOptions {
         );
         index += 1;
         break;
+      case "--single-wave":
+        singleWave = true;
+        break;
       case "--system-model":
         qualificationOverridePresent = true;
         systemModelId = decodeLongMemEvalSystemModelId(next);
@@ -566,6 +600,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     debugMemory,
     forceDreamDiagnostic,
     indexTimeoutMs: indexTimeoutMinutes * 60_000,
+    onlineEvaluation,
     outputDirectory: resolveBenchmarkOutputDirectory(benchmarkRoot, output),
     profile,
     qualificationManifestId,
@@ -577,6 +612,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     sampleSize,
     seed,
     sessionConcurrency,
+    singleWave,
     systemModelId
   });
 }
@@ -585,20 +621,35 @@ function applyQualificationManifest(
   options: CliOptions,
   manifest: LongMemEvalQualificationManifest
 ): CliOptions {
+  if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+  }
   const manifestRoute = qualificationManifestRerankerRoute(manifest);
   const activeRoute = approvedRerankerDeployments.map(({ preset }) => ({
     relevanceScoreFloor: preset.relevanceScoreFloor,
     upstreamModelId: preset.upstreamModelId
   }));
   if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
-    manifest.id !== "fu2-reader-first-blind-50-v6" ||
+    manifest.runtime.embedding.providerOrder.length !==
+      qualificationEmbeddingProviderOrder.length ||
+    manifest.runtime.embedding.providerOrder.some((provider, index) =>
+      provider !== qualificationEmbeddingProviderOrder[index]) ||
     manifest.runtime.reranker.policyVersion !== RERANKER_ROUTE_POLICY_VERSION ||
     !qualificationRerankerRoutesMatch(manifestRoute, activeRoute) ||
     manifest.runtime.systemModel.reasoningEffort !==
       qualificationSystemReasoningEffort ||
     manifest.runtime.workerConcurrency.global !== qualificationMemoryJobParallelism ||
     manifest.runtime.workerConcurrency.perUser !==
-      qualificationMemoryJobPerUserParallelism) {
+      qualificationMemoryJobPerUserParallelism ||
+    manifest.runtime.evaluation.mode !== "per_case" ||
+    !manifest.runtime.evaluation.failFast ||
+    manifest.runtime.evaluation.model !== "gpt-4o-2024-08-06" ||
+    manifest.runtime.evaluation.scriptSha256 !== LONGMEMEVAL_EVALUATOR_SHA256 ||
+    manifest.runtime.evaluation.oracleSha256 !== LONGMEMEVAL_ORACLE_SHA256 ||
+    manifest.runtime.lexical.backend !== "OPENSEARCH" ||
+    process.env.AIQSA_MEMORY_LEXICAL_BACKEND !== manifest.runtime.lexical.backend ||
+    process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID !==
+      manifest.runtime.lexical.indexBuildId) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
   return Object.freeze({
@@ -607,6 +658,7 @@ function applyQualificationManifest(
     debugMemory: manifest.runtime.debugMemory,
     forceDreamDiagnostic: manifest.runtime.forceDreamDiagnostic,
     indexTimeoutMs: manifest.runtime.indexTimeoutMinutes * 60_000,
+    onlineEvaluation: true,
     profile: manifest.profile,
     questionIds: Object.freeze(
       manifest.selection.cases.map(({ questionId }) => questionId)
@@ -650,6 +702,12 @@ function assertQualificationResolvedRerankerRoute(
     qualificationManifestRerankerRoute(manifest),
     roles.rerankerRoute
   )) {
+    throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+  }
+  if (manifest.id === "fu2-reader-first-blind-50-v7" &&
+    (roles.qwen.providerOrder.length !== manifest.runtime.embedding.providerOrder.length ||
+      roles.qwen.providerOrder.some((provider, index) =>
+        provider !== manifest.runtime.embedding.providerOrder[index]))) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
 }
@@ -717,6 +775,9 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 function decodeCheckpointCaseSummary(value: unknown): CaseSummary {
   if (!isRecord(value) || !isRecord(value.answer) ||
     typeof value.answer.memoryOutcome !== "string" ||
+    (value.answer.memoryDegradationCode !== null &&
+      (typeof value.answer.memoryDegradationCode !== "string" ||
+        !/^[a-z0-9_]{1,64}$/u.test(value.answer.memoryDegradationCode))) ||
     typeof value.questionId !== "string" || typeof value.questionType !== "string" ||
     !isRecord(value.componentEvaluation) ||
     !isRecord(value.embeddingBatchSizeDistribution) || !isRecord(value.history) ||
@@ -740,6 +801,9 @@ function decodeCheckpointCaseFailure(value: unknown): CaseFailure {
 
 function checkpointOutcomeReason(summary: CaseSummary): string {
   if (summary.answer.memoryOutcome === "USED") return "memory_used";
+  if (summary.answer.memoryDegradationCode) {
+    return summary.answer.memoryDegradationCode;
+  }
   if (summary.retrieval.reason) return summary.retrieval.reason;
   const outcome = summary.answer.memoryOutcome.toLowerCase();
   return /^[a-z0-9_]{1,64}$/u.test(outcome)
@@ -757,6 +821,13 @@ function latestCheckpointOutcome(
   const latest = checkpoint.attempts.at(-1);
   if (!latest) throw new Error("longmemeval_checkpoint_invalid");
   return latest.outcome;
+}
+
+function qualificationLexicalCutoverHealthy(
+  summary: CaseSummary,
+  required: boolean
+): boolean {
+  return !required || longMemEvalLexicalCutoverHealthy(summary.retrieval);
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -953,6 +1024,18 @@ async function resolveProviderRoles(
         where: { id: memorySettings.embeddingProviderModelId }
       })
     : null;
+  let qwenConfiguration: ReturnType<typeof normalizeProviderModelConfiguration> | null = null;
+  try {
+    qwenConfiguration = qwen?.activeConfig
+      ? normalizeProviderModelConfiguration(qwen.activeConfig)
+      : null;
+  } catch {
+    qwenConfiguration = null;
+  }
+  const qwenProviderOrder = qwenConfiguration?.openRouterRouting?.mode ===
+    "only_selected"
+    ? qwenConfiguration.openRouterRouting.providers
+    : [];
   const system = systemModels[0];
   const systemCredential = system?.connection.defaultCredential;
   if (systemModels.length !== 1 || !system || !systemCredential?.enabled ||
@@ -960,6 +1043,10 @@ async function resolveProviderRoles(
     qwen.activeVersion < 1 || !qwen.enabled || !qwen.connection.enabled ||
     qwen.connection.family !== "openrouter" || qwen.modelClass !== "embedding" ||
     qwen.modelId !== qualificationEmbeddingModelId ||
+    qwenConfiguration?.embedding?.providerFamily !== "openrouter" ||
+    qwenProviderOrder.length !== qualificationEmbeddingProviderOrder.length ||
+    qwenProviderOrder.some((provider, index) =>
+      provider !== qualificationEmbeddingProviderOrder[index]) ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
     systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort ||
     systemPolicy.rerankerProviderModelId !==
@@ -1012,7 +1099,11 @@ async function resolveProviderRoles(
       id: system.id,
       upstreamModelId: decodeLongMemEvalSystemModelId(system.modelId)
     }),
-    qwen: Object.freeze({ connectionId: qwen.connectionId, id: qwen.id })
+    qwen: Object.freeze({
+      connectionId: qwen.connectionId,
+      id: qwen.id,
+      providerOrder: Object.freeze([...qwenProviderOrder])
+    })
   });
 }
 
@@ -1550,6 +1641,30 @@ async function alignPreparedCaseIdentity(
   }
 }
 
+async function promotePreparedCaseIdentity(
+  prisma: PrismaClient,
+  input: Readonly<{
+    currentDisplayName: string;
+    currentEmail: string;
+    displayName: string;
+    email: string;
+    userId: string;
+  }>
+): Promise<void> {
+  const promoted = await prisma.user.updateMany({
+    data: { displayName: input.displayName, email: input.email },
+    where: {
+      displayName: input.currentDisplayName,
+      email: input.currentEmail,
+      id: input.userId,
+      status: "active"
+    }
+  });
+  if (promoted.count !== 1) {
+    throw new Error("longmemeval_prepared_case_identity_promotion_failed");
+  }
+}
+
 async function loadPreparedHistory(
   prisma: PrismaClient,
   userId: string,
@@ -1670,10 +1785,150 @@ async function loadPreparedHistory(
   });
 }
 
+async function assertPreparedHistoryContractCompatibility(
+  prisma: PrismaClient,
+  userId: string
+): Promise<void> {
+  const [
+    incompatibleCheckpoint,
+    incompatibleChunk,
+    incompatibleRound,
+    incompatibleSegment,
+    incompatibleToolEvent,
+    incompatibleDigest,
+    executionBindings
+  ] = await Promise.all([
+    prisma.chatMemoryCheckpoint.findFirst({
+      select: { id: true },
+      where: {
+        pipelineVersion: { not: MEMORY_HISTORY_INDEX_PIPELINE_VERSION },
+        userId
+      }
+    }),
+    prisma.memoryRecallChunk.findFirst({
+      select: { id: true },
+      where: {
+        OR: [
+          { chunkingVersion: { not: MEMORY_HISTORY_CHUNKING_VERSION } },
+          {
+            sourceProjectionVersion: {
+              not: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
+            }
+          }
+        ],
+        state: "ACTIVE",
+        userId
+      }
+    }),
+    prisma.memoryRecallRound.findFirst({
+      select: { id: true },
+      where: {
+        OR: [
+          { projectionVersion: { not: MEMORY_RECALL_ROUND_PROJECTION_VERSION } },
+          {
+            sourceProjectionVersion: {
+              not: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
+            }
+          },
+          {
+            contextualKeyPolicyVersion: {
+              not: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION
+            }
+          }
+        ],
+        state: "ACTIVE",
+        userId
+      }
+    }),
+    prisma.memoryRecallRoundSegment.findFirst({
+      select: { id: true },
+      where: {
+        OR: [
+          {
+            projectionVersion: {
+              not: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
+            }
+          },
+          {
+            contextualKeyPolicyVersion: {
+              not: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION
+            }
+          }
+        ],
+        state: "ACTIVE",
+        userId
+      }
+    }),
+    prisma.memoryToolEvent.findFirst({
+      select: { id: true },
+      where: {
+        projectionVersion: { not: MEMORY_TOOL_EVENT_PROJECTION_VERSION },
+        state: "ACTIVE",
+        userId
+      }
+    }),
+    prisma.chatMemoryDigest.findFirst({
+      select: { id: true },
+      where: {
+        OR: [
+          { pipelineVersion: { not: MEMORY_CHAT_DIGEST_PIPELINE_VERSION } },
+          {
+            sourceProjectionVersion: {
+              not: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
+            }
+          },
+          { rebuildPolicyVersion: null },
+          {
+            rebuildPolicyVersion: {
+              not: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION
+            }
+          }
+        ],
+        state: "ACTIVE",
+        userId
+      }
+    }),
+    prisma.memoryExecutionBinding.findMany({
+      select: {
+        pipelineVersion: true,
+        policyVersion: true,
+        promptVersion: true,
+        schemaVersion: true
+      },
+      where: {
+        logicalRole: "MEMORY_HISTORY_CLASSIFY",
+        state: "SUCCEEDED",
+        userId
+      }
+    })
+  ]);
+  const executionVersions = [
+    MEMORY_HISTORY_CLASSIFICATION_VERSIONS,
+    MEMORY_CONTEXTUAL_KEY_VERSIONS,
+    MEMORY_CHAT_DIGEST_VERSIONS
+  ];
+  const incompatibleBinding = executionBindings.some((binding) =>
+    !executionVersions.some((versions) =>
+      binding.pipelineVersion === versions.pipelineVersion &&
+      binding.policyVersion === versions.policyVersion &&
+      binding.promptVersion === versions.promptVersion &&
+      binding.schemaVersion === versions.schemaVersion));
+  if (incompatibleCheckpoint || incompatibleChunk || incompatibleRound ||
+    incompatibleSegment || incompatibleToolEvent || incompatibleDigest ||
+    incompatibleBinding) {
+    throw new Error("longmemeval_prepared_case_history_contract_incompatible");
+  }
+}
+
 async function loadReadyHybridIndex(
   prisma: PrismaClient,
   userId: string
 ): Promise<Readonly<{ activeChunks: number; hybridEntries: number }> | null> {
+  const promotion = await createPrismaMemoryRebuildRepository(prisma)
+    .promoteCompatibleActiveGeneration(userId);
+  if (promotion.kind !== "already_current" && promotion.kind !== "promoted") {
+    return null;
+  }
   const pin = await probeCurrentMemoryEmbeddingPin(
     defaultMemoryExecutionAuthority,
     prisma,
@@ -1685,7 +1940,7 @@ async function loadReadyHybridIndex(
     where: { userId }
   });
   if (!settings?.activeIndexGenerationId) return null;
-  const [generation, activeJobs, failedEmbeddingJobs, activeChunks, entries] =
+  const [generation, activeJobs, activeChunks, entries] =
     await Promise.all([
       prisma.memoryIndexGeneration.findFirst({
         select: {
@@ -1714,13 +1969,6 @@ async function loadReadyHybridIndex(
       prisma.memoryJob.count({
         where: { state: { in: [...activeJobStates] }, userId }
       }),
-      prisma.memoryJob.count({
-        where: {
-          kind: "EMBED_ITEMS",
-          state: { in: [...unsuccessfulJobStates] },
-          userId
-        }
-      }),
       prisma.memoryRecallChunk.count({ where: { state: "ACTIVE", userId } }),
       prisma.memorySearchEntry.findMany({
         select: { embeddingState: true },
@@ -1729,7 +1977,7 @@ async function loadReadyHybridIndex(
     ]);
   if (!generation || generation.state !== "ACTIVE" ||
     generation.indexedThroughMemoryRevision !== settings.memoryRevision ||
-    generation.languageProfile !== MEMORY_LEXICAL_LANGUAGE_PROFILE ||
+    generation.languageProfile !== MEMORY_LEXICAL_ANALYSIS_PROFILE ||
     generation.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
     generation.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
     generation.roundProjectionVersion !== MEMORY_RECALL_ROUND_PROJECTION_VERSION ||
@@ -1738,7 +1986,7 @@ async function loadReadyHybridIndex(
     generation.contextualKeyPolicyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
     generation.retrievalPipelineVersion !== MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION ||
     !memoryItemEmbeddingGenerationMatchesPin(generation, pin) || activeJobs !== 0 ||
-    failedEmbeddingJobs !== 0 || activeChunks === 0 || entries.length === 0 ||
+    activeChunks === 0 || entries.length === 0 ||
     entries.some(({ embeddingState }) => embeddingState !== "READY")) {
     return null;
   }
@@ -1958,7 +2206,9 @@ async function waitForHistoryIndex(
         where: { userId }
       })
     ]);
-    const failures = jobs.filter(({ state }) => unsuccessfulJobStates.has(state));
+    const failures = jobs.filter(({ kind, state }) =>
+      kind !== "EMBED_ITEMS" && kind !== "REBUILD_INDEX" &&
+      unsuccessfulJobStates.has(state));
     const failedJob = failures[0];
     if (failedJob) {
       throw new Error([
@@ -2220,6 +2470,82 @@ async function waitForHybridIndex(
   throw new Error("longmemeval_hybrid_rebuild_timeout");
 }
 
+async function waitForOpenSearchProjection(
+  prisma: PrismaClient,
+  userId: string,
+  timeoutMs: number,
+  questionId: string
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let nextProgressAt = 0;
+  while (Date.now() < deadline) {
+    const settings = await prisma.userMemorySettings.findUnique({
+      select: { activeIndexGenerationId: true, memoryRevision: true },
+      where: { userId }
+    });
+    const generationId = settings?.activeIndexGenerationId;
+    if (!settings || !generationId) {
+      throw new Error("longmemeval_lexical_projection_authority_missing");
+    }
+    const [state, outstanding, blocked] = await Promise.all([
+      prisma.memoryLexicalProjectionState.findFirst({
+        select: {
+          enqueuedThroughSequence: true,
+          expectedContentFingerprint: true,
+          expectedDocumentCount: true,
+          projectedThroughRevision: true,
+          projectionFingerprint: true,
+          status: true,
+          targetMemoryRevision: true,
+          visibleContentFingerprint: true,
+          visibleDocumentCount: true,
+          visibleThroughSequence: true
+        },
+        where: { indexGenerationId: generationId, userId }
+      }),
+      prisma.memoryLexicalProjectionEvent.count({
+        where: {
+          indexGenerationId: generationId,
+          state: { not: "SUCCEEDED" },
+          userId
+        }
+      }),
+      prisma.memoryLexicalProjectionEvent.count({
+        where: {
+          indexGenerationId: generationId,
+          state: "BLOCKED_REQUIRES_ADMIN",
+          userId
+        }
+      })
+    ]);
+    if (blocked > 0 || state?.status === "DEGRADED" || state?.status === "RETIRED") {
+      throw new Error("longmemeval_lexical_projection_failed");
+    }
+    const contentMatches = state?.expectedContentFingerprint !== null &&
+      state?.expectedContentFingerprint === state?.visibleContentFingerprint;
+    const countsMatch = state?.expectedDocumentCount !== null &&
+      state?.expectedDocumentCount === state?.visibleDocumentCount;
+    if (state?.status === "READY" && outstanding === 0 &&
+      state.targetMemoryRevision === settings.memoryRevision &&
+      state.projectedThroughRevision === settings.memoryRevision &&
+      state.enqueuedThroughSequence === state.visibleThroughSequence &&
+      state.projectionFingerprint !== null && contentMatches && countsMatch) {
+      return;
+    }
+    if (Date.now() >= nextProgressAt) {
+      emit("lexical_projection_progress", {
+        blocked,
+        outstanding,
+        questionId,
+        status: state?.status ?? null
+      });
+      nextProgressAt = Date.now() + 15_000;
+    }
+    await sleep(2_000);
+  }
+  throw new Error("longmemeval_lexical_projection_timeout");
+}
+
 function requestHeaders(baseUrl: URL, cookie: string, json = false): HeadersInit {
   return {
     accept: json ? "application/json" : "text/event-stream",
@@ -2426,6 +2752,7 @@ async function runQuestion(
     prisma.modelRunMemoryBinding.findUnique({
       select: {
         contextTokenCount: true,
+        degradationCode: true,
         id: true,
         outcome: true,
         retrievalAttemptId: true
@@ -2456,6 +2783,7 @@ async function runQuestion(
       costMicros: modelRun.estimatedCostMicros,
       inputTokens: modelRun.inputTokens,
       memoryContextTokens: memoryBinding.contextTokenCount,
+      memoryDegradationCode: memoryBinding.degradationCode,
       memoryItems,
       memoryOutcome: memoryBinding.outcome,
       outputTokens: modelRun.outputTokens,
@@ -3078,6 +3406,8 @@ async function runCase(
       let lexicalIndexCompletedAt!: number;
       let hybridIndexCompletedAt!: number;
       let sourceCacheHit = false;
+      let sourceBuildRecovered = false;
+      let sourceCompatibilityPromoted = false;
       let hybridCacheHit = false;
       const buildFresh = async (persistent: Readonly<{
         buildingEmail: string;
@@ -3256,6 +3586,133 @@ async function runCase(
             cachedUser = null;
           }
         }
+        if (!cachedUser) {
+          const buildingUsers = await prisma.user.findMany({
+            orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+            select: { displayName: true, email: true, id: true },
+            where: {
+              displayName,
+              email: {
+                endsWith: LONGMEMEVAL_PREPARED_CASE_EMAIL_SUFFIX,
+                startsWith: `building.${sourceFingerprint.slice(0, 12)}.`
+              }
+            }
+          });
+          for (const buildingUser of buildingUsers) {
+            if (!buildingUser.email) continue;
+            try {
+              await assertPreparedQueryIsolation(
+                prisma,
+                buildingUser.id,
+                entry.questionId
+              );
+              await assertPreparedHistoryContractCompatibility(
+                prisma,
+                buildingUser.id
+              );
+              await alignPreparedCaseIdentity(prisma, {
+                displayName: buildingUser.displayName,
+                email: buildingUser.email,
+                roles,
+                userId: buildingUser.id
+              });
+              imported = await loadPreparedHistory(prisma, buildingUser.id, entry);
+              learning = await waitForHistoryIndex(
+                prisma,
+                buildingUser.id,
+                imported.chatIds.length,
+                imported.automaticSettlements,
+                options.profile,
+                options.indexTimeoutMs,
+                entry.questionId
+              );
+              await promotePreparedCaseIdentity(prisma, {
+                currentDisplayName: buildingUser.displayName,
+                currentEmail: buildingUser.email,
+                displayName,
+                email: readyEmail,
+                userId: buildingUser.id
+              });
+              cachedUser = { id: buildingUser.id };
+              sourceBuildRecovered = true;
+              emit("prepared_case_build_recovered", {
+                questionId: entry.questionId,
+                sourceFingerprint
+              });
+              break;
+            } catch (error) {
+              emit("prepared_case_build_recovery_invalid", {
+                code: safeFailureCode(error),
+                questionId: entry.questionId
+              });
+            }
+          }
+        }
+        if (!cachedUser) {
+          const compatibleUsers = await prisma.user.findMany({
+            orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+            select: { displayName: true, email: true, id: true },
+            where: {
+              displayName: { startsWith: `LongMemEval prepared ${entry.questionId} ` },
+              email: { endsWith: LONGMEMEVAL_PREPARED_CASE_EMAIL_SUFFIX }
+            }
+          });
+          for (const compatibleUser of compatibleUsers) {
+            const legacyFingerprint = longMemEvalPreparedCaseReadyFingerprint({
+              displayName: compatibleUser.displayName,
+              email: compatibleUser.email,
+              questionId: entry.questionId
+            });
+            if (!legacyFingerprint || legacyFingerprint === sourceFingerprint) continue;
+            if (!compatibleUser.email) continue;
+            try {
+              await assertPreparedQueryIsolation(
+                prisma,
+                compatibleUser.id,
+                entry.questionId
+              );
+              await assertPreparedHistoryContractCompatibility(
+                prisma,
+                compatibleUser.id
+              );
+              await alignPreparedCaseIdentity(prisma, {
+                displayName: compatibleUser.displayName,
+                email: compatibleUser.email,
+                roles,
+                userId: compatibleUser.id
+              });
+              imported = await loadPreparedHistory(prisma, compatibleUser.id, entry);
+              learning = await waitForHistoryIndex(
+                prisma,
+                compatibleUser.id,
+                imported.chatIds.length,
+                imported.automaticSettlements,
+                options.profile,
+                options.indexTimeoutMs,
+                entry.questionId
+              );
+              await promotePreparedCaseIdentity(prisma, {
+                currentDisplayName: compatibleUser.displayName,
+                currentEmail: compatibleUser.email,
+                displayName,
+                email: readyEmail,
+                userId: compatibleUser.id
+              });
+              cachedUser = { id: compatibleUser.id };
+              sourceCompatibilityPromoted = true;
+              emit("prepared_case_source_compatibility_promoted", {
+                questionId: entry.questionId,
+                sourceFingerprint
+              });
+              break;
+            } catch (error) {
+              emit("prepared_case_source_compatibility_invalid", {
+                code: safeFailureCode(error),
+                questionId: entry.questionId
+              });
+            }
+          }
+        }
         if (cachedUser) {
           sourceCacheHit = true;
           preserveUser = true;
@@ -3318,18 +3775,33 @@ async function runCase(
         preparedCase = Object.freeze({
           cacheVersion: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
           hybridCacheHit,
+          sourceBuildRecovered,
           sourceCacheHit,
+          sourceCompatibilityPromoted,
           sourceFingerprint
         });
         emit(sourceCacheHit ? "prepared_case_cache_hit" : "prepared_case_cache_miss", {
           hybridCacheHit,
           questionId: entry.questionId,
+          sourceBuildRecovered,
+          sourceCompatibilityPromoted,
           sourceFingerprint
         });
       } else {
         await buildFresh(null);
       }
       if (!identity) throw new Error("longmemeval_identity_setup_failed");
+      if (options.qualificationManifestId === "fu2-reader-first-blind-50-v7") {
+        await withFailureCode(
+          "longmemeval_lexical_projection_failed",
+          () => waitForOpenSearchProjection(
+            prisma,
+            identity!.userId,
+            options.indexTimeoutMs,
+            entry.questionId
+          )
+        );
+      }
       const answer = await withFailureCode(
         "longmemeval_question_run_failed",
         () => runQuestion(
@@ -3483,6 +3955,9 @@ function buildCheckpointIdentity(input: Readonly<{
       embeddingModel: qualificationEmbeddingModelId,
       forceDreamDiagnostic: input.options.forceDreamDiagnostic,
       indexTimeoutMs: input.options.indexTimeoutMs,
+      lexicalBackend: process.env.AIQSA_MEMORY_LEXICAL_BACKEND ?? "POSTGRES",
+      lexicalIndexBuildId: process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID ?? null,
+      onlineEvaluation: input.options.onlineEvaluation,
       preparedCaseCache: Object.freeze({
         enabled: input.options.profile === "official" &&
           !input.options.forceDreamDiagnostic,
@@ -3505,7 +3980,7 @@ function buildCheckpointIdentity(input: Readonly<{
       mode: input.selection.mode,
       seed: input.selection.seed
     }),
-    version: 3
+    version: 4
   });
 }
 
@@ -3536,7 +4011,14 @@ async function main(): Promise<void> {
     ? await loadLongMemEvalQualificationManifest(options.qualificationManifestId)
     : null;
   if (qualificationManifest) {
+    if (qualificationManifest.id !== "fu2-reader-first-blind-50-v7") {
+      throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+    }
     options = applyQualificationManifest(options, qualificationManifest);
+    await assertLongMemEvalQualificationRevision(repositoryRoot, {
+      headCommit: qualificationManifest.source.appCommit,
+      worktreeSha256: qualificationManifest.source.appWorktreeSha256
+    });
   }
   const allCases = await loadDataset();
   await assertReferenceMetadata(allCases);
@@ -3604,18 +4086,75 @@ async function main(): Promise<void> {
       }
     }
     const checkpoints = new Map(loadedCheckpoints);
+    const caseEvaluations = new Map<string, LongMemEvalCaseEvaluation>();
+    const lexicalCutoverRequired = qualificationManifest?.id ===
+      "fu2-reader-first-blind-50-v7";
+    if (options.onlineEvaluation) {
+      for (const entry of selection.cases) {
+        const checkpoint = checkpoints.get(entry.questionId);
+        const latest = checkpoint?.attempts.at(-1);
+        if (!latest || latest.outcome.status !== "COMPLETE") continue;
+        if (latest.outcome.summary.answer.memoryOutcome !== "USED") {
+          if (options.retryUnhealthy) continue;
+          emit("case_memory_unhealthy", {
+            checkpointAttempt: latest.attempt,
+            memoryOutcome: latest.outcome.summary.answer.memoryOutcome,
+            questionId: entry.questionId
+          });
+          throw new Error("longmemeval_case_memory_unhealthy");
+        }
+        if (!qualificationLexicalCutoverHealthy(
+          latest.outcome.summary,
+          lexicalCutoverRequired
+        )) {
+          if (options.retryUnhealthy) continue;
+          emit("case_lexical_cutover_unhealthy", {
+            checkpointAttempt: latest.attempt,
+            questionId: entry.questionId
+          });
+          throw new Error("longmemeval_case_lexical_cutover_unhealthy");
+        }
+        const evaluationInput = {
+          attempt: latest.attempt,
+          hypothesis: latest.outcome.hypothesis,
+          outputDirectory: options.outputDirectory,
+          questionId: entry.questionId
+        };
+        const existing = await readLongMemEvalCaseEvaluation(evaluationInput);
+        if (existing) {
+          caseEvaluations.set(entry.questionId, existing);
+          continue;
+        }
+        const settled = await settleLongMemEvalCaseEvaluation(evaluationInput);
+        caseEvaluations.set(entry.questionId, settled);
+        emit("case_evaluated", {
+          checkpointAttempt: latest.attempt,
+          correct: settled.label,
+          questionId: entry.questionId,
+          recovered: true
+        });
+        if (!settled.label) {
+          throw new Error("longmemeval_case_incorrect");
+        }
+      }
+    }
     const pendingCases = selection.cases.filter((entry) => {
       const checkpoint = checkpoints.get(entry.questionId);
       if (!checkpoint) return true;
       if (!options.retryUnhealthy) return false;
       const outcome = latestCheckpointOutcome(checkpoint);
-      return outcome.status === "FAILED" || outcome.summary.answer.memoryOutcome !== "USED";
+      return outcome.status === "FAILED" || outcome.summary.answer.memoryOutcome !== "USED" ||
+        !qualificationLexicalCutoverHealthy(
+          outcome.summary,
+          lexicalCutoverRequired
+        );
     });
     emit("benchmark_start", {
       caseConcurrency: options.caseConcurrency,
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
       forceDreamDiagnostic: options.forceDreamDiagnostic,
+      onlineEvaluation: options.onlineEvaluation,
       preparedCaseCache: options.profile === "official" &&
         !options.forceDreamDiagnostic,
       profile: options.profile,
@@ -3624,11 +4163,15 @@ async function main(): Promise<void> {
       retryUnhealthy: options.retryUnhealthy,
       selectionMode: selection.mode,
       sessionConcurrency: options.sessionConcurrency,
+      singleWave: options.singleWave,
       systemModel: roles.system.upstreamModelId,
       staleUsersRemoved
     });
-    await mapConcurrentOrdered(
-      pendingCases,
+    const invocationCases = options.singleWave
+      ? pendingCases.slice(0, options.caseConcurrency)
+      : pendingCases;
+    await mapConcurrentOrderedWaves(
+      invocationCases,
       options.caseConcurrency,
       async (entry) => {
         emit("case_start", {
@@ -3685,19 +4228,66 @@ async function main(): Promise<void> {
         const checkpointAttempt = checkpoint.attempts.length;
         if (outcome.status === "FAILED") {
           emit("case_failed", { ...outcome.failure, checkpointAttempt });
+          throw new Error("longmemeval_case_runtime_failed");
         } else {
           emit("case_complete", {
             checkpointAttempt,
+            memoryDegradationCode: outcome.summary.answer.memoryDegradationCode,
             memoryItems: outcome.summary.answer.memoryItems,
             memoryOutcome: outcome.summary.answer.memoryOutcome,
             questionId: entry.questionId,
             reason: outcome.reason,
             runTokens: outcome.summary.answer.totalTokens
           });
+          if (outcome.summary.answer.memoryOutcome !== "USED") {
+            emit("case_memory_unhealthy", {
+              checkpointAttempt,
+              memoryOutcome: outcome.summary.answer.memoryOutcome,
+              questionId: entry.questionId
+            });
+            throw new Error("longmemeval_case_memory_unhealthy");
+          }
+          if (!qualificationLexicalCutoverHealthy(
+            outcome.summary,
+            lexicalCutoverRequired
+          )) {
+            emit("case_lexical_cutover_unhealthy", {
+              checkpointAttempt,
+              questionId: entry.questionId
+            });
+            throw new Error("longmemeval_case_lexical_cutover_unhealthy");
+          }
+          if (options.onlineEvaluation) {
+            const evaluation = await settleLongMemEvalCaseEvaluation({
+              attempt: checkpointAttempt,
+              hypothesis: outcome.hypothesis,
+              outputDirectory: options.outputDirectory,
+              questionId: entry.questionId
+            });
+            caseEvaluations.set(entry.questionId, evaluation);
+            emit("case_evaluated", {
+              checkpointAttempt,
+              correct: evaluation.label,
+              questionId: entry.questionId,
+              recovered: false
+            });
+            if (!evaluation.label) {
+              throw new Error("longmemeval_case_incorrect");
+            }
+          }
         }
         return checkpointAttempt;
       }
     );
+    if (options.singleWave && invocationCases.length < pendingCases.length) {
+      emit("benchmark_paused", {
+        completedCases: selection.cases.length - pendingCases.length +
+          invocationCases.length,
+        completedThisInvocation: invocationCases.length,
+        remainingCases: pendingCases.length - invocationCases.length
+      });
+      return;
+    }
     const authoritativeCheckpoints = await loadLongMemEvalCaseCheckpoints(
       options.outputDirectory,
       {
@@ -3719,6 +4309,18 @@ async function main(): Promise<void> {
       } else {
         summaries.push(outcome.summary);
         answers.push({ hypothesis: outcome.hypothesis, questionId: entry.questionId });
+        if (options.onlineEvaluation) {
+          const evaluation = await readLongMemEvalCaseEvaluation({
+            attempt: checkpoint.attempts.length,
+            hypothesis: outcome.hypothesis,
+            outputDirectory: options.outputDirectory,
+            questionId: entry.questionId
+          });
+          if (!evaluation) {
+            throw new Error("longmemeval_case_evaluation_incomplete");
+          }
+          caseEvaluations.set(entry.questionId, evaluation);
+        }
       }
     }
     await writeLongMemEvalAnswersAtomic(options.outputDirectory, answers);
@@ -3733,6 +4335,11 @@ async function main(): Promise<void> {
     const qualification = longMemEvalQualificationGate({
       executionFailures: failures.length,
       memoryOutcomes: summaries.map(({ answer }) => answer.memoryOutcome)
+    });
+    const lexicalCutoverQualification = Object.freeze({
+      passed: summaries.length > 0 && summaries.every((summary) =>
+        qualificationLexicalCutoverHealthy(summary, lexicalCutoverRequired)),
+      required: lexicalCutoverRequired
     });
     await writeJsonAtomic(summaryPath, {
       activeMemoryRetrievalConfiguration: {
@@ -3782,6 +4389,7 @@ async function main(): Promise<void> {
       failures,
       memoryEmbeddingModel: {
         provider: "OpenRouter",
+        providerOrder: roles.qwen.providerOrder,
         upstreamModelId: qualificationEmbeddingModelId
       },
       memoryRerankerModel: {
@@ -3795,8 +4403,26 @@ async function main(): Promise<void> {
         routePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
         upstreamModelId: roles.reranker.upstreamModelId
       },
+      officialEvaluation: options.onlineEvaluation
+        ? {
+            correctCases: [...caseEvaluations.values()].filter(({ label }) => label)
+              .length,
+            evaluatedCases: caseEvaluations.size,
+            failFast: true,
+            incorrectCases: [...caseEvaluations.values()].filter(({ label }) => !label)
+              .map(({ questionId }) => questionId),
+            model: "gpt-4o-2024-08-06",
+            perCaseJournalVersion: 1,
+            scriptSha256: LONGMEMEVAL_EVALUATOR_SHA256,
+            unchanged: true
+          }
+        : null,
       profile: longMemEvalProfileManifest(options.profile),
       preparedCaseCache: {
+        buildRecoveries: summaries.filter(({ preparedCase }) =>
+          preparedCase?.sourceBuildRecovered).length,
+        compatibilityPromotions: summaries.filter(({ preparedCase }) =>
+          preparedCase?.sourceCompatibilityPromoted).length,
         enabled: options.profile === "official" && !options.forceDreamDiagnostic,
         hybridHits: summaries.filter(({ preparedCase }) =>
           preparedCase?.hybridCacheHit).length,
@@ -3805,9 +4431,11 @@ async function main(): Promise<void> {
           preparedCase?.sourceCacheHit).length,
         version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
       },
-      qualificationManifest: qualificationManifest
+      qualificationManifest: qualificationManifest?.id ===
+          "fu2-reader-first-blind-50-v7"
         ? {
             appCommit: qualificationManifest.source.appCommit,
+            appWorktreeSha256: qualificationManifest.source.appWorktreeSha256,
             id: qualificationManifest.id,
             questionIdDigest: qualificationManifest.selection.questionIdDigest,
             runtimeOverride: options.resumeCaseConcurrency === null
@@ -3817,6 +4445,7 @@ async function main(): Promise<void> {
           }
         : null,
       qualification,
+      lexicalCutoverQualification,
       results: summaries,
       selection: {
         mode: selection.mode,
@@ -3825,7 +4454,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 14,
+      version: 16,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: qualificationMemoryJobParallelism,
@@ -3835,10 +4464,17 @@ async function main(): Promise<void> {
     });
     emit("benchmark_complete", {
       completed: summaries.length,
+      correct: options.onlineEvaluation
+        ? [...caseEvaluations.values()].filter(({ label }) => label).length
+        : null,
       degradedMemoryOutcomes: qualification.degradedMemoryOutcomes,
       failed: failures.length,
+      incorrect: options.onlineEvaluation
+        ? [...caseEvaluations.values()].filter(({ label }) => !label).length
+        : null,
       outputDirectory: options.outputDirectory,
-      qualificationPassed: qualification.passed,
+      qualificationPassed: qualification.passed &&
+        lexicalCutoverQualification.passed,
       unhealthyMemoryOutcomes: qualification.unhealthyMemoryOutcomes
     });
     if (summaries.length === 0 || failures.length > 0) {
@@ -3846,6 +4482,13 @@ async function main(): Promise<void> {
     }
     if (!qualification.passed) {
       throw new Error("longmemeval_qualification_memory_unhealthy");
+    }
+    if (!lexicalCutoverQualification.passed) {
+      throw new Error("longmemeval_qualification_lexical_cutover_unhealthy");
+    }
+    if (options.onlineEvaluation &&
+      [...caseEvaluations.values()].some(({ label }) => !label)) {
+      throw new Error("longmemeval_qualification_oracle_misses");
     }
   } finally {
     await prisma.$disconnect();

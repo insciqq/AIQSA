@@ -69,6 +69,12 @@ type ModelForm = {
   upstreamModelId: string;
 };
 
+export type AdminOpenRouterRouteDraft = {
+  mode: "automatic" | "only_selected";
+  providers: string[];
+  upstreamModelId: string;
+};
+
 function adapterFor(family: AdminProviderConnection["family"]): AdminProviderAdapterKind {
   if (family === "anthropic") return "anthropic_messages";
   if (family === "deepseek") return "deepseek_responses_native";
@@ -216,43 +222,45 @@ function moveItem(items: string[], index: number, direction: -1 | 1): string[] {
   return next;
 }
 
-function RouteEditor({
+export function AdminOpenRouterRouteEditor({
   credentialId,
   discovery,
-  form,
   modelIdentity,
-  onChange
+  onChange,
+  route,
+  selectedModeHelp = "Use the ordered allowlist below and deny fallback outside it."
 }: {
   credentialId: string;
   discovery: AdminOpenRouterDiscoverySession;
-  form: ModelForm;
   modelIdentity: ReturnType<typeof openRouterModelDiscoveryIdentity>;
-  onChange(next: ModelForm): void;
+  onChange(next: AdminOpenRouterRouteDraft): void;
+  route: AdminOpenRouterRouteDraft;
+  selectedModeHelp?: string;
 }) {
   const [query, setQuery] = useState("");
   const endpointIdentity = useMemo(
-    () => openRouterEndpointDiscoveryIdentity(modelIdentity, form.upstreamModelId),
-    [form.upstreamModelId, modelIdentity]
+    () => openRouterEndpointDiscoveryIdentity(modelIdentity, route.upstreamModelId),
+    [modelIdentity, route.upstreamModelId]
   );
   const endpointState = discovery.endpoints.get(endpointIdentity);
 
   useEffect(() => {
-    if (form.openRouterRoutingMode === "only_selected" && endpointIdentity) {
+    if (route.mode === "only_selected" && endpointIdentity) {
       void discovery.endpoints.load(endpointIdentity);
     }
-  }, [discovery.endpoints, endpointIdentity, form.openRouterRoutingMode]);
+  }, [discovery.endpoints, endpointIdentity, route.mode]);
 
   const endpointByTag = useMemo(
     () => new Map(endpointState.items.map((endpoint) => [endpoint.tag, endpoint])),
     [endpointState.items]
   );
-  const selected = form.providerTags.map((tag) => ({
+  const selected = route.providers.map((tag) => ({
     endpoint: endpointByTag.get(tag) ?? null,
     tag
   }));
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const available = [...endpointState.items]
-    .filter((endpoint) => !form.providerTags.includes(endpoint.tag))
+    .filter((endpoint) => !route.providers.includes(endpoint.tag))
     .filter((endpoint) => !normalizedQuery || [
       endpoint.providerName,
       endpoint.name,
@@ -270,14 +278,10 @@ function RouteEditor({
       <div className="grid gap-2 sm:grid-cols-2">
         <label className={`flex min-h-touch items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
           <input
-            checked={form.openRouterRoutingMode === "automatic"}
+            checked={route.mode === "automatic"}
             className="mt-0.5 size-4 shrink-0 accent-proof"
             name="openrouter-routing-mode"
-            onChange={() => onChange({
-              ...form,
-              openRouterRoutingMode: "automatic",
-              providerTags: []
-            })}
+            onChange={() => onChange({ ...route, mode: "automatic", providers: [] })}
             type="radio"
           />
           <span>
@@ -287,21 +291,21 @@ function RouteEditor({
         </label>
         <label className={`flex min-h-touch items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
           <input
-            checked={form.openRouterRoutingMode === "only_selected"}
+            checked={route.mode === "only_selected"}
             className="mt-0.5 size-4 shrink-0 accent-proof"
             name="openrouter-routing-mode"
-            onChange={() => onChange({ ...form, openRouterRoutingMode: "only_selected" })}
+            onChange={() => onChange({ ...route, mode: "only_selected" })}
             type="radio"
           />
           <span>
             <span className="block font-medium text-ink">Only selected providers</span>
-            <span className="mt-0.5 block leading-4 text-ink-muted">Use the ordered allowlist below and deny fallback outside it.</span>
+            <span className="mt-0.5 block leading-4 text-ink-muted">{selectedModeHelp}</span>
           </span>
         </label>
       </div>
 
-      {form.openRouterRoutingMode === "only_selected" ? (
-        !credentialId || !form.upstreamModelId ? (
+      {route.mode === "only_selected" ? (
+        !credentialId || !route.upstreamModelId ? (
           <p className="text-xs text-ink-muted">Choose a usable key and model before selecting downstream providers.</p>
         ) : (
           <div className="grid gap-3 rounded-control bg-control-surface/60 p-3">
@@ -330,9 +334,9 @@ function RouteEditor({
                       <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">{endpoint ? endpointLabel(endpoint) : tag}</span>
                       <span className="block break-all font-mono text-metadata text-ink-muted">{endpoint ? endpointDetail(endpoint) : tag}</span>
                     </span>
-                    <button aria-label={`Move ${tag} up`} className={quietButton} disabled={index === 0} onClick={() => onChange({ ...form, providerTags: moveItem(form.providerTags, index, -1) })} type="button"><ArrowUp aria-hidden="true" className="size-3" /></button>
-                    <button aria-label={`Move ${tag} down`} className={quietButton} disabled={index === form.providerTags.length - 1} onClick={() => onChange({ ...form, providerTags: moveItem(form.providerTags, index, 1) })} type="button"><ArrowDown aria-hidden="true" className="size-3" /></button>
-                    <button aria-label={`Remove ${tag} from route`} className={dangerButton} onClick={() => onChange({ ...form, providerTags: form.providerTags.filter((candidate) => candidate !== tag) })} type="button"><X aria-hidden="true" className="size-3" /></button>
+                    <button aria-label={`Move ${tag} up`} className={quietButton} disabled={index === 0} onClick={() => onChange({ ...route, providers: moveItem(route.providers, index, -1) })} type="button"><ArrowUp aria-hidden="true" className="size-3" /></button>
+                    <button aria-label={`Move ${tag} down`} className={quietButton} disabled={index === route.providers.length - 1} onClick={() => onChange({ ...route, providers: moveItem(route.providers, index, 1) })} type="button"><ArrowDown aria-hidden="true" className="size-3" /></button>
+                    <button aria-label={`Remove ${tag} from route`} className={dangerButton} onClick={() => onChange({ ...route, providers: route.providers.filter((candidate) => candidate !== tag) })} type="button"><X aria-hidden="true" className="size-3" /></button>
                   </li>
                 ))}
               </ol>
@@ -369,7 +373,7 @@ function RouteEditor({
                       <button
                         aria-label={`Add route ${endpointLabel(endpoint)} (${endpoint.tag})`}
                         className={`flex min-h-control w-full min-w-0 items-center gap-3 rounded-control bg-answer-paper px-3 py-2 text-left hover:bg-control-hover ${focusRing} ${touchTarget}`}
-                        onClick={() => onChange({ ...form, providerTags: [...form.providerTags, endpoint.tag] })}
+                        onClick={() => onChange({ ...route, providers: [...route.providers, endpoint.tag] })}
                         type="button"
                       >
                         <span className="min-w-0 flex-1">
@@ -686,12 +690,20 @@ export function AdminProviderModelEditor({
           />
 
           {form.upstreamModelId ? (
-            <RouteEditor
+            <AdminOpenRouterRouteEditor
               credentialId={credentialId}
               discovery={discovery}
-              form={form}
               modelIdentity={modelIdentity}
-              onChange={setForm}
+              onChange={(route) => setForm({
+                ...form,
+                openRouterRoutingMode: route.mode,
+                providerTags: route.providers
+              })}
+              route={{
+                mode: form.openRouterRoutingMode,
+                providers: form.providerTags,
+                upstreamModelId: form.upstreamModelId
+              }}
             />
           ) : null}
 

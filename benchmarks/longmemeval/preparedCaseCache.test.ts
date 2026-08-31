@@ -5,6 +5,7 @@ import {
   longMemEvalPreparedCaseBuildingEmail,
   longMemEvalPreparedCaseDisplayName,
   longMemEvalPreparedCaseFingerprint,
+  longMemEvalPreparedCaseReadyFingerprint,
   longMemEvalPreparedCaseReadyEmail
 } from "./preparedCaseCache";
 
@@ -50,5 +51,30 @@ describe("LongMemEval prepared-case cache identity", () => {
       .toThrow("longmemeval_prepared_case_fingerprint_invalid");
     expect(() => longMemEvalPreparedCaseDisplayName("bad id", "0".repeat(64)))
       .toThrow("longmemeval_prepared_case_question_id_invalid");
+  });
+
+  it("recognizes only settled prepared identities for compatibility promotion", () => {
+    const fingerprint = "abcdef0123456789".repeat(4);
+    const displayName = longMemEvalPreparedCaseDisplayName("case_1", fingerprint);
+    const email = longMemEvalPreparedCaseReadyEmail(fingerprint);
+
+    expect(longMemEvalPreparedCaseReadyFingerprint({
+      displayName,
+      email,
+      questionId: "case_1"
+    })).toBe(fingerprint);
+    expect(longMemEvalPreparedCaseReadyFingerprint({
+      displayName,
+      email: longMemEvalPreparedCaseBuildingEmail(
+        fingerprint,
+        "00000000-0000-4000-8000-000000000001"
+      ),
+      questionId: "case_1"
+    })).toBeNull();
+    expect(longMemEvalPreparedCaseReadyFingerprint({
+      displayName,
+      email,
+      questionId: "different_case"
+    })).toBeNull();
   });
 });

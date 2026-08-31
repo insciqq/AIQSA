@@ -19,7 +19,8 @@ export const LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS = [
   "fu2-reader-first-blind-50-v3",
   "fu2-reader-first-blind-50-v4",
   "fu2-reader-first-blind-50-v5",
-  "fu2-reader-first-blind-50-v6"
+  "fu2-reader-first-blind-50-v6",
+  "fu2-reader-first-blind-50-v7"
 ] as const;
 
 export type LongMemEvalQualificationManifestId =
@@ -198,6 +199,40 @@ const readerFirstManifestV6Schema = readerFirstManifestV1Schema.extend({
   }).strict()
 }).strict();
 
+const readerFirstManifestV7Schema = readerFirstManifestV1Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v7"),
+  runtime: readerFirstManifestV1Schema.shape.runtime.extend({
+    embedding: z.object({
+      provider: z.literal("OpenRouter"),
+      providerOrder: z.tuple([
+        z.literal("nebius"),
+        z.literal("deepinfra")
+      ]),
+      upstreamModelId: z.literal("qwen/qwen3-embedding-8b")
+    }).strict(),
+    evaluation: z.object({
+      failFast: z.literal(true),
+      mode: z.literal("per_case"),
+      model: z.literal("gpt-4o-2024-08-06"),
+      oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+      provider: z.literal("OpenAI"),
+      scriptSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256)
+    }).strict(),
+    lexical: z.object({
+      backend: z.literal("OPENSEARCH"),
+      indexBuildId: z.literal("20260831-lme-v7-r2")
+    }).strict()
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("9ed2a90f8320ed028fcc2a239e7844e13e318fec"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
 const manifestSchema = z.discriminatedUnion("id", [
   legacyManifestSchema,
   readerFirstManifestV1Schema,
@@ -205,7 +240,8 @@ const manifestSchema = z.discriminatedUnion("id", [
   readerFirstManifestV3Schema,
   readerFirstManifestV4Schema,
   readerFirstManifestV5Schema,
-  readerFirstManifestV6Schema
+  readerFirstManifestV6Schema,
+  readerFirstManifestV7Schema
 ]);
 
 export type LongMemEvalQualificationManifest = Readonly<

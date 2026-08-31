@@ -159,6 +159,61 @@ source_sql "
   WHERE settings.\"userId\" = '00000000-0000-4000-8000-000000000001';
 " >/dev/null
 source_sql "
+  WITH projection_event AS (
+    INSERT INTO \"MemoryLexicalProjectionEvent\" (
+      \"id\", \"userId\", \"indexGenerationId\", \"searchEntryId\",
+      \"operation\", \"memoryRevisionSnapshot\", \"idempotencyFingerprint\",
+      \"state\", \"attemptCount\", \"leaseToken\", \"leaseExpiresAt\"
+    ) VALUES (
+      '00000000-0000-4000-8000-00000000a001',
+      '00000000-0000-4000-8000-000000000001',
+      'backup-restore-projection-generation',
+      'backup-restore-projection-entry',
+      'SYNC_ENTRY'::\"MemoryLexicalProjectionOperation\",
+      0,
+      'backup-restore-projection-event',
+      'CLAIMED'::\"MemoryLexicalProjectionEventState\",
+      1,
+      'backup-restore-projection-lease',
+      CURRENT_TIMESTAMP + INTERVAL '1 hour'
+    )
+    RETURNING \"sequence\"
+  )
+  INSERT INTO \"MemoryLexicalProjectionState\" (
+    \"id\", \"userId\", \"indexGenerationId\", \"backendKind\",
+    \"mappingVersion\", \"normalizationVersion\", \"analysisProfile\",
+    \"retrievalPipelineVersion\", \"status\", \"enqueuedThroughSequence\",
+    \"visibleThroughSequence\", \"targetMemoryRevision\",
+    \"projectedThroughRevision\", \"expectedDocumentCount\",
+    \"visibleDocumentCount\", \"projectionFingerprint\",
+    \"expectedContentFingerprint\", \"visibleContentFingerprint\",
+    \"lastSuccessfulRefreshAt\", \"lastIntegrityCheckAt\", \"readyAt\"
+  )
+  SELECT
+    '00000000-0000-4000-8000-00000000a002',
+    '00000000-0000-4000-8000-000000000001',
+    'backup-restore-projection-generation',
+    'opensearch_icu_lexical_v1',
+    'memory-lexical-mapping-v1',
+    'memory-unicode-query-analysis-v1',
+    'memory-unicode-icu-v1',
+    'memory-personal-retrieval-v63',
+    'READY'::\"MemoryLexicalProjectionStatus\",
+    \"sequence\",
+    \"sequence\",
+    0,
+    0,
+    0,
+    0,
+    repeat('a', 64),
+    repeat('b', 64),
+    repeat('b', 64),
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+  FROM projection_event;
+" >/dev/null
+source_sql "
   INSERT INTO \"KnowledgeSource\" (
     \"id\", \"ownerUserId\", \"name\", \"description\", \"tags\",
     \"version\", \"createdAt\", \"updatedAt\"
@@ -210,7 +265,7 @@ source_sql "
 source_user_count="$(source_sql 'SELECT count(*) FROM "User";')"
 [[ "$source_user_count" =~ ^[0-9]+$ && "$source_user_count" -gt 0 ]]
 
-source_compose up -d app memory-worker
+source_compose up -d app memory-worker memory-search-worker
 test_stage="write-quiesced-backup"
 COMPOSE_FILE="$SOURCE_COMPOSE" \
 COMPOSE_PROJECT_NAME="$source_project" \
@@ -219,6 +274,20 @@ AIQSA_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
   ops/backup/create.sh "$test_root/backups" >/dev/null
 source_compose ps --services --status running app | grep -Fxq app
 source_compose ps --services --status running memory-worker | grep -Fxq memory-worker
+source_compose ps --services --status running memory-search-worker |
+  grep -Fxq memory-search-worker
+projection_event_state="$(source_sql "
+  SELECT concat_ws(
+    ',',
+    \"state\"::text,
+    CASE WHEN \"leaseToken\" IS NULL AND \"leaseExpiresAt\" IS NULL
+      THEN 'unleased' ELSE 'leased' END
+  )
+  FROM \"MemoryLexicalProjectionEvent\"
+  WHERE \"id\" = '00000000-0000-4000-8000-00000000a001';
+")"
+projection_event_state="${projection_event_state//[[:space:]]/}"
+[[ "$projection_event_state" == "RETRY_WAIT,unleased" ]]
 
 bundle="$(find "$test_root/backups" -mindepth 1 -maxdepth 1 -type d -name 'aiqsa-backup-*' -print -quit)"
 [[ -n "$bundle" ]]
@@ -368,6 +437,15 @@ knowledge_deletion_state="$(target_sql \
   'SELECT "state"::text FROM "KnowledgeDeletionJob" WHERE "id" = '\''backup-restore-knowledge-deletion'\'';')"
 knowledge_deletion_state="${knowledge_deletion_state//[[:space:]]/}"
 [[ "$knowledge_deletion_state" == "SUCCEEDED" ]]
+restored_projection_residuals="$(target_sql "
+  SELECT
+    (SELECT count(*) FROM \"MemoryLexicalProjectionEvent\"
+      WHERE \"id\" = '00000000-0000-4000-8000-00000000a001')
+    + (SELECT count(*) FROM \"MemoryLexicalProjectionState\"
+      WHERE \"id\" = '00000000-0000-4000-8000-00000000a002');
+")"
+restored_projection_residuals="${restored_projection_residuals//[[:space:]]/}"
+[[ "$restored_projection_residuals" -eq 0 ]]
 if target_compose "$KEYRING" exec -T minio-restore sh -ceu '
   mc alias set --quiet target http://127.0.0.1:9000 \
     "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
@@ -394,6 +472,8 @@ fi
 grep -Fq "does not have the current backup schema" "$test_root/missing-memory.log"
 source_compose ps --services --status running app | grep -Fxq app
 source_compose ps --services --status running memory-worker | grep -Fxq memory-worker
+source_compose ps --services --status running memory-search-worker |
+  grep -Fxq memory-search-worker
 if find "$test_root/rejected-backups" -mindepth 1 -print -quit | grep -q .; then
   printf '%s\n' "Missing-Memory rejection published an unexpected bundle." >&2
   exit 1

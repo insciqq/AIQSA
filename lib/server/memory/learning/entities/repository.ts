@@ -15,9 +15,14 @@ import {
   memoryEntityAliases,
   memoryEntityAliasSupportFingerprint,
   memoryGroundedEntityCanonicalKey,
+  memoryGroundedEntityCanonicalKeys,
   normalizeMemoryEntityAlias,
   type MemoryEntityType
 } from "./normalization";
+import {
+  memoryLegacyIdentityIsUnambiguous,
+  registerMemoryIdentityCompatibility
+} from "../identity/compatibility";
 
 type EntityRow = Readonly<{
   canonicalKey: string;
@@ -54,7 +59,7 @@ async function resolutionCandidates(
   tx: MemoryTransaction,
   userId: string,
   entity: MemoryFactCandidateEntity,
-  canonicalKey: string | null,
+  canonicalKeys: readonly string[],
   adjudicatedEntityId: string | null
 ): Promise<readonly ResolutionCandidate[]> {
   const normalizedAliases = memoryEntityAliases(entity)
@@ -70,9 +75,9 @@ async function resolutionCandidates(
         ${lookupIds.length === 0
           ? Prisma.sql`FALSE`
           : Prisma.sql`entity."id" IN (${Prisma.join(lookupIds)})`}
-        OR ${canonicalKey === null
+        OR ${canonicalKeys.length === 0
           ? Prisma.sql`FALSE`
-          : Prisma.sql`entity."canonicalKey" = ${canonicalKey}`}
+          : Prisma.sql`entity."canonicalKey" IN (${Prisma.join(canonicalKeys)})`}
         OR ${normalizedAliases.length === 0
           ? Prisma.sql`FALSE`
           : Prisma.sql`EXISTS (
@@ -142,7 +147,9 @@ function renewedEntityCanonicalKey(
   const suffix = `:renewed:${renewal.slice(0, 32)}`;
   return baseCanonicalKey.length + suffix.length <= 256
     ? `${baseCanonicalKey}${suffix}`
-    : `entity:v3:renewed:${renewal}`;
+    : `entity:${
+        baseCanonicalKey.startsWith("entity:v4:") ? "v4" : "v3"
+      }:renewed:${renewal}`;
 }
 
 function compatibleEntityTypes(left: string, right: string): boolean {
@@ -170,14 +177,44 @@ async function resolveOrCreate(
   userId: string,
   entity: MemoryFactCandidateEntity,
   languageCode: string,
+  identityProfile: MemoryExtractedCandidate["identityProfile"],
   adjudicatedEntityId: string | null = null
 ): Promise<string | null> {
-  const canonicalKey = memoryGroundedEntityCanonicalKey(entity);
+  const keySet = memoryGroundedEntityCanonicalKeys(entity);
+  if (keySet) {
+    await registerMemoryIdentityCompatibility(tx, {
+      containerId: "ENTITY",
+      legacyCanonicalKey: keySet.legacyCanonicalKey,
+      namespace: "GROUNDED_ENTITY",
+      now: new Date(),
+      unicodeCanonicalKey: keySet.unicodeCanonicalKey,
+      userId
+    });
+  }
+  const legacyIsUnambiguous = keySet === null
+    ? false
+    : await memoryLegacyIdentityIsUnambiguous(tx, {
+        containerId: "ENTITY",
+        legacyCanonicalKey: keySet.legacyCanonicalKey,
+        namespace: "GROUNDED_ENTITY",
+        unicodeCanonicalKey: keySet.unicodeCanonicalKey,
+        userId
+      });
+  const canonicalKey = keySet === null
+    ? null
+    : identityProfile === "LEGACY_V1" && legacyIsUnambiguous
+      ? keySet.legacyCanonicalKey
+      : keySet.unicodeCanonicalKey;
+  const canonicalKeys = keySet === null
+    ? []
+    : legacyIsUnambiguous
+      ? [keySet.unicodeCanonicalKey, keySet.legacyCanonicalKey]
+      : [keySet.unicodeCanonicalKey];
   const candidates = await resolutionCandidates(
     tx,
     userId,
     entity,
-    canonicalKey,
+    canonicalKeys,
     adjudicatedEntityId
   );
 
@@ -194,10 +231,19 @@ async function resolveOrCreate(
     return context.rootId;
   }
 
-  const canonicalRoots = canonicalKey === null
+  const unicodeRoots = keySet === null
     ? []
     : [...new Set(candidates.filter((candidate) =>
-        candidate.canonicalKey === canonicalKey &&
+        candidate.canonicalKey === keySet.unicodeCanonicalKey &&
+        compatibleEntityTypes(candidate.entityType, entity.entityType) &&
+        candidate.aliases.length > 0)
+      .map(({ rootId }) => rootId))].sort();
+  if (unicodeRoots.length === 1) return unicodeRoots[0]!;
+  if (unicodeRoots.length > 1) return null;
+  const canonicalRoots = keySet === null || !legacyIsUnambiguous
+    ? []
+    : [...new Set(candidates.filter((candidate) =>
+        candidate.canonicalKey === keySet.legacyCanonicalKey &&
         compatibleEntityTypes(candidate.entityType, entity.entityType) &&
         candidate.aliases.length > 0)
       .map(({ rootId }) => rootId))].sort();
@@ -299,6 +345,7 @@ export async function materializeMemoryCandidateEntityIdentity(
     input.userId,
     subject,
     candidate.languageCode,
+    candidate.identityProfile,
     input.adjudicatedEntityId
   );
   if (!resolvedEntityId) throw new Error("memory_fact_candidate_invalid");
@@ -311,8 +358,10 @@ export async function materializeMemoryCandidateEntityIdentity(
         ? Object.freeze({ ...entity, contextEntityId: resolvedEntityId })
         : entity)),
     identityVersion: "slot-v3" as const,
+    legacyCanonicalKey: canonicalKey,
     subjectEntityId: resolvedEntityId,
-    subjectKey: `entity:${resolvedEntityId}`
+    subjectKey: `entity:${resolvedEntityId}`,
+    unicodeCanonicalKey: canonicalKey
   });
 }
 
@@ -403,7 +452,8 @@ export async function persistMemoryCandidateEntities(
           tx,
           input.userId,
           entity,
-          input.candidate.languageCode
+          input.candidate.languageCode,
+          input.candidate.identityProfile
         )
       : await rootId(tx, input.userId, materializedSubjectId);
     if (materializedSubjectId !== null &&

@@ -20,17 +20,13 @@ export const MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS = Object.freeze({
 
 export const MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS = Object.freeze({
   fallback: Object.freeze({
-    en: "contextualFallbackEn",
+    declared: "contextualFallbackDeclared",
     mixed: "contextualFallbackMixed",
-    other: "contextualFallbackOther",
-    ru: "contextualFallbackRu",
     und: "contextualFallbackUnd"
   }),
   generated: Object.freeze({
-    en: "contextualGeneratedEn",
+    declared: "contextualGeneratedDeclared",
     mixed: "contextualGeneratedMixed",
-    other: "contextualGeneratedOther",
-    ru: "contextualGeneratedRu",
     und: "contextualGeneratedUnd"
   })
 } as const);

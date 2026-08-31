@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnvConfig } from "@next/env";
+import { loadLongMemEvalLatestCaseEvaluations } from "./caseEvaluation";
 import {
   LONGMEMEVAL_EVALUATOR_SHA256,
   LONGMEMEVAL_MAX_EVALUATOR_CONCURRENCY,
@@ -56,6 +57,7 @@ type OfficialEvaluationRow = Readonly<{
 type EvaluatorOptions = Readonly<{
   answersArgument: string | undefined;
   concurrency: number;
+  reuseCaseEvaluations: boolean;
 }>;
 
 const DEFAULT_EVALUATOR_CONCURRENCY = 16;
@@ -74,8 +76,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseEvaluatorOptions(argv: readonly string[]): EvaluatorOptions {
   const answersArgument = argv[0];
   let concurrency = DEFAULT_EVALUATOR_CONCURRENCY;
+  let concurrencyExplicit = false;
+  let reuseCaseEvaluations = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === "--reuse-case-evaluations") {
+      if (reuseCaseEvaluations) {
+        throw new Error("longmemeval_evaluator_argument_duplicate");
+      }
+      reuseCaseEvaluations = true;
+      continue;
+    }
     if (argument !== "--concurrency") {
       throw new Error(`longmemeval_evaluator_argument_unknown:${argument ?? "missing"}`);
     }
@@ -86,9 +97,13 @@ function parseEvaluatorOptions(argv: readonly string[]): EvaluatorOptions {
       throw new Error("longmemeval_evaluator_concurrency_invalid");
     }
     concurrency = parsed;
+    concurrencyExplicit = true;
     index += 1;
   }
-  return Object.freeze({ answersArgument, concurrency });
+  if (reuseCaseEvaluations && concurrencyExplicit) {
+    throw new Error("longmemeval_evaluator_reuse_concurrency_forbidden");
+  }
+  return Object.freeze({ answersArgument, concurrency, reuseCaseEvaluations });
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -347,7 +362,8 @@ async function writeAggregateScore(
   contract: EvaluationContract,
   labels: ReadonlyMap<string, boolean>,
   evaluatorConcurrency: number,
-  evaluatorShards: number
+  evaluatorShards: number,
+  reusedCaseEvaluations = false
 ): Promise<boolean> {
   const categories = new Map<string, { correct: number; total: number }>();
   let correct = 0;
@@ -383,6 +399,7 @@ async function writeAggregateScore(
       evaluatedCases: labels.size,
       model: "gpt-4o-2024-08-06",
       requestedConcurrency: evaluatorConcurrency,
+      reusedCaseEvaluations,
       scriptSha256: LONGMEMEVAL_EVALUATOR_SHA256,
       shards: evaluatorShards,
       unchanged: true
@@ -413,8 +430,10 @@ async function writeAggregateScore(
 
 async function main(): Promise<void> {
   loadEnvConfig(repositoryRoot, true, { error() {}, info() {} }, true);
-  if (!process.env.OPENAI_API_KEY) throw new Error("longmemeval_openai_key_missing");
   const options = parseEvaluatorOptions(process.argv.slice(2));
+  if (!options.reuseCaseEvaluations && !process.env.OPENAI_API_KEY) {
+    throw new Error("longmemeval_openai_key_missing");
+  }
   const answersPath = await resolveAnswersPath(options.answersArgument);
   const resultPath = `${answersPath}.eval-results-gpt-4o`;
   const scorePath = resolve(dirname(answersPath), "benchmark-score.json");
@@ -436,17 +455,36 @@ async function main(): Promise<void> {
       () => Promise.resolve()
     ))
   ]);
-  const evaluation = await runEvaluatorShards(
-    resultPath,
-    contract.hypotheses,
-    options.concurrency
-  );
+  const evaluation = options.reuseCaseEvaluations
+    ? await loadLongMemEvalLatestCaseEvaluations({
+        hypotheses: contract.hypotheses,
+        outputDirectory: dirname(answersPath)
+      }).then(async (evaluations) => {
+        await writeFile(
+          resultPath,
+          `${evaluations.map(({ row }) => JSON.stringify(row)).join("\n")}\n`,
+          { flag: "wx", mode: 0o600 }
+        );
+        return Object.freeze({
+          labels: new Map(evaluations.map(({ label, questionId }) => [
+            questionId,
+            label
+          ])),
+          shards: evaluations.length
+        });
+      })
+    : await runEvaluatorShards(
+        resultPath,
+        contract.hypotheses,
+        options.concurrency
+      );
   const qualificationPassed = await writeAggregateScore(
     scorePath,
     contract,
     evaluation.labels,
-    options.concurrency,
-    evaluation.shards
+    options.reuseCaseEvaluations ? 1 : options.concurrency,
+    evaluation.shards,
+    options.reuseCaseEvaluations
   );
   if (!qualificationPassed) process.exitCode = 2;
 }

@@ -81,7 +81,7 @@ function candidate(
     finalScore,
     itemId: id,
     itemType: "FACT_VERSION",
-    laneRanks: { FACT_FTS_SIMPLE: 1 },
+    laneRanks: { FACT_LEXICAL_UNICODE: 1 },
     metadata: metadata({ dedupeKey: id, factId: id, ...overrides }),
     rrfScore: 0.1,
     selectionReason: "semantic_relevance"

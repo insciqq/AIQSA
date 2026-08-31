@@ -10,13 +10,13 @@ describe("Memory operational counters", () => {
   it("accepts only allowlisted non-negative integer measurements", () => {
     expect(decodeMemoryOperationalCounters({
       contextualFallbackUnsupportedNumber: 2,
-      contextualGeneratedRu: 3,
+      contextualGeneratedDeclared: 3,
       digestNoop: 1,
       historyRoundSegmentsBuilt: 6,
       historyMessagesProjected: 4
     })).toEqual({
       contextualFallbackUnsupportedNumber: 2,
-      contextualGeneratedRu: 3,
+      contextualGeneratedDeclared: 3,
       digestNoop: 1,
       historyRoundSegmentsBuilt: 6,
       historyMessagesProjected: 4
@@ -37,17 +37,13 @@ describe("Memory operational counters", () => {
       .toBe(Object.keys(MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS).length);
     expect(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS).toEqual({
       fallback: {
-        en: "contextualFallbackEn",
+        declared: "contextualFallbackDeclared",
         mixed: "contextualFallbackMixed",
-        other: "contextualFallbackOther",
-        ru: "contextualFallbackRu",
         und: "contextualFallbackUnd"
       },
       generated: {
-        en: "contextualGeneratedEn",
+        declared: "contextualGeneratedDeclared",
         mixed: "contextualGeneratedMixed",
-        other: "contextualGeneratedOther",
-        ru: "contextualGeneratedRu",
         und: "contextualGeneratedUnd"
       }
     });

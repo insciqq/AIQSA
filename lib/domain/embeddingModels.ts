@@ -7,6 +7,7 @@ export type EmbeddingModelPreset = Readonly<{
   displayName: string;
   id: "bge-m3" | "gemini-embedding-2" | "qwen3-embedding-8b" | "text-embedding-3-large";
   nativeDimension: number;
+  openRouterProviderTags?: readonly string[];
   providerFamily: EmbeddingProviderFamily;
   queryInstructionTemplate: string | null;
   supportsMrl: boolean;
@@ -24,6 +25,7 @@ export const embeddingModelPresets: readonly EmbeddingModelPreset[] = Object.fre
     displayName: "Qwen3 Embedding 8B",
     id: DEFAULT_EMBEDDING_MODEL_PRESET_ID,
     nativeDimension: 4_096,
+    openRouterProviderTags: ["nebius", "deepinfra"],
     providerFamily: "openrouter",
     // Private-KB retrieval semantics (FR-11). The template is part of the
     // stored embedding configuration, hashed into the vector-space

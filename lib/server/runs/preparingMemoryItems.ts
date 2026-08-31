@@ -39,6 +39,10 @@ import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from
   "../memory/history/toolEvents";
 import {
+  memoryUserTestimonyText,
+  type MemoryUserTestimonySpan
+} from "../memory/history/userTestimony";
+import {
   memoryRedactionHasMeaningfulRemainder,
   redactMemorySecrets
 } from "../memory/explicit/safety";
@@ -48,7 +52,7 @@ import {
 } from "../memory/persistence/pauseIntervals";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256
@@ -70,7 +74,7 @@ type PreparingItemTransaction = Prisma.TransactionClient;
 function compatibleActiveGenerationPredicate(): Prisma.Sql {
   return Prisma.sql`
     generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
-    AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+    AND generation."languageProfile" = ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
     AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
     AND (
       (generation."indexMode" = 'HYBRID'::"MemoryIndexMode"
@@ -251,6 +255,10 @@ type RoundSegmentAuthorityRow = RoundAuthorityRow & Readonly<{
   segmentPosition: string;
   segmentProjectionVersion: string;
   segmentSourceRevision: number;
+}>;
+
+type RoundSegmentUserTestimonyRow = MemoryUserTestimonySpan & Readonly<{
+  messageId: string;
 }>;
 
 type ToolEventAuthorityRow = Readonly<{
@@ -448,6 +456,13 @@ function safeFactProjectionText(value: string): string | null {
   if (redaction.containsSecret &&
     !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
   return redaction.redactedText;
+}
+
+function safeHistoryProjectionText(value: string): string | null {
+  const redaction = redactMemorySecrets(value);
+  if (redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+  return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 
 function factRetrievalContract(
@@ -1602,6 +1617,59 @@ async function roundSegmentMessageIds(
   return rows.map(({ messageId }) => messageId);
 }
 
+async function roundSegmentUserTestimony(
+  tx: PreparingItemTransaction,
+  authority: PreparingMemoryItemAuthority,
+  roundId: string,
+  segmentId: string,
+  rawSafeText: string
+): Promise<Readonly<{
+  safeText: string;
+  sourceMessageIds: readonly string[];
+}> | null> {
+  const rows = await tx.$queryRaw<RoundSegmentUserTestimonyRow[]>(Prisma.sql`
+    SELECT segment_message."messageId", segment_message."ordinal",
+      segment_message."segmentStartOffset" AS "start",
+      segment_message."segmentEndOffset" AS "end"
+    FROM "MemoryRecallRoundSegmentMessage" AS segment_message
+    INNER JOIN "MemoryRecallRoundMessage" AS round_message
+      ON round_message."userId" = segment_message."userId"
+      AND round_message."chatId" = segment_message."chatId"
+      AND round_message."roundId" = segment_message."roundId"
+      AND round_message."messageId" = segment_message."messageId"
+      AND round_message."ordinal" = segment_message."ordinal"
+      AND round_message."role" = segment_message."role"
+      AND round_message."safeTextHash" = segment_message."safeTextHash"
+      AND round_message."sourceMessageContentHash" =
+        segment_message."sourceMessageContentHash"
+      AND round_message."sourceMessageUpdatedAt" =
+        segment_message."sourceMessageUpdatedAt"
+    WHERE segment_message."userId" = ${authority.userId}
+      AND segment_message."roundId" = ${roundId}
+      AND segment_message."segmentId" = ${segmentId}
+      AND segment_message."role" = 'user'
+      AND segment_message."sourceStartOffset" >=
+        round_message."sourceStartOffset"
+      AND segment_message."sourceEndOffset" <=
+        round_message."sourceEndOffset"
+      AND segment_message."sourceEndOffset" >
+        segment_message."sourceStartOffset"
+      AND segment_message."segmentEndOffset" >
+        segment_message."segmentStartOffset"
+    ORDER BY segment_message."ordinal"
+    LIMIT 33
+    FOR SHARE OF segment_message, round_message
+  `);
+  const spans = rows.map(({ end, ordinal, start }) => ({ end, ordinal, start }));
+  const safeText = memoryUserTestimonyText(rawSafeText, spans);
+  const sourceMessageIds = rows.map(({ messageId }) => messageId);
+  if (!safeText || sourceMessageIds.some((messageId) =>
+    typeof messageId !== "string" || messageId.length < 1 || messageId.length > 256 ||
+    messageId.includes("\u0000")) ||
+    new Set(sourceMessageIds).size !== sourceMessageIds.length) return null;
+  return Object.freeze({ safeText, sourceMessageIds: Object.freeze(sourceMessageIds) });
+}
+
 type ContextualDependencySnapshot = Readonly<{
   evidenceHashes: readonly string[];
   retrievalHintHash: string | null;
@@ -1742,7 +1810,12 @@ async function resolveRound(
 ): Promise<ResolvedPreparingMemoryItem> {
   const projection = itemProjection(input);
   const segmentId = input.recallRoundSegmentId ?? null;
+  const feature = record(input.featureSnapshot) ?? {};
+  const historyEvidenceView = feature.historyEvidenceView;
   if (projection.supportingItemId === null ||
+    (historyEvidenceView !== undefined &&
+      historyEvidenceView !== "USER_TESTIMONY") ||
+    (historyEvidenceView === "USER_TESTIMONY" && segmentId === null) ||
     (segmentId === null && projection.kind !== "RECALL_ROUND_RAW_SAFE_TEXT") ||
     (segmentId !== null &&
       projection.kind !== "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT")) {
@@ -1754,20 +1827,43 @@ async function resolveRound(
   const row = segmentId
     ? await resolveRoundSegmentRow(tx, authority, input.recallRoundId, segmentId)
     : await resolveRoundRow(tx, authority, input.recallRoundId);
+  const exactSegmentAuthority = row && segmentId !== null &&
+    isRoundSegmentAuthorityRow(row) && row.segmentId === segmentId &&
+    exactRoundSegmentAuthority(row);
+  const userTestimony = historyEvidenceView === "USER_TESTIMONY" &&
+    row && segmentId && exactSegmentAuthority
+    ? await roundSegmentUserTestimony(
+        tx,
+        authority,
+        input.recallRoundId,
+        segmentId,
+        row.safeText
+      )
+    : null;
   const boundedRawSafeText = row
-    ? segmentId ? row.safeText : boundedMemoryRecallRoundEvidenceText(row.safeText)
+    ? historyEvidenceView === "USER_TESTIMONY"
+      ? userTestimony ? safeHistoryProjectionText(userTestimony.safeText) : null
+      : segmentId ? row.safeText : boundedMemoryRecallRoundEvidenceText(row.safeText)
     : null;
   const authoritativeExactSafeText = boundedRawSafeText === null
     ? null
     : canonicalMemoryPackedSafeText("RECALL_ROUND", boundedRawSafeText);
   if (!row || projection.supportingItemId !== row.parentChunkId ||
     input.exactSafeText !== authoritativeExactSafeText ||
-    segmentId !== null &&
-      (!isRoundSegmentAuthorityRow(row) || row.segmentId !== segmentId ||
-        !exactRoundSegmentAuthority(row))) {
+    segmentId !== null && !exactSegmentAuthority) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
   const dependencySnapshot = contextualDependencySnapshot(input);
+  if (historyEvidenceView === "USER_TESTIMONY" && (
+    dependencySnapshot.retrievalHintHash !== null ||
+    dependencySnapshot.roundIds.length > 0 ||
+    dependencySnapshot.evidenceHashes.length > 0
+  )) {
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_item_round_projection_invalid",
+      false
+    );
+  }
   if (dependencySnapshot.retrievalHintHash !== null) {
     if (row.contextualKeyState !== "GENERATED" ||
       memorySha256(row.contextualNarrativeText) !==
@@ -1797,9 +1893,11 @@ async function resolveRound(
       throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
     }
   }
-  const sourceMessageIds = segmentId
-    ? await roundSegmentMessageIds(tx, authority.userId, segmentId)
-    : await roundMessageIds(tx, authority.userId, input.recallRoundId);
+  const sourceMessageIds = historyEvidenceView === "USER_TESTIMONY"
+    ? userTestimony!.sourceMessageIds
+    : segmentId
+      ? await roundSegmentMessageIds(tx, authority.userId, segmentId)
+      : await roundMessageIds(tx, authority.userId, input.recallRoundId);
   const snapshots = historySnapshots(row, projection.kind, sourceMessageIds, row.parentChunkId);
   return {
     ...commonResolved(input, projection.kind),
@@ -1820,6 +1918,7 @@ async function resolveRound(
     sourceSnapshot: {
       ...snapshots.sourceSnapshot,
       evidenceRootHash: row.evidenceRootHash,
+      ...(historyEvidenceView === "USER_TESTIMONY" ? { historyEvidenceView } : {}),
       parentChunkId: row.parentChunkId,
       ...(segmentId ? { segmentId } : {}),
       schemaVersion: 3
