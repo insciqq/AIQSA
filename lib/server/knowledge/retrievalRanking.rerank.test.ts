@@ -216,6 +216,61 @@ describe("Post-rerank final ranking", () => {
     expect(ordered.map((entry) => entry.rerankScore)).toEqual([0.1, null, null]);
   });
 
+  it("rejects ineligible omissions before they can displace eligible evidence", () => {
+    const pool = fuseKnowledgeCandidates([
+      candidate({
+        chunkId: "chunk-scored",
+        signals: [signal("passage_semantic", 3, { rawScore: 0.1, vectorDistance: 0.9 })]
+      }),
+      candidate({
+        chunkId: "chunk-rejected",
+        signals: [signal("passage_semantic", 1, { rawScore: 0.1, vectorDistance: 0.9 })]
+      }),
+      candidate({
+        chunkId: "chunk-eligible",
+        signals: [
+          signal("passage_bm25", 60, { rawScore: 0.2 }),
+          signal("passage_semantic", 2, { rawScore: 0.1, vectorDistance: 0.9 })
+        ]
+      })
+    ]);
+    const ordered = orderRerankedKnowledgeCandidates({
+      pool,
+      query: "unmatched",
+      rerankScores: new Map([["chunk-scored", -0.5]])
+    });
+    const selected = selectRerankedKnowledgeCandidates({
+      candidates: ordered,
+      resultLimit: 2
+    });
+    expect(ordered.map((entry) => entry.chunkId))
+      .toEqual(["chunk-scored", "chunk-eligible"]);
+    expect(ordered[0]!.signals).toHaveLength(1);
+    expect(ordered[0]!.signals[0]!.lane).toBe("passage_semantic");
+    expect(ordered[1]!.signals.map((entry) => entry.lane)).toEqual(["passage_bm25"]);
+    expect(selected.map((entry) => entry.chunkId))
+      .toEqual(["chunk-scored", "chunk-eligible"]);
+  });
+
+  it("keeps eligible BM25 and exact omissions after every scored candidate", () => {
+    const pool = fuseKnowledgeCandidates([
+      candidate({
+        chunkId: "chunk-scored-low",
+        signals: [signal("passage_semantic", 1, { rawScore: 0.1, vectorDistance: 0.9 })]
+      }),
+      candidate({ chunkId: "chunk-bm25", signals: [signal("passage_bm25", 1)] }),
+      candidate({ chunkId: "chunk-exact", signals: [signal("exact", 50)] })
+    ]);
+    const ordered = orderRerankedKnowledgeCandidates({
+      pool,
+      query: "unmatched",
+      rerankScores: new Map([["chunk-scored-low", -10]])
+    });
+    expect(ordered.map((entry) => entry.chunkId))
+      .toEqual(["chunk-scored-low", "chunk-exact", "chunk-bm25"]);
+    expect(ordered.map((entry) => entry.rerankScore)).toEqual([-10, null, null]);
+  });
+
   it("applies content deduplication and the final result limit after reranking", () => {
     const pool = fuseKnowledgeCandidates(Array.from({ length: 20 }, (_, index) => candidate({
       chunkId: `chunk-${String(index).padStart(2, "0")}`,

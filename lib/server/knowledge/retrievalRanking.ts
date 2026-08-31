@@ -88,10 +88,20 @@ export type KnowledgeRankedCandidate = KnowledgeRetrievalCandidate & Readonly<{
   fusedScore: number;
 }>;
 
-/** Content-free deterministic RRF replay evidence. */
+export const KNOWLEDGE_RERANK_OMITTED_ADMISSION_VERSION = 1 as const;
+
+/** Content-free admission facts for one accepted partial rerank response. */
+export type KnowledgeRerankOmittedAdmissionEvidenceV1 = Readonly<{
+  omittedCandidateCount: number;
+  omittedRejectedCandidateCount: number;
+  version: typeof KNOWLEDGE_RERANK_OMITTED_ADMISSION_VERSION;
+}>;
+
+/** Content-free final-ranking replay and admission evidence. */
 export type KnowledgeRankingEvidence = Readonly<{
   candidateOrder: readonly string[];
   fusion: typeof KNOWLEDGE_RETRIEVAL_FUSION;
+  rerankOmittedAdmission?: KnowledgeRerankOmittedAdmissionEvidenceV1;
 }>;
 
 /** Decode-only compatibility for accepted receipts written before the focused cutover. */
@@ -163,7 +173,7 @@ export function knowledgeCandidateSignalEligible(signal: KnowledgeCandidateSigna
   }
 }
 
-function relevanceEligibleCandidate(
+export function relevanceEligibleKnowledgeCandidate(
   candidate: KnowledgeRetrievalCandidate
 ): KnowledgeRetrievalCandidate | null {
   const signals = candidate.signals.filter(knowledgeCandidateSignalEligible);
@@ -177,7 +187,7 @@ export function eligibleKnowledgeCandidates(
   candidates: readonly KnowledgeRetrievalCandidate[]
 ): KnowledgeRetrievalCandidate[] {
   return candidates.flatMap((candidate) => {
-    const accepted = relevanceEligibleCandidate(candidate);
+    const accepted = relevanceEligibleKnowledgeCandidate(candidate);
     return accepted ? [accepted] : [];
   });
 }
@@ -429,15 +439,23 @@ function hostedRerankFusionScores(
 /**
  * Final ranking after hosted reranking: descending rerank score, exact signal
  * as tie-breaker, fused RRF score next, deterministic chunk id last. Scored
- * candidates always precede candidates the provider omitted; omitted
- * candidates keep their deterministic weighted RRF order.
+ * candidates retain the accepted hosted-rerank semantics. Candidates omitted
+ * by the provider rejoin only through the same signal eligibility as the
+ * deterministic path, with their weighted RRF recomputed from eligible
+ * signals; every admitted omitted candidate follows every scored candidate.
  */
 export function orderRerankedKnowledgeCandidates(input: Readonly<{
   pool: readonly KnowledgeRankedCandidate[];
   query: string;
   rerankScores: ReadonlyMap<string, number>;
 }>): KnowledgeRerankedCandidate[] {
-  const withScores = input.pool.map((candidate): KnowledgeRerankedCandidate =>
+  const scored = input.pool.filter((candidate) =>
+    input.rerankScores.has(candidate.chunkId));
+  const eligibleOmitted = fuseKnowledgeCandidates(eligibleKnowledgeCandidates(
+    input.pool.filter((candidate) => !input.rerankScores.has(candidate.chunkId))
+  ));
+  const withScores = [...scored, ...eligibleOmitted]
+    .map((candidate): KnowledgeRerankedCandidate =>
     Object.freeze({
       ...candidate,
       rerankScore: input.rerankScores.get(candidate.chunkId) ?? null
@@ -555,7 +573,7 @@ export function rankKnowledgeCandidates(input: Readonly<{
   selected: readonly KnowledgeRankedCandidate[];
 }>> {
   const eligible = input.candidates.flatMap((candidate) => {
-    const accepted = relevanceEligibleCandidate(candidate);
+    const accepted = relevanceEligibleKnowledgeCandidate(candidate);
     return accepted ? [accepted] : [];
   });
   const ranked = Object.freeze(fuseKnowledgeCandidates(eligible));

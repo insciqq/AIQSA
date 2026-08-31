@@ -4,12 +4,21 @@ import {
   type KnowledgeUsageTotals
 } from "./contract";
 
-export const KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION = 1 as const;
+export const KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION = 2 as const;
 
 export type KnowledgeBenchmarkRerankerDiagnostic = Readonly<{
   fallbackReason: string | null;
+  omittedCandidateCount: number;
+  omittedRejectedCandidateCount: number;
   status: "complete" | "degraded" | "disabled" | "partial";
   timedOut: boolean;
+}>;
+
+export type KnowledgeBenchmarkRerankAdmissionAggregate = Readonly<{
+  omittedCandidateCount: number;
+  omittedRejectedCandidateCount: number;
+  queriesWithOmittedCandidates: number;
+  queriesWithOmittedRejections: number;
 }>;
 
 export type KnowledgeRetrievalCheckpointOutcome = KnowledgeQueryOutcome & Readonly<{
@@ -59,6 +68,8 @@ const scheduleKeys = Object.freeze([
 const usageKeys = Object.freeze(["costMicros", "requests", "tokens"] as const);
 const diagnosticKeys = Object.freeze([
   "fallbackReason",
+  "omittedCandidateCount",
+  "omittedRejectedCandidateCount",
   "status",
   "timedOut"
 ] as const);
@@ -169,16 +180,56 @@ function decodeDiagnostic(value: unknown): KnowledgeBenchmarkRerankerDiagnostic 
   if (!isRecord(value) || !hasExactKeys(value, diagnosticKeys)) return null;
   const status = value.status;
   const fallbackReason = value.fallbackReason;
+  const omittedCandidateCount = boundedNonNegativeInteger(
+    value.omittedCandidateCount,
+    96
+  );
+  const omittedRejectedCandidateCount = boundedNonNegativeInteger(
+    value.omittedRejectedCandidateCount,
+    96
+  );
   if (status !== "complete" && status !== "degraded" && status !== "disabled" &&
     status !== "partial" || typeof value.timedOut !== "boolean" ||
+    omittedCandidateCount === null || omittedRejectedCandidateCount === null ||
+    omittedRejectedCandidateCount > omittedCandidateCount ||
+    (status === "partial") !== (omittedCandidateCount > 0) ||
+    (status !== "partial" && omittedRejectedCandidateCount !== 0) ||
     fallbackReason !== null && (typeof fallbackReason !== "string" ||
       !failureCodePattern.test(fallbackReason)) ||
     (status === "degraded") !== (fallbackReason !== null)) return null;
   return Object.freeze({
     fallbackReason: fallbackReason as string | null,
+    omittedCandidateCount,
+    omittedRejectedCandidateCount,
     status,
     timedOut: value.timedOut
   });
+}
+
+/** Aggregate-only, content-free partial-rerank admission diagnostics. */
+export function aggregateKnowledgeRerankAdmissionDiagnostics(
+  outcomes: readonly KnowledgeRetrievalCheckpointOutcome[]
+): KnowledgeBenchmarkRerankAdmissionAggregate {
+  return Object.freeze(outcomes.reduce((aggregate, outcome) => {
+    const diagnostic = outcome.rerankerDiagnostic;
+    return {
+      omittedCandidateCount:
+        aggregate.omittedCandidateCount + diagnostic.omittedCandidateCount,
+      omittedRejectedCandidateCount:
+        aggregate.omittedRejectedCandidateCount + diagnostic.omittedRejectedCandidateCount,
+      queriesWithOmittedCandidates:
+        aggregate.queriesWithOmittedCandidates +
+        (diagnostic.omittedCandidateCount > 0 ? 1 : 0),
+      queriesWithOmittedRejections:
+        aggregate.queriesWithOmittedRejections +
+        (diagnostic.omittedRejectedCandidateCount > 0 ? 1 : 0)
+    };
+  }, {
+    omittedCandidateCount: 0,
+    omittedRejectedCandidateCount: 0,
+    queriesWithOmittedCandidates: 0,
+    queriesWithOmittedRejections: 0
+  }));
 }
 
 export function decodeKnowledgeRetrievalCheckpointOutcome(
