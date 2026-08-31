@@ -167,6 +167,87 @@ describe("OpenAI Responses transport", () => {
     expect(openAIRetryableErrorPayload({ retryable: true, status: 503 })).toBeNull();
   });
 
+  it("bounded-retries only opted-in transient failures before a Responses request is accepted", async () => {
+    const calls: Array<{ body: string; url: string }> = [];
+    const sleeps: number[] = [];
+    const responses = [
+      new Response("gateway unavailable", {
+        headers: { "retry-after": "1" },
+        status: 502
+      }),
+      new Response(JSON.stringify({ id: "response-json", status: "completed" })),
+      new Response("temporarily unavailable", { status: 503 }),
+      new Response("event: response.completed\ndata: {}\n\n")
+    ];
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: "key",
+      fetchFn: async (input, init) => {
+        calls.push({ body: String(init?.body), url: String(input) });
+        return responses.shift() ?? new Response("{}", { status: 500 });
+      },
+      initialRequestRetry: {
+        maxAttempts: 2,
+        random: () => 0,
+        sleep: async (delayMs, signal) => {
+          expect(signal.aborted).toBe(false);
+          sleeps.push(delayMs);
+        }
+      }
+    });
+
+    await expect(client.create({ model: "gpt-test", stream: false })).resolves.toMatchObject({
+      id: "response-json"
+    });
+    const stream = await client.stream!({ model: "gpt-test", stream: true });
+
+    expect(stream.status).toBe(200);
+    expect(calls).toEqual([
+      { body: JSON.stringify({ model: "gpt-test", stream: false }), url: "https://api.openai.com/v1/responses" },
+      { body: JSON.stringify({ model: "gpt-test", stream: false }), url: "https://api.openai.com/v1/responses" },
+      { body: JSON.stringify({ model: "gpt-test", stream: true }), url: "https://api.openai.com/v1/responses" },
+      { body: JSON.stringify({ model: "gpt-test", stream: true }), url: "https://api.openai.com/v1/responses" }
+    ]);
+    expect(sleeps).toEqual([1_000, 125]);
+  });
+
+  it("does not replay an initial Responses failure without the stateless opt-in", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response("gateway unavailable", { status: 502 })
+    );
+    const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn });
+
+    await expect(client.create({ model: "gpt-test" })).rejects.toThrow(
+      "OpenAI request failed with status 502"
+    );
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("keeps retry backoff inside the original Responses request deadline", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response("gateway unavailable", { status: 502 })
+    );
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: "key",
+      defaultTimeoutMs: 5,
+      fetchFn,
+      initialRequestRetry: {
+        maxAttempts: 3,
+        sleep: async (_delayMs, signal) =>
+          new Promise<void>((_resolve, reject) => {
+            const rejectFromSignal = () => reject(signal.reason);
+            if (signal.aborted) rejectFromSignal();
+            else signal.addEventListener("abort", rejectFromSignal, { once: true });
+          })
+      }
+    });
+
+    await expect(client.create({ model: "gpt-test" })).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
   it("applies the provider request timeout to create, retrieve, cancel, and stream", async () => {
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
@@ -321,11 +402,14 @@ describe("OpenAI Responses transport", () => {
   });
 
   it("rejects successful streaming responses without a body", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
-      fetchFn: async () => new Response(null, { status: 200 })
+      fetchFn,
+      initialRequestRetry: { maxAttempts: 3 }
     });
 
     await expect(client.stream!({ stream: true })).rejects.toThrow("openai_stream_body_missing");
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
 });
