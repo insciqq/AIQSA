@@ -51,9 +51,15 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
   decodeKnowledgeCoverageScopeV6,
   knowledgeCoverageEvidenceFromManifestV6,
-  knowledgeCoverageScopeFailureV6,
   knowledgeCoverageScopePromptV6
 } from "./coverageScopeV6";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
+  knowledgeCoverageScopeCompletenessPromptV1
+} from "./coverageScopeCompletenessV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
@@ -1140,7 +1146,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("reconstructs sparse-unit-Scope-repaired V21 into Evidence V21", async () => {
+  it("reconstructs append-only Scope completeness into Evidence V24", async () => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1243,12 +1249,12 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       scopePass: "initial"
     });
-    const scopeRepairPrompt = knowledgeCoverageScopePromptV6({
+    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV1({
+      acceptedScope: acceptedScope!,
+      completenessPass: "initial",
       evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
-      repairReason: "coverage_scope_shape_invalid",
-      request,
-      scopePass: "repair"
+      request
     });
     const selectorPrompt = knowledgeGroundedSelectorPromptV21({
       draft: acceptedDraft!,
@@ -1261,7 +1267,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol: "scope_v6_targeted_delta_v3" as const,
+      protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1282,16 +1288,17 @@ describe("Knowledge Evidence v2 repository projection", () => {
       systemPrompt: initialScopePrompt.systemPrompt,
       userPrompt: initialScopePrompt.userPrompt
     });
-    const scopeRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+    const coverageScopePayloadHash = knowledgeAnswerHash(acceptedScope);
+    const completenessRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       ...commonRequest,
-      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
-      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
-      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
-      systemPrompt: scopeRepairPrompt.systemPrompt,
-      userPrompt: scopeRepairPrompt.userPrompt
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
+      systemPrompt: completenessPrompt.systemPrompt,
+      userPrompt: completenessPrompt.userPrompt
     });
-    const coverageScopePayloadHash = knowledgeAnswerHash(rawScope);
     const selectorRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       ...commonRequest,
       contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
@@ -1381,19 +1388,17 @@ describe("Knowledge Evidence v2 repository projection", () => {
       }),
       v21AttemptRow({
         acceptedRequest: initialScopeRequest,
-        acceptedResult: knowledgeCoverageScopeFailureV6(
-          "coverage_scope_shape_invalid"
-        ),
+        acceptedResult: rawScope,
         draft: dispatchDraft,
         ordinal: 2,
         purpose: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
       }),
       v21AttemptRow({
-        acceptedRequest: scopeRepairRequest,
-        acceptedResult: rawScope,
+        acceptedRequest: completenessRequest,
+        acceptedResult: { additions: [], version: 1 },
         draft: dispatchDraft,
         ordinal: 3,
-        purpose: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
       }),
       v21AttemptRow({
         acceptedRequest: selectorRequest,
@@ -1442,13 +1447,18 @@ describe("Knowledge Evidence v2 repository projection", () => {
       },
       correctionAttempted: true,
       correctionSucceeded: true,
+      completeness: {
+        addedDimensionCount: 0,
+        initialDimensionCount: 2,
+        status: "accepted"
+      },
       finalText: [
         "- Completed Atlas exports are retained for 30 days. [K1]",
         "- The retention period starts after completion. [K1]"
       ].join("\n"),
       requestCoverage: "complete",
       supportedClaimCount: 2,
-      version: 23
+      version: 24
     });
     expect(result.grounding).toMatchObject({
       answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
@@ -1460,26 +1470,26 @@ describe("Knowledge Evidence v2 repository projection", () => {
       result.grounding.operations.map(({ role }) => role)).toEqual([
       "primary",
       "scope",
-      "scope_repair",
+      "scope_completeness",
       "initial",
       "supplement",
       "final"
     ]);
-    const conflictingScopeRepairRequest = {
-      ...scopeRepairRequest,
+    const conflictingCompletenessRequest = {
+      ...completenessRequest,
       userPrompt: "{}"
     };
     await expect(groundKnowledgeRunAnswerV21(client(row(), {
       attempts: attempts.map((attempt, index) => index === 2
         ? {
             ...attempt,
-            acceptedRequest: conflictingScopeRepairRequest,
-            requestHash: knowledgeAnswerHash(conflictingScopeRepairRequest)
+            acceptedRequest: conflictingCompletenessRequest,
+            requestHash: knowledgeAnswerHash(conflictingCompletenessRequest)
           }
         : attempt),
       providerExecutionSnapshot: fakeProviderExecutionSnapshot()
     }), { runId: "run-1", userId: "user-1" })).rejects.toThrow(
-      "knowledge_coverage_scope_unaccepted"
+      "knowledge_answer_operation_snapshot_conflict"
     );
   });
 

@@ -4,7 +4,8 @@ import type {
   KnowledgeGroundingEvidenceV19,
   KnowledgeGroundingEvidenceV21,
   KnowledgeGroundingEvidenceV22,
-  KnowledgeGroundingEvidenceV23
+  KnowledgeGroundingEvidenceV23,
+  KnowledgeGroundingEvidenceV24
 } from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
@@ -210,6 +211,32 @@ function evidenceV23(durationMs: number): KnowledgeGroundingEvidenceV23 {
   } as unknown as KnowledgeGroundingEvidenceV23;
 }
 
+function evidenceV24(durationMs: number): KnowledgeGroundingEvidenceV24 {
+  const historical = evidenceV23(durationMs);
+  const [primary, scope, initial] = historical.operations;
+  return {
+    ...historical,
+    completeness: {
+      addedDimensionCount: 2,
+      initialDimensionCount: 1,
+      initialScopePayloadHash: hash,
+      payloadHash: hash,
+      status: "accepted"
+    },
+    completenessRepairAttempted: false,
+    completenessRepairSucceeded: false,
+    operations: [primary, scope, {
+      ...scope,
+      contractVersion: 1,
+      operationId: "operation-scope-completeness",
+      ordinal: 3,
+      purpose: "knowledge_coverage_scope_completeness_v1",
+      role: "scope_completeness"
+    }, { ...initial, ordinal: 4 }],
+    version: 24
+  } as unknown as KnowledgeGroundingEvidenceV24;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
     const metrics = aggregateKnowledgeGroundingMetrics([
@@ -254,10 +281,18 @@ describe("Knowledge grounding operational metrics", () => {
     expect(serialized).not.toContain(hash);
   });
 
-  it("loads only structurally valid V18-V23 metric receipts", async () => {
+  it("counts append-only Scope completeness without projecting its private additions", () => {
+    const metrics = aggregateKnowledgeGroundingMetrics([evidenceV24(100)]);
+    expect(metrics.scopeCompletenessAccepted).toBe(1);
+    expect(metrics.totalScopeCompletenessAdditions).toBe(2);
+    expect(metrics.stages.scope_completeness.calls).toBe(1);
+    expect(JSON.stringify(metrics)).not.toContain("PRIVATE");
+  });
+
+  it("loads only structurally valid V18-V24 metric receipts", async () => {
     const findMany = async (query: unknown) => {
       expect(query).toMatchObject({
-        where: { version: { in: [18, 19, 20, 21, 22, 23] } }
+        where: { version: { in: [18, 19, 20, 21, 22, 23, 24] } }
       });
       return [
         { evidence: evidence(100) },
@@ -265,13 +300,14 @@ describe("Knowledge grounding operational metrics", () => {
         { evidence: evidenceV21(100) },
         { evidence: evidenceV22(100) },
         { evidence: evidenceV23(100) },
+        { evidence: evidenceV24(100) },
         { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
       ];
     };
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
     } as never, { limit: 5 });
-    expect(metrics.answers).toBe(5);
-    expect(metrics.modelOperations).toBe(15);
+    expect(metrics.answers).toBe(6);
+    expect(metrics.modelOperations).toBe(19);
   });
 });

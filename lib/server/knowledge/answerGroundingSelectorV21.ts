@@ -26,6 +26,9 @@ import {
   type KnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
 import {
+  validateDecodedKnowledgeCoverageScopeCompletenessUnionV1
+} from "./coverageScopeCompletenessV1";
+import {
   knowledgeCoverageEvidenceAtomIndexV1,
   type KnowledgeCoverageEvidenceAtomIndexV1
 } from "./coverageScopeV4";
@@ -62,6 +65,10 @@ export type KnowledgeGroundedSelectorValidationV21 =
 export type KnowledgeGroundedSelectorFailureReasonV21 =
   KnowledgeGroundedSelectorFailureReasonV20;
 export type KnowledgeGroundedSelectorFailureV21 = KnowledgeGroundedSelectorFailureV20;
+
+export type KnowledgeCoverageScopeValidationProtocolV21 =
+  | "canonical_v6"
+  | "append_only_completeness_v1";
 
 export type KnowledgeCoverageDerivationV6 = Readonly<{
   coveredDimensionCount: number;
@@ -135,6 +142,29 @@ function rejected(
   return Object.freeze({ kind: "rejected", reason });
 }
 
+function validCoverageScopeV21(input: Readonly<{
+  evidence: readonly KnowledgeSelectorEvidenceV1[];
+  request: string;
+  scope: KnowledgeCoverageScopeV6;
+  scopeProtocol?: KnowledgeCoverageScopeValidationProtocolV21;
+}>): boolean {
+  if (input.scopeProtocol !== undefined && input.scopeProtocol !== "canonical_v6" &&
+    input.scopeProtocol !== "append_only_completeness_v1") return false;
+  try {
+    return input.scopeProtocol === "append_only_completeness_v1"
+      ? validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(input.scope, {
+          evidence: input.evidence,
+          request: input.request
+        })
+      : validateDecodedKnowledgeCoverageScopeV6(input.scope, {
+          evidence: input.evidence,
+          request: input.request
+        });
+  } catch {
+    return false;
+  }
+}
+
 export function validateKnowledgeGroundedSelectorV21(
   value: unknown,
   input: Readonly<{
@@ -142,17 +172,10 @@ export function validateKnowledgeGroundedSelectorV21(
     evidence: readonly KnowledgeSelectorEvidenceV1[];
     request: string;
     scope: KnowledgeCoverageScopeV6;
+    scopeProtocol?: KnowledgeCoverageScopeValidationProtocolV21;
   }>
 ): KnowledgeGroundedSelectorValidationV21 {
-  let scopeValid = false;
-  try {
-    scopeValid = validateDecodedKnowledgeCoverageScopeV6(input.scope, {
-      evidence: input.evidence,
-      request: input.request
-    });
-  } catch {
-    scopeValid = false;
-  }
+  const scopeValid = validCoverageScopeV21(input);
   if (!scopeValid) return rejected("selector_malformed");
   if (!record(value) || !Array.isArray(value.coverage)) {
     return rejected("selector_malformed");
@@ -293,6 +316,7 @@ export function knowledgeGroundedSelectorPromptV21(input: Readonly<{
   repairReason?: KnowledgeSelectorValidationFailureReason;
   request: string;
   scope: KnowledgeCoverageScopeV6;
+  scopeProtocol?: KnowledgeCoverageScopeValidationProtocolV21;
   selectorPass: "final" | "initial" | "repair";
 }>): Readonly<{ systemPrompt: string; userPrompt: string }> {
   const rawInput = input as unknown;
@@ -303,17 +327,10 @@ export function knowledgeGroundedSelectorPromptV21(input: Readonly<{
     ...(input.repairReason === undefined ? [] : ["repairReason"]),
     "request",
     "scope",
+    ...(input.scopeProtocol === undefined ? [] : ["scopeProtocol"]),
     "selectorPass"
   ];
-  let scopeValid = false;
-  try {
-    scopeValid = validateDecodedKnowledgeCoverageScopeV6(input.scope, {
-      evidence: input.evidence,
-      request: input.request
-    });
-  } catch {
-    scopeValid = false;
-  }
+  const scopeValid = validCoverageScopeV21(input);
   if (!record(rawInput) || !exactKeys(rawInput, expectedKeys) ||
     input.selectorPass !== "initial" && input.selectorPass !== "repair" &&
       input.selectorPass !== "final" ||

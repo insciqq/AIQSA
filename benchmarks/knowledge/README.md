@@ -58,7 +58,8 @@ paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
 The live answer lane attests the current V21 Draft / blind Coverage Scope V6 /
-Selector V21 / settlement V6 candidate and refuses to run while the code-owned
+append-only Scope Completeness V1 / Selector V21 / settlement V6 candidate and
+refuses to run while the code-owned
 V21 rollout is not at 100%. This prevents a V20 product answer from being
 reported under a V21 manifest. Keep that activation candidate unpublished
 until the acceptance gate passes; frozen replay remains available while the
@@ -125,17 +126,20 @@ when the answer stage completed, its private answer and replay snapshot are
 still persisted for diagnosis before fail-fast exit.
 
 Replay schema V2 preserves exact V20 recovery and supports the current V21
-three-call `Draft -> blind Scope -> Selector` normal path, five-call correction
-path, one adjacent structural validation repair for either Scope or initial
-Selector, and a six-call hard cap. Scope never receives Draft or Selector
+four-call `Draft -> blind Scope -> append-only completeness -> Selector` normal
+path, six-call correction path, one adjacent structural validation repair for
+Scope, completeness, or initial Selector, and a six-call hard cap. Scope and
+completeness never receive Draft or Selector
 content. It reviews the exact bounded atom ledger grouped by evidence handle,
 returns one record per handle containing zero or more local findings that are
 already final Scope dimensions, plus bounded cross-handle joint findings and
 explicit unsupported request facets. The server validates exact unit identity,
 atom provenance, anchors, and bounds, then materializes every finding losslessly;
 there is no negative-atom echo or second model-owned positive-to-Scope reduction.
-Selector receives a de-duplicated exact-text index for the atoms assigned to
-Scope and independently filters positive findings whose descriptions are not
+Completeness re-reviews the complete atom ledger against the exact request and
+accepted Scope, returns additions only, and cannot delete or rewrite an accepted
+item. Selector receives a de-duplicated exact-text index for the atoms assigned
+to merged Scope and independently filters positive findings whose descriptions are not
 entailed by those atoms or are not material direct requirements of the request.
 Those findings are `excluded` from correction, settlement, and the coverage
 denominator. A requested unsupported facet has no atom IDs and can never be
@@ -153,8 +157,9 @@ advisory Draft handles from the target atoms. An oversized projection disables
 correction instead of being truncated. This performs no retrieval or semantic
 server reduction. It is a delta:
 the accepted base, including Scope eligibility, remains immutable and a target
-can close only through its own supported supplemental claim. Every later request
-pins the exact accepted Scope result hash. Selector coverage requires each
+can close only through its own supported supplemental claim. Completeness pins
+the exact initial Scope hash; Selector and every later request pin the canonical
+merged Scope hash. Selector coverage requires each
 covered support ID to overlap that immutable scope through canonical evidence
 handles. Replay
 runs answer-grounding and optional judge stages only. Its origin

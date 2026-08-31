@@ -34,6 +34,9 @@ import {
   decodeKnowledgeCoverageScopeFailureV6
 } from "../../lib/server/knowledge/coverageScopeV6";
 import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+} from "../../lib/server/knowledge/coverageScopeCompletenessV1";
+import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
@@ -332,13 +335,17 @@ export function isOpenRagAnswerOperationSequence(
   if (pipeline === "v21_scope_v6") {
     const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6;
     const candidates = [1, 2].flatMap((scopePasses) => [1, 2].flatMap(
-      (selectorPasses) => {
+      (completenessPasses) => [1, 2].flatMap((selectorPasses) => {
         const base = [
           pair.draftOperation,
           ...Array.from({ length: scopePasses }, () => pair.coverageAuditorOperation),
+          ...Array.from(
+            { length: completenessPasses },
+            () => KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+          ),
           ...Array.from({ length: selectorPasses }, () => pair.selectorOperation)
         ];
-        return [
+        return base.length > 6 ? [] : [
           base,
           ...(base.length + 2 <= 6
             ? [
@@ -347,7 +354,7 @@ export function isOpenRagAnswerOperationSequence(
               ]
             : [])
         ];
-      }
+      })
     ));
     return candidates.some((candidate) => exactSequence(operations, candidate));
   }
@@ -533,7 +540,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
   if (value.executionPolicy !== null && !executionPolicy ||
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
-    pipeline === "v21_scope_v6" && (engine.groundingEvidenceVersion !== 23 ||
+    pipeline === "v21_scope_v6" && (engine.groundingEvidenceVersion !== 24 ||
       engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==

@@ -283,6 +283,15 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
         payloadHash: "8".repeat(64),
         status: "accepted" as const
       },
+      completeness: {
+        addedDimensionCount: 0,
+        initialDimensionCount: 1,
+        initialScopePayloadHash: "8".repeat(64),
+        payloadHash: "a".repeat(64),
+        status: "accepted" as const
+      },
+      completenessRepairAttempted: false,
+      completenessRepairSucceeded: false,
       correctionAttempted: false,
       correctionSucceeded: false,
       contradictedClaimCount: 0,
@@ -318,7 +327,7 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
       sessionId: "evidence-session-v21",
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
-      version: 23 as const
+      version: 24 as const
     }
   };
 }
@@ -1846,6 +1855,20 @@ describe("run recovery", () => {
     expectedReasoningEfforts: [],
     snapshotVersion: 6
   }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 7
+  }, {
     current: true,
     executionPolicy: {
       auditorReasoningEffort: "high",
@@ -1857,8 +1880,8 @@ describe("run recovery", () => {
       supplementReasoningEffort: "low",
       version: 1
     } as const,
-    expectedReasoningEfforts: ["high", "medium"],
-    snapshotVersion: 7
+    expectedReasoningEfforts: ["high", "high", "medium"],
+    snapshotVersion: 8
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -1881,7 +1904,12 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 7
+      ...(snapshotVersion === 8
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: "scope_v6_completeness_v1_targeted_delta_v4" as const
+          }
+        : snapshotVersion === 7
         ? {
             executionPolicy: executionPolicy!,
             protocol: "scope_v6_targeted_delta_v3" as const
@@ -1952,7 +1980,7 @@ describe("run recovery", () => {
             requests.push(request);
             return {
               ...providerResult,
-              finalText: JSON.stringify(snapshotVersion === 7 && requests.length === 1
+              finalText: JSON.stringify(snapshotVersion === 8 && requests.length === 1
                 ? {
                     evidenceUnits: [{
                       findings: [{
@@ -1966,7 +1994,9 @@ describe("run recovery", () => {
                     unsupportedDimensions: [],
                     version: 6
                   }
-                : snapshotVersion === 7
+                : snapshotVersion === 8 && requests.length === 2
+                  ? { additions: [], version: 1 }
+                : snapshotVersion === 8
                   ? {
                       claims: [{
                         id: "C1",
@@ -1996,7 +2026,7 @@ describe("run recovery", () => {
     expect(requests.map(({ params }) => params.reasoningEffort))
       .toEqual(expectedReasoningEfforts);
     if (current) {
-      expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
+      expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1,
         expect.objectContaining({
           contractVersion: 6,
@@ -2005,8 +2035,14 @@ describe("run recovery", () => {
         }));
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2,
         expect.objectContaining({
-          contractVersion: 21,
+          contractVersion: 1,
           ordinal: 3,
+          purpose: "knowledge_coverage_scope_completeness_v1"
+        }));
+      expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(3,
+        expect.objectContaining({
+          contractVersion: 21,
+          ordinal: 4,
           purpose: "knowledge_grounded_selector_v21"
         }));
       expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
