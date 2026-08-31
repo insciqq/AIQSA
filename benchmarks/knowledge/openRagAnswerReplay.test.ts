@@ -138,9 +138,9 @@ function v21Origin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 22,
+      groundingEvidenceVersion: 23,
       pipelineVersion:
-        "knowledge_answer_draft_v21_scope_v6_selector_v21_settlement_v6",
+        "knowledge_answer_draft_v21_scope_v6_selector_v21_targeted_delta_v1_settlement_v6",
       selectorContractVersion: 21,
       settlementVersion: 6
     })

@@ -36,6 +36,15 @@ import {
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
 import {
+  KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
+  decodeKnowledgeTargetedSupplementV1,
+  mergeKnowledgeTargetedSupplementV1
+} from "./answerGroundingCorrectionV21";
+import {
+  knowledgeAnswerTargetedSupplementPromptV1,
+  knowledgeGroundedDeltaSelectorPromptV1
+} from "./answerGroundingCorrectionPromptV21";
+import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
@@ -1252,7 +1261,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol: "scope_v6" as const,
+      protocol: "scope_v6_targeted_delta_v1" as const,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1297,33 +1306,37 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const rawSupplement = {
       claims: [{
         citationHints: ["K1"],
+        targetDimensionId: "D2",
         text: "The retention period starts after completion."
       }],
       version: 1
     };
-    const acceptedSupplement = decodeKnowledgeAnswerDraftSupplementV21(rawSupplement, {
-      availableHandles: ["K1"]
+    const acceptedSupplement = decodeKnowledgeTargetedSupplementV1(rawSupplement, {
+      availableHandles: ["K1"],
+      missingDimensions,
+      primaryDraft: acceptedDraft!
     });
     expect(acceptedSupplement).not.toBeNull();
-    const mergedDraft = mergeKnowledgeAnswerDraftsV21({
-      primary: acceptedDraft!,
+    const merged = mergeKnowledgeTargetedSupplementV1({
+      primaryDraft: acceptedDraft!,
       supplement: acceptedSupplement!
     });
-    const supplementPrompt = knowledgeAnswerDraftPromptV21({
+    const mergedDraft = merged.draft;
+    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: missingDimensions,
-      draftPass: "supplement",
       evidenceManifest: dispatchDraft.message,
       primaryDraft: acceptedDraft!,
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const finalPrompt = knowledgeGroundedSelectorPromptV21({
+    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV1({
+      bindings: merged.bindings,
       draft: mergedDraft,
       evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
+      initialSelector: acceptedSelector!,
       request,
-      scope: acceptedScope!,
-      selectorPass: "final"
+      scope: acceptedScope!
     });
     const supplementRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       ...commonRequest,
@@ -1331,7 +1344,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       coverageScopePayloadHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
+      schema: KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
       systemPrompt: supplementPrompt.systemPrompt,
       userPrompt: supplementPrompt.userPrompt
     });
@@ -1436,7 +1449,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       ].join("\n"),
       requestCoverage: "complete",
       supportedClaimCount: 2,
-      version: 22
+      version: 23
     });
     expect(result.grounding).toMatchObject({
       answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),

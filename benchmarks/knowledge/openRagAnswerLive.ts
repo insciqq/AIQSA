@@ -15,6 +15,7 @@ import {
 import {
   KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
@@ -29,7 +30,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -1225,10 +1226,9 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23,
         parserProfileVersion: revision.pdfParserProfileVersion,
-        pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v6_selector_v21_settlement_v6",
+        pipelineVersion: KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
         profileRevisionId: revision.id,
         profileRevisionNumber: revision.revisionNumber,
         rankingProfileVersion: KNOWLEDGE_RANKING_PROFILE_VERSION,

@@ -74,6 +74,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V19 = 19 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V20 = 20 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V21 = 21 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22 = 22 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23 = 23 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -530,6 +531,17 @@ export type KnowledgeGroundingEvidenceV22 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV23 =
+  KnowledgeGroundingOperationEvidenceV22;
+
+export type KnowledgeGroundingEvidenceV23 = Omit<
+  KnowledgeGroundingEvidenceV22,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV23[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -547,7 +559,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV19
   | KnowledgeGroundingEvidenceV20
   | KnowledgeGroundingEvidenceV21
-  | KnowledgeGroundingEvidenceV22;
+  | KnowledgeGroundingEvidenceV22
+  | KnowledgeGroundingEvidenceV23;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -1902,6 +1915,19 @@ export function groundSettledKnowledgeAnswerV22(input: Omit<Parameters<
       usage: Object.freeze({ ...operation.usage })
     }))),
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V22
+  });
+}
+
+/** V23 is the content-free attestation for Snapshot V7's target-addressed,
+ * monotonic correction delta. V22 remains the exact historical Scope V6
+ * full-recomputation receipt and is never reinterpreted. */
+export function groundSettledKnowledgeAnswerV23(
+  input: Parameters<typeof groundSettledKnowledgeAnswerV22>[0]
+): KnowledgeGroundingEvidenceV23 {
+  const historical = groundSettledKnowledgeAnswerV22(input);
+  return Object.freeze({
+    ...historical,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V23
   });
 }
 

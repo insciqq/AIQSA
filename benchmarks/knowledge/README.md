@@ -75,6 +75,10 @@ npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
 ```
 
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
+The current V21 acceptance campaign always supplies exactly five distinct
+`--case-id` values and never dispatches `--full`. Each five-case run is
+sequential, fail-fast, and non-scoreable; a corpus result may be assembled only
+after all twenty batches share the exact frozen pins and every case has settled.
 Add `--preflight-only` to validate the dataset, ignored paths, session,
 codex-lb pins, and either the live Base/profile/source snapshot or the frozen
 replay origin manifest. Frozen replay preflight also locks the exact admitted
@@ -85,8 +89,9 @@ unsupported by the admitted model. This validation makes no provider/network
 request and creates no checkpoint.
 `--judge-repeat N` is diagnostic: the first frozen judgment remains official
 and later judgments never rewrite it. `--no-judge` runs answer-stage diagnosis
-only. All of these modes are non-scoreable. A scoreable run requires exactly
-the pinned 100 cases, one answer and one judge per case:
+only. All of these modes are non-scoreable. A future monolithic scoreable run
+would require exactly the pinned 100 cases, one answer and one judge per case,
+but this command is not used by the current five-case acceptance campaign:
 
 ```bash
 AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
@@ -131,9 +136,13 @@ atom provenance, anchors, and bounds, then materializes every finding losslessly
 there is no negative-atom echo or second model-owned positive-to-Scope reduction.
 A repair receives unchanged authority inputs plus only the bounded
 validation-reason enum; provider failures are not retried. Correction starts
-only when both remaining calls fit. Every later request pins the exact accepted
-Scope result hash. Selector coverage requires each covered support ID to overlap
-that immutable scope through canonical evidence handles. Replay
+only when both remaining calls fit. Every supplemental claim names exactly one
+initially missing positive Scope target and overlaps its immutable provenance.
+The final Selector is a delta: the accepted base remains immutable and a target
+can close only through its own supported supplemental claim. Every later request
+pins the exact accepted Scope result hash. Selector coverage requires each
+covered support ID to overlap that immutable scope through canonical evidence
+handles. Replay
 runs answer-grounding and optional judge stages only. Its origin
 Base/source/engine pins come from the immutable snapshot, so no live Base or
 retrieval state is consulted:
