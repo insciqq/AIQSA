@@ -19,7 +19,7 @@ import {
   type KnowledgeAnswerOperationV21,
   type KnowledgeAnswerV21ContractVersions
 } from "./answerGroundingV21";
-import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV1";
+import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV2";
 import {
   decodeKnowledgeProviderAttemptUsage,
   type KnowledgeProviderAttemptUsage
@@ -341,7 +341,7 @@ export type KnowledgeGroundingEvidenceV16 = Readonly<{
 export type KnowledgeGroundingOperationEvidenceV17 = Readonly<{
   acceptedRequestHash: string;
   acceptedResultHash: string;
-  contractVersion: 1 | 17 | 21;
+  contractVersion: 1 | 2 | 17 | 21;
   durationMs: number;
   operationId: string;
   ordinal: 1 | 2 | 3 | 4 | 5 | 6;
@@ -1184,7 +1184,7 @@ function validGroundingOperationV17(
   const contractVersion = role === "primary" || role === "supplement"
     ? 21
     : role === "auditor" || role === "auditor_repair"
-      ? 1
+      ? 2
       : 17;
   return operation.ordinal === ordinal && operation.role === role &&
     operation.purpose === purpose && operation.contractVersion === contractVersion &&
@@ -1253,7 +1253,7 @@ export function groundSettledKnowledgeAnswerV17(input: Readonly<{
     : input.settlement.requestCoverage === auditCoverage;
   if (input.contracts.draftContractVersion !== 21 ||
     input.contracts.selectorContractVersion !== 17 ||
-    input.contracts.coverageAuditorContractVersion !== 1 ||
+    input.contracts.coverageAuditorContractVersion !== 2 ||
     input.contracts.settlementVersion !== 6 || !operationsValid || !auditor ||
     input.audit.payloadHash !== auditor.acceptedResultHash ||
     !Number.isSafeInteger(input.audit.dimensionCount) ||

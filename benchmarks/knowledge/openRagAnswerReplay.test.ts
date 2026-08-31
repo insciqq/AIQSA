@@ -136,10 +136,10 @@ function v21Origin() {
     ...legacy,
     engine: Object.freeze({
       ...legacy.engine,
-      coverageAuditorContractVersion: 1,
+      coverageAuditorContractVersion: 2,
       draftContractVersion: 21,
       groundingEvidenceVersion: 18,
-      pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v1_settlement_v6",
+      pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v2_settlement_v6",
       selectorContractVersion: 17,
       settlementVersion: 6
     })
@@ -315,15 +315,14 @@ describe("OpenRAG frozen-evidence replay", () => {
         };
       }
       return {
-        dimensions: [{
+        coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+        scope: [{
           description: "State the completed-export retention period.",
-          evidenceHintHandles: [],
+          evidenceHandles: ["K1"],
           id: "D1",
-          requestAnchor: "How long are completed exports retained?",
-          status: "covered",
-          supportIds: ["C1"]
+          requestAnchor: "How long are completed exports retained?"
         }],
-        version: 1
+        version: 2
       };
     });
 
@@ -335,11 +334,11 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(executeStructuredOutput.mock.calls.map(([, request]) => request.name)).toEqual([
       "knowledge_answer_draft_v21",
       "knowledge_grounded_selector_v17",
-      "knowledge_coverage_auditor_v1"
+      "knowledge_coverage_auditor_v2"
     ]);
     expect(result).toMatchObject({
       contracts: {
-        coverageAuditorContractVersion: 1,
+        coverageAuditorContractVersion: 2,
         draftContractVersion: 21,
         selectorContractVersion: 17,
         settlementVersion: 6
@@ -389,15 +388,14 @@ describe("OpenRAG frozen-evidence replay", () => {
       }
       if (auditCalls++ === 0) return {};
       return {
-        dimensions: [{
+        coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+        scope: [{
           description: "State the completed-export retention period.",
-          evidenceHintHandles: [],
+          evidenceHandles: ["K1"],
           id: "D1",
-          requestAnchor: "How long are completed exports retained?",
-          status: "covered",
-          supportIds: ["C1"]
+          requestAnchor: "How long are completed exports retained?"
         }],
-        version: 1
+        version: 2
       };
     });
 
@@ -409,7 +407,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.operationCount).toBe(4);
     const auditRequests = executeStructuredOutput.mock.calls
       .map(([, request]) => request)
-      .filter(({ name }) => name === "knowledge_coverage_auditor_v1");
+      .filter(({ name }) => name === "knowledge_coverage_auditor_v2");
     expect(auditRequests).toHaveLength(2);
     expect(JSON.parse(auditRequests[0]!.userPrompt)).toMatchObject({
       auditPass: "initial",
@@ -422,15 +420,15 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
       "knowledge_grounded_selector_v17",
-      "knowledge_coverage_auditor_v1",
-      "knowledge_coverage_auditor_v1"
+      "knowledge_coverage_auditor_v2",
+      "knowledge_coverage_auditor_v2"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
       "knowledge_grounded_selector_v17",
       "knowledge_grounded_selector_v17",
-      "knowledge_coverage_auditor_v1",
-      "knowledge_coverage_auditor_v1",
+      "knowledge_coverage_auditor_v2",
+      "knowledge_coverage_auditor_v2",
       "knowledge_answer_draft_supplement_v21"
     ])).toBe(false);
   });

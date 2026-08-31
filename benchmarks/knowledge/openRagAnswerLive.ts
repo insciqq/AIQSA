@@ -13,7 +13,7 @@ import {
   decodeKnowledgeAnswerOperationRequestSnapshotV1
 } from "../../lib/server/knowledge/answerGroundingV5";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2,
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
@@ -674,13 +674,13 @@ async function loadProductAnswer(input: Readonly<{
   }
   const operations = dispatches.map(({ attempt }) => attempt.purpose);
   const isV21 = input.origin.engine.coverageAuditorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.coverageAuditorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.coverageAuditorContractVersion &&
     input.origin.engine.draftContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.draftContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.draftContractVersion &&
     input.origin.engine.selectorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.selectorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.selectorContractVersion &&
     input.origin.engine.settlementVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.settlementVersion;
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.settlementVersion;
   if (!isOpenRagAnswerOperationSequence(Object.freeze({
     coverageAuditorContractVersion: input.origin.engine.coverageAuditorContractVersion,
     draftContractVersion: input.origin.engine.draftContractVersion,
@@ -1225,7 +1225,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
         groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18,
         parserProfileVersion: revision.pdfParserProfileVersion,
-        pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v1_settlement_v6",
+        pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v2_settlement_v6",
         profileRevisionId: revision.id,
         profileRevisionNumber: revision.revisionNumber,
         rankingProfileVersion: KNOWLEDGE_RANKING_PROFILE_VERSION,

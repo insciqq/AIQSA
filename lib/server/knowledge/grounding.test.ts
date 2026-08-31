@@ -674,7 +674,7 @@ describe("Knowledge answer citation contract", () => {
         payloadHash: auditPayloadHash
       },
       contracts: {
-        coverageAuditorContractVersion: 1,
+        coverageAuditorContractVersion: 2,
         draftContractVersion: 21,
         selectorContractVersion: 17,
         settlementVersion: 6
@@ -707,23 +707,23 @@ describe("Knowledge answer citation contract", () => {
       }, {
         acceptedRequestHash: "7".repeat(64),
         acceptedResultHash: "9".repeat(64),
-        contractVersion: 1,
+        contractVersion: 2,
         durationMs: 16,
-        operationId: "operation-auditor-v1",
+        operationId: "operation-auditor-v2",
         ordinal: 3,
-        providerRequestId: "provider-auditor-v1",
-        purpose: "knowledge_coverage_auditor_v1",
+        providerRequestId: "provider-auditor-v2",
+        purpose: "knowledge_coverage_auditor_v2",
         role: "auditor",
         usage
       }, {
         acceptedRequestHash: "a".repeat(64),
         acceptedResultHash: auditPayloadHash,
-        contractVersion: 1,
+        contractVersion: 2,
         durationMs: 14,
-        operationId: "operation-auditor-repair-v1",
+        operationId: "operation-auditor-repair-v2",
         ordinal: 4,
-        providerRequestId: "provider-auditor-repair-v1",
-        purpose: "knowledge_coverage_auditor_v1",
+        providerRequestId: "provider-auditor-repair-v2",
+        purpose: "knowledge_coverage_auditor_v2",
         role: "auditor_repair",
         usage
       }],
@@ -745,7 +745,7 @@ describe("Knowledge answer citation contract", () => {
     expect(result).toMatchObject({
       audit: { dimensionCount: 1, payloadHash: auditPayloadHash, status: "accepted" },
       contracts: {
-        coverageAuditorContractVersion: 1,
+        coverageAuditorContractVersion: 2,
         draftContractVersion: 21,
         selectorContractVersion: 17,
         settlementVersion: 6
@@ -780,12 +780,12 @@ describe("Knowledge answer citation contract", () => {
     const operation = (
       acceptedRequestHash: string,
       acceptedResultHash: string,
-      contractVersion: 1 | 17 | 21,
+      contractVersion: 1 | 2 | 17 | 21,
       ordinal: 1 | 2 | 3 | 4 | 5,
       purpose:
         | "knowledge_answer_draft_supplement_v21"
         | "knowledge_answer_draft_v21"
-        | "knowledge_coverage_auditor_v1"
+        | "knowledge_coverage_auditor_v2"
         | "knowledge_grounded_selector_final_v17"
         | "knowledge_grounded_selector_v17",
       role: "auditor" | "final" | "initial" | "primary" | "supplement"
@@ -809,7 +809,7 @@ describe("Knowledge answer citation contract", () => {
         payloadHash: auditPayloadHash
       },
       contracts: {
-        coverageAuditorContractVersion: 1,
+        coverageAuditorContractVersion: 2,
         draftContractVersion: 21,
         selectorContractVersion: 17,
         settlementVersion: 6
@@ -837,9 +837,9 @@ describe("Knowledge answer citation contract", () => {
         operation(
           "5".repeat(64),
           auditPayloadHash,
-          1,
+          2,
           3,
-          "knowledge_coverage_auditor_v1",
+          "knowledge_coverage_auditor_v2",
           "auditor"
         ),
         operation(

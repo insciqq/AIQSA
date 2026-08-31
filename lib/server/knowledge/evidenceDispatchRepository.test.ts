@@ -53,10 +53,10 @@ import {
 import {
   KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
-  knowledgeCoverageAuditFailureV1,
-  knowledgeCoverageAuditPromptV1
-} from "./coverageAuditV1";
+  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
+  knowledgeCoverageAuditFailureV2,
+  knowledgeCoverageAuditPromptV2
+} from "./coverageAuditV2";
 
 const NOW = new Date("2026-08-19T10:00:00.000Z");
 const LEASE = new Date("2026-08-19T10:05:00.000Z");
@@ -1231,15 +1231,14 @@ describe("Knowledge evidence dispatch repository", () => {
       selector: acceptedSelector
     });
     const audit = {
-      dimensions: [{
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+      scope: [{
         description: "State how long the verified value is retained.",
-        evidenceHintHandles: [],
+        evidenceHandles: ["K1"],
         id: "D1",
-        requestAnchor: "How long",
-        status: "covered",
-        supportIds: ["C1"]
+        requestAnchor: "How long"
       }],
-      version: 1
+      version: 2
     };
     const draftPrompt = knowledgeAnswerDraftPromptV21({
       draftPass: "primary",
@@ -1254,7 +1253,7 @@ describe("Knowledge evidence dispatch repository", () => {
       request,
       selectorPass: "initial"
     });
-    const auditPrompt = knowledgeCoverageAuditPromptV1({
+    const auditPrompt = knowledgeCoverageAuditPromptV2({
       auditPass: "initial",
       evidence,
       evidenceManifest: currentManifest.message,
@@ -1289,11 +1288,11 @@ describe("Knowledge evidence dispatch repository", () => {
         userPrompt: selectorPrompt.userPrompt
       }),
       createKnowledgeAnswerOperationRequestSnapshotV21({
-        contractVersion: 1,
+        contractVersion: 2,
         evidenceReceiptHash: currentManifest.manifestHash,
         maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
         operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-        schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+        schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
         systemPrompt: auditPrompt.systemPrompt,
         transport: "native_strict",
         userPrompt: auditPrompt.userPrompt
@@ -1302,7 +1301,7 @@ describe("Knowledge evidence dispatch repository", () => {
     const results = [
       rawDraft,
       rawSelector,
-      knowledgeCoverageAuditFailureV1("coverage_audit_shape_invalid")
+      knowledgeCoverageAuditFailureV2("coverage_audit_shape_invalid")
     ] as const;
     for (const [index, snapshot] of snapshots.entries()) {
       const ordinal = index + 1;
@@ -1365,7 +1364,7 @@ describe("Knowledge evidence dispatch repository", () => {
       supplementalDraft: null
     });
 
-    const repairPrompt = knowledgeCoverageAuditPromptV1({
+    const repairPrompt = knowledgeCoverageAuditPromptV2({
       auditPass: "repair",
       evidence,
       evidenceManifest: currentManifest.message,
@@ -1380,11 +1379,11 @@ describe("Knowledge evidence dispatch repository", () => {
       supportedView
     });
     const repairSnapshot = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: 1,
+      contractVersion: 2,
       evidenceReceiptHash: currentManifest.manifestHash,
       maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
       systemPrompt: repairPrompt.systemPrompt,
       transport: "native_strict",
       userPrompt: repairPrompt.userPrompt

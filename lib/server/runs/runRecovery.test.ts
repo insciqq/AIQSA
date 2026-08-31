@@ -272,7 +272,7 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
         status: "accepted" as const
       },
       contracts: {
-        coverageAuditorContractVersion: 1 as const,
+        coverageAuditorContractVersion: 2 as const,
         draftContractVersion: 21 as const,
         selectorContractVersion: 17 as const,
         settlementVersion: 6 as const
@@ -1859,15 +1859,14 @@ describe("run recovery", () => {
                     version: 1
                   }
                 : {
-                    dimensions: [{
+                    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+                    scope: [{
                       description: "Answer the exact saved request.",
-                      evidenceHintHandles: [],
+                      evidenceHandles: ["K1"],
                       id: "D1",
-                      requestAnchor: "remember this",
-                      status: "covered",
-                      supportIds: ["C1"]
+                      requestAnchor: "remember this"
                     }],
-                    version: 1
+                    version: 2
                   }),
               providerResponseId: `response-v21-${requests.length}`
             };
@@ -1888,9 +1887,9 @@ describe("run recovery", () => {
       purpose: "knowledge_grounded_selector_v17"
     }));
     expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      contractVersion: 1,
+      contractVersion: 2,
       ordinal: 3,
-      purpose: "knowledge_coverage_auditor_v1"
+      purpose: "knowledge_coverage_auditor_v2"
     }));
     expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
     expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });

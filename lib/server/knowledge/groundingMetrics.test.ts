@@ -24,7 +24,7 @@ function evidence(durationMs: number): KnowledgeGroundingEvidenceV18 {
     purpose: role === "primary"
       ? "knowledge_answer_draft_v21"
       : role === "auditor"
-        ? "knowledge_coverage_auditor_v1"
+        ? "knowledge_coverage_auditor_v2"
         : "knowledge_grounded_selector_v17",
     role,
     usage: {
@@ -47,7 +47,7 @@ function evidence(durationMs: number): KnowledgeGroundingEvidenceV18 {
       status: "accepted"
     },
     contracts: {
-      coverageAuditorContractVersion: 1,
+      coverageAuditorContractVersion: 2,
       draftContractVersion: 21,
       selectorContractVersion: 17,
       settlementVersion: 6
