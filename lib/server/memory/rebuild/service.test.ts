@@ -48,6 +48,10 @@ function repository(
       ready: false,
       settingsRevision: 0
     })),
+    promoteCompatibleActiveGeneration: vi.fn(async () => ({
+      generationId: null,
+      kind: "incompatible" as const
+    })),
     rollbackGeneration: vi.fn(async () => ({
       activeGenerationId: null,
       kind: "generation_incompatible" as const

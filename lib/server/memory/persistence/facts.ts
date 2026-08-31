@@ -11,7 +11,6 @@ import {
 } from "../../../contracts/memoryActionIntent";
 import { memoryDerivativePlaintextAllowed } from "../../../domain/memory/safety";
 import { prisma } from "../../prisma";
-import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   memoryControlAcceptedOutputHash,
@@ -52,6 +51,7 @@ import {
   type MemoryTransaction,
   withLockedMemoryTransaction
 } from "./transaction";
+import { ensureClassifiedSearchEntry } from "./factSearchEntry";
 
 export type MemoryDirectnessInput = "DIRECT" | "INFERRED" | "PARAPHRASED";
 
@@ -623,74 +623,6 @@ async function createEvidence(
   });
 }
 
-async function createSearchEntry(
-  tx: MemoryTransaction,
-  activeIndex: MemoryActiveIndex,
-  userId: string,
-  versionId: string,
-  value: MemoryFactValueInput,
-  evidence: MemoryFactEvidenceInput
-): Promise<Readonly<{
-  embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY";
-  id: string;
-}>> {
-  const normalizedSearchText = normalizeMemorySearchText(value.displayText);
-  return tx.memorySearchEntry.create({
-    data: {
-      embeddingState: activeIndex.indexMode === "LEXICAL_ONLY" ? "NOT_APPLICABLE" : "PENDING",
-      factVersionId: versionId,
-      indexGenerationId: activeIndex.id,
-      itemType: "FACT_VERSION",
-      languageCode: value.languageCode,
-      safeContentHash: memorySha256({
-        displayText: value.displayText,
-        structuredValue: value.structuredValue
-      }),
-      normalizedSearchText,
-      safetyIdentitySnapshot: memorySha256({
-        safetyClass: value.sensitivityClass,
-        secretTaintedSourceWindow: value.secretTaintedSourceWindow
-      }),
-      sourceIdentitySnapshot: memorySha256({
-        branchGeneration: evidence.kind === "MESSAGE" ? evidence.branchGeneration : null,
-        safeSourceHash: evidence.safeSourceHash,
-        sourceProjectionVersion: evidence.sourceProjectionVersion,
-        sourceType: evidence.kind
-      }),
-      suppressionIdentitySnapshot: memorySha256({
-        canonicalKey: value.canonicalKey,
-        category: value.category,
-        normalizedValue: normalizedSearchText
-      }),
-      userId
-    },
-    select: { embeddingState: true, id: true }
-  });
-}
-
-async function enqueueItemEmbedding(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  input: MemoryFactMutationCommonInput,
-  searchEntry: Readonly<{
-    embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY";
-    id: string;
-  }> | null
-): Promise<void> {
-  if (
-    input.value.sourceMode !== "EXPLICIT" ||
-    !searchEntry ||
-    (searchEntry.embeddingState !== "PENDING" &&
-      searchEntry.embeddingState !== "FAILED")
-  ) {
-    return;
-  }
-  await enqueueMemoryEmbeddingBatchItem(tx, settings, {
-    entryId: searchEntry.id,
-    triggerIdentity: input.idempotencyFingerprint
-  });
-}
-
 function suppressionMatchInput(input: MemoryFactMutationCommonInput) {
   return {
     canonicalKey: input.value.canonicalKey,
@@ -1187,24 +1119,7 @@ export function createPrismaMemoryFactRepository(
           }
         });
         if (updated.count !== 1) return memoryPersistenceFailure("memory_fact_version_stale");
-        await tx.memorySearchEntry.deleteMany({
-          where: {
-            factVersionId: input.expectedVersionId,
-            indexGenerationId: activeIndex.id,
-            userId
-          }
-        });
         await createEvidence(tx, userId, versionId, eventId, input.evidence);
-        const searchEntry = await createSearchEntry(
-          tx,
-          activeIndex,
-          userId,
-          versionId,
-          input.value,
-          input.evidence
-        );
-        await enqueueItemEmbedding(tx, settings, input, searchEntry);
-
         const result = {
           eventId,
           factId: fact.id,
@@ -1214,6 +1129,22 @@ export function createPrismaMemoryFactRepository(
           versionId
         };
         await persistReceipt(tx, userId, "EDIT", input, inputPayloadHash, result);
+        await ensureClassifiedSearchEntry(
+          tx,
+          settings,
+          input.expectedVersionId,
+          input.idempotencyFingerprint,
+          transitionAt,
+          activeIndex
+        );
+        await ensureClassifiedSearchEntry(
+          tx,
+          settings,
+          versionId,
+          input.idempotencyFingerprint,
+          transitionAt,
+          activeIndex
+        );
         return { ...result, replayed: false };
       }, { deadlineAtMs: input.authorization?.admissionDeadlineAtMs });
     },
@@ -1526,26 +1457,7 @@ export function createPrismaMemoryFactRepository(
         if (retractedFact.count !== 1) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
-        await tx.memorySearchEntry.deleteMany({
-          where: {
-            factVersionId: {
-              in: [sourceVersion.id, ...(targetCurrentVersion ? [targetCurrentVersion.id] : [])]
-            },
-            indexGenerationId: activeIndex.id,
-            userId
-          }
-        });
         await createEvidence(tx, userId, targetVersionId, eventId, input.evidence);
-        const searchEntry = await createSearchEntry(
-          tx,
-          activeIndex,
-          userId,
-          targetVersionId,
-          movedValue,
-          input.evidence
-        );
-        await enqueueItemEmbedding(tx, settings, movedInput, searchEntry);
-
         const result = {
           eventId,
           factId: targetFactId,
@@ -1555,6 +1467,20 @@ export function createPrismaMemoryFactRepository(
           versionId: targetVersionId
         };
         await persistReceipt(tx, userId, "MOVE_SCOPE", input, inputPayloadHash, result);
+        for (const factVersionId of [
+          sourceVersion.id,
+          ...(targetCurrentVersion ? [targetCurrentVersion.id] : []),
+          targetVersionId
+        ]) {
+          await ensureClassifiedSearchEntry(
+            tx,
+            settings,
+            factVersionId,
+            input.idempotencyFingerprint,
+            transitionAt,
+            activeIndex
+          );
+        }
         return { ...result, replayed: false };
       });
     },
@@ -1710,23 +1636,7 @@ export function createPrismaMemoryFactRepository(
           }
         });
         if (updated.count !== 1) return memoryPersistenceFailure("memory_fact_version_stale");
-        await tx.memorySearchEntry.deleteMany({
-          where: {
-            factVersionId: { in: [...input.expectedVersionIds] },
-            indexGenerationId: activeIndex.id,
-            userId
-          }
-        });
         await createEvidence(tx, userId, versionId, eventId, input.evidence);
-        const searchEntry = await createSearchEntry(
-          tx,
-          activeIndex,
-          userId,
-          versionId,
-          input.value,
-          input.evidence
-        );
-        await enqueueItemEmbedding(tx, settings, input, searchEntry);
         const result = {
           eventId,
           factId: fact.id,
@@ -1736,6 +1646,16 @@ export function createPrismaMemoryFactRepository(
           versionId
         };
         await persistReceipt(tx, userId, "EDIT", input, inputPayloadHash, result);
+        for (const factVersionId of [...input.expectedVersionIds, versionId]) {
+          await ensureClassifiedSearchEntry(
+            tx,
+            settings,
+            factVersionId,
+            input.idempotencyFingerprint,
+            transitionAt,
+            activeIndex
+          );
+        }
         return { ...result, replayed: false };
       });
     },
@@ -1851,16 +1771,6 @@ export function createPrismaMemoryFactRepository(
             data: { lastConfirmedAt: input.evidence.observedAt },
             where: { id: existing.id }
           });
-          const searchEntry = await tx.memorySearchEntry.findFirst({
-            select: { embeddingState: true, id: true },
-            where: {
-              factVersionId: currentVersion.id,
-              indexGenerationId: activeIndex.id,
-              itemType: "FACT_VERSION",
-              userId
-            }
-          });
-          await enqueueItemEmbedding(tx, settings, input, searchEntry);
           const result = {
             eventId,
             factId: existing.id,
@@ -1870,6 +1780,14 @@ export function createPrismaMemoryFactRepository(
             versionId: currentVersion.id
           };
           await persistReceipt(tx, userId, "SAVE", input, inputPayloadHash, result);
+          await ensureClassifiedSearchEntry(
+            tx,
+            settings,
+            currentVersion.id,
+            input.idempotencyFingerprint,
+            input.evidence.observedAt,
+            activeIndex
+          );
           return { ...result, replayed: false };
         }
 
@@ -1944,15 +1862,6 @@ export function createPrismaMemoryFactRepository(
           }
         });
         await createEvidence(tx, userId, versionId, eventId, input.evidence);
-        const searchEntry = await createSearchEntry(
-          tx,
-          activeIndex,
-          userId,
-          versionId,
-          input.value,
-          input.evidence
-        );
-        await enqueueItemEmbedding(tx, settings, input, searchEntry);
         const result = {
           eventId,
           factId,
@@ -1962,6 +1871,14 @@ export function createPrismaMemoryFactRepository(
           versionId
         };
         await persistReceipt(tx, userId, "SAVE", input, inputPayloadHash, result);
+        await ensureClassifiedSearchEntry(
+          tx,
+          settings,
+          versionId,
+          input.idempotencyFingerprint,
+          input.evidence.observedAt,
+          activeIndex
+        );
         return { ...result, replayed: false };
       }, { deadlineAtMs: input.authorization?.admissionDeadlineAtMs });
     }

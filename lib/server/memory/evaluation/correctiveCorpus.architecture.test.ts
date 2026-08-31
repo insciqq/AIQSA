@@ -436,9 +436,9 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-chat-digest-prompt-v5",
         "memory-chat-digest-schema-v2"
       ],
-      entity: ["memory-entity-resolution-v2", "slot-v3"],
+      entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
-        "memory-fact-extraction-vnext-v7",
+        "memory-fact-extraction-vnext-v8",
         "memory-fact-extraction-policy-v11",
         "memory-fact-extraction-prompt-v29",
         "memory-fact-extraction-schema-v5"
@@ -450,7 +450,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v62",
+      retrieval: "memory-personal-retrieval-v63",
       synthesis: [
         "memory-synthesis-v2",
         "memory-synthesis-policy-v3",

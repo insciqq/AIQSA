@@ -30,7 +30,7 @@ import { createPrismaMemoryMutationAuthorizationRepository } from
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   memorySha256,
   normalizeMemorySearchText
@@ -509,7 +509,7 @@ async function createFixture(
       generation: 0,
       indexMode: "HYBRID",
       indexedThroughMemoryRevision: 0,
-      languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+      languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
       normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
       readyAt: INITIAL_NOW,
       retrievalPipelineVersion: options.retrievalPipelineVersion ??

@@ -14,12 +14,14 @@ import {
   longMemEvalEmbeddingBatchSizeDistribution,
   longMemEvalExpectedUtilityModelIds,
   longMemEvalHybridRebuildFailed,
+  longMemEvalLexicalCutoverHealthy,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
   longMemEvalReaderOracleGap,
   longMemEvalSettledImportTurns,
   mapConcurrentOrdered,
+  mapConcurrentOrderedWaves,
   mergeLongMemEvalEvaluationResults,
   parseLongMemEvalDate,
   partitionLongMemEvalEvaluation,
@@ -84,6 +86,64 @@ describe("LongMemEval adapter contract", () => {
       executionFailures: 0,
       memoryOutcomes: ["USED", "USED"]
     }).passed).toBe(true);
+  });
+
+  it("scopes OpenSearch cutover health to candidate-provider lanes", () => {
+    const healthy = sanitizeLongMemEvalRetrievalAudit({
+      lexicalEvidence: [
+        {
+          backend: "POSTGRES",
+          failureCode: null,
+          fallbackUsed: false,
+          lane: "FACT_EXACT",
+          projectionCaughtUp: true
+        },
+        {
+          backend: "POSTGRES",
+          failureCode: null,
+          fallbackUsed: false,
+          lane: "HISTORY_DIGEST_FTS_SIMPLE",
+          projectionCaughtUp: true
+        },
+        {
+          backend: "OPENSEARCH",
+          failureCode: null,
+          fallbackUsed: false,
+          lane: "HISTORY_RECALL_LEXICAL_UNICODE",
+          projectionCaughtUp: true
+        }
+      ]
+    });
+    expect(healthy.lexicalBackendCounts).toEqual({
+      OPENSEARCH: 1,
+      POSTGRES: 2
+    });
+    expect(healthy.lexicalCandidateProviderBackendCounts).toEqual({
+      OPENSEARCH: 1
+    });
+    expect(longMemEvalLexicalCutoverHealthy(healthy)).toBe(true);
+
+    const providerFallback = sanitizeLongMemEvalRetrievalAudit({
+      lexicalEvidence: [{
+        backend: "POSTGRES",
+        failureCode: "memory_opensearch_timeout",
+        fallbackUsed: true,
+        lane: "HISTORY_RECALL_LEXICAL_UNICODE",
+        projectionCaughtUp: false
+      }]
+    });
+    expect(longMemEvalLexicalCutoverHealthy(providerFallback)).toBe(false);
+    expect(longMemEvalLexicalCutoverHealthy(
+      sanitizeLongMemEvalRetrievalAudit({
+        lexicalEvidence: [{
+          backend: "POSTGRES",
+          failureCode: null,
+          fallbackUsed: false,
+          lane: "HISTORY_RECALL_EXACT",
+          projectionCaughtUp: true
+        }]
+      })
+    )).toBe(false);
   });
 
   it("keeps the official and product profiles explicit and non-interchangeable", () => {
@@ -464,6 +524,47 @@ describe("LongMemEval adapter contract", () => {
     expect(started).toEqual([0, 1]);
   });
 
+  it("settles each fixed wave before admitting the next paid case wave", async () => {
+    const releases = new Map<number, () => void>();
+    const started: number[] = [];
+    const pending = mapConcurrentOrderedWaves([0, 1, 2, 3], 2, async (value) => {
+      started.push(value);
+      await new Promise<void>((resolve) => releases.set(value, resolve));
+      return value;
+    });
+
+    await vi.waitFor(() => expect(started).toEqual([0, 1]));
+    releases.get(0)?.();
+    await Promise.resolve();
+    expect(started).toEqual([0, 1]);
+    releases.get(1)?.();
+    await vi.waitFor(() => expect(started).toEqual([0, 1, 2, 3]));
+    releases.get(2)?.();
+    releases.get(3)?.();
+
+    await expect(pending).resolves.toEqual([0, 1, 2, 3]);
+  });
+
+  it("does not admit a later paid case wave after a current-wave failure", async () => {
+    let releasePeer: (() => void) | undefined;
+    const started: number[] = [];
+    const pending = mapConcurrentOrderedWaves([0, 1, 2], 2, async (value) => {
+      started.push(value);
+      if (value === 0) {
+        await new Promise<void>((resolve) => {
+          releasePeer = resolve;
+        });
+        return value;
+      }
+      throw new Error("expected_wave_failure");
+    });
+
+    await vi.waitFor(() => expect(started).toEqual([0, 1]));
+    releasePeer?.();
+    await expect(pending).rejects.toThrow("expected_wave_failure");
+    expect(started).toEqual([0, 1]);
+  });
+
   it("retains only aggregate text-free retrieval diagnostics", () => {
     expect(sanitizeLongMemEvalRetrievalAudit({
       aggregationBoundaryCount: 1,
@@ -482,7 +583,7 @@ describe("LongMemEval adapter contract", () => {
         private_text: "hidden"
       },
       cardinalityParserRejectedCount: 1,
-      cardinalityParserVersion: "memory-cardinality-parser-v1",
+      cardinalityParserVersion: "memory-cardinality-parser-v2",
       componentMetrics: {
         candidateCountsByLane: {
           FACT_EXACT: 4,
@@ -531,6 +632,31 @@ describe("LongMemEval adapter contract", () => {
       failureClass: "DATABASE",
       failureCode: "memory_expansion_database_p2010",
       itemCount: 5,
+      lexicalEvidence: [
+        {
+          backend: "OPENSEARCH",
+          failureCode: null,
+          fallbackUsed: false,
+          lane: "HISTORY_RECALL_LEXICAL_UNICODE",
+          opaqueId: "private-opaque-id",
+          projectionCaughtUp: true
+        },
+        {
+          backend: "POSTGRES",
+          failureCode: "memory_opensearch_timeout",
+          fallbackUsed: true,
+          lane: "HISTORY_RECALL_LEXICAL_NGRAM",
+          projectionCaughtUp: false
+        },
+        {
+          backend: "POSTGRES",
+          failureCode: null,
+          fallbackUsed: false,
+          lane: "HISTORY_RECALL_EXACT",
+          projectionCaughtUp: true
+        },
+        { backend: "private backend", private_text: "hidden" }
+      ],
       localRetrievalMs: 31,
       memoryPrepareLatencyBucket: "GT_12S",
       memoryPrepareMs: 80_500,
@@ -573,7 +699,7 @@ describe("LongMemEval adapter contract", () => {
       cardinalityParserAcceptedCount: 3,
       cardinalityParserReasonCounts: { UNSUPPORTED_NUMBER_WORD: 1 },
       cardinalityParserRejectedCount: 1,
-      cardinalityParserVersion: "memory-cardinality-parser-v1",
+      cardinalityParserVersion: "memory-cardinality-parser-v2",
       candidatesRetainedAfterRejoin: 4,
       candidatesRetainedAfterReranker: 5,
       candidatesSentToReranker: 10,
@@ -587,6 +713,20 @@ describe("LongMemEval adapter contract", () => {
       failureCode: "memory_expansion_database_p2010",
       hardCapTokens: 5_000,
       itemCount: 5,
+      lexicalBackendCounts: { OPENSEARCH: 1, POSTGRES: 2 },
+      lexicalCandidateProviderBackendCounts: { OPENSEARCH: 1, POSTGRES: 1 },
+      lexicalCandidateProviderEvidenceCount: 2,
+      lexicalCandidateProviderFailureReasonCounts: {
+        memory_opensearch_timeout: 1
+      },
+      lexicalCandidateProviderFallbackCount: 1,
+      lexicalCandidateProviderProjectionCaughtUpCount: 1,
+      lexicalCandidateProviderProjectionNotCaughtUpCount: 1,
+      lexicalEvidenceCount: 3,
+      lexicalFailureReasonCounts: { memory_opensearch_timeout: 1 },
+      lexicalFallbackCount: 1,
+      lexicalProjectionCaughtUpCount: 2,
+      lexicalProjectionNotCaughtUpCount: 1,
       localRetrievalMs: 31,
       memoryPrepareLatencyBucket: "GT_12S",
       memoryPrepareMs: 80_500,

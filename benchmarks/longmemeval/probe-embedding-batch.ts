@@ -5,6 +5,10 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { createPrismaEmbeddingRuntime } from
   "../../lib/server/providerRuntime/embeddingRuntime";
 import { assertBenchmarkDatabaseUrl } from "./contract";
+import {
+  LONGMEMEVAL_QUALIFICATION_OPERATOR_USER_ID,
+  selectedQualificationEmbeddingDeployment
+} from "./probeEmbeddingContract";
 
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(benchmarkRoot, "../..");
@@ -39,20 +43,34 @@ async function main(): Promise<void> {
       identity[0]?.role !== "aiqsa_benchmark") {
       throw new Error("embedding_batch_probe_database_identity_mismatch");
     }
-    const models = await prisma.providerModel.findMany({
-      select: { id: true },
-      where: {
-        activeConfig: { not: Prisma.DbNull },
-        activeVersion: { gt: 0 },
-        connection: { enabled: true, family: "openrouter" },
-        enabled: true,
-        modelClass: "embedding",
-        modelId: "qwen/qwen3-embedding-8b"
-      }
-    });
-    if (models.length !== 1) throw new Error("embedding_batch_probe_model_invalid");
+    const [settings, models] = await Promise.all([
+      prisma.userMemorySettings.findUnique({
+        select: { embeddingProviderModelId: true },
+        where: { userId: LONGMEMEVAL_QUALIFICATION_OPERATOR_USER_ID }
+      }),
+      prisma.providerModel.findMany({
+        select: {
+          activeConfig: true,
+          activeVersion: true,
+          connection: { select: { enabled: true, family: true } },
+          enabled: true,
+          id: true,
+          modelClass: true,
+          modelId: true
+        },
+        where: {
+          connection: { family: "openrouter" },
+          modelClass: "embedding",
+          modelId: "qwen/qwen3-embedding-8b"
+        }
+      })
+    ]);
+    const model = selectedQualificationEmbeddingDeployment(
+      models,
+      settings?.embeddingProviderModelId ?? null
+    );
     const binding = await createPrismaEmbeddingRuntime(prisma)
-      .resolveForInstallation({ providerModelId: models[0]!.id });
+      .resolveForInstallation({ providerModelId: model.id });
     const expectedDimension = binding.configuration.embedding?.targetDimension;
     if (!expectedDimension) throw new Error("embedding_batch_probe_model_invalid");
     const startedAt = Date.now();

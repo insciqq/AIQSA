@@ -464,7 +464,7 @@ describe("Memory run utility execution", () => {
   it.each([
     { ordinal: 1, purpose: "RETRIEVAL" as const },
     { ordinal: 3, purpose: "ACTION_TARGET" as const }
-  ])("binds ordinal $ordinal before a $purpose embedding and settles usage once", async ({
+  ])("binds ordinal $ordinal before a vector-compatible $purpose embedding", async ({
     ordinal,
     purpose
   }) => {
@@ -495,7 +495,12 @@ describe("Memory run utility execution", () => {
     });
     const result = await service.embedQuery({
       ...baseInput(),
-      profile,
+      profile: {
+        ...profile,
+        // The active generation may retain an older transport revision while
+        // the current route still produces the same vector space.
+        configurationFingerprint: "9".repeat(64)
+      },
       purpose,
       query: `what did we discuss about postgres; token ${token}`
     });
@@ -520,10 +525,11 @@ describe("Memory run utility execution", () => {
       role: "MEMORY_QUERY_EMBED"
     }));
     expect(embed).toHaveBeenCalledWith({
+      latencyClass: "interactive",
       mode: "document",
       signal: expect.any(AbortSignal),
       texts: [expect.stringMatching(
-        /prior personal conversational evidence.*English, Russian, and mixed-language.*what did we discuss about postgres.*REDACTED/su
+        /prior personal conversational evidence.*regardless of language, script, or writing system.*what did we discuss about postgres.*REDACTED/su
       )]
     });
     expect(JSON.stringify(embed.mock.calls)).not.toContain(token);

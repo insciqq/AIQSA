@@ -44,6 +44,10 @@ function assertFingerprint(value: string): void {
   }
 }
 
+function validQuestionId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/u.test(value);
+}
+
 export function longMemEvalPreparedCaseReadyEmail(fingerprint: string): string {
   assertFingerprint(fingerprint);
   return `ready.${fingerprint.slice(0, 57)}${LONGMEMEVAL_PREPARED_CASE_EMAIL_SUFFIX}`;
@@ -66,10 +70,26 @@ export function longMemEvalPreparedCaseDisplayName(
   fingerprint: string
 ): string {
   assertFingerprint(fingerprint);
-  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(questionId)) {
+  if (!validQuestionId(questionId)) {
     throw new Error("longmemeval_prepared_case_question_id_invalid");
   }
   return `LongMemEval prepared ${questionId} ${fingerprint}`;
+}
+
+export function longMemEvalPreparedCaseReadyFingerprint(input: Readonly<{
+  displayName: string;
+  email: string | null;
+  questionId: string;
+}>): string | null {
+  if (!validQuestionId(input.questionId) || !input.email) return null;
+  const prefix = `LongMemEval prepared ${input.questionId} `;
+  if (!input.displayName.startsWith(prefix)) return null;
+  const fingerprint = input.displayName.slice(prefix.length);
+  if (!/^[a-f0-9]{64}$/u.test(fingerprint) ||
+    input.email !== longMemEvalPreparedCaseReadyEmail(fingerprint)) {
+    return null;
+  }
+  return fingerprint;
 }
 
 export function longMemEvalPreparedCaseAdvisoryKey(

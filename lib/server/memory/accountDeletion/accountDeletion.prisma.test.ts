@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createPrismaAdminRepository } from "../../auth/adminRepository";
@@ -18,8 +18,23 @@ import {
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createPrismaMemoryFeedbackRepository } from "../review/feedbackRepository";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
+import {
+  createPrismaMemoryLexicalProjectionStore
+} from "../searchProjection/repository";
+import { runMemoryLexicalProjectionPass } from "../searchProjection/worker";
+import {
+  memoryOpenSearchConfigurationFromEnv,
+  memoryOpenSearchIntegrityFingerprintMaterial,
+  type MemoryOpenSearchDocument
+} from "../../search/opensearch/memoryContract";
+import type {
+  MemoryOpenSearchClient
+} from "../../search/opensearch/memoryClient";
 import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "./contract";
-import { createPrismaAccountMemoryDeletionHandler } from "./handler";
+import {
+  createPrismaAccountMemoryDeletionHandler,
+  inspectAccountMemoryDeletionResiduals
+} from "./handler";
 import { createAccountMemoryDeletionHook } from "./integration";
 import { countAccountMemoryOwnedData } from "./inventory";
 
@@ -154,7 +169,113 @@ async function cleanupOwner(userId: string): Promise<void> {
     await tx.usageEvent.deleteMany({ where: { userId } });
     await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await tx.user.deleteMany({ where: { id: userId } });
+    // Canonical cascades emit projection delete duties. Test teardown removes
+    // the derived rows only after those triggers have finished.
+    await tx.memoryLexicalProjectionEvent.deleteMany({ where: { userId } });
+    await tx.memoryLexicalProjectionState.deleteMany({ where: { userId } });
   });
+}
+
+function inMemoryMemoryOpenSearch(): Readonly<{
+  client: MemoryOpenSearchClient;
+  purgedUsers: readonly string[];
+}> {
+  const documents = new Map<string, MemoryOpenSearchDocument>();
+  const purgedUsers: string[] = [];
+  const key = (routing: string, searchEntryId: string) =>
+    `${routing}\0${searchEntryId}`;
+  const client: MemoryOpenSearchClient = {
+    async activateReplacementIndex() {},
+    async applyMutations(mutations) {
+      for (const mutation of mutations) {
+        if (mutation.operation === "UPSERT") {
+          documents.set(
+            key(mutation.routing, mutation.document.searchEntryId),
+            mutation.document
+          );
+        } else {
+          documents.delete(key(mutation.routing, mutation.searchEntryId));
+        }
+      }
+      return { applied: mutations.length, opaqueId: randomUUID(), superseded: 0 };
+    },
+    async ensureIndex() {},
+    async inspectGeneration(input) {
+      const entries = [...documents.values()]
+        .filter((document) => document.userScope === input.userScope &&
+          document.generationId === input.generationId)
+        .sort((left, right) => left.searchEntryId.localeCompare(right.searchEntryId));
+      const digest = createHash("sha256");
+      for (const entry of entries) {
+        digest.update(memoryOpenSearchIntegrityFingerprintMaterial({
+          safeContentHash: entry.safeContentHash,
+          searchEntryId: entry.searchEntryId
+        }), "utf8");
+      }
+      return { documentCount: entries.length, fingerprint: digest.digest("hex") };
+    },
+    async purgeGeneration(input) {
+      for (const [documentKey, document] of documents) {
+        if (document.userScope === input.userScope &&
+          document.generationId === input.generationId) {
+          documents.delete(documentKey);
+        }
+      }
+    },
+    async purgeUser(input) {
+      purgedUsers.push(input.userScope);
+      for (const [documentKey, document] of documents) {
+        if (document.userScope === input.userScope) documents.delete(documentKey);
+      }
+    },
+    async prepareReplacementIndex() {
+      documents.clear();
+    },
+    async refreshIndex() {},
+    async searchLexical() {
+      throw new Error("unexpected_memory_lexical_search");
+    }
+  };
+  return Object.freeze({ client: Object.freeze(client), purgedUsers });
+}
+
+async function drainAccountMemoryProjection(userId: string, now: Date) {
+  const search = inMemoryMemoryOpenSearch();
+  const store = createPrismaMemoryLexicalProjectionStore(prisma);
+  const openSearchConfiguration = memoryOpenSearchConfigurationFromEnv({
+    AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: "account-deletion-test",
+    AIQSA_MEMORY_OPENSEARCH_READ_ALIAS: "aiqsa-memory-account-test-read",
+    AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY:
+      "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: "account-deletion-test-v1",
+    AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS: "aiqsa-memory-account-test-write"
+  });
+  for (let passNumber = 0; passNumber < 32; passNumber += 1) {
+    const pass = await runMemoryLexicalProjectionPass({
+      configuration: {
+        intervalMs: 250,
+        leaseMs: 60_000,
+        maximumAttempts: 8,
+        projectionBatch: 16,
+        verificationBatch: 4
+      },
+      now: new Date(now.getTime() + passNumber),
+      openSearchConfiguration,
+      search: search.client,
+      store
+    });
+    if (pass.failed !== 0 || pass.integrityFailed !== 0) {
+      throw new Error("account_memory_projection_drain_failed");
+    }
+    if (pass.claimed === 0) break;
+  }
+  const outstanding = await prisma.memoryLexicalProjectionEvent.count({
+    where: { state: { not: "SUCCEEDED" }, userId }
+  });
+  if (outstanding !== 0 || search.purgedUsers.length !== 1) {
+    throw new Error("account_memory_projection_drain_incomplete");
+  }
+  return search;
 }
 
 async function createOwner(status: "active" | "disabled" = "active"): Promise<string> {
@@ -200,6 +321,16 @@ async function populateReusableMemory(
     await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
     await tx.memoryScope.create({
       data: { id: scopeId, scopeType: "GLOBAL_USER", userId }
+    });
+    await tx.memoryIdentityCompatibility.create({
+      data: {
+        containerId: scopeId,
+        id: memorySha256({ scopeId, userId, version: 1 }),
+        legacyKeyHash: "e".repeat(64),
+        namespace: "FACT",
+        unicodeKeyHash: "f".repeat(64),
+        userId
+      }
     });
     await tx.memoryIndexGeneration.createMany({
       data: [{
@@ -1016,13 +1147,21 @@ describe("Prisma account Memory deletion", () => {
         });
 
       admissionEnabled = false;
+      const directClaim = await claimFor(admitted.id);
+      const direct = await handler.execute(directClaim, {
+        now: () => new Date(clock),
+        signal: new AbortController().signal
+      });
+      await prisma.$transaction((tx) => direct.apply!(tx, directClaim));
       await coordinator.reconcileNow();
       const succeeded = await prisma.memoryDeletionOutbox.findUniqueOrThrow({
         where: { id: admitted.id }
       });
-      expect(succeeded.state).toBe("SUCCEEDED");
+      expect(succeeded).toMatchObject({ errorCode: null, state: "SUCCEEDED" });
       expect(await prisma.memoryFact.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryFeedback.count({ where: { userId } })).toBe(0);
+      expect(await prisma.memoryIdentityCompatibility.count({ where: { userId } }))
+        .toBe(0);
       expect(await prisma.memorySearchEntry.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryPauseInterval.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
@@ -1065,6 +1204,22 @@ describe("Prisma account Memory deletion", () => {
       });
       await expect(prisma.$transaction((tx) => replay.apply!(tx, replayClaim)))
         .resolves.toBeUndefined();
+
+      await expect(admin.deleteStaleUser({
+        actingAdminUserId: `admin-${randomUUID()}`,
+        userId
+      })).resolves.toBe("deletion_pending");
+      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
+        where: { id: admitted.id }
+      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+
+      const projection = await drainAccountMemoryProjection(userId, clock);
+      expect(projection.purgedUsers).toHaveLength(1);
+      await expect(prisma.$transaction((tx) =>
+        inspectAccountMemoryDeletionResiduals(tx, {
+          deletionId: admitted.id,
+          userId
+        }))).resolves.toEqual([]);
 
       await expect(admin.deleteStaleUser({
         actingAdminUserId: `admin-${randomUUID()}`,

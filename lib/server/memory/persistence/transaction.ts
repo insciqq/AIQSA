@@ -8,7 +8,7 @@ import { memoryIndexGenerationBootstrapAllowed } from "../../../domain/memory/st
 import { memoryPersistenceFailure } from "./errors";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "./lexical";
@@ -19,6 +19,8 @@ import {
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
+import { initializeMemoryLexicalProjectionState } from
+  "../searchProjection/repository";
 
 // Provider work can complete in a burst for one user. Every authoritative
 // Memory commit deliberately takes the same settings lock, so Serializable
@@ -277,7 +279,7 @@ export async function ensureActiveLexicalGeneration(
       generation: (aggregate._max.generation ?? -1) + 1,
       indexMode: "LEXICAL_ONLY",
       indexedThroughMemoryRevision: settings.memoryRevision,
-      languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+      languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
       normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
       contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
       readyAt: now,
@@ -295,6 +297,11 @@ export async function ensureActiveLexicalGeneration(
       roundProjectionVersion: true,
       roundSegmentProjectionVersion: true
     }
+  });
+  await initializeMemoryLexicalProjectionState(tx, {
+    indexGenerationId: generation.id,
+    targetMemoryRevision,
+    userId: settings.userId
   });
   await tx.userMemorySettings.update({
     data: { activeIndexGenerationId: generation.id },

@@ -57,6 +57,10 @@ describe("first-install secret preparation", () => {
     expect(values.AIQSA_POSTGRES_PASSWORD).toMatch(/^[0-9a-f]{64}$/);
     expect(values.AIQSA_S3_SECRET_ACCESS_KEY).toMatch(/^[0-9a-f]{64}$/);
     expect(Buffer.from(values.AIQSA_ENCRYPTION_KEY, "base64")).toHaveLength(32);
+    expect(Buffer.from(
+      values.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY,
+      "base64"
+    )).toHaveLength(32);
     const fingerprintKeyring = values.AIQSA_MEMORY_FINGERPRINT_KEYRING.match(
       /^current=v1,v1=([A-Za-z0-9+/]{43}=)$/u
     );
@@ -70,6 +74,7 @@ describe("first-install secret preparation", () => {
       "AIQSA_AUTH_SESSION_SECRET",
       "AIQSA_ENCRYPTION_KEY",
       "AIQSA_MEMORY_FINGERPRINT_KEYRING",
+      "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY",
       "AIQSA_POSTGRES_PASSWORD",
       "AIQSA_S3_SECRET_ACCESS_KEY"
     ]) {

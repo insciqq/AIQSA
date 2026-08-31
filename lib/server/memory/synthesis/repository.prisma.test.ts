@@ -579,6 +579,23 @@ describe("Prisma Memory Dream synthesis", () => {
         where: { modality: "PATTERN", userId }
       });
       expect(patterns).toHaveLength(2);
+      const patternFacts = await prisma.memoryFact.findMany({
+        select: { canonicalKey: true, identityVersion: true },
+        where: { category: "patterns", userId }
+      });
+      expect(patternFacts).toHaveLength(2);
+      expect(patternFacts.every((fact) =>
+        fact.identityVersion === "proposition-v2" &&
+        /^prop:v2:[a-f0-9]{64}$/u.test(fact.canonicalKey)))
+        .toBe(true);
+      const [identityMappings] = await prisma.$queryRaw<Array<{ count: bigint }>>(
+        Prisma.sql`
+          SELECT COUNT(*) AS count
+          FROM "MemoryIdentityCompatibility"
+          WHERE "userId" = ${userId} AND "namespace" = 'FACT'
+        `
+      );
+      expect(identityMappings?.count).toBe(2n);
       const pattern = patterns.find(({ displayText }) =>
         displayText?.includes("recurring weekly review"));
       const shortPattern = patterns.find(({ displayText }) =>

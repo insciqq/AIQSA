@@ -1,12 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { memoryCounterEffectFor } from "../../../../domain/memory/counters";
-import { enqueueMemoryEmbeddingBatchItem } from "../../embedding/enqueue";
+import { ensureClassifiedSearchEntry } from "../../persistence/factSearchEntry";
 import { loadPersonalMemoryEvidenceSnapshots } from "../../persistence/eligibility";
-import {
-  memorySha256,
-  normalizeMemorySearchText
-} from "../../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../../persistence/scopes";
 import {
   advanceMemoryMutation,
@@ -258,110 +254,18 @@ async function ensureWinnerSearchEntry(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   index: MemoryActiveIndex,
-  fact: FactRow,
   version: VersionRow,
-  triggerId: string
+  triggerId: string,
+  now: Date
 ): Promise<void> {
-  if (version.displayText === null || version.structuredValue === null) {
-    throw new Error("memory_fact_source_normalization_content_missing");
-  }
-  const evidence = version.sourceMode === "AUTOMATIC"
-    ? (await loadPersonalMemoryEvidenceSnapshots(
-        tx,
-        settings.userId,
-        [version.id]
-      )).map((item) => ({ ...item, sourceType: "MESSAGE" as const }))
-    : await tx.memoryEvidence.findMany({
-        orderBy: [{ observedAt: "asc" }, { id: "asc" }],
-        select: {
-          branchGeneration: true,
-          chatId: true,
-          id: true,
-          messageId: true,
-          safeSourceHash: true,
-          sourceProjectionVersion: true,
-          sourceType: true
-        },
-        where: {
-          factVersionId: version.id,
-          sourceType: "EXPLICIT_ACTION",
-          stance: "SUPPORTS",
-          userId: settings.userId
-        }
-      });
-  if (evidence.length === 0) {
-    throw new Error("memory_fact_source_normalization_support_missing");
-  }
-  const normalizedSearchText = normalizeMemorySearchText(version.displayText);
-  if (!normalizedSearchText) throw new Error("memory_fact_source_normalization_content_missing");
-  const existing = await tx.memorySearchEntry.findFirst({
-    select: { embeddingState: true, id: true },
-    where: {
-      factVersionId: version.id,
-      indexGenerationId: index.id,
-      userId: settings.userId
-    }
-  });
-  const embeddingState = index.indexMode === "HYBRID"
-    ? existing?.embeddingState === "READY" ? "READY" : "PENDING"
-    : "NOT_APPLICABLE";
-  const snapshots = {
-    safeContentHash: memorySha256({
-      displayText: version.displayText,
-      structuredValue: version.structuredValue
-    }),
-    safetyIdentitySnapshot: memorySha256({
-      safetyClass: version.sensitivityClass,
-      secretTaintedSourceWindow: false
-    }),
-    sourceIdentitySnapshot: memorySha256({
-      evidence: evidence.map((item) => ({
-        branchGeneration: item.branchGeneration,
-        chatId: item.chatId,
-        evidenceId: item.id,
-        messageId: item.messageId,
-        safeSourceHash: item.safeSourceHash,
-        sourceProjectionVersion: item.sourceProjectionVersion,
-        sourceType: item.sourceType
-      })),
-      version: 1
-    }),
-    suppressionIdentitySnapshot: memorySha256({
-      canonicalKey: fact.canonicalKey,
-      category: version.category,
-      normalizedValue: normalizedSearchText
-    })
-  };
-  const entry = existing
-    ? await tx.memorySearchEntry.update({
-        data: {
-          embeddingState,
-          languageCode: version.languageCode,
-          normalizedSearchText,
-          ...snapshots
-        },
-        select: { id: true },
-        where: { id: existing.id }
-      })
-    : await tx.memorySearchEntry.create({
-        data: {
-          embeddingState,
-          factVersionId: version.id,
-          indexGenerationId: index.id,
-          itemType: "FACT_VERSION",
-          languageCode: version.languageCode,
-          normalizedSearchText,
-          userId: settings.userId,
-          ...snapshots
-        },
-        select: { id: true }
-      });
-  if (embeddingState === "PENDING") {
-    await enqueueMemoryEmbeddingBatchItem(tx, settings, {
-      entryId: entry.id,
-      triggerIdentity: triggerId
-    });
-  }
+  await ensureClassifiedSearchEntry(
+    tx,
+    settings,
+    version.id,
+    triggerId,
+    now,
+    index
+  );
 }
 
 async function normalizeFact(
@@ -462,7 +366,7 @@ async function normalizeFact(
       if (version.count !== 1 || logical.count !== 1) {
         throw new Error("memory_fact_source_normalization_stale");
       }
-      await ensureWinnerSearchEntry(tx, settings, index, fact, winner, triggerId);
+      await ensureWinnerSearchEntry(tx, settings, index, winner, triggerId, now);
       return;
     }
     return;
@@ -510,7 +414,7 @@ async function normalizeFact(
     if (logical.count !== 1) {
       throw new Error("memory_fact_source_normalization_stale");
     }
-    await ensureWinnerSearchEntry(tx, settings, index, fact, current, triggerId);
+    await ensureWinnerSearchEntry(tx, settings, index, current, triggerId, now);
   }
 }
 

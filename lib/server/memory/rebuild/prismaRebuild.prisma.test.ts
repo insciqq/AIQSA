@@ -43,6 +43,12 @@ import {
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
 import { applyMemoryHistorySourceMutation } from "../history/sourceLifecycle";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
@@ -52,7 +58,7 @@ import {
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
@@ -1388,13 +1394,21 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         where: { id: identity.generationId }
       });
       if (!target.sourceIndexGenerationId) throw new Error("source_missing");
-      const [after, source, entries] = await Promise.all([
+      const [after, source, entries, projection] = await Promise.all([
         prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
         prisma.memoryIndexGeneration.findUniqueOrThrow({
           where: { id: target.sourceIndexGenerationId }
         }),
         prisma.memorySearchEntry.findMany({
           where: { indexGenerationId: identity.generationId, userId }
+        }),
+        prisma.memoryLexicalProjectionState.findUniqueOrThrow({
+          where: {
+            userId_indexGenerationId: {
+              indexGenerationId: identity.generationId,
+              userId
+            }
+          }
         })
       ]);
       expect(after).toMatchObject({
@@ -1404,7 +1418,15 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       expect(target).toMatchObject({
         indexedThroughMemoryRevision: after.memoryRevision,
+        languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
+        normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+        retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+        sourceIndexGenerationId: source.id,
         state: "ACTIVE"
+      });
+      expect(projection).toMatchObject({
+        status: "CATCHING_UP",
+        targetMemoryRevision: after.memoryRevision
       });
       expect(source.state).toBe("SUPERSEDED");
       await expect(prisma.memorySearchEntry.count({
@@ -1723,6 +1745,22 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         memoryGeneration: beforeRollback.memoryGeneration,
         memoryRevision: beforeRollback.memoryRevision + 1
       });
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: firstCurrentGenerationId }
+      })).resolves.toMatchObject({
+        indexedThroughMemoryRevision: afterRollback.memoryRevision
+      });
+      await expect(prisma.memoryLexicalProjectionState.findUniqueOrThrow({
+        where: {
+          userId_indexGenerationId: {
+            indexGenerationId: firstCurrentGenerationId,
+            userId
+          }
+        }
+      })).resolves.toMatchObject({
+        status: "CATCHING_UP",
+        targetMemoryRevision: afterRollback.memoryRevision
+      });
       await expect(cutover.inventory(userId)).resolves.toMatchObject({
         activeGenerationId: firstCurrentGenerationId,
         eligibleItems: 1,
@@ -1748,6 +1786,183 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         where: { userId }
       })).resolves.toMatchObject({ activeIndexGenerationId: firstCurrentGenerationId });
       expect(JSON.stringify({ admitted, before, current })).not.toContain(statement);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("promotes compatible lexical metadata through an immutable exact clone", async () => {
+    const userId = await createOwner("compatible-generation-promotion");
+    const { explicit } = services();
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    const cutover = createPrismaMemoryRetrievalCutoverRepository(prisma);
+    try {
+      const initialSettings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const activatedAt = new Date("2026-08-31T04:00:00.000Z");
+      const source = await prisma.$transaction(async (tx) => {
+        const generation = await tx.memoryIndexGeneration.create({
+          data: {
+            activatedAt,
+            chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+            contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+            generation: 0,
+            indexMode: "LEXICAL_ONLY",
+            indexedThroughMemoryRevision: initialSettings.memoryRevision,
+            languageProfile: "UNICODE_EN_RU_TRIGRAM_V4",
+            normalizationVersion: "memory-search-normalization-v4",
+            readyAt: activatedAt,
+            retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+            roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+            roundSegmentProjectionVersion:
+              MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+            state: "ACTIVE",
+            targetMemoryRevision: initialSettings.memoryRevision,
+            userId
+          }
+        });
+        await tx.userMemorySettings.update({
+          data: { activeIndexGenerationId: generation.id },
+          where: { userId }
+        });
+        return generation;
+      });
+      const saved = await saveExplicit(
+        explicit,
+        userId,
+        "Keep immutable generation promotion exact.",
+        "compatible-generation-promotion-save"
+      );
+      const originalVersionId = saved.memory.currentVersionId!;
+      const editAuthorization = await explicit.mintAuthorization(userId, {
+        action: "EDIT",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: originalVersionId,
+        requestNonce: "compatible-generation-promotion-edit",
+        targetFactId: saved.memory.id
+      });
+      const edited = await explicit.update(userId, saved.memory.id, {
+        expectedVersionId: originalVersionId,
+        mutationAuthorizationId: editAuthorization.mutationAuthorizationId,
+        pinned: true
+      });
+      expect(edited.memory.currentVersionId).not.toBe(originalVersionId);
+      const [before, sourceEntries, jobsBefore] = await Promise.all([
+        prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
+        prisma.memorySearchEntry.findMany({
+          orderBy: { id: "asc" },
+          where: { indexGenerationId: source.id, userId }
+        }),
+        prisma.memoryJob.count({ where: { userId } })
+      ]);
+      expect(sourceEntries).toHaveLength(2);
+
+      const promotedAt = new Date("2026-08-31T04:01:00.000Z");
+      const promotion = await rebuild.promoteCompatibleActiveGeneration(
+        userId,
+        promotedAt
+      );
+      expect(promotion).toMatchObject({
+        generationId: expect.any(String),
+        kind: "promoted"
+      });
+      expect(promotion.generationId).not.toBe(source.id);
+      if (!promotion.generationId) throw new Error("promotion_generation_missing");
+
+      const [after, promoted, retainedSource, targetEntries, projection, jobsAfter] =
+        await Promise.all([
+          prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
+          prisma.memoryIndexGeneration.findUniqueOrThrow({
+            where: { id: promotion.generationId }
+          }),
+          prisma.memoryIndexGeneration.findUniqueOrThrow({ where: { id: source.id } }),
+          prisma.memorySearchEntry.findMany({
+            orderBy: { id: "asc" },
+            where: { indexGenerationId: promotion.generationId, userId }
+          }),
+          prisma.memoryLexicalProjectionState.findUniqueOrThrow({
+            where: {
+              userId_indexGenerationId: {
+                indexGenerationId: promotion.generationId,
+                userId
+              }
+            }
+          }),
+          prisma.memoryJob.count({ where: { userId } })
+        ]);
+      expect(after).toMatchObject({
+        activeIndexGenerationId: promotion.generationId,
+        memoryGeneration: before.memoryGeneration,
+        memoryRevision: before.memoryRevision + 1
+      });
+      expect(promoted).toMatchObject({
+        activatedAt: promotedAt,
+        indexedThroughMemoryRevision: after.memoryRevision,
+        languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
+        normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+        sourceIndexGenerationId: source.id,
+        state: "ACTIVE",
+        targetMemoryRevision: after.memoryRevision
+      });
+      expect(retainedSource).toMatchObject({
+        indexedThroughMemoryRevision: after.memoryRevision,
+        state: "SUPERSEDED",
+        supersededAt: promotedAt
+      });
+      expect(targetEntries).toHaveLength(sourceEntries.length);
+      expect(new Set(targetEntries.map(({ id }) => id))).not.toEqual(
+        new Set(sourceEntries.map(({ id }) => id))
+      );
+      const exactEntry = (entry: typeof sourceEntries[number]) => ({
+        embeddingDimension: entry.embeddingDimension,
+        embeddingState: entry.embeddingState,
+        factVersionId: entry.factVersionId,
+        itemType: entry.itemType,
+        languageCode: entry.languageCode,
+        normalizedSearchText: entry.normalizedSearchText,
+        recallChunkId: entry.recallChunkId,
+        recallRoundId: entry.recallRoundId,
+        recallRoundSegmentId: entry.recallRoundSegmentId,
+        safeContentHash: entry.safeContentHash,
+        safetyIdentitySnapshot: entry.safetyIdentitySnapshot,
+        sourceIdentitySnapshot: entry.sourceIdentitySnapshot,
+        suppressionIdentitySnapshot: entry.suppressionIdentitySnapshot,
+        toolEventId: entry.toolEventId,
+        userId: entry.userId
+      });
+      const byFactVersionId = (
+        left: ReturnType<typeof exactEntry>,
+        right: ReturnType<typeof exactEntry>
+      ) => (left.factVersionId ?? "").localeCompare(right.factVersionId ?? "");
+      expect(targetEntries.map(exactEntry).sort(byFactVersionId)).toEqual(
+        sourceEntries.map(exactEntry).sort(byFactVersionId)
+      );
+      expect(projection).toMatchObject({
+        status: "CATCHING_UP",
+        targetMemoryRevision: after.memoryRevision
+      });
+      expect(projection.enqueuedThroughSequence).toBeGreaterThan(0n);
+      expect(jobsAfter).toBe(jobsBefore);
+      await expect(cutover.inventory(userId)).resolves.toMatchObject({
+        activeGenerationId: promotion.generationId,
+        eligibleItems: sourceEntries.length,
+        ready: true
+      });
+
+      const generationCount = await prisma.memoryIndexGeneration.count({
+        where: { userId }
+      });
+      await expect(rebuild.promoteCompatibleActiveGeneration(userId, promotedAt))
+        .resolves.toEqual({
+          generationId: promotion.generationId,
+          kind: "already_current"
+        });
+      await expect(prisma.memoryIndexGeneration.count({ where: { userId } }))
+        .resolves.toBe(generationCount);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .resolves.toMatchObject({ memoryRevision: after.memoryRevision });
+      await expect(prisma.memoryJob.count({ where: { userId } })).resolves.toBe(jobsBefore);
     } finally {
       await cleanupOwner(userId);
     }

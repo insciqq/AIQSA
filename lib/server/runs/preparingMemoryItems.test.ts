@@ -587,6 +587,90 @@ describe("preparing Memory item finalization", () => {
     )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
   });
 
+  it("rebuilds user-only segment testimony from its canonical role map", async () => {
+    const userText = "I chose the 🪵 cedar route.";
+    const rawSafeText = `User: ${userText}\n\nAssistant: I will remember it.`;
+    const start = rawSafeText.indexOf(userText);
+    const row = {
+      branchGeneration: 5,
+      chatId: "source-chat",
+      contentHash: "c".repeat(64),
+      contextualKeyPolicyVersion: "memory-contextual-narrative-key-v1",
+      contextualKeyState: "RAW_FALLBACK",
+      contextualNarrativeText: "",
+      evidenceRootHash: "e".repeat(64),
+      languageCode: "en",
+      parentChunkId: "parent-chunk-1",
+      parentRawSafeText: rawSafeText,
+      projectionVersion: "memory-recall-round-projection-v1",
+      rawEndOffsetUtf16: rawSafeText.length,
+      rawSafeTextHash: memorySha256(rawSafeText),
+      rawStartOffsetUtf16: 0,
+      redactionState: "NOT_NEEDED",
+      safeText: rawSafeText,
+      safetyClass: "NORMAL",
+      segmentId: "segment-user",
+      segmentPosition: "SINGLE",
+      segmentProjectionVersion: "memory-recall-round-segment-v1",
+      segmentSourceRevision: 9,
+      sourceAssistantId: null,
+      sourceFolderId: null,
+      sourceRevision: 9,
+      state: "ACTIVE",
+      supportingRoundIds: []
+    };
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce([{
+        end: start + userText.length,
+        messageId: "source-user",
+        ordinal: 0,
+        start
+      }]);
+    const resolved = await resolvePreparingMemoryItem(
+      { $queryRaw } as unknown as Prisma.TransactionClient,
+      { ...authority, indexGenerationId: "generation-1" },
+      "Which route did I choose?",
+      {
+        exactItemId: "round-user",
+        exactSafeText: `User: ${userText}`,
+        featureSnapshot: {
+          aggregationRequested: false,
+          contextualRetrievalHintHash: null,
+          contextualSupportingEvidenceHashes: [],
+          contextualSupportingRoundIds: [],
+          historyEvidenceView: "USER_TESTIMONY",
+          retrievalMode: "PAST_CHAT_SEARCH"
+        },
+        finalScore: 0.9,
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+        recallRoundId: "round-user",
+        recallRoundSegmentId: "segment-user",
+        selectionReason: "targeted_session_completion_user_evidence",
+        supportingItemId: "parent-chunk-1"
+      }
+    );
+
+    expect(resolved).toMatchObject({
+      exactSafeText: `User: ${userText}`,
+      recallRoundId: "round-user",
+      recallRoundSegmentId: "segment-user",
+      sourceMessageIdsSnapshot: ["source-user"],
+      sourceSnapshot: {
+        historyEvidenceView: "USER_TESTIMONY",
+        segmentId: "segment-user"
+      }
+    });
+    expect($queryRaw).toHaveBeenCalledTimes(2);
+    const roleSql = $queryRaw.mock.calls[1]![0].strings.join("?");
+    expect(roleSql).toContain('FROM "MemoryRecallRoundSegmentMessage"');
+    expect(roleSql).toContain('INNER JOIN "MemoryRecallRoundMessage"');
+    expect(roleSql).toContain('segment_message."role" = \'user\'');
+    expect(roleSql).toContain('round_message."sourceMessageContentHash"');
+    expect(roleSql).toContain("FOR SHARE OF segment_message, round_message");
+  });
+
   it("rejoins an authorized overview, aggregation, or derived targeted digest", async () => {
     const digestText = "Summary: Cedar was selected for the deployment.";
     const digestMessageIds = Array.from(

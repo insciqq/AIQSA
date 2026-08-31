@@ -4,7 +4,7 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../../memory/history/rounds";
-import { MEMORY_LEXICAL_CHUNKING_VERSION, MEMORY_LEXICAL_LANGUAGE_PROFILE, MEMORY_LEXICAL_NORMALIZATION_VERSION, MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION } from "../../memory/persistence/lexical";
+import { MEMORY_LEXICAL_CHUNKING_VERSION, MEMORY_LEXICAL_ANALYSIS_PROFILE, MEMORY_LEXICAL_NORMALIZATION_VERSION, MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION } from "../../memory/persistence/lexical";
 import { createPrismaAdminMemoryStatusRepository } from "./statusRepository";
 
 function clientFixture(input: Readonly<{
@@ -52,7 +52,7 @@ function clientFixture(input: Readonly<{
               generation: 7,
               id: "private-generation",
               indexMode: "LEXICAL_ONLY",
-              languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+              languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
               normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
               retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
               roundProjectionVersion: input.roundConfigurationStale

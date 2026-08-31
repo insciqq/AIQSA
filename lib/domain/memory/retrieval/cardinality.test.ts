@@ -13,8 +13,8 @@ function parse(exactText: string, languageTag = "und") {
   });
 }
 
-function accepts(exactText: string, value: number): void {
-  expect(parse(exactText)).toEqual({
+function accepts(exactText: string, value: number, languageTag = "und"): void {
+  expect(parse(exactText, languageTag)).toEqual({
     normalizedText: expect.any(String),
     parserVersion: MEMORY_CARDINALITY_PARSER_VERSION,
     status: "ACCEPTED",
@@ -24,92 +24,84 @@ function accepts(exactText: string, value: number): void {
 
 function rejects(
   exactText: string,
-  reason: MemoryCardinalityRejectionReason
+  reason: MemoryCardinalityRejectionReason,
+  languageTag = "und"
 ): void {
-  expect(parse(exactText)).toEqual({
+  expect(parse(exactText, languageTag)).toEqual({
     parserVersion: MEMORY_CARDINALITY_PARSER_VERSION,
     reason,
     status: "REJECTED"
   });
 }
 
-describe("Memory source-bound cardinality parser", () => {
+describe("Memory source-bound language-neutral cardinality parser", () => {
   it.each([
-    ["3 visits", 3],
-    ["3 визита", 3],
-    ["three visits", 3],
-    ["три визита", 3],
-    ["twenty-one visits", 21],
-    ["двадцать один визит", 21],
-    ["one hundred and five inspections", 105],
-    ["сто пять проверок", 105],
-    ["1,000 visits", 1_000],
-    ["1 000 визитов", 1_000],
-    ["one million records", 1_000_000],
-    ["один миллион записей", 1_000_000],
-    ["pair of shoes", 2],
-    ["a dozen eggs", 12]
-  ])("parses exact English/Russian noun-count span %s", (text, value) => {
-    accepts(text, value);
-  });
-
-  it.each([
+    ["3 visits", "en", 3],
+    ["3 визита", "ru", 3],
     ["３ visitas", "es", 3],
-    ["٣ visitas", "es-MX", 3],
-    ["3 visitas", "es", 3],
-    ["3 posete", "sr-Latn", 3],
-    ["３ посете", "sr-Cyrl", 3]
-  ])("normalizes digits independently of the surrounding language: %s", (
+    ["٣ زيارات", "ar", 3],
+    ["३ यात्राएँ", "hi", 3],
+    ["৩ সফর", "bn", 3],
+    ["3回", "ja", 3],
+    ["𝟛 επισκέψεις", "el", 3],
+    ["1,000 records", "en", 1_000],
+    ["1 000 записей", "ru", 1_000]
+  ])("normalizes Unicode decimal noun-count syntax %s", (
     text,
     languageTag,
     value
   ) => {
-    expect(parse(text, languageTag)).toMatchObject({ status: "ACCEPTED", value });
+    accepts(text, value, languageTag);
+  });
+
+  it.each([
+    ["three visits", "en"],
+    ["три визита", "ru"],
+    ["tres visitas", "es"],
+    ["tri posete", "sr-Latn"],
+    ["ثلاث زيارات", "ar"],
+    ["तीन यात्राएँ", "hi"],
+    ["三回", "ja"],
+    ["pair of shoes", "en"]
+  ])("rejects number words uniformly without a locale dictionary: %s", (
+    text,
+    languageTag
+  ) => {
+    rejects(text, "UNSUPPORTED_NUMBER_WORD", languageTag);
   });
 
   it.each<[string, MemoryCardinalityRejectionReason]>([
     ["2026-08-29", "DATE_OR_TIME"],
-    ["version 3", "IDENTIFIER"],
-    ["модель 3", "IDENTIFIER"],
-    ["3 per week", "RATE"],
-    ["3 в неделю", "RATE"],
-    ["for 3 weeks", "DURATION"],
-    ["3 недели", "DURATION"],
-    ["third visit", "ORDINAL"],
-    ["третий визит", "ORDINAL"],
+    ["version 3", "AMBIGUOUS_NOUN_COUNT_CONTEXT"],
+    ["3 per week", "AMBIGUOUS_NOUN_COUNT_CONTEXT"],
+    ["3 visits and four calls", "AMBIGUOUS_NOUN_COUNT_CONTEXT"],
     ["2–4 visits", "RANGE"],
-    ["about five visits", "VAGUE_QUANTIFIER"],
-    ["около пяти визитов", "VAGUE_QUANTIFIER"],
+    ["about 5 visits", "AMBIGUOUS_NOUN_COUNT_CONTEXT"],
     ["3.5 visits", "DECIMAL"],
-    ["3,5 визита", "DECIMAL"],
+    ["3,5 visits", "DECIMAL"],
     ["1/2 visit", "FRACTION"],
     ["3% visits", "PERCENTAGE"],
-    ["3 dollars", "CURRENCY"],
+    ["$3", "CURRENCY"],
     ["1. visit", "LIST_POSITION"],
-    ["three visits and four calls", "CONFLICTING_CARDINALS"],
-    ["3 visits and four calls", "CONFLICTING_CARDINALS"],
+    ["3 visits and 4 calls", "CONFLICTING_CARDINALS"],
+    ["3_visits", "IDENTIFIER"],
     ["0 visits", "OUT_OF_RANGE"],
     ["1000001 visits", "OUT_OF_RANGE"],
     ["-3 visits", "OUT_OF_RANGE"],
-    ["three", "AMBIGUOUS_NOUN_COUNT_CONTEXT"],
-    ["tres visitas", "UNSUPPORTED_NUMBER_WORD"],
-    ["tri posete", "UNSUPPORTED_NUMBER_WORD"]
-  ])("rejects unsafe or non-cardinal context %s", (text, reason) => {
+    ["3", "AMBIGUOUS_NOUN_COUNT_CONTEXT"],
+    ["/", "RATE"]
+  ])("rejects structurally unsafe or non-exact context %s", (text, reason) => {
     rejects(text, reason);
   });
 
-  it.each([
-    ["tres visitas", "es"],
-    ["tri posete", "sr-Latn"],
-    ["три посете", "sr-Cyrl"]
-  ])("does not reinterpret unsupported-language word numbers: %s", (
-    text,
-    languageTag
-  ) => {
-    expect(parse(text, languageTag)).toMatchObject({
-      reason: "UNSUPPORTED_NUMBER_WORD",
+  it("validates metadata structurally without routing on its language", () => {
+    expect(parse("3 visits", "not_a_language")).toMatchObject({
+      reason: "UNSUPPORTED_CONTEXT",
       status: "REJECTED"
     });
+    for (const languageTag of ["en", "ru", "es", "sr-Cyrl", "zh-Hant", "und"]) {
+      expect(parse("٣ visits", languageTag)).toMatchObject({ status: "ACCEPTED", value: 3 });
+    }
   });
 
   it("rejects unbounded input before running any grammar", () => {
@@ -117,7 +109,7 @@ describe("Memory source-bound cardinality parser", () => {
   });
 
   it("is total and deterministic over punctuation/control-like fuzz corpus", () => {
-    const alphabet = ["a", "я", "3", "٣", "-", ".", "/", "%", " ", "\n", "\t"];
+    const alphabet = ["a", "я", "क", "3", "٣", "-", ".", "/", "%", " ", "\n", "\t"];
     let state = 0x5eed;
     for (let sample = 0; sample < 500; sample += 1) {
       let text = "";

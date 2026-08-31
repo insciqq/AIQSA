@@ -37,6 +37,7 @@ function input(
   return {
     contextRefs,
     folderId: null,
+    identityProfile: "UNICODE_V2",
     inputHash: "b".repeat(64),
     messages: [...priorMessages.map((message, index) => ({
       contentHash: memorySha256(message.text),

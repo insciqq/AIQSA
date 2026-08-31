@@ -49,16 +49,16 @@ const profileIntent: MemoryActionIntent = {
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v22");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v23");
     expect(MEMORY_CONTROL_REASONING_EFFORT).toBe("low");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v22",
-      policyVersion: "memory-control-policy-v22",
-      promptVersion: "memory-control-prompt-v25",
+      pipelineVersion: "memory-control-v23",
+      policyVersion: "memory-control-policy-v23",
+      promptVersion: "memory-control-prompt-v26",
       schemaVersion: "memory-action-intent-v11"
     });
-    expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(7);
+    expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
   });
 
   it("round-trips the exact broad-profile decision and rejects a legacy proof version", () => {
@@ -75,7 +75,7 @@ describe("Memory control runtime contract", () => {
     expect(proof).not.toBeNull();
     expect(decodeMemoryReadOnlyControlReuseProof(proof)).toMatchObject({
       intent: { profileRequested: true },
-      version: 7
+      version: 8
     });
     expect(decodeMemoryReadOnlyControlReuseProof({ ...proof, version: 1 })).toBeNull();
   });

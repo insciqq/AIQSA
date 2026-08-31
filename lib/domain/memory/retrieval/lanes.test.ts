@@ -96,9 +96,9 @@ describe("Memory retrieval lane scheduler", () => {
     }, {
       async execute() {
         await slowGate;
-        return { candidates: [], lane: "HISTORY_RECALL_FTS_SIMPLE" as const };
+        return { candidates: [], lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const };
       },
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const,
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const,
       onUnavailable: unavailable
     }], 2, controller.signal);
 
@@ -106,7 +106,7 @@ describe("Memory retrieval lane scheduler", () => {
     controller.abort({ code: "test_settle" });
     await expect(pending).resolves.toEqual([
       { candidates: [], lane: "FACT_EXACT" },
-      { candidates: [], lane: "HISTORY_RECALL_FTS_SIMPLE" }
+      { candidates: [], lane: "HISTORY_RECALL_LEXICAL_UNICODE" }
     ]);
     expect(unavailable).toHaveBeenCalledOnce();
     releaseSlow?.();
@@ -119,26 +119,22 @@ describe("Memory retrieval lane scheduler", () => {
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(allocation).toEqual({
-      FACT_EXACT: 4,
-      FACT_ENTITY: 6,
-      FACT_FTS_ENGLISH: 5,
-      FACT_FTS_RUSSIAN: 5,
-      FACT_FTS_SIMPLE: 5,
+      FACT_EXACT: 5,
+      FACT_ENTITY: 7,
+      FACT_LEXICAL_UNICODE: 7,
       FACT_RECENT: 2,
-      FACT_TEMPORAL_FILTERED: 5,
-      FACT_TEMPORAL_UNRESTRICTED: 2,
-      FACT_TRIGRAM: 4,
-      FACT_VECTOR: 5,
-      HISTORY_DIGEST_FTS_SIMPLE: 14,
-      HISTORY_RECALL_EXACT: 5,
-      HISTORY_RECALL_FTS_ENGLISH: 14,
-      HISTORY_RECALL_FTS_RUSSIAN: 14,
-      HISTORY_RECALL_FTS_SIMPLE: 14,
-      HISTORY_RECALL_RECENT: 5,
-      HISTORY_RECALL_TEMPORAL_FILTERED: 11,
-      HISTORY_RECALL_TEMPORAL_UNRESTRICTED: 4,
-      HISTORY_RECALL_TRIGRAM: 9,
-      HISTORY_RECALL_VECTOR: 27
+      FACT_TEMPORAL_FILTERED: 7,
+      FACT_TEMPORAL_UNRESTRICTED: 3,
+      FACT_LEXICAL_NGRAM: 5,
+      FACT_VECTOR: 7,
+      HISTORY_DIGEST_FTS_SIMPLE: 18,
+      HISTORY_RECALL_EXACT: 7,
+      HISTORY_RECALL_LEXICAL_UNICODE: 18,
+      HISTORY_RECALL_RECENT: 7,
+      HISTORY_RECALL_TEMPORAL_FILTERED: 14,
+      HISTORY_RECALL_TEMPORAL_UNRESTRICTED: 5,
+      HISTORY_RECALL_LEXICAL_NGRAM: 12,
+      HISTORY_RECALL_VECTOR: 36
     });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);
@@ -155,27 +151,27 @@ describe("Memory retrieval lane scheduler", () => {
     const targetedHistory = [
       "HISTORY_RECALL_EXACT",
       "HISTORY_DIGEST_FTS_SIMPLE",
-      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_LEXICAL_UNICODE",
       "HISTORY_RECALL_RECENT",
       "HISTORY_RECALL_VECTOR"
     ] as const;
     expect(allocateMemoryRetrievalLaneLimits(targetedHistory)).toEqual({
       HISTORY_RECALL_EXACT: 12,
       HISTORY_DIGEST_FTS_SIMPLE: 30,
-      HISTORY_RECALL_FTS_SIMPLE: 30,
+      HISTORY_RECALL_LEXICAL_UNICODE: 30,
       HISTORY_RECALL_RECENT: 12,
       HISTORY_RECALL_VECTOR: 60
     });
     const aggregationHistoryLanes = [
       "HISTORY_RECALL_EXACT",
       "HISTORY_DIGEST_FTS_SIMPLE",
-      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_LEXICAL_UNICODE",
       "HISTORY_RECALL_VECTOR"
     ] as const;
     expect(allocateMemoryRetrievalLaneLimits(aggregationHistoryLanes, true)).toEqual({
       HISTORY_RECALL_EXACT: 8,
       HISTORY_DIGEST_FTS_SIMPLE: 30,
-      HISTORY_RECALL_FTS_SIMPLE: 40,
+      HISTORY_RECALL_LEXICAL_UNICODE: 40,
       HISTORY_RECALL_VECTOR: 120
     });
     expect(Object.values(allocateMemoryRetrievalLaneLimits(aggregationHistoryLanes, true))

@@ -21,7 +21,8 @@ import {
   type MemoryPreparingSettingsSnapshot
 } from "../../runs/preparingRun";
 import type {
-  MemoryAggregationSessionCompletion,
+  MemoryLexicalLaneEvidence,
+  MemorySessionEvidenceCompletion,
   PrismaLocalMemoryRetrievalRepository
 } from "./localRepository";
 import type { MemoryControlResult, MemoryControlService } from "../actions/controlRuntime";
@@ -33,7 +34,7 @@ import {
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
   MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
-  mergeMemoryAggregationSessionCompletion,
+  mergeMemorySessionEvidenceCompletion,
   memoryRelevanceCandidates,
   selectMemoryAggregationRawCandidates,
   type MemoryRunControlCache,
@@ -252,7 +253,7 @@ function snapshot(activeIndexGenerationId: string | null) {
     activeGenerationId: activeIndexGenerationId, assistantId: null, chatId: "chat-current",
     chatMemoryMode: "NORMAL" as const, folderId: null,
     decayEnabled: false, decayPolicyVersion: null,
-    historySuppressionIdentitySnapshot: "a".repeat(64),
+    historyAuthorityRevision: 4,
     indexMode: activeIndexGenerationId ? "HYBRID" as const : null,
     memoryGeneration: 2, memoryRevision: 4,
     reason: activeIndexGenerationId ? "ready" : "memory_index_unavailable",
@@ -265,10 +266,11 @@ function repository(options: Readonly<{
   activeIndexGenerationId?: string | null;
   aggregationCandidates?: readonly MemoryLaneCandidate[];
   candidates?: readonly MemoryLaneCandidate[];
-  completion?: MemoryAggregationSessionCompletion;
+  completion?: MemorySessionEvidenceCompletion;
   core?: readonly MemoryCoreCandidate[];
   decayEnabled?: boolean;
   hybridCandidates?: readonly MemoryLaneCandidate[];
+  lexicalEvidence?: readonly MemoryLexicalLaneEvidence[];
   lexicalFailures?: readonly MemoryRetrievalLane[];
   lexicalState?: "DEGRADED" | "DISABLED" | "FAILED" | "READY";
   projectAggregationSessions?: (
@@ -297,6 +299,7 @@ function repository(options: Readonly<{
       candidates: selectedCandidates.filter((candidate) => candidate.lane === lane),
       lane
     })),
+    lexicalEvidence: options.lexicalEvidence ?? [],
     lexicalFailures: options.lexicalFailures ?? [],
     lexicalState: options.lexicalState ??
       (activeIndexGenerationId ? "READY" as const : "DISABLED" as const),
@@ -361,7 +364,9 @@ function repository(options: Readonly<{
         projectionKind: candidate.matchedSegmentId
           ? "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT"
           : "RECALL_ROUND_RAW_SAFE_TEXT",
-        safeText: `relevant round text ${candidate.matchedSegmentId ?? candidate.itemId}`,
+        safeText: candidate.historyEvidenceView === "USER_TESTIMONY"
+          ? `User: direct user episode ${candidate.matchedSegmentId ?? candidate.itemId}`
+          : `relevant round text ${candidate.matchedSegmentId ?? candidate.itemId}`,
         sourceChatId: candidate.metadata.sourceChatId,
         supportingItemId: candidate.metadata.parentChunkId ?? "parent-chunk"
       };
@@ -377,13 +382,13 @@ function repository(options: Readonly<{
           supportingItemId: null
         };
   }));
-  const completeAggregationSessionEvidence = options.completion
+  const completeSessionEvidence = options.completion
     ? vi.fn(async () => options.completion!)
     : null;
   const value = {
     expand,
     expandAggregationNavigation: expand,
-    ...(completeAggregationSessionEvidence ? { completeAggregationSessionEvidence } : {}),
+    ...(completeSessionEvidence ? { completeSessionEvidence } : {}),
     projectAggregationSessions,
     retrieve,
     ...(retrieveSpeculativeBaseline ? { retrieveSpeculativeBaseline } : {}),
@@ -391,7 +396,7 @@ function repository(options: Readonly<{
     snapshot: vi.fn(async () => state)
   } as unknown as PrismaLocalMemoryRetrievalRepository;
   return {
-    completeAggregationSessionEvidence,
+    completeSessionEvidence,
     expand,
     projectAggregationSessions,
     retrieve,
@@ -653,7 +658,7 @@ describe("Personal Memory v1 run admission", () => {
         }
       }]
     });
-    const input = runInput("What happened yesterday?");
+    const input = runInput("2026-08-12");
     input.normalizedRequest = {
       ...input.normalizedRequest,
       prompt: {
@@ -676,18 +681,18 @@ describe("Personal Memory v1 run admission", () => {
           sourceKinds: ["FACT", "EVENT", "HISTORY"]
         }),
         semanticQueryVariants: [
-          { kind: "ORIGINAL", text: "What happened yesterday?" }
+          { kind: "ORIGINAL", text: "2026-08-12" }
         ]
       }),
       plan: expect.objectContaining({
         temporalQuery: expect.objectContaining({
           confidence: "HIGH",
-          expressionType: "RELATIVE_DAY",
+          expressionType: "EXPLICIT_DATE",
           state: "MATCHED"
         }),
         temporalQueryVariants: [
-          { kind: "FILTERED", text: "What happened yesterday?" },
-          { kind: "UNRESTRICTED", text: "What happened yesterday?" }
+          { kind: "FILTERED", text: "2026-08-12" },
+          { kind: "UNRESTRICTED", text: "2026-08-12" }
         ]
       })
     }));
@@ -707,7 +712,7 @@ describe("Personal Memory v1 run admission", () => {
       temporalFilteredCandidateCount: 1,
       temporalParserConfidence: "HIGH",
       temporalParserState: "MATCHED",
-      temporalParserType: "RELATIVE_DAY",
+      temporalParserType: "EXPLICIT_DATE",
       temporalUnrestrictedCandidateCount: 1
     });
     expect(budget.plan).toMatchObject({
@@ -715,11 +720,11 @@ describe("Personal Memory v1 run admission", () => {
         confidence: "HIGH",
         expressionCount: 1,
         state: "MATCHED",
-        type: "RELATIVE_DAY"
+        type: "EXPLICIT_DATE"
       }
     });
     const metricsJson = JSON.stringify(budget.componentMetrics);
-    expect(metricsJson).not.toContain("What happened yesterday");
+    expect(metricsJson).not.toContain("2026-08-12");
     expect(metricsJson).not.toContain("America/Los_Angeles");
     expect(metricsJson).not.toContain("user-1");
   });
@@ -786,7 +791,7 @@ describe("Personal Memory v1 run admission", () => {
     });
     const local = repository({
       candidates: [
-        segmentCandidate("private-prefix-segment", "PREFIX", "HISTORY_RECALL_FTS_SIMPLE"),
+        segmentCandidate("private-prefix-segment", "PREFIX", "HISTORY_RECALL_LEXICAL_UNICODE"),
         segmentCandidate("private-suffix-segment", "SUFFIX", "HISTORY_RECALL_VECTOR")
       ]
     });
@@ -865,6 +870,57 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "DEGRADED"
       });
       expect(local.retrieve).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a healthy slow embedding inside the concurrent utility envelope", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("slow-embedding-local")] });
+      const base = retrievalOptions(["c0"]);
+      const utilitiesWithSlowEmbedding: MemoryRunUtilityService = {
+        ...base.utilities,
+        embedQuery: vi.fn(async (input) => {
+          expect(input.signal.aborted).toBe(false);
+          await new Promise<void>((resolve) => setTimeout(resolve, 6_000));
+          return {
+            bindingId: "binding-slow-embedding",
+            profile,
+            status: "READY" as const,
+            vector: Array.from(
+              { length: profile.dimension },
+              (_, index) => index === 0 ? 1 : 0
+            )
+          };
+        })
+      };
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        utilities: utilitiesWithSlowEmbedding
+      }).retrieve(runInput("What do I prefer?"))
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+
+      await vi.advanceTimersByTimeAsync(5_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pending).resolves.toMatchObject({
+        items: [{ exactItemId: "slow-embedding-local" }],
+        outcome: "USED"
+      });
+      expect(utilitiesWithSlowEmbedding.embedQuery).toHaveBeenCalledOnce();
+      expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+        vector: expect.objectContaining({ profile })
+      }));
     } finally {
       vi.useRealTimers();
     }
@@ -956,7 +1012,7 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "DEGRADED"
       });
       expect(embeddingSignals[0]?.aborted).toBe(true);
-      expect(admittedRoleBudgetMs).toBe(4_000);
+      expect(admittedRoleBudgetMs).toBe(8_000);
     } finally {
       vi.useRealTimers();
     }
@@ -1182,6 +1238,7 @@ describe("Personal Memory v1 run admission", () => {
       local.retrieve.mockResolvedValueOnce({
         core: [],
         laneResults: [],
+        lexicalEvidence: [],
         lexicalFailures: [],
         lexicalState: "READY",
         snapshot: revisedSnapshot,
@@ -1421,12 +1478,12 @@ describe("Personal Memory v1 run admission", () => {
       sourceChatId: "chat-source",
       supportingItemId: "parent-chunk"
     });
-    const completion: MemoryAggregationSessionCompletion = {
+    const completion: MemorySessionEvidenceCompletion = {
       candidates: [duplicate, completed],
       sourceChatCount: 1
     };
 
-    const merged = mergeMemoryAggregationSessionCompletion(
+    const merged = mergeMemorySessionEvidenceCompletion(
       [anchor],
       [expandedHistory("anchor")],
       completion,
@@ -1486,7 +1543,7 @@ describe("Personal Memory v1 run admission", () => {
       "e".repeat(64)
     );
 
-    const merged = mergeMemoryAggregationSessionCompletion(
+    const merged = mergeMemorySessionEvidenceCompletion(
       anchors,
       anchors.map(sourceExpansion),
       { candidates: [aCompletion], sourceChatCount: 1 },
@@ -2256,19 +2313,19 @@ describe("Personal Memory v1 run admission", () => {
   it("uses the broad lexical plan when control and query embedding are unavailable", async () => {
     const narrowFact = {
       ...factLaneCandidate("narrow-speculative-fact", 0.9),
-      lane: "FACT_FTS_SIMPLE" as const
+      lane: "FACT_LEXICAL_UNICODE" as const
     };
     const narrowHistory = {
       ...laneCandidate("narrow-speculative-history"),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const broadFact = {
       ...factLaneCandidate("broad-fallback-fact", 0.9),
-      lane: "FACT_FTS_SIMPLE" as const
+      lane: "FACT_LEXICAL_UNICODE" as const
     };
     const broadHistory = {
       ...laneCandidate("broad-fallback-history"),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const local = repository({
       aggregationCandidates: [broadFact, broadHistory],
@@ -2333,7 +2390,7 @@ describe("Personal Memory v1 run admission", () => {
   it("keeps a ready dense lane when System-Model control falls back", async () => {
     const lexical = {
       ...laneCandidate("current-lexical-evidence"),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const priorDense = {
       ...laneCandidate("prior-dense-evidence"),
@@ -2393,7 +2450,7 @@ describe("Personal Memory v1 run admission", () => {
   it("keeps a completed primary lane healthy when only fuzzy recovery expires", async () => {
     const lexical = {
       ...laneCandidate("history-primary-evidence"),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const dense = {
       ...laneCandidate("history-dense-evidence"),
@@ -2408,11 +2465,12 @@ describe("Personal Memory v1 run admission", () => {
     local.retrieveSpeculativeBaseline?.mockResolvedValueOnce({
       core: [],
       laneResults: [
-        { candidates: [], lane: "FACT_FTS_SIMPLE" },
-        { candidates: [lexical], lane: "HISTORY_RECALL_FTS_SIMPLE" },
-        { candidates: [], lane: "FACT_TRIGRAM" }
+        { candidates: [], lane: "FACT_LEXICAL_UNICODE" },
+        { candidates: [lexical], lane: "HISTORY_RECALL_LEXICAL_UNICODE" },
+        { candidates: [], lane: "FACT_LEXICAL_NGRAM" }
       ],
-      lexicalFailures: ["FACT_TRIGRAM"],
+      lexicalEvidence: [],
+      lexicalFailures: ["FACT_LEXICAL_NGRAM"],
       lexicalState: "DEGRADED",
       snapshot: local.state,
       vectorEvidence: [],
@@ -2424,6 +2482,7 @@ describe("Personal Memory v1 run admission", () => {
         { candidates: [], lane: "FACT_VECTOR" },
         { candidates: [dense], lane: "HISTORY_RECALL_VECTOR" }
       ],
+      lexicalEvidence: [],
       lexicalFailures: [],
       lexicalState: "DISABLED",
       snapshot: local.state,
@@ -2444,7 +2503,7 @@ describe("Personal Memory v1 run admission", () => {
 
     expect(result).toMatchObject({
       budgetSnapshot: {
-        lexicalFailures: ["FACT_TRIGRAM"],
+        lexicalFailures: ["FACT_LEXICAL_NGRAM"],
         lexicalState: "DEGRADED",
         speculativeHybridUsed: true
       },
@@ -2456,7 +2515,7 @@ describe("Personal Memory v1 run admission", () => {
   it("retries the full hybrid read when a speculative source family is unavailable", async () => {
     const recovered = {
       ...laneCandidate("full-read-recovered-history"),
-      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+      lane: "HISTORY_RECALL_LEXICAL_UNICODE" as const
     };
     const local = repository({
       aggregationCandidates: [recovered],
@@ -2467,10 +2526,11 @@ describe("Personal Memory v1 run admission", () => {
     local.retrieveSpeculativeBaseline?.mockResolvedValueOnce({
       core: [],
       laneResults: [
-        { candidates: [], lane: "FACT_FTS_SIMPLE" },
-        { candidates: [], lane: "HISTORY_RECALL_FTS_SIMPLE" }
+        { candidates: [], lane: "FACT_LEXICAL_UNICODE" },
+        { candidates: [], lane: "HISTORY_RECALL_LEXICAL_UNICODE" }
       ],
-      lexicalFailures: ["FACT_FTS_SIMPLE", "HISTORY_RECALL_FTS_SIMPLE"],
+      lexicalEvidence: [],
+      lexicalFailures: ["FACT_LEXICAL_UNICODE", "HISTORY_RECALL_LEXICAL_UNICODE"],
       lexicalState: "FAILED",
       snapshot: local.state,
       vectorEvidence: [],
@@ -2818,6 +2878,7 @@ describe("Personal Memory v1 run admission", () => {
     local.retrieve.mockResolvedValue({
       core: [],
       laneResults: [{ candidates: [candidate], lane: "HISTORY_RECALL_VECTOR" }],
+      lexicalEvidence: [],
       lexicalFailures: [],
       lexicalState: "READY",
       snapshot: revisedSnapshot,
@@ -3159,7 +3220,7 @@ describe("Personal Memory v1 run admission", () => {
     const result = await createMemoryRunRetrievalService(local.value, options)
       .retrieve(runInput("What is the total across all completed trips?"));
 
-    expect(local.completeAggregationSessionEvidence).toHaveBeenCalledOnce();
+    expect(local.completeSessionEvidence).toHaveBeenCalledOnce();
     expect(local.expand).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ mode: "PAST_CHAT_SEARCH" }),
@@ -3181,6 +3242,74 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).toContain("relevant round text completed-round");
   });
 
+  it("expands exact user episodes from reranked targeted sources before packing", async () => {
+    const userEpisode: MemoryRankedCandidate = {
+      ...rankedHistory("user-episode", "NORMAL"),
+      entryId: null,
+      historyEvidenceView: "USER_TESTIMONY",
+      itemType: "RECALL_ROUND",
+      matchedSegmentId: "user-segment",
+      matchedSegmentPosition: "SINGLE",
+      metadata: {
+        ...rankedHistory("user-episode", "NORMAL").metadata,
+        dedupeKey: `history:${"b".repeat(64)}`,
+        evidenceRootHash: "b".repeat(64),
+        parentChunkId: "parent-user-episode",
+        sourceChatId: "chat-source"
+      },
+      selectionReason: "targeted_session_completion_user_evidence"
+    };
+    const local = repository({
+      candidates: [laneCandidate("query-anchor")],
+      completion: { candidates: [userEpisode], sourceChatCount: 1 }
+    });
+    const runUtilities = utilities(null);
+    const options = {
+      ...intentOptions({
+        aggregationRequested: false,
+        memoryUseful: false,
+        pastChatsUseful: true,
+        retrievalMode: "PAST_CHAT_SEARCH",
+        temporalIntent: "ANY"
+      }),
+      utilities: runUtilities
+    };
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Which route did I choose in that earlier discussion?"));
+
+    expect(local.completeSessionEvidence).toHaveBeenCalledOnce();
+    expect(vi.mocked(runUtilities.rerank).mock.calls[0]![0].candidates).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({ text: "User: direct user episode user-segment" })
+      ])
+    );
+    expect(vi.mocked(runUtilities.rerank).mock.invocationCallOrder[0])
+      .toBeLessThan(local.completeSessionEvidence!.mock.invocationCallOrder[0]!);
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        componentMetrics: {
+          sessionCompletionCandidateCount: 1,
+          sessionCompletionExpandedSourceChatCount: 1,
+          sessionCompletionState: "READY"
+        }
+      },
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          exactItemId: "user-episode",
+          featureSnapshot: expect.objectContaining({
+            historyEvidenceView: "USER_TESTIMONY"
+          }),
+          itemType: "RECALL_ROUND"
+        })
+      ]),
+      outcome: "USED"
+    });
+    expect(result.preparedContext?.text).toContain(
+      "User: direct user episode user-segment"
+    );
+  });
+
   it("keeps admitted anchors when optional source completion exhausts its budget", async () => {
     vi.useFakeTimers();
     try {
@@ -3188,8 +3317,8 @@ describe("Personal Memory v1 run admission", () => {
         candidates: [laneCandidate("query-anchor")],
         completion: { candidates: [], sourceChatCount: 0 }
       });
-      local.completeAggregationSessionEvidence?.mockImplementation(
-        () => new Promise<MemoryAggregationSessionCompletion>(() => undefined)
+      local.completeSessionEvidence?.mockImplementation(
+        () => new Promise<MemorySessionEvidenceCompletion>(() => undefined)
       );
       const options = intentOptions({
         aggregationRequested: true,
@@ -3202,7 +3331,7 @@ describe("Personal Memory v1 run admission", () => {
       const pending = createMemoryRunRetrievalService(local.value, options)
         .retrieve(runInput("What happened across my earlier chats?"));
       await vi.waitFor(() =>
-        expect(local.completeAggregationSessionEvidence).toHaveBeenCalledOnce());
+        expect(local.completeSessionEvidence).toHaveBeenCalledOnce());
       await vi.advanceTimersByTimeAsync(MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS + 1);
       const result = await pending;
 
@@ -3308,7 +3437,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v14"
+        version: "memory-retrieval-component-metrics-v15"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
@@ -4028,7 +4157,7 @@ describe("Personal Memory v1 run admission", () => {
 
   it.each([
     {
-      candidateLane: "FACT_FTS_SIMPLE" as const,
+      candidateLane: "FACT_LEXICAL_UNICODE" as const,
       code: "memory_query_embedding_unavailable",
       embeddingUnavailable: true,
       lexicalFailures: [] as readonly MemoryRetrievalLane[],
@@ -4039,7 +4168,7 @@ describe("Personal Memory v1 run admission", () => {
       candidateLane: "FACT_VECTOR" as const,
       code: "memory_fts_unavailable",
       embeddingUnavailable: false,
-      lexicalFailures: ["FACT_FTS_SIMPLE"] as readonly MemoryRetrievalLane[],
+      lexicalFailures: ["FACT_LEXICAL_UNICODE"] as readonly MemoryRetrievalLane[],
       lexicalState: "DEGRADED" as const,
       vectorState: "READY" as const
     },
@@ -4048,13 +4177,13 @@ describe("Personal Memory v1 run admission", () => {
       code: "memory_fts_unavailable",
       embeddingUnavailable: false,
       lexicalFailures: [
-        "FACT_FTS_RUSSIAN", "FACT_TRIGRAM"
+        "FACT_LEXICAL_UNICODE", "FACT_LEXICAL_NGRAM"
       ] as readonly MemoryRetrievalLane[],
       lexicalState: "DEGRADED" as const,
       vectorState: "READY" as const
     },
     {
-      candidateLane: "FACT_FTS_SIMPLE" as const,
+      candidateLane: "FACT_LEXICAL_UNICODE" as const,
       code: "memory_entity_unavailable",
       embeddingUnavailable: false,
       lexicalFailures: ["FACT_ENTITY"] as readonly MemoryRetrievalLane[],
@@ -4062,7 +4191,7 @@ describe("Personal Memory v1 run admission", () => {
       vectorState: "READY" as const
     },
     {
-      candidateLane: "FACT_FTS_SIMPLE" as const,
+      candidateLane: "FACT_LEXICAL_UNICODE" as const,
       code: "memory_vector_unavailable",
       embeddingUnavailable: false,
       lexicalFailures: [] as readonly MemoryRetrievalLane[],
@@ -4101,7 +4230,7 @@ describe("Personal Memory v1 run admission", () => {
 
   it("returns zero dynamic memory when every ranking signal is absent", async () => {
     const local = repository({
-      lexicalFailures: ["FACT_EXACT", "FACT_ENTITY", "FACT_FTS_SIMPLE"],
+      lexicalFailures: ["FACT_EXACT", "FACT_ENTITY", "FACT_LEXICAL_UNICODE"],
       lexicalState: "FAILED",
       vectorState: "DEGRADED"
     });
@@ -4173,6 +4302,41 @@ describe("Personal Memory v1 run admission", () => {
       relevanceDecisions: [{ category: "legacy [REDACTED:TOKEN]" }]
     });
     expect(JSON.stringify(result.budgetSnapshot)).not.toContain(secret);
+  });
+
+  it("persists the content-free lexical lane contract in attempt diagnostics", async () => {
+    const lexicalEvidence = Object.freeze([Object.freeze({
+      backend: "POSTGRES" as const,
+      canonicalAcceptedCount: 1,
+      durationMs: 12,
+      failureCode: null,
+      fallbackUsed: false,
+      lane: "FACT_LEXICAL_UNICODE" as const,
+      matchMode: "UNICODE" as const,
+      opaqueId: null,
+      projectionCaughtUp: true,
+      projectionEventLag: null,
+      projectionRevisionLag: null,
+      projectionVisibleAgeMs: null,
+      rawCandidateCount: 1,
+      rejectedAuthorityCount: 0,
+      rejectedGenerationCount: 0,
+      rejectedHashCount: 0,
+      requestedLimit: 20,
+      timedOut: false
+    })]);
+    const local = repository({
+      candidates: [factLaneCandidate("diagnostic-fact", 0.9)],
+      lexicalEvidence
+    });
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      retrievalOptions(["c0"])
+    ).retrieve(runInput("What do you remember?"));
+
+    expect(result.budgetSnapshot).toMatchObject({ lexicalEvidence });
+    expect(JSON.stringify(result.budgetSnapshot.lexicalEvidence))
+      .not.toContain("What do you remember?");
   });
 
   it("sends low-similarity cross-language Saved facts to the mandatory reranker only", async () => {

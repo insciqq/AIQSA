@@ -4,6 +4,8 @@ import {
   decodeLongMemEvalQualificationManifest,
   loadLongMemEvalQualificationManifest
 } from "../benchmarks/longmemeval/qualification";
+import { currentLongMemEvalQualificationRevision } from
+  "../benchmarks/longmemeval/qualificationRevision";
 
 describe("LongMemEval frozen qualification manifest", () => {
   it("loads the content-free blind 50 contract with all category quotas", async () => {
@@ -29,18 +31,28 @@ describe("LongMemEval frozen qualification manifest", () => {
   });
 
   it("freezes the reader-first reranker route and case concurrency two", async () => {
-    const [legacy, first, second, third, fourth, prior, manifest] = await Promise.all([
+    const [legacy, first, second, third, fourth, fifth, prior, manifest] =
+      await Promise.all([
       loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v2"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v3"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v4"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v5"),
-      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v6")
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v6"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v7")
     ]);
+    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+      throw new Error("reader_first_manifest_expected");
+    }
 
     expect(manifest.runtime.caseConcurrency).toBe(2);
     expect(manifest.runtime.sessionConcurrency).toBe(16);
+    expect(manifest.runtime.embedding).toEqual({
+      provider: "OpenRouter",
+      providerOrder: ["nebius", "deepinfra"],
+      upstreamModelId: "qwen/qwen3-embedding-8b"
+    });
     expect(manifest.runtime.reranker).toEqual({
       policyVersion: "openrouter-reranker-route-v1",
       provider: "OpenRouter",
@@ -59,14 +71,29 @@ describe("LongMemEval frozen qualification manifest", () => {
         }
       ]
     });
+    expect(manifest.runtime.evaluation).toMatchObject({
+      failFast: true,
+      mode: "per_case",
+      model: "gpt-4o-2024-08-06"
+    });
+    expect(manifest.runtime.lexical).toEqual({
+      backend: "OPENSEARCH",
+      indexBuildId: "20260831-lme-v7-r2"
+    });
     expect(manifest.selection).toEqual(legacy.selection);
     expect(manifest.selection).toEqual(first.selection);
     expect(manifest.selection).toEqual(second.selection);
     expect(manifest.selection).toEqual(third.selection);
     expect(manifest.selection).toEqual(fourth.selection);
+    expect(manifest.selection).toEqual(fifth.selection);
     expect(manifest.selection).toEqual(prior.selection);
     expect(manifest.source.appCommit)
-      .toBe("04abc3d5aa730df861224c8f66a64307c4ed17ce");
+      .toBe("9ed2a90f8320ed028fcc2a239e7844e13e318fec");
+    await expect(currentLongMemEvalQualificationRevision(process.cwd()))
+      .resolves.toEqual({
+        headCommit: manifest.source.appCommit,
+        worktreeSha256: manifest.source.appWorktreeSha256
+      });
   });
 
   it("binds every selected id to its frozen upstream category", async () => {
@@ -90,9 +117,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first reranker route drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v6"
+      "fu2-reader-first-blind-50-v7"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v6") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {
@@ -102,6 +129,28 @@ describe("LongMemEval frozen qualification manifest", () => {
         reranker: {
           ...manifest.runtime.reranker,
           route: [...manifest.runtime.reranker.route].reverse()
+        }
+      }
+    };
+
+    expect(() => decodeLongMemEvalQualificationManifest(drifted))
+      .toThrow();
+  });
+
+  it("rejects reader-first embedding provider-order drift", async () => {
+    const manifest = await loadLongMemEvalQualificationManifest(
+      "fu2-reader-first-blind-50-v7"
+    );
+    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+      throw new Error("reader_first_manifest_expected");
+    }
+    const drifted: unknown = {
+      ...manifest,
+      runtime: {
+        ...manifest.runtime,
+        embedding: {
+          ...manifest.runtime.embedding,
+          providerOrder: [...manifest.runtime.embedding.providerOrder].reverse()
         }
       }
     };

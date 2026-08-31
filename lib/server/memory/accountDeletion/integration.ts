@@ -1,7 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "./contract";
-import { inspectAccountMemoryDeletionResiduals } from "./handler";
+import {
+  inspectAccountMemoryDeletionCanonicalResiduals,
+  inspectAccountMemoryDeletionProjectionResiduals
+} from "./handler";
 
 export type AccountMemoryDeletionAdvance = Readonly<{
   admitted: boolean;
@@ -184,11 +187,11 @@ async function advanceAccountDeletion(
     return { admitted: false, deletionPending: true, readyForUserDeletion: false };
   }
 
-  const residuals = await inspectAccountMemoryDeletionResiduals(tx, {
+  const canonicalResiduals = await inspectAccountMemoryDeletionCanonicalResiduals(tx, {
     deletionId: existing.id,
     userId: input.userId
   });
-  if (residuals.length > 0) {
+  if (canonicalResiduals.length > 0) {
     await tx.memoryDeletionOutbox.update({
       data: {
         completedAt: null,
@@ -201,6 +204,9 @@ async function advanceAccountDeletion(
     });
     return { admitted: true, deletionPending: true, readyForUserDeletion: false };
   }
+  if ((await inspectAccountMemoryDeletionProjectionResiduals(tx, input.userId)).length > 0) {
+    return { admitted: false, deletionPending: true, readyForUserDeletion: false };
+  }
 
   // The leaf retained only usage-backed, provider-detached immutable call
   // evidence. Global account deletion now owns the final removal of both
@@ -210,6 +216,20 @@ async function advanceAccountDeletion(
   });
   await tx.memoryExecutionBinding.deleteMany({ where: { userId: input.userId } });
   await tx.memoryJob.deleteMany({ where: { userId: input.userId } });
+
+  const projectionReceipt = await tx.memoryLexicalProjectionEvent.deleteMany({
+    where: {
+      operation: "PURGE_USER",
+      state: "SUCCEEDED",
+      userId: input.userId
+    }
+  });
+  if (projectionReceipt.count !== 1) {
+    throw new MemoryCoordinatorError(
+      "memory_account_projection_finalize_conflict",
+      true
+    );
+  }
 
   const deleted = await tx.memoryDeletionOutbox.deleteMany({
     where: {

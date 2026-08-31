@@ -14,7 +14,7 @@ import {
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V2,
-  MEMORY_READER_CONTRACT_V1,
+  MEMORY_READER_CONTRACT_CURRENT,
   knowledgeToolLoopContract
 } from "../providers/personalContext";
 import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
@@ -195,7 +195,7 @@ export function normalizedRequestPersonalContextTokenLimit(
   });
   const promptTokens = estimateApproxTokens(request.prompt.system ?? "") +
     estimateApproxTokens(request.prompt.developer ?? "") +
-    estimateApproxTokens(MEMORY_READER_CONTRACT_V1) +
+    estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) +
     (request.prompt.memoryActionAnswerResult
       ? estimateApproxTokens(memoryActionAnswerContract(
           request.prompt.memoryActionAnswerResult
@@ -427,7 +427,9 @@ export function applyProviderRequestContextBudget(input: Readonly<{
     estimateApproxTokens(providerFacingSerializedTools(input.request, input.bridge)) +
     estimateApproxTokens(input.request.providerToolMessages ?? []) +
     estimateApproxTokens(input.request.personalContext?.text ?? "") +
-    (input.request.personalContext ? estimateApproxTokens(MEMORY_READER_CONTRACT_V1) : 0) +
+    (input.request.personalContext
+      ? estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT)
+      : 0) +
     estimateApproxTokens(knowledgeToolLoopContract(input.request) ?? "");
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {

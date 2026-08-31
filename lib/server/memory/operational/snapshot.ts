@@ -2,9 +2,20 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
+import {
+  MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS,
+  MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS
+} from "./counters";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v5";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v6";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
+const contextualFallbackCounterKeys = Object.values(
+  MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS
+);
+const contextualLanguageCounterKeys = [
+  ...Object.values(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS.fallback),
+  ...Object.values(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS.generated)
+];
 
 type CountRow = Readonly<Record<string, string>>;
 type GroupedCountRow = Readonly<{
@@ -552,12 +563,7 @@ export async function loadMemoryOperationalSnapshot(
           CROSS JOIN LATERAL jsonb_each_text(job."operationalCounters") AS entry(key, value)
           WHERE job."completedAt" >= ${input.from}
             AND job."completedAt" < ${input.to}
-            AND entry.key LIKE 'contextualFallback%'
-            AND entry.key NOT IN (
-              'contextualFallbackEn', 'contextualFallbackMixed',
-              'contextualFallbackOther', 'contextualFallbackRu',
-              'contextualFallbackUnd'
-            )
+            AND entry.key IN (${Prisma.join(contextualFallbackCounterKeys)})
           UNION ALL
           SELECT 'contextual_language'::text AS family, entry.key AS code,
             entry.value::numeric AS quantity
@@ -565,12 +571,7 @@ export async function loadMemoryOperationalSnapshot(
           CROSS JOIN LATERAL jsonb_each_text(job."operationalCounters") AS entry(key, value)
           WHERE job."completedAt" >= ${input.from}
             AND job."completedAt" < ${input.to}
-            AND (entry.key LIKE 'contextualGenerated%'
-              OR entry.key IN (
-                'contextualFallbackEn', 'contextualFallbackMixed',
-                'contextualFallbackOther', 'contextualFallbackRu',
-                'contextualFallbackUnd'
-              ))
+            AND entry.key IN (${Prisma.join(contextualLanguageCounterKeys)})
         ) grouped
         GROUP BY family, code
         ORDER BY family, code

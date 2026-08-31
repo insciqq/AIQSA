@@ -22,6 +22,8 @@ import {
 } from "../lib/server/memory/purge/defaultPurge";
 import { createPrismaTemporaryChatDeletionHandler } from
   "../lib/server/memory/temporaryDeletion";
+import { resetMemoryLexicalProjection } from
+  "../lib/server/memory/searchProjection/repository";
 import { prisma } from "../lib/server/prisma";
 
 const providerCredentialNames = [
@@ -42,8 +44,13 @@ function assertIsolatedRuntime(): void {
   ) {
     throw new Error("memory_restore_reconciliation_not_authorized");
   }
-  if (providerCredentialNames.some((name) => Boolean(process.env[name]))) {
-    throw new Error("memory_restore_provider_credentials_forbidden");
+  const forbiddenProviderCredential = providerCredentialNames.find(
+    (name) => Boolean(process.env[name])
+  );
+  if (forbiddenProviderCredential) {
+    throw new Error(
+      `memory_restore_provider_credentials_forbidden_${forbiddenProviderCredential.toLowerCase()}`
+    );
   }
 
   const postgresService = process.env.AIQSA_RESTORE_POSTGRES_SERVICE;
@@ -98,6 +105,7 @@ async function reopenIncompleteCompletedDeletions(now: Date): Promise<void> {
 
 async function main(): Promise<void> {
   assertIsolatedRuntime();
+  const now = new Date();
   const storage = createS3StorageAdapter();
   const registry = new MemoryCoordinatorRegistry();
   const permanentChat = createPrismaPermanentChatDeletionHandler(storage, prisma);
@@ -113,7 +121,11 @@ async function main(): Promise<void> {
   }));
   registry.registerDeletion(createPrismaAccountMemoryDeletionHandler(prisma));
 
-  await reopenIncompleteCompletedDeletions(new Date());
+  // OpenSearch is excluded from backup authority. Replace restored historical
+  // projection work with a PostgreSQL snapshot before any deletion replay can
+  // append newer, ordered purge duties.
+  await resetMemoryLexicalProjection(prisma, { mode: "RESTORE", now });
+  await reopenIncompleteCompletedDeletions(now);
   const coordinator = new MemoryCoordinator({
     policy: { maxDeletionParallel: 1, maxJobParallel: 1 },
     registry,
@@ -122,7 +134,12 @@ async function main(): Promise<void> {
   await coordinator.reconcileNow();
   coordinator.stop();
 
-  const [unresolved, accountObligations] = await Promise.all([
+  const [
+    unresolved,
+    accountObligations,
+    claimedProjectionEvents,
+    readyProjectionStates
+  ] = await Promise.all([
     prisma.memoryDeletionOutbox.count({
       where: {
         state: {
@@ -132,9 +149,12 @@ async function main(): Promise<void> {
     }),
     prisma.memoryDeletionOutbox.count({
       where: { operation: "ACCOUNT_MEMORY_DELETE" }
-    })
+    }),
+    prisma.memoryLexicalProjectionEvent.count({ where: { state: "CLAIMED" } }),
+    prisma.memoryLexicalProjectionState.count({ where: { status: "READY" } })
   ]);
-  if (unresolved > 0 || accountObligations > 0) {
+  if (unresolved > 0 || accountObligations > 0 ||
+    claimedProjectionEvents > 0 || readyProjectionStates > 0) {
     throw new Error("memory_restore_reconciliation_pending");
   }
   console.error("AIQSA restore reconciliation passed.");

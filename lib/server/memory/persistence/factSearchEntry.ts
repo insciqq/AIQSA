@@ -1,17 +1,13 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type MemoryEmbeddingState } from "@prisma/client";
 import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
-import {
-  memoryRedactionHasMeaningfulRemainder,
-  redactMemorySecrets
-} from "../explicit/safety";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { loadMemoryReusableFactSourceSnapshots } from
   "../synthesis/authoritySnapshots";
-import { memorySha256, normalizeMemorySearchText } from "./lexical";
-import { memoryCanonicalGlobalScopePredicate } from "./scopes";
+import { buildMemoryFactSearchIdentity } from "./factSearchIdentity";
 import {
   requireActiveMemoryIndex,
-  type LockedMemorySettings
+  type LockedMemorySettings,
+  type MemoryActiveIndex
 } from "./transaction";
 
 type IndexableClassifiedFact = Readonly<{
@@ -38,8 +34,11 @@ export async function ensureClassifiedSearchEntry(
   settings: LockedMemorySettings,
   factVersionId: string,
   triggerIdentity: string,
-  now: Date
+  now: Date,
+  activeIndex?: MemoryActiveIndex
 ): Promise<void> {
+  const index = activeIndex ?? await requireActiveMemoryIndex(tx, settings);
+  if (!index) throw new Error("memory_active_generation_invalid");
   const [row] = await tx.$queryRaw<IndexableClassifiedFact[]>(Prisma.sql`
     SELECT
       fact."id" AS "factId", fact."canonicalKey", fact."category",
@@ -52,8 +51,6 @@ export async function ensureClassifiedSearchEntry(
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId"
       AND fact."id" = version."factId"
-      AND fact."currentVersionId" = version."id"
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId"
       AND scope."id" = fact."scopeId"
@@ -62,77 +59,111 @@ export async function ensureClassifiedSearchEntry(
       ON settings."userId" = version."userId"
     WHERE version."userId" = ${settings.userId}
       AND version."id" = ${factVersionId}
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND version."systemTo" IS NULL
       AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
-      AND version."safetyClassificationState" =
-        'CLASSIFIED'::"MemorySafetyClassificationState"
-      AND version."contentPurgedAt" IS NULL
-      AND version."displayText" IS NOT NULL
-      AND version."structuredValue" IS NOT NULL
-      AND ${memoryCanonicalGlobalScopePredicate()}
       AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
-        includePatterns: true
+        includePatterns: true,
+        lifecycle: "CURRENT_OR_HISTORICAL"
       })}
   `);
-  if (!row) return;
-  const index = await requireActiveMemoryIndex(tx, settings);
-  if (!index) throw new Error("memory_active_generation_invalid");
-  const redaction = redactMemorySecrets(row.displayText);
-  if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(row.displayText, redaction)) return;
-  const safeDisplayText = redaction.redactedText;
-  const normalizedSearchText = normalizeMemorySearchText(safeDisplayText);
-  if (!normalizedSearchText) return;
+  if (!row) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        factVersionId,
+        indexGenerationId: index.id,
+        userId: settings.userId
+      }
+    });
+    return;
+  }
   const snapshots = await loadMemoryReusableFactSourceSnapshots(
     tx,
     settings.userId,
     [row]
   );
   const sources = snapshots.get(factVersionId) ?? [];
-  if (row.sourceMode === "AUTOMATIC" && sources.length === 0) return;
+  const identity = buildMemoryFactSearchIdentity(row, sources);
+  if (!identity) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        factVersionId,
+        indexGenerationId: index.id,
+        userId: settings.userId
+      }
+    });
+    return;
+  }
   let entry = await tx.memorySearchEntry.findFirst({
-    select: { embeddingState: true, id: true },
+    select: {
+      embeddingState: true,
+      id: true,
+      languageCode: true,
+      normalizedSearchText: true,
+      safeContentHash: true,
+      safetyIdentitySnapshot: true,
+      sourceIdentitySnapshot: true,
+      suppressionIdentitySnapshot: true
+    },
     where: {
       factVersionId,
       indexGenerationId: index.id,
       userId: settings.userId
     }
   });
-  entry ??= await tx.memorySearchEntry.create({
-    data: {
-      embeddingState: index.indexMode === "HYBRID"
-        ? "PENDING"
-        : "NOT_APPLICABLE",
-      factVersionId,
-      indexGenerationId: index.id,
-      itemType: "FACT_VERSION",
-      languageCode: row.languageCode,
-      normalizedSearchText,
-      safeContentHash: memorySha256({
-        displayText: safeDisplayText,
-        structuredValue: row.structuredValue
-      }),
-      safetyIdentitySnapshot: memorySha256({
-        sensitivityClass: row.sensitivityClass,
-        sources
-      }),
-      sourceIdentitySnapshot: memorySha256({
-        factId: row.factId,
-        sourceMode: row.sourceMode,
-        sources,
-        versionId: row.versionId
-      }),
-      suppressionIdentitySnapshot: memorySha256({
-        canonicalKey: row.canonicalKey,
-        category: row.category,
-        normalizedValue: normalizedSearchText
-      }),
-      userId: settings.userId
-    },
-    select: { embeddingState: true, id: true }
-  });
-  if (entry.embeddingState === "PENDING") {
+  const embeddingInputChanged = entry !== null && (
+    entry.normalizedSearchText !== identity.normalizedSearchText ||
+    entry.safeContentHash !== identity.safeContentHash
+  );
+  const embeddingState: MemoryEmbeddingState = index.indexMode === "LEXICAL_ONLY"
+    ? "NOT_APPLICABLE"
+    : !entry || embeddingInputChanged || entry.embeddingState === "NOT_APPLICABLE"
+      ? "PENDING"
+      : entry.embeddingState;
+  const identityChanged = entry !== null && (
+    entry.languageCode !== identity.languageCode ||
+    entry.normalizedSearchText !== identity.normalizedSearchText ||
+    entry.safeContentHash !== identity.safeContentHash ||
+    entry.safetyIdentitySnapshot !== identity.safetyIdentitySnapshot ||
+    entry.sourceIdentitySnapshot !== identity.sourceIdentitySnapshot ||
+    entry.suppressionIdentitySnapshot !== identity.suppressionIdentitySnapshot
+  );
+  if (!entry) {
+    entry = await tx.memorySearchEntry.create({
+      data: {
+        ...identity,
+        embeddingState,
+        factVersionId,
+        indexGenerationId: index.id,
+        itemType: "FACT_VERSION",
+        userId: settings.userId
+      },
+      select: {
+        embeddingState: true,
+        id: true,
+        languageCode: true,
+        normalizedSearchText: true,
+        safeContentHash: true,
+        safetyIdentitySnapshot: true,
+        sourceIdentitySnapshot: true,
+        suppressionIdentitySnapshot: true
+      }
+    });
+  } else if (identityChanged || entry.embeddingState !== embeddingState) {
+    entry = await tx.memorySearchEntry.update({
+      data: { ...identity, embeddingState },
+      select: {
+        embeddingState: true,
+        id: true,
+        languageCode: true,
+        normalizedSearchText: true,
+        safeContentHash: true,
+        safetyIdentitySnapshot: true,
+        sourceIdentitySnapshot: true,
+        suppressionIdentitySnapshot: true
+      },
+      where: { id: entry.id }
+    });
+  }
+  if (entry.embeddingState === "PENDING" || entry.embeddingState === "FAILED") {
     await enqueueMemoryEmbeddingBatchItem(tx, settings, {
       entryId: entry.id,
       triggerIdentity

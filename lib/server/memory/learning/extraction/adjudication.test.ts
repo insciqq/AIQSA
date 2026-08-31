@@ -50,10 +50,13 @@ function candidate(
     expiresAt: null,
     futureUseful: true,
     id: "1".repeat(64),
+    identityProfile: "LEGACY_V1",
     identityKind: "SLOT",
     identityVersion: "slot-v2",
     importance: 0.65,
     languageCode: "und",
+    legacyCanonicalKey: "slot:v2:device:macbook:product_status:_",
+    legacyProposedValue: { schema: "product-status-v1", state: "owned" },
     modality: "STATE",
     negated: false,
     occurredAt: null,
@@ -80,6 +83,8 @@ function candidate(
     temporary: false,
     temporalNormalization: { kind: "NONE" },
     temporalResolutionEvidence: null,
+    unicodeCanonicalKey: "slot:v4:device:macbook:product_status:_",
+    unicodeProposedValue: { schema: "product-status-v1", state: "owned" },
     validFrom: null,
     validTo: null,
     ...overrides
@@ -106,6 +111,7 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
       text: "bounded current state"
     }],
     folderId: null,
+    identityProfile: "UNICODE_V2",
     inputHash: "a".repeat(64),
     messages: [{
       contentHash: memorySha256("opaque"),

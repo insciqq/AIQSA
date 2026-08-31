@@ -38,6 +38,7 @@ import {
 } from "./contracts";
 import {
   orderMemoryCandidatesByDistinctSourceFirst,
+  orderMemoryCandidatesWithLinkedEvidenceCoverage,
   orderMemoryCandidatesWithSoftSourceDiversity
 } from "./sourceDiversity";
 import {
@@ -280,7 +281,11 @@ function renderedEvidence(
   item: MemoryPackedItem,
   supportingEvidence = item.supportingEvidence ?? []
 ): string {
+  const claimState = item.itemType === "FACT_VERSION"
+    ? item.recordStatus
+    : "timeline_evidence";
   return safeJsonLine({
+    claim_state: claimState,
     derived: item.derived,
     document_time: renderedDate(item.documentTime),
     event_time: {
@@ -299,9 +304,9 @@ function renderedEvidence(
     source_authority: item.sourceAuthority,
     source_session_handle: item.sourceSessionHandle ?? "none",
     speaker_scope: item.speakerScope,
-    status: item.status,
     supporting_authoritative_evidence: [
       ...supportingEvidence.map((support) => ({
+        claim_state: "timeline_evidence",
         document_time: support.documentTime,
         evidence_type: "supporting_observation",
         raw_safe_evidence: support.rawSafeText,
@@ -310,6 +315,7 @@ function renderedEvidence(
         speaker_scope: "user"
       })),
       ...(item.patternSupportingEvidence ?? []).map((support) => ({
+        claim_state: "timeline_evidence",
         document_time: support.documentTime,
         evidence_type: "direct_pattern_support",
         raw_safe_evidence: support.rawSafeText,
@@ -351,6 +357,8 @@ function render(
   plan: MemoryRetrievalPlan,
   budgetProfile: MemoryContextBudgetProfile
 ): string {
+  const currentStateFold = plan.mode === "PAST_CHAT_SEARCH" &&
+    plan.temporalIntent === "CURRENT" && !plan.aggregationRequested;
   const lines = [
     contextPreamble,
     ...(items.some(({ item }) => item.itemType === "TOOL_EVENT")
@@ -359,14 +367,25 @@ function render(
     ...(items.some(({ item }) => item.evidenceType === "pattern")
       ? [patternPreamble]
       : []),
-    '<aiqsa_memory_evidence version="2">',
+    '<aiqsa_memory_evidence version="3">',
     safeJsonLine({
       aggregation_requested: plan.aggregationRequested,
       answer_focus: answerFocus(plan),
       budget_profile: budgetProfile.toLocaleLowerCase("und"),
       profile_inventory: plan.profileRequested,
+      state_resolution: currentStateFold
+        ? "latest_exact_slot"
+        : "none",
       temporal_intent: plan.temporalIntent.toLocaleLowerCase("und")
     }),
+    ...(currentStateFold
+      ? [
+          "CURRENT_STATE_FOLD_ORDER: dated timeline evidence is rendered old-to-new " +
+          "across source sessions. Apply only clear direct-user assertions matching " +
+          "the exact requested subject, predicate, and role; each later matching " +
+          "assertion replaces the earlier value. Unrelated evidence is not an update."
+        ]
+      : []),
     ...(plan.aggregationRequested ? [MEMORY_CONTEXT_AGGREGATION_GUIDANCE] : []),
     "EVIDENCE_ITEMS_JSONL",
     ...renderedEvidenceLines(items),
@@ -433,6 +452,31 @@ function chronologicalGroupOrder(items: readonly SectionedItem[]): readonly Sect
   });
 }
 
+function readerEvidenceOrder(
+  items: readonly SectionedItem[],
+  plan: MemoryRetrievalPlan
+): readonly SectionedItem[] {
+  const grouped = chronologicalGroupOrder(items);
+  if (plan.mode !== "PAST_CHAT_SEARCH" || plan.temporalIntent !== "CURRENT" ||
+    plan.aggregationRequested) return grouped;
+  const timeline = grouped.filter(({ item }) => item.itemType !== "FACT_VERSION")
+    .sort((left, right) => {
+      if (left.chronologyTime === null && right.chronologyTime === null) {
+        return left.selectionIndex - right.selectionIndex;
+      }
+      // An undated assertion cannot supersede dated evidence. Rendering it
+      // before the chronological fold also keeps its ambiguity visible.
+      if (left.chronologyTime === null) return -1;
+      if (right.chronologyTime === null) return 1;
+      return left.chronologyTime - right.chronologyTime ||
+        left.selectionIndex - right.selectionIndex;
+    });
+  let timelineOffset = 0;
+  return grouped.map((entry) => entry.item.itemType === "FACT_VERSION"
+    ? entry
+    : timeline[timelineOffset++] ?? entry);
+}
+
 function evidenceType(candidate: MemoryRankedCandidate, expansion: MemoryExpandedCandidate):
 MemoryPackedItem["evidenceType"] {
   if (candidate.itemType === "TOOL_EVENT") return "tool_observation";
@@ -465,13 +509,21 @@ MemoryPackedItem["sourceAuthority"] {
   }
 }
 
-function speakerScope(candidate: MemoryRankedCandidate): MemoryPackedItem["speakerScope"] {
+function speakerScope(
+  candidate: MemoryRankedCandidate,
+  expansion: MemoryExpandedCandidate
+): MemoryPackedItem["speakerScope"] {
   if (candidate.metadata.sourceAuthority === "SYNTHESIS") return "derived";
   if (candidate.itemType === "TOOL_EVENT") return "tool";
-  return candidate.itemType === "FACT_VERSION" ? "user" : "mixed_conversation";
+  if (candidate.itemType === "FACT_VERSION") return "user";
+  const user = /(?:^|\n)User:\s/u.test(expansion.safeText);
+  const nonUser = /(?:^|\n)(?:Assistant|Tool event):\s/u.test(expansion.safeText);
+  return user && !nonUser ? "user" : "mixed_conversation";
 }
 
-function evidenceStatus(candidate: MemoryRankedCandidate): MemoryPackedItem["status"] {
+function evidenceRecordStatus(
+  candidate: MemoryRankedCandidate
+): MemoryPackedItem["recordStatus"] {
   if (candidate.metadata.lifecycleState === "SUPERSEDED") return "superseded";
   return candidate.metadata.historical ? "historical" : "current";
 }
@@ -568,8 +620,8 @@ function packedItem(input: Readonly<{
     sourceSessionHandle: input.sourceSessionHandle,
     speakerScope: expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT"
       ? "derived"
-      : speakerScope(candidate),
-    status: evidenceStatus(candidate),
+      : speakerScope(candidate, expansion),
+    recordStatus: evidenceRecordStatus(candidate),
     supportingEvidence: Object.freeze((expansion.supportingEvidence ?? []).map((support) => ({
       documentTime: support.occurredFrom.toISOString(),
       itemId: support.itemId,
@@ -592,17 +644,24 @@ function packedItem(input: Readonly<{
 
 function sourceDiversityOrder(
   ranked: readonly MemoryRankedCandidate[],
-  strictCoverage: boolean
+  plan: MemoryRetrievalPlan
 ): readonly MemoryRankedCandidate[] {
-  const order = strictCoverage
+  const sourceChatId = (candidate: MemoryRankedCandidate): string | null =>
+    candidate.itemType === "FACT_VERSION"
+      ? null
+      : candidate.metadata.sourceChatId ?? `missing-source:${candidate.itemId}`;
+  if (plan.mode === "PAST_CHAT_SEARCH" && !plan.aggregationRequested &&
+    ranked.some((candidate) => candidate.historyEvidenceView === "USER_TESTIMONY")) {
+    return orderMemoryCandidatesWithLinkedEvidenceCoverage(
+      ranked,
+      sourceChatId,
+      (candidate) => candidate.historyEvidenceView === "USER_TESTIMONY"
+    );
+  }
+  const order = plan.mode === "HISTORY_OVERVIEW"
     ? orderMemoryCandidatesByDistinctSourceFirst
     : orderMemoryCandidatesWithSoftSourceDiversity;
-  return order(
-    ranked,
-    (candidate) => candidate.itemType === "FACT_VERSION"
-      ? null
-      : candidate.metadata.sourceChatId ?? `missing-source:${candidate.itemId}`
-  );
+  return order(ranked, sourceChatId);
 }
 
 function temporalReason(plan: MemoryRetrievalPlan): MemoryPackedItem["temporalReason"] {
@@ -718,7 +777,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     });
     const proposed = [...selected, entry];
     if (estimateApproxTokens(render(
-      chronologicalGroupOrder(proposed),
+      readerEvidenceOrder(proposed, input.plan),
       input.plan,
       defaults.profile
     )) > Math.min(MEMORY_CORE_CONTEXT_TARGET_TOKENS, targetTokens)) {
@@ -733,7 +792,7 @@ export function packMemoryPersonalContext(input: Readonly<{
   const coreTokens = selected.length === 0
     ? 0
     : estimateApproxTokens(render(
-        chronologicalGroupOrder(selected),
+        readerEvidenceOrder(selected, input.plan),
         input.plan,
         defaults.profile
       ));
@@ -744,7 +803,7 @@ export function packMemoryPersonalContext(input: Readonly<{
   let historyTokens = 0;
   for (const candidate of sourceDiversityOrder(
     input.ranked,
-    input.plan.mode === "HISTORY_OVERVIEW"
+    input.plan
   )) {
     if (candidate.metadata.sourceAuthority === "SYNTHESIS" &&
       !input.plan.includePatterns) {
@@ -861,7 +920,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       continue;
     }
     if (estimateApproxTokens(render(
-      chronologicalGroupOrder(proposed),
+      readerEvidenceOrder(proposed, input.plan),
       input.plan,
       defaults.profile
     )) > targetTokens) {
@@ -901,7 +960,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       text: null
     };
   }
-  const ordered = chronologicalGroupOrder(selected);
+  const ordered = readerEvidenceOrder(selected, input.plan);
   const text = render(
     ordered,
     input.plan,

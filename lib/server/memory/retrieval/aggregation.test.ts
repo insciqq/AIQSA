@@ -32,7 +32,7 @@ function item(index: number): MemoryPackedItem {
     sourceChatId: `source-${index}`,
     sourceSessionHandle: `S${index + 1}`,
     speakerScope: "mixed_conversation",
-    status: "current",
+    recordStatus: "current",
     supportingItemId: `digest-${index}`,
     temporalReason: "any",
     tier: "DYNAMIC",
@@ -204,21 +204,21 @@ describe("bounded Memory aggregation guide", () => {
 
   it("sums evidence-grounded aggregate quantities instead of counting summary groups", () => {
     const evidence = [
-      { ...item(0), exactSafeText: "completed twelve inspections" },
+      { ...item(0), exactSafeText: "completed 12 inspections" },
       { ...item(1), exactSafeText: "completed 7 repairs" },
-      { ...item(2), exactSafeText: "completed one follow-up" }
+      { ...item(2), exactSafeText: "completed 1 follow-up" }
     ];
     const context = pack([
       MEMORY_CONTEXT_AGGREGATION_GUIDANCE,
-      "- completed twelve inspections",
+      "- completed 12 inspections",
       "- completed 7 repairs",
-      "- completed one follow-up"
+      "- completed 1 follow-up"
     ].join("\n"), evidence);
     const result = applyMemoryAggregationPlan(context, {
       groups: [{
-        cardinalityEvidence: sourceCardinality(evidence[0]!, "twelve inspections"),
+        cardinalityEvidence: sourceCardinality(evidence[0]!, "12 inspections"),
         itemHandles: ["i0"],
-        occurrence: "twelve inspections",
+        occurrence: "12 inspections",
         role: "MEMBER"
       }, {
         cardinalityEvidence: sourceCardinality(evidence[1]!, "7 repairs"),
@@ -226,9 +226,9 @@ describe("bounded Memory aggregation guide", () => {
         occurrence: "7 repairs",
         role: "MEMBER"
       }, {
-        cardinalityEvidence: sourceCardinality(evidence[2]!, "one follow-up"),
+        cardinalityEvidence: sourceCardinality(evidence[2]!, "1 follow-up"),
         itemHandles: ["i2"],
-        occurrence: "one follow-up",
+        occurrence: "1 follow-up",
         role: "MEMBER"
       }],
       operation: "COUNT",

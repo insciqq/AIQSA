@@ -23,7 +23,7 @@ import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from
   "../history/sourceProjection";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
@@ -35,6 +35,8 @@ import {
 } from "../learning/extraction/contract";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
+import { PostgresLegacyMemoryLexicalCandidateProvider } from
+  "./lexical/postgresLegacyProvider";
 
 const fixtureNow = new Date("2026-08-10T12:00:00.000Z");
 const suffix = randomUUID();
@@ -113,7 +115,7 @@ async function activateLexicalGeneration(userId: string): Promise<string> {
       generation: 0,
       indexMode: "LEXICAL_ONLY",
       indexedThroughMemoryRevision: 0,
-      languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+      languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
       normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
       readyAt: fixtureNow,
       retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
@@ -1333,48 +1335,168 @@ describe("local Memory retrieval on PostgreSQL", () => {
     );
   });
 
-  it("retrieves EN/RU morphology and mixed transliterated names from stored projections", async () => {
-    const userId = await createOwner("memory-multilingual-lexical");
+  it("preserves the frozen PostgreSQL lexical candidate IDs, hashes, ranks, and order", async () => {
+    type RawCandidate = Readonly<{
+      backendScore: number;
+      matchedTermCount: number;
+      maximumMatchedTermLength: number;
+      rankWithinVariant: number;
+      safeContentHash: string;
+      searchEntryId: string;
+      variantOrdinal: number;
+    }>;
+    const terms = ["preferred", "editor"];
+    const variantOrdinals = [0, 1];
+    const expected = await prisma.$queryRaw<RawCandidate[]>(Prisma.sql`
+      WITH query_terms AS MATERIALIZED (
+        SELECT DISTINCT term, "variantOrdinal",
+          char_length(term)::integer AS "termLength",
+          plainto_tsquery('simple', term) AS query
+        FROM unnest(${terms}::text[], ${variantOrdinals}::integer[])
+          AS terms(term, "variantOrdinal")
+        WHERE plainto_tsquery('simple', term) <> ''::tsquery
+      ),
+      candidate_matches AS MATERIALIZED (
+        SELECT entry."id" AS "searchEntryId", entry."safeContentHash",
+          query_terms."variantOrdinal",
+          COUNT(*)::integer AS "matchedTermCount",
+          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+            "maximumMatchedTermLength",
+          COALESCE(SUM(ts_rank_cd(entry."searchVectorSimple", query_terms.query)),
+            0.0)::double precision AS "backendScore"
+        FROM "MemorySearchEntry" AS entry
+        INNER JOIN query_terms ON entry."searchVectorSimple" @@ query_terms.query
+        WHERE entry."userId" = ${fixture.userId}
+          AND entry."indexGenerationId" = ${fixture.generationId}
+          AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
+        GROUP BY entry."id", entry."safeContentHash", query_terms."variantOrdinal"
+      ),
+      ranked_entry_matches AS MATERIALIZED (
+        SELECT candidate_matches.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY candidate_matches."variantOrdinal"
+            ORDER BY candidate_matches."maximumMatchedTermLength" DESC,
+              candidate_matches."matchedTermCount" DESC,
+              candidate_matches."backendScore" DESC,
+              candidate_matches."searchEntryId"
+          )::integer AS "rankWithinVariant"
+        FROM candidate_matches
+      )
+      SELECT "searchEntryId", "safeContentHash", "variantOrdinal",
+        "rankWithinVariant", "matchedTermCount", "maximumMatchedTermLength",
+        "backendScore"
+      FROM ranked_entry_matches
+      WHERE "rankWithinVariant" <= 24
+      ORDER BY "rankWithinVariant", "variantOrdinal",
+        "maximumMatchedTermLength" DESC, "matchedTermCount" DESC,
+        "backendScore" DESC, "searchEntryId"
+    `);
+    const provider = new PostgresLegacyMemoryLexicalCandidateProvider(
+      prisma,
+      "FACT_FTS_SIMPLE"
+    );
+
+    const actual = await provider.search({
+      activeGenerationId: fixture.generationId,
+      analysisProfileVersion: MEMORY_LEXICAL_ANALYSIS_PROFILE,
+      candidateLimitPerVariant: 24,
+      deadlineAtMs: Date.now() + 1_000,
+      finalLimit: 12,
+      itemFamily: "FACT",
+      memoryRevisionSnapshot: 0,
+      userId: fixture.userId,
+      variants: [{
+        logicalTerms: [{
+          characterLength: 9,
+          ordinal: 0,
+          value: "preferred"
+        }],
+        normalizedText: "preferred",
+        ordinal: 0
+      }, {
+        logicalTerms: [{
+          characterLength: 6,
+          ordinal: 0,
+          value: "editor"
+        }],
+        normalizedText: "editor",
+        ordinal: 1
+      }]
+    });
+
+    expect(expected.length).toBeGreaterThan(0);
+    expect(actual.candidates.map(({ matchMode: _matchMode, ...candidate }) => candidate))
+      .toEqual(expected);
+    expect(actual.candidates.every(({ matchMode }) => matchMode === "UNICODE"))
+      .toBe(true);
+  });
+
+  it("retrieves a broad Unicode corpus through one generic lexical contract", async () => {
+    const userId = await createOwner("memory-language-neutral-lexical");
     const generationId = await activateLexicalGeneration(userId);
     const current = await createChatWithLeaf({
       sourceRevision: 0,
-      title: "Multilingual lexical request",
+      title: "Language-neutral lexical request",
       userId,
       userText: "Recall my editor and model notes."
     });
-    const enFactVersionId = await createFact({
-      canonicalKey: "lexical.editor.en",
-      displayText: "My preferred editor is Neovim.",
-      generationId,
-      languageCode: "en",
-      userId
-    });
-    const ruFactVersionId = await createFact({
-      canonicalKey: "lexical.editor.ru",
-      displayText: "Мой предпочтительный редактор — Helix.",
-      generationId,
-      languageCode: "ru",
-      userId
-    });
-    const mixedDisplayText = "Модель Qwen3 для проекта Москва называется «Зелёный-7».";
-    const mixedFactVersionId = await createFact({
-      canonicalKey: "lexical.model.mixed",
-      displayText: mixedDisplayText,
-      generationId,
+    const definitions = [{
+      canonicalKey: "lexical.latin",
+      displayText: "El proyecto usa el identificador CaféZorro-42.",
+      languageCode: "es-MX",
+      query: "CaféZorro-42"
+    }, {
+      canonicalKey: "lexical.cyrillic",
+      displayText: "Пројекат користи ознаку ЋирилицаЖирафа-43.",
+      languageCode: "sr-Cyrl",
+      query: "ЋирилицаЖирафа-43"
+    }, {
+      canonicalKey: "lexical.greek",
+      displayText: "Το έργο χρησιμοποιεί το αναγνωριστικό ΑθηνάΚήπος-44.",
+      languageCode: "el",
+      query: "ΑθηνάΚήπος-44"
+    }, {
+      canonicalKey: "lexical.arabic-hebrew",
+      displayText: "المشروع يحمل الرمز قمرحديقة-45 וגם תג גןירח.",
       languageCode: "und",
-      userId
-    });
+      query: "قمرحديقة-45"
+    }, {
+      canonicalKey: "lexical.indic",
+      displayText: "परियोजना का पहचानकर्ता नीलकमल-46 है।",
+      languageCode: "hi",
+      query: "नीलकमल-46"
+    }, {
+      canonicalKey: "lexical.cjk",
+      displayText: "東京計画の識別子は青い庭47です。",
+      languageCode: "ja",
+      query: "東京計画"
+    }, {
+      canonicalKey: "lexical.thai",
+      displayText: "โครงการช้างใช้รหัสสวนฟ้า48",
+      languageCode: "th",
+      query: "โครงการช้าง"
+    }, {
+      canonicalKey: "lexical.mixed",
+      displayText: "Модель Qwen3 для 東京 называется «Зелёный-49».",
+      languageCode: "x-arbitrary",
+      query: "Qwen3 東京 Зелёный-49"
+    }] as const;
+    const corpus = [] as Array<(typeof definitions)[number] & { factVersionId: string }>;
+    for (const definition of definitions) {
+      corpus.push({
+        ...definition,
+        factVersionId: await createFact({
+          canonicalKey: definition.canonicalKey,
+          displayText: definition.displayText,
+          generationId,
+          languageCode: definition.languageCode,
+          userId
+        })
+      });
+    }
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
 
-    for (const testCase of [{
-      expectedId: enFactVersionId,
-      lane: "FACT_FTS_ENGLISH" as const,
-      query: "preferring editors"
-    }, {
-      expectedId: ruFactVersionId,
-      lane: "FACT_FTS_RUSSIAN" as const,
-      query: "предпочтительные редакторы"
-    }]) {
+    for (const testCase of corpus) {
       const result = await repository.retrieve({
         assistantId: null,
         chatId: current.chatId,
@@ -1382,24 +1504,27 @@ describe("local Memory retrieval on PostgreSQL", () => {
         plan: planMemoryRetrieval({ currentUserText: testCase.query, now: fixtureNow }),
         userId
       });
-      const candidates = result.laneResults.find(({ lane }) =>
-        lane === testCase.lane)?.candidates ?? [];
-      expect(candidates.map(({ itemId }) => itemId)).toContain(testCase.expectedId);
-      expect(candidates.find(({ itemId }) => itemId === testCase.expectedId)?.itemType)
-        .toBe("FACT_VERSION");
+      const genericCandidates = result.laneResults
+        .filter(({ lane }) => lane === "FACT_LEXICAL_UNICODE" ||
+          lane === "FACT_LEXICAL_NGRAM")
+        .flatMap(({ candidates }) => candidates);
+      expect(result.laneResults.some(({ lane }) =>
+        /ENGLISH|RUSSIAN/u.test(lane))).toBe(false);
+      expect(genericCandidates.map(({ itemId }) => itemId))
+        .toContain(testCase.factVersionId);
     }
 
-    for (const query of ["Moskva", "Zeleniy", "Qwen3 Moskva Zeleniy-7"]) {
-      const result = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: planMemoryRetrieval({ currentUserText: query, now: fixtureNow }),
-        userId
-      });
-      expect(result.laneResults.find(({ lane }) => lane === "FACT_TRIGRAM")
-        ?.candidates.map(({ itemId }) => itemId)).toContain(mixedFactVersionId);
-    }
+    const transliterated = await repository.retrieve({
+      assistantId: null,
+      chatId: current.chatId,
+      now: fixtureNow,
+      plan: planMemoryRetrieval({ currentUserText: "Zeleniy", now: fixtureNow }),
+      userId
+    });
+    const mixedFactVersionId = corpus.at(-1)!.factVersionId;
+    expect(transliterated.laneResults.find(({ lane }) =>
+      lane === "FACT_LEXICAL_NGRAM")?.candidates.map(({ itemId }) => itemId))
+      .not.toContain(mixedFactVersionId);
 
     const projections = await prisma.$queryRaw<Array<{
       displayText: string;
@@ -1420,14 +1545,13 @@ describe("local Memory retrieval on PostgreSQL", () => {
         AND entry."factVersionId" = ${mixedFactVersionId}
     `);
     expect(projections).toEqual([expect.objectContaining({
-      displayText: mixedDisplayText,
-      normalizedSearchText: "модель qwen3 для проекта москва называется «зеленый-7»."
+      displayText: definitions.at(-1)!.displayText,
+      normalizedSearchText: "модель qwen3 для 東京 называется «зелёный-49»."
     })]);
     expect(projections[0]?.displayText).toContain("Зелёный");
-    expect(projections[0]?.normalizedSearchText).not.toContain("ё");
+    expect(projections[0]?.normalizedSearchText).toContain("ё");
     expect(projections[0]?.englishVector.length).toBeGreaterThan(0);
     expect(projections[0]?.russianVector).toContain("зелен");
-    expect(projections[0]?.trigramSearchText).toContain("moskva");
     expect(projections[0]?.trigramSearchText).toContain("zelenyy");
   });
 
@@ -1604,7 +1728,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId
       });
       expect(overview.laneResults.map(({ lane }) => lane)).toEqual([
-        "HISTORY_RECALL_FTS_SIMPLE",
+        "HISTORY_RECALL_LEXICAL_UNICODE",
         "HISTORY_RECALL_RECENT"
       ]);
       const overviewRanked = fuseMemoryRetrievalCandidates(
@@ -1655,9 +1779,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
         "HISTORY_RECALL_EXACT",
         "HISTORY_DIGEST_FTS_SIMPLE",
         "HISTORY_INTRA_CHAT_RAW",
-        "HISTORY_RECALL_FTS_SIMPLE",
-        "HISTORY_RECALL_FTS_ENGLISH",
-        "HISTORY_RECALL_TRIGRAM"
+        "HISTORY_RECALL_LEXICAL_UNICODE",
+        "HISTORY_RECALL_LEXICAL_NGRAM"
       ]);
       const targetedRanked = fuseMemoryRetrievalCandidates(
         targetedPlan,
@@ -1807,9 +1930,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
         "HISTORY_RECALL_EXACT",
         "HISTORY_DIGEST_FTS_SIMPLE",
         "HISTORY_INTRA_CHAT_RAW",
-        "HISTORY_RECALL_FTS_SIMPLE",
-        "HISTORY_RECALL_FTS_ENGLISH",
-        "HISTORY_RECALL_TRIGRAM"
+        "HISTORY_RECALL_LEXICAL_UNICODE",
+        "HISTORY_RECALL_LEXICAL_NGRAM"
       ]);
       const aggregationRanked = fuseMemoryRetrievalCandidates(
         aggregationPlan,
@@ -1871,7 +1993,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
         sourceRevision: 0,
         title: "Current temporal request",
         userId,
-        userText: "What happened yesterday?"
+        userText: "2026-08-09"
       });
       const inside = await createDigestHistoryChat({
         digestText: "Summary: The cedar rehearsal completed successfully.",
@@ -1898,7 +2020,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId: foreignUserId
       });
       const plan = planMemoryRetrieval({
-        currentUserText: "What happened yesterday?",
+        currentUserText: "2026-08-09",
         filters: { sourceKinds: ["HISTORY"] },
         mode: "PAST_CHAT_SEARCH",
         now: fixtureNow,
@@ -2425,7 +2547,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
           itemId: fixture.directUnindexedFactVersionId
         })
       ]));
-    expect(result.laneResults.find(({ lane }) => lane === "FACT_FTS_SIMPLE")?.candidates
+    expect(result.laneResults.find(({ lane }) => lane === "FACT_LEXICAL_UNICODE")?.candidates
       .map(({ itemId }) => itemId)).not.toContain(fixture.directUnindexedFactVersionId);
   });
 
@@ -2443,7 +2565,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       userId: fixture.userId
     });
 
-    expect(result.laneResults.find(({ lane }) => lane === "FACT_FTS_SIMPLE")?.candidates)
+    expect(result.laneResults.find(({ lane }) => lane === "FACT_LEXICAL_UNICODE")?.candidates)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ itemId: fixture.enFactVersionId })
       ]));
@@ -2482,7 +2604,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     );
     expect(irrelevantCandidates).toEqual([]);
     expect(irrelevantResult.laneResults.filter((lane) =>
-      lane.lane === "HISTORY_RECALL_EXACT" || lane.lane === "HISTORY_RECALL_FTS_SIMPLE")
+      lane.lane === "HISTORY_RECALL_EXACT" || lane.lane === "HISTORY_RECALL_LEXICAL_UNICODE")
       .flatMap((lane) => lane.candidates)).toEqual([]);
   });
 
@@ -2616,6 +2738,95 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId: fixture.userId
       });
       expect(result.laneResults.flatMap((lane) => lane.candidates)).toEqual([]);
+    } finally {
+      await prisma.memorySuppression.delete({ where: { id: suppression.id } });
+    }
+  });
+
+  it("rechecks a concurrent history pause against an already issued snapshot", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({
+      currentUserText: "миграции PostgreSQL",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now: fixtureNow,
+      temporalIntent: "ANY"
+    });
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+    try {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: false },
+        where: { userId: fixture.userId }
+      });
+      const paused = await repository.retrieve({
+        assistantId: null,
+        chatId: fixture.currentChatId,
+        now: fixtureNow,
+        plan,
+        sourceSnapshot: snapshot,
+        userId: fixture.userId
+      });
+      expect(paused.laneResults.flatMap(({ candidates }) => candidates)).toEqual([]);
+    } finally {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: true },
+        where: { userId: fixture.userId }
+      });
+    }
+  });
+
+  it("rechecks concurrent suppression expiry against an already issued snapshot", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const query = "миграции PostgreSQL";
+    const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+    const suppression = await prisma.memorySuppression.create({
+      data: {
+        deletionGeneration: 1,
+        expiresAt: new Date(Date.now() + 60_000),
+        fingerprintKeyVersion: "memory-test-v1",
+        normalizationVersion: "memory-search-normalization-v1",
+        scope: "ALL",
+        userId: fixture.userId
+      }
+    });
+    try {
+      const suppressed = await repository.retrieve({
+        assistantId: null,
+        chatId: fixture.currentChatId,
+        now: fixtureNow,
+        plan,
+        sourceSnapshot: snapshot,
+        userId: fixture.userId
+      });
+      expect(suppressed.laneResults.flatMap(({ candidates }) => candidates)).toEqual([]);
+
+      await prisma.memorySuppression.update({
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+        where: { id: suppression.id }
+      });
+      const restored = await repository.retrieve({
+        assistantId: null,
+        chatId: fixture.currentChatId,
+        now: fixtureNow,
+        plan,
+        sourceSnapshot: snapshot,
+        userId: fixture.userId
+      });
+      expect(restored.laneResults.flatMap(({ candidates }) =>
+        candidates.map(({ itemId }) => itemId))).toContain(fixture.validChunkId);
     } finally {
       await prisma.memorySuppression.delete({ where: { id: suppression.id } });
     }

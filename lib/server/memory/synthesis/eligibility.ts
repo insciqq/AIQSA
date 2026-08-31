@@ -331,7 +331,7 @@ export function memorySynthesisPatternAuthorityPredicate(
     AND ${version}."observedAt" IS NOT NULL
     AND ${version}."observedAt" >= ${settings}."synthesisEnabledAt"
     AND ${fact}."identityKind" = 'PROPOSITION'::"MemoryFactIdentityKind"
-    AND ${fact}."identityVersion" = 'proposition-v1'
+    AND ${fact}."identityVersion" IN ('proposition-v1', 'proposition-v2')
     AND ${fact}."subjectEntityId" IS NULL
     AND ${fact}."subjectKey" IS NULL
     AND ${fact}."predicateKey" IS NULL

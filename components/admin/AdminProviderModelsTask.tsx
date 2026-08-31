@@ -4,6 +4,8 @@ import {
   AdminProviderModelEditor,
   adminProviderAdapterLabel
 } from "@/components/admin/AdminProviderModelEditor";
+import { AdminProviderEmbeddingRouteEditor } from
+  "@/components/admin/AdminProviderEmbeddingRouteEditor";
 import { AdminProviderCapabilities } from "@/components/admin/AdminProviderCapabilities";
 import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import {
@@ -49,6 +51,9 @@ export function AdminProviderModelsTask({
   const editing = editingId && editingId !== "new"
     ? connection.models.find(({ id }) => id === editingId) ?? null
     : null;
+  const editingIsEmbedding = editing
+    ? (editing.modelClass ?? editing.draftConfig.modelClass ?? "answer") === "embedding"
+    : false;
   const embeddingPresets = embeddingPresetsForFamily(connection.family);
   const rerankerPresets = rerankerPresetsForFamily(connection.family);
 
@@ -91,6 +96,16 @@ export function AdminProviderModelsTask({
           targetDimension: preset.targetDimension
         },
         modelClass: "embedding",
+        ...(preset.providerFamily === "openrouter"
+          ? {
+              openRouterRouting: preset.openRouterProviderTags?.length
+                ? {
+                    mode: "only_selected" as const,
+                    providers: [...preset.openRouterProviderTags]
+                  }
+                : { mode: "automatic" as const, providers: [] as [] }
+            }
+          : {}),
         upstreamModelId: preset.upstreamModelId
       },
       displayName: preset.displayName
@@ -244,14 +259,25 @@ export function AdminProviderModelsTask({
 
         {editingId ? (
           <div className="border-b border-trace-subtle px-4 py-4">
-            <AdminProviderModelEditor
-              connection={connection}
-              controller={controller}
-              discovery={discovery}
-              editing={editing}
-              key={`${connection.id}:${editingId}:${editing?.draftVersion ?? 0}`}
-              onClose={() => setEditingId(null)}
-            />
+            {editingIsEmbedding && editing ? (
+              <AdminProviderEmbeddingRouteEditor
+                connection={connection}
+                controller={controller}
+                discovery={discovery}
+                key={`${connection.id}:${editingId}:${editing.draftVersion}`}
+                model={editing}
+                onClose={() => setEditingId(null)}
+              />
+            ) : (
+              <AdminProviderModelEditor
+                connection={connection}
+                controller={controller}
+                discovery={discovery}
+                editing={editing}
+                key={`${connection.id}:${editingId}:${editing?.draftVersion ?? 0}`}
+                onClose={() => setEditingId(null)}
+              />
+            )}
           </div>
         ) : null}
 
@@ -263,8 +289,13 @@ export function AdminProviderModelsTask({
               const isReranker = (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "reranker";
               const embedding = model.draftConfig.embedding;
               const routing = model.draftConfig.openRouterRouting;
+              const providerRoutingText = routing?.mode === "only_selected"
+                ? routing.providers.join(" → ")
+                : routing
+                  ? "Automatic routing"
+                  : null;
               const routingText = isEmbedding && embedding
-                ? `${embedding.nativeDimension.toLocaleString()} → ${embedding.targetDimension.toLocaleString()} dimensions`
+                ? `${embedding.nativeDimension.toLocaleString()} → ${embedding.targetDimension.toLocaleString()} dimensions${providerRoutingText ? ` · ${providerRoutingText}` : ""}`
                 : routing?.mode === "only_selected"
                 ? `${routing.providers.length} ordered provider${routing.providers.length === 1 ? "" : "s"}`
                 : routing
@@ -310,9 +341,15 @@ export function AdminProviderModelsTask({
                       <TestTube2 aria-hidden="true" className="size-3.5" />
                       Capabilities
                     </button>
-                    {!isEmbedding && !isReranker ? (
+                    {(!isEmbedding && !isReranker) || (
+                      isEmbedding &&
+                      connection.family === "openrouter" &&
+                      embedding?.providerFamily === "openrouter"
+                    ) ? (
                       <button
-                        aria-label={`Edit ${model.displayName}`}
+                        aria-label={isEmbedding
+                          ? `Edit ${model.displayName} provider route`
+                          : `Edit ${model.displayName}`}
                         className={quietButton}
                         disabled={controller.state.busy}
                         onClick={() => requestDraftDiscard(
@@ -322,7 +359,7 @@ export function AdminProviderModelsTask({
                         type="button"
                       >
                         <Pencil aria-hidden="true" className="size-3.5" />
-                        Edit
+                        {isEmbedding ? "Edit route" : "Edit"}
                       </button>
                     ) : null}
                     <button

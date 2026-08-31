@@ -1,0 +1,111 @@
+{
+  "contract": {
+    "analysisProfile": "memory-unicode-icu-v1",
+    "backendKind": "opensearch_icu_lexical_v1",
+    "mappingVersion": "memory-lexical-mapping-v1",
+    "normalizationVersion": "memory-unicode-query-analysis-v1",
+    "retrievalPipelineVersion": "memory-personal-retrieval-v63"
+  },
+  "corpus": {
+    "caseCount": 22,
+    "cohortCount": 16,
+    "fingerprint": "29d145b18baf803355a4fd52e710291c61f89d0d3ba549c4f630dd4c90b4ff5b",
+    "indexedDocuments": 7630,
+    "loadCorpusSizes": [32, 512, 2048, 5000]
+  },
+  "freshness": {
+    "canarySelectedOpenSearch": true,
+    "circuitSkippedToPostgres": true,
+    "dirtyAutomaticPostgresFallback": true,
+    "dirtyFallbackCandidatePresent": true,
+    "dirtyProjectionRejected": true,
+    "outageFailedClosed": true,
+    "outageRoutedToPostgres": true,
+    "readyProjectionFoundFreshItem": true
+  },
+  "gates": {
+    "authority": true,
+    "baselineContainmentOverall": true,
+    "baselineContainmentPerHighVolumeCohort": true,
+    "cohortRankOverlap": true,
+    "freshness": true,
+    "isolation": true,
+    "maximumBoundedRequest": true,
+    "rankOverlapMedian": true,
+    "relevantRecall": true,
+    "requestedModes": true
+  },
+  "generatedAt": "2026-08-31T05:27:03.661Z",
+  "load": {
+    "corpusRows": [
+      {
+        "maximumCandidates": 32,
+        "openSearchMs": { "p50": 30.388965000001917, "p95": 66.740726, "p99": 66.740726 },
+        "postgresMs": { "p50": 10.918620000000374, "p95": 21.51705199999924, "p99": 21.51705199999924 },
+        "size": 32
+      },
+      {
+        "maximumCandidates": 50,
+        "openSearchMs": { "p50": 10.321913000003406, "p95": 29.53069400000095, "p99": 29.53069400000095 },
+        "postgresMs": { "p50": 9.322775999997248, "p95": 28.436021000001347, "p99": 28.436021000001347 },
+        "size": 512
+      },
+      {
+        "maximumCandidates": 50,
+        "openSearchMs": { "p50": 10.96426799999972, "p95": 16.830056999999215, "p99": 16.830056999999215 },
+        "postgresMs": { "p50": 25.23602799999935, "p95": 32.12454499999876, "p99": 32.12454499999876 },
+        "size": 2048
+      },
+      {
+        "maximumCandidates": 50,
+        "openSearchMs": { "p50": 14.195852000000741, "p95": 30.42494699999952, "p99": 30.42494699999952 },
+        "postgresMs": { "p50": 56.23882799999774, "p95": 62.30559500000163, "p99": 62.30559500000163 },
+        "size": 5000
+      }
+    ],
+    "isolation": {
+      "concurrencyPerWorkload": 6,
+      "knowledgeConcurrentErrors": 0,
+      "knowledgeConcurrentP95Ms": 100.90891399999964,
+      "knowledgeStandaloneP95Ms": 50.28608700000041,
+      "memoryConcurrentErrors": 0,
+      "memoryConcurrentP95Ms": 201.28746299999693,
+      "memoryStandaloneP95Ms": 169.5750020000014,
+      "searchesPerWorkload": 32
+    }
+  },
+  "parity": {
+    "baselineCaseContainmentRate": 1,
+    "baselineNonEmptyCases": 22,
+    "expectedModePassRate": 1,
+    "failedCaseKeys": [],
+    "firstRelevantReciprocalRankDeltaMedian": 0,
+    "rankOverlapReviews": [
+      {
+        "cohort": "Spanish",
+        "disposition": "ADDITIVE_NO_BASELINE_OR_RELEVANT_RANK_REGRESSION"
+      },
+      {
+        "cohort": "CJK",
+        "disposition": "ADDITIVE_NO_BASELINE_OR_RELEVANT_RANK_REGRESSION"
+      },
+      {
+        "cohort": "mixed-script",
+        "disposition": "ADDITIVE_NO_BASELINE_OR_RELEVANT_RANK_REGRESSION"
+      },
+      {
+        "cohort": "cross-script-transliteration",
+        "disposition": "ADDITIVE_NO_BASELINE_OR_RELEVANT_RANK_REGRESSION"
+      }
+    ],
+    "relevantRecall": 1,
+    "top10JaccardMedian": 1
+  },
+  "passed": true,
+  "privacy": {
+    "contentFieldsEmitted": false,
+    "opaqueEntryIdentitiesEmitted": false,
+    "syntheticCorpusOnly": true
+  },
+  "version": "memory-opensearch-shadow-v2"
+}

@@ -14,6 +14,7 @@ export type MemoryDestructiveSourceBarrierSnapshot = Readonly<{
 }>;
 
 type JoinedHistorySourceAliases = Readonly<{
+  boundedCandidateSourceLookup?: boolean;
   chat: "chat" | "dependency_source_chat" | "source_chat";
   checkpoint: "checkpoint" | "dependency_checkpoint";
 }>;
@@ -79,6 +80,19 @@ function memoryHistorySourceAuthorityPredicate(
     ? `"MemoryRecallChunkMessage"`
     : `"MemoryRecallRoundMessage"`);
   const sourceMapId = Prisma.raw(kind === "CHUNK" ? `"chunkId"` : `"roundId"`);
+  const authoritySourceMap = aliases?.boundedCandidateSourceLookup
+    ? Prisma.sql`LATERAL (
+      SELECT bounded_source_map."userId", bounded_source_map."chatId",
+          bounded_source_map."messageId",
+          bounded_source_map."sourceMessageUpdatedAt",
+          bounded_source_map.${sourceMapId}
+        FROM ${sourceMap} AS bounded_source_map
+        WHERE bounded_source_map.${sourceMapId} = ${source}."id"
+          AND bounded_source_map."userId" = ${source}."userId"
+          AND bounded_source_map."chatId" = ${source}."chatId"
+        OFFSET 0
+      ) AS authority_source_map`
+    : Prisma.sql`${sourceMap} AS authority_source_map`;
   const authority = Prisma.sql`
     ${chat}."userId" = ${source}."userId"
     AND ${chat}."id" = ${source}."chatId"
@@ -90,14 +104,14 @@ function memoryHistorySourceAuthorityPredicate(
     AND ${checkpoint}."lastIndexedMessageId" = ${checkpoint}."activeLeafMessageId"
     AND ${checkpoint}."status" = 'READY'::"MemoryHistoryCheckpointStatus"
     AND EXISTS (
-      SELECT 1 FROM ${sourceMap} AS authority_source_map
+      SELECT 1 FROM ${authoritySourceMap}
       WHERE authority_source_map."userId" = ${source}."userId"
         AND authority_source_map."chatId" = ${source}."chatId"
         AND authority_source_map.${sourceMapId} = ${source}."id"
     )
     AND NOT EXISTS (
       SELECT 1
-      FROM ${sourceMap} AS authority_source_map
+      FROM ${authoritySourceMap}
       WHERE authority_source_map."userId" = ${source}."userId"
         AND authority_source_map."chatId" = ${source}."chatId"
         AND authority_source_map.${sourceMapId} = ${source}."id"

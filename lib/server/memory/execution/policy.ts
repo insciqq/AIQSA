@@ -207,10 +207,10 @@ function systemFailure(
   return resolution.code;
 }
 
-export function memoryVectorSpaceFingerprint(
-  target: ResolvedMemoryExecutionTarget
+export function memoryProviderSnapshotVectorSpaceFingerprint(
+  snapshot: ProviderExecutionSnapshot
 ): string | null {
-  const model = target.snapshot.model;
+  const model = snapshot.model;
   if (
     model.adapterKind !== "openai_embeddings_compatible" ||
     model.modelClass !== "embedding" ||
@@ -220,11 +220,22 @@ export function memoryVectorSpaceFingerprint(
   }
   return memoryExecutionSha256({
     adapterKind: model.adapterKind,
-    deploymentId: target.snapshot.providerModelId,
-    embedding: model.embedding,
-    schemaVersion: 1,
+    deploymentId: snapshot.providerModelId,
+    documentEmbedding: {
+      nativeDimension: model.embedding.nativeDimension,
+      providerFamily: model.embedding.providerFamily,
+      supportsMrl: model.embedding.supportsMrl,
+      targetDimension: model.embedding.targetDimension
+    },
+    schemaVersion: 2,
     upstreamModelId: model.upstreamModelId
   });
+}
+
+export function memoryVectorSpaceFingerprint(
+  target: ResolvedMemoryExecutionTarget
+): string | null {
+  return memoryProviderSnapshotVectorSpaceFingerprint(target.snapshot);
 }
 
 export async function resolveCurrentMemoryUtilityPolicy(

@@ -24,8 +24,13 @@ function assertIsolatedRuntime(): void {
   ) {
     throw new Error("knowledge_restore_reconciliation_not_authorized");
   }
-  if (providerCredentialNames.some((name) => Boolean(process.env[name]))) {
-    throw new Error("knowledge_restore_provider_credentials_forbidden");
+  const forbiddenProviderCredential = providerCredentialNames.find(
+    (name) => Boolean(process.env[name])
+  );
+  if (forbiddenProviderCredential) {
+    throw new Error(
+      `knowledge_restore_provider_credentials_forbidden_${forbiddenProviderCredential.toLowerCase()}`
+    );
   }
   const postgresService = process.env.AIQSA_RESTORE_POSTGRES_SERVICE;
   const minioService = process.env.AIQSA_RESTORE_MINIO_SERVICE;

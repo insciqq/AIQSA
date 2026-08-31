@@ -1056,10 +1056,85 @@ describe("AdminProvidersSection", () => {
             targetDimension: 1_536
           },
           modelClass: "embedding",
+          openRouterRouting: {
+            mode: "only_selected",
+            providers: ["nebius", "deepinfra"]
+          },
           upstreamModelId: "qwen/qwen3-embedding-8b"
         }),
         displayName: "Qwen3 Embedding 8B"
       }
+    ));
+  });
+
+  it("edits an embedding provider route as an ordered primary and fallback chain", async () => {
+    const qwenModel = providerModel({
+      displayName: "Qwen3 Embedding 8B",
+      draftConfig: {
+        adapterKind: "openai_embeddings_compatible",
+        answerSelectable: false,
+        capabilities: {
+          contextWindow: 32_768,
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          streaming: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        embedding: {
+          nativeDimension: 4_096,
+          providerFamily: "openrouter",
+          queryInstructionTemplate: "Query: {text}",
+          supportsMrl: true,
+          targetDimension: 1_536
+        },
+        modelClass: "embedding",
+        openRouterRouting: {
+          mode: "only_selected",
+          providers: ["nebius", "deepinfra"]
+        },
+        upstreamModelId: "qwen/qwen3-embedding-8b"
+      },
+      id: "qwen-embedding"
+    });
+    const qwenConnection = { ...connection, models: [qwenModel] };
+    const view = controller();
+    view.state.connections = [qwenConnection];
+    view.state.selectedConnection = qwenConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Models");
+    expect(screen.getByText(/nebius → deepinfra/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", {
+      name: "Edit Qwen3 Embedding 8B provider route"
+    }));
+
+    await waitFor(() => expect(view.actions.discoverEndpoints).toHaveBeenCalledWith(
+      "connection-1",
+      "credential-1",
+      "qwen/qwen3-embedding-8b"
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Move deepinfra up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save provider route" }));
+
+    await waitFor(() => expect(view.actions.updateModel).toHaveBeenCalledWith(
+      "connection-1",
+      "qwen-embedding",
+      expect.objectContaining({
+        action: "update",
+        configuration: expect.objectContaining({
+          openRouterRouting: {
+            mode: "only_selected",
+            providers: ["deepinfra", "nebius"]
+          }
+        }),
+        expectedDraftVersion: 1
+      }),
+      expect.stringContaining("provider route saved")
     ));
   });
 

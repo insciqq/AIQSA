@@ -14,7 +14,7 @@ import {
 import { memoryPersonalFactEvidencePredicate } from "../../memory/persistence/eligibility";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../../memory/persistence/lexical";
@@ -66,7 +66,7 @@ function generationConfigurationCurrent(generation: Readonly<{
     generation.state !== "ACTIVE" ||
     generation.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
     generation.contextualKeyPolicyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
-    generation.languageProfile !== MEMORY_LEXICAL_LANGUAGE_PROFILE ||
+    generation.languageProfile !== MEMORY_LEXICAL_ANALYSIS_PROFILE ||
     generation.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
     generation.roundProjectionVersion !== MEMORY_RECALL_ROUND_PROJECTION_VERSION
   ) {

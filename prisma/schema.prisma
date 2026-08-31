@@ -610,6 +610,29 @@ enum MemoryEmbeddingBatchItemState {
   OUTCOME_UNKNOWN
 }
 
+enum MemoryLexicalProjectionOperation {
+  SYNC_ENTRY
+  DELETE_ENTRY
+  PURGE_GENERATION
+  PURGE_USER
+}
+
+enum MemoryLexicalProjectionEventState {
+  PENDING
+  CLAIMED
+  RETRY_WAIT
+  SUCCEEDED
+  BLOCKED_REQUIRES_ADMIN
+}
+
+enum MemoryLexicalProjectionStatus {
+  BUILDING
+  CATCHING_UP
+  READY
+  DEGRADED
+  RETIRED
+}
+
 enum MemoryHistoryRunState {
   RUNNING
   COMPLETE
@@ -1675,25 +1698,25 @@ model KnowledgeSourceIndexArtifact {
 }
 
 model KnowledgePdfProcessingAttempt {
-  id               String                             @id @default(uuid())
-  sourceArtifactId String
-  sourceVersionId  String
-  processingGeneration Int                            @default(0)
-  batchIndex       Int
-  mode             KnowledgePdfProcessingMode
-  pageStart        Int
-  pageEnd          Int
-  requestDigest    String                             @db.Char(64)
-  state            KnowledgePdfProcessingAttemptState @default(reserved)
-  resultText       String?
-  resultChecksum   String?                            @db.Char(64)
-  usage            Json?
-  dispatchedAt     DateTime?
-  settledAt        DateTime?
-  createdAt        DateTime                           @default(now())
-  updatedAt        DateTime                           @updatedAt
-  sourceArtifact   KnowledgeSourceIndexArtifact       @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgePdfAttempt_source_artifact_fkey")
-  usageEvent       UsageEvent?
+  id                   String                             @id @default(uuid())
+  sourceArtifactId     String
+  sourceVersionId      String
+  processingGeneration Int                                @default(0)
+  batchIndex           Int
+  mode                 KnowledgePdfProcessingMode
+  pageStart            Int
+  pageEnd              Int
+  requestDigest        String                             @db.Char(64)
+  state                KnowledgePdfProcessingAttemptState @default(reserved)
+  resultText           String?
+  resultChecksum       String?                            @db.Char(64)
+  usage                Json?
+  dispatchedAt         DateTime?
+  settledAt            DateTime?
+  createdAt            DateTime                           @default(now())
+  updatedAt            DateTime                           @updatedAt
+  sourceArtifact       KnowledgeSourceIndexArtifact       @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgePdfAttempt_source_artifact_fkey")
+  usageEvent           UsageEvent?
 
   @@unique([sourceArtifactId, processingGeneration, batchIndex], map: "KnowledgePdfAttempt_artifact_generation_batch_key")
   @@index([sourceVersionId, sourceArtifactId], map: "KnowledgePdfAttempt_source_artifact_idx")
@@ -1729,82 +1752,82 @@ model KnowledgeHierarchicalIndexArtifact {
 }
 
 model KnowledgeSearchProjection {
-  id                       String                         @id @default(uuid()) @db.Uuid
-  indexArtifactId          String                         @unique
-  backendKind              String                         @db.VarChar(32)
-  mappingVersion           Int
-  projectionFingerprint    String                         @db.Char(64)
-  state                    KnowledgeSearchProjectionState @default(PENDING)
-  expectedPassageCount     Int
-  indexedPassageCount      Int                            @default(0)
-  attemptCount             Int                            @default(0)
-  claimToken               String?                        @db.VarChar(128)
-  leaseExpiresAt           DateTime?
-  nextAttemptAt            DateTime                       @default(now())
-  lastErrorCode            String?                        @db.VarChar(64)
-  startedAt                DateTime?
-  readyAt                  DateTime?
-  deleteCompletedAt        DateTime?
-  createdAt                DateTime                       @default(now())
-  updatedAt                DateTime                       @updatedAt
-  indexArtifact            KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  id                    String                             @id @default(uuid()) @db.Uuid
+  indexArtifactId       String                             @unique
+  backendKind           String                             @db.VarChar(32)
+  mappingVersion        Int
+  projectionFingerprint String                             @db.Char(64)
+  state                 KnowledgeSearchProjectionState     @default(PENDING)
+  expectedPassageCount  Int
+  indexedPassageCount   Int                                @default(0)
+  attemptCount          Int                                @default(0)
+  claimToken            String?                            @db.VarChar(128)
+  leaseExpiresAt        DateTime?
+  nextAttemptAt         DateTime                           @default(now())
+  lastErrorCode         String?                            @db.VarChar(64)
+  startedAt             DateTime?
+  readyAt               DateTime?
+  deleteCompletedAt     DateTime?
+  createdAt             DateTime                           @default(now())
+  updatedAt             DateTime                           @updatedAt
+  indexArtifact         KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 
   @@index([state, nextAttemptAt, leaseExpiresAt, createdAt], map: "KnowledgeSearchProjection_queue_idx")
 }
 
 model KnowledgeArtifactDocumentIndex {
-  indexArtifactId     String                             @id
-  sourceName          String
-  fileName            String
-  title               String?
-  description         String                             @default("")
-  tags                String[]                           @default([])
-  tagsText            String                             @default("")
-  languages           String[]                           @default([])
-  documentType        String                             @db.VarChar(255)
-  pageCount           Int
-  summary             String                             @default("")
-  outline             String[]                           @default([])
-  outlineText         String                             @default("")
-  keywords            String[]                           @default([])
-  keywordsText        String                             @default("")
-  entities            String[]                           @default([])
-  entitiesText        String                             @default("")
-  metadataText        String                             @default("")
-  contentHash         String                             @db.Char(64)
-  simpleSearchVector  Unsupported("tsvector")?
-  createdAt           DateTime                           @default(now())
-  indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KADI_index_artifact_fkey")
+  indexArtifactId    String                             @id
+  sourceName         String
+  fileName           String
+  title              String?
+  description        String                             @default("")
+  tags               String[]                           @default([])
+  tagsText           String                             @default("")
+  languages          String[]                           @default([])
+  documentType       String                             @db.VarChar(255)
+  pageCount          Int
+  summary            String                             @default("")
+  outline            String[]                           @default([])
+  outlineText        String                             @default("")
+  keywords           String[]                           @default([])
+  keywordsText       String                             @default("")
+  entities           String[]                           @default([])
+  entitiesText       String                             @default("")
+  metadataText       String                             @default("")
+  contentHash        String                             @db.Char(64)
+  simpleSearchVector Unsupported("tsvector")?
+  createdAt          DateTime                           @default(now())
+  indexArtifact      KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KADI_index_artifact_fkey")
 }
 
 model KnowledgeArtifactSectionIndex {
-  id                  String                             @id
-  indexArtifactId     String
-  ordinal             Int
-  label               String
-  headingPath         String[]                           @default([])
-  headingText         String                             @default("")
-  page                Int
-  pageEnd             Int
-  summary             String                             @default("")
-  keywords            String[]                           @default([])
-  keywordsText        String                             @default("")
-  entities            String[]                           @default([])
-  entitiesText        String                             @default("")
-  languages           String[]                           @default([])
-  passageStart        Int
-  passageEnd          Int
-  fileName            String
-  documentTitle       String                             @default("")
-  sourceDescription   String                             @default("")
-  tags                String[]                           @default([])
-  tagsText            String                             @default("")
-  contentHash         String                             @db.Char(64)
-  simpleSearchVector  Unsupported("tsvector")?
-  createdAt           DateTime                           @default(now())
-  indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KASI_index_artifact_fkey")
-  passages            KnowledgeArtifactPassageIndex[]
-  exactEntries        KnowledgeArtifactExactEntry[]
+  id                 String                             @id
+  indexArtifactId    String
+  ordinal            Int
+  label              String
+  headingPath        String[]                           @default([])
+  headingText        String                             @default("")
+  page               Int
+  pageEnd            Int
+  summary            String                             @default("")
+  keywords           String[]                           @default([])
+  keywordsText       String                             @default("")
+  entities           String[]                           @default([])
+  entitiesText       String                             @default("")
+  languages          String[]                           @default([])
+  passageStart       Int
+  passageEnd         Int
+  fileName           String
+  documentTitle      String                             @default("")
+  sourceDescription  String                             @default("")
+  tags               String[]                           @default([])
+  tagsText           String                             @default("")
+  contentHash        String                             @db.Char(64)
+  simpleSearchVector Unsupported("tsvector")?
+  createdAt          DateTime                           @default(now())
+  indexArtifact      KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KASI_index_artifact_fkey")
+  passages           KnowledgeArtifactPassageIndex[]
+  exactEntries       KnowledgeArtifactExactEntry[]
 
   @@unique([indexArtifactId, ordinal], map: "KASI_artifact_ordinal_key")
   @@unique([indexArtifactId, id], map: "KASI_artifact_id_key")
@@ -1812,38 +1835,38 @@ model KnowledgeArtifactSectionIndex {
 }
 
 model KnowledgeArtifactPassageIndex {
-  id                  String                             @id
-  indexArtifactId     String
-  sectionId           String
-  ordinal             Int
-  page                Int
-  pageEnd             Int
-  headingPath         String[]                           @default([])
-  headingText         String                             @default("")
-  text                String
-  contextPrefix       String                             @default("")
-  documentContext     Json?
+  id                String                             @id
+  indexArtifactId   String
+  sectionId         String
+  ordinal           Int
+  page              Int
+  pageEnd           Int
+  headingPath       String[]                           @default([])
+  headingText       String                             @default("")
+  text              String
+  contextPrefix     String                             @default("")
+  documentContext   Json?
   /// Structured layout identity for current builds; legacy rows resolve layout
   /// from documentContext or the retired contextPrefix markers at read time.
-  layoutKind          String?                            @db.VarChar(32)
-  fileName            String
-  sourceName          String
-  documentTitle       String                             @default("")
-  sourceDescription   String                             @default("")
-  tags                String[]                           @default([])
-  tagsText            String                             @default("")
-  languages           String[]                           @default([])
-  contentHash         String                             @db.Char(64)
-  embeddingTextHash   String                             @db.Char(64)
-  sourceBlockStart    Int
-  sourceBlockEnd      Int
-  sourceBlockIds      String[]                           @default([])
-  tokenCount          Int
-  createdAt           DateTime                           @default(now())
-  indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAPI_index_artifact_fkey")
-  section             KnowledgeArtifactSectionIndex      @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageIndex_section_fkey")
-  embedding           KnowledgeArtifactPassageEmbedding?
-  exactEntries        KnowledgeArtifactExactEntry[]
+  layoutKind        String?                            @db.VarChar(32)
+  fileName          String
+  sourceName        String
+  documentTitle     String                             @default("")
+  sourceDescription String                             @default("")
+  tags              String[]                           @default([])
+  tagsText          String                             @default("")
+  languages         String[]                           @default([])
+  contentHash       String                             @db.Char(64)
+  embeddingTextHash String                             @db.Char(64)
+  sourceBlockStart  Int
+  sourceBlockEnd    Int
+  sourceBlockIds    String[]                           @default([])
+  tokenCount        Int
+  createdAt         DateTime                           @default(now())
+  indexArtifact     KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAPI_index_artifact_fkey")
+  section           KnowledgeArtifactSectionIndex      @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageIndex_section_fkey")
+  embedding         KnowledgeArtifactPassageEmbedding?
+  exactEntries      KnowledgeArtifactExactEntry[]
 
   @@unique([indexArtifactId, ordinal], map: "KAPI_artifact_ordinal_key")
   @@unique([indexArtifactId, id], map: "KAPI_artifact_id_key")
@@ -2889,36 +2912,36 @@ model ModelRunToolCall {
 }
 
 model KnowledgeRun {
-  id                  String                      @id @default(uuid())
-  modelRunId          String
-  modelRunToolCallId  String                      @unique
-  retrievalSessionId  String?
-  invocationOrdinal   Int
-  operation           String                      @default("search") @db.VarChar(32)
-  query               String
-  outcome             KnowledgeRunOutcome
-  fusion              String                      @db.VarChar(32)
-  candidateLimit      Int
-  resultLimit         Int
-  candidateCount      Int
-  baseEvidence        Json
-  results             Json
-  providerText        String
-  embeddingUsage      Json
-  durationMs          Int
-  failureCode         String?                     @db.VarChar(128)
-  budgetEvidence      Json                        @default("{}")
+  id                     String                      @id @default(uuid())
+  modelRunId             String
+  modelRunToolCallId     String                      @unique
+  retrievalSessionId     String?
+  invocationOrdinal      Int
+  operation              String                      @default("search") @db.VarChar(32)
+  query                  String
+  outcome                KnowledgeRunOutcome
+  fusion                 String                      @db.VarChar(32)
+  candidateLimit         Int
+  resultLimit            Int
+  candidateCount         Int
+  baseEvidence           Json
+  results                Json
+  providerText           String
+  embeddingUsage         Json
+  durationMs             Int
+  failureCode            String?                     @db.VarChar(128)
+  budgetEvidence         Json                        @default("{}")
   lexicalBackendEvidence Json?
-  readReceipt         Json?
-  receiptVersion      Int?
-  budgetReservationId String?                     @unique
-  createdAt           DateTime                    @default(now())
-  updatedAt           DateTime                    @updatedAt
-  modelRun            ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  modelRunToolCall    ModelRunToolCall            @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
-  retrievalSession    KnowledgeRetrievalSession?  @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  evidenceLinks       KnowledgeRunEvidence[]
-  budgetReservation   KnowledgeBudgetReservation? @relation(fields: [modelRunId, modelRunToolCallId, budgetReservationId], references: [modelRunId, modelRunToolCallId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRun_budgetReservation_fkey")
+  readReceipt            Json?
+  receiptVersion         Int?
+  budgetReservationId    String?                     @unique
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+  modelRun               ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall       ModelRunToolCall            @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
+  retrievalSession       KnowledgeRetrievalSession?  @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceLinks          KnowledgeRunEvidence[]
+  budgetReservation      KnowledgeBudgetReservation? @relation(fields: [modelRunId, modelRunToolCallId, budgetReservationId], references: [modelRunId, modelRunToolCallId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRun_budgetReservation_fkey")
 
   @@unique([modelRunId, modelRunToolCallId])
   @@unique([modelRunId, budgetReservationId])
@@ -3156,17 +3179,17 @@ model KnowledgeEvidenceDispatchManifestExclusion {
 }
 
 model KnowledgeRunScope {
-  modelRunId          String   @id
-  selection           Json
-  resolvedBaseCount   Int
-  resolvedSourceCount Int
+  modelRunId            String   @id
+  selection             Json
+  resolvedBaseCount     Int
+  resolvedSourceCount   Int
   sourceBindingStrategy String   @default("eager_v1") @db.VarChar(24)
-  exclusions          Json     @default("[]")
-  budgetPolicy        Json
-  answerPolicy        Json     @default("{\"version\":1,\"revision\":1,\"maximumKnowledgeSearches\":12,\"fullContextThresholdBasisPoints\":7000}")
-  answerRoute         String   @default("rag_v1") @db.VarChar(32)
-  createdAt           DateTime @default(now())
-  modelRun            ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  exclusions            Json     @default("[]")
+  budgetPolicy          Json
+  answerPolicy          Json     @default("{\"version\":1,\"revision\":1,\"maximumKnowledgeSearches\":12,\"fullContextThresholdBasisPoints\":7000}")
+  answerRoute           String   @default("rag_v1") @db.VarChar(32)
+  createdAt             DateTime @default(now())
+  modelRun              ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
 }
 
 model KnowledgeRetrievalSession {
@@ -4264,6 +4287,24 @@ model MemoryFact {
   @@index([userId, subjectEntityId, predicateKey, dimensionKey])
 }
 
+/// Content-free dual-read/collision ledger for versioned Memory identity.
+/// Canonical keys and user content are never persisted in this projection.
+model MemoryIdentityCompatibility {
+  id               String   @id @db.Char(64)
+  userId           String
+  namespace        String   @db.VarChar(32)
+  containerId      String   @db.VarChar(256)
+  legacyKeyHash    String   @db.Char(64)
+  unicodeKeyHash   String   @db.Char(64)
+  firstObservedAt  DateTime @default(now())
+  lastObservedAt   DateTime @default(now())
+  observationCount Int      @default(1)
+
+  @@unique([userId, namespace, containerId, legacyKeyHash, unicodeKeyHash], map: "MemoryIdentityCompatibility_mapping_key")
+  @@index([userId, namespace, containerId, legacyKeyHash], map: "MemoryIdentityCompatibility_legacy_idx")
+  @@index([userId, namespace, containerId, unicodeKeyHash], map: "MemoryIdentityCompatibility_unicode_idx")
+}
+
 model MemoryFactVersion {
   id                             String                          @id @default(uuid())
   userId                         String
@@ -4780,6 +4821,66 @@ model MemorySearchEntry {
   @@index([userId, recallRoundId])
   @@index([userId, recallRoundSegmentId])
   @@index([userId, toolEventId])
+}
+
+/// Durable, content-free work for the derived Memory lexical OpenSearch
+/// projection. `sequence` is also the signed-64 external document version.
+model MemoryLexicalProjectionEvent {
+  sequence               BigInt                            @id @default(autoincrement())
+  id                     String                            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                 String
+  indexGenerationId      String?
+  searchEntryId          String?
+  operation              MemoryLexicalProjectionOperation
+  memoryRevisionSnapshot Int
+  idempotencyFingerprint String                            @unique @db.VarChar(128)
+  state                  MemoryLexicalProjectionEventState @default(PENDING)
+  attemptCount           Int                               @default(0)
+  leaseToken             String?                           @db.VarChar(128)
+  leaseExpiresAt         DateTime?
+  nextAttemptAt          DateTime?
+  errorCode              String?                           @db.VarChar(64)
+  createdAt              DateTime                          @default(now())
+  updatedAt              DateTime                          @default(now()) @updatedAt
+  completedAt            DateTime?
+
+  @@index([state, nextAttemptAt, leaseExpiresAt, sequence], map: "MemoryLexicalProjectionEvent_queue_idx")
+  @@index([userId, indexGenerationId, state, sequence], map: "MemoryLexicalProjectionEvent_generation_idx")
+  @@index([userId, searchEntryId, sequence], map: "MemoryLexicalProjectionEvent_entry_idx")
+  @@index([userId, state, sequence], map: "MemoryLexicalProjectionEvent_user_order_idx")
+}
+
+/// PostgreSQL-owned readiness proof for one Memory generation. OpenSearch is
+/// derived state; the contract and content fingerprints must both pass before
+/// this row can become READY.
+model MemoryLexicalProjectionState {
+  id                         String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                     String
+  indexGenerationId          String
+  backendKind                String                        @db.VarChar(64)
+  mappingVersion             String                        @db.VarChar(64)
+  normalizationVersion       String                        @db.VarChar(64)
+  analysisProfile            String                        @db.VarChar(64)
+  retrievalPipelineVersion   String                        @db.VarChar(64)
+  status                     MemoryLexicalProjectionStatus @default(BUILDING)
+  enqueuedThroughSequence    BigInt                        @default(0)
+  visibleThroughSequence     BigInt                        @default(0)
+  targetMemoryRevision       Int
+  projectedThroughRevision   Int                           @default(0)
+  expectedDocumentCount      Int?
+  visibleDocumentCount       Int?
+  projectionFingerprint      String?                       @db.Char(64)
+  expectedContentFingerprint String?                       @db.Char(64)
+  visibleContentFingerprint  String?                       @db.Char(64)
+  lastSuccessfulRefreshAt    DateTime?
+  lastIntegrityCheckAt       DateTime?
+  lastErrorCode              String?                       @db.VarChar(64)
+  createdAt                  DateTime                      @default(now())
+  updatedAt                  DateTime                      @default(now()) @updatedAt
+  readyAt                    DateTime?
+
+  @@unique([userId, indexGenerationId], map: "MemoryLexicalProjectionState_user_generation_key")
+  @@index([userId, status, updatedAt], map: "MemoryLexicalProjectionState_user_status_idx")
 }
 
 model MemoryEmbeddingBatchItem {

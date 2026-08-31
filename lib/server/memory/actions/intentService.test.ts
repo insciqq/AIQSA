@@ -75,10 +75,19 @@ describe("MemoryActionIntent service", () => {
     expect(request.systemPrompt).toContain("Put that management lookup in targetQuery");
     expect(request.systemPrompt).toContain("ordinary answer requests: choose NONE");
     expect(request.systemPrompt).toContain(
-      "targeted question about one specific prior conversation or event"
+      "current value of a changeable personal fact whose evidence must come from prior chats"
     );
     expect(request.systemPrompt).toContain(
-      "pastChatsUseful true, memoryUseful false, retrievalMode PAST_CHAT_SEARCH"
+      "retrievalMode PAST_CHAT_SEARCH, temporalIntent CURRENT"
+    );
+    expect(request.systemPrompt).toContain(
+      "Cadence, rate, preference, ownership, location, relationship, plan state"
+    );
+    expect(request.systemPrompt).toContain(
+      "specific prior conversation or completed event"
+    );
+    expect(request.systemPrompt).toContain(
+      "retrievalMode PAST_CHAT_SEARCH, temporalIntent ANY"
     );
     expect(request.systemPrompt).toContain(
       "Set aggregationRequested true only when answering requires combining evidence"
@@ -155,6 +164,12 @@ describe("MemoryActionIntent service", () => {
     );
     expect(request.systemPrompt).toContain(
       "retrievalMode PAST_CHAT_SEARCH, temporalIntent ANY"
+    );
+    expect(request.systemPrompt).toContain(
+      "CURRENT whenever the requested answer is the current state"
+    );
+    expect(request.systemPrompt).toContain(
+      "including PAST_CHAT_SEARCH over prior-chat evidence"
     );
     expect(request.systemPrompt).toContain(
       "Do not use temporalIntent HISTORICAL"

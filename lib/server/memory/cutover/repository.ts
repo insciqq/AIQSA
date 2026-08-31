@@ -2,7 +2,7 @@ import { Prisma, type MemoryJobState, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../persistence/lexical";
@@ -52,7 +52,16 @@ export function createPrismaMemoryRetrievalCutoverRepository(
     userId: string,
     now = new Date()
   ): Promise<MemoryRetrievalCutoverResult> {
-    const inventory = await rebuild.inventory(userId, now);
+    let inventory = await rebuild.inventory(userId, now);
+    if (!inventory.ready) {
+      const promotion = await rebuild.promoteCompatibleActiveGeneration(
+        userId,
+        now
+      );
+      if (promotion.kind === "promoted") {
+        inventory = await rebuild.inventory(userId, now);
+      }
+    }
     if (inventory.ready) {
       return {
         generationId: inventory.activeGenerationId,
@@ -194,7 +203,7 @@ export function createPrismaMemoryRetrievalCutoverRepository(
           AND (
             active."id" IS NULL
             OR active."indexedThroughMemoryRevision" <> settings."memoryRevision"
-            OR active."languageProfile" <> ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+            OR active."languageProfile" <> ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
             OR active."normalizationVersion" <> ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
             OR active."chunkingVersion" <> ${MEMORY_LEXICAL_CHUNKING_VERSION}
             OR active."embeddingProviderModelId" IS DISTINCT FROM

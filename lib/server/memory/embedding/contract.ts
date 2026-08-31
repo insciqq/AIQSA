@@ -18,15 +18,15 @@ export const MAX_MEMORY_EMBEDDING_BATCH_SIZE = 128;
 export const MEMORY_EMBEDDING_PROFILE = Object.freeze({
   documentProjectionVersion: "memory-document-projection-v2",
   normalizationVersion: "memory-search-normalization-v2",
-  queryInstructionVersion: "memory-query-instruction-v2",
+  queryInstructionVersion: "memory-query-instruction-v3",
   queryInstruction:
-    "Retrieve prior personal conversational evidence useful for answering the query. Match speakers, entities, dates, corrections, and exact details across English, Russian, and mixed-language text."
+    "Retrieve prior personal conversational evidence useful for answering the query. Match speaker attribution, entities, dates, corrections, and exact details regardless of language, script, or writing system."
 });
 
 export const MEMORY_EMBEDDING_PROFILE_FINGERPRINT = memoryExecutionSha256({
   domain: "aiqsa.memory.embedding-profile",
   profile: MEMORY_EMBEDDING_PROFILE,
-  version: 2
+  version: 3
 });
 
 export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
@@ -43,7 +43,7 @@ export const MEMORY_EMBEDDING_BATCH_VERSIONS = Object.freeze({
   policyVersion: "memory-item-embed-policy-v3",
   promptVersion: MEMORY_EMBEDDING_PROFILE.documentProjectionVersion,
   retrievalConfigFingerprint:
-    "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v3-batched-profile-v2",
+    "memory-vector-pg18.6-pgvector0.8.6-filtered-hnsw-v3-batched-profile-v3",
   schemaVersion: "memory-document-embed-batch-result-v2"
 });
 
@@ -343,10 +343,12 @@ export function memoryItemEmbeddingGenerationMatchesPin(
   generation: MemoryItemEmbeddingGeneration,
   pin: MemoryItemEmbeddingPin
 ): boolean {
+  // The configuration fingerprint records the exact transport revision, but
+  // route order, timeout, credential rotation, and provider-level query
+  // transforms do not change Memory's stored document-vector space.
   return generation.indexMode === "HYBRID" &&
     generation.embeddingConnectionId === pin.connectionId &&
     generation.embeddingProviderModelId === pin.providerModelId &&
-    generation.embeddingConfigurationFingerprint === pin.configurationFingerprint &&
     generation.embeddingDimension === pin.dimension &&
     generation.vectorSpaceFingerprint === pin.vectorSpaceFingerprint;
 }

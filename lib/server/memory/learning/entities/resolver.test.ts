@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   memoryEntityAliases,
   memoryEntityCanonicalKey,
+  memoryGroundedEntityCanonicalKeys,
   normalizeMemoryEntityAlias
 } from "./normalization";
 import {
@@ -32,6 +33,22 @@ describe("Memory entity normalization and resolution", () => {
       entityType: "PRODUCT",
       qualifiers: { brand: "Apple", model: "MacBook Air M4" }
     }));
+  });
+
+  it("versions grounded Unicode identity without carrying a partial ASCII key", () => {
+    const ascii = memoryGroundedEntityCanonicalKeys({
+      entityType: "PRODUCT",
+      mention: "caf",
+      mentionKind: "NAMED"
+    })!;
+    const accented = memoryGroundedEntityCanonicalKeys({
+      entityType: "PRODUCT",
+      mention: "cafè",
+      mentionKind: "NAMED"
+    })!;
+    expect(accented.legacyCanonicalKey).toBe(ascii.legacyCanonicalKey);
+    expect(accented.unicodeCanonicalKey).not.toBe(ascii.unicodeCanonicalKey);
+    expect(accented.unicodeCanonicalKey).toMatch(/^entity:v4:/u);
   });
 
   it("uses context, canonical key, then one unambiguous supported alias", () => {

@@ -522,6 +522,55 @@ describe("provider model configuration", () => {
     );
   });
 
+  it("accepts ordered OpenRouter routing only for OpenRouter embedding deployments", () => {
+    const inertCapabilities = {
+      contextWindow: 32_768,
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      toolCalling: false,
+      vision: false
+    };
+    const embedding = {
+      nativeDimension: 4_096,
+      providerFamily: "openrouter" as const,
+      queryInstructionTemplate: "Query: {text}",
+      supportsMrl: true,
+      targetDimension: 1_536
+    };
+    const routed = normalizeProviderModelConfigurationBase({
+      adapterKind: "openai_embeddings_compatible",
+      answerSelectable: false,
+      capabilities: inertCapabilities,
+      defaultParams: {},
+      embedding,
+      modelClass: "embedding",
+      openRouterRouting: {
+        mode: "only_selected",
+        providers: ["nebius", "deepinfra"]
+      },
+      upstreamModelId: "qwen/qwen3-embedding-8b"
+    });
+
+    expect(routed.openRouterRouting).toEqual({
+      mode: "only_selected",
+      providers: ["nebius", "deepinfra"]
+    });
+
+    expectCode(() => normalizeProviderModelConfigurationBase({
+      adapterKind: "openai_embeddings_compatible",
+      answerSelectable: false,
+      capabilities: inertCapabilities,
+      defaultParams: {},
+      embedding: { ...embedding, providerFamily: "openai" },
+      modelClass: "embedding",
+      openRouterRouting: { mode: "automatic", providers: [] },
+      upstreamModelId: "text-embedding-3-large"
+    }), "provider_routing_invalid");
+  });
+
   it("keeps rerankers inert and isolated from answer and embedding classes", () => {
     const inertCapabilities = {
       nativePdfInput: false,

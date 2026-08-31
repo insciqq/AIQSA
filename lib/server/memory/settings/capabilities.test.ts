@@ -8,7 +8,7 @@ import {
 import type { MemoryExecutionRole } from "../execution/roles";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../persistence/lexical";
@@ -449,7 +449,7 @@ describe("Memory capability projection", () => {
       embeddingConfigurationFingerprint: embedding.compatibilityFingerprints.configFingerprint,
       embeddingProviderModelId: embedding.snapshot.providerModelId,
       indexMode: "HYBRID",
-      languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+      languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
       normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
       retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
       state: "ACTIVE",
@@ -490,7 +490,7 @@ describe("Memory capability projection", () => {
           embeddingConfigurationFingerprint: null,
           embeddingProviderModelId: null,
           indexMode: "LEXICAL_ONLY",
-          languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+          languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
           normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
           retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
           state: "ACTIVE",

@@ -192,11 +192,11 @@ describe("Prisma explicit Memory API", () => {
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
       await expect(memoryService.search(userId, {
-        query: "ЕЛКАХ",
+        query: "ЁЛКАХ",
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
       await expect(memoryService.search(userId, {
-        query: "Я ПРЕДПОЧИТАЮ ОТВЕТЫ О ЕЛКАХ НА РУССКОМ ЯЗЫКЕ."
+        query: "Я ПРЕДПОЧИТАЮ ОТВЕТЫ О ЁЛКАХ НА РУССКОМ ЯЗЫКЕ."
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
 
       const [searchShape] = await prisma.$queryRaw<Array<{
@@ -211,7 +211,7 @@ describe("Prisma explicit Memory API", () => {
       `;
       expect(searchShape).toEqual({
         lexicalReady: true,
-        normalizedSearchText: "я предпочитаю ответы о елках на русском языке."
+        normalizedSearchText: "я предпочитаю ответы о ёлках на русском языке."
       });
       await expect(prisma.memoryFactVersion.findUniqueOrThrow({
         where: { id: versionId }
@@ -257,9 +257,13 @@ describe("Prisma explicit Memory API", () => {
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: second.response.memory.id }] });
       await expect(memoryService.search(userId, {
-        query: "ЁЛКИ",
+        query: "ЕЛКИ",
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: second.response.memory.id }] });
+      await expect(memoryService.search(userId, {
+        query: "ЁЛКИ",
+        scope: { type: "GLOBAL_USER" }
+      })).resolves.toMatchObject({ memories: [] });
       const firstPage = await memoryService.list(userId, {
         pageSize: 1,
         scope: { type: "GLOBAL_USER" },
@@ -474,7 +478,7 @@ describe("Prisma explicit Memory API", () => {
     }
   });
 
-  it("appends edits, fences stale concurrent versions, and keeps one current lexical entry", async () => {
+  it("appends edits, fences stale concurrent versions, and retains historical lexical entries", async () => {
     const userId = await createActiveUser("edit-cas");
     const memoryService = service();
     try {
@@ -532,7 +536,7 @@ describe("Prisma explicit Memory API", () => {
       await expect(memoryService.search(userId, { query: "Neovim" }))
         .resolves.toMatchObject({ memories: [{ id: factId }] });
       await expect(prisma.memorySearchEntry.count({ where: { userId } }))
-        .resolves.toBe(1);
+        .resolves.toBe(2);
 
       await expect(memoryService.mintAuthorization(userId, {
         action: "EDIT",
@@ -579,7 +583,7 @@ describe("Prisma explicit Memory API", () => {
         where: { factId, state: "ACTIVE", userId }
       })).resolves.toBe(1);
       await expect(prisma.memorySearchEntry.count({ where: { userId } }))
-        .resolves.toBe(1);
+        .resolves.toBe(3);
       const evidence = await memoryService.evidence(userId, factId, null);
       expect(evidence.evidence).toHaveLength(3);
     } finally {

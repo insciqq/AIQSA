@@ -38,10 +38,10 @@ describe("language-agnostic Memory retrieval planning", () => {
     ]);
   });
 
-  it("uses the same yo-folded search projection for exact lookup", () => {
+  it("preserves yo in the normalized exact lookup projection", () => {
     expect(planMemoryRetrieval({ currentUserText: "  ЗЕЛЁНАЯ ёлка  ", now }))
       .toMatchObject({
-        normalizedExactQuery: "зеленая елка",
+        normalizedExactQuery: "зелёная ёлка",
         normalizedQuery: "ЗЕЛЁНАЯ ёлка"
       });
   });
@@ -300,38 +300,41 @@ describe("language-agnostic Memory retrieval planning", () => {
     })).toThrow("memory_retrieval_filter_invalid");
   });
 
-  it("adds deterministic temporal and unrestricted variants without model authority", () => {
+  it("adds deterministic numeric temporal and unrestricted variants", () => {
     const temporal = planMemoryRetrieval({
-      currentUserText: "What happened yesterday?",
+      currentUserText: "2025-12-30",
       now: new Date("2026-01-01T01:30:00.000Z"),
       temporalIntent: "ANY",
       timeZone: "America/Los_Angeles"
     });
     expect(temporal.temporalQuery).toMatchObject({
       confidence: "HIGH",
-      expressionType: "RELATIVE_DAY",
+      expressionType: "EXPLICIT_DATE",
       matchedExpressionCount: 1,
       state: "MATCHED"
     });
     expect(temporal.temporalQuery.interval?.from?.toISOString())
       .toBe("2025-12-30T08:00:00.000Z");
     expect(temporal.temporalQueryVariants).toEqual([
-      { kind: "FILTERED", text: "What happened yesterday?" },
-      { kind: "UNRESTRICTED", text: "What happened yesterday?" }
+      { kind: "FILTERED", text: "2025-12-30" },
+      { kind: "UNRESTRICTED", text: "2025-12-30" }
     ]);
     expect(temporal.temporalQuery).not.toHaveProperty("text");
     expect(temporal.temporalQuery).not.toHaveProperty("query");
   });
 
-  it("keeps medium and ambiguous temporal parsing fail-open", () => {
-    const medium = planMemoryRetrieval({
-      currentUserText: "on February 10",
+  it("keeps natural-language and ambiguous temporal parsing fail-open", () => {
+    const naturalLanguage = planMemoryRetrieval({
+      currentUserText: "before the last launch",
       now,
       temporalIntent: "ANY"
     });
-    expect(medium.temporalQuery).toMatchObject({ confidence: "MEDIUM", state: "MATCHED" });
-    expect(medium.temporalQueryVariants.map(({ kind }) => kind))
-      .toEqual(["FILTERED", "UNRESTRICTED"]);
+    expect(naturalLanguage.temporalQuery).toMatchObject({
+      confidence: null,
+      state: "NO_MATCH"
+    });
+    expect(naturalLanguage.temporalQueryVariants.map(({ kind }) => kind))
+      .toEqual(["UNRESTRICTED"]);
 
     const ambiguous = planMemoryRetrieval({
       currentUserText: "03/04/2025",
@@ -341,6 +344,20 @@ describe("language-agnostic Memory retrieval planning", () => {
     expect(ambiguous.temporalQuery).toMatchObject({ state: "AMBIGUOUS", interval: null });
     expect(ambiguous.temporalQueryVariants.map(({ kind }) => kind))
       .toEqual(["UNRESTRICTED"]);
+
+    const structured = planMemoryRetrieval({
+      currentUserText: "before the last launch",
+      filters: {
+        asOf: new Date("2025-12-30T00:00:00.000Z"),
+        sourceKinds: ["FACT"]
+      },
+      mode: "HISTORICAL_MEMORY",
+      now,
+      temporalIntent: "AS_OF"
+    });
+    expect(structured.temporalQuery).toMatchObject({ state: "NO_MATCH" });
+    expect(structured.temporalQueryVariants.map(({ kind }) => kind))
+      .toEqual(["FILTERED", "UNRESTRICTED"]);
   });
 
   it("validates every explicit retrieval mode against source and temporal intent", () => {
@@ -375,6 +392,16 @@ describe("language-agnostic Memory retrieval planning", () => {
       now,
       temporalIntent: "ANY"
     }).mode).toBe("PAST_CHAT_SEARCH");
+    expect(planMemoryRetrieval({
+      currentUserText: "current mutable fact from prior chats",
+      filters: history,
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "CURRENT"
+    })).toMatchObject({
+      mode: "PAST_CHAT_SEARCH",
+      temporalIntent: "CURRENT"
+    });
     expect(planMemoryRetrieval({
       currentUserText: "history overview",
       filters: history,

@@ -14,6 +14,14 @@ import {
   type KnowledgeBm25VariantHit,
   type KnowledgeSearchDocument
 } from "./contract";
+import {
+  BoundedOpenSearchCoreTransport,
+  OpenSearchTransportError,
+  type BoundedOpenSearchRequest
+} from "./coreTransport";
+
+export { OpenSearchTransportError, type OpenSearchFailureCode } from
+  "./coreTransport";
 
 const HEALTH_TIMEOUT_MS = 3_000;
 const SEARCH_TIMEOUT_MS = 10_000;
@@ -24,41 +32,6 @@ const KNOWLEDGE_INTEGRITY_PAGE_SIZE = 1_000;
 const KNOWLEDGE_REBUILD_COUNT_MAX_ARTIFACTS = 256;
 
 export type AiqsaOpenSearchNamespace = "knowledge" | "memory";
-
-export type OpenSearchFailureCode =
-  | "opensearch_authentication_failed"
-  | "opensearch_bulk_item_failed"
-  | "opensearch_connection_failed"
-  | "opensearch_index_incompatible"
-  | "opensearch_index_missing"
-  | "opensearch_rate_limited"
-  | "opensearch_response_invalid"
-  | "opensearch_response_too_large"
-  | "opensearch_scope_too_large"
-  | "opensearch_timeout"
-  | "opensearch_unavailable";
-
-export class OpenSearchTransportError extends Error {
-  constructor(
-    readonly code: OpenSearchFailureCode,
-    readonly timedOut = false
-  ) {
-    super(code);
-    this.name = "OpenSearchTransportError";
-  }
-}
-
-type OpenSearchConfiguration = Readonly<{
-  password?: string;
-  url: URL;
-  username?: string;
-}>;
-
-type BoundedResponse = Readonly<{
-  body: unknown;
-  opaqueId: string | null;
-  status: number;
-}>;
 
 export type KnowledgeOpenSearchResult = Readonly<{
   durationMs: number;
@@ -79,68 +52,6 @@ type KnowledgeArtifactCount = KnowledgeOpenSearchInventory["artifactCounts"][num
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function configurationFromEnv(env: NodeJS.ProcessEnv): OpenSearchConfiguration {
-  const rawUrl = env.AIQSA_OPENSEARCH_URL?.trim() || "http://opensearch:9200";
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new OpenSearchTransportError("opensearch_connection_failed");
-  }
-  const username = env.AIQSA_OPENSEARCH_USERNAME?.trim();
-  const password = env.AIQSA_OPENSEARCH_PASSWORD;
-  if (
-    (url.protocol !== "http:" && url.protocol !== "https:") ||
-    url.username || url.password || url.search || url.hash ||
-    (username === undefined) !== (password === undefined)
-  ) throw new OpenSearchTransportError("opensearch_connection_failed");
-  url.pathname = `${url.pathname.replace(/\/+$/u, "")}/`;
-  return Object.freeze({
-    ...(password !== undefined ? { password } : {}),
-    url,
-    ...(username !== undefined ? { username } : {})
-  });
-}
-
-async function boundedBody(response: Response, maximum: number): Promise<unknown> {
-  if (!response.body) return null;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const next = await reader.read();
-    if (next.done) break;
-    total += next.value.byteLength;
-    if (total > maximum) {
-      await reader.cancel();
-      throw new OpenSearchTransportError("opensearch_response_too_large");
-    }
-    chunks.push(next.value);
-  }
-  if (total === 0) return null;
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw new OpenSearchTransportError("opensearch_response_invalid");
-  }
-}
-
-function classifiedStatus(status: number): OpenSearchTransportError {
-  if (status === 401 || status === 403) {
-    return new OpenSearchTransportError("opensearch_authentication_failed");
-  }
-  if (status === 404) return new OpenSearchTransportError("opensearch_index_missing");
-  if (status === 429) return new OpenSearchTransportError("opensearch_rate_limited");
-  if (status >= 500) return new OpenSearchTransportError("opensearch_unavailable");
-  return new OpenSearchTransportError("opensearch_response_invalid");
 }
 
 function exactPropertyMapping(value: unknown): boolean {
@@ -258,80 +169,19 @@ function decodeVariantHits(value: unknown): readonly KnowledgeBm25VariantHit[] {
 }
 
 export class AiqsaOpenSearchTransport {
-  readonly #configuration: OpenSearchConfiguration;
+  readonly #core: BoundedOpenSearchCoreTransport;
   readonly #namespace: AiqsaOpenSearchNamespace;
 
   constructor(input: Readonly<{
     env?: NodeJS.ProcessEnv;
     namespace: AiqsaOpenSearchNamespace;
   }>) {
-    this.#configuration = configurationFromEnv(input.env ?? process.env);
+    this.#core = new BoundedOpenSearchCoreTransport(input);
     this.#namespace = input.namespace;
   }
 
-  #assertIndex(indexName: string): void {
-    if (!indexName.startsWith(`aiqsa-${this.#namespace}-`) ||
-      !/^aiqsa-(?:knowledge|memory)-[a-z0-9-]+$/u.test(indexName)) {
-      throw new OpenSearchTransportError("opensearch_index_incompatible");
-    }
-  }
-
-  async #request(input: Readonly<{
-    acceptedStatuses?: readonly number[];
-    body?: string;
-    indexName?: string;
-    maximumResponseBytes: number;
-    method: "DELETE" | "GET" | "HEAD" | "POST" | "PUT";
-    opaqueId?: string;
-    path: string;
-    signal?: AbortSignal;
-    timeoutMs: number;
-  }>): Promise<BoundedResponse> {
-    if (input.indexName) this.#assertIndex(input.indexName);
-    const controller = new AbortController();
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, input.timeoutMs);
-    const abort = (): void => controller.abort();
-    input.signal?.addEventListener("abort", abort, { once: true });
-    try {
-      const url = new URL(input.path.replace(/^\/+/u, ""), this.#configuration.url);
-      const headers = new Headers();
-      if (input.body !== undefined) headers.set("content-type", "application/json");
-      if (input.opaqueId) headers.set("x-opaque-id", input.opaqueId);
-      if (this.#configuration.username !== undefined) {
-        headers.set("authorization", `Basic ${Buffer.from(
-          `${this.#configuration.username}:${this.#configuration.password}`
-        ).toString("base64")}`);
-      }
-      const response = await fetch(url, {
-        ...(input.body !== undefined ? { body: input.body } : {}),
-        headers,
-        method: input.method,
-        redirect: "error",
-        signal: controller.signal
-      });
-      const accepted = input.acceptedStatuses ?? [200];
-      const body = input.method === "HEAD"
-        ? null
-        : await boundedBody(response, input.maximumResponseBytes);
-      if (!accepted.includes(response.status)) throw classifiedStatus(response.status);
-      return Object.freeze({
-        body,
-        opaqueId: response.headers.get("x-opaque-id"),
-        status: response.status
-      });
-    } catch (error) {
-      if (error instanceof OpenSearchTransportError) throw error;
-      if (timedOut) throw new OpenSearchTransportError("opensearch_timeout", true);
-      if (input.signal?.aborted) throw error;
-      throw new OpenSearchTransportError("opensearch_connection_failed");
-    } finally {
-      clearTimeout(timeout);
-      input.signal?.removeEventListener("abort", abort);
-    }
+  #request(input: BoundedOpenSearchRequest) {
+    return this.#core.request(input);
   }
 
   async ensureKnowledgeIndex(): Promise<void> {
@@ -372,16 +222,7 @@ export class AiqsaOpenSearchTransport {
   }
 
   async #ensureServerVersion(): Promise<void> {
-    const root = await this.#request({
-      maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
-      method: "GET",
-      path: "",
-      timeoutMs: HEALTH_TIMEOUT_MS
-    });
-    if (!record(root.body) || !record(root.body.version) ||
-      root.body.version.number !== AIQSA_OPENSEARCH_VERSION) {
-      throw new OpenSearchTransportError("opensearch_index_incompatible");
-    }
+    await this.#core.ensureServerVersion(AIQSA_OPENSEARCH_VERSION);
   }
 
   /** Guarded operator boundary: only the code-owned physical Knowledge index

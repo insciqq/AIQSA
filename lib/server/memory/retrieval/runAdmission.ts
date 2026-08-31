@@ -68,9 +68,10 @@ import type { MemoryIntentActionExecutor } from "../actions/intentExecutor";
 import { loadMemoryRunSources } from "../sources/runProjection";
 import {
   createPrismaLocalMemoryRetrievalRepository,
-  type MemoryAggregationSessionCompletion,
+  selectMemoryTargetedSessionRepresentatives,
   type MemoryLocalRetrievalResult,
   type MemoryLocalRetrievalSnapshot,
+  type MemorySessionEvidenceCompletion,
   type PrismaLocalMemoryRetrievalRepository
 } from "./localRepository";
 import {
@@ -95,9 +96,9 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v44";
+  "memory-run-retrieval-admission-v45";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v14";
+  "memory-retrieval-component-metrics-v15";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -769,7 +770,11 @@ export const MEMORY_INTERACTIVE_SOFT_DEADLINE_MS = 10_000;
 export const MEMORY_INTERACTIVE_HARD_DEADLINE_MS = 14_000;
 export const MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS = 1_000;
 export const MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS = 1_500;
-export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 4_000;
+// Query embedding starts beside the control call, whose bounded envelope is
+// already eight seconds. Giving both initial utilities the same envelope does
+// not lengthen that concurrent stage, while the 14-second admission deadline
+// still leaves six seconds for local retrieval, reranking, rejoin and packing.
+export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 8_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
 export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 8_000;
 
@@ -966,10 +971,13 @@ function attemptItems(
         sourceAuthority: packed.sourceAuthority,
         sourceSessionHandle: packed.sourceSessionHandle,
         speakerScope: packed.speakerScope,
-        status: packed.status,
+        status: packed.recordStatus,
         supportingItemId: packed.supportingItemId,
         temporalReason: packed.temporalReason,
         historical: candidate.metadata.historical,
+        ...(candidate.historyEvidenceView
+          ? { historyEvidenceView: candidate.historyEvidenceView }
+          : {}),
         includePatterns: plan.includePatterns,
         lifecycleState: candidate.metadata.lifecycleState,
         matchedSegmentId: candidate.matchedSegmentId ?? null,
@@ -1209,7 +1217,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     candidate.laneRanks.FACT_BASELINE_ORIGINAL !== undefined ||
     candidate.laneRanks.HISTORY_BASELINE_ORIGINAL !== undefined).length;
   const sessionCompletionPackedCount = input.selectedDynamic.filter((candidate) =>
-    candidate.selectionReason.includes("aggregation_session_completion") &&
+    candidate.selectionReason.includes("session_completion") &&
     packedKeys.has(`${candidate.itemType}:${candidate.itemId}`)).length;
   const rerankDiagnostics = input.relevance?.diagnostics;
   return Object.freeze({
@@ -1637,7 +1645,7 @@ export function selectMemoryAggregationRawCandidates(
     .slice(0, MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES);
 }
 
-export type MemoryAggregationRejoin = Readonly<{
+export type MemorySessionRejoin = Readonly<{
   candidates: readonly MemoryRankedCandidate[];
   completionCandidateCount: number;
   expansions: readonly MemoryExpandedCandidate[];
@@ -1649,12 +1657,12 @@ export type MemoryAggregationRejoin = Readonly<{
  * evidence-root identity both deduplicate, so completion can widen a selected
  * session but can never double-count an already retrieved round.
  */
-export function mergeMemoryAggregationSessionCompletion(
+export function mergeMemorySessionEvidenceCompletion(
   candidates: readonly MemoryRankedCandidate[],
   expansions: readonly MemoryExpandedCandidate[],
-  completion: MemoryAggregationSessionCompletion,
+  completion: MemorySessionEvidenceCompletion,
   completionExpansions: readonly MemoryExpandedCandidate[]
-): MemoryAggregationRejoin {
+): MemorySessionRejoin {
   const expansionByKey = new Map(expansions.map((expansion) => [
     `${expansion.itemType}:${expansion.itemId}`,
     expansion
@@ -1668,7 +1676,7 @@ export function mergeMemoryAggregationSessionCompletion(
   if (completionExpansionByKey.size !== completionExpansions.length ||
     completionExpansions.some((expansion) =>
       !completionCandidateKeys.has(`${expansion.itemType}:${expansion.itemId}`))) {
-    throw new Error("memory_aggregation_session_completion_invalid");
+    throw new Error("memory_session_completion_invalid");
   }
   type RejoinEntry = Readonly<{
     candidate: MemoryRankedCandidate;
@@ -2004,16 +2012,16 @@ function healthRelevantLexicalFailures(
   const primarySparseLane = (lane: MemoryRetrievalLane) =>
     lane === "FACT_ENTITY" || lane === "HISTORY_DIGEST_FTS_SIMPLE" ||
     lane === "HISTORY_INTRA_CHAT_RAW" || lane.endsWith("_EXACT") ||
-    lane.includes("_FTS_");
+    lane.endsWith("_LEXICAL_UNICODE");
   const primarySparseSettled = (fallbackLane: MemoryRetrievalLane) => {
-    const factFamily = fallbackLane === "FACT_TRIGRAM";
+    const factFamily = fallbackLane === "FACT_LEXICAL_NGRAM";
     return result.laneResults.some(({ lane }) =>
       !failed.has(lane) && primarySparseLane(lane) &&
       (factFamily ? lane.startsWith("FACT_") : lane.startsWith("HISTORY_")));
   };
   return result.lexicalFailures.filter((lane) =>
     sourceFamilyEnabled(lane) &&
-    (!(lane === "FACT_TRIGRAM" || lane === "HISTORY_RECALL_TRIGRAM") ||
+    (!(lane === "FACT_LEXICAL_NGRAM" || lane === "HISTORY_RECALL_LEXICAL_NGRAM") ||
       !primarySparseSettled(lane)));
 }
 
@@ -2025,13 +2033,14 @@ function mergeSpeculativeRetrieval(
     lane === "FACT_VECTOR" || lane === "HISTORY_RECALL_VECTOR";
   if (!sparse || !dense || sparse.snapshot !== dense.snapshot ||
     dense.core.length > 0 || dense.lexicalState !== "DISABLED" ||
-    dense.lexicalFailures.length > 0 ||
+    (dense.lexicalEvidence?.length ?? 0) > 0 || dense.lexicalFailures.length > 0 ||
     sparse.laneResults.some(({ lane }) => vectorLane(lane)) ||
     dense.laneResults.some(({ lane }) => !vectorLane(lane))) return null;
   return Object.freeze({
     core: sparse.core,
     ...(sparse.digestEvidence ? { digestEvidence: sparse.digestEvidence } : {}),
     laneResults: Object.freeze([...sparse.laneResults, ...dense.laneResults]),
+    lexicalEvidence: sparse.lexicalEvidence ?? [],
     lexicalFailures: sparse.lexicalFailures,
     lexicalState: sparse.lexicalState,
     snapshot: sparse.snapshot,
@@ -2059,7 +2068,7 @@ function degradationFor(
     (result.lexicalState === "FAILED" || result.lexicalState === "DEGRADED")) {
     const families = new Set(lexicalFailures.map((lane) =>
       lane === "FACT_ENTITY" ? "entity" :
-        lane.includes("_FTS_") || lane.endsWith("_TRIGRAM") ? "fts"
+        lane.includes("_FTS_") || lane.includes("_LEXICAL_") ? "fts"
         : lane.endsWith("_EXACT") ? "exact" : "recent"));
     if (families.size === 1 && families.has("entity")) return "memory_entity_unavailable";
     if (families.size === 1 && families.has("fts")) return "memory_fts_unavailable";
@@ -2654,6 +2663,15 @@ export function createMemoryRunRetrievalService(
       let dynamicCandidates: readonly MemoryRankedCandidate[] = dynamicFused;
       let navigationExpanded: readonly MemoryExpandedCandidate[] = [];
       let expansionFailure: MemoryExpansionFailure | null = null;
+      let sessionCompletion: MemorySessionEvidenceCompletion = Object.freeze({
+        candidates: Object.freeze([]),
+        sourceChatCount: 0
+      });
+      let sessionCompletionExpansions: readonly MemoryExpandedCandidate[] = [];
+      let sessionCompletionState: "READY" | "SKIPPED" | "UNAVAILABLE" = "SKIPPED";
+      const targetedSessionCompletionEnabled = !plan.aggregationRequested &&
+        plan.mode === "PAST_CHAT_SEARCH" &&
+        typeof repository.completeSessionEvidence === "function";
       if (dynamicFused.length > 0) {
         try {
           dynamicCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
@@ -2759,24 +2777,36 @@ export function createMemoryRunRetrievalService(
         ? selectMemoryAggregationRawCandidates(dynamicFused, relevant)
         : relevant;
       let rejoined: readonly MemoryExpandedCandidate[] = [];
-      let sessionCompletion: MemoryAggregationSessionCompletion = Object.freeze({
-        candidates: Object.freeze([]),
-        sourceChatCount: 0
-      });
-      let sessionCompletionExpansions: readonly MemoryExpandedCandidate[] = [];
-      let sessionCompletionState: "READY" | "SKIPPED" | "UNAVAILABLE" = "SKIPPED";
-      const sessionCompletionEnabled = plan.aggregationRequested &&
+      const aggregationSessionCompletionEnabled = plan.aggregationRequested &&
         plan.mode === "PAST_CHAT_SEARCH" &&
-        typeof repository.completeAggregationSessionEvidence === "function";
+        typeof repository.completeSessionEvidence === "function";
+      const sessionCompletionSources = aggregationSessionCompletionEnabled
+        ? relevant
+        : targetedSessionCompletionEnabled
+          ? selectMemoryTargetedSessionRepresentatives(relevant)
+          : [];
+      const sessionCompletionSourceChatCount = new Set(
+        sessionCompletionSources.flatMap((candidate) =>
+          candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
+            ? [candidate.metadata.sourceChatId]
+            : [])
+      ).size;
+      const sessionCompletionEnabled = sessionCompletionSourceChatCount > 0;
+      if (sessionCompletionEnabled) {
+        sessionCompletion = Object.freeze({
+          candidates: Object.freeze([]),
+          sourceChatCount: sessionCompletionSourceChatCount
+        });
+      }
       if (rejoinCandidates.length > 0) {
         try {
           // The reranker operates on the first safe expansion. Reload its
           // bounded accepted set so decay and packing see only rows that still
-          // satisfy every authoritative admission fence. For aggregation, a
-          // second local query completes only those source sessions selected
-          // by the reranker, then every completion item passes the same final
-          // authoritative expansion as an ordinary retrieval hit. Its failure
-          // never hides the admitted anchors.
+          // satisfy every authoritative admission fence. A second local query
+          // completes only source sessions selected by the reranker, then
+          // every linked item passes the same final authoritative expansion as
+          // an ordinary retrieval hit. Its failure never hides admitted
+          // anchors.
           const [expandedResult, completionResult] = await timings.measure("rejoinMs", () =>
             Promise.all([
               runBoundedMemoryRead(
@@ -2801,10 +2831,10 @@ export function createMemoryRunRetrievalService(
                     deadline,
                     MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
                     (completionSignal) => abortableRead((async () => {
-                      const value = await repository.completeAggregationSessionEvidence(
+                      const value = await repository.completeSessionEvidence!(
                         local.snapshot,
                         plan,
-                        relevant
+                        sessionCompletionSources
                       );
                       const expansions = await expandWithSourceFamilyPlans({
                         candidates: value.candidates,
@@ -2831,11 +2861,13 @@ export function createMemoryRunRetrievalService(
             ]));
           if (expandedResult.error) throw expandedResult.error;
           rejoined = expandedResult.value;
-          if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
-          else {
-            sessionCompletion = completionResult.value;
-            sessionCompletionExpansions = completionResult.expansions;
-            sessionCompletionState = sessionCompletionEnabled ? "READY" : "SKIPPED";
+          if (sessionCompletionEnabled) {
+            if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
+            else {
+              sessionCompletion = completionResult.value;
+              sessionCompletionExpansions = completionResult.expansions;
+              sessionCompletionState = "READY";
+            }
           }
         } catch (error) {
           if (deadline.expired()) {
@@ -2853,8 +2885,10 @@ export function createMemoryRunRetrievalService(
       ]));
       const queryMatchedRelevant = rejoinCandidates.filter((candidate) =>
         rejoinedByKey.has(`${candidate.itemType}:${candidate.itemId}`));
-      const mergedRejoin = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
-        ? mergeMemoryAggregationSessionCompletion(
+      const sessionCompletionCandidateKeys = new Set(sessionCompletion.candidates.map(
+        (candidate) => `${candidate.itemType}:${candidate.itemId}`));
+      const mergedRejoin = sessionCompletionState === "READY"
+        ? mergeMemorySessionEvidenceCompletion(
             queryMatchedRelevant,
             rejoined,
             sessionCompletion,
@@ -2862,11 +2896,17 @@ export function createMemoryRunRetrievalService(
           )
         : Object.freeze({
             candidates: queryMatchedRelevant,
-            completionCandidateCount: 0,
+            completionCandidateCount: queryMatchedRelevant.filter((candidate) =>
+              candidate.historyEvidenceView === "USER_TESTIMONY" &&
+              sessionCompletionCandidateKeys.has(
+                `${candidate.itemType}:${candidate.itemId}`
+              )).length,
             expansions: rejoined
           });
       const rejoinedRelevant = mergedRejoin.candidates;
       rejoined = mergedRejoin.expansions;
+      sessionCompletionExpansions = rejoined.filter((expansion) =>
+        sessionCompletionCandidateKeys.has(`${expansion.itemType}:${expansion.itemId}`));
       const sessionCompletionExpansionKeys = new Set(sessionCompletionExpansions.map(
         (expansion) => `${expansion.itemType}:${expansion.itemId}`));
       const completedSourceChats = new Set(sessionCompletion.candidates.flatMap((candidate) =>
@@ -2928,6 +2968,7 @@ export function createMemoryRunRetrievalService(
             failureClass: expansionFailure.failureClass,
             failureCode: expansionFailure.failureCode,
             ...relevanceEvidence(relevanceInput, relevance, relevant.length, 0),
+            lexicalEvidence: local.lexicalEvidence ?? [],
             lexicalFailures: local.lexicalFailures,
             lexicalState: local.lexicalState,
             plan: planEvidence(plan),
@@ -3025,6 +3066,7 @@ export function createMemoryRunRetrievalService(
         }),
         coreCount: selectedCore.length,
         laneCount: local.laneResults.length,
+        lexicalEvidence: local.lexicalEvidence ?? [],
         lexicalFailures: local.lexicalFailures,
         lexicalState: local.lexicalState,
         memoryHardDeadlineReached: deadline.expired(),

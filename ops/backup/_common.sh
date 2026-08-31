@@ -126,7 +126,7 @@ SELECT CASE
       FROM "_prisma_migrations"
       WHERE finished_at IS NOT NULL
         AND rolled_back_at IS NULL
-      ORDER BY started_at, id
+      ORDER BY migration_name
     )
       = ARRAY[$expected_migrations]::text[]
     AND to_regclass('public."UserMemorySettings"') IS NOT NULL
@@ -135,6 +135,8 @@ SELECT CASE
     AND to_regclass('public."MemoryDeletionOutbox"') IS NOT NULL
     AND to_regclass('public."MemoryJob"') IS NOT NULL
     AND to_regclass('public."MemoryExecutionBinding"') IS NOT NULL
+    AND to_regclass('public."MemoryLexicalProjectionEvent"') IS NOT NULL
+    AND to_regclass('public."MemoryLexicalProjectionState"') IS NOT NULL
     AND to_regclass('public."KnowledgeDeletionJob"') IS NOT NULL
     AND to_regclass('public."KnowledgeDeletionObject"') IS NOT NULL
   THEN '$AIQSA_BACKUP_SCHEMA'

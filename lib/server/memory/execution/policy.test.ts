@@ -8,8 +8,11 @@ import type {
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import {
+  memoryProviderSnapshotVectorSpaceFingerprint,
+  memoryVectorSpaceFingerprint,
   requireMemoryPolicyTarget,
-  resolveCurrentMemoryUtilityPolicy
+  resolveCurrentMemoryUtilityPolicy,
+  type ResolvedMemoryExecutionTarget
 } from "./policy";
 
 function snapshot(defaultParams: Record<string, unknown>): ProviderExecutionSnapshot {
@@ -41,6 +44,84 @@ describe("Memory system-model execution policy", () => {
   it("preserves the exact admitted snapshot for provider-default reasoning", () => {
     const admitted = snapshot({ temperature: 0.2 });
     expect(applySystemModelReasoningEffort(admitted, null)).toBe(admitted);
+  });
+});
+
+describe("Memory embedding vector-space identity", () => {
+  const model: ProviderModelConfiguration = {
+    adapterKind: "openai_embeddings_compatible",
+    answerSelectable: false,
+    capabilities: {
+      contextWindow: 32_768,
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      toolCalling: false,
+      vision: false
+    },
+    defaultParams: {},
+    embedding: {
+      nativeDimension: 4_096,
+      providerFamily: "openrouter",
+      queryInstructionTemplate: "Query: {text}",
+      supportsMrl: true,
+      targetDimension: 1_536
+    },
+    modelClass: "embedding",
+    openRouterRouting: {
+      mode: "only_selected",
+      providers: ["nebius", "deepinfra"]
+    },
+    upstreamModelId: "qwen/qwen3-embedding-8b"
+  };
+  const target = (
+    overrides: Partial<ProviderModelConfiguration> = {}
+  ) => ({
+    snapshot: {
+      model: { ...model, ...overrides },
+      providerModelId: "qwen-embedding-deployment"
+    }
+  }) as ResolvedMemoryExecutionTarget;
+
+  it("does not require vector regeneration when only OpenRouter routing changes", () => {
+    expect(memoryVectorSpaceFingerprint(target())).toBe(
+      memoryVectorSpaceFingerprint(target({
+        openRouterRouting: {
+          mode: "only_selected",
+          providers: ["deepinfra", "nebius"]
+        }
+      }))
+    );
+  });
+
+  it("keeps provider query transforms outside the stored document-vector identity", () => {
+    expect(memoryVectorSpaceFingerprint(target())).toBe(
+      memoryVectorSpaceFingerprint(target({
+        embedding: {
+          ...model.embedding!,
+          queryInstructionTemplate: "Instruct: New query policy\nQuery: {text}"
+        }
+      }))
+    );
+  });
+
+  it("changes identity when the model or document-vector shape changes", () => {
+    const original = memoryVectorSpaceFingerprint(target());
+    expect(memoryVectorSpaceFingerprint(target({
+      upstreamModelId: "qwen/qwen3-embedding-4b"
+    }))).not.toBe(original);
+    expect(memoryVectorSpaceFingerprint(target({
+      embedding: { ...model.embedding!, targetDimension: 1_024 }
+    }))).not.toBe(original);
+  });
+
+  it("can canonicalize an immutable historical provider snapshot", () => {
+    const current = target().snapshot;
+    expect(memoryProviderSnapshotVectorSpaceFingerprint(current)).toBe(
+      memoryVectorSpaceFingerprint(target())
+    );
   });
 });
 

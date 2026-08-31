@@ -1,11 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { MemoryJobClaim } from "../../coordinator/types";
-import { enqueueMemoryEmbeddingBatchItem } from "../../embedding/enqueue";
-import {
-  memorySha256,
-  normalizeMemorySearchText
-} from "../../persistence/lexical";
+import { ensureClassifiedSearchEntry } from "../../persistence/factSearchEntry";
+import { normalizeMemorySearchText } from "../../persistence/lexical";
 import { memoryPersonalFactEvidencePredicate } from "../../persistence/eligibility";
 import {
   ensureGlobalMemoryScope,
@@ -16,7 +13,6 @@ import {
   lockMemorySettings,
   requireActiveMemoryIndex,
   type LockedMemorySettings,
-  type MemoryActiveIndex,
   type MemoryTransaction
 } from "../../persistence/transaction";
 import type { MemorySuppressionKeyring } from "../../suppressionKeyring";
@@ -247,72 +243,6 @@ async function createEvidence(
   return result.count;
 }
 
-async function createSearchEntry(
-  tx: MemoryTransaction,
-  index: MemoryActiveIndex,
-  userId: string,
-  versionId: string,
-  candidate: MemoryFactCandidateSnapshot,
-  retrievable: boolean
-) {
-  const normalizedSearchText = normalizeMemorySearchText(candidate.displayText);
-  return tx.memorySearchEntry.create({
-    data: {
-      embeddingState: retrievable && index.indexMode === "HYBRID"
-        ? "PENDING"
-        : "NOT_APPLICABLE",
-      factVersionId: versionId,
-      indexGenerationId: index.id,
-      itemType: "FACT_VERSION",
-      languageCode: candidate.languageCode,
-      safeContentHash: memorySha256({
-        displayText: candidate.displayText,
-        structuredValue: candidate.proposedValue
-      }),
-      normalizedSearchText,
-      safetyIdentitySnapshot: memorySha256({
-        safetyClass: "NORMAL",
-        secretTaintedSourceWindow: false
-      }),
-      sourceIdentitySnapshot: memorySha256({
-        branchGeneration: candidate.branchGeneration,
-        evidence: candidate.evidence.map((evidence) => ({
-          messageId: evidence.messageId,
-          sourceTextHash: evidence.sourceTextHash
-        })),
-        sourceHash: candidate.sourceHash,
-        sourceProjectionVersion: candidate.sourceProjectionVersion,
-        sourceRevision: candidate.sourceRevision
-      }),
-      suppressionIdentitySnapshot: memorySha256({
-        canonicalKey: candidate.canonicalKey,
-        category: candidateCategory(candidate),
-        normalizedValue: normalizedSearchText
-      }),
-      userId
-    },
-    select: { embeddingState: true, id: true }
-  });
-}
-
-async function enqueueDerivedWork(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  candidate: MemoryFactCandidateSnapshot,
-  decisionId: string,
-  factId: string,
-  searchEntry: Readonly<{ embeddingState: string; id: string }> | null
-): Promise<void> {
-  if (searchEntry?.embeddingState === "PENDING") {
-    await enqueueMemoryEmbeddingBatchItem(tx, settings, {
-      entryId: searchEntry.id,
-      triggerIdentity: decisionId
-    });
-  }
-  void candidate;
-  void factId;
-}
-
 async function lockTargetFact(
   tx: MemoryTransaction,
   userId: string,
@@ -471,15 +401,24 @@ async function applyAdd(
     }
   });
   await createEvidence(tx, settings.userId, versionId, candidate, "SUPPORTS");
-  const entry = await createSearchEntry(
+  if (priorVersion) {
+    await ensureClassifiedSearchEntry(
+      tx,
+      settings,
+      priorVersion.id,
+      decisionId,
+      systemFrom,
+      index
+    );
+  }
+  await ensureClassifiedSearchEntry(
     tx,
-    index,
-    settings.userId,
+    settings,
     versionId,
-    candidate,
-    true
+    decisionId,
+    systemFrom,
+    index
   );
-  await enqueueDerivedWork(tx, settings, candidate, decisionId, factId, entry);
   return { factId, semanticMutation: true, versionId };
 }
 
@@ -494,7 +433,6 @@ async function applyReinforce(
 ): Promise<SemanticApplyResult | null> {
   const target = await lockTargetFact(tx, settings.userId, factId, versionId);
   if (!target) return null;
-  const factCandidate = { ...candidate, canonicalKey: target.fact.canonicalKey };
   const existing = await tx.memoryEvidence.findMany({
     select: { messageId: true, sourceProjectionVersion: true },
     where: {
@@ -537,25 +475,14 @@ async function applyReinforce(
   });
   const index = await requireActiveMemoryIndex(tx, settings);
   if (!index) throw new Error("memory_active_generation_invalid");
-  let entry = await tx.memorySearchEntry.findFirst({
-    select: { embeddingState: true, id: true },
-    where: {
-      factVersionId: versionId,
-      indexGenerationId: index.id,
-      userId: settings.userId
-    }
-  });
-  if (!entry && target.version.displayText && target.version.structuredValue !== null) {
-    entry = await createSearchEntry(
-      tx,
-      index,
-      settings.userId,
-      versionId,
-      factCandidate,
-      true
-    );
-  }
-  await enqueueDerivedWork(tx, settings, candidate, decisionId, factId, entry);
+  await ensureClassifiedSearchEntry(
+    tx,
+    settings,
+    versionId,
+    decisionId,
+    confirmedAt,
+    index
+  );
   void eventId;
   return { factId, semanticMutation: true, versionId };
 }
@@ -630,14 +557,14 @@ async function applyVersionTransition(
       candidate,
       "CONTRADICTS"
     );
-    await tx.memorySearchEntry.deleteMany({
-      where: {
-        factVersionId: target.version.id,
-        indexGenerationId: index.id,
-        userId: settings.userId
-      }
-    });
-    await enqueueDerivedWork(tx, settings, candidate, decisionId, target.fact.id, null);
+    await ensureClassifiedSearchEntry(
+      tx,
+      settings,
+      target.version.id,
+      decisionId,
+      at,
+      index
+    );
     void eventId;
     return {
       factId: target.fact.id,
@@ -716,30 +643,21 @@ async function applyVersionTransition(
     throw new Error("memory_fact_transition_stale");
   }
   await createEvidence(tx, settings.userId, newVersionId, candidate, "SUPPORTS");
-  if (replacing) {
-    await tx.memorySearchEntry.deleteMany({
-      where: {
-        factVersionId: target.version.id,
-        indexGenerationId: index.id,
-        userId: settings.userId
-      }
-    });
-  }
-  const entry = await createSearchEntry(
-    tx,
-    index,
-    settings.userId,
-    newVersionId,
-    factCandidate,
-    replacing
-  );
-  await enqueueDerivedWork(
+  await ensureClassifiedSearchEntry(
     tx,
     settings,
-    candidate,
+    target.version.id,
     decisionId,
-    target.fact.id,
-    entry
+    at,
+    index
+  );
+  await ensureClassifiedSearchEntry(
+    tx,
+    settings,
+    newVersionId,
+    decisionId,
+    at,
+    index
   );
   return { factId: target.fact.id, semanticMutation: true, versionId: newVersionId };
 }

@@ -44,7 +44,7 @@ import {
 } from "./eligibility";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
-  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
@@ -178,7 +178,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           generation: 0,
           indexMode: "HYBRID",
           indexedThroughMemoryRevision: settings.memoryRevision,
-          languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+          languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
           normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
           readyAt: fixtureNow,
           retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
@@ -898,7 +898,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           generation: 1,
           indexMode: "LEXICAL_ONLY",
           indexedThroughMemoryRevision: afterFenceSettings.memoryRevision,
-          languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+          languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
           normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
           readyAt: fixtureNow,
           retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,

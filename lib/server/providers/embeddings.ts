@@ -34,6 +34,7 @@ export const MAX_EMBEDDING_BATCH_INPUTS = 128;
 export const MAX_EMBEDDING_INPUT_CHARS = 131_072;
 export const MAX_EMBEDDING_REQUEST_BYTES = 2 * 1024 * 1024;
 export const MAX_EMBEDDING_RESPONSE_BYTES = 16 * 1024 * 1024;
+export const OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS = 1_000;
 
 export type EmbeddingMode = "document" | "query";
 
@@ -50,6 +51,7 @@ export type EmbeddingResult = Readonly<{
 }>;
 
 export type EmbeddingRequest = Readonly<{
+  latencyClass?: "background" | "interactive";
   mode: EmbeddingMode;
   signal?: AbortSignal;
   texts: readonly string[];
@@ -270,6 +272,90 @@ function responseBody(
   };
 }
 
+function serializedRequestBody(
+  prepared: readonly string[],
+  model: ProviderModelConfiguration,
+  pinnedOpenRouterProvider: string | null = null
+): string {
+  const selectedRouting = model.openRouterRouting?.mode === "only_selected"
+    ? model.openRouterRouting
+    : null;
+  const body = {
+    encoding_format: "float",
+    input: prepared,
+    model: model.upstreamModelId,
+    ...(model.embedding?.providerFamily === "openrouter"
+      ? {
+          provider: {
+            allow_fallbacks: pinnedOpenRouterProvider === null &&
+              model.openRouterRouting !== undefined,
+            data_collection: "deny",
+            ...(pinnedOpenRouterProvider !== null
+              ? {
+                  only: [pinnedOpenRouterProvider],
+                  order: [pinnedOpenRouterProvider]
+                }
+              : selectedRouting
+                ? {
+                    only: [...selectedRouting.providers],
+                    order: [...selectedRouting.providers]
+                  }
+                : {})
+          }
+        }
+      : {})
+  };
+  const serialized = JSON.stringify(body);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_EMBEDDING_REQUEST_BYTES) {
+    throw new EmbeddingAdapterError("embedding_request_too_large");
+  }
+  return serialized;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return typeof signal.reason === "undefined"
+    ? new DOMException("The operation was aborted", "AbortError")
+    : signal.reason;
+}
+
+function waitForHedge(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const handleAbort = () => {
+      clearTimeout(timeout);
+      reject(abortReason(signal));
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", handleAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
+function hedgeFailure(error: unknown): unknown {
+  if (!(error instanceof AggregateError)) return error;
+  const failures = error.errors as unknown[];
+  return failures.find((failure) =>
+    failure instanceof ProviderResponseTooLargeError ||
+    failure instanceof EmbeddingAdapterError
+  ) ?? failures[0] ?? error;
+}
+
+function interactiveOpenRouterProviders(
+  request: EmbeddingRequest,
+  model: ProviderModelConfiguration
+): readonly string[] {
+  const interactive = request.latencyClass === "interactive" ||
+    request.latencyClass === undefined && request.mode === "query";
+  return interactive &&
+    model.embedding?.providerFamily === "openrouter" &&
+    model.openRouterRouting?.mode === "only_selected" &&
+    model.openRouterRouting.providers.length > 1
+    ? model.openRouterRouting.providers
+    : [];
+}
+
 export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
   connection: ProviderConnectionConfiguration;
   model: ProviderModelConfiguration;
@@ -297,23 +383,6 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
   return {
     async embed(request) {
       const prepared = requestInputs(request.texts, request.mode, model.embedding!);
-      const body = {
-        encoding_format: "float",
-        input: prepared,
-        model: model.upstreamModelId,
-        ...(model.embedding!.providerFamily === "openrouter"
-          ? {
-              provider: {
-                allow_fallbacks: false,
-                data_collection: "deny"
-              }
-            }
-          : {})
-      };
-      const serialized = JSON.stringify(body);
-      if (Buffer.byteLength(serialized, "utf8") > MAX_EMBEDDING_REQUEST_BYTES) {
-        throw new EmbeddingAdapterError("embedding_request_too_large");
-      }
       const timeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
       const timeout = withTimeoutSignal(request.signal, timeoutMs);
       try {
@@ -328,7 +397,10 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
           "content-type": "application/json"
         });
         if (secret !== null) headers.set("authorization", `Bearer ${secret}`);
-        return await executeWithProviderRetry({
+        const executeRequest = (
+          serialized: string,
+          signal: AbortSignal
+        ) => executeWithProviderRetry({
           operation: async () => {
             const response = await fetchFn(providerRequestEndpoint(
               connection,
@@ -338,11 +410,11 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
               headers,
               method: "POST",
               redirect: "error",
-              signal: timeout.signal
+              signal
             });
             const text = await readBoundedResponseText(response, {
               maxBytes: responseMaxBytes,
-              signal: timeout.signal
+              signal
             });
             if (!response.ok) {
               throw new EmbeddingAdapterError("embedding_provider_http_error", {
@@ -364,19 +436,51 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
             );
           },
           options: input.network?.retry,
-          shouldRetry: (error) => embeddingRetryDecision(error, timeout.signal),
-          signal: timeout.signal
+          shouldRetry: (error) => embeddingRetryDecision(error, signal),
+          signal
         });
-      } catch (error) {
-        if (error instanceof EmbeddingAdapterError) throw error;
-        if (error instanceof ProviderResponseTooLargeError) {
-          throw new EmbeddingAdapterError("embedding_response_too_large");
+        const hedgeProviders = interactiveOpenRouterProviders(request, model);
+        if (hedgeProviders.length === 0) {
+          return await executeRequest(
+            serializedRequestBody(prepared, model),
+            timeout.signal
+          );
         }
+
+        const settled = new AbortController();
+        const hedgeSignal = AbortSignal.any([timeout.signal, settled.signal]);
+        try {
+          const result = await Promise.any(hedgeProviders.map(async (provider, index) => {
+            if (index > 0) {
+              await waitForHedge(
+                OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS * index,
+                hedgeSignal
+              );
+            }
+            return executeRequest(
+              serializedRequestBody(prepared, model, provider),
+              hedgeSignal
+            );
+          }));
+          settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
+          return result;
+        } catch (error) {
+          throw hedgeFailure(error);
+        } finally {
+          if (!settled.signal.aborted) {
+            settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
+          }
+        }
+      } catch (error) {
         if (
           isProviderDeadlineExceededError(error) ||
           timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)
         ) {
           throw new EmbeddingAdapterError("embedding_request_timed_out");
+        }
+        if (error instanceof EmbeddingAdapterError) throw error;
+        if (error instanceof ProviderResponseTooLargeError) {
+          throw new EmbeddingAdapterError("embedding_response_too_large");
         }
         throw new EmbeddingAdapterError("embedding_provider_request_failed");
       } finally {

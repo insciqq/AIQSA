@@ -13,10 +13,10 @@ usage() {
   cat <<'USAGE'
 Usage: ops/backup/create.sh DESTINATION_DIRECTORY
 
-Create a coordinated AIQSA backup while the web app and standalone Memory
-worker are stopped. The script restarts only services that were running before
-the backup began and fences durable Memory and Knowledge deletion leases before
-copying data.
+Create a coordinated AIQSA backup while the web app, canonical Memory worker,
+and Memory OpenSearch projection worker are stopped. The script restarts only
+services that were running before the backup began and fences durable Memory,
+Memory projection, and Knowledge deletion leases before copying data.
 
 The destination receives one mode-0700 bundle containing:
   manifest.env   privacy-safe format/runtime metadata
@@ -86,6 +86,7 @@ partial="$destination/.${bundle_name}.partial.$$"
 objects_directory="$partial/.objects"
 app_was_running=0
 memory_worker_was_running=0
+memory_search_worker_was_running=0
 
 [[ ! -e "$bundle" && ! -e "$partial" ]] || die "Backup destination already exists."
 mkdir -m 700 -- "$partial"
@@ -110,6 +111,16 @@ cleanup() {
     fi
   fi
 
+  if [[ "$memory_search_worker_was_running" -eq 1 ]]; then
+    if compose start memory-search-worker >/dev/null 2>&1 &&
+      service_is_running memory-search-worker; then
+      info "memory-search-worker restarted."
+    else
+      info "Error: backup ended but memory-search-worker could not be restarted."
+      status=1
+    fi
+  fi
+
   if [[ "$app_was_running" -eq 1 ]]; then
     if compose start app >/dev/null 2>&1 && service_is_running app; then
       info "app restarted."
@@ -128,10 +139,12 @@ trap 'exit 129' HUP
 
 service_is_running app && app_was_running=1
 service_is_running memory-worker && memory_worker_was_running=1
+service_is_running memory-search-worker && memory_search_worker_was_running=1
 
-if [[ "$app_was_running" -eq 1 || "$memory_worker_was_running" -eq 1 ]]; then
+if [[ "$app_was_running" -eq 1 || "$memory_worker_was_running" -eq 1 ||
+  "$memory_search_worker_was_running" -eq 1 ]]; then
   info "Stopping web and Memory writers for a write-quiesced backup..."
-  compose stop app memory-worker >/dev/null
+  compose stop app memory-worker memory-search-worker >/dev/null
 fi
 
 if service_is_running app; then
@@ -139,6 +152,9 @@ if service_is_running app; then
 fi
 if service_is_running memory-worker; then
   die "memory-worker is still running; backup was not started."
+fi
+if service_is_running memory-search-worker; then
+  die "memory-search-worker is still running; backup was not started."
 fi
 
 info "Fencing durable deletion leases..."
@@ -170,6 +186,15 @@ SET
   "errorCode" = '"'"'memory_backup_fenced'"'"',
   "updatedAt" = CURRENT_TIMESTAMP
 WHERE "state" = '"'"'RUNNING'"'"'::"MemoryDeletionState";
+UPDATE "MemoryLexicalProjectionEvent"
+SET
+  "state" = '"'"'RETRY_WAIT'"'"'::"MemoryLexicalProjectionEventState",
+  "leaseToken" = NULL,
+  "leaseExpiresAt" = NULL,
+  "nextAttemptAt" = CURRENT_TIMESTAMP,
+  "errorCode" = '"'"'memory_backup_fenced'"'"',
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "state" = '"'"'CLAIMED'"'"'::"MemoryLexicalProjectionEventState";
 UPDATE "KnowledgeDeletionJob"
 SET
   "state" = '"'"'RETRY_WAIT'"'"'::"KnowledgeDeletionState",
