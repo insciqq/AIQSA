@@ -720,7 +720,12 @@ async function purgeProviderAttempts(
             state: "ambiguous" as const
           }
         : {};
-    const structuredAnswer = attempt.purpose === "knowledge_coverage_planner_v20" ||
+    const structuredAnswer = attempt.purpose === "knowledge_answer_draft_v21" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v21" ||
+      attempt.purpose === "knowledge_grounded_selector_v17" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v17" ||
+      attempt.purpose === "knowledge_coverage_auditor_v1" ||
+      attempt.purpose === "knowledge_coverage_planner_v20" ||
       attempt.purpose === "knowledge_answer_draft_v20" ||
       attempt.purpose === "knowledge_answer_draft_supplement_v20" ||
       attempt.purpose === "knowledge_answer_draft_v19" ||

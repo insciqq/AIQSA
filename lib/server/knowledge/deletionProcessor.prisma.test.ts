@@ -407,7 +407,16 @@ async function createActiveProviderAttemptPrivacyAudit(input: Readonly<{
 }
 
 async function createStructuredAnswerPrivacyAudit(input: Readonly<{
+  contractVersion?: 1 | 5 | 17 | 21;
   modelRunId: string;
+  ordinal?: number;
+  purpose?:
+    | "knowledge_answer_draft_v5"
+    | "knowledge_answer_draft_v21"
+    | "knowledge_answer_draft_supplement_v21"
+    | "knowledge_coverage_auditor_v1"
+    | "knowledge_grounded_selector_final_v17"
+    | "knowledge_grounded_selector_v17";
   suffix: string;
 }>): Promise<string> {
   const now = new Date();
@@ -420,6 +429,9 @@ async function createStructuredAnswerPrivacyAudit(input: Readonly<{
     reasoningTokens: null,
     totalTokens: 2
   };
+  const contractVersion = input.contractVersion ?? 5;
+  const ordinal = input.ordinal ?? 4;
+  const purpose = input.purpose ?? "knowledge_answer_draft_v5";
   const attempt = await prisma.knowledgeProviderAttempt.create({
     data: {
       acceptedRequest: {
@@ -432,16 +444,17 @@ async function createStructuredAnswerPrivacyAudit(input: Readonly<{
       },
       actualUsage: usage,
       checkpointHash: "a".repeat(64),
-      contractVersion: 5,
+      contractVersion,
+      createdAt: now,
       dispatchedAt: now,
       estimatedUsage: usage,
       evidenceReceiptHash: "b".repeat(64),
-      idempotencyKey: `structured-draft:${input.suffix}`,
+      idempotencyKey: `structured-answer:${ordinal}:${input.suffix}`,
       modelRunId: input.modelRunId,
-      ordinal: 4,
+      ordinal,
       providerBindingKey: "answer",
       providerResponseId: `private-structured-response:${input.suffix}`,
-      purpose: "knowledge_answer_draft_v5",
+      purpose,
       requestHash: "c".repeat(64),
       resultAcceptedAt: now,
       resultHash: "d".repeat(64),
@@ -1060,6 +1073,31 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       modelRunId: run.id,
       suffix
     });
+    const structuredV21AttemptIds: string[] = [];
+    const v21Purposes = [{
+      contractVersion: 21 as const,
+      purpose: "knowledge_answer_draft_v21" as const
+    }, {
+      contractVersion: 17 as const,
+      purpose: "knowledge_grounded_selector_v17" as const
+    }, {
+      contractVersion: 1 as const,
+      purpose: "knowledge_coverage_auditor_v1" as const
+    }, {
+      contractVersion: 21 as const,
+      purpose: "knowledge_answer_draft_supplement_v21" as const
+    }, {
+      contractVersion: 17 as const,
+      purpose: "knowledge_grounded_selector_final_v17" as const
+    }];
+    for (const [index, operation] of v21Purposes.entries()) {
+      structuredV21AttemptIds.push(await createStructuredAnswerPrivacyAudit({
+        ...operation,
+        modelRunId: run.id,
+        ordinal: index + 5,
+        suffix: `${suffix}-v21-${index + 1}`
+      }));
+    }
     await prisma.modelRun.update({
       data: { status: "in_progress" },
       where: { id: run.id }
@@ -1379,6 +1417,26 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         resultHash: "0".repeat(64),
         state: "settled"
       });
+      for (const attemptId of structuredV21AttemptIds) {
+        await expect(prisma.knowledgeProviderAttempt.findUnique({
+          select: {
+            acceptedRequest: true,
+            acceptedResult: true,
+            evidenceReceiptHash: true,
+            providerResponseId: true,
+            resultHash: true,
+            state: true
+          },
+          where: { id: attemptId }
+        })).resolves.toEqual({
+          acceptedRequest: { purged: true, version: 1 },
+          acceptedResult: { purged: true, version: 1 },
+          evidenceReceiptHash: "0".repeat(64),
+          providerResponseId: null,
+          resultHash: "0".repeat(64),
+          state: "settled"
+        });
+      }
       await expect(prisma.knowledgeProviderAttempt.findMany({
         orderBy: { ordinal: "asc" },
         select: {

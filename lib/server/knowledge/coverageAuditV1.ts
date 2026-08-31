@@ -55,6 +55,18 @@ export type KnowledgeCoverageAuditValidationFailureReason =
   | "coverage_audit_shape_invalid"
   | "coverage_audit_support_invalid";
 
+export type KnowledgeCoverageAuditFailureReasonV1 =
+  | KnowledgeCoverageAuditValidationFailureReason
+  | "coverage_audit_provider_error"
+  | "coverage_audit_refusal"
+  | "coverage_audit_timeout"
+  | "coverage_audit_transport_failure";
+
+export type KnowledgeCoverageAuditFailureV1 = Readonly<{
+  kind: "coverage_audit_failed";
+  reason: KnowledgeCoverageAuditFailureReasonV1;
+}>;
+
 export type KnowledgeCoverageAuditValidationV1 =
   | Readonly<{ kind: "accepted"; value: KnowledgeCoverageAuditV1 }>
   | Readonly<{
@@ -107,6 +119,39 @@ function rejected(
   reason: KnowledgeCoverageAuditValidationFailureReason
 ): KnowledgeCoverageAuditValidationV1 {
   return Object.freeze({ kind: "rejected", reason });
+}
+
+const auditValidationFailureReasons = new Set<KnowledgeCoverageAuditValidationFailureReason>([
+  "coverage_audit_anchor_invalid",
+  "coverage_audit_description_invalid",
+  "coverage_audit_dimension_invalid",
+  "coverage_audit_evidence_hint_invalid",
+  "coverage_audit_shape_invalid",
+  "coverage_audit_support_invalid"
+]);
+
+export function knowledgeCoverageAuditFailureV1(
+  reason: KnowledgeCoverageAuditFailureReasonV1
+): KnowledgeCoverageAuditFailureV1 {
+  return Object.freeze({ kind: "coverage_audit_failed", reason });
+}
+
+export function decodeKnowledgeCoverageAuditFailureV1(
+  value: unknown
+): KnowledgeCoverageAuditFailureV1 | null {
+  if (!record(value) || !exactKeys(value, ["kind", "reason"]) ||
+    value.kind !== "coverage_audit_failed" || typeof value.reason !== "string" ||
+    value.reason !== "coverage_audit_provider_error" &&
+    value.reason !== "coverage_audit_refusal" &&
+    value.reason !== "coverage_audit_timeout" &&
+    value.reason !== "coverage_audit_transport_failure" &&
+    !auditValidationFailureReasons.has(
+      value.reason as KnowledgeCoverageAuditValidationFailureReason
+    )) return null;
+  return Object.freeze({
+    kind: "coverage_audit_failed",
+    reason: value.reason as KnowledgeCoverageAuditFailureReasonV1
+  });
 }
 
 const supportedClaimSchema = Object.freeze({

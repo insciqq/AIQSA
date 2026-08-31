@@ -22,11 +22,13 @@ import {
   buildKnowledgeSupportedAnswerViewV1,
   decodeKnowledgeAnswerDraftSupplementV21,
   decodeKnowledgeAnswerDraftV21,
+  decodeKnowledgeGroundedSelectorFailureV17,
   decodeKnowledgeGroundedSelectorFinalV17,
   decodeKnowledgeGroundedSelectorV17,
   knowledgeAnswerDraftPromptV21,
   knowledgeAnswerV21FailureCode,
   knowledgeGroundedSelectorPromptV17,
+  knowledgeGroundedSelectorV17Fallback,
   mergeKnowledgeAnswerDraftsV21,
   settleKnowledgeAnswerV21FromAudit,
   settleKnowledgeAnswerV21FromFinalSelector,
@@ -235,6 +237,16 @@ describe("Knowledge grounding V21 contracts", () => {
     expect(decodeKnowledgeAnswerDraftV21(rawDraft([
       { hints: ["K1"], text: "Unsafe\nclaim." }
     ]), { availableHandles: ["K1"] })).toBeNull();
+  });
+
+  it("accepts only Selector-owned classified failures", () => {
+    expect(decodeKnowledgeGroundedSelectorFailureV17(
+      knowledgeGroundedSelectorV17Fallback("selector_timeout")
+    )).toEqual({ kind: "selector_failed", reason: "selector_timeout" });
+    expect(decodeKnowledgeGroundedSelectorFailureV17({
+      kind: "selector_failed",
+      reason: "draft_malformed"
+    })).toBeNull();
   });
 
   it("makes initial Selector factual-support-only with exact claim identity", () => {
