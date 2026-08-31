@@ -26,13 +26,17 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+  buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftV21CommonMarkV1,
+  knowledgeAnswerScopeV6CorrectionFitsV2,
   knowledgeAnswerDraftPromptV21,
   settleKnowledgeAnswerV21FromFinalSelector,
   validateKnowledgeAnswerDraftV21CommonMarkV1,
-  type KnowledgeAnswerOperationScopeV6CompletenessV1,
+  type KnowledgeAnswerOperationScopeV6ClosureV1,
   type KnowledgeAnswerV21ContractVersions
 } from "./answerGroundingV21";
 import {
@@ -41,17 +45,19 @@ import {
   decodeKnowledgeTargetedSupplementV3,
   isKnowledgeTargetedSupplementFailureReasonV1,
   knowledgeTargetableMissingDimensionsV1,
-  knowledgeTargetedEvidenceAtomIndexV1,
+  knowledgeTargetedEvidenceAtomIndex,
   knowledgeTargetedSupplementFailureV1,
   knowledgeTargetedSupplementFitsV1,
-  mergeKnowledgeGroundedCorrectionV1,
+  knowledgeGroundedDeltaCoverageReviewRequiredV1,
+  mergeKnowledgeGroundedCorrectionV2,
   mergeKnowledgeTargetedSupplementV2,
   validateKnowledgeTargetedSupplementV3,
   type KnowledgeTargetedSupplementClaimBindingV1
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeAnswerTargetedSupplementPromptV2,
-  knowledgeGroundedDeltaSelectorPromptV2
+  knowledgeAnswerTargetedSupplementPromptV3,
+  knowledgeGroundedDeltaSelectorPromptV4,
+  knowledgeGroundedSelectorPromptV21TargetClosureV1
 } from "./answerGroundingCorrectionPromptV21";
 import {
   acceptedOperation,
@@ -64,16 +70,25 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
-  decodeKnowledgeCoverageScopeFailureV6,
   decodeKnowledgeCoverageScopeV6,
   isKnowledgeCoverageScopeValidationFailureReasonV6,
   knowledgeCoverageEvidenceFromManifestV6,
-  knowledgeCoverageScopeFailureV6,
-  knowledgeCoverageScopePromptV6,
-  validateKnowledgeCoverageScopeV6,
   type KnowledgeCoverageScopeFailureReasonV6,
   type KnowledgeCoverageScopeValidationFailureReasonV6
 } from "./coverageScopeV6";
+import {
+  type KnowledgeCoverageScopeRepairDiagnosticV1
+} from "./coverageScopeRepairFeedbackV1";
+import {
+  decodeKnowledgeCoverageScopeRepairCandidateV1,
+  decodeKnowledgeCoverageScopeVerifiedPatchFailureV1,
+  knowledgeCoverageScopePromptV6VerifiedPatchV1,
+  knowledgeCoverageScopeRepairBaseHashV1,
+  knowledgeCoverageScopeVerifiedPatchFailureV1,
+  mergeKnowledgeCoverageScopeVerifiedPatchesV1,
+  rejectKnowledgeCoverageScopeForeignLocalFindingsV1,
+  type KnowledgeCoverageScopeRepairCandidateV1
+} from "./coverageScopeVerifiedPatchRepairV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
@@ -89,6 +104,22 @@ import {
   type KnowledgeCoverageScopeCompletenessValidationFailureReasonV1
 } from "./coverageScopeCompletenessV1";
 import {
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
+  applyKnowledgeCoverageScopeClosureV1,
+  decodeKnowledgeCoverageScopeClosureFailureV1,
+  decodeKnowledgeCoverageScopeClosureV1,
+  isKnowledgeCoverageScopeClosureValidationFailureReasonV1,
+  knowledgeCoverageScopeClosureFailureV1,
+  knowledgeCoverageScopeClosurePromptV1,
+  validateKnowledgeCoverageScopeClosureV1,
+  type KnowledgeCoverageScopeClosureFailureReasonV1,
+  type KnowledgeCoverageScopeClosureValidationFailureReasonV1
+} from "./coverageScopeClosureV1";
+import { KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 } from "./coverageScopeV4";
+import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
@@ -97,7 +128,6 @@ import {
   decodeKnowledgeGroundedSelectorFailureV21,
   decodeKnowledgeGroundedSelectorV21,
   knowledgeCoverageMissingDimensionsV6,
-  knowledgeGroundedSelectorPromptV21,
   knowledgeGroundedSelectorV21Fallback,
   normalizeKnowledgeGroundedSelectorSupportEdgesV1,
   validateKnowledgeGroundedSelectorV21,
@@ -109,12 +139,12 @@ import {
   type KnowledgeGroundingEffectiveExecutionPolicyV1
 } from "./groundingExecutionPolicy";
 
-type OperationOrdinalScopeV6 = OperationOrdinalV21 | 7;
+type OperationOrdinalScopeV6 = OperationOrdinalV21 | 7 | 8;
 
 export type KnowledgeAnswerGroundingExecutionV21ScopeV6Result = Readonly<{
   contracts: KnowledgeAnswerV21ContractVersions;
   operations: readonly Readonly<{
-    operation: KnowledgeAnswerOperationScopeV6CompletenessV1;
+    operation: KnowledgeAnswerOperationScopeV6ClosureV1;
     ordinal: OperationOrdinalScopeV6;
     providerResponseId: string | null;
     usage: ModelRunUsage;
@@ -170,12 +200,30 @@ function completenessFallbackReason(
   return "coverage_scope_completeness_provider_error";
 }
 
-/** Executes Draft -> positive-finding Scope -> append-only completeness -> Selector.
+function closureFallbackReason(
+  error: unknown
+): KnowledgeCoverageScopeClosureFailureReasonV1 {
+  const name = error instanceof Error ? error.name.toLowerCase() : "";
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (name === "timeouterror" || message.includes("timeout") ||
+    message.includes("deadline")) return "coverage_scope_closure_timeout";
+  if (message.includes("refusal") || message.includes("refused") ||
+    message.includes("safety")) return "coverage_scope_closure_refusal";
+  if (error instanceof TypeError || message.includes("network") ||
+    message.includes("transport") || message.includes("fetch")) {
+    return "coverage_scope_closure_transport_failure";
+  }
+  return "coverage_scope_closure_provider_error";
+}
+
+/** Executes Draft -> positive-finding Scope -> append-only completeness -> Selector
+ * -> independent semantic closure veto.
  * Scope and completeness are physically separate request/evidence-only operations.
  * Completeness may only add validated findings to immutable Scope; it cannot rewrite
  * or remove one. Every downstream request pins the resulting Scope hash. Adjacent
- * structural repairs and one correction remain bounded by the seven-call hard cap.
- * One validation repair cannot consume the two slots reserved for correction. */
+ * structural repairs and one correction remain bounded by the eight-call hard cap.
+ * Admission is atomic for the two-call semantic correction: the normal path and
+ * any path with one adjacent structural repair retain both correction slots. */
 export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   authorize(): Promise<void>;
   draft: KnowledgeEvidenceDispatchManifestDraft;
@@ -220,13 +268,14 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   > = [];
   const pushOperation = (
     ordinal: OperationOrdinalScopeV6,
-    operation: KnowledgeAnswerOperationScopeV6CompletenessV1,
+    operation: KnowledgeAnswerOperationScopeV6ClosureV1,
     result: Readonly<{
       providerResponseId: string | null;
       usage: ModelRunUsage;
     }>
   ) => {
-    if (operations.length + 1 !== ordinal || operations.length >= 7) {
+    if (operations.length + 1 !== ordinal || operations.length >=
+      KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
       throw new Error("knowledge_answer_operation_sequence_invalid");
     }
     operations.push(Object.freeze({
@@ -257,7 +306,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
     ...requestExecutionPolicy,
     protocol:
-      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1",
+      KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
     schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
     systemPrompt: draftPrompt.systemPrompt,
     transport: input.transport,
@@ -295,15 +344,26 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     });
   if (!primaryDraft) throw new Error("knowledge_answer_draft_result_invalid");
 
+  let transientScopeRepairBase: KnowledgeCoverageScopeRepairCandidateV1 | null = null;
   const runScope = async (
     ordinal: OperationOrdinalScopeV6,
     scopePass: "initial" | "repair",
-    repairReason?: KnowledgeCoverageScopeValidationFailureReasonV6
+    repair?: Readonly<{
+      diagnostic: KnowledgeCoverageScopeRepairDiagnosticV1;
+      reason: KnowledgeCoverageScopeValidationFailureReasonV6;
+      repairBase: KnowledgeCoverageScopeRepairCandidateV1 | null;
+      repairBaseHash: string | null;
+    }>
   ) => {
-    const prompt = knowledgeCoverageScopePromptV6({
+    const prompt = knowledgeCoverageScopePromptV6VerifiedPatchV1({
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: input.draft.message,
-      ...(repairReason ? { repairReason } : {}),
+      repairBaseHash: repair?.repairBaseHash ?? null,
+      ...(repair ? {
+        repairDiagnostic: repair.diagnostic,
+        repairReason: repair.reason
+      } : {}),
       request: input.request,
       scopePass
     });
@@ -314,7 +374,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
       ...requestExecutionPolicy,
       protocol:
-        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1",
+        KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
       schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -322,16 +382,46 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     });
     const operation = await acceptedOperation({
       acceptedFailure: (error) => operationRecord(
-        knowledgeCoverageScopeFailureV6(scopeFallbackReason(error))
+        knowledgeCoverageScopeVerifiedPatchFailureV1(scopeFallbackReason(error))
       ),
       acceptedOutput: (output) => {
-        const validation = validateKnowledgeCoverageScopeV6(output, {
+        if (repair?.repairBase &&
+          decodeKnowledgeCoverageScopeRepairCandidateV1(output)) {
+          const merge = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
+            atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+            base: repair.repairBase,
+            diagnostic: repair.diagnostic,
+            evidence,
+            rejectForeignLocalFindings: true,
+            repair: output,
+            request: input.request
+          });
+          return operationRecord(merge.kind === "accepted"
+            ? merge.output
+            : knowledgeCoverageScopeVerifiedPatchFailureV1(
+                merge.reason,
+                merge.diagnostic
+              ));
+        }
+        const localRejection = rejectKnowledgeCoverageScopeForeignLocalFindingsV1(
+          output,
+          {
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           evidence,
           request: input.request
-        });
+          }
+        );
+        const validation = localRejection.validation;
+        if (scopePass === "initial" && validation.kind === "rejected") {
+          transientScopeRepairBase = validation.repairBase;
+        }
         return operationRecord(validation.kind === "accepted"
-          ? output
-          : knowledgeCoverageScopeFailureV6(validation.reason));
+          ? validation.output
+          : knowledgeCoverageScopeVerifiedPatchFailureV1(
+              validation.reason,
+              validation.diagnostic,
+              knowledgeCoverageScopeRepairBaseHashV1(validation.repairBase)
+            ));
       },
       acceptedRequest: request,
       authorize: input.authorize,
@@ -351,22 +441,36 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
 
   let scopeOrdinal: OperationOrdinalScopeV6 = 2;
   let scopeOperation = await runScope(scopeOrdinal, "initial");
-  const initialScopeFailure = decodeKnowledgeCoverageScopeFailureV6(
+  const initialScopeFailure = decodeKnowledgeCoverageScopeVerifiedPatchFailureV1(
     scopeOperation.acceptedResult
   );
-  if (initialScopeFailure &&
+  if (initialScopeFailure?.diagnostic &&
     isKnowledgeCoverageScopeValidationFailureReasonV6(initialScopeFailure.reason)) {
+    const transientScopeRepairBaseHash = knowledgeCoverageScopeRepairBaseHashV1(
+      transientScopeRepairBase
+    );
+    if (transientScopeRepairBaseHash !== initialScopeFailure.repairBaseHash) {
+      throw new Error("knowledge_coverage_scope_repair_base_unavailable");
+    }
     scopeOrdinal = 3;
     scopeOperation = await runScope(
       scopeOrdinal,
       "repair",
-      initialScopeFailure.reason
+      {
+        diagnostic: initialScopeFailure.diagnostic,
+        reason: initialScopeFailure.reason,
+        repairBase: transientScopeRepairBase,
+        repairBaseHash: initialScopeFailure.repairBaseHash
+      }
     );
   }
-  if (decodeKnowledgeCoverageScopeFailureV6(scopeOperation.acceptedResult)) {
+  if (decodeKnowledgeCoverageScopeVerifiedPatchFailureV1(
+    scopeOperation.acceptedResult
+  )) {
     throw new Error("knowledge_coverage_scope_unaccepted");
   }
   let scope = decodeKnowledgeCoverageScopeV6(scopeOperation.acceptedResult, {
+    atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     evidence,
     request: input.request
   });
@@ -380,6 +484,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   ) => {
     const prompt = knowledgeCoverageScopeCompletenessPromptV1({
       acceptedScope: scope!,
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       completenessPass,
       evidence,
       evidenceManifest: input.draft.message,
@@ -394,7 +499,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
       ...requestExecutionPolicy,
       protocol:
-        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1",
+        KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
       schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -409,6 +514,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       acceptedOutput: (output) => {
         const validation = validateKnowledgeCoverageScopeCompletenessV1(output, {
           acceptedScope: scope!,
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           evidence,
           request: input.request
         });
@@ -455,7 +561,12 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }
   const completeness = decodeKnowledgeCoverageScopeCompletenessV1(
     completenessOperation.acceptedResult,
-    { acceptedScope: scope, evidence, request: input.request }
+    {
+      acceptedScope: scope,
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      evidence,
+      request: input.request
+    }
   );
   if (!completeness) {
     throw new Error("knowledge_coverage_scope_completeness_unaccepted");
@@ -473,23 +584,31 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
     ordinal: OperationOrdinalScopeV6;
     repairReason?: KnowledgeSelectorValidationFailureReason;
-    selectorPass: "final" | "initial" | "repair";
+    selectorPass: "final" | "final_repair" | "initial" | "repair";
   }>) => {
-    if ((selectorInput.selectorPass === "final") !== Boolean(selectorInput.correction)) {
+    const correctionPass = selectorInput.selectorPass === "final" ||
+      selectorInput.selectorPass === "final_repair";
+    const repairPass = selectorInput.selectorPass === "repair" ||
+      selectorInput.selectorPass === "final_repair";
+    if (correctionPass !== Boolean(selectorInput.correction) ||
+      repairPass !== Boolean(selectorInput.repairReason)) {
       throw new Error("knowledge_grounded_selector_correction_state_invalid");
     }
     const prompt = selectorInput.correction
-      ? knowledgeGroundedDeltaSelectorPromptV2({
+      ? knowledgeGroundedDeltaSelectorPromptV4({
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           bindings: selectorInput.correction.bindings,
           draft: selectorInput.draft,
           evidence,
-          evidenceManifest: input.draft.message,
           initialSelector: selectorInput.correction.initialSelector,
+          ...(selectorInput.repairReason
+            ? { repairReason: selectorInput.repairReason }
+            : {}),
           request: input.request,
-          scope,
-          scopeProtocol: "append_only_completeness_v1"
+          scope
         })
-      : knowledgeGroundedSelectorPromptV21({
+      : knowledgeGroundedSelectorPromptV21TargetClosureV1({
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           draft: selectorInput.draft,
           evidence,
           evidenceManifest: input.draft.message,
@@ -509,7 +628,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       operation: selectorInput.operation,
       ...requestExecutionPolicy,
       protocol:
-        "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1",
+        KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -520,27 +639,38 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         knowledgeGroundedSelectorV21Fallback(selectorFallbackReason(error))
       ),
       acceptedOutput: (output) => {
-        const normalizedOutput = normalizeKnowledgeGroundedSelectorSupportEdgesV1(
-          output,
-          {
-            draft: selectorInput.draft,
-            evidence,
-            request: input.request,
-            scope,
-            scopeProtocol: "append_only_completeness_v1"
-          }
-        );
-        if (normalizedOutput) return operationRecord(normalizedOutput);
-        const validation = validateKnowledgeGroundedSelectorV21(output, {
+        const validationInput = {
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           draft: selectorInput.draft,
           evidence,
           request: input.request,
           scope,
-          scopeProtocol: "append_only_completeness_v1"
-        });
-        return operationRecord(validation.kind === "accepted"
-          ? output
-          : knowledgeGroundedSelectorV21Fallback(validation.reason));
+          scopeProtocol: "append_only_completeness_v1" as const
+        };
+        const normalizedOutput = normalizeKnowledgeGroundedSelectorSupportEdgesV1(
+          output,
+          validationInput
+        );
+        const candidate = normalizedOutput ?? output;
+        const validation = validateKnowledgeGroundedSelectorV21(
+          candidate,
+          validationInput
+        );
+        if (validation.kind === "rejected") {
+          return operationRecord(knowledgeGroundedSelectorV21Fallback(validation.reason));
+        }
+        const coverageReviewRequired = selectorInput.correction !== undefined &&
+          selectorInput.selectorPass === "final" && selectorInput.ordinal <
+            KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 &&
+          knowledgeGroundedDeltaCoverageReviewRequiredV1({
+            bindings: selectorInput.correction.bindings,
+            finalSelector: validation.value,
+            initialSelector: selectorInput.correction.initialSelector,
+            primaryClaimCount: selectorInput.correction.initialSelector.claims.length
+          });
+        return operationRecord(coverageReviewRequired
+          ? knowledgeGroundedSelectorV21Fallback("selector_coverage_invalid")
+          : candidate);
       },
       acceptedRequest: request,
       authorize: input.authorize,
@@ -571,6 +701,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   let acceptedSelector: KnowledgeGroundedSelectorV21 | null = selectorFailure
     ? null
     : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
+        atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
         draft: primaryDraft,
         evidence,
         request: input.request,
@@ -583,7 +714,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (!isKnowledgeDraftMalformed(primaryDraft) && selectorFailure &&
     isKnowledgeSelectorValidationFailureReason(selectorFailure.reason)) {
     selectorOrdinal = (selectorOrdinal + 1) as OperationOrdinalScopeV6;
-    if (selectorOrdinal > 7) throw new Error("knowledge_answer_operation_limit_exceeded");
+    if (selectorOrdinal > KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+      throw new Error("knowledge_answer_operation_limit_exceeded");
+    }
     selectorOperation = await runSelector({
       draft: primaryDraft,
       operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
@@ -597,6 +730,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     acceptedSelector = selectorFailure
       ? null
       : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           draft: primaryDraft,
           evidence,
           request: input.request,
@@ -609,32 +743,143 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }
   if (!acceptedSelector) throw new Error("knowledge_grounded_selector_result_invalid");
 
+  let correctionBaseSelector = acceptedSelector;
+  let postSelectorOrdinal = selectorOrdinal;
+  if (acceptedSelector.coverage.some(({ status }) => status === "covered")) {
+    const supportedView = buildKnowledgeSupportedAnswerViewV1({
+      draft: primaryDraft,
+      evidence,
+      selector: Object.freeze({
+        claims: acceptedSelector.claims,
+        extractIds: acceptedSelector.extractIds,
+        insufficientReason: acceptedSelector.insufficientReason,
+        version: acceptedSelector.version
+      })
+    });
+    const closureInput = {
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      evidence,
+      request: input.request,
+      scope,
+      selector: acceptedSelector,
+      supportedView
+    } as const;
+    const runClosure = async (
+      ordinal: OperationOrdinalScopeV6,
+      closurePass: "initial" | "repair",
+      repairReason?: KnowledgeCoverageScopeClosureValidationFailureReasonV1
+    ) => {
+      const prompt = knowledgeCoverageScopeClosurePromptV1({
+        ...closureInput,
+        closurePass,
+        ...(repairReason ? { repairReason } : {})
+      });
+      const request = createKnowledgeAnswerOperationRequestSnapshotV21({
+        contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
+        coverageScopePayloadHash,
+        evidenceReceiptHash: input.draft.manifestHash,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+        ...requestExecutionPolicy,
+        protocol: KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+        schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
+        systemPrompt: prompt.systemPrompt,
+        transport: input.transport,
+        userPrompt: prompt.userPrompt
+      });
+      const operation = await acceptedOperation({
+        acceptedFailure: (error) => operationRecord(
+          knowledgeCoverageScopeClosureFailureV1(closureFallbackReason(error))
+        ),
+        acceptedOutput: (output) => {
+          const validation = validateKnowledgeCoverageScopeClosureV1(
+            output,
+            closureInput
+          );
+          return operationRecord(validation.kind === "accepted"
+            ? output
+            : knowledgeCoverageScopeClosureFailureV1(validation.reason));
+        },
+        acceptedRequest: request,
+        authorize: input.authorize,
+        draft: input.draft,
+        evidenceBindings: input.evidenceBindings,
+        execute: input.execute,
+        lifecycle: input.lifecycle,
+        modelRunId: input.modelRunId,
+        operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+        ordinal,
+        recoveryProviderResponseId: input.recoveryProviderResponseIds?.[ordinal],
+        shouldAbort: input.shouldAbort
+      });
+      pushOperation(ordinal, KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION, operation);
+      return operation;
+    };
+
+    postSelectorOrdinal = (selectorOrdinal + 1) as OperationOrdinalScopeV6;
+    if (postSelectorOrdinal >
+      KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+      throw new Error("knowledge_answer_operation_limit_exceeded");
+    }
+    let closureOperation = await runClosure(postSelectorOrdinal, "initial");
+    const initialClosureFailure = decodeKnowledgeCoverageScopeClosureFailureV1(
+      closureOperation.acceptedResult
+    );
+    if (initialClosureFailure &&
+      isKnowledgeCoverageScopeClosureValidationFailureReasonV1(
+        initialClosureFailure.reason
+      ) && postSelectorOrdinal <
+        KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+      postSelectorOrdinal = (postSelectorOrdinal + 1) as OperationOrdinalScopeV6;
+      closureOperation = await runClosure(
+        postSelectorOrdinal,
+        "repair",
+        initialClosureFailure.reason
+      );
+    }
+    if (decodeKnowledgeCoverageScopeClosureFailureV1(
+      closureOperation.acceptedResult
+    )) {
+      throw new Error("knowledge_coverage_scope_closure_unaccepted");
+    }
+    const closure = decodeKnowledgeCoverageScopeClosureV1(
+      closureOperation.acceptedResult,
+      closureInput
+    );
+    if (!closure) throw new Error("knowledge_coverage_scope_closure_unaccepted");
+    correctionBaseSelector = applyKnowledgeCoverageScopeClosureV1({
+      closure,
+      selector: acceptedSelector
+    });
+  }
+
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
     ? 0
     : primaryDraft.claims.length;
-  const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector);
+  const missingDimensions = knowledgeCoverageMissingDimensionsV6(correctionBaseSelector);
   const targetableMissingDimensions = knowledgeTargetableMissingDimensionsV1(
     missingDimensions
   );
-  const targetEvidenceAvailable = knowledgeTargetedEvidenceAtomIndexV1({
+  const targetEvidenceAvailable = knowledgeTargetedEvidenceAtomIndex({
     evidence,
     targetDimensions: targetableMissingDimensions
-  }) !== null;
+  }, KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2) !== null;
   const correctionRequired = targetEvidenceAvailable && knowledgeTargetedSupplementFitsV1({
     primaryClaimCount,
     targetableDimensionCount: targetableMissingDimensions.length
   }) &&
-    selectorOrdinal + 2 <= 7;
+    knowledgeAnswerScopeV6CorrectionFitsV2(postSelectorOrdinal);
   if (!correctionRequired) {
     return result(settleKnowledgeAnswerV21FromFinalSelector({
       draft: primaryDraft,
       evidence,
-      selector: acceptedSelector
+      selector: correctionBaseSelector
     }));
   }
 
-  const supplementOrdinal = (selectorOrdinal + 1) as OperationOrdinalScopeV6;
-  const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV2({
+  const supplementOrdinal = (postSelectorOrdinal + 1) as OperationOrdinalScopeV6;
+  const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV3({
+    atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     auditDimensions: targetableMissingDimensions,
     evidence,
     primaryClaimCount,
@@ -653,7 +898,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
     ...requestExecutionPolicy,
     protocol:
-      "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1",
+      KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
     schema: supplementSchema,
     systemPrompt: supplementPrompt.systemPrompt,
     transport: input.transport,
@@ -702,7 +947,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     return result(settleKnowledgeAnswerV21FromFinalSelector({
       draft: primaryDraft,
       evidence,
-      selector: acceptedSelector
+      selector: correctionBaseSelector
     }));
   }
   const supplement = decodeKnowledgeTargetedSupplementV3(
@@ -720,21 +965,45 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     supplement
   });
   const finalDraft = merged.draft;
-  const finalOrdinal = (supplementOrdinal + 1) as OperationOrdinalScopeV6;
-  if (finalOrdinal > 7) throw new Error("knowledge_answer_operation_limit_exceeded");
-  const finalOperation = await runSelector({
+  let finalOrdinal = (supplementOrdinal + 1) as OperationOrdinalScopeV6;
+  if (finalOrdinal > KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+    throw new Error("knowledge_answer_operation_limit_exceeded");
+  }
+  let finalOperation = await runSelector({
     correction: {
       bindings: merged.bindings,
-      initialSelector: acceptedSelector
+      initialSelector: correctionBaseSelector
     },
     draft: finalDraft,
     operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
     ordinal: finalOrdinal,
     selectorPass: "final"
   });
-  const finalSelector = decodeKnowledgeGroundedSelectorFailureV21(
+  let finalFailure = decodeKnowledgeGroundedSelectorFailureV21(
     finalOperation.acceptedResult
-  ) ? null : decodeKnowledgeGroundedSelectorV21(finalOperation.acceptedResult, {
+  );
+  if (finalFailure && isKnowledgeSelectorValidationFailureReason(finalFailure.reason) &&
+    finalOrdinal < KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+    finalOrdinal = (finalOrdinal + 1) as OperationOrdinalScopeV6;
+    finalOperation = await runSelector({
+      correction: {
+        bindings: merged.bindings,
+        initialSelector: correctionBaseSelector
+      },
+      draft: finalDraft,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      ordinal: finalOrdinal,
+      repairReason: finalFailure.reason,
+      selectorPass: "final_repair"
+    });
+    finalFailure = decodeKnowledgeGroundedSelectorFailureV21(
+      finalOperation.acceptedResult
+    );
+  }
+  const finalSelector = finalFailure ? null : decodeKnowledgeGroundedSelectorV21(
+    finalOperation.acceptedResult,
+    {
+    atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     draft: finalDraft,
     evidence,
     request: input.request,
@@ -742,10 +1011,10 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     scopeProtocol: "append_only_completeness_v1"
   });
   if (!finalSelector) throw new Error("knowledge_grounded_selector_result_invalid");
-  const correctedSelector = mergeKnowledgeGroundedCorrectionV1({
+  const correctedSelector = mergeKnowledgeGroundedCorrectionV2({
     bindings: merged.bindings,
     finalSelector,
-    initialSelector: acceptedSelector,
+    initialSelector: correctionBaseSelector,
     primaryClaimCount
   });
   return result(settleKnowledgeAnswerV21FromFinalSelector({

@@ -16,6 +16,7 @@ import {
   KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
@@ -30,7 +31,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -654,7 +655,7 @@ function evidenceFacts(input: Readonly<{
   });
 }
 
-async function loadProductAnswer(input: Readonly<{
+export async function loadProductAnswer(input: Readonly<{
   case: OpenRagAnswerCase;
   chat: ChatExecution;
   goldDocumentId: string;
@@ -663,7 +664,9 @@ async function loadProductAnswer(input: Readonly<{
 }>): Promise<OpenRagProductAnswer> {
   const repository = createPrismaKnowledgeEvidenceDispatchRepository(input.prisma);
   const dispatches = [];
-  for (let ordinal = 1; ordinal <= 7; ordinal += 1) {
+  for (let ordinal = 1;
+    ordinal <= KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2;
+    ordinal += 1) {
     const dispatch = await repository.loadForRecovery({
       modelRunId: input.chat.runId,
       ordinal
@@ -671,7 +674,8 @@ async function loadProductAnswer(input: Readonly<{
     if (!dispatch) break;
     dispatches.push(dispatch);
   }
-  if (dispatches.length < 3 || dispatches.length > 7) {
+  if (dispatches.length < 3 || dispatches.length >
+    KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
     throw new Error("open_rag_answer_operation_set_invalid");
   }
   const operations = dispatches.map(({ attempt }) => attempt.purpose);
@@ -1227,7 +1231,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V30,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39,
         parserProfileVersion: revision.pdfParserProfileVersion,
         pipelineVersion: KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
         profileRevisionId: revision.id,

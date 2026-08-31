@@ -7,15 +7,15 @@ import type {
   KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
 import {
-  knowledgeCoverageEvidenceAtomIndexV1,
-  knowledgeCoverageEvidenceContextV1
+  knowledgeCoverageEvidenceAtomIndex,
+  knowledgeCoverageEvidenceContextV1,
+  type KnowledgeCoverageEvidenceAtomIndexVersion
 } from "./coverageScopeV4";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_V5_LIMITS,
+  knowledgeCoverageEvidenceUnitIndex,
   knowledgeCoverageEvidenceFromManifestV5,
-  knowledgeCoverageEvidenceUnitIndexV1,
-  type KnowledgeCoverageEvidenceV5,
-  type KnowledgeCoverageEvidenceUnitIndexV1
+  type KnowledgeCoverageEvidenceV5
 } from "./coverageScopeV5";
 
 export const KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION = 6 as const;
@@ -26,6 +26,14 @@ export const KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS = 8_192;
 export const KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS = KNOWLEDGE_COVERAGE_SCOPE_V5_LIMITS;
 
 export type KnowledgeCoverageEvidenceV6 = KnowledgeCoverageEvidenceV5;
+
+export const KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1 = Object.freeze([
+  '<aiqsa_knowledge_source_ordered_context_contract version="1">',
+  "evidenceUnitIndex version 2 carries server-authored contextRole on every atom. Its array order restores trusted retrieval coordinates: previous_context precedes exact_excerpt and next_context follows it. related_context has no claimed relative source position.",
+  "Resolve anaphora, definite references, clipped continuations, method or domain names, and other scope-limiting qualifiers from the complete ordered unit before describing a finding. Include every atom needed to preserve the resolved subject and level of generality; never generalize a property of a named construction, proposal, experiment, jurisdiction, time, or condition into a universal property.",
+  "Provider-visible context headings and positional labels are framing, not factual evidence. contextRole establishes relative placement only; proximity alone never establishes a semantic relation.",
+  "</aiqsa_knowledge_source_ordered_context_contract>"
+].join("\n"));
 
 export type KnowledgeCoverageFindingOutputV1 = Readonly<{
   description: string;
@@ -331,6 +339,7 @@ function validateDescriptionAndAnchor(
 export function validateKnowledgeCoverageScopeV6(
   value: unknown,
   input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
     evidence: readonly KnowledgeCoverageEvidenceV6[];
     request: string;
   }>
@@ -347,11 +356,12 @@ export function validateKnowledgeCoverageScopeV6(
     input.evidence.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxEvidenceItems) {
     return rejected("coverage_scope_shape_invalid");
   }
-  let unitIndex: KnowledgeCoverageEvidenceUnitIndexV1;
-  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndexV1>;
+  let unitIndex: ReturnType<typeof knowledgeCoverageEvidenceUnitIndex>;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndex>;
   try {
-    unitIndex = knowledgeCoverageEvidenceUnitIndexV1(input.evidence);
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    const atomIndexVersion = input.atomIndexVersion ?? 1;
+    unitIndex = knowledgeCoverageEvidenceUnitIndex(input.evidence, atomIndexVersion);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(input.evidence, atomIndexVersion);
   } catch {
     return rejected("coverage_scope_shape_invalid");
   }
@@ -492,9 +502,12 @@ export function validateDecodedKnowledgeCoverageScopeV6(
     typeof input.request !== "string" || !input.request.trim() ||
     input.request.includes("\u0000") || input.evidence.length < 1 ||
     input.evidence.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxEvidenceItems) return false;
-  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndexV1>;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndex>;
   try {
-    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+    atomIndex = knowledgeCoverageEvidenceAtomIndex(
+      input.evidence,
+      input.atomIndexVersion ?? 1
+    );
   } catch {
     return false;
   }
@@ -553,6 +566,7 @@ export function validateDecodedKnowledgeCoverageScopeV6(
 }
 
 export function knowledgeCoverageScopePromptV6(input: Readonly<{
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   evidenceManifest: string;
   repairReason?: KnowledgeCoverageScopeValidationFailureReasonV6;
@@ -563,6 +577,7 @@ export function knowledgeCoverageScopePromptV6(input: Readonly<{
   const expectedKeys = [
     "evidence",
     "evidenceManifest",
+    ...(input.atomIndexVersion === undefined ? [] : ["atomIndexVersion"]),
     ...(input.repairReason === undefined ? [] : ["repairReason"]),
     "request",
     "scopePass"
@@ -578,11 +593,21 @@ export function knowledgeCoverageScopePromptV6(input: Readonly<{
     input.evidence.some(({ handle }) => !handlePattern.test(handle))) {
     throw new Error("knowledge_coverage_scope_v6_prompt_invalid");
   }
-  const evidenceUnitIndex = knowledgeCoverageEvidenceUnitIndexV1(input.evidence);
+  const atomIndexVersion = input.atomIndexVersion ?? 1;
+  const evidenceUnitIndex = knowledgeCoverageEvidenceUnitIndex(
+    input.evidence,
+    atomIndexVersion
+  );
   const evidenceContext = knowledgeCoverageEvidenceContextV1(input.evidence);
   return Object.freeze({
-    systemPrompt: KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6,
+    systemPrompt: atomIndexVersion === 2
+      ? `${KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6}\n\n` +
+        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      : KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6,
     userPrompt: knowledgeAnswerCanonicalJson({
+      ...(atomIndexVersion === 2
+        ? { atomProjection: "source_ordered_context_v2" as const }
+        : {}),
       evidenceContext,
       evidenceManifestHash: knowledgeAnswerHash(input.evidenceManifest),
       evidenceUnitIndex,
@@ -598,6 +623,7 @@ export function knowledgeCoverageScopePromptV6(input: Readonly<{
 }
 
 export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
+  atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   evidenceManifest: string;
   request: string;
@@ -607,7 +633,12 @@ export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
   repairReason: KnowledgeCoverageScopeValidationFailureReasonV6 | null;
   scopePass: "initial" | "repair";
 }> | null {
-  if (input.systemPrompt !== KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6) return null;
+  const atomIndexVersion = input.atomIndexVersion ?? 1;
+  const expectedSystemPrompt = atomIndexVersion === 2
+    ? `${KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6}\n\n` +
+      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+    : KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6;
+  if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
   try {
     value = JSON.parse(input.userPrompt) as unknown;
@@ -615,6 +646,7 @@ export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
     return null;
   }
   if (!record(value) || !exactKeys(value, [
+    ...(atomIndexVersion === 2 ? ["atomProjection"] : []),
     "evidenceContext",
     "evidenceManifestHash",
     "evidenceUnitIndex",
@@ -624,12 +656,17 @@ export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
     "taskReminder",
     "version"
   ]) || value.evidenceManifestHash !== knowledgeAnswerHash(input.evidenceManifest) ||
+    (atomIndexVersion === 2) !==
+      (value.atomProjection === "source_ordered_context_v2") ||
     knowledgeAnswerCanonicalJson(value.evidenceContext) !==
       knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceContextV1(input.evidence)) ||
     value.request !== input.request ||
     value.version !== KNOWLEDGE_COVERAGE_SCOPE_V6_PAYLOAD_VERSION ||
     knowledgeAnswerCanonicalJson(value.evidenceUnitIndex) !==
-      knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceUnitIndexV1(input.evidence)) ||
+      knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceUnitIndex(
+        input.evidence,
+        atomIndexVersion
+      )) ||
     value.scopePass !== "initial" && value.scopePass !== "repair" ||
     (value.scopePass === "repair") !==
       isKnowledgeCoverageScopeValidationFailureReasonV6(value.repairReason) ||

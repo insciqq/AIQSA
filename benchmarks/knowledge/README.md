@@ -57,21 +57,64 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests the current V21 Draft / blind Coverage Scope V6 /
-append-only Scope Completeness V1 / Selector V21 / settlement V6 candidate and
-refuses to run while the code-owned
-V21 rollout is not at 100%. This prevents a V20 product answer from being
-reported under a V21 manifest. Keep that activation candidate unpublished
-until the acceptance gate passes; frozen replay remains available while the
-production default is V20. The current replay pin is Snapshot V14 / Grounding
-Evidence V30 with the
-`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1`
+The live answer lane attests current Snapshot V23 over Draft V21 / blind
+Coverage Scope V6 / append-only Scope Completeness V1 / Selector V21 / Scope
+Closure V1 / settlement V6 and refuses to run while the code-owned
+`v21_scope_v6` rollout is not at 100%. This prevents a historical V20 product
+answer from being reported under a V23 manifest. Keep that activation candidate
+unpublished until the acceptance gate passes; frozen replay remains available.
+The current replay pin is Snapshot V23 / Grounding Evidence V39 with the
+`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1`
 pipeline. It retains delimiter-aware claim validation and deterministic removal
-of only provenance-disjoint surplus support edges. During the bounded delta
-pass, every supplemental claim is adjudicated atomically, while an ordered set
-of supported claims bound to the same target may collectively entail one
-compound Scope dimension. Unknown, unrelated, redundant, or unsupported edges
-still fail closed. Snapshot V13 / Evidence V29 retain the historical
+of only provenance-disjoint surplus support edges. Expanded passages use
+persisted content-free boundaries and Source ordinals to build atoms in trusted
+`previous -> exact -> next` Source order; provider-facing labels are never
+parsed as ordering metadata. During the bounded delta pass, Supplement and the
+final verifier receive only the complete atoms assigned to their exact targets.
+The final verifier receives no full manifest, literal index, unrelated atom
+ledger, or primary Draft text; it rechecks each target hypothesis and every
+supplemental statement's semantic roles, beneficiary, and risk/value-flow
+direction. A false-positive positive target may be vetoed to `excluded`, while
+an evidence-free requested facet never enters correction and cannot be hidden.
+Every supplemental claim is adjudicated atomically, while an ordered set of
+supported claims bound to the same target may collectively entail one compound
+Scope dimension. Unknown, foreign-target, unrelated, redundant, partial-case,
+or unsupported edges still fail closed. When validation proves that a local
+finding cites an atom owned by another evidence unit, Snapshot V23 drops that
+entire finding and revalidates the remaining Scope; it never filters or remaps
+atom IDs. This applies both before repair and when another verified patch
+exposes the violation, and consumes no model retry. Every other repairable Scope
+failure receives only a server-authored content-safe error code, JSON path,
+expected handle, applicable count bound, and a content-free hash of any
+transient structurally bounded repair base. The server applies replacement
+values only at independently rejected paths and revalidates after each patch;
+all fields outside those paths remain unchanged. The rejected provider payload
+is neither copied into the repair request nor persisted by the product, and
+recovery without its transient base fails closed. The independent
+least-authority Scope Closure pass sees only covered Scope items and their mapped
+supported-answer projection. It may veto `covered` back to `missing` when a
+material qualifier, condition, comparison, or conjunct is absent, but cannot
+promote a target, change evidence eligibility, or inspect unrelated evidence.
+The five-operation path and any path with one adjacent structural repair retain
+both calls for one targeted correction under the eight-call cap. A second repair
+may consume that reserve; it never creates another correction loop. When every
+exact-target supplemental claim is supported only by that target's provenance
+but the first final map still leaves the target missing, Snapshot V23 records a
+content-free validation failure and uses the eighth slot for one fresh
+target-only final verifier. It never promotes coverage, reuses the rejected
+payload as evidence, or retries twice; the second valid result may remain
+partial. Snapshot V22 / Evidence V38 retain fail-closed local provenance without
+this final-delta review. Snapshot
+V20 / Evidence V36 retain trusted Source order with the historical full-context
+final Selector. Snapshot V21 / Evidence V37 retain target-only least-authority
+verification without deterministic local provenance rejection. Snapshot
+V18 / Evidence V34 retain the original seven-call Scope-closure budget, while
+Snapshot V17 / Evidence V33 retain verified patch merging without this semantic
+closure veto; Snapshot V16 / Evidence V32 retain target closure without
+verified patch merging; Snapshot V15 / Evidence
+V31 retain structured Scope repair without target closure;
+Snapshot V14 / Evidence V30 retain the historical collective target-support contract,
+while Snapshot V13 / Evidence V29 retain the historical
 single-claim whole-target delta contract; Snapshot V12 / Evidence V28 retain
 the historical all-or-nothing edge validation.
 
@@ -86,7 +129,7 @@ npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
 ```
 
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
-The current V21 acceptance campaign always supplies exactly five distinct
+The current V23 acceptance campaign always supplies exactly five distinct
 `--case-id` values and never dispatches `--full`. Each five-case run is
 sequential, fail-fast, and non-scoreable; a corpus result may be assembled only
 after all twenty batches share the exact frozen pins and every case has settled.
@@ -109,7 +152,7 @@ AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
 AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
 npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
   --confirm-paid OPENRAG --full \
-  --output .aiqsa/openrag-answer-runs/v21-full-1
+  --output .aiqsa/openrag-answer-runs/v22-full-1
 ```
 
 After an infrastructure interruption, repeat that exact scoreable command
@@ -142,11 +185,13 @@ the rejected stage, into the private failure checkpoint before fail-fast exit.
 When the answer stage completed, its private answer and replay snapshot are
 likewise persisted if the judge fails.
 
-Replay schema V2 preserves exact V20 recovery and supports the current V21
-four-call `Draft -> blind Scope -> append-only completeness -> Selector` normal
-path, six-call correction path, one adjacent structural validation repair for
-Scope, completeness, or initial Selector, and a seven-call hard cap that keeps
-both correction slots available after any one repair. Scope and
+Replay schema V2 preserves exact V20 recovery and supports the current V23
+five-call `Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
+normal path, one adjacent structural validation repair for Scope, completeness,
+initial Selector, or Scope Closure, and an eight-call hard cap that keeps both
+correction slots available after any one repair. It also accepts the bounded
+`Supplement -> final Selector -> final Selector repair` suffix described above.
+Scope and
 completeness never receive Draft or Selector
 content. It reviews the exact bounded atom ledger grouped by evidence handle,
 returns one record per handle containing zero or more local findings that are
@@ -162,8 +207,10 @@ entailed by those atoms or are not material direct requirements of the request.
 Those findings are `excluded` from correction, settlement, and the coverage
 denominator. A requested unsupported facet has no atom IDs and can never be
 excluded; it remains `missing`.
-A repair receives unchanged authority inputs plus only the bounded
-validation-reason enum; provider failures are not retried. Correction starts
+A repair receives unchanged authority inputs plus only bounded content-safe
+validator feedback and an optional transient-base hash. Its candidate is merged
+only at server-rejected paths and revalidated after every replacement; provider
+failures are not retried. Correction starts
 only when both remaining calls fit. Every supplemental candidate names exactly
 one initially missing positive Scope target and carries no model-owned
 provenance. The final Selector independently

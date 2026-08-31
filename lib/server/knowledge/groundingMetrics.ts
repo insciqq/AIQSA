@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { KnowledgeAnswerSettlementV5 } from "./answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_MAX_OPERATION_COUNT_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
+} from "./answerGroundingV21";
 
 const groundingStages = Object.freeze([
   "primary",
@@ -11,6 +15,8 @@ const groundingStages = Object.freeze([
   "scope_repair",
   "scope_completeness",
   "scope_completeness_repair",
+  "scope_closure",
+  "scope_closure_repair",
   "supplement",
   "final"
 ] as const);
@@ -35,6 +41,10 @@ type KnowledgeGroundingMetricsEvidenceV18 = Readonly<{
 }>;
 
 type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
+  closure?: Readonly<{
+    reopenedDimensionCount: number;
+    status: "accepted";
+  }> | null;
   completeness?: Readonly<{
     addedDimensionCount: number;
     status: "accepted";
@@ -57,7 +67,8 @@ type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
   requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
   supportedClaimCount: number;
   unsupportedClaimCount: number;
-  version: 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30;
+  version: 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 |
+    33 | 34 | 35 | 36 | 37 | 38 | 39;
 }>;
 
 type KnowledgeGroundingMetricsEvidence = KnowledgeGroundingMetricsEvidenceV18 |
@@ -84,6 +95,7 @@ export type KnowledgeGroundingOperationalMetrics = Readonly<{
   modelOperations: number;
   pipelineVersion21: number;
   scopeCompletenessAccepted: number;
+  scopeClosureAccepted: number;
   selectorContradicted: number;
   selectorSupported: number;
   selectorUnsupported: number;
@@ -92,6 +104,7 @@ export type KnowledgeGroundingOperationalMetrics = Readonly<{
   totalExcludedCoverageDimensions: number;
   totalMissingCoverageDimensions: number;
   totalScopeCompletenessAdditions: number;
+  totalScopeClosureReopenedDimensions: number;
 }>;
 
 function percentile(sorted: readonly number[], ratio: number): number | null {
@@ -123,6 +136,7 @@ export function aggregateKnowledgeGroundingMetrics(
   let totalExcludedCoverageDimensions = 0;
   let totalMissingCoverageDimensions = 0;
   let totalScopeCompletenessAdditions = 0;
+  let totalScopeClosureReopenedDimensions = 0;
   for (const evidence of evidences) {
     coverage[evidence.requestCoverage] += 1;
     correctionAttempted += Number(evidence.correctionAttempted);
@@ -137,7 +151,10 @@ export function aggregateKnowledgeGroundingMetrics(
     totalExcludedCoverageDimensions += evidence.version === 23 ||
       evidence.version === 24 || evidence.version === 25 || evidence.version === 26 ||
       evidence.version === 27 || evidence.version === 28 || evidence.version === 29 ||
-      evidence.version === 30
+      evidence.version === 30 || evidence.version === 31 || evidence.version === 32 ||
+      evidence.version === 33 || evidence.version === 34 || evidence.version === 35
+      || evidence.version === 36 || evidence.version === 37 || evidence.version === 38 ||
+      evidence.version === 39
       ? evidence.coverage.excludedDimensionCount ?? 0
       : 0;
     totalMissingCoverageDimensions += evidence.version === 18
@@ -145,8 +162,17 @@ export function aggregateKnowledgeGroundingMetrics(
       : evidence.coverage.missingDimensionCount;
     totalScopeCompletenessAdditions += evidence.version === 24 ||
       evidence.version === 25 || evidence.version === 26 || evidence.version === 27 ||
-      evidence.version === 28 || evidence.version === 29 || evidence.version === 30
+      evidence.version === 28 || evidence.version === 29 || evidence.version === 30 ||
+      evidence.version === 31 || evidence.version === 32 || evidence.version === 33
+      || evidence.version === 34 || evidence.version === 35
+      || evidence.version === 36 || evidence.version === 37 || evidence.version === 38 ||
+      evidence.version === 39
       ? evidence.completeness?.addedDimensionCount ?? 0
+      : 0;
+    totalScopeClosureReopenedDimensions += evidence.version === 34 ||
+      evidence.version === 35 || evidence.version === 36 || evidence.version === 37 ||
+      evidence.version === 38 || evidence.version === 39
+      ? evidence.closure?.reopenedDimensionCount ?? 0
       : 0;
     modelOperations += evidence.operations.length;
     for (const operation of evidence.operations) {
@@ -179,6 +205,10 @@ export function aggregateKnowledgeGroundingMetrics(
     modelOperations,
     pipelineVersion21: evidences.length,
     scopeCompletenessAccepted: evidences.filter(({ version }) => version >= 24).length,
+    scopeClosureAccepted: evidences.filter((evidence) =>
+      (evidence.version === 34 || evidence.version === 35 || evidence.version === 36 ||
+        evidence.version === 37 || evidence.version === 38 || evidence.version === 39) &&
+        evidence.closure !== null).length,
     selectorContradicted,
     selectorSupported,
     selectorUnsupported,
@@ -186,7 +216,8 @@ export function aggregateKnowledgeGroundingMetrics(
     totalCoverageDimensions,
     totalExcludedCoverageDimensions,
     totalMissingCoverageDimensions,
-    totalScopeCompletenessAdditions
+    totalScopeCompletenessAdditions,
+    totalScopeClosureReopenedDimensions
   });
 }
 
@@ -205,7 +236,10 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
     value.version !== 20 && value.version !== 21 && value.version !== 22 &&
     value.version !== 23 && value.version !== 24 && value.version !== 25 &&
     value.version !== 26 && value.version !== 27 && value.version !== 28 &&
-    value.version !== 29 && value.version !== 30 ||
+    value.version !== 29 && value.version !== 30 && value.version !== 31 &&
+    value.version !== 32 && value.version !== 33 && value.version !== 34 &&
+    value.version !== 35 && value.version !== 36 && value.version !== 37 &&
+    value.version !== 38 && value.version !== 39 ||
     typeof value.correctionAttempted !== "boolean" ||
     typeof value.correctionSucceeded !== "boolean" ||
     !counter(value.draftClaimCount) || !counter(value.contradictedClaimCount) ||
@@ -225,9 +259,21 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
   if (value.version >= 24 && (!record(value.completeness) ||
     value.completeness.status !== "accepted" ||
     !counter(value.completeness.addedDimensionCount))) return false;
-  const operationLimit = value.version === 25 || value.version === 26 ||
-    value.version === 27 || value.version === 28 || value.version === 29 ||
-    value.version === 30 ? 7 : 6;
+  if ((value.version === 34 || value.version === 35 || value.version === 36 ||
+    value.version === 37 || value.version === 38 || value.version === 39) &&
+    value.closure !== null &&
+    (!record(value.closure) ||
+    value.closure.status !== "accepted" ||
+    !counter(value.closure.reopenedDimensionCount))) return false;
+  const operationLimit = value.version === 35 || value.version === 36 ||
+    value.version === 37 || value.version === 38 || value.version === 39
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
+      : value.version === 25 || value.version === 26 || value.version === 27 ||
+        value.version === 28 || value.version === 29 || value.version === 30 ||
+        value.version === 31 || value.version === 32 || value.version === 33 ||
+        value.version === 34
+        ? KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_MAX_OPERATION_COUNT_V1
+        : 6;
   return value.operations.length >= 3 && value.operations.length <= operationLimit &&
     value.operations.every((operation) => record(operation) &&
       groundingStages.includes(operation.role as KnowledgeGroundingStage) &&
@@ -237,7 +283,7 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
 
 const METRICS_ROW_LIMIT = 10_000;
 
-/** Loads V18-V30 content-free receipts; malformed rows are ignored. */
+/** Loads V18-V39 content-free receipts; malformed rows are ignored. */
 export async function loadKnowledgeGroundingOperationalMetrics(
   client: Pick<PrismaClient, "knowledgeGroundingResult">,
   input: Readonly<{ limit?: number; since?: Date }> = {}
@@ -250,7 +296,10 @@ export async function loadKnowledgeGroundingOperationalMetrics(
     take: limit,
     where: {
       evidence: { not: Prisma.AnyNull },
-      version: { in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30] },
+      version: {
+        in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+          34, 35, 36, 37, 38, 39]
+      },
       ...(input.since ? { createdAt: { gte: input.since } } : {})
     }
   });

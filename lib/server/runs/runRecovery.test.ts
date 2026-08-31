@@ -75,6 +75,14 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_FAIL_CLOSED_LOCAL_PROVENANCE_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_CORRECTION_PROTOCOL_V2,
+  KNOWLEDGE_ANSWER_SCOPE_V6_LEAST_AUTHORITY_DELTA_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SOURCE_ORDERED_CONTEXT_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_CLOSURE_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_VERIFIED_PATCH_PROTOCOL_V1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   knowledgeAnswerDraftPromptV21
 } from "../knowledge/answerGroundingV21";
@@ -95,6 +103,20 @@ import {
   type RunRecoveryRepository
 } from "./runRecovery";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
+
+// Most recovery fixtures below intentionally exercise the historical V20/V16
+// new-run path. Persisted V21 snapshots are selected from their durable first
+// operation and have dedicated cases, so pin only fresh admissions here rather
+// than coupling unrelated recovery tests to the installation rollout percent.
+vi.mock("../knowledge/answerPipelineRollout", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../knowledge/answerPipelineRollout")
+  >();
+  return {
+    ...actual,
+    selectKnowledgeAnswerPipelineForNewRun: vi.fn(() => "v20_v16" as const)
+  };
+});
 
 const userId = "user-1";
 const runId = "run-1";
@@ -327,7 +349,7 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
       sessionId: "evidence-session-v21",
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
-      version: 30 as const
+      version: 32 as const
     }
   };
 }
@@ -1953,6 +1975,132 @@ describe("run recovery", () => {
     expectedReasoningEfforts: [],
     snapshotVersion: 13
   }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 14
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 15
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 16
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 17
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 18
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 19
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 20
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 21
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 22
+  }, {
     current: true,
     executionPolicy: {
       auditorReasoningEffort: "high",
@@ -1964,8 +2112,8 @@ describe("run recovery", () => {
       supplementReasoningEffort: "low",
       version: 1
     } as const,
-    expectedReasoningEfforts: ["high", "high", "medium"],
-    snapshotVersion: 14
+    expectedReasoningEfforts: ["high", "high", "medium", "high"],
+    snapshotVersion: 23
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -1988,7 +2136,53 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 14
+      ...(snapshotVersion === 23
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1
+          }
+        : snapshotVersion === 22
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_FAIL_CLOSED_LOCAL_PROVENANCE_PROTOCOL_V1
+          }
+        : snapshotVersion === 21
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_LEAST_AUTHORITY_DELTA_PROTOCOL_V1
+          }
+        : snapshotVersion === 20
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_SOURCE_ORDERED_CONTEXT_PROTOCOL_V1
+          }
+        : snapshotVersion === 19
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_CORRECTION_PROTOCOL_V2
+          }
+        : snapshotVersion === 18
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_CLOSURE_PROTOCOL_V1
+          }
+        : snapshotVersion === 17
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_VERIFIED_PATCH_PROTOCOL_V1
+          }
+        : snapshotVersion === 16
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_CLOSURE_PROTOCOL_V1
+          }
+        : snapshotVersion === 15
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              "scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1" as const
+          }
+        : snapshotVersion === 14
         ? {
             executionPolicy: executionPolicy!,
             protocol:
@@ -2116,7 +2310,7 @@ describe("run recovery", () => {
                   }
                 : current && requests.length === 2
                   ? { additions: [], version: 1 }
-                : current
+                : current && requests.length === 3
                   ? {
                       claims: [{
                         id: "C1",
@@ -2132,6 +2326,11 @@ describe("run recovery", () => {
                       insufficientReason: "not_applicable",
                       version: 1
                     }
+                  : current
+                    ? {
+                        decisions: [{ id: "D1", status: "closed" }],
+                        version: 1
+                      }
                   : {}),
               providerResponseId: `response-v21-${requests.length}`
             };
@@ -2146,7 +2345,7 @@ describe("run recovery", () => {
     expect(requests.map(({ params }) => params.reasoningEffort))
       .toEqual(expectedReasoningEfforts);
     if (current) {
-      expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(3);
+      expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(4);
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1,
         expect.objectContaining({
           contractVersion: 6,
@@ -2164,6 +2363,12 @@ describe("run recovery", () => {
           contractVersion: 21,
           ordinal: 4,
           purpose: "knowledge_grounded_selector_v21"
+        }));
+      expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(4,
+        expect.objectContaining({
+          contractVersion: 1,
+          ordinal: 5,
+          purpose: "knowledge_coverage_scope_closure_v1"
         }));
       expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
       expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });

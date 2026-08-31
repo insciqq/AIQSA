@@ -28,6 +28,7 @@ import {
   decodeOpenRagJudgmentText
 } from "./openRagAnswerEvaluate";
 import {
+  decodeOpenRagAnswerReplaySnapshot,
   OpenRagAnswerReplayExecutionError,
   type OpenRagAnswerReplaySnapshot
 } from "./openRagAnswerReplay";
@@ -441,7 +442,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
     expect(checkpoint.outcomes.size).toBe(0);
   });
 
-  it("accepts the seven-operation repair-reserved correction sequence", async () => {
+  it("accepts the eight-operation bounded final-delta review sequence", async () => {
     const cases = [benchmarkCase(1)];
     const legacyManifest = manifest(cases);
     const runManifest = manifest(cases, {
@@ -449,9 +450,9 @@ describe("OpenRAG answer fail-fast schedule", () => {
         ...legacyManifest.engine,
         coverageAuditorContractVersion: 6,
         draftContractVersion: 21,
-        groundingEvidenceVersion: 30,
+        groundingEvidenceVersion: 39,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_settlement_v6",
+          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_settlement_v6",
         selectorContractVersion: 21,
         settlementVersion: 6
       }
@@ -468,10 +469,11 @@ describe("OpenRAG answer fail-fast schedule", () => {
       const sequence = [
         "knowledge_answer_draft_v21",
         "knowledge_coverage_scope_v6",
-        "knowledge_coverage_scope_v6",
         "knowledge_coverage_scope_completeness_v1",
         "knowledge_grounded_selector_v21",
+        "knowledge_coverage_scope_closure_v1",
         "knowledge_answer_draft_supplement_v21",
+        "knowledge_grounded_selector_final_v21",
         "knowledge_grounded_selector_final_v21"
       ];
       return {
@@ -513,7 +515,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
     });
 
     expect(summary.pass).toBe(1);
-    expect(checkpoint.outcomes.get("doc-001-q1:1")?.stageRecords).toHaveLength(7);
+    expect(checkpoint.outcomes.get("doc-001-q1:1")?.stageRecords).toHaveLength(8);
   });
 
   it("does not start a later case after the first non-pass", async () => {
@@ -628,6 +630,40 @@ describe("OpenRAG answer fail-fast schedule", () => {
         schemaVersion: 1
       },
       stage: "replay"
+    });
+  });
+
+  it("records a content-free replay snapshot diagnostic on answer failure", async () => {
+    const cases = [benchmarkCase(1)];
+    const runManifest = manifest(cases);
+    const header = createOpenRagAnswerCheckpointHeader({ manifest: runManifest });
+    const checkpoint = memoryCheckpoint();
+    const fakeRuntime = runtime("pass");
+    let snapshotError: unknown;
+    try {
+      decodeOpenRagAnswerReplaySnapshot(replaySnapshot(cases[0]!));
+    } catch (error) {
+      snapshotError = error;
+    }
+    expect(snapshotError).toBeInstanceOf(Error);
+    fakeRuntime.executeAnswer.mockRejectedValueOnce(snapshotError);
+
+    await expect(runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: checkpoint.store,
+      goldDocumentIds: { "doc-001": "document-1" },
+      header,
+      resume: false,
+      runtime: fakeRuntime
+    })).rejects.toThrow("open_rag_answer_replay_snapshot_invalid");
+
+    expect(checkpoint.failures).toHaveLength(1);
+    expect(checkpoint.failures[0]).toEqual({
+      caseId: "doc-001-q1",
+      code: "open_rag_answer_replay_snapshot_invalid",
+      diagnostic: "envelope_shape_invalid",
+      repeatOrdinal: 1,
+      stage: "answer"
     });
   });
 
