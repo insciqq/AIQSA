@@ -186,6 +186,12 @@ const caseKeys = Object.freeze([
 ] as const);
 const safeIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/u;
 const sha256Pattern = /^[0-9a-f]{64}$/u;
+const executionPolicyRoles = Object.freeze([
+  "draft",
+  "selector",
+  "auditor",
+  "supplement"
+] as const);
 
 const zeroUsage: ModelRunUsage = Object.freeze({
   cachedInputTokens: 0,
@@ -225,6 +231,74 @@ function replayPipeline(
     return "v21_audit_v1";
   }
   return null;
+}
+
+function stageReasoningEffort(
+  policy: KnowledgeGroundingEffectiveExecutionPolicyV1,
+  role: typeof executionPolicyRoles[number]
+): string | null {
+  switch (role) {
+    case "auditor":
+      return policy.auditorReasoningEffort;
+    case "draft":
+      return policy.draftReasoningEffort;
+    case "selector":
+      return policy.selectorReasoningEffort;
+    case "supplement":
+      return policy.supplementReasoningEffort;
+  }
+}
+
+function supportedReasoningEffort(
+  snapshot: ProviderExecutionSnapshot,
+  effort: string | null
+): boolean {
+  if (effort === null) return true;
+  return snapshot.model.capabilities.reasoning === true &&
+    snapshot.model.capabilities.reasoningEfforts?.includes(effort) === true;
+}
+
+function validReplayReasoningPolicy(input: Readonly<{
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1 | null;
+  reasoningEffort: string | null;
+  snapshot: ProviderExecutionSnapshot;
+}>): boolean {
+  if (!input.executionPolicy) {
+    return supportedReasoningEffort(input.snapshot, input.reasoningEffort);
+  }
+  const policy = input.executionPolicy;
+  return input.reasoningEffort === null && executionPolicyRoles.every((role) => {
+    const effort = stageReasoningEffort(policy, role);
+    const overridden = policy.overriddenRoles.includes(role);
+    return supportedReasoningEffort(input.snapshot, effort) &&
+      (!overridden || effort !== null);
+  });
+}
+
+/** Proves that frozen replay actually executes with the answer reasoning
+ * control named by its run manifest. Explicit stage overrides remain allowed,
+ * but every inherited role must equal the admitted answer control. */
+export function openRagAnswerReplayMatchesReasoningControl(
+  snapshot: OpenRagAnswerReplaySnapshot,
+  answerReasoningEffort: string | null
+): boolean {
+  if (answerReasoningEffort !== null && (!answerReasoningEffort.trim() ||
+    answerReasoningEffort.length > 32 ||
+    !supportedReasoningEffort(snapshot.answerExecutionSnapshot, answerReasoningEffort))) {
+    return false;
+  }
+  if (!validReplayReasoningPolicy({
+    executionPolicy: snapshot.executionPolicy,
+    reasoningEffort: snapshot.reasoningEffort,
+    snapshot: snapshot.answerExecutionSnapshot
+  })) return false;
+  if (!snapshot.executionPolicy) {
+    return snapshot.reasoningEffort === answerReasoningEffort;
+  }
+  const policy = snapshot.executionPolicy;
+  return executionPolicyRoles.every((role) =>
+    policy.overriddenRoles.includes(role) ||
+    stageReasoningEffort(policy, role) === answerReasoningEffort);
 }
 
 function exactSequence(left: readonly string[], right: readonly string[]): boolean {
@@ -457,7 +531,12 @@ export function decodeOpenRagAnswerReplaySnapshot(
     engine.draftContractVersion !== contracts.draftContractVersion ||
     engine.selectorContractVersion !== contracts.selectorContractVersion ||
     engine.settlementVersion !== contracts.settlementVersion ||
-    engine.evidencePackingVersion !== evidence.packingVersion) {
+    engine.evidencePackingVersion !== evidence.packingVersion ||
+    !validReplayReasoningPolicy({
+      executionPolicy,
+      reasoningEffort: value.reasoningEffort as string | null,
+      snapshot: answerExecutionSnapshot
+    })) {
     throw new Error(code);
   }
   const body = Object.freeze({

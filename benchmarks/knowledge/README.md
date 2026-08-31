@@ -78,8 +78,10 @@ Add `--preflight-only` to validate the dataset, ignored paths, session,
 codex-lb pins, and either the live Base/profile/source snapshot or the frozen
 replay origin manifest. Frozen replay preflight also locks the exact admitted
 credential version and proves that its envelope is decryptable by the runner's
-trusted runtime. This validation makes no provider/network request and creates
-no checkpoint.
+trusted runtime. It rejects a replay whose inherited stage reasoning effort
+does not match the answer-control fingerprint or whose explicit override is
+unsupported by the admitted model. This validation makes no provider/network
+request and creates no checkpoint.
 `--judge-repeat N` is diagnostic: the first frozen judgment remains official
 and later judgments never rewrite it. `--no-judge` runs answer-stage diagnosis
 only. All of these modes are non-scoreable. A scoreable run requires exactly

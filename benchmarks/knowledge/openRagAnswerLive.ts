@@ -69,6 +69,7 @@ import {
   createOpenRagAnswerReplaySnapshot,
   decodeOpenRagAnswerReplaySnapshot,
   isOpenRagAnswerOperationSequence,
+  openRagAnswerReplayMatchesReasoningControl,
   replayOpenRagAnswerSnapshot,
   type OpenRagAnswerReplayOrigin,
   type OpenRagAnswerReplaySnapshot
@@ -1303,6 +1304,15 @@ async function livePreflight(
       sha256Canonical(replaySnapshot.answerExecutionSnapshot) !==
         answerAdmission.pin.executionSnapshotHash) {
       throw new Error("open_rag_answer_replay_model_mismatch");
+    }
+    const answerReasoningEffort = typeof answerControls.reasoningEffort === "string"
+      ? answerControls.reasoningEffort
+      : null;
+    if (!openRagAnswerReplayMatchesReasoningControl(
+      replaySnapshot,
+      answerReasoningEffort
+    )) {
+      throw new Error("open_rag_answer_replay_controls_mismatch");
     }
     await assertAcceptedStructuredOutputSnapshotExecutable(
       prisma,
