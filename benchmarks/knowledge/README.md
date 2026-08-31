@@ -35,6 +35,96 @@ of an accepted `search_knowledge` call — with no answer generation:
 MIRACL is intentionally excluded; no MIRACL adapter, subset, or derivative
 exists here.
 
+## OpenRAG answer reliability
+
+`openRagAnswerRunner.ts` is the answer/judge and frozen-evidence harness for
+the pinned 100-PDF OpenRAG slice. Unlike the isolated public retrieval suites
+above, it is intended to attest and reuse an already healthy local development
+Base through the ordinary authenticated chat API. It never uploads,
+reprocesses, retrieves directly from a repository, or grants source authority
+from benchmark metadata. The private profile attestation must name the same
+active 100-source Base and profile revision found by product admission.
+
+The runner binds exactly one `gpt-5.6-luna` answer deployment and one
+`gpt-5.6-sol` judge deployment on the explicitly supplied codex-lb connection.
+It freezes their full admitted execution-snapshot hashes, the Base/source
+snapshot, the full reranker deployment snapshot, parser/chunking/ranking
+identities, answer/judge control fingerprints, the runner and judge contracts,
+and all grounding contract versions before the first paid request. The local
+session token is read from `AIQSA_OPENRAG_SESSION_TOKEN` or the ignored
+local-development profile; it is never printed or stored in a result.
+An OpenRouter-backed retrieval reranker is refused unless a separate explicit
+paid-run authority is supplied; the answer/judge acknowledgement alone does
+not authorize it. Frozen replay does not invoke retrieval or a reranker.
+
+Run a focused, non-scoreable case first:
+
+```bash
+AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
+AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
+npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
+  --confirm-paid OPENRAG --case-id doc-027-q2 \
+  --output .aiqsa/openrag-answer-runs/doc-027-q2-canary
+```
+
+`--case-id` is repeatable and `--repeat N` repeats every selected case.
+Add `--preflight-only` to validate the dataset, ignored paths, session,
+codex-lb pins, and either the live Base/profile/source snapshot or the frozen
+replay origin manifest without making a provider request or creating a
+checkpoint.
+`--judge-repeat N` is diagnostic: the first frozen judgment remains official
+and later judgments never rewrite it. `--no-judge` runs answer-stage diagnosis
+only. All of these modes are non-scoreable. A scoreable run requires exactly
+the pinned 100 cases, one answer and one judge per case:
+
+```bash
+AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
+AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
+npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
+  --confirm-paid OPENRAG --full \
+  --output .aiqsa/openrag-answer-runs/v21-full-1
+```
+
+After an infrastructure interruption, repeat that exact scoreable command
+with `--resume`. Resume verifies the entire manifest and pacing identity,
+preserves the original run id, skips only atomically settled passes, and
+refuses a completed summary or a checkpoint containing a non-pass.
+
+Execution is deliberately sequential and fail-fast. The first `partial`,
+`fail`, judge error, or provider/infrastructure error prevents the next case
+from starting. A non-pass run has no aggregate score; diagnose its immutable
+stage evidence, implement a general product fix, and start a new uniformly
+pinned run. Runtime code must never branch on a benchmark case id, document
+alias, or reference answer.
+
+Every settled case writes a hash-only resumable outcome plus a private replay
+record containing the exact evidence dispatch, source/version/artifact
+bindings, grounding contract versions, accepted grounding outputs, answer,
+cited evidence, and judge raw result. Both output and replay input are
+refused unless they are beneath ignored `.aiqsa/`,
+`benchmarks/knowledge/.data/`, or `benchmarks/knowledge/results/` paths.
+
+A judge/provider failure remains content-free in the public failure record;
+when the answer stage completed, its private answer and replay snapshot are
+still persisted for diagnosis before fail-fast exit.
+
+Replay runs answer-grounding and optional judge stages only. Its origin
+Base/source/engine pins come from the immutable snapshot, so no live Base or
+retrieval state is consulted:
+
+```bash
+AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
+AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
+npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
+  --confirm-paid OPENRAG \
+  --frozen-evidence .aiqsa/openrag-answer-runs/<run>/replay-snapshots/<case>.json \
+  --output .aiqsa/openrag-answer-runs/<case>-replay
+```
+
+The current operator decision intentionally omits a fresh full V20 baseline;
+focused V20 checkpoint/replay evidence is labeled as such and is not presented
+as a directly comparable full score.
+
 Anti-gaming rules are structural: both suites run one global ranking profile
 (the product's), there are no dataset-name conditionals or language-specific
 parameters, corpora and scoreable queries are used in full without sampling or
