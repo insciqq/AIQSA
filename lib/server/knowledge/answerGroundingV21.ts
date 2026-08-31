@@ -1,4 +1,5 @@
 import {
+  KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES,
   KNOWLEDGE_ANSWER_DRAFT_LIMITS,
   KNOWLEDGE_ANSWER_DRAFT_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS,
@@ -13,6 +14,7 @@ import {
   isKnowledgeDraftMalformed,
   isKnowledgeSelectorValidationFailureReason,
   knowledgeAnswerCanonicalJson,
+  knowledgeAnswerHash,
   knowledgeSelectorLiteralExtractIndexV2,
   mergeKnowledgeAnswerDraftsV1,
   validateKnowledgeAnswerDraftSupplementV1,
@@ -29,8 +31,16 @@ import {
   type KnowledgeSelectorValidationFailureReason
 } from "./answerGroundingV5";
 import {
+  STRUCTURED_OUTPUT_LIMITS
+} from "../providers/structuredOutput";
+import { structuredOutputPromptFits } from "../providers/structuredOutputLimits";
+import type {
+  KnowledgeEvidenceDispatchManifestDraft
+} from "./evidenceDispatchManifest";
+import {
   KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
   KNOWLEDGE_COVERAGE_AUDIT_PAYLOAD_VERSION,
   decodeKnowledgeCoverageAuditV1,
   decodeKnowledgeSupportedAnswerViewV1,
@@ -47,6 +57,20 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION = 17 as const;
 export const KNOWLEDGE_ANSWER_DRAFT_V21_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION = 6 as const;
+
+export type KnowledgeAnswerV21ContractVersions = Readonly<{
+  coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION;
+  draftContractVersion: typeof KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION;
+  selectorContractVersion: typeof KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION;
+  settlementVersion: typeof KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION;
+}>;
+
+export const KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS = Object.freeze({
+  coverageAuditorContractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
+  draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+  selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+  settlementVersion: KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION
+} as const satisfies KnowledgeAnswerV21ContractVersions);
 
 export const KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 =
   "knowledge_answer_draft_v21" as const;
@@ -76,6 +100,40 @@ export const KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21 =
 export type KnowledgeSelectorInsufficientReasonV17 =
   | "not_applicable"
   | KnowledgeInsufficientReason;
+
+export type KnowledgeAnswerOperationV21 =
+  | typeof KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+  | typeof KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+  | typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17
+  | typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17
+  | typeof KNOWLEDGE_COVERAGE_AUDITOR_OPERATION;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21 = Readonly<{
+  auditPayloadHash: string | null;
+  contractVersion: 1 | 17 | 21;
+  evidenceReceiptHash: string;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationV21;
+  operation: KnowledgeAnswerOperationV21;
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 1;
+}>;
+
+export type KnowledgeGroundedSelectorFailureReasonV17 = Exclude<
+  KnowledgeAnswerFallbackReason,
+  "draft_malformed"
+>;
+
+export type KnowledgeGroundedSelectorFailureV17 = Readonly<{
+  kind: "selector_failed";
+  reason: KnowledgeGroundedSelectorFailureReasonV17;
+}>;
 
 export type KnowledgeGroundedSelectorV17 = Readonly<{
   claims: readonly KnowledgeGroundedSelectorClaimV3[];
@@ -186,6 +244,151 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17 = Object.freeze({
   required: ["version", "claims", "extractIds", "coverage", "insufficientReason"],
   type: "object"
 } satisfies Readonly<Record<string, unknown>>);
+
+function v21OperationMetadata(operation: unknown): Readonly<{
+  contractVersion: 1 | 17 | 21;
+  requiresAuditPayload: boolean;
+  schema: Readonly<Record<string, unknown>>;
+}> | null {
+  if (operation === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      requiresAuditPayload: false,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21
+    });
+  }
+  if (operation === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      requiresAuditPayload: true,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21
+    });
+  }
+  if (operation === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+      requiresAuditPayload: false,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17
+    });
+  }
+  if (operation === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+      requiresAuditPayload: true,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17
+    });
+  }
+  if (operation === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION) {
+    return Object.freeze({
+      contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
+      requiresAuditPayload: false,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1
+    });
+  }
+  return null;
+}
+
+export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly<{
+  auditPayloadHash?: string | null;
+  contractVersion: 1 | 17 | 21;
+  evidenceReceiptHash: string;
+  maxOutputTokens: number;
+  operation: KnowledgeAnswerOperationV21;
+  reasoningEffort?: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  systemPrompt: string;
+  transport: KnowledgeAnswerOperationRequestSnapshotV21["transport"];
+  userPrompt: string;
+}>): KnowledgeAnswerOperationRequestSnapshotV21 {
+  const metadata = v21OperationMetadata(input.operation);
+  const auditPayloadHash = input.auditPayloadHash ?? null;
+  if (!metadata || metadata.contractVersion !== input.contractVersion ||
+    knowledgeAnswerHash(metadata.schema) !== knowledgeAnswerHash(input.schema) ||
+    metadata.requiresAuditPayload !== (auditPayloadHash !== null) ||
+    auditPayloadHash !== null && !/^[0-9a-f]{64}$/u.test(auditPayloadHash) ||
+    !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash) ||
+    !Number.isSafeInteger(input.maxOutputTokens) ||
+    input.maxOutputTokens < STRUCTURED_OUTPUT_LIMITS.minOutputTokens ||
+    input.maxOutputTokens > STRUCTURED_OUTPUT_LIMITS.maxOutputTokens ||
+    input.transport !== "native_strict" && input.transport !== "provider_neutral_json" ||
+    !record(input.schema) || Buffer.byteLength(JSON.stringify(input.schema), "utf8") >
+      STRUCTURED_OUTPUT_LIMITS.maxSchemaBytes ||
+    !input.systemPrompt.trim() || !input.userPrompt.trim() ||
+    !structuredOutputPromptFits(input) ||
+    input.reasoningEffort !== undefined && input.reasoningEffort !== null &&
+      (!input.reasoningEffort.trim() || input.reasoningEffort.length > 32)) {
+    throw new Error("knowledge_answer_operation_request_invalid");
+  }
+  const snapshot = Object.freeze({
+    auditPayloadHash,
+    contractVersion: input.contractVersion,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    maxOutputTokens: input.maxOutputTokens,
+    name: input.operation,
+    operation: input.operation,
+    reasoningEffort: input.reasoningEffort ?? null,
+    schema: input.schema,
+    schemaHash: knowledgeAnswerHash(input.schema),
+    systemPrompt: input.systemPrompt,
+    tools: "none" as const,
+    transport: input.transport,
+    userPrompt: input.userPrompt,
+    version: 1 as const
+  });
+  if (Buffer.byteLength(knowledgeAnswerCanonicalJson(snapshot), "utf8") >
+    KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES) {
+    throw new Error("knowledge_answer_operation_request_invalid");
+  }
+  return snapshot;
+}
+
+export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
+  value: unknown
+): KnowledgeAnswerOperationRequestSnapshotV21 | null {
+  const metadata = record(value) ? v21OperationMetadata(value.operation) : null;
+  if (!record(value) || !exactKeys(value, [
+    "version",
+    "operation",
+    "name",
+    "contractVersion",
+    "transport",
+    "tools",
+    "schema",
+    "schemaHash",
+    "systemPrompt",
+    "userPrompt",
+    "maxOutputTokens",
+    "reasoningEffort",
+    "evidenceReceiptHash",
+    "auditPayloadHash"
+  ]) || value.version !== 1 || !metadata || value.name !== value.operation ||
+    value.contractVersion !== metadata.contractVersion ||
+    value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
+    value.tools !== "none" || !record(value.schema) ||
+    typeof value.schemaHash !== "string" ||
+    knowledgeAnswerHash(value.schema) !== value.schemaHash ||
+    knowledgeAnswerHash(metadata.schema) !== value.schemaHash ||
+    typeof value.systemPrompt !== "string" || !value.systemPrompt.trim() ||
+    typeof value.userPrompt !== "string" || !value.userPrompt.trim() ||
+    typeof value.evidenceReceiptHash !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(value.evidenceReceiptHash) ||
+    metadata.requiresAuditPayload !== (value.auditPayloadHash !== null) ||
+    value.auditPayloadHash !== null &&
+      (typeof value.auditPayloadHash !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(value.auditPayloadHash)) ||
+    !Number.isSafeInteger(value.maxOutputTokens) ||
+    Number(value.maxOutputTokens) < STRUCTURED_OUTPUT_LIMITS.minOutputTokens ||
+    Number(value.maxOutputTokens) > STRUCTURED_OUTPUT_LIMITS.maxOutputTokens ||
+    !structuredOutputPromptFits({
+      systemPrompt: value.systemPrompt,
+      userPrompt: value.userPrompt
+    }) || value.reasoningEffort !== null &&
+      (typeof value.reasoningEffort !== "string" || !value.reasoningEffort.trim() ||
+        value.reasoningEffort.length > 32) ||
+    Buffer.byteLength(knowledgeAnswerCanonicalJson(value), "utf8") >
+      KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES) return null;
+  return Object.freeze(value as unknown as KnowledgeAnswerOperationRequestSnapshotV21);
+}
 
 export const KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V21 = Object.freeze([
   '<aiqsa_knowledge_answer_draft_contract version="21">',
@@ -469,6 +672,26 @@ export function decodeKnowledgeGroundedSelectorV17(
 ): KnowledgeGroundedSelectorV17 | null {
   const validation = validateKnowledgeGroundedSelectorV17(value, input);
   return validation.kind === "accepted" ? validation.value : null;
+}
+
+/** Fail-closed server projection used only when no Selector result was
+ * accepted. It marks no content supported and is never persisted as a model
+ * result or treated as factual adjudication. */
+export function knowledgeEmptyGroundedSelectorV17(
+  draft: KnowledgeAnswerDraftSelectorInput
+): KnowledgeGroundedSelectorV17 {
+  return Object.freeze({
+    claims: Object.freeze(isKnowledgeDraftMalformed(draft)
+      ? []
+      : draft.claims.map(({ id }) => Object.freeze({
+          id,
+          supportHandles: Object.freeze([]),
+          verdict: "unsupported" as const
+        }))),
+    extractIds: Object.freeze([]),
+    insufficientReason: "not_found",
+    version: KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION
+  });
 }
 
 export function buildKnowledgeSupportedAnswerViewV1(input: Readonly<{
@@ -875,6 +1098,64 @@ export function knowledgeAnswerDraftPromptV21(input:
   });
 }
 
+export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
+  draft: KnowledgeEvidenceDispatchManifestDraft;
+  snapshot: KnowledgeAnswerOperationRequestSnapshotV21;
+}>): Readonly<{
+  request: string;
+  routeInstruction: string;
+}> | null {
+  if (input.snapshot.operation !== KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 ||
+    input.snapshot.auditPayloadHash !== null ||
+    input.snapshot.evidenceReceiptHash !== input.draft.manifestHash) return null;
+  const prefix = `${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V21}\n\n`;
+  if (!input.snapshot.systemPrompt.startsWith(prefix)) return null;
+  const routeInstruction = input.snapshot.systemPrompt.slice(prefix.length);
+  if (!routeInstruction.trim() || routeInstruction.trim() !== routeInstruction) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(input.snapshot.userPrompt) as unknown;
+  } catch {
+    return null;
+  }
+  if (!record(value) || !exactKeys(value, [
+    "draftPass",
+    "evidenceManifest",
+    "request",
+    "taskReminder",
+    "version"
+  ]) || value.draftPass !== "primary" || value.version !== 1 ||
+    value.evidenceManifest !== input.draft.message ||
+    value.taskReminder !== KNOWLEDGE_ANSWER_DRAFT_TASK_REMINDER_V21 ||
+    typeof value.request !== "string" || !value.request.trim()) return null;
+  const prompt = knowledgeAnswerDraftPromptV21({
+    draftPass: "primary",
+    evidenceManifest: input.draft.message,
+    request: value.request,
+    routeInstruction
+  });
+  let expected: KnowledgeAnswerOperationRequestSnapshotV21;
+  try {
+    expected = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      evidenceReceiptHash: input.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      reasoningEffort: input.snapshot.reasoningEffort,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+      systemPrompt: prompt.systemPrompt,
+      transport: input.snapshot.transport,
+      userPrompt: prompt.userPrompt
+    });
+  } catch {
+    return null;
+  }
+  return knowledgeAnswerCanonicalJson(expected) ===
+    knowledgeAnswerCanonicalJson(input.snapshot)
+    ? Object.freeze({ request: value.request, routeInstruction })
+    : null;
+}
+
 export function knowledgeGroundedSelectorPromptV17(input: Readonly<{
   audit?: KnowledgeCoverageAuditV1;
   draft: KnowledgeAnswerDraftSelectorInput;
@@ -949,7 +1230,23 @@ export function knowledgeAnswerV21FailureCode(error: unknown):
 }
 
 export function knowledgeGroundedSelectorV17Fallback(
-  reason: KnowledgeAnswerFallbackReason
-): Readonly<{ kind: "selector_failed"; reason: KnowledgeAnswerFallbackReason }> {
+  reason: KnowledgeGroundedSelectorFailureReasonV17
+): KnowledgeGroundedSelectorFailureV17 {
   return Object.freeze({ kind: "selector_failed", reason });
+}
+
+export function decodeKnowledgeGroundedSelectorFailureV17(
+  value: unknown
+): KnowledgeGroundedSelectorFailureV17 | null {
+  if (!record(value) || !exactKeys(value, ["kind", "reason"]) ||
+    value.kind !== "selector_failed" || typeof value.reason !== "string" ||
+    value.reason !== "selector_provider_error" &&
+    value.reason !== "selector_refusal" &&
+    value.reason !== "selector_timeout" &&
+    value.reason !== "selector_transport_failure" &&
+    !isKnowledgeSelectorValidationFailureReason(value.reason)) return null;
+  return Object.freeze({
+    kind: "selector_failed",
+    reason: value.reason as KnowledgeGroundedSelectorFailureReasonV17
+  });
 }

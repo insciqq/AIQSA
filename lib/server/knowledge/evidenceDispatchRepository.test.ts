@@ -8,6 +8,7 @@ import {
   KNOWLEDGE_PROVIDER_ATTEMPT_PURPOSE_STORAGE_LIMIT,
   loadFinalKnowledgeGroundingDispatch,
   loadSettledKnowledgeAnswerGroundingOperations,
+  loadSettledKnowledgeAnswerGroundingOperationsV21,
   type KnowledgeEvidenceDispatchBinding,
   type KnowledgeProviderAttemptUsage,
   type ReserveKnowledgeEvidenceDispatchInput
@@ -35,6 +36,26 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V6,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V9
 } from "./answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+  KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
+  buildKnowledgeSupportedAnswerViewV1,
+  createKnowledgeAnswerOperationRequestSnapshotV21,
+  decodeKnowledgeAnswerDraftV21,
+  decodeKnowledgeGroundedSelectorV17,
+  knowledgeAnswerDraftPromptV21,
+  knowledgeGroundedSelectorPromptV17
+} from "./answerGroundingV21";
+import {
+  KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+  knowledgeCoverageAuditPromptV1
+} from "./coverageAuditV1";
 
 const NOW = new Date("2026-08-19T10:00:00.000Z");
 const LEASE = new Date("2026-08-19T10:05:00.000Z");
@@ -1176,6 +1197,161 @@ describe("Knowledge evidence dispatch repository", () => {
       finalSelector: null,
       initialSelector: { attempt: { purpose: "knowledge_grounded_selector_v16" } },
       selector: { attempt: { purpose: "knowledge_grounded_selector_v16" } },
+      supplementalDraft: null
+    });
+  });
+
+  it("loads the exact V21 Draft, Selector, and Auditor sequence", async () => {
+    const fake = createFakePrisma();
+    const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+    const currentManifest = draft();
+    const request = "How long is the verified value retained?";
+    const evidence = knowledgeSelectorEvidenceFromManifest(currentManifest);
+    const rawDraft = {
+      claims: [{ citationHints: ["K1"], text: "The verified value is retained." }],
+      version: 1
+    };
+    const acceptedDraft = decodeKnowledgeAnswerDraftV21(rawDraft, {
+      availableHandles: ["K1"]
+    })!;
+    const rawSelector = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    const acceptedSelector = decodeKnowledgeGroundedSelectorV17(rawSelector, {
+      draft: acceptedDraft,
+      evidence
+    })!;
+    const supportedView = buildKnowledgeSupportedAnswerViewV1({
+      draft: acceptedDraft,
+      evidence,
+      selector: acceptedSelector
+    });
+    const audit = {
+      dimensions: [{
+        description: "State how long the verified value is retained.",
+        evidenceHintHandles: [],
+        id: "D1",
+        requestAnchor: "How long",
+        status: "covered",
+        supportIds: ["C1"]
+      }],
+      version: 1
+    };
+    const draftPrompt = knowledgeAnswerDraftPromptV21({
+      draftPass: "primary",
+      evidenceManifest: currentManifest.message,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    });
+    const selectorPrompt = knowledgeGroundedSelectorPromptV17({
+      draft: acceptedDraft,
+      evidence,
+      evidenceManifest: currentManifest.message,
+      request,
+      selectorPass: "initial"
+    });
+    const auditPrompt = knowledgeCoverageAuditPromptV1({
+      evidence,
+      evidenceManifest: currentManifest.message,
+      request,
+      selectorState: {
+        contradictedClaimCount: 0,
+        selectedLiteralCount: 0,
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      },
+      supportedView
+    });
+    const snapshots = [
+      createKnowledgeAnswerOperationRequestSnapshotV21({
+        contractVersion: 21,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+        schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+        systemPrompt: draftPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: draftPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV21({
+        contractVersion: 17,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+        schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
+        systemPrompt: selectorPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: selectorPrompt.userPrompt
+      }),
+      createKnowledgeAnswerOperationRequestSnapshotV21({
+        contractVersion: 1,
+        evidenceReceiptHash: currentManifest.manifestHash,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+        schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+        systemPrompt: auditPrompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: auditPrompt.userPrompt
+      })
+    ] as const;
+    const results = [rawDraft, rawSelector, audit] as const;
+    for (const [index, snapshot] of snapshots.entries()) {
+      const ordinal = index + 1;
+      const input: ReserveKnowledgeEvidenceDispatchInput = {
+        acceptedRequest: snapshot,
+        checkpointHash: String(ordinal).repeat(64),
+        contractVersion: snapshot.contractVersion,
+        draft: currentManifest,
+        estimatedUsage: usage(),
+        evidenceBindings: [{
+          dispatchEvidenceId: "dispatch-evidence-1",
+          evidenceItemId: "evidence-item-1"
+        }],
+        evidenceReceiptHash: currentManifest.manifestHash,
+        idempotencyKey: `run:answer:v21:${ordinal}`,
+        leaseExpiresAt: LEASE,
+        leaseToken: `lease:worker:v21:${ordinal}`,
+        modelRunId: "run-1",
+        now: NOW,
+        ordinal,
+        providerBindingKey: "answer",
+        purpose: snapshot.operation,
+        requestHash: knowledgeAnswerHash(snapshot),
+        retrievalSessionId: "session-1",
+        roundIndex: 0
+      };
+      const reserved = await repository.reserve(input);
+      const attemptIdentity = identity(input, reserved.dispatch.attempt.id);
+      await repository.dispatch({
+        ...attemptIdentity,
+        dispatchedAt: DISPATCHED,
+        leaseExpiresAt: DISPATCH_LEASE,
+        leaseToken: input.leaseToken
+      });
+      await repository.settle({
+        ...attemptIdentity,
+        acceptedResult: results[index]!,
+        actualUsage: usage(),
+        leaseToken: input.leaseToken,
+        providerResponseId: `provider-response-v21-${ordinal}`,
+        resultAcceptedAt: new Date("2026-08-19T10:01:30.000Z"),
+        resultHash: knowledgeAnswerHash(results[index]!),
+        settledAt: SETTLED
+      });
+    }
+    await expect(loadSettledKnowledgeAnswerGroundingOperationsV21(fake.client, {
+      modelRunId: "run-1"
+    })).resolves.toMatchObject({
+      auditor: { attempt: { purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } },
+      draft: { attempt: { purpose: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } },
+      finalSelector: null,
+      initialSelector: {
+        attempt: { purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17 }
+      },
+      selectorRepair: null,
       supplementalDraft: null
     });
   });

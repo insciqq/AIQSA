@@ -73,6 +73,8 @@ import {
   type KnowledgeAnswerOperationExecutionOptionsV8,
   type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
+import { executeKnowledgeAnswerGroundingV21 } from
+  "../knowledge/answerGroundingExecutionV21";
 import {
   decodeKnowledgeAnswerDraftPrompt,
   decodeKnowledgeAnswerOperationRequestSnapshotV1,
@@ -85,6 +87,13 @@ import {
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
   type KnowledgeAnswerContractPair
 } from "../knowledge/answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  decodeKnowledgeAnswerDraftPrimaryPromptV21,
+  decodeKnowledgeAnswerOperationRequestSnapshotV21
+} from "../knowledge/answerGroundingV21";
+import { selectKnowledgeAnswerPipelineForNewRun } from
+  "../knowledge/answerPipelineRollout";
 import {
   type KnowledgeRunAdmissionAuthorizationSnapshot,
   type KnowledgeRunAdmissionPlan
@@ -222,6 +231,7 @@ export type RunRecoveryRepository = Pick<
   | "getRunControlForRecovery"
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
+  | "groundKnowledgeAnswerV21"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
@@ -2040,7 +2050,7 @@ async function recoverCheckpointedToolLoop(
           "The accepted Knowledge request is empty."
         );
       }
-      await recoverKnowledgeAnswerGroundingV5(deps, {
+      await recoverKnowledgeAnswerGrounding(deps, {
         control: latest,
         runId: run.id,
         seed: {
@@ -2895,7 +2905,7 @@ type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
   transport: "native_strict" | "provider_neutral_json";
 }>;
 
-async function recoverKnowledgeAnswerGroundingV5(
+async function recoverKnowledgeAnswerGrounding(
   deps: RunRecoveryDeps,
   input: Readonly<{
     control: LoadedRecoveryControl;
@@ -2913,61 +2923,115 @@ async function recoverKnowledgeAnswerGroundingV5(
       }>
   )
 ): Promise<void> {
-  if (!deps.knowledgeProviderDispatch || !deps.repository.groundKnowledgeAnswerV5) {
-    throw new ToolLoopRecoveryError(
-      "knowledge_answer_v5_unavailable",
-      "The saved Knowledge answer operation cannot be recovered."
-    );
-  }
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
+  let pipeline: "v20_v16" | "v21_audit_v1";
   if (input.draftDispatch) {
-    const acceptedPair = knowledgeAnswerContractPairForDraftOperation(
-      input.draftDispatch.attempt.purpose
-    );
-    if (!acceptedPair ||
-      input.draftDispatch.attempt.ordinal !==
-        (acceptedPair.coveragePlannerOperation ? 2 : 1) ||
-      input.draftDispatch.attempt.providerBindingKey !== "answer") {
-      throw new ToolLoopRecoveryError(
-        "knowledge_answer_v5_unavailable",
-        "The saved Knowledge answer operation cannot be recovered."
+    if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
+      if (input.draftDispatch.attempt.ordinal !== 1 ||
+        input.draftDispatch.attempt.providerBindingKey !== "answer") {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_grounding_unavailable",
+          "The saved Knowledge answer operation cannot be recovered."
+        );
+      }
+      const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+        input.draftDispatch.attempt.acceptedRequest
       );
-    }
-    contractPair = acceptedPair;
-    const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV1(
-      input.draftDispatch.attempt.acceptedRequest
-    );
-    const prompt = draftRequest
-      ? decodeKnowledgeAnswerDraftPrompt(draftRequest, input.draftDispatch.draft)
-      : null;
-    if (!draftRequest || !prompt) {
-      throw new ToolLoopRecoveryError(
-        "knowledge_answer_contract_failed",
-        "The saved Knowledge draft contract snapshot is invalid."
+      const prompt = draftRequest
+        ? decodeKnowledgeAnswerDraftPrimaryPromptV21({
+            draft: input.draftDispatch.draft,
+            snapshot: draftRequest
+          })
+        : null;
+      if (!draftRequest || !prompt) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The saved Knowledge draft contract snapshot is invalid."
+        );
+      }
+      pipeline = "v21_audit_v1";
+      seed = Object.freeze({
+        draft: input.draftDispatch.draft,
+        evidenceBindings: [
+          ...input.draftDispatch.items,
+          ...input.draftDispatch.exclusions
+        ].flatMap((item) => item.evidenceItemId
+          ? [{
+              dispatchEvidenceId: item.dispatchEvidenceId,
+              evidenceItemId: item.evidenceItemId
+            }]
+          : []),
+        forbiddenIdentityFragments: input.draftDispatch.draft.items.map(
+          (item) => item.evidenceId
+        ),
+        reasoningEffort: draftRequest.reasoningEffort,
+        request: prompt.request,
+        routeInstruction: prompt.routeInstruction,
+        transport: draftRequest.transport
+      });
+    } else {
+      const acceptedPair = knowledgeAnswerContractPairForDraftOperation(
+        input.draftDispatch.attempt.purpose
       );
+      if (!acceptedPair ||
+        input.draftDispatch.attempt.ordinal !==
+          (acceptedPair.coveragePlannerOperation ? 2 : 1) ||
+        input.draftDispatch.attempt.providerBindingKey !== "answer") {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_v5_unavailable",
+          "The saved Knowledge answer operation cannot be recovered."
+        );
+      }
+      pipeline = "v20_v16";
+      contractPair = acceptedPair;
+      const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV1(
+        input.draftDispatch.attempt.acceptedRequest
+      );
+      const prompt = draftRequest
+        ? decodeKnowledgeAnswerDraftPrompt(draftRequest, input.draftDispatch.draft)
+        : null;
+      if (!draftRequest || !prompt) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The saved Knowledge draft contract snapshot is invalid."
+        );
+      }
+      seed = Object.freeze({
+        draft: input.draftDispatch.draft,
+        evidenceBindings: [
+          ...input.draftDispatch.items,
+          ...input.draftDispatch.exclusions
+        ].flatMap((item) => item.evidenceItemId
+          ? [{
+              dispatchEvidenceId: item.dispatchEvidenceId,
+              evidenceItemId: item.evidenceItemId
+            }]
+          : []),
+        forbiddenIdentityFragments: input.draftDispatch.draft.items.map(
+          (item) => item.evidenceId
+        ),
+        reasoningEffort: draftRequest.reasoningEffort,
+        request: prompt.request,
+        routeInstruction: prompt.routeInstruction,
+        transport: draftRequest.transport
+      });
     }
-    seed = Object.freeze({
-      draft: input.draftDispatch.draft,
-      evidenceBindings: [
-        ...input.draftDispatch.items,
-        ...input.draftDispatch.exclusions
-      ].flatMap((item) => item.evidenceItemId
-        ? [{
-            dispatchEvidenceId: item.dispatchEvidenceId,
-            evidenceItemId: item.evidenceItemId
-          }]
-        : []),
-      forbiddenIdentityFragments: input.draftDispatch.draft.items.map(
-        (item) => item.evidenceId
-      ),
-      reasoningEffort: draftRequest.reasoningEffort,
-      request: prompt.request,
-      routeInstruction: prompt.routeInstruction,
-      transport: draftRequest.transport
-    });
   } else {
     seed = input.seed;
+    pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: input.runId });
+  }
+  const groundingUnavailable = !deps.knowledgeProviderDispatch ||
+    (pipeline === "v21_audit_v1"
+      ? !deps.repository.groundKnowledgeAnswerV21
+      : !deps.repository.groundKnowledgeAnswerV5);
+  if (groundingUnavailable) {
+    throw new ToolLoopRecoveryError(
+      pipeline === "v20_v16"
+        ? "knowledge_answer_v5_unavailable"
+        : "knowledge_answer_grounding_unavailable",
+      "The saved Knowledge answer operation cannot be recovered."
+    );
   }
   const runtime = await resolveAnswerRuntime(deps, input.runId, input.control.provider);
   if (!runtime?.adapter) {
@@ -3131,9 +3195,8 @@ async function recoverKnowledgeAnswerGroundingV5(
       usage: normalizeTokenUsage(next.value.usage)
     });
   };
-  const operationResult = await executeKnowledgeAnswerGroundingV8({
+  const groundingInput = {
     authorize,
-    contractPair,
     draft: seed.draft,
     ...(seed.evidenceBindings?.length
       ? { evidenceBindings: seed.evidenceBindings }
@@ -3146,26 +3209,47 @@ async function recoverKnowledgeAnswerGroundingV5(
     lifecycle: deps.knowledgeProviderDispatch,
     modelRunId: input.runId,
     reasoningEffort: seed.reasoningEffort,
-        recoveryProviderResponseIds: input.control.providerResponseId
-      ? {
-          ...(contractPair.coveragePlannerOperation
-            ? { [contractPair.coveragePlannerOperation]: input.control.providerResponseId }
-            : {}),
-          [contractPair.draftOperation]: input.control.providerResponseId,
-          [contractPair.selectorOperation]: input.control.providerResponseId,
-          ...(contractPair.supplementalDraftOperation
-            ? { [contractPair.supplementalDraftOperation]: input.control.providerResponseId }
-            : {}),
-          ...(contractPair.finalSelectorOperation
-            ? { [contractPair.finalSelectorOperation]: input.control.providerResponseId }
-            : {})
-        }
-      : undefined,
     request: seed.request,
     routeInstruction: seed.routeInstruction,
     shouldAbort: () => input.signal.aborted,
     transport: seed.transport
-  });
+  } as const;
+  const operationResult = pipeline === "v21_audit_v1"
+    ? await executeKnowledgeAnswerGroundingV21({
+        ...groundingInput,
+        recoveryProviderResponseIds: input.control.providerResponseId
+          ? {
+              1: input.control.providerResponseId,
+              2: input.control.providerResponseId,
+              3: input.control.providerResponseId,
+              4: input.control.providerResponseId,
+              5: input.control.providerResponseId,
+              6: input.control.providerResponseId
+            }
+          : undefined
+      })
+    : await executeKnowledgeAnswerGroundingV8({
+        ...groundingInput,
+        contractPair,
+        recoveryProviderResponseIds: input.control.providerResponseId
+          ? {
+              ...(contractPair.coveragePlannerOperation
+                ? { [contractPair.coveragePlannerOperation]: input.control.providerResponseId }
+                : {}),
+              [contractPair.draftOperation]: input.control.providerResponseId,
+              [contractPair.selectorOperation]: input.control.providerResponseId,
+              ...(contractPair.supplementalDraftOperation
+                ? {
+                    [contractPair.supplementalDraftOperation]:
+                      input.control.providerResponseId
+                  }
+                : {}),
+              ...(contractPair.finalSelectorOperation
+                ? { [contractPair.finalSelectorOperation]: input.control.providerResponseId }
+                : {})
+            }
+          : undefined
+      });
   const latest = await loadRecoveryRunControl(
     deps,
     input.runId,
@@ -3185,9 +3269,9 @@ async function recoverKnowledgeAnswerGroundingV5(
   const usageAttributions = groupedUsageAttributions([
     ...persistedUsage.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
     ...operationResult.operations.map((operation) => ({
-    modelId: latest.modelId,
-    provider: latest.provider,
-    usage: operation.usage
+      modelId: latest.modelId,
+      provider: latest.provider,
+      usage: operation.usage
     }))
   ]);
   await finalizeRunCompletion({
@@ -3238,10 +3322,11 @@ async function refreshProviderRunOnceRegistered(
           ordinal: 2
         });
       }
-      if (draftDispatch && knowledgeAnswerContractPairForDraftOperation(
-        draftDispatch.attempt.purpose
+      if (draftDispatch && (
+        draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 ||
+        knowledgeAnswerContractPairForDraftOperation(draftDispatch.attempt.purpose)
       )) {
-        await recoverKnowledgeAnswerGroundingV5(deps, {
+        await recoverKnowledgeAnswerGrounding(deps, {
           control,
           draftDispatch,
           runId,
@@ -3363,7 +3448,7 @@ async function refreshProviderRunOnceRegistered(
           "The accepted Knowledge request is empty."
         );
       }
-      await recoverKnowledgeAnswerGroundingV5(deps, {
+      await recoverKnowledgeAnswerGrounding(deps, {
         control,
         runId,
         seed: {
@@ -3619,7 +3704,7 @@ async function refreshProviderRunOnceRegistered(
           );
         }
         answerRecoveryStarted = true;
-        await recoverKnowledgeAnswerGroundingV5(deps, {
+        await recoverKnowledgeAnswerGrounding(deps, {
           control,
           runId,
           seed: {

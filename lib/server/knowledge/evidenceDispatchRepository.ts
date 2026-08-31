@@ -21,6 +21,15 @@ import {
   KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES,
   type KnowledgeAnswerContractPair
 } from "./answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  type KnowledgeAnswerOperationV21
+} from "./answerGroundingV21";
+import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV1";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
@@ -60,6 +69,11 @@ export type KnowledgeProviderAttemptUsage = Readonly<{
 
 export type KnowledgeProviderAttemptPurpose =
   | "answer"
+  | "knowledge_answer_draft_v21"
+  | "knowledge_answer_draft_supplement_v21"
+  | "knowledge_grounded_selector_v17"
+  | "knowledge_grounded_selector_final_v17"
+  | "knowledge_coverage_auditor_v1"
   | "knowledge_coverage_planner_v20"
   | "knowledge_answer_draft_v20"
   | "knowledge_answer_draft_supplement_v20"
@@ -190,6 +204,15 @@ export type StoredKnowledgeAnswerGroundingOperations = Readonly<{
   finalSelector: StoredKnowledgeEvidenceDispatch | null;
   initialSelector: StoredKnowledgeEvidenceDispatch;
   selector: StoredKnowledgeEvidenceDispatch;
+  supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
+}>;
+
+export type StoredKnowledgeAnswerGroundingOperationsV21 = Readonly<{
+  auditor: StoredKnowledgeEvidenceDispatch;
+  draft: StoredKnowledgeEvidenceDispatch;
+  finalSelector: StoredKnowledgeEvidenceDispatch | null;
+  initialSelector: StoredKnowledgeEvidenceDispatch;
+  selectorRepair: StoredKnowledgeEvidenceDispatch | null;
   supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
 }>;
 
@@ -439,6 +462,11 @@ function canonicalJsonHash(value: unknown): string {
 function answerOperationContractVersion(
   purpose: LegacyKnowledgeProviderAttemptPurpose
 ): number | null {
+  if (purpose === "knowledge_answer_draft_v21" ||
+    purpose === "knowledge_answer_draft_supplement_v21") return 21;
+  if (purpose === "knowledge_grounded_selector_v17" ||
+    purpose === "knowledge_grounded_selector_final_v17") return 17;
+  if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
     purpose === "knowledge_answer_draft_v20" ||
     purpose === "knowledge_answer_draft_supplement_v20") return 20;
@@ -535,6 +563,11 @@ function repositoryError(code: KnowledgeEvidenceDispatchRepositoryErrorCode): ne
 function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPurpose {
   return value === "answer" || value === "answer_citation_retry" ||
     value === "citation_repair" || value === "tool_follow_up" ||
+    value === "knowledge_answer_draft_v21" ||
+    value === "knowledge_answer_draft_supplement_v21" ||
+    value === "knowledge_grounded_selector_v17" ||
+    value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
@@ -588,7 +621,12 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
 }
 
 function validReservationPurpose(value: unknown): value is KnowledgeProviderAttemptPurpose {
-  return value === "answer" || value === "knowledge_coverage_planner_v20" ||
+  return value === "answer" || value === "knowledge_answer_draft_v21" ||
+    value === "knowledge_answer_draft_supplement_v21" ||
+    value === "knowledge_grounded_selector_v17" ||
+    value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_coverage_auditor_v1" ||
+    value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
     value === "knowledge_answer_draft_v19" ||
@@ -1307,6 +1345,89 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
     initialSelector,
     selector: finalSelector ?? initialSelector,
     supplementalDraft
+  });
+}
+
+/** Loads one exact V21 answer protocol. The initial Selector purpose may occur
+ * twice only when ordinal three is its single structural-repair pass. Audit
+ * payload consumers must pin the Auditor result hash in their request
+ * snapshots, so recovery cannot reinterpret or replace accepted dimensions. */
+export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
+  client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
+  input: Readonly<{ modelRunId: string }>
+): Promise<StoredKnowledgeAnswerGroundingOperationsV21> {
+  if (!safeString(input.modelRunId)) repositoryError("invalid_input");
+  const rows = await client.knowledgeProviderAttempt.findMany({
+    include: attemptInclude,
+    orderBy: { ordinal: "asc" },
+    where: { modelRunId: input.modelRunId }
+  });
+  const operationRows = rows.filter((row) => validPurpose(row.purpose) &&
+    answerOperationContractVersion(row.purpose) !== null);
+  const dispatches = operationRows.map(storedDispatch);
+  const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
+  const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
+  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17;
+  const auditor = KNOWLEDGE_COVERAGE_AUDITOR_OPERATION;
+  const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
+  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17;
+  const allowedSequences: readonly (readonly KnowledgeAnswerOperationV21[])[] = [
+    [draft, selector, auditor],
+    [draft, selector, auditor, supplement],
+    [draft, selector, auditor, supplement, finalSelector],
+    [draft, selector, selector, auditor],
+    [draft, selector, selector, auditor, supplement],
+    [draft, selector, selector, auditor, supplement, finalSelector]
+  ];
+  if (!allowedSequences.some((sequence) =>
+    canonicalJson(sequence) === canonicalJson(purposeSequence))) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const requests = dispatches.map((dispatch) =>
+    decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      dispatch.attempt.acceptedRequest
+    ));
+  const terminal = (dispatch: StoredKnowledgeEvidenceDispatch) =>
+    dispatch.attempt.state === "settled" && dispatch.attempt.actualUsage !== null &&
+    dispatch.attempt.acceptedResult !== null && dispatch.attempt.dispatchedAt !== null &&
+    dispatch.attempt.settledAt !== null && dispatch.attempt.resultAcceptedAt !== null &&
+    dispatch.attempt.resultHash !== null;
+  const canonicalManifest = canonicalJson(dispatches[0]!.draft);
+  if (dispatches.some((dispatch, index) =>
+    dispatch.attempt.ordinal !== index + 1 ||
+    dispatch.attempt.providerBindingKey !== "answer" || !terminal(dispatch) ||
+    !requests[index] || requests[index]!.operation !== purposeSequence[index] ||
+    requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
+    canonicalJson(dispatch.draft) !== canonicalManifest)) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const auditorIndex = purposeSequence.indexOf(auditor);
+  const auditorDispatch = dispatches[auditorIndex];
+  if (!auditorDispatch || auditorIndex < 2 || auditorIndex > 3) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const auditPayloadHash = auditorDispatch.attempt.resultHash;
+  if (!auditPayloadHash || dispatches.some((dispatch, index) => {
+    const request = requests[index]!;
+    const consumesAudit = dispatch.attempt.purpose === supplement ||
+      dispatch.attempt.purpose === finalSelector;
+    return consumesAudit
+      ? request.auditPayloadHash !== auditPayloadHash
+      : request.auditPayloadHash !== null;
+  })) repositoryError("stored_manifest_invalid");
+  const selectorDispatches = dispatches.filter(({ attempt }) =>
+    attempt.purpose === selector);
+  const supplementDispatch = dispatches.find(({ attempt }) =>
+    attempt.purpose === supplement) ?? null;
+  const finalSelectorDispatch = dispatches.find(({ attempt }) =>
+    attempt.purpose === finalSelector) ?? null;
+  return deepFreeze({
+    auditor: auditorDispatch,
+    draft: dispatches[0]!,
+    finalSelector: finalSelectorDispatch,
+    initialSelector: selectorDispatches[0]!,
+    selectorRepair: selectorDispatches[1] ?? null,
+    supplementalDraft: supplementDispatch
   });
 }
 

@@ -23,6 +23,7 @@ import {
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
+  groundSettledKnowledgeAnswerV17,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -34,6 +35,7 @@ import {
   type KnowledgeGroundingEvidenceV14,
   type KnowledgeGroundingEvidenceV15,
   type KnowledgeGroundingEvidenceV16,
+  type KnowledgeGroundingEvidenceV17,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -44,6 +46,7 @@ import { parseToolLoopCheckpoint } from "../runs/toolLoopPersistence";
 import {
   loadFinalKnowledgeGroundingDispatch,
   loadSettledKnowledgeAnswerGroundingOperations,
+  loadSettledKnowledgeAnswerGroundingOperationsV21,
   type KnowledgeEvidenceDispatchBinding,
   type KnowledgeGroundingDispatchSelection,
   type StoredKnowledgeEvidenceDispatch
@@ -59,6 +62,7 @@ import type {
 } from "./evidenceDispatchManifest";
 import {
   decodeKnowledgeAnswerDraftAcceptedResultForPair,
+  decodeKnowledgeAnswerDraftMalformed,
   decodeKnowledgeAnswerDraftSupplementAcceptedResultV1,
   decodeKnowledgeAnswerDraftPrompt,
   decodeKnowledgeAnswerDraftPromptV20,
@@ -74,6 +78,7 @@ import {
   decodeKnowledgeGroundedSelectorV8,
   decodeKnowledgeSelectorFailureV3,
   knowledgeAnswerContractPairForVersions,
+  knowledgeAnswerHash,
   isKnowledgeDraftMalformed,
   isKnowledgeSelectorValidationFailureReason,
   mergeKnowledgeAnswerDraftsV1,
@@ -84,8 +89,53 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_MAX_OUTPUT_TOKENS,
   settleKnowledgeAnswerV5,
   type KnowledgeAnswerDraftSelectorInput,
-  type KnowledgeAnswerContractVersions
+  type KnowledgeAnswerContractVersions,
+  type KnowledgeSelectorValidationFailureReason
 } from "./answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
+  KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+  KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
+  KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+  KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
+  buildKnowledgeSupportedAnswerViewV1,
+  createKnowledgeAnswerOperationRequestSnapshotV21,
+  decodeKnowledgeAnswerDraftPrimaryPromptV21,
+  decodeKnowledgeAnswerDraftSupplementV21,
+  decodeKnowledgeAnswerDraftV21,
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  decodeKnowledgeGroundedSelectorFailureV17,
+  decodeKnowledgeGroundedSelectorFinalV17,
+  decodeKnowledgeGroundedSelectorV17,
+  knowledgeAnswerDraftPromptV21,
+  knowledgeEmptyGroundedSelectorV17,
+  knowledgeGroundedSelectorPromptV17,
+  mergeKnowledgeAnswerDraftsV21,
+  settleKnowledgeAnswerV21FromAudit,
+  settleKnowledgeAnswerV21FromFinalSelector,
+  type KnowledgeGroundedSelectorV17
+} from "./answerGroundingV21";
+import {
+  KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+  decodeKnowledgeCoverageAuditFailureV1,
+  decodeKnowledgeCoverageAuditV1,
+  deriveKnowledgeCoverageV1,
+  knowledgeCoverageAuditMissingDimensionsV1,
+  knowledgeCoverageAuditPromptV1,
+  type KnowledgeCoverageAuditSelectorStateV1
+} from "./coverageAuditV1";
+import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
   decodeKnowledgeBudgetPolicy,
   isKnowledgeOperationKind
@@ -1499,12 +1549,416 @@ export async function groundKnowledgeRunAnswerV5(
   return Object.freeze({ grounding });
 }
 
+function knowledgeV21SelectorState(
+  selector: KnowledgeGroundedSelectorV17
+): KnowledgeCoverageAuditSelectorStateV1 {
+  return Object.freeze({
+    contradictedClaimCount: selector.claims.filter(
+      ({ verdict }) => verdict === "contradicted"
+    ).length,
+    selectedLiteralCount: selector.extractIds.length,
+    supportedClaimCount: selector.claims.filter(
+      ({ verdict }) => verdict === "supported"
+    ).length,
+    unsupportedClaimCount: selector.claims.filter(
+      ({ verdict }) => verdict === "unsupported"
+    ).length
+  });
+}
+
+export async function groundKnowledgeRunAnswerV21(
+  client: EvidenceClient,
+  input: Readonly<{ runId: string; userId: string }>
+): Promise<KnowledgeRunFinalizationEnvelope> {
+  const authorization = await loadKnowledgeGroundingEvidencePackage(client, input);
+  if (!authorization) throw new Error("knowledge_evidence_receipt_invalid");
+  const operations = await loadSettledKnowledgeAnswerGroundingOperationsV21(client, {
+    modelRunId: input.runId
+  });
+  const operationDispatches = [
+    operations.draft,
+    operations.initialSelector,
+    ...(operations.selectorRepair ? [operations.selectorRepair] : []),
+    operations.auditor,
+    ...(operations.supplementalDraft ? [operations.supplementalDraft] : []),
+    ...(operations.finalSelector ? [operations.finalSelector] : [])
+  ];
+  if (operationDispatches.some((dispatch) =>
+    dispatch.retrievalSessionId !== authorization.evidence.sessionId)) {
+    throw new Error("knowledge_evidence_dispatch_grounding_mismatch");
+  }
+  const evidence = knowledgeSelectorEvidenceFromManifest(operations.draft.draft);
+  const handles = evidence.map(({ handle }) => handle);
+  const forbiddenIdentityFragments = [
+    input.runId,
+    authorization.evidence.sessionId,
+    ...operationDispatches.map(({ manifestId }) => manifestId),
+    ...operations.draft.draft.items.map(({ evidenceId }) => evidenceId),
+    ...authorization.evidence.items.flatMap((item) => [
+      item.id,
+      item.sourceId,
+      item.sourceVersionId,
+      item.sourceArtifactId,
+      item.documentId,
+      item.documentVersionId,
+      item.sectionId,
+      item.passageId
+    ].filter((value): value is string => value !== null))
+  ];
+  const primaryDraft = decodeKnowledgeAnswerDraftMalformed(
+    operations.draft.attempt.acceptedResult
+  ) ?? decodeKnowledgeAnswerDraftV21(operations.draft.attempt.acceptedResult, {
+    availableHandles: handles,
+    forbiddenIdentityFragments
+  });
+  if (!primaryDraft) throw new Error("knowledge_answer_draft_result_invalid");
+  const primaryRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+    operations.draft.attempt.acceptedRequest
+  );
+  const primaryPrompt = primaryRequest
+    ? decodeKnowledgeAnswerDraftPrimaryPromptV21({
+        draft: operations.draft.draft,
+        snapshot: primaryRequest
+      })
+    : null;
+  if (!primaryRequest || !primaryPrompt) {
+    throw new Error("knowledge_answer_operation_snapshot_conflict");
+  }
+  const exactRequest = (
+    actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
+    expected: ReturnType<typeof createKnowledgeAnswerOperationRequestSnapshotV21>
+  ) => Boolean(actual && canonicalJson(actual) === canonicalJson(expected));
+  const initialRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+    operations.initialSelector.attempt.acceptedRequest
+  );
+  const initialPrompt = knowledgeGroundedSelectorPromptV17({
+    draft: primaryDraft,
+    evidence,
+    evidenceManifest: operations.draft.draft.message,
+    request: primaryPrompt.request,
+    selectorPass: "initial"
+  });
+  const expectedInitialRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+    contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+    evidenceReceiptHash: operations.draft.draft.manifestHash,
+    maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
+    operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+    reasoningEffort: primaryRequest.reasoningEffort,
+    schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
+    systemPrompt: initialPrompt.systemPrompt,
+    transport: primaryRequest.transport,
+    userPrompt: initialPrompt.userPrompt
+  });
+  if (!exactRequest(initialRequest, expectedInitialRequest)) {
+    throw new Error("knowledge_answer_operation_snapshot_conflict");
+  }
+  let selectorFailure = decodeKnowledgeGroundedSelectorFailureV17(
+    operations.initialSelector.attempt.acceptedResult
+  );
+  let acceptedSelector = selectorFailure
+    ? null
+    : decodeKnowledgeGroundedSelectorV17(
+        operations.initialSelector.attempt.acceptedResult,
+        { draft: primaryDraft, evidence }
+      );
+  if (!selectorFailure && !acceptedSelector) {
+    throw new Error("knowledge_grounded_selector_result_invalid");
+  }
+  let selectorRepairSucceeded = false;
+  const repairRequired = !isKnowledgeDraftMalformed(primaryDraft) && selectorFailure !== null &&
+    isKnowledgeSelectorValidationFailureReason(selectorFailure.reason);
+  if (repairRequired !== Boolean(operations.selectorRepair)) {
+    throw new Error("knowledge_answer_operation_snapshot_conflict");
+  }
+  if (operations.selectorRepair) {
+    const repairReason = selectorFailure!.reason as KnowledgeSelectorValidationFailureReason;
+    const repairPrompt = knowledgeGroundedSelectorPromptV17({
+      draft: primaryDraft,
+      evidence,
+      evidenceManifest: operations.draft.draft.message,
+      repairReason,
+      request: primaryPrompt.request,
+      selectorPass: "repair"
+    });
+    const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      operations.selectorRepair.attempt.acceptedRequest
+    );
+    const expectedRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+      evidenceReceiptHash: operations.draft.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
+      reasoningEffort: primaryRequest.reasoningEffort,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
+      systemPrompt: repairPrompt.systemPrompt,
+      transport: primaryRequest.transport,
+      userPrompt: repairPrompt.userPrompt
+    });
+    if (!exactRequest(repairRequest, expectedRepairRequest)) {
+      throw new Error("knowledge_answer_operation_snapshot_conflict");
+    }
+    selectorFailure = decodeKnowledgeGroundedSelectorFailureV17(
+      operations.selectorRepair.attempt.acceptedResult
+    );
+    acceptedSelector = selectorFailure
+      ? null
+      : decodeKnowledgeGroundedSelectorV17(
+          operations.selectorRepair.attempt.acceptedResult,
+          { draft: primaryDraft, evidence }
+        );
+    if (!selectorFailure && !acceptedSelector) {
+      throw new Error("knowledge_grounded_selector_result_invalid");
+    }
+    selectorRepairSucceeded = acceptedSelector !== null;
+  }
+  const selectorForAudit = acceptedSelector ??
+    knowledgeEmptyGroundedSelectorV17(primaryDraft);
+  const supportedView = buildKnowledgeSupportedAnswerViewV1({
+    draft: primaryDraft,
+    evidence,
+    selector: selectorForAudit
+  });
+  const auditPrompt = knowledgeCoverageAuditPromptV1({
+    evidence,
+    evidenceManifest: operations.draft.draft.message,
+    request: primaryPrompt.request,
+    ...(acceptedSelector
+      ? { selectorState: knowledgeV21SelectorState(acceptedSelector) }
+      : {}),
+    supportedView
+  });
+  const auditRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+    operations.auditor.attempt.acceptedRequest
+  );
+  const expectedAuditRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+    contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
+    evidenceReceiptHash: operations.draft.draft.manifestHash,
+    maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+    operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+    reasoningEffort: primaryRequest.reasoningEffort,
+    schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+    systemPrompt: auditPrompt.systemPrompt,
+    transport: primaryRequest.transport,
+    userPrompt: auditPrompt.userPrompt
+  });
+  if (!exactRequest(auditRequest, expectedAuditRequest) ||
+    decodeKnowledgeCoverageAuditFailureV1(operations.auditor.attempt.acceptedResult)) {
+    throw new Error("knowledge_coverage_audit_unaccepted");
+  }
+  const audit = decodeKnowledgeCoverageAuditV1(
+    operations.auditor.attempt.acceptedResult,
+    { evidence, request: primaryPrompt.request, supportedView }
+  );
+  if (!audit || !operations.auditor.attempt.resultHash ||
+    knowledgeAnswerHash(operations.auditor.attempt.acceptedResult) !==
+      operations.auditor.attempt.resultHash) {
+    throw new Error("knowledge_coverage_audit_unaccepted");
+  }
+  const auditPayloadHash = operations.auditor.attempt.resultHash;
+  const coverage = deriveKnowledgeCoverageV1({ audit, supportedView });
+  const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
+    ? 0
+    : primaryDraft.claims.length;
+  const correctionRequired = coverage.missingInformation.length > 0 &&
+    primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims;
+  if (correctionRequired !== Boolean(operations.supplementalDraft)) {
+    throw new Error("knowledge_answer_operation_snapshot_conflict");
+  }
+  let settlement;
+  if (!operations.supplementalDraft) {
+    if (operations.finalSelector || !acceptedSelector) {
+      throw new Error("knowledge_grounded_selector_result_invalid");
+    }
+    settlement = settleKnowledgeAnswerV21FromAudit({
+      audit,
+      draft: primaryDraft,
+      evidence,
+      request: primaryPrompt.request,
+      selector: acceptedSelector
+    });
+  } else {
+    const missingDimensions = knowledgeCoverageAuditMissingDimensionsV1(audit);
+    const supplementPrompt = knowledgeAnswerDraftPromptV21({
+      auditDimensions: missingDimensions,
+      draftPass: "supplement",
+      evidenceManifest: operations.draft.draft.message,
+      primaryDraft,
+      request: primaryPrompt.request,
+      routeInstruction: primaryPrompt.routeInstruction
+    });
+    const supplementRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      operations.supplementalDraft.attempt.acceptedRequest
+    );
+    const expectedSupplementRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      auditPayloadHash,
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      evidenceReceiptHash: operations.draft.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+      reasoningEffort: primaryRequest.reasoningEffort,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
+      systemPrompt: supplementPrompt.systemPrompt,
+      transport: primaryRequest.transport,
+      userPrompt: supplementPrompt.userPrompt
+    });
+    if (!exactRequest(supplementRequest, expectedSupplementRequest)) {
+      throw new Error("knowledge_answer_operation_snapshot_conflict");
+    }
+    const supplement = decodeKnowledgeAnswerDraftMalformed(
+      operations.supplementalDraft.attempt.acceptedResult
+    ) ?? decodeKnowledgeAnswerDraftSupplementV21(
+      operations.supplementalDraft.attempt.acceptedResult,
+      { availableHandles: handles, forbiddenIdentityFragments }
+    );
+    if (!supplement) throw new Error("knowledge_answer_draft_result_invalid");
+    if (isKnowledgeDraftMalformed(supplement)) {
+      if (operations.finalSelector || !acceptedSelector) {
+        throw new Error("knowledge_grounded_selector_result_invalid");
+      }
+      settlement = settleKnowledgeAnswerV21FromAudit({
+        audit,
+        draft: primaryDraft,
+        evidence,
+        request: primaryPrompt.request,
+        selector: acceptedSelector
+      });
+    } else {
+      if (!operations.finalSelector) {
+        throw new Error("knowledge_answer_operation_snapshot_conflict");
+      }
+      const finalDraft = mergeKnowledgeAnswerDraftsV21({
+        primary: primaryDraft,
+        supplement
+      });
+      const finalPrompt = knowledgeGroundedSelectorPromptV17({
+        audit,
+        draft: finalDraft,
+        evidence,
+        evidenceManifest: operations.draft.draft.message,
+        request: primaryPrompt.request,
+        selectorPass: "final"
+      });
+      const finalRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+        operations.finalSelector.attempt.acceptedRequest
+      );
+      const expectedFinalRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+        auditPayloadHash,
+        contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION,
+        evidenceReceiptHash: operations.draft.draft.manifestHash,
+        maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
+        reasoningEffort: primaryRequest.reasoningEffort,
+        schema: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
+        systemPrompt: finalPrompt.systemPrompt,
+        transport: primaryRequest.transport,
+        userPrompt: finalPrompt.userPrompt
+      });
+      if (!exactRequest(finalRequest, expectedFinalRequest) ||
+        decodeKnowledgeGroundedSelectorFailureV17(
+          operations.finalSelector.attempt.acceptedResult
+        )) throw new Error("knowledge_grounded_selector_result_invalid");
+      const finalSelector = decodeKnowledgeGroundedSelectorFinalV17(
+        operations.finalSelector.attempt.acceptedResult,
+        { audit, draft: finalDraft, evidence }
+      );
+      if (!finalSelector) throw new Error("knowledge_grounded_selector_result_invalid");
+      settlement = settleKnowledgeAnswerV21FromFinalSelector({
+        draft: finalDraft,
+        evidence,
+        selector: finalSelector
+      });
+    }
+  }
+  const providerBinding = await client.providerRunBinding.findUnique({
+    select: { executionSnapshot: true },
+    where: {
+      modelRunId_bindingKey: {
+        bindingKey: "answer",
+        modelRunId: input.runId
+      }
+    }
+  });
+  if (!providerBinding) throw new Error("provider_run_binding_not_found");
+  const providerSnapshot = normalizeProviderExecutionSnapshot(
+    providerBinding.executionSnapshot
+  );
+  const providerPinFingerprint = knowledgeAnswerHash({
+    connection: providerSnapshot.connection,
+    connectionId: providerSnapshot.connectionId,
+    providerFamily: providerSnapshot.providerFamily,
+    version: 1
+  });
+  const modelPinFingerprint = knowledgeAnswerHash({
+    model: providerSnapshot.model,
+    providerModelId: providerSnapshot.providerModelId,
+    version: 1
+  });
+  const operationEvidence = operationDispatches.map((dispatch, index) => {
+    if (!dispatch.attempt.dispatchedAt || !dispatch.attempt.settledAt ||
+      !dispatch.attempt.resultHash || !dispatch.attempt.actualUsage ||
+      !dispatch.attempt.contractVersion) {
+      throw new Error("knowledge_answer_operation_timing_invalid");
+    }
+    const role = dispatch === operations.draft
+      ? "primary" as const
+      : dispatch === operations.initialSelector
+        ? "initial" as const
+        : dispatch === operations.selectorRepair
+          ? "repair" as const
+          : dispatch === operations.auditor
+            ? "auditor" as const
+            : dispatch === operations.supplementalDraft
+              ? "supplement" as const
+              : "final" as const;
+    return Object.freeze({
+      acceptedRequestHash: dispatch.attempt.requestHash,
+      acceptedResultHash: dispatch.attempt.resultHash,
+      contractVersion: dispatch.attempt.contractVersion as 1 | 17 | 21,
+      durationMs: dispatch.attempt.settledAt.valueOf() -
+        dispatch.attempt.dispatchedAt.valueOf(),
+      operationId: dispatch.attempt.id,
+      ordinal: index + 1 as 1 | 2 | 3 | 4 | 5 | 6,
+      providerRequestId: dispatch.attempt.providerResponseId,
+      purpose: dispatch.attempt.purpose as
+        | typeof KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+        | typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17
+        | typeof KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+        | typeof KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+        | typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
+      role,
+      usage: dispatch.attempt.actualUsage
+    });
+  });
+  const grounding = groundSettledKnowledgeAnswerV17({
+    audit: {
+      coveredDimensionCount: audit.dimensions.filter(
+        ({ status }) => status === "covered"
+      ).length,
+      dimensionCount: audit.dimensions.length,
+      missingDimensionCount: audit.dimensions.filter(
+        ({ status }) => status === "missing"
+      ).length,
+      payloadHash: auditPayloadHash
+    },
+    contracts: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+    evidence: authorization.evidence,
+    evidenceReceiptHash: operations.draft.draft.manifestHash,
+    modelPinFingerprint,
+    operations: operationEvidence,
+    providerPinFingerprint,
+    selectorRepairSucceeded,
+    settlement
+  });
+  return Object.freeze({ grounding });
+}
+
 function groundingEvidenceProjection(
   grounding: KnowledgeGroundingEvidenceV7 | KnowledgeGroundingEvidenceV8 |
     KnowledgeGroundingEvidenceV9 | KnowledgeGroundingEvidenceV10 |
     KnowledgeGroundingEvidenceV11 | KnowledgeGroundingEvidenceV12 |
     KnowledgeGroundingEvidenceV13 | KnowledgeGroundingEvidenceV14 |
-    KnowledgeGroundingEvidenceV15 | KnowledgeGroundingEvidenceV16
+    KnowledgeGroundingEvidenceV15 | KnowledgeGroundingEvidenceV16 |
+    KnowledgeGroundingEvidenceV17
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

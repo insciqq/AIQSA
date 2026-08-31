@@ -2176,7 +2176,8 @@ export function decodeKnowledgeAnswerDraftSupplementAcceptedResultV1(
   value: unknown,
   input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
 ): KnowledgeAnswerDraftSelectorInput | null {
-  return decodeDraftMalformed(value) ?? decodeKnowledgeAnswerDraftSupplementV1(value, input);
+  return decodeKnowledgeAnswerDraftMalformed(value) ??
+    decodeKnowledgeAnswerDraftSupplementV1(value, input);
 }
 
 /** Deterministically combines already validated candidate sets. This routine
@@ -2225,7 +2226,9 @@ export function mergeKnowledgeAnswerDraftsV1(input: Readonly<{
   });
 }
 
-function decodeDraftMalformed(value: unknown): KnowledgeAnswerDraftMalformed | null {
+export function decodeKnowledgeAnswerDraftMalformed(
+  value: unknown
+): KnowledgeAnswerDraftMalformed | null {
   if (!record(value) || value.kind !== "draft_malformed") return null;
   if (exactKeys(value, ["kind"])) return KNOWLEDGE_DRAFT_MALFORMED;
   if (!exactKeys(value, ["kind", "reason"]) ||
@@ -2242,7 +2245,7 @@ export function decodeKnowledgeAnswerDraftAcceptedResultV6(
   value: unknown,
   input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
 ): KnowledgeAnswerDraftSelectorInput | null {
-  return decodeDraftMalformed(value) ?? decodeKnowledgeAnswerDraftV6(value, input);
+  return decodeKnowledgeAnswerDraftMalformed(value) ?? decodeKnowledgeAnswerDraftV6(value, input);
 }
 
 export function decodeKnowledgeAnswerDraftAcceptedResultForPair(

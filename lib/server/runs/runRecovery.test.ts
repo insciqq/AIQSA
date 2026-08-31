@@ -67,7 +67,17 @@ import {
   type KnowledgeEvidenceDispatchManifestDraft
 } from "../knowledge/evidenceDispatchManifest";
 import type { StoredKnowledgeEvidenceDispatch } from "../knowledge/evidenceDispatchRepository";
-import { KNOWLEDGE_INSUFFICIENT_MESSAGE } from "../knowledge/answerGroundingV5";
+import {
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_INSUFFICIENT_MESSAGE
+} from "../knowledge/answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+  KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+  createKnowledgeAnswerOperationRequestSnapshotV21,
+  knowledgeAnswerDraftPromptV21
+} from "../knowledge/answerGroundingV21";
 import type {
   KnowledgeProviderDispatchLifecycle,
   KnowledgeProviderDispatchRecovery,
@@ -251,6 +261,48 @@ function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer
   };
 }
 
+function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer [K1]") {
+  return {
+    grounding: {
+      audit: {
+        coveredDimensionCount: 1,
+        dimensionCount: 1,
+        missingDimensionCount: 0,
+        payloadHash: "1".repeat(64),
+        status: "accepted" as const
+      },
+      contracts: {
+        coverageAuditorContractVersion: 1 as const,
+        draftContractVersion: 21 as const,
+        selectorContractVersion: 17 as const,
+        settlementVersion: 6 as const
+      },
+      correctionAttempted: false,
+      correctionSucceeded: false,
+      contradictedClaimCount: 0,
+      evidenceReceiptHash: "2".repeat(64),
+      fallbackReason: null,
+      finalAnswerHash: "3".repeat(64),
+      finalText,
+      finalizationMode: "selected_claims" as const,
+      groundingStatus: "verified" as const,
+      modelPinFingerprint: "4".repeat(64),
+      operations: [],
+      originalAnswerHash: "5".repeat(64),
+      outcome: "answered" as const,
+      providerPinFingerprint: "6".repeat(64),
+      receiptHash: "7".repeat(64),
+      requestCoverage: "complete" as const,
+      selectorRepairAttempted: false,
+      selectorRepairSucceeded: false,
+      sessionId: "evidence-session-v21",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0,
+      version: 17 as const
+    }
+  };
+}
+
 function createHarness(options: Readonly<{
   attachmentLimits?: ReturnType<NonNullable<RunRecoveryDeps["getAttachmentLimits"]>>;
   completeRun?: boolean;
@@ -258,6 +310,7 @@ function createHarness(options: Readonly<{
   failRun?: boolean;
   groundKnowledgeAnswer?: RunRecoveryRepository["groundKnowledgeAnswer"];
   groundKnowledgeAnswerV5?: RunRecoveryRepository["groundKnowledgeAnswerV5"];
+  groundKnowledgeAnswerV21?: RunRecoveryRepository["groundKnowledgeAnswerV21"];
   liveRunIds?: readonly string[];
   knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
   knowledgeAdmission?: RunRecoveryDeps["knowledgeAdmission"];
@@ -408,6 +461,9 @@ function createHarness(options: Readonly<{
           groundKnowledgeAnswerV5: options.groundKnowledgeAnswerV5 ??
             (async () => recoveredKnowledgeV5Finalization())
         }
+      : {}),
+    ...(options.groundKnowledgeAnswerV21
+      ? { groundKnowledgeAnswerV21: options.groundKnowledgeAnswerV21 }
       : {}),
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
@@ -1692,6 +1748,132 @@ describe("run recovery", () => {
     expect(requests.every((request) => request.prompt.knowledgeAnswerContract === undefined))
       .toBe(true);
     expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
+  });
+
+  it("recovers V21 from its persisted first operation regardless of the disabled rollout", async () => {
+    const fixture = focusedKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const acceptedDraft = {
+      claims: [{
+        citationHints: ["K1"],
+        text: "Recovered focused evidence"
+      }],
+      version: 1
+    };
+    const primaryPrompt = knowledgeAnswerDraftPromptV21({
+      draftPass: "primary",
+      evidenceManifest: dispatch.draft.message,
+      request: "remember this",
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    });
+    const acceptedRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: 21,
+      evidenceReceiptHash: dispatch.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+      systemPrompt: primaryPrompt.systemPrompt,
+      transport: "provider_neutral_json",
+      userPrompt: primaryPrompt.userPrompt
+    });
+    const settledAt = new Date("2026-07-12T09:02:00.000Z");
+    const draftDispatch: StoredKnowledgeEvidenceDispatch = {
+      ...dispatch.dispatch,
+      attempt: {
+        ...dispatch.dispatch.attempt,
+        acceptedRequest,
+        acceptedResult: acceptedDraft,
+        actualUsage: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          estimatedCostMicros: null,
+          inputTokens: 5,
+          outputTokens: 3,
+          reasoningTokens: 0,
+          totalTokens: 8
+        },
+        contractVersion: 21,
+        dispatchedAt: new Date("2026-07-12T09:01:00.000Z"),
+        evidenceReceiptHash: dispatch.draft.manifestHash,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        providerResponseId: "response-v21-draft",
+        purpose: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+        requestHash: "1".repeat(64),
+        resultAcceptedAt: settledAt,
+        resultHash: "2".repeat(64),
+        settledAt,
+        state: "settled"
+      }
+    };
+    vi.mocked(dispatch.lifecycle.inspect).mockImplementation(async ({ ordinal }) =>
+      ordinal === 1 ? draftDispatch : null);
+    const requests: ProviderRunRequest[] = [];
+    const groundKnowledgeAnswerV5 = vi.fn<NonNullable<
+      RunRecoveryRepository["groundKnowledgeAnswerV5"]
+    >>(async () => recoveredKnowledgeV5Finalization());
+    const groundKnowledgeAnswerV21 = vi.fn<NonNullable<
+      RunRecoveryRepository["groundKnowledgeAnswerV21"]
+    >>(async () => recoveredKnowledgeV21Finalization());
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      groundKnowledgeAnswerV5,
+      groundKnowledgeAnswerV21,
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providerDispatchRecoveryRequest: fixture.normalizedRequest,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              ...providerResult,
+              finalText: JSON.stringify(requests.length === 1
+                ? {
+                    claims: [{
+                      id: "C1",
+                      supportHandles: ["K1"],
+                      verdict: "supported"
+                    }],
+                    extractIds: [],
+                    insufficientReason: "not_applicable",
+                    version: 1
+                  }
+                : {
+                    dimensions: [{
+                      description: "Answer the exact saved request.",
+                      evidenceHintHandles: [],
+                      id: "D1",
+                      requestAnchor: "remember this",
+                      status: "covered",
+                      supportIds: ["C1"]
+                    }],
+                    version: 1
+                  }),
+              providerResponseId: `response-v21-${requests.length}`
+            };
+          }
+        }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toHaveLength(2);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      contractVersion: 17,
+      ordinal: 2,
+      purpose: "knowledge_grounded_selector_v17"
+    }));
+    expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      contractVersion: 1,
+      ordinal: 3,
+      purpose: "knowledge_coverage_auditor_v1"
+    }));
+    expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
+    expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });
+    expect(harness.state.completed?.finalText).toBe("Recovered audited answer [K1]");
   });
 
   it("rebuilds full-context evidence before starting Draft V5 without retrieval", async () => {

@@ -93,6 +93,10 @@ import {
   executeKnowledgeAnswerGroundingV8,
   type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
+import { executeKnowledgeAnswerGroundingV21 } from
+  "../knowledge/answerGroundingExecutionV21";
+import { selectKnowledgeAnswerPipelineForNewRun } from
+  "../knowledge/answerPipelineRollout";
 import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
@@ -122,7 +126,8 @@ import {
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import {
   finalizeRunCompletion,
-  usageAttributionsWithEstimatedCost
+  usageAttributionsWithEstimatedCost,
+  type KnowledgeAnswerFinalizationContracts
 } from "./runFinalization";
 import type { MaterializedPreparedRunData } from "./runPreparation";
 import type {
@@ -216,6 +221,7 @@ export type RunExecutionRepository = Pick<
   | "getRunControlForUser"
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
+  | "groundKnowledgeAnswerV21"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
@@ -1354,21 +1360,26 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
       }
 
-      async function runAutomaticKnowledgeAnswerV5(inputRequest: Readonly<{
+      async function runAutomaticKnowledgeAnswer(inputRequest: Readonly<{
         dispatchDraft: KnowledgeEvidenceDispatchManifestDraft;
         evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null;
         routeInstruction?: string;
       }>): Promise<Readonly<{
-        contracts: Readonly<{
-          draftContractVersion: 20;
-          selectorContractVersion: 16;
-        }>;
+        contracts: KnowledgeAnswerFinalizationContracts;
         result: ProviderRunResult & { usageAttributions: RunUsageAttribution[] };
       }>> {
-        if (!input.knowledgeProviderDispatch || !input.repository.groundKnowledgeAnswerV5) {
+        const pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: runId });
+        const groundingUnavailable = !input.knowledgeProviderDispatch ||
+          (pipeline === "v20_v16" && !input.repository.groundKnowledgeAnswerV5) ||
+          (pipeline === "v21_audit_v1" && !input.repository.groundKnowledgeAnswerV21);
+        if (groundingUnavailable) {
           throw new RunPipelineError(
-            "knowledge_answer_v5_unavailable",
-            "Knowledge answer grounding V5 is unavailable"
+            pipeline === "v20_v16"
+              ? "knowledge_answer_v5_unavailable"
+              : "knowledge_answer_grounding_unavailable",
+            pipeline === "v20_v16"
+              ? "Knowledge answer grounding V5 is unavailable"
+              : "Knowledge answer grounding is unavailable"
           );
         }
         const requestText = textFromContentBlocks(normalizedRequest.content).trim();
@@ -1381,7 +1392,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const reasoningEffort = typeof normalizedRequest.params.reasoningEffort === "string"
           ? normalizedRequest.params.reasoningEffort
           : null;
-        const operationResult = await executeKnowledgeAnswerGroundingV8({
+        const executionInput = {
           authorize: authorizeKnowledgeAnswerOperation,
           draft: inputRequest.dispatchDraft,
           ...(inputRequest.evidenceBindings
@@ -1408,9 +1419,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           transport: input.structuredOutputAdapter
             ? "native_strict"
             : "provider_neutral_json"
-        });
-        if (operationResult.contracts.draftContractVersion !== 20 ||
-          operationResult.contracts.selectorContractVersion !== 16) {
+        } as const;
+        const operationResult = pipeline === "v21_audit_v1"
+          ? await executeKnowledgeAnswerGroundingV21(executionInput)
+          : await executeKnowledgeAnswerGroundingV8(executionInput);
+        const contractConflict = pipeline === "v20_v16"
+          ? operationResult.contracts.draftContractVersion !== 20 ||
+            operationResult.contracts.selectorContractVersion !== 16
+          : operationResult.contracts.draftContractVersion !== 21 ||
+            operationResult.contracts.selectorContractVersion !== 17 ||
+            !("coverageAuditorContractVersion" in operationResult.contracts) ||
+            operationResult.contracts.coverageAuditorContractVersion !== 1 ||
+            operationResult.contracts.settlementVersion !== 6;
+        if (contractConflict) {
           throw new RunPipelineError(
             "knowledge_answer_contract_conflict",
             "The current Knowledge answer run returned an unexpected contract pair"
@@ -1433,11 +1454,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           contracts: operationResult.contracts,
           result: {
             finalText: "",
-            finalProviderResponsePreview: {
-              draftContractVersion: 20,
-              selectorContractVersion: 16,
-              structuredKnowledgeAnswer: true
-            },
+            finalProviderResponsePreview: pipeline === "v21_audit_v1"
+              ? {
+                  coverageAuditorContractVersion: 1,
+                  draftContractVersion: 21,
+                  selectorContractVersion: 17,
+                  settlementVersion: 6,
+                  structuredKnowledgeAnswer: true
+                }
+              : {
+                  draftContractVersion: 20,
+                  selectorContractVersion: 16,
+                  structuredKnowledgeAnswer: true
+                },
             ...((operationResult.operations.at(-1)?.providerResponseId ??
               operationResult.operations[0]?.providerResponseId)
               ? {
@@ -2386,7 +2415,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         let knowledgeZeroEvidence = false;
         let knowledgeAnswerExecution = groundedKnowledgeAnswer
           ? preparedProviderRequest.dispatchDraft
-            ? await runAutomaticKnowledgeAnswerV5({
+            ? await runAutomaticKnowledgeAnswer({
                 dispatchDraft: preparedProviderRequest.dispatchDraft,
                 evidenceBindings: preparedProviderRequest.evidenceBindings
               })
@@ -2425,7 +2454,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 finalText: KNOWLEDGE_INSUFFICIENT_MESSAGE
               };
             } else {
-              knowledgeAnswerExecution = await runAutomaticKnowledgeAnswerV5({
+              knowledgeAnswerExecution = await runAutomaticKnowledgeAnswer({
                 dispatchDraft: toolLoopResult.knowledgeDispatchDraft,
                 evidenceBindings: null,
                 routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
