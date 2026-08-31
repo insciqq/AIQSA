@@ -2934,7 +2934,7 @@ async function recoverKnowledgeAnswerGrounding(
 ): Promise<void> {
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
-  let pipeline: "v20_v16" | "v21_audit_v1";
+  let pipeline: "v20_v16" | "v21_audit_v2";
   if (input.draftDispatch) {
     if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
       if (input.draftDispatch.attempt.ordinal !== 1 ||
@@ -2959,7 +2959,7 @@ async function recoverKnowledgeAnswerGrounding(
           "The saved Knowledge draft contract snapshot is invalid."
         );
       }
-      pipeline = "v21_audit_v1";
+      pipeline = "v21_audit_v2";
       seed = Object.freeze({
         draft: input.draftDispatch.draft,
         evidenceBindings: [
@@ -3031,7 +3031,7 @@ async function recoverKnowledgeAnswerGrounding(
   } else {
     seed = input.seed;
     pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: input.runId });
-    if (pipeline === "v21_audit_v1") {
+    if (pipeline === "v21_audit_v2") {
       if (!seed.modelCapabilities) {
         throw new ToolLoopRecoveryError(
           "knowledge_answer_contract_failed",
@@ -3049,7 +3049,7 @@ async function recoverKnowledgeAnswerGrounding(
     }
   }
   const groundingUnavailable = !deps.knowledgeProviderDispatch ||
-    (pipeline === "v21_audit_v1"
+    (pipeline === "v21_audit_v2"
       ? !deps.repository.groundKnowledgeAnswerV21
       : !deps.repository.groundKnowledgeAnswerV5);
   if (groundingUnavailable) {
@@ -3246,7 +3246,7 @@ async function recoverKnowledgeAnswerGrounding(
     shouldAbort: () => input.signal.aborted,
     transport: seed.transport
   } as const;
-  const operationResult = pipeline === "v21_audit_v1"
+  const operationResult = pipeline === "v21_audit_v2"
     ? await executeKnowledgeAnswerGroundingV21({
         ...groundingInput,
         recoveryProviderResponseIds: input.control.providerResponseId

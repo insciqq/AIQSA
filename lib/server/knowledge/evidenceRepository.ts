@@ -129,16 +129,16 @@ import {
   KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
-  decodeKnowledgeCoverageAuditFailureV1,
-  decodeKnowledgeCoverageAuditV1,
-  deriveKnowledgeCoverageV1,
-  isKnowledgeCoverageAuditValidationFailureReason,
-  knowledgeCoverageAuditMissingDimensionsV1,
-  knowledgeCoverageAuditPromptV1,
+  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
+  decodeKnowledgeCoverageAuditFailureV2,
+  decodeKnowledgeCoverageAuditV2,
+  deriveKnowledgeCoverageV2,
+  isKnowledgeCoverageAuditValidationFailureReasonV2,
+  knowledgeCoverageAuditMissingDimensionsV2,
+  knowledgeCoverageAuditPromptV2,
   type KnowledgeCoverageAuditSelectorStateV1,
-  type KnowledgeCoverageAuditValidationFailureReason
-} from "./coverageAuditV1";
+  type KnowledgeCoverageAuditValidationFailureReasonV2
+} from "./coverageAuditV2";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
   decodeKnowledgeBudgetPolicy,
@@ -1726,7 +1726,7 @@ export async function groundKnowledgeRunAnswerV21(
     evidence,
     selector: selectorForAudit
   });
-  const auditPrompt = knowledgeCoverageAuditPromptV1({
+  const auditPrompt = knowledgeCoverageAuditPromptV2({
     auditPass: "initial",
     evidence,
     evidenceManifest: operations.draft.draft.message,
@@ -1745,7 +1745,7 @@ export async function groundKnowledgeRunAnswerV21(
     maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
     ...requestExecutionPolicy,
-    schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+    schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
     systemPrompt: auditPrompt.systemPrompt,
     transport: primaryRequest.transport,
     userPrompt: auditPrompt.userPrompt
@@ -1753,12 +1753,12 @@ export async function groundKnowledgeRunAnswerV21(
   if (!exactRequest(initialAuditRequest, expectedAuditRequest)) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
-  const initialAuditFailure = decodeKnowledgeCoverageAuditFailureV1(
+  const initialAuditFailure = decodeKnowledgeCoverageAuditFailureV2(
     operations.initialAuditor.attempt.acceptedResult
   );
   let audit = initialAuditFailure
     ? null
-    : decodeKnowledgeCoverageAuditV1(
+    : decodeKnowledgeCoverageAuditV2(
         operations.initialAuditor.attempt.acceptedResult,
         { evidence, request: primaryPrompt.request, supportedView }
       );
@@ -1766,14 +1766,14 @@ export async function groundKnowledgeRunAnswerV21(
     throw new Error("knowledge_coverage_audit_unaccepted");
   }
   const auditRepairRequired = initialAuditFailure !== null &&
-    isKnowledgeCoverageAuditValidationFailureReason(initialAuditFailure.reason);
+    isKnowledgeCoverageAuditValidationFailureReasonV2(initialAuditFailure.reason);
   if (auditRepairRequired !== Boolean(operations.auditorRepair)) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
   if (operations.auditorRepair) {
     const repairReason = initialAuditFailure!.reason as
-      KnowledgeCoverageAuditValidationFailureReason;
-    const repairPrompt = knowledgeCoverageAuditPromptV1({
+      KnowledgeCoverageAuditValidationFailureReasonV2;
+    const repairPrompt = knowledgeCoverageAuditPromptV2({
       auditPass: "repair",
       evidence,
       evidenceManifest: operations.draft.draft.message,
@@ -1793,7 +1793,7 @@ export async function groundKnowledgeRunAnswerV21(
       maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
       ...requestExecutionPolicy,
-      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
       systemPrompt: repairPrompt.systemPrompt,
       transport: primaryRequest.transport,
       userPrompt: repairPrompt.userPrompt
@@ -1801,10 +1801,10 @@ export async function groundKnowledgeRunAnswerV21(
     if (!exactRequest(repairRequest, expectedRepairRequest)) {
       throw new Error("knowledge_answer_operation_snapshot_conflict");
     }
-    if (decodeKnowledgeCoverageAuditFailureV1(
+    if (decodeKnowledgeCoverageAuditFailureV2(
       operations.auditorRepair.attempt.acceptedResult
     )) throw new Error("knowledge_coverage_audit_unaccepted");
-    audit = decodeKnowledgeCoverageAuditV1(
+    audit = decodeKnowledgeCoverageAuditV2(
       operations.auditorRepair.attempt.acceptedResult,
       { evidence, request: primaryPrompt.request, supportedView }
     );
@@ -1813,7 +1813,7 @@ export async function groundKnowledgeRunAnswerV21(
   }
   if (!audit) throw new Error("knowledge_coverage_audit_unaccepted");
   const acceptedAudit = operations.auditor;
-  const decodedAcceptedAudit = decodeKnowledgeCoverageAuditV1(
+  const decodedAcceptedAudit = decodeKnowledgeCoverageAuditV2(
     acceptedAudit.attempt.acceptedResult,
     { evidence, request: primaryPrompt.request, supportedView }
   );
@@ -1824,7 +1824,7 @@ export async function groundKnowledgeRunAnswerV21(
     throw new Error("knowledge_coverage_audit_unaccepted");
   }
   const auditPayloadHash = acceptedAudit.attempt.resultHash;
-  const coverage = deriveKnowledgeCoverageV1({ audit, supportedView });
+  const coverage = deriveKnowledgeCoverageV2(audit);
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
     ? 0
     : primaryDraft.claims.length;
@@ -1848,7 +1848,7 @@ export async function groundKnowledgeRunAnswerV21(
       selector: acceptedSelector
     });
   } else {
-    const missingDimensions = knowledgeCoverageAuditMissingDimensionsV1(audit);
+    const missingDimensions = knowledgeCoverageAuditMissingDimensionsV2(audit);
     const supplementPrompt = knowledgeAnswerDraftPromptV21({
       auditDimensions: missingDimensions,
       draftPass: "supplement",
@@ -1998,7 +1998,7 @@ export async function groundKnowledgeRunAnswerV21(
     return Object.freeze({
       acceptedRequestHash: dispatch.attempt.requestHash,
       acceptedResultHash: dispatch.attempt.resultHash,
-      contractVersion: dispatch.attempt.contractVersion as 1 | 17 | 21,
+      contractVersion: dispatch.attempt.contractVersion as 1 | 2 | 17 | 21,
       durationMs: dispatch.attempt.settledAt.valueOf() -
         dispatch.attempt.dispatchedAt.valueOf(),
       operationId: dispatch.attempt.id,
@@ -2016,11 +2016,11 @@ export async function groundKnowledgeRunAnswerV21(
   });
   const groundingInput = {
     audit: {
-      coveredDimensionCount: audit.dimensions.filter(
+      coveredDimensionCount: audit.coverage.filter(
         ({ status }) => status === "covered"
       ).length,
-      dimensionCount: audit.dimensions.length,
-      missingDimensionCount: audit.dimensions.filter(
+      dimensionCount: audit.scope.length,
+      missingDimensionCount: audit.coverage.filter(
         ({ status }) => status === "missing"
       ).length,
       payloadHash: auditPayloadHash

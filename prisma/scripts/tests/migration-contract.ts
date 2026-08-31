@@ -1248,7 +1248,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'KnowledgeProviderAttempt_answer_result_state_check'
           )
           AND convalidated
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_auditor_v1%';
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_auditor_v[12]%';
       `),
       "2",
       "Audited V21 operations are missing from durable provider-attempt constraints",
@@ -1257,13 +1257,11 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       psqlScalar(database, `
         SELECT count(*) FROM pg_indexes
         WHERE schemaname = 'public'
-          AND indexname = 'KnowledgeProviderAttempt_modelRunId_purpose_key'
-          AND indexdef LIKE '%knowledge_answer_draft_v21%'
-          AND indexdef LIKE '%knowledge_coverage_auditor_v1%'
-          AND indexdef LIKE '%knowledge_grounded_selector_final_v17%';
+          AND indexname = 'KnowledgeProviderAttempt_v21_auditor_request_key'
+          AND indexdef LIKE '%knowledge_coverage_auditor_v[12]%';
       `),
       "1",
-      "Audited V21 single-operation uniqueness is missing",
+      "Audited V21 request uniqueness is missing",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1781,8 +1779,8 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         ),
         (
           'knowledge-v21-auditor', 'knowledge-h2-run-2', 'answer', 4, 0,
-          'knowledge_coverage_auditor_v1', 1, repeat('a', 64),
-          '{"version":1,"operation":"knowledge_coverage_auditor_v1"}'::jsonb,
+          'knowledge_coverage_auditor_v2', 2, repeat('a', 64),
+          '{"version":2,"operation":"knowledge_coverage_auditor_v2","pass":"initial"}'::jsonb,
           'knowledge-v21-auditor-key', repeat('4', 64), repeat('4', 64), 'reserved',
           '{}'::jsonb, 'knowledge-v21-auditor-lease', CURRENT_TIMESTAMP + interval '5 minutes',
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -1812,7 +1810,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
           AND purpose IN (
             'knowledge_answer_draft_v21',
             'knowledge_grounded_selector_v17',
-            'knowledge_coverage_auditor_v1',
+            'knowledge_coverage_auditor_v2',
             'knowledge_answer_draft_supplement_v21',
             'knowledge_grounded_selector_final_v17'
           );
@@ -1820,6 +1818,22 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       "6",
       "V21 bounded operation and one-repair sequence was not accepted",
     );
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES (
+        'knowledge-v21-auditor-repair', 'knowledge-h2-run-2', 'answer', 7, 0,
+        'knowledge_coverage_auditor_v2', 2, repeat('a', 64),
+        '{"version":2,"operation":"knowledge_coverage_auditor_v2","pass":"repair"}'::jsonb,
+        'knowledge-v21-auditor-repair-key', repeat('7', 64), repeat('7', 64),
+        'reserved', '{}'::jsonb, 'knowledge-v21-auditor-repair-lease',
+        CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+      SELECT 'knowledge-v21-auditor-repair-ready';
+    `);
     const duplicateSelectorRequest = compose([
       "exec", "-T", POSTGRES_SERVICE,
       "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
@@ -1831,7 +1845,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
           "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
           "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
         ) VALUES (
-          'knowledge-v21-selector-duplicate', 'knowledge-h2-run-2', 'answer', 7, 0,
+          'knowledge-v21-selector-duplicate', 'knowledge-h2-run-2', 'answer', 8, 0,
           'knowledge_grounded_selector_v17', 17, repeat('a', 64),
           '{"version":1,"operation":"knowledge_grounded_selector_v17","pass":"duplicate"}'::jsonb,
           'knowledge-v21-selector-duplicate-key', repeat('7', 64), repeat('2', 64),
@@ -1849,6 +1863,36 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       `${duplicateSelectorRequest.stdout}\n${duplicateSelectorRequest.stderr}`,
       /KnowledgeProviderAttempt_v21_selector_request_key/u,
       "Duplicate V21 Selector request failed without the stable uniqueness index",
+    );
+    const duplicateAuditorRequest = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeProviderAttempt" (
+          id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+          "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+          "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+          "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+        ) VALUES (
+          'knowledge-v21-auditor-duplicate', 'knowledge-h2-run-2', 'answer', 9, 0,
+          'knowledge_coverage_auditor_v2', 2, repeat('a', 64),
+          '{"version":2,"operation":"knowledge_coverage_auditor_v2","pass":"duplicate"}'::jsonb,
+          'knowledge-v21-auditor-duplicate-key', repeat('8', 64), repeat('4', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-auditor-duplicate-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
+    assert.notEqual(
+      duplicateAuditorRequest.status,
+      0,
+      "V21 accepted a duplicate Auditor request instead of one distinct repair",
+    );
+    assert.match(
+      `${duplicateAuditorRequest.stdout}\n${duplicateAuditorRequest.stderr}`,
+      /KnowledgeProviderAttempt_v21_auditor_request_key/u,
+      "Duplicate V21 Auditor request failed without the stable uniqueness index",
     );
     psqlScalar(database, `
       INSERT INTO "KnowledgeGroundingResult" (

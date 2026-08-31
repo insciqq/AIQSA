@@ -18,7 +18,7 @@ function isKnowledgeAnswerV21Contracts(
   value: KnowledgeAnswerFinalizationContracts
 ): value is KnowledgeAnswerV21ContractVersions {
   return "coverageAuditorContractVersion" in value &&
-    value.coverageAuditorContractVersion === 1 && value.draftContractVersion === 21 &&
+    value.coverageAuditorContractVersion === 2 && value.draftContractVersion === 21 &&
     value.selectorContractVersion === 17 && value.settlementVersion === 6;
 }
 

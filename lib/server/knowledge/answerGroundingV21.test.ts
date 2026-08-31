@@ -10,7 +10,7 @@ import {
 } from "./answerGroundingV5";
 import {
   KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V21,
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2,
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
@@ -37,10 +37,11 @@ import {
   type KnowledgeGroundedSelectorV17
 } from "./answerGroundingV21";
 import {
-  decodeKnowledgeCoverageAuditV1,
-  type KnowledgeCoverageAuditV1,
-  type KnowledgeSupportedAnswerViewV1
-} from "./coverageAuditV1";
+  decodeKnowledgeCoverageAuditV2,
+  knowledgeCoverageAuditDimensionsV2,
+  type KnowledgeCoverageAuditV2
+} from "./coverageAuditV2";
+import type { KnowledgeSupportedAnswerViewV1 } from "./coverageAuditV1";
 
 const request = "How does the process preserve order, remove duplicates, and bound memory?";
 const evidenceManifest =
@@ -129,17 +130,26 @@ function auditFor(
     status: "covered" | "missing";
     supportIds?: readonly string[];
   }>[]
-): KnowledgeCoverageAuditV1 {
-  const value = decodeKnowledgeCoverageAuditV1({
-    dimensions: dimensions.map((dimension) => ({
-      description: dimension.description,
-      evidenceHintHandles: dimension.hints ?? [],
+): KnowledgeCoverageAuditV2 {
+  const supportHandlesById = new Map([
+    ...view.claims.map(({ id, supportHandles }) => [id, supportHandles] as const),
+    ...view.literals.map(({ handle, id }) => [id, [handle]] as const)
+  ]);
+  const value = decodeKnowledgeCoverageAuditV2({
+    coverage: dimensions.map((dimension) => ({
       id: dimension.id,
-      requestAnchor: dimension.requestAnchor,
       status: dimension.status,
       supportIds: dimension.supportIds ?? []
     })),
-    version: 1
+    scope: dimensions.map((dimension) => ({
+      description: dimension.description,
+      evidenceHandles: dimension.hints ?? [...new Set(
+        (dimension.supportIds ?? []).flatMap((id) => supportHandlesById.get(id) ?? [])
+      )],
+      id: dimension.id,
+      requestAnchor: dimension.requestAnchor
+    })),
+    version: 2
   }, { evidence, request, supportedView: view });
   if (!value) throw new Error("fixture_audit_invalid");
   return value;
@@ -176,9 +186,9 @@ describe("Knowledge grounding V21 contracts", () => {
       "knowledge_answer_draft_supplement_v21",
       "knowledge_grounded_selector_final_v17"
     ]);
-    expect(KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1).toMatchObject({
-      coverageAuditorContractVersion: 1,
-      coverageAuditorOperation: "knowledge_coverage_auditor_v1",
+    expect(KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2).toMatchObject({
+      coverageAuditorContractVersion: 2,
+      coverageAuditorOperation: "knowledge_coverage_auditor_v2",
       draftContractVersion: 21,
       selectorContractVersion: 17,
       settlementVersion: 6
@@ -320,16 +330,15 @@ describe("Knowledge grounding V21 contracts", () => {
       evidence,
       selector: currentSelector
     });
-    const audit = decodeKnowledgeCoverageAuditV1({
-      dimensions: [{
+    const audit = decodeKnowledgeCoverageAuditV2({
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+      scope: [{
         description: "Explain how the process preserves order.",
-        evidenceHintHandles: [],
+        evidenceHandles: ["K1"],
         id: "D1",
-        requestAnchor: "preserve order",
-        status: "covered",
-        supportIds: ["C1"]
+        requestAnchor: "preserve order"
       }],
-      version: 1
+      version: 2
     }, { evidence, request: scopedRequest, supportedView: view });
     const settlement = settleKnowledgeAnswerV21FromAudit({
       audit,
@@ -369,7 +378,8 @@ describe("Knowledge grounding V21 contracts", () => {
     expect(partial.finalText).toContain(KNOWLEDGE_PARTIAL_COVERAGE_NOTE);
 
     const supplementPrompt = knowledgeAnswerDraftPromptV21({
-      auditDimensions: audit.dimensions.filter(({ status }) => status === "missing"),
+      auditDimensions: knowledgeCoverageAuditDimensionsV2(audit)
+        .filter(({ status }) => status === "missing"),
       draftPass: "supplement",
       evidenceManifest,
       primaryDraft: primary,
@@ -471,16 +481,19 @@ describe("Knowledge grounding V21 contracts", () => {
       evidence: noEvidence,
       selector: emptySelector!
     });
-    const audit = decodeKnowledgeCoverageAuditV1({
-      dimensions: [{
-        description: "Explain how the process preserves order.",
-        evidenceHintHandles: [],
+    const audit = decodeKnowledgeCoverageAuditV2({
+      coverage: [{
         id: "D1",
-        requestAnchor: "preserve order",
         status: "missing",
         supportIds: []
       }],
-      version: 1
+      scope: [{
+        description: "Explain how the process preserves order.",
+        evidenceHandles: [],
+        id: "D1",
+        requestAnchor: "preserve order"
+      }],
+      version: 2
     }, { evidence: noEvidence, request, supportedView: emptyView });
     expect(settleKnowledgeAnswerV21FromAudit({
       audit,
@@ -519,6 +532,18 @@ describe("Knowledge grounding V21 contracts", () => {
     }, { audit, draft: primary, evidence });
     expect(swapped).toEqual({ kind: "rejected", reason: "selector_dimension_invalid" });
 
+    const crossScoped = validateKnowledgeGroundedSelectorFinalV17({
+      ...rawSelector(primary, ["supported", "supported"]) as object,
+      coverage: [
+        { id: "D1", status: "covered", supportIds: ["C2"] },
+        { id: "D2", status: "covered", supportIds: ["C1"] }
+      ]
+    }, { audit, draft: primary, evidence });
+    expect(crossScoped).toEqual({
+      kind: "rejected",
+      reason: "selector_dimension_invalid"
+    });
+
     const rewritten = validateKnowledgeGroundedSelectorFinalV17({
       ...rawSelector(primary, ["supported", "supported"]) as object,
       coverage: [
@@ -541,15 +566,14 @@ describe("Knowledge grounding V21 contracts", () => {
     const initial = selector(primary, ["supported"]);
     expect(() => settleKnowledgeAnswerV21FromAudit({
       audit: {
-        dimensions: [{
+        coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+        scope: [{
           description: "Explain order.",
-          evidenceHintHandles: [],
+          evidenceHandles: ["K1"],
           id: "D1",
-          requestAnchor: "not in request",
-          status: "covered",
-          supportIds: ["C1"]
+          requestAnchor: "not in request"
         }],
-        version: 1
+        version: 2
       },
       draft: primary,
       evidence,

@@ -407,13 +407,14 @@ async function createActiveProviderAttemptPrivacyAudit(input: Readonly<{
 }
 
 async function createStructuredAnswerPrivacyAudit(input: Readonly<{
-  contractVersion?: 1 | 5 | 17 | 21;
+  contractVersion?: 1 | 2 | 5 | 17 | 21;
   modelRunId: string;
   ordinal?: number;
   purpose?:
     | "knowledge_answer_draft_v5"
     | "knowledge_answer_draft_v21"
     | "knowledge_answer_draft_supplement_v21"
+    | "knowledge_coverage_auditor_v2"
     | "knowledge_coverage_auditor_v1"
     | "knowledge_grounded_selector_final_v17"
     | "knowledge_grounded_selector_v17";
@@ -1081,8 +1082,8 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       contractVersion: 17 as const,
       purpose: "knowledge_grounded_selector_v17" as const
     }, {
-      contractVersion: 1 as const,
-      purpose: "knowledge_coverage_auditor_v1" as const
+      contractVersion: 2 as const,
+      purpose: "knowledge_coverage_auditor_v2" as const
     }, {
       contractVersion: 21 as const,
       purpose: "knowledge_answer_draft_supplement_v21" as const

@@ -29,7 +29,7 @@ import {
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
-import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV1";
+import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV2";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
@@ -73,7 +73,7 @@ export type KnowledgeProviderAttemptPurpose =
   | "knowledge_answer_draft_supplement_v21"
   | "knowledge_grounded_selector_v17"
   | "knowledge_grounded_selector_final_v17"
-  | "knowledge_coverage_auditor_v1"
+  | "knowledge_coverage_auditor_v2"
   | "knowledge_coverage_planner_v20"
   | "knowledge_answer_draft_v20"
   | "knowledge_answer_draft_supplement_v20"
@@ -123,6 +123,7 @@ export type KnowledgeProviderAttemptPurpose =
 /** Accepted-record decoder includes retired purposes for historical recovery. */
 type LegacyKnowledgeProviderAttemptPurpose =
   | KnowledgeProviderAttemptPurpose
+  | "knowledge_coverage_auditor_v1"
   | "answer_citation_retry"
   | "citation_repair"
   | "knowledge_answer_draft_v5"
@@ -468,6 +469,7 @@ function answerOperationContractVersion(
     purpose === "knowledge_answer_draft_supplement_v21") return 21;
   if (purpose === "knowledge_grounded_selector_v17" ||
     purpose === "knowledge_grounded_selector_final_v17") return 17;
+  if (purpose === "knowledge_coverage_auditor_v2") return 2;
   if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
     purpose === "knowledge_answer_draft_v20" ||
@@ -569,6 +571,7 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
     value === "knowledge_answer_draft_supplement_v21" ||
     value === "knowledge_grounded_selector_v17" ||
     value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_coverage_auditor_v2" ||
     value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
@@ -627,7 +630,7 @@ function validReservationPurpose(value: unknown): value is KnowledgeProviderAtte
     value === "knowledge_answer_draft_supplement_v21" ||
     value === "knowledge_grounded_selector_v17" ||
     value === "knowledge_grounded_selector_final_v17" ||
-    value === "knowledge_coverage_auditor_v1" ||
+    value === "knowledge_coverage_auditor_v2" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||

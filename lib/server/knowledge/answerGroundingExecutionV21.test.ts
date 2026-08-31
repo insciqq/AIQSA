@@ -21,8 +21,8 @@ import {
 } from "./answerGroundingV21";
 import {
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-  decodeKnowledgeCoverageAuditPromptV1
-} from "./coverageAuditV1";
+  decodeKnowledgeCoverageAuditPromptV2
+} from "./coverageAuditV2";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "./groundingExecutionPolicy";
 
@@ -103,57 +103,62 @@ function initialSelectorOutput() {
 
 function partialAuditOutput() {
   return {
-    dimensions: [{
-      description: "Explain alpha.",
-      evidenceHintHandles: [],
+    coverage: [{
       id: "D1",
-      requestAnchor: "alpha",
       status: "covered",
       supportIds: ["C1"]
     }, {
-      description: "Explain beta.",
-      evidenceHintHandles: ["K2"],
       id: "D2",
-      requestAnchor: "beta",
       status: "missing",
       supportIds: []
     }],
-    version: 1
+    scope: [{
+      description: "Explain alpha.",
+      evidenceHandles: ["K1"],
+      id: "D1",
+      requestAnchor: "alpha"
+    }, {
+      description: "Explain beta.",
+      evidenceHandles: ["K2"],
+      id: "D2",
+      requestAnchor: "beta"
+    }],
+    version: 2
   };
 }
 
 function completeAuditOutput() {
   return {
-    dimensions: [{
-      description: "Explain alpha and beta.",
-      evidenceHintHandles: [],
+    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
+    scope: [{
+      description: "Explain alpha.",
+      evidenceHandles: ["K1"],
       id: "D1",
-      requestAnchor: "Explain alpha and beta.",
-      status: "covered",
-      supportIds: ["C1"]
+      requestAnchor: "alpha"
     }],
-    version: 1
+    version: 2
   };
 }
 
 function missingAuditOutput() {
   return {
-    dimensions: [{
-      description: "Explain alpha.",
-      evidenceHintHandles: ["K1"],
-      id: "D1",
-      requestAnchor: "alpha",
-      status: "missing",
-      supportIds: []
-    }, {
-      description: "Explain beta.",
-      evidenceHintHandles: ["K2"],
+    coverage: [{ id: "D1", status: "missing", supportIds: [] }, {
       id: "D2",
-      requestAnchor: "beta",
       status: "missing",
       supportIds: []
     }],
-    version: 1
+    scope: [{
+      description: "Explain alpha.",
+      evidenceHandles: ["K1"],
+      id: "D1",
+      requestAnchor: "alpha"
+    }, {
+      description: "Explain beta.",
+      evidenceHandles: ["K2"],
+      id: "D2",
+      requestAnchor: "beta"
+    }],
+    version: 2
   };
 }
 
@@ -590,7 +595,7 @@ describe("V21 audited Knowledge answer execution", () => {
     const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
       recorder.entries.get(4)!.acceptedRequest
     )!;
-    expect(decodeKnowledgeCoverageAuditPromptV1({
+    expect(decodeKnowledgeCoverageAuditPromptV2({
       evidence: knowledgeSelectorEvidenceFromManifest(packed),
       evidenceManifest: packed.message,
       request,

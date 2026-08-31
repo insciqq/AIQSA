@@ -261,7 +261,7 @@ describe("run finalization", () => {
         status: "accepted" as const
       },
       contracts: {
-        coverageAuditorContractVersion: 1 as const,
+        coverageAuditorContractVersion: 2 as const,
         draftContractVersion: 21 as const,
         selectorContractVersion: 17 as const,
         settlementVersion: 6 as const
@@ -303,7 +303,7 @@ describe("run finalization", () => {
     const result = await finalizeRunCompletion({
       ...completionInput(repository),
       knowledgeAnswerContracts: {
-        coverageAuditorContractVersion: 1,
+        coverageAuditorContractVersion: 2,
         draftContractVersion: 21,
         selectorContractVersion: 17,
         settlementVersion: 6

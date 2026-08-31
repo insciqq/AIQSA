@@ -21,7 +21,7 @@ import {
   type KnowledgeAnswerOperationExecutionV8
 } from "../../lib/server/knowledge/answerGroundingExecutionV5";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2,
   type KnowledgeAnswerOperationRequestSnapshotV21
 } from "../../lib/server/knowledge/answerGroundingV21";
 import {
@@ -29,8 +29,8 @@ import {
   type KnowledgeAnswerOperationExecutionV21
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import {
-  decodeKnowledgeCoverageAuditFailureV1
-} from "../../lib/server/knowledge/coverageAuditV1";
+  decodeKnowledgeCoverageAuditFailureV2
+} from "../../lib/server/knowledge/coverageAuditV2";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -216,7 +216,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function replayPipeline(
   contracts: OpenRagAnswerReplayContracts
-): "v20_v16" | "v21_audit_v1" | null {
+): "v20_v16" | "v21_audit_v2" | null {
   if (contracts.coverageAuditorContractVersion === null &&
     contracts.draftContractVersion ===
       KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftContractVersion &&
@@ -224,14 +224,14 @@ function replayPipeline(
       KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.selectorContractVersion &&
     contracts.settlementVersion === 5) return "v20_v16";
   if (contracts.coverageAuditorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.coverageAuditorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.coverageAuditorContractVersion &&
     contracts.draftContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.draftContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.draftContractVersion &&
     contracts.selectorContractVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.selectorContractVersion &&
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.selectorContractVersion &&
     contracts.settlementVersion ===
-      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.settlementVersion) {
-    return "v21_audit_v1";
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.settlementVersion) {
+    return "v21_audit_v2";
   }
   return null;
 }
@@ -327,8 +327,8 @@ export function isOpenRagAnswerOperationSequence(
       [...base, pair.supplementalDraftOperation!, pair.finalSelectorOperation!]
     ].some((candidate) => exactSequence(operations, candidate));
   }
-  if (pipeline === "v21_audit_v1") {
-    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1;
+  if (pipeline === "v21_audit_v2") {
+    const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2;
     const base = [pair.draftOperation, pair.selectorOperation];
     const repaired = [...base, pair.selectorOperation];
     const candidates = [base, repaired].flatMap((prefix) => [
@@ -534,7 +534,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
   if (value.executionPolicy !== null && !executionPolicy ||
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
-    pipeline === "v21_audit_v1" && (engine.groundingEvidenceVersion === 18
+    pipeline === "v21_audit_v2" && (engine.groundingEvidenceVersion === 18
       ? !executionPolicy || value.reasoningEffort !== null
       : engine.groundingEvidenceVersion === 17
         ? executionPolicy !== null
@@ -832,9 +832,9 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
     } catch (error) {
       const lastAudit = [...captured].reverse().find((operation) =>
         operation.operation ===
-          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.coverageAuditorOperation);
+          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2.coverageAuditorOperation);
       const acceptedAuditFailure = lastAudit
-        ? decodeKnowledgeCoverageAuditFailureV1(lastAudit.acceptedResult)
+        ? decodeKnowledgeCoverageAuditFailureV2(lastAudit.acceptedResult)
         : null;
       if (error instanceof Error &&
         error.message === "knowledge_coverage_audit_unaccepted" &&

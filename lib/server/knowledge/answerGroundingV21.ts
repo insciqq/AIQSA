@@ -40,13 +40,17 @@ import type {
 import {
   KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
   KNOWLEDGE_COVERAGE_AUDIT_PAYLOAD_VERSION,
-  decodeKnowledgeCoverageAuditV1,
+  decodeKnowledgeCoverageAuditV2,
+  deriveKnowledgeCoverageV2,
+  knowledgeCoverageAuditDimensionsV2,
+  type KnowledgeCoverageAuditDimensionV2,
+  type KnowledgeCoverageAuditV2,
+  type KnowledgeCoverageScopeItemV2
+} from "./coverageAuditV2";
+import {
   decodeKnowledgeSupportedAnswerViewV1,
-  deriveKnowledgeCoverageV1,
-  type KnowledgeCoverageAuditDimensionV1,
-  type KnowledgeCoverageAuditV1,
   type KnowledgeSupportedAnswerViewV1
 } from "./coverageAuditV1";
 import {
@@ -87,7 +91,7 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17 =
 export const KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17 =
   "knowledge_grounded_selector_final_v17" as const;
 
-export const KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1 = Object.freeze({
+export const KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V2 = Object.freeze({
   coverageAuditorContractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
   coverageAuditorOperation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
   draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
@@ -116,7 +120,7 @@ export type KnowledgeAnswerOperationV21 =
 
 export type KnowledgeAnswerOperationRequestSnapshotV21V1 = Readonly<{
   auditPayloadHash: string | null;
-  contractVersion: 1 | 17 | 21;
+  contractVersion: 1 | 2 | 17 | 21;
   evidenceReceiptHash: string;
   maxOutputTokens: number;
   name: KnowledgeAnswerOperationV21;
@@ -133,7 +137,7 @@ export type KnowledgeAnswerOperationRequestSnapshotV21V1 = Readonly<{
 
 export type KnowledgeAnswerOperationRequestSnapshotV21V2 = Readonly<{
   auditPayloadHash: string | null;
-  contractVersion: 1 | 17 | 21;
+  contractVersion: 1 | 2 | 17 | 21;
   evidenceReceiptHash: string;
   executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
   maxOutputTokens: number;
@@ -171,7 +175,7 @@ export type KnowledgeGroundedSelectorV17 = Readonly<{
 }>;
 
 export type KnowledgeGroundedSelectorFinalV17 = KnowledgeGroundedSelectorV17 & Readonly<{
-  coverage: readonly KnowledgeCoverageAuditDimensionV1[];
+  coverage: readonly KnowledgeCoverageAuditDimensionV2[];
 }>;
 
 export type KnowledgeGroundedSelectorValidationV17 =
@@ -274,7 +278,7 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17 = Object.freeze({
 } satisfies Readonly<Record<string, unknown>>);
 
 function v21OperationMetadata(operation: unknown): Readonly<{
-  contractVersion: 1 | 17 | 21;
+  contractVersion: 1 | 2 | 17 | 21;
   requiresAuditPayload: boolean;
   schema: Readonly<Record<string, unknown>>;
 }> | null {
@@ -310,7 +314,7 @@ function v21OperationMetadata(operation: unknown): Readonly<{
     return Object.freeze({
       contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
       requiresAuditPayload: false,
-      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2
     });
   }
   return null;
@@ -334,7 +338,7 @@ export function knowledgeAnswerOperationExecutionRoleV21(
 
 export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly<{
   auditPayloadHash?: string | null;
-  contractVersion: 1 | 17 | 21;
+  contractVersion: 1 | 2 | 17 | 21;
   evidenceReceiptHash: string;
   executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
   maxOutputTokens: number;
@@ -507,8 +511,8 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_V17 = Object.freeze([
   "Internally test every subject-predicate-object assertion and every relation, qualifier, condition, comparison, arithmetic step, association, and connector. Related or plausible evidence is not entailment. Derived content is supportable only when all exact operands, labels, units, associations, qualifiers, and the complete relation are entailed.",
   "literalExtractIndex contains server-authored IDs for exact control-free Source spans. Select a literal only for a directly requested fact. Literals cannot create a comparison, calculation, association, explanation, polar relationship, or other cross-span conclusion.",
   "Initial and repair passes decide factual support only. They do not create a request checklist, decide completeness, return dimensions, or narrow the exact request to the Draft.",
-  "Final receives immutable Coverage Audit dimensions and a merged Draft. Re-adjudicate every merged claim and return every audit ID exactly once in the original order, mapping it only to currently supported claim or literal IDs. Do not add, delete, reorder, reinterpret, or rewrite dimensions.",
-  "The Audit descriptions, request anchors, IDs, order, and count remain immutable. Its covered/missing status and supportIds describe the pre-supplement view, not the final verdict; recompute only that mapping against the merged Draft and current supported content.",
+  "Final receives an immutable Coverage Audit scope and a merged Draft. Re-adjudicate every merged claim and return every audit ID exactly once in the original order, mapping it only to currently supported claim or literal IDs whose canonical support handles overlap that scope item's evidenceHandles. Do not add, delete, reorder, reinterpret, or rewrite scope items.",
+  "The Audit descriptions, request anchors, evidence handles, IDs, order, and count remain immutable. Its covered/missing status and supportIds describe the pre-supplement view, not the final verdict; recompute only that mapping against the merged Draft and current supported content.",
   "A covered final dimension has at least one valid supported ID; a missing dimension has none. Evidence alone never covers a dimension.",
   "Use insufficientReason not_applicable when any claim or literal is supported; otherwise use exactly not_found, ambiguous, or conflicting.",
   "selectorPass is server-owned protocol state. A repair is one fresh adjudication over unchanged inputs; prior malformed output is not evidence and does not relax support.",
@@ -523,7 +527,7 @@ export const KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_TASK_REMINDER_V21 =
 export const KNOWLEDGE_GROUNDED_SELECTOR_TASK_REMINDER_V17 =
   "Adjudicate factual support only; initial and repair passes never decide request completeness.";
 export const KNOWLEDGE_GROUNDED_SELECTOR_FINAL_TASK_REMINDER_V17 =
-  "Re-adjudicate support and map every immutable audit ID without changing the audit dimensions.";
+  "Re-adjudicate support and map every immutable audit ID without changing its evidence scope.";
 
 const auditHandlePattern = /^K[1-9]\d{0,3}$/u;
 const auditSupportIdPattern = /^(?:C(?:[1-9]|1\d|2[0-4])|L[1-9]\d{0,3})$/u;
@@ -552,41 +556,50 @@ function boundedPlainText(value: unknown, maximum: number): value is string {
     Array.from(value).length <= maximum && !controlCharacterPattern.test(value);
 }
 
-function validAuditDimensionShape(
+function validAuditScopeShape(
   value: unknown,
   expectedId?: string
-): value is KnowledgeCoverageAuditDimensionV1 {
+): value is KnowledgeCoverageScopeItemV2 {
   if (!record(value) || !exactKeys(value, [
     "id",
     "description",
     "requestAnchor",
-    "status",
-    "supportIds",
-    "evidenceHintHandles"
+    "evidenceHandles"
   ]) || typeof value.id !== "string" || !auditDimensionIdPattern.test(value.id) ||
     expectedId !== undefined && value.id !== expectedId ||
     !boundedPlainText(value.description, 500) ||
     !boundedPlainText(value.requestAnchor, 500) ||
+    !Array.isArray(value.evidenceHandles) || value.evidenceHandles.length > 4 ||
+    !value.evidenceHandles.every((handle) => typeof handle === "string" &&
+      auditHandlePattern.test(handle)) ||
+    !uniqueStrings(value.evidenceHandles as string[])) return false;
+  return true;
+}
+
+function validAuditCoverageShape(value: unknown, expectedId?: string): boolean {
+  if (!record(value) || !exactKeys(value, ["id", "status", "supportIds"]) ||
+    typeof value.id !== "string" || !auditDimensionIdPattern.test(value.id) ||
+    expectedId !== undefined && value.id !== expectedId ||
     value.status !== "covered" && value.status !== "missing" ||
     !Array.isArray(value.supportIds) ||
     !value.supportIds.every((id) => typeof id === "string" &&
-      auditSupportIdPattern.test(id)) ||
-    !uniqueStrings(value.supportIds as string[]) ||
-    !Array.isArray(value.evidenceHintHandles) || value.evidenceHintHandles.length > 4 ||
-    !value.evidenceHintHandles.every((handle) => typeof handle === "string" &&
-      auditHandlePattern.test(handle)) ||
-    !uniqueStrings(value.evidenceHintHandles as string[])) return false;
+      auditSupportIdPattern.test(id)) || !uniqueStrings(value.supportIds as string[])) {
+    return false;
+  }
   return value.status === "covered"
-    ? value.supportIds.length >= 1 && value.evidenceHintHandles.length === 0
+    ? value.supportIds.length >= 1
     : value.supportIds.length === 0;
 }
 
-function validAcceptedAuditShape(value: unknown): value is KnowledgeCoverageAuditV1 {
-  return record(value) && exactKeys(value, ["version", "dimensions"]) &&
+function validAcceptedAuditShape(value: unknown): value is KnowledgeCoverageAuditV2 {
+  return record(value) && exactKeys(value, ["version", "scope", "coverage"]) &&
     value.version === KNOWLEDGE_COVERAGE_AUDIT_PAYLOAD_VERSION &&
-    Array.isArray(value.dimensions) && value.dimensions.length >= 1 &&
-    value.dimensions.length <= 8 && value.dimensions.every((dimension, index) =>
-      validAuditDimensionShape(dimension, `D${index + 1}`));
+    Array.isArray(value.scope) && Array.isArray(value.coverage) &&
+    value.scope.length >= 1 && value.scope.length <= 8 &&
+    value.coverage.length === value.scope.length &&
+    value.scope.every((scope, index) => validAuditScopeShape(scope, `D${index + 1}`)) &&
+    value.coverage.every((coverage, index) =>
+      validAuditCoverageShape(coverage, `D${index + 1}`));
 }
 
 function validMissingAuditDimensions(
@@ -594,12 +607,21 @@ function validMissingAuditDimensions(
   request: string
 ): boolean {
   if (!Array.isArray(value)) return false;
-  const dimensions = value as readonly KnowledgeCoverageAuditDimensionV1[];
+  const dimensions = value as readonly KnowledgeCoverageAuditDimensionV2[];
   let previousOrdinal = 0;
   const ids = new Set<string>();
   return dimensions.length >= 1 && dimensions.length <= 8 &&
     dimensions.every((dimension) => {
-      if (!validAuditDimensionShape(dimension) || dimension.status !== "missing" ||
+      if (!validAuditScopeShape({
+        description: dimension.description,
+        evidenceHandles: dimension.evidenceHandles,
+        id: dimension.id,
+        requestAnchor: dimension.requestAnchor
+      }) || !validAuditCoverageShape({
+        id: dimension.id,
+        status: dimension.status,
+        supportIds: dimension.supportIds
+      }) || dimension.status !== "missing" ||
         !request.includes(dimension.requestAnchor) || ids.has(dimension.id)) return false;
       const ordinal = Number(auditDimensionIdPattern.exec(dimension.id)?.[1]);
       if (!Number.isSafeInteger(ordinal) || ordinal <= previousOrdinal) return false;
@@ -826,7 +848,7 @@ export function buildKnowledgeSupportedAnswerViewV1(input: Readonly<{
 export function validateKnowledgeGroundedSelectorFinalV17(
   value: unknown,
   input: Readonly<{
-    audit: KnowledgeCoverageAuditV1;
+    audit: KnowledgeCoverageAuditV2;
     draft: KnowledgeAnswerDraftSelectorInput;
     evidence: readonly KnowledgeSelectorEvidenceV1[];
   }>
@@ -838,7 +860,7 @@ export function validateKnowledgeGroundedSelectorFinalV17(
     "coverage",
     "insufficientReason"
   ]) || !Array.isArray(value.coverage) ||
-    value.coverage.length !== input.audit.dimensions.length ||
+    value.coverage.length !== input.audit.scope.length ||
     !validAcceptedAuditShape(input.audit)) {
     return rejectedFinalSelector("selector_dimension_invalid");
   }
@@ -852,29 +874,34 @@ export function validateKnowledgeGroundedSelectorFinalV17(
     evidence: input.evidence,
     selector: base.value
   });
-  const supportedIds = new Set([
-    ...supportedView.claims.map(({ id }) => id),
-    ...supportedView.literals.map(({ id }) => id)
+  const supportHandlesById = new Map([
+    ...supportedView.claims.map(({ id, supportHandles }) =>
+      [id, new Set(supportHandles)] as const),
+    ...supportedView.literals.map(({ handle, id }) =>
+      [id, new Set([handle])] as const)
   ]);
-  const coverage: KnowledgeCoverageAuditDimensionV1[] = [];
+  const coverage: KnowledgeCoverageAuditDimensionV2[] = [];
   for (const [index, candidate] of value.coverage.entries()) {
-    const audited = input.audit.dimensions[index];
+    const audited = input.audit.scope[index];
     if (!audited || !record(candidate) ||
       !exactKeys(candidate, ["id", "status", "supportIds"]) ||
       candidate.id !== audited.id ||
       candidate.status !== "covered" && candidate.status !== "missing" ||
       !Array.isArray(candidate.supportIds) ||
-      candidate.supportIds.length > supportedIds.size ||
+      candidate.supportIds.length > supportHandlesById.size ||
       !candidate.supportIds.every((id) => typeof id === "string" &&
-        supportedIds.has(id)) ||
+        supportHandlesById.has(id)) ||
       !uniqueStrings(candidate.supportIds as string[]) ||
       candidate.status === "covered" && candidate.supportIds.length < 1 ||
-      candidate.status === "missing" && candidate.supportIds.length !== 0) {
+      candidate.status === "missing" && candidate.supportIds.length !== 0 ||
+      candidate.status === "covered" && candidate.supportIds.some((id) =>
+        ![...(supportHandlesById.get(id as string) ?? [])].some((handle) =>
+          audited.evidenceHandles.includes(handle)))) {
       return rejectedFinalSelector("selector_dimension_invalid");
     }
     coverage.push(Object.freeze({
       description: audited.description,
-      evidenceHintHandles: Object.freeze([...audited.evidenceHintHandles]),
+      evidenceHandles: Object.freeze([...audited.evidenceHandles]),
       id: audited.id,
       requestAnchor: audited.requestAnchor,
       status: candidate.status,
@@ -908,23 +935,35 @@ export function mergeKnowledgeAnswerDraftsV21(input: Readonly<{
 }
 
 function validAuditDimensions(
-  dimensions: readonly KnowledgeCoverageAuditDimensionV1[],
+  dimensions: readonly KnowledgeCoverageAuditDimensionV2[],
   supportedView: KnowledgeSupportedAnswerViewV1
 ): boolean {
-  const supportedIds = new Set([
-    ...supportedView.claims.map(({ id }) => id),
-    ...supportedView.literals.map(({ id }) => id)
+  const supportHandlesById = new Map([
+    ...supportedView.claims.map(({ id, supportHandles }) =>
+      [id, new Set(supportHandles)] as const),
+    ...supportedView.literals.map(({ handle, id }) =>
+      [id, new Set([handle])] as const)
   ]);
   return dimensions.length >= 1 && dimensions.length <= 8 &&
     dimensions.every((dimension, index) => dimension.id === `D${index + 1}` &&
+      validAuditScopeShape({
+        description: dimension.description,
+        evidenceHandles: dimension.evidenceHandles,
+        id: dimension.id,
+        requestAnchor: dimension.requestAnchor
+      }) &&
       uniqueStrings(dimension.supportIds) &&
-      dimension.supportIds.every((id) => supportedIds.has(id)) &&
+      dimension.supportIds.every((id) => {
+        const supportHandles = supportHandlesById.get(id);
+        return supportHandles !== undefined && [...supportHandles].some((handle) =>
+          dimension.evidenceHandles.includes(handle));
+      }) &&
       (dimension.status === "covered" && dimension.supportIds.length >= 1 ||
         dimension.status === "missing" && dimension.supportIds.length === 0));
 }
 
 function legacySelectorForCoverage(input: Readonly<{
-  coverage: readonly KnowledgeCoverageAuditDimensionV1[];
+  coverage: readonly KnowledgeCoverageAuditDimensionV2[];
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   requestCoverage: "complete" | "none" | "partial";
   selector: KnowledgeGroundedSelectorV17;
@@ -990,7 +1029,7 @@ function citations(handles: readonly string[]): string {
 }
 
 function v21Settlement(input: Readonly<{
-  coverage: readonly KnowledgeCoverageAuditDimensionV1[];
+  coverage: readonly KnowledgeCoverageAuditDimensionV2[];
   draft: KnowledgeAnswerDraftSelectorInput;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   selector: KnowledgeGroundedSelectorV17;
@@ -1000,13 +1039,22 @@ function v21Settlement(input: Readonly<{
     throw new Error("knowledge_answer_v21_settlement_invalid");
   }
   const audit = Object.freeze({
-    dimensions: Object.freeze([...input.coverage]),
+    coverage: Object.freeze(input.coverage.map(({ id, status, supportIds }) =>
+      Object.freeze({ id, status, supportIds: Object.freeze([...supportIds]) }))),
+    scope: Object.freeze(input.coverage.map(({
+      description,
+      evidenceHandles,
+      id,
+      requestAnchor
+    }) => Object.freeze({
+      description,
+      evidenceHandles: Object.freeze([...evidenceHandles]),
+      id,
+      requestAnchor
+    }))),
     version: KNOWLEDGE_COVERAGE_AUDIT_PAYLOAD_VERSION
   });
-  const derivation = deriveKnowledgeCoverageV1({
-    audit,
-    supportedView: input.supportedView
-  });
+  const derivation = deriveKnowledgeCoverageV2(audit);
   const selector = legacySelectorForCoverage({
     coverage: input.coverage,
     evidence: input.evidence,
@@ -1088,14 +1136,14 @@ export function settleKnowledgeAnswerV21FromAudit(input: Readonly<{
   selector: KnowledgeGroundedSelectorV17;
 }>): KnowledgeAnswerSettlementV5 {
   const supportedView = buildKnowledgeSupportedAnswerViewV1(input);
-  const audit = decodeKnowledgeCoverageAuditV1(input.audit, {
+  const audit = decodeKnowledgeCoverageAuditV2(input.audit, {
     evidence: input.evidence,
     request: input.request,
     supportedView
   });
   if (!audit) throw new Error("knowledge_coverage_audit_unaccepted");
   return v21Settlement({
-    coverage: audit.dimensions,
+    coverage: knowledgeCoverageAuditDimensionsV2(audit),
     draft: input.draft,
     evidence: input.evidence,
     selector: input.selector,
@@ -1135,7 +1183,7 @@ export function knowledgeAnswerDraftPromptV21(input:
       routeInstruction: string;
     }>
   | Readonly<{
-      auditDimensions: readonly KnowledgeCoverageAuditDimensionV1[];
+      auditDimensions: readonly KnowledgeCoverageAuditDimensionV2[];
       draftPass: "supplement";
       evidenceManifest: string;
       primaryDraft: KnowledgeAnswerDraftSelectorInput;
@@ -1250,7 +1298,7 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
 }
 
 export function knowledgeGroundedSelectorPromptV17(input: Readonly<{
-  audit?: KnowledgeCoverageAuditV1;
+  audit?: KnowledgeCoverageAuditV2;
   draft: KnowledgeAnswerDraftSelectorInput;
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   evidenceManifest: string;
