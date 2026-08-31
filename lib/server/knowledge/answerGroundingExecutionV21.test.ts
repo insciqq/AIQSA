@@ -879,6 +879,13 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     expect(snapshots.slice(2).every((snapshot) =>
       isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
+    expect(JSON.parse(snapshots[3]!.userPrompt)).toMatchObject({
+      targetEvidenceAtomIndex: {
+        atoms: [{ handle: "K2", id: "A2", text: "Beta removes duplicates." }],
+        targets: [{ evidenceAtomIds: ["A2"], targetDimensionId: "D2" }],
+        version: 1
+      }
+    });
   });
 
   it("lets the final Selector own support when a targeted Draft hint is advisory", async () => {

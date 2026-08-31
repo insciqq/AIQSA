@@ -13,8 +13,15 @@ import type {
   KnowledgeCoverageDimensionV6,
   KnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
+import { knowledgeCoverageEvidenceAtomIndexV1 } from "./coverageScopeV4";
+import type { KnowledgeCoverageEvidenceV6 } from "./coverageScopeV6";
 
 export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1 = 1 as const;
+
+export const KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1 = Object.freeze({
+  maxAtoms: 128,
+  maxCodePoints: 32_768
+});
 
 const targetIdPattern = /^D[1-8]$/u;
 const claimIdPattern = /^C(?:[1-9]|1\d|2[0-4])$/u;
@@ -64,6 +71,19 @@ export type KnowledgeTargetedSupplementV1 = Readonly<{
   bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
   draft: KnowledgeAnswerDraftV5;
   version: typeof KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1;
+}>;
+
+export type KnowledgeTargetedEvidenceAtomIndexV1 = Readonly<{
+  atoms: readonly Readonly<{
+    handle: string;
+    id: string;
+    text: string;
+  }>[];
+  targets: readonly Readonly<{
+    evidenceAtomIds: readonly string[];
+    targetDimensionId: string;
+  }>[];
+  version: 1;
 }>;
 
 export type KnowledgeTargetedSupplementFailureReasonV1 =
@@ -152,6 +172,53 @@ export function knowledgeTargetableMissingDimensionsV1(
   return Object.freeze(dimensions.filter((dimension) =>
     dimension.status === "missing" && dimension.evidenceHandles.length > 0
   ));
+}
+
+/** Projects only the exact Scope atoms assigned to positive correction
+ * targets. The projection is deterministic, lossless, and bounded; it adds no
+ * retrieval or semantic server inference. Returning null disables correction
+ * rather than sending a partial target-evidence view. */
+export function knowledgeTargetedEvidenceAtomIndexV1(input: Readonly<{
+  evidence: readonly KnowledgeCoverageEvidenceV6[];
+  targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+}>): KnowledgeTargetedEvidenceAtomIndexV1 | null {
+  const targetable = knowledgeTargetableMissingDimensionsV1(input.targetDimensions);
+  const targetIds = new Set(targetable.map(({ id }) => id));
+  if (targetable.length !== input.targetDimensions.length || targetable.length < 1 ||
+    targetIds.size !== targetable.length || targetable.some(({ id, evidenceAtomIds }) =>
+      !targetIdPattern.test(id) || evidenceAtomIds.length < 1 ||
+      new Set(evidenceAtomIds).size !== evidenceAtomIds.length)) return null;
+  let atomIndex: ReturnType<typeof knowledgeCoverageEvidenceAtomIndexV1>;
+  try {
+    atomIndex = knowledgeCoverageEvidenceAtomIndexV1(input.evidence);
+  } catch {
+    return null;
+  }
+  const atomById = new Map(atomIndex.items.map((atom, index) =>
+    [atom.id, Object.freeze({ ...atom, index })] as const));
+  const selectedIds = new Set<string>();
+  for (const dimension of targetable) {
+    const atoms = dimension.evidenceAtomIds.map((id) => atomById.get(id));
+    if (atoms.some((atom) => atom === undefined) || atoms.some((atom, index) =>
+      index > 0 && atom!.index <= atoms[index - 1]!.index)) return null;
+    const handles = [...new Set(atoms.map((atom) => atom!.handle))];
+    if (!sameStrings(handles, dimension.evidenceHandles)) return null;
+    for (const id of dimension.evidenceAtomIds) selectedIds.add(id);
+  }
+  const atoms = atomIndex.items.filter(({ id }) => selectedIds.has(id));
+  const totalCodePoints = atoms.reduce((total, { text }) =>
+    total + Array.from(text).length, 0);
+  if (atoms.length < 1 ||
+    atoms.length > KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1.maxAtoms ||
+    totalCodePoints > KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1.maxCodePoints) return null;
+  return Object.freeze({
+    atoms: Object.freeze(atoms.map((atom) => Object.freeze({ ...atom }))),
+    targets: Object.freeze(targetable.map((dimension) => Object.freeze({
+      evidenceAtomIds: Object.freeze([...dimension.evidenceAtomIds]),
+      targetDimensionId: dimension.id
+    }))),
+    version: 1 as const
+  });
 }
 
 /** The all-target supplement contract is dispatchable only when one candidate

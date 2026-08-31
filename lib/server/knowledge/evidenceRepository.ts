@@ -117,6 +117,7 @@ import {
   decodeKnowledgeTargetedSupplementFailureV1,
   decodeKnowledgeTargetedSupplementV1,
   knowledgeTargetableMissingDimensionsV1,
+  knowledgeTargetedEvidenceAtomIndexV1,
   knowledgeTargetedSupplementFitsV1,
   mergeKnowledgeGroundedCorrectionV1,
   mergeKnowledgeTargetedSupplementV1
@@ -1816,7 +1817,11 @@ export async function groundKnowledgeRunAnswerV21(
   const targetableMissingDimensions = knowledgeTargetableMissingDimensionsV1(
     missingDimensions
   );
-  const correctionRequired = knowledgeTargetedSupplementFitsV1({
+  const targetEvidenceAvailable = knowledgeTargetedEvidenceAtomIndexV1({
+    evidence,
+    targetDimensions: targetableMissingDimensions
+  }) !== null;
+  const correctionRequired = targetEvidenceAvailable && knowledgeTargetedSupplementFitsV1({
     primaryClaimCount,
     targetableDimensionCount: targetableMissingDimensions.length
   }) &&
@@ -1837,6 +1842,7 @@ export async function groundKnowledgeRunAnswerV21(
   } else {
     const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: targetableMissingDimensions,
+      evidence,
       evidenceManifest: operations.draft.draft.message,
       primaryDraft,
       request: primaryPrompt.request,

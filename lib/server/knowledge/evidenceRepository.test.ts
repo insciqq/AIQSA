@@ -1324,6 +1324,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const mergedDraft = merged.draft;
     const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
       auditDimensions: missingDimensions,
+      evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
       primaryDraft: acceptedDraft!,
       request,
