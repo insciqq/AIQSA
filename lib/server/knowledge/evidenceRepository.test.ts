@@ -1126,7 +1126,23 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("reconstructs a corrected V21 sequence and settles partial audit coverage as complete", async () => {
+  it.each([{
+    evidenceVersion: 17,
+    executionPolicy: undefined
+  }, {
+    evidenceVersion: 18,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const
+  }])("reconstructs corrected V21 snapshot into Evidence V$evidenceVersion",
+    async ({ evidenceVersion, executionPolicy }) => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1229,6 +1245,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       contractVersion: 21,
       evidenceReceiptHash: dispatchDraft.manifestHash,
+      ...(executionPolicy ? { executionPolicy } : {}),
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
       schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
@@ -1239,6 +1256,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const selectorRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       contractVersion: 17,
       evidenceReceiptHash: dispatchDraft.manifestHash,
+      ...(executionPolicy ? { executionPolicy } : {}),
       maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
@@ -1249,6 +1267,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const auditRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       contractVersion: 1,
       evidenceReceiptHash: dispatchDraft.manifestHash,
+      ...(executionPolicy ? { executionPolicy } : {}),
       maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
       schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
@@ -1301,6 +1320,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       auditPayloadHash,
       contractVersion: 21,
       evidenceReceiptHash: dispatchDraft.manifestHash,
+      ...(executionPolicy ? { executionPolicy } : {}),
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
       schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
@@ -1312,6 +1332,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       auditPayloadHash,
       contractVersion: 17,
       evidenceReceiptHash: dispatchDraft.manifestHash,
+      ...(executionPolicy ? { executionPolicy } : {}),
       maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
@@ -1398,8 +1419,16 @@ describe("Knowledge Evidence v2 repository projection", () => {
       ].join("\n"),
       requestCoverage: "complete",
       supportedClaimCount: 2,
-      version: 17
+      version: evidenceVersion
     });
+    if (evidenceVersion === 18) {
+      expect(result.grounding).toMatchObject({
+        answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        draftClaimCount: 2,
+        executionPolicy,
+        executionPolicyFingerprint: knowledgeAnswerHash(executionPolicy)
+      });
+    }
     expect("operations" in result.grounding &&
       result.grounding.operations.map(({ role }) => role)).toEqual([
       "primary",

@@ -98,6 +98,12 @@ import { executeKnowledgeAnswerGroundingV21 } from
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
 import {
+  resolveKnowledgeGroundingExecutionPolicyV1,
+  type KnowledgeGroundingExecutionPolicyV1
+} from "../knowledge/groundingExecutionPolicy";
+import { knowledgeGroundingProviderParams } from
+  "../knowledge/groundingProviderParams";
+import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
@@ -247,6 +253,7 @@ export type RunExecutionInput = Readonly<{
   repository: RunExecutionRepository;
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
+  knowledgeGroundingExecutionPolicy?: KnowledgeGroundingExecutionPolicyV1;
   structuredOutputAdapter?: ProviderStructuredOutputAdapter;
   knowledgeAdmission?: Readonly<{
     authorizeSnapshot?(input: {
@@ -1231,10 +1238,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           knowledgeFocusedRequest: undefined,
           mcp: undefined,
           mcpDiscovery: undefined,
-          params: {
-            ...input.prepared.providerRequest.params,
-            maxOutputTokens: operation.maxOutputTokens
-          },
+          params: knowledgeGroundingProviderParams({
+            baseParams: input.prepared.providerRequest.params,
+            operation
+          }),
           personalContext: undefined,
           prompt: {
             developer: null,
@@ -1392,6 +1399,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const reasoningEffort = typeof normalizedRequest.params.reasoningEffort === "string"
           ? normalizedRequest.params.reasoningEffort
           : null;
+        const groundingExecutionPolicy = pipeline === "v21_audit_v1"
+          ? resolveKnowledgeGroundingExecutionPolicyV1({
+              inheritedReasoningEffort: reasoningEffort,
+              modelCapabilities: normalizedRequest.modelCapabilities,
+              ...(input.knowledgeGroundingExecutionPolicy
+                ? { policy: input.knowledgeGroundingExecutionPolicy }
+                : {})
+            })
+          : null;
         const executionInput = {
           authorize: authorizeKnowledgeAnswerOperation,
           draft: inputRequest.dispatchDraft,
@@ -1410,7 +1426,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ],
           lifecycle: input.knowledgeProviderDispatch,
           modelRunId: runId,
-          reasoningEffort,
+          ...(groundingExecutionPolicy
+            ? { executionPolicy: groundingExecutionPolicy }
+            : { reasoningEffort }),
           request: requestText,
           routeInstruction: inputRequest.routeInstruction ?? (fullContextPlan
             ? KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION
