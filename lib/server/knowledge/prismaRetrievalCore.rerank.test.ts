@@ -134,7 +134,7 @@ function scoringExecutor(scoreByChunk: ReadonlyMap<string, number>) {
       .sort((left, right) => scoreByChunk.get(right)! - scoreByChunk.get(left)!);
     const omitted = orderedIds.filter((chunkId) => !scoreByChunk.has(chunkId));
     const outputOrder = [...scored, ...omitted];
-    const partial = scored.length < orderedIds.length && scored.length > 0;
+    const partial = scored.length < orderedIds.length && orderedIds.length > 1;
     return {
       evidence: {
         adapterVersion: pin.adapterVersion,
@@ -266,6 +266,83 @@ describe("Prisma retrieval core hosted rerank stage", () => {
     expect(deterministic.passages.map((passage) => passage.chunkId)).toEqual(["chunk-strong"]);
     const deterministicSql = sqlText(deterministicClient.$queryRaw.mock.calls[1]![0]);
     expect(deterministicSql.match(/"rawScore" >= \?/gu)).toHaveLength(2);
+  });
+
+  it("admits only eligible provider omissions after every scored candidate", async () => {
+    const rows = [
+      row({
+        chunkId: "chunk-scored-low",
+        lane: "passage_semantic",
+        laneRank: 4,
+        rawScore: 0.1,
+        vectorDistance: 0.9
+      }),
+      row({
+        chunkId: "chunk-rejected",
+        lane: "passage_semantic",
+        laneRank: 1,
+        rawScore: 0.1,
+        vectorDistance: 0.9
+      }),
+      row({ chunkId: "chunk-bm25", lane: "passage_bm25", laneRank: 1 }),
+      row({ chunkId: "chunk-exact", lane: "exact", laneRank: 50, rawScore: 0.001 })
+    ];
+    const result = await execute(mockClient([scope(0, "Base A", "base-a")], rows), {
+      rerank: { executor: scoringExecutor(new Map([["chunk-scored-low", -10]])) }
+    });
+    expect(result.passages.map((passage) => passage.chunkId))
+      .toEqual(["chunk-scored-low", "chunk-exact", "chunk-bm25"]);
+    expect(result.candidateCount).toBe(3);
+    expect(result.rankingEvidence).toMatchObject({
+      candidateOrder: ["chunk-scored-low", "chunk-exact", "chunk-bm25"],
+      rerankOmittedAdmission: {
+        omittedCandidateCount: 3,
+        omittedRejectedCandidateCount: 1,
+        version: 1
+      }
+    });
+    expect(result.rerankerBinding).toMatchObject({
+      inputCandidateCount: 4,
+      status: "partial",
+      version: 2
+    });
+    expect(result.passages[0]!.rerankScore).toBe(-10);
+  });
+
+  it("can return no relevant evidence when a partial response omits only weak candidates", async () => {
+    const rows = [
+      row({
+        chunkId: "chunk-weak-a",
+        lane: "passage_semantic",
+        laneRank: 1,
+        rawScore: 0.1,
+        vectorDistance: 0.9
+      }),
+      row({
+        chunkId: "chunk-weak-b",
+        lane: "passage_semantic",
+        laneRank: 2,
+        rawScore: 0.2,
+        vectorDistance: 0.8
+      })
+    ];
+    const result = await execute(mockClient([scope(0, "Base A", "base-a")], rows), {
+      rerank: { executor: scoringExecutor(new Map()) }
+    });
+    expect(result.candidateCount).toBe(0);
+    expect(result.passages).toEqual([]);
+    expect(result.rankingEvidence).toMatchObject({
+      candidateOrder: [],
+      rerankOmittedAdmission: {
+        omittedCandidateCount: 2,
+        omittedRejectedCandidateCount: 2,
+        version: 1
+      }
+    });
+    expect(result.rerankerBinding).toMatchObject({
+      inputCandidateCount: 2,
+      status: "partial"
+    });
   });
 
   it("falls back to deterministic weighted RRF with today's floors on a degraded stage", async () => {
