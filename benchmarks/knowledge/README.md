@@ -124,14 +124,16 @@ three-call `Draft -> blind Scope -> Selector` normal path, five-call correction
 path, one adjacent structural validation repair for either Scope or initial
 Selector, and a six-call hard cap. Scope never receives Draft or Selector
 content. It reviews the exact bounded atom ledger grouped by evidence handle,
-returns one sparse positive map per handle, and reduces those positives into
-the immutable answer scope; the server validates unit identity and provenance
-and derives the negative complement. A repair receives unchanged authority
-inputs plus only the bounded validation-reason enum; provider failures are not
-retried. Correction starts only when both remaining calls fit. Every later
-request pins the exact accepted Scope result hash. Selector coverage requires
-each covered support ID to overlap that immutable scope through canonical
-evidence handles. Replay
+returns one record per handle containing zero or more local findings that are
+already final Scope dimensions, plus bounded cross-handle joint findings and
+explicit unsupported request facets. The server validates exact unit identity,
+atom provenance, anchors, and bounds, then materializes every finding losslessly;
+there is no negative-atom echo or second model-owned positive-to-Scope reduction.
+A repair receives unchanged authority inputs plus only the bounded
+validation-reason enum; provider failures are not retried. Correction starts
+only when both remaining calls fit. Every later request pins the exact accepted
+Scope result hash. Selector coverage requires each covered support ID to overlap
+that immutable scope through canonical evidence handles. Replay
 runs answer-grounding and optional judge stages only. Its origin
 Base/source/engine pins come from the immutable snapshot, so no live Base or
 retrieval state is consulted:
