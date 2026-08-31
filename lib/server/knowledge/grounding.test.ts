@@ -706,7 +706,7 @@ describe("Knowledge answer citation contract", () => {
         usage
       }, {
         acceptedRequestHash: "7".repeat(64),
-        acceptedResultHash: auditPayloadHash,
+        acceptedResultHash: "9".repeat(64),
         contractVersion: 1,
         durationMs: 16,
         operationId: "operation-auditor-v1",
@@ -714,6 +714,17 @@ describe("Knowledge answer citation contract", () => {
         providerRequestId: "provider-auditor-v1",
         purpose: "knowledge_coverage_auditor_v1",
         role: "auditor",
+        usage
+      }, {
+        acceptedRequestHash: "a".repeat(64),
+        acceptedResultHash: auditPayloadHash,
+        contractVersion: 1,
+        durationMs: 14,
+        operationId: "operation-auditor-repair-v1",
+        ordinal: 4,
+        providerRequestId: "provider-auditor-repair-v1",
+        purpose: "knowledge_coverage_auditor_v1",
+        role: "auditor_repair",
         usage
       }],
       providerPinFingerprint: "8".repeat(64),
@@ -748,7 +759,8 @@ describe("Knowledge answer citation contract", () => {
     expect(result.operations.map(({ role }) => role)).toEqual([
       "primary",
       "initial",
-      "auditor"
+      "auditor",
+      "auditor_repair"
     ]);
     expect(JSON.stringify(result.operations)).not.toContain("Supported audited result");
     expect(JSON.stringify(result)).not.toContain(privateSourceId);

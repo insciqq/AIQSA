@@ -120,6 +120,7 @@ describe("Knowledge grounding operational metrics", () => {
       totalOutputTokens: 20
     });
     expect(metrics.stages.repair.calls).toBe(0);
+    expect(metrics.stages.auditor_repair.calls).toBe(0);
   });
 
   it("projects no request, evidence, claim, or private identity text", () => {

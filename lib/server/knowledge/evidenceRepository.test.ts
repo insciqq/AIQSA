@@ -48,6 +48,7 @@ import {
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
   KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
   decodeKnowledgeCoverageAuditV1,
+  knowledgeCoverageAuditFailureV1,
   knowledgeCoverageAuditMissingDimensionsV1,
   knowledgeCoverageAuditPromptV1
 } from "./coverageAuditV1";
@@ -1141,7 +1142,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       supplementReasoningEffort: "low",
       version: 1
     } as const
-  }])("reconstructs corrected V21 snapshot into Evidence V$evidenceVersion",
+  }])("reconstructs Auditor-repaired V21 snapshot into Evidence V$evidenceVersion",
     async ({ evidenceVersion, executionPolicy }) => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
@@ -1231,6 +1232,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       selectorPass: "initial"
     });
     const auditPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "initial",
       evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
       request,
@@ -1274,6 +1276,31 @@ describe("Knowledge Evidence v2 repository projection", () => {
       systemPrompt: auditPrompt.systemPrompt,
       transport: "native_strict",
       userPrompt: auditPrompt.userPrompt
+    });
+    const auditRepairPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "repair",
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      repairReason: "coverage_audit_shape_invalid",
+      request,
+      selectorState: {
+        contradictedClaimCount: 0,
+        selectedLiteralCount: 0,
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      },
+      supportedView
+    });
+    const auditRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: 1,
+      evidenceReceiptHash: dispatchDraft.manifestHash,
+      ...(executionPolicy ? { executionPolicy } : {}),
+      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+      systemPrompt: auditRepairPrompt.systemPrompt,
+      transport: "native_strict",
+      userPrompt: auditRepairPrompt.userPrompt
     });
     const acceptedAudit = decodeKnowledgeCoverageAuditV1(rawAudit, {
       evidence: selectorEvidence,
@@ -1372,23 +1399,32 @@ describe("Knowledge Evidence v2 repository projection", () => {
       }),
       v21AttemptRow({
         acceptedRequest: auditRequest,
-        acceptedResult: rawAudit,
+        acceptedResult: knowledgeCoverageAuditFailureV1(
+          "coverage_audit_shape_invalid"
+        ),
         draft: dispatchDraft,
         ordinal: 3,
+        purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+      }),
+      v21AttemptRow({
+        acceptedRequest: auditRepairRequest,
+        acceptedResult: rawAudit,
+        draft: dispatchDraft,
+        ordinal: 4,
         purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
       }),
       v21AttemptRow({
         acceptedRequest: supplementRequest,
         acceptedResult: rawSupplement,
         draft: dispatchDraft,
-        ordinal: 4,
+        ordinal: 5,
         purpose: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
       }),
       v21AttemptRow({
         acceptedRequest: finalRequest,
         acceptedResult: rawFinalSelector,
         draft: dispatchDraft,
-        ordinal: 5,
+        ordinal: 6,
         purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17
       })
     ];
@@ -1434,9 +1470,26 @@ describe("Knowledge Evidence v2 repository projection", () => {
       "primary",
       "initial",
       "auditor",
+      "auditor_repair",
       "supplement",
       "final"
     ]);
+    const conflictingAuditRepairRequest = {
+      ...auditRepairRequest,
+      userPrompt: "{}"
+    };
+    await expect(groundKnowledgeRunAnswerV21(client(row(), {
+      attempts: attempts.map((attempt, index) => index === 3
+        ? {
+            ...attempt,
+            acceptedRequest: conflictingAuditRepairRequest,
+            requestHash: knowledgeAnswerHash(conflictingAuditRepairRequest)
+          }
+        : attempt),
+      providerExecutionSnapshot: fakeProviderExecutionSnapshot()
+    }), { runId: "run-1", userId: "user-1" })).rejects.toThrow(
+      "knowledge_answer_operation_snapshot_conflict"
+    );
   });
 
   it("rejects focused Knowledge finalization when its evidence receipt is missing", async () => {

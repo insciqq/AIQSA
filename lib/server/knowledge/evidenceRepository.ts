@@ -133,9 +133,11 @@ import {
   decodeKnowledgeCoverageAuditFailureV1,
   decodeKnowledgeCoverageAuditV1,
   deriveKnowledgeCoverageV1,
+  isKnowledgeCoverageAuditValidationFailureReason,
   knowledgeCoverageAuditMissingDimensionsV1,
   knowledgeCoverageAuditPromptV1,
-  type KnowledgeCoverageAuditSelectorStateV1
+  type KnowledgeCoverageAuditSelectorStateV1,
+  type KnowledgeCoverageAuditValidationFailureReason
 } from "./coverageAuditV1";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
@@ -1581,7 +1583,8 @@ export async function groundKnowledgeRunAnswerV21(
     operations.draft,
     operations.initialSelector,
     ...(operations.selectorRepair ? [operations.selectorRepair] : []),
-    operations.auditor,
+    operations.initialAuditor,
+    ...(operations.auditorRepair ? [operations.auditorRepair] : []),
     ...(operations.supplementalDraft ? [operations.supplementalDraft] : []),
     ...(operations.finalSelector ? [operations.finalSelector] : [])
   ];
@@ -1724,6 +1727,7 @@ export async function groundKnowledgeRunAnswerV21(
     selector: selectorForAudit
   });
   const auditPrompt = knowledgeCoverageAuditPromptV1({
+    auditPass: "initial",
     evidence,
     evidenceManifest: operations.draft.draft.message,
     request: primaryPrompt.request,
@@ -1732,8 +1736,8 @@ export async function groundKnowledgeRunAnswerV21(
       : {}),
     supportedView
   });
-  const auditRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
-    operations.auditor.attempt.acceptedRequest
+  const initialAuditRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+    operations.initialAuditor.attempt.acceptedRequest
   );
   const expectedAuditRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
     contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
@@ -1746,27 +1750,88 @@ export async function groundKnowledgeRunAnswerV21(
     transport: primaryRequest.transport,
     userPrompt: auditPrompt.userPrompt
   });
-  if (!exactRequest(auditRequest, expectedAuditRequest) ||
-    decodeKnowledgeCoverageAuditFailureV1(operations.auditor.attempt.acceptedResult)) {
+  if (!exactRequest(initialAuditRequest, expectedAuditRequest)) {
+    throw new Error("knowledge_answer_operation_snapshot_conflict");
+  }
+  const initialAuditFailure = decodeKnowledgeCoverageAuditFailureV1(
+    operations.initialAuditor.attempt.acceptedResult
+  );
+  let audit = initialAuditFailure
+    ? null
+    : decodeKnowledgeCoverageAuditV1(
+        operations.initialAuditor.attempt.acceptedResult,
+        { evidence, request: primaryPrompt.request, supportedView }
+      );
+  if (!initialAuditFailure && !audit) {
     throw new Error("knowledge_coverage_audit_unaccepted");
   }
-  const audit = decodeKnowledgeCoverageAuditV1(
-    operations.auditor.attempt.acceptedResult,
+  const auditRepairRequired = initialAuditFailure !== null &&
+    isKnowledgeCoverageAuditValidationFailureReason(initialAuditFailure.reason);
+  if (auditRepairRequired !== Boolean(operations.auditorRepair)) {
+    throw new Error("knowledge_answer_operation_snapshot_conflict");
+  }
+  if (operations.auditorRepair) {
+    const repairReason = initialAuditFailure!.reason as
+      KnowledgeCoverageAuditValidationFailureReason;
+    const repairPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "repair",
+      evidence,
+      evidenceManifest: operations.draft.draft.message,
+      repairReason,
+      request: primaryPrompt.request,
+      ...(acceptedSelector
+        ? { selectorState: knowledgeV21SelectorState(acceptedSelector) }
+        : {}),
+      supportedView
+    });
+    const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      operations.auditorRepair.attempt.acceptedRequest
+    );
+    const expectedRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
+      evidenceReceiptHash: operations.draft.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      ...requestExecutionPolicy,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+      systemPrompt: repairPrompt.systemPrompt,
+      transport: primaryRequest.transport,
+      userPrompt: repairPrompt.userPrompt
+    });
+    if (!exactRequest(repairRequest, expectedRepairRequest)) {
+      throw new Error("knowledge_answer_operation_snapshot_conflict");
+    }
+    if (decodeKnowledgeCoverageAuditFailureV1(
+      operations.auditorRepair.attempt.acceptedResult
+    )) throw new Error("knowledge_coverage_audit_unaccepted");
+    audit = decodeKnowledgeCoverageAuditV1(
+      operations.auditorRepair.attempt.acceptedResult,
+      { evidence, request: primaryPrompt.request, supportedView }
+    );
+  } else if (initialAuditFailure) {
+    throw new Error("knowledge_coverage_audit_unaccepted");
+  }
+  if (!audit) throw new Error("knowledge_coverage_audit_unaccepted");
+  const acceptedAudit = operations.auditor;
+  const decodedAcceptedAudit = decodeKnowledgeCoverageAuditV1(
+    acceptedAudit.attempt.acceptedResult,
     { evidence, request: primaryPrompt.request, supportedView }
   );
-  if (!audit || !operations.auditor.attempt.resultHash ||
-    knowledgeAnswerHash(operations.auditor.attempt.acceptedResult) !==
-      operations.auditor.attempt.resultHash) {
+  if (!decodedAcceptedAudit || canonicalJson(decodedAcceptedAudit) !== canonicalJson(audit) ||
+    !acceptedAudit.attempt.resultHash ||
+    knowledgeAnswerHash(acceptedAudit.attempt.acceptedResult) !==
+      acceptedAudit.attempt.resultHash) {
     throw new Error("knowledge_coverage_audit_unaccepted");
   }
-  const auditPayloadHash = operations.auditor.attempt.resultHash;
+  const auditPayloadHash = acceptedAudit.attempt.resultHash;
   const coverage = deriveKnowledgeCoverageV1({ audit, supportedView });
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
     ? 0
     : primaryDraft.claims.length;
   let draftClaimCount = primaryClaimCount;
   const correctionRequired = coverage.missingInformation.length > 0 &&
-    primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims;
+    primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims &&
+    operations.auditor.attempt.ordinal + 2 <= 6;
   if (correctionRequired !== Boolean(operations.supplementalDraft)) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
@@ -1923,11 +1988,13 @@ export async function groundKnowledgeRunAnswerV21(
         ? "initial" as const
         : dispatch === operations.selectorRepair
           ? "repair" as const
-          : dispatch === operations.auditor
+          : dispatch === operations.initialAuditor
             ? "auditor" as const
-            : dispatch === operations.supplementalDraft
-              ? "supplement" as const
-              : "final" as const;
+            : dispatch === operations.auditorRepair
+              ? "auditor_repair" as const
+              : dispatch === operations.supplementalDraft
+                ? "supplement" as const
+                : "final" as const;
     return Object.freeze({
       acceptedRequestHash: dispatch.attempt.requestHash,
       acceptedResultHash: dispatch.attempt.resultHash,

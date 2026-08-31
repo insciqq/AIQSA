@@ -130,6 +130,14 @@ const auditValidationFailureReasons = new Set<KnowledgeCoverageAuditValidationFa
   "coverage_audit_support_invalid"
 ]);
 
+export function isKnowledgeCoverageAuditValidationFailureReason(
+  value: unknown
+): value is KnowledgeCoverageAuditValidationFailureReason {
+  return typeof value === "string" && auditValidationFailureReasons.has(
+    value as KnowledgeCoverageAuditValidationFailureReason
+  );
+}
+
 export function knowledgeCoverageAuditFailureV1(
   reason: KnowledgeCoverageAuditFailureReasonV1
 ): KnowledgeCoverageAuditFailureV1 {
@@ -284,6 +292,7 @@ export const KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_V1 = Object.freeze([
   "For a comparison, polar relation, calculation, association, or explanation, component facts do not cover the dimension unless one supported ID states or entails the complete requested relation.",
   "evidenceHintHandles are optional non-authoritative focus hints for a later bounded supplement. They are never proof. Covered dimensions must return an empty hint list.",
   "Return D1 through D8 in request order. Descriptions are private answer tasks, not factual claims, and must be unique, bounded, and free of markup or control characters.",
+  "auditPass is server-owned protocol state. A repair is one fresh validation attempt over unchanged request, evidence, Selector state, and supported view. Fix only the supplied structural repairReason; prior malformed output is not evidence and does not relax completeness rules.",
   "Do not use reference answers, benchmark metadata, or inferred benchmark expectations.",
   "You are the only model authority for request completeness in this protocol. You are not the factual-support Selector or answer generator.",
   "</aiqsa_knowledge_coverage_auditor_contract>"
@@ -291,6 +300,8 @@ export const KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_V1 = Object.freeze([
 
 export const KNOWLEDGE_COVERAGE_AUDITOR_TASK_REMINDER_V1 =
   "Audit only exact-request completeness against SupportedAnswerViewV1; map covered dimensions only to existing supported IDs.";
+export const KNOWLEDGE_COVERAGE_AUDITOR_REPAIR_TASK_REMINDER_V1 =
+  "Return one fresh complete Audit that fixes the supplied structural validation reason without changing authority or inputs.";
 
 export function decodeKnowledgeSupportedAnswerViewV1(
   value: unknown,
@@ -498,17 +509,29 @@ function validSelectorState(
 }
 
 export function knowledgeCoverageAuditPromptV1(input: Readonly<{
+  auditPass: "initial" | "repair";
   evidence: readonly KnowledgeSelectorEvidenceV1[];
   evidenceManifest: string;
+  repairReason?: KnowledgeCoverageAuditValidationFailureReason;
   request: string;
   selectorState?: KnowledgeCoverageAuditSelectorStateV1;
   supportedView: KnowledgeSupportedAnswerViewV1;
 }>): Readonly<{ systemPrompt: string; userPrompt: string }> {
   const rawInput = input as unknown;
-  const expectedKeys = input.selectorState === undefined
-    ? ["evidence", "evidenceManifest", "request", "supportedView"]
-    : ["evidence", "evidenceManifest", "request", "selectorState", "supportedView"];
+  const expectedKeys = [
+    "auditPass",
+    "evidence",
+    "evidenceManifest",
+    ...(input.repairReason === undefined ? [] : ["repairReason"]),
+    "request",
+    ...(input.selectorState === undefined ? [] : ["selectorState"]),
+    "supportedView"
+  ];
   if (!record(rawInput) || !exactKeys(rawInput, expectedKeys) ||
+    input.auditPass !== "initial" && input.auditPass !== "repair" ||
+    (input.auditPass === "repair") !== (input.repairReason !== undefined) ||
+    input.repairReason !== undefined &&
+      !isKnowledgeCoverageAuditValidationFailureReason(input.repairReason) ||
     !input.request.trim() || !input.evidenceManifest.trim() ||
     !decodeKnowledgeSupportedAnswerViewV1(input.supportedView, input.evidence) ||
     input.selectorState !== undefined && !validSelectorState(input.selectorState)) {
@@ -517,11 +540,15 @@ export function knowledgeCoverageAuditPromptV1(input: Readonly<{
   return Object.freeze({
     systemPrompt: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
+      auditPass: input.auditPass,
       evidenceManifest: input.evidenceManifest,
+      repairReason: input.repairReason ?? null,
       request: input.request,
       selectorState: input.selectorState ?? null,
       supportedView: input.supportedView,
-      taskReminder: KNOWLEDGE_COVERAGE_AUDITOR_TASK_REMINDER_V1,
+      taskReminder: input.auditPass === "repair"
+        ? KNOWLEDGE_COVERAGE_AUDITOR_REPAIR_TASK_REMINDER_V1
+        : KNOWLEDGE_COVERAGE_AUDITOR_TASK_REMINDER_V1,
       version: 1
     })
   });
@@ -534,6 +561,8 @@ export function decodeKnowledgeCoverageAuditPromptV1(input: Readonly<{
   systemPrompt: string;
   userPrompt: string;
 }>): Readonly<{
+  auditPass: "initial" | "repair";
+  repairReason: KnowledgeCoverageAuditValidationFailureReason | null;
   selectorState: KnowledgeCoverageAuditSelectorStateV1 | null;
   supportedView: KnowledgeSupportedAnswerViewV1;
 }> | null {
@@ -545,7 +574,9 @@ export function decodeKnowledgeCoverageAuditPromptV1(input: Readonly<{
     return null;
   }
   if (!record(value) || !exactKeys(value, [
+    "auditPass",
     "evidenceManifest",
+    "repairReason",
     "request",
     "selectorState",
     "supportedView",
@@ -553,7 +584,13 @@ export function decodeKnowledgeCoverageAuditPromptV1(input: Readonly<{
     "version"
   ]) || value.evidenceManifest !== input.evidenceManifest ||
     value.request !== input.request || value.version !== 1 ||
-    value.taskReminder !== KNOWLEDGE_COVERAGE_AUDITOR_TASK_REMINDER_V1 ||
+    value.auditPass !== "initial" && value.auditPass !== "repair" ||
+    (value.auditPass === "repair") !==
+      isKnowledgeCoverageAuditValidationFailureReason(value.repairReason) ||
+    value.auditPass === "initial" && value.repairReason !== null ||
+    value.taskReminder !== (value.auditPass === "repair"
+      ? KNOWLEDGE_COVERAGE_AUDITOR_REPAIR_TASK_REMINDER_V1
+      : KNOWLEDGE_COVERAGE_AUDITOR_TASK_REMINDER_V1) ||
     knowledgeAnswerCanonicalJson(value) !== input.userPrompt) return null;
   const supportedView = decodeKnowledgeSupportedAnswerViewV1(
     value.supportedView,
@@ -565,5 +602,10 @@ export function decodeKnowledgeCoverageAuditPromptV1(input: Readonly<{
   if (!supportedView || selectorState !== null && !validSelectorState(selectorState)) {
     return null;
   }
-  return Object.freeze({ selectorState, supportedView });
+  return Object.freeze({
+    auditPass: value.auditPass,
+    repairReason: value.repairReason as KnowledgeCoverageAuditValidationFailureReason | null,
+    selectorState,
+    supportedView
+  });
 }

@@ -71,12 +71,14 @@ import {
   decodeKnowledgeCoverageAuditFailureV1,
   decodeKnowledgeCoverageAuditV1,
   deriveKnowledgeCoverageV1,
+  isKnowledgeCoverageAuditValidationFailureReason,
   knowledgeCoverageAuditFailureV1,
   knowledgeCoverageAuditMissingDimensionsV1,
   knowledgeCoverageAuditPromptV1,
   validateKnowledgeCoverageAuditV1,
   type KnowledgeCoverageAuditFailureReasonV1,
-  type KnowledgeCoverageAuditSelectorStateV1
+  type KnowledgeCoverageAuditSelectorStateV1,
+  type KnowledgeCoverageAuditValidationFailureReason
 } from "./coverageAuditV1";
 import {
   decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
@@ -563,52 +565,75 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     evidence,
     selector: selectorForAudit
   });
-  const auditPrompt = knowledgeCoverageAuditPromptV1({
-    evidence,
-    evidenceManifest: input.draft.message,
-    request: input.request,
-    ...(acceptedSelector ? { selectorState: selectorState(acceptedSelector) } : {}),
-    supportedView
-  });
-  const auditRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-    contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
-    evidenceReceiptHash: input.draft.manifestHash,
-    maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-    operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-    ...requestExecutionPolicy,
-    schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
-    systemPrompt: auditPrompt.systemPrompt,
-    transport: input.transport,
-    userPrompt: auditPrompt.userPrompt
-  });
-  const auditOrdinal = nextOrdinal;
-  const auditOperation = await acceptedOperation({
-    acceptedFailure: (error) => operationRecord(
-      knowledgeCoverageAuditFailureV1(auditFallbackReason(error))
-    ),
-    acceptedOutput: (output) => {
-      const validation = validateKnowledgeCoverageAuditV1(output, {
-        evidence,
-        request: input.request,
-        supportedView
-      });
-      return operationRecord(validation.kind === "accepted"
-        ? output
-        : knowledgeCoverageAuditFailureV1(validation.reason));
-    },
-    acceptedRequest: auditRequest,
-    authorize: input.authorize,
-    draft: input.draft,
-    evidenceBindings: input.evidenceBindings,
-    execute: input.execute,
-    lifecycle: input.lifecycle,
-    modelRunId: input.modelRunId,
-    operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-    ordinal: auditOrdinal,
-    recoveryProviderResponseId: input.recoveryProviderResponseIds?.[auditOrdinal],
-    shouldAbort: input.shouldAbort
-  });
-  pushOperation(auditOrdinal, KNOWLEDGE_COVERAGE_AUDITOR_OPERATION, auditOperation);
+  const executeAudit = async (
+    ordinal: OperationOrdinal,
+    auditPass: "initial" | "repair",
+    repairReason?: KnowledgeCoverageAuditValidationFailureReason
+  ) => {
+    const auditPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass,
+      evidence,
+      evidenceManifest: input.draft.message,
+      ...(repairReason ? { repairReason } : {}),
+      request: input.request,
+      ...(acceptedSelector ? { selectorState: selectorState(acceptedSelector) } : {}),
+      supportedView
+    });
+    const auditRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: KNOWLEDGE_COVERAGE_AUDITOR_CONTRACT_VERSION,
+      evidenceReceiptHash: input.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      ...requestExecutionPolicy,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+      systemPrompt: auditPrompt.systemPrompt,
+      transport: input.transport,
+      userPrompt: auditPrompt.userPrompt
+    });
+    const operation = await acceptedOperation({
+      acceptedFailure: (error) => operationRecord(
+        knowledgeCoverageAuditFailureV1(auditFallbackReason(error))
+      ),
+      acceptedOutput: (output) => {
+        const validation = validateKnowledgeCoverageAuditV1(output, {
+          evidence,
+          request: input.request,
+          supportedView
+        });
+        return operationRecord(validation.kind === "accepted"
+          ? output
+          : knowledgeCoverageAuditFailureV1(validation.reason));
+      },
+      acceptedRequest: auditRequest,
+      authorize: input.authorize,
+      draft: input.draft,
+      evidenceBindings: input.evidenceBindings,
+      execute: input.execute,
+      lifecycle: input.lifecycle,
+      modelRunId: input.modelRunId,
+      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      ordinal,
+      recoveryProviderResponseId: input.recoveryProviderResponseIds?.[ordinal],
+      shouldAbort: input.shouldAbort
+    });
+    pushOperation(ordinal, KNOWLEDGE_COVERAGE_AUDITOR_OPERATION, operation);
+    return operation;
+  };
+  let auditOrdinal: OperationOrdinal = nextOrdinal;
+  let auditOperation = await executeAudit(auditOrdinal, "initial");
+  const initialAuditFailure = decodeKnowledgeCoverageAuditFailureV1(
+    auditOperation.acceptedResult
+  );
+  if (initialAuditFailure &&
+    isKnowledgeCoverageAuditValidationFailureReason(initialAuditFailure.reason)) {
+    auditOrdinal = (auditOrdinal + 1) as OperationOrdinal;
+    if (auditOrdinal > 6) throw new Error("knowledge_answer_operation_limit_exceeded");
+    auditOperation = await executeAudit(
+      auditOrdinal,
+      "repair",
+      initialAuditFailure.reason
+    );
+  }
   if (decodeKnowledgeCoverageAuditFailureV1(auditOperation.acceptedResult)) {
     throw new Error("knowledge_coverage_audit_unaccepted");
   }
@@ -624,7 +649,8 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     ? 0
     : primaryDraft.claims.length;
   const correctionRequired = coverage.missingInformation.length > 0 &&
-    primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims;
+    primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims &&
+    auditOrdinal + 2 <= 6;
   if (!correctionRequired) {
     if (!acceptedSelector) {
       throw new Error("knowledge_grounded_selector_result_invalid");

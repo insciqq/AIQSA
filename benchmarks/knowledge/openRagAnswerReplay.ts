@@ -29,6 +29,9 @@ import {
   type KnowledgeAnswerOperationExecutionV21
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import {
+  decodeKnowledgeCoverageAuditFailureV1
+} from "../../lib/server/knowledge/coverageAuditV1";
+import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
@@ -328,16 +331,26 @@ export function isOpenRagAnswerOperationSequence(
     const pair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1;
     const base = [pair.draftOperation, pair.selectorOperation];
     const repaired = [...base, pair.selectorOperation];
-    return [base, repaired].some((prefix) => [
-      [...prefix, pair.coverageAuditorOperation],
-      [...prefix, pair.coverageAuditorOperation, pair.supplementalDraftOperation],
-      [
-        ...prefix,
-        pair.coverageAuditorOperation,
-        pair.supplementalDraftOperation,
-        pair.finalSelectorOperation
-      ]
-    ].some((candidate) => exactSequence(operations, candidate)));
+    const candidates = [base, repaired].flatMap((prefix) => [
+      [pair.coverageAuditorOperation],
+      [pair.coverageAuditorOperation, pair.coverageAuditorOperation]
+    ].flatMap((auditPasses) => {
+      const audited = [...prefix, ...auditPasses];
+      return [
+        audited,
+        ...(audited.length + 2 <= 6
+          ? [
+              [...audited, pair.supplementalDraftOperation],
+              [
+                ...audited,
+                pair.supplementalDraftOperation,
+                pair.finalSelectorOperation
+              ]
+            ]
+          : [])
+      ];
+    }));
+    return candidates.some((candidate) => exactSequence(operations, candidate));
   }
   return false;
 }
@@ -798,22 +811,40 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
     operations = result.operations;
     settlement = settleCapturedV20(snapshot, captured);
   } else {
-    const result = await executeKnowledgeAnswerGroundingV21({
-      authorize,
-      draft: snapshot.evidence,
-      evidenceBindings,
-      execute,
-      forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
-      lifecycle,
-      modelRunId,
-      ...(snapshot.executionPolicy
-        ? { executionPolicy: snapshot.executionPolicy }
-        : { reasoningEffort: snapshot.reasoningEffort }),
-      request: snapshot.request,
-      routeInstruction: snapshot.routeInstruction,
-      shouldAbort,
-      transport: snapshot.transport
-    });
+    let result: Awaited<ReturnType<typeof executeKnowledgeAnswerGroundingV21>>;
+    try {
+      result = await executeKnowledgeAnswerGroundingV21({
+        authorize,
+        draft: snapshot.evidence,
+        evidenceBindings,
+        execute,
+        forbiddenIdentityFragments: snapshot.forbiddenIdentityFragments,
+        lifecycle,
+        modelRunId,
+        ...(snapshot.executionPolicy
+          ? { executionPolicy: snapshot.executionPolicy }
+          : { reasoningEffort: snapshot.reasoningEffort }),
+        request: snapshot.request,
+        routeInstruction: snapshot.routeInstruction,
+        shouldAbort,
+        transport: snapshot.transport
+      });
+    } catch (error) {
+      const lastAudit = [...captured].reverse().find((operation) =>
+        operation.operation ===
+          KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.coverageAuditorOperation);
+      const acceptedAuditFailure = lastAudit
+        ? decodeKnowledgeCoverageAuditFailureV1(lastAudit.acceptedResult)
+        : null;
+      if (error instanceof Error &&
+        error.message === "knowledge_coverage_audit_unaccepted" &&
+        acceptedAuditFailure) {
+        throw new Error(`open_rag_replay_${acceptedAuditFailure.reason}`, {
+          cause: error
+        });
+      }
+      throw error;
+    }
     operations = result.operations;
     settlement = result.settlement;
   }

@@ -209,8 +209,10 @@ export type StoredKnowledgeAnswerGroundingOperations = Readonly<{
 
 export type StoredKnowledgeAnswerGroundingOperationsV21 = Readonly<{
   auditor: StoredKnowledgeEvidenceDispatch;
+  auditorRepair: StoredKnowledgeEvidenceDispatch | null;
   draft: StoredKnowledgeEvidenceDispatch;
   finalSelector: StoredKnowledgeEvidenceDispatch | null;
+  initialAuditor: StoredKnowledgeEvidenceDispatch;
   initialSelector: StoredKnowledgeEvidenceDispatch;
   selectorRepair: StoredKnowledgeEvidenceDispatch | null;
   supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
@@ -1348,10 +1350,10 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads one exact V21 answer protocol. The initial Selector purpose may occur
- * twice only when ordinal three is its single structural-repair pass. Audit
- * payload consumers must pin the Auditor result hash in their request
- * snapshots, so recovery cannot reinterpret or replace accepted dimensions. */
+/** Loads one exact V21 answer protocol. Selector and Auditor purposes may each
+ * occur twice only as their single adjacent structural-validation repair. Audit
+ * payload consumers pin the final accepted Auditor result hash, so recovery
+ * cannot reinterpret or replace accepted dimensions. */
 export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
   input: Readonly<{ modelRunId: string }>
@@ -1373,9 +1375,13 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17;
   const allowedSequences: readonly (readonly KnowledgeAnswerOperationV21[])[] = [
     [draft, selector, auditor],
+    [draft, selector, auditor, auditor],
     [draft, selector, auditor, supplement],
     [draft, selector, auditor, supplement, finalSelector],
+    [draft, selector, auditor, auditor, supplement],
+    [draft, selector, auditor, auditor, supplement, finalSelector],
     [draft, selector, selector, auditor],
+    [draft, selector, selector, auditor, auditor],
     [draft, selector, selector, auditor, supplement],
     [draft, selector, selector, auditor, supplement, finalSelector]
   ];
@@ -1401,11 +1407,22 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     canonicalJson(dispatch.draft) !== canonicalManifest)) {
     repositoryError("stored_manifest_invalid");
   }
-  const auditorIndex = purposeSequence.indexOf(auditor);
-  const auditorDispatch = dispatches[auditorIndex];
-  if (!auditorDispatch || auditorIndex < 2 || auditorIndex > 3) {
+  const auditorIndexes = purposeSequence.flatMap((purpose, index) =>
+    purpose === auditor ? [index] : []);
+  const initialAuditorIndex = auditorIndexes[0];
+  const auditorRepairIndex = auditorIndexes[1] ?? null;
+  const initialAuditorDispatch = initialAuditorIndex === undefined
+    ? undefined
+    : dispatches[initialAuditorIndex];
+  const auditorRepairDispatch = auditorRepairIndex === null
+    ? null
+    : dispatches[auditorRepairIndex] ?? null;
+  if (!initialAuditorDispatch || initialAuditorIndex < 2 || initialAuditorIndex > 3 ||
+    auditorIndexes.length < 1 || auditorIndexes.length > 2 ||
+    auditorRepairIndex !== null && auditorRepairIndex !== initialAuditorIndex + 1) {
     repositoryError("stored_manifest_invalid");
   }
+  const auditorDispatch = auditorRepairDispatch ?? initialAuditorDispatch;
   const auditPayloadHash = auditorDispatch.attempt.resultHash;
   if (!auditPayloadHash || dispatches.some((dispatch, index) => {
     const request = requests[index]!;
@@ -1423,8 +1440,10 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     attempt.purpose === finalSelector) ?? null;
   return deepFreeze({
     auditor: auditorDispatch,
+    auditorRepair: auditorRepairDispatch,
     draft: dispatches[0]!,
     finalSelector: finalSelectorDispatch,
+    initialAuditor: initialAuditorDispatch,
     initialSelector: selectorDispatches[0]!,
     selectorRepair: selectorDispatches[1] ?? null,
     supplementalDraft: supplementDispatch

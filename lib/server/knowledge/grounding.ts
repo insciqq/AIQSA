@@ -347,7 +347,8 @@ export type KnowledgeGroundingOperationEvidenceV17 = Readonly<{
   ordinal: 1 | 2 | 3 | 4 | 5 | 6;
   providerRequestId: string | null;
   purpose: KnowledgeAnswerOperationV21;
-  role: "auditor" | "final" | "initial" | "primary" | "repair" | "supplement";
+  role: "auditor" | "auditor_repair" | "final" | "initial" | "primary" |
+    "repair" | "supplement";
   usage: KnowledgeProviderAttemptUsage;
 }>;
 
@@ -1175,14 +1176,14 @@ function validGroundingOperationV17(
     ? KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
     : role === "initial" || role === "repair"
       ? KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17
-      : role === "auditor"
+      : role === "auditor" || role === "auditor_repair"
         ? KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
         : role === "supplement"
           ? KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
           : KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17;
   const contractVersion = role === "primary" || role === "supplement"
     ? 21
-    : role === "auditor"
+    : role === "auditor" || role === "auditor_repair"
       ? 1
       : 17;
   return operation.ordinal === ordinal && operation.role === role &&
@@ -1215,9 +1216,13 @@ export function groundSettledKnowledgeAnswerV17(input: Readonly<{
 }>): KnowledgeGroundingEvidenceV17 {
   const roleSequences: readonly (readonly KnowledgeGroundingOperationEvidenceV17["role"][])[] = [
     ["primary", "initial", "auditor"],
+    ["primary", "initial", "auditor", "auditor_repair"],
     ["primary", "initial", "auditor", "supplement"],
     ["primary", "initial", "auditor", "supplement", "final"],
+    ["primary", "initial", "auditor", "auditor_repair", "supplement"],
+    ["primary", "initial", "auditor", "auditor_repair", "supplement", "final"],
     ["primary", "initial", "repair", "auditor"],
+    ["primary", "initial", "repair", "auditor", "auditor_repair"],
     ["primary", "initial", "repair", "auditor", "supplement"],
     ["primary", "initial", "repair", "auditor", "supplement", "final"]
   ];
@@ -1226,7 +1231,8 @@ export function groundSettledKnowledgeAnswerV17(input: Readonly<{
     JSON.stringify(sequence) === JSON.stringify(roles));
   const operationsValid = validSequence && input.operations.every((operation, index) =>
     validGroundingOperationV17(operation, index + 1, roles[index]!));
-  const auditor = input.operations.find(({ role }) => role === "auditor");
+  const auditor = input.operations.find(({ role }) => role === "auditor_repair") ??
+    input.operations.find(({ role }) => role === "auditor");
   const correctionAttempted = roles.includes("supplement");
   const correctionSucceeded = roles.includes("final");
   const selectorRepairAttempted = roles.includes("repair");

@@ -54,6 +54,7 @@ import {
   KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
   KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+  knowledgeCoverageAuditFailureV1,
   knowledgeCoverageAuditPromptV1
 } from "./coverageAuditV1";
 
@@ -1254,6 +1255,7 @@ describe("Knowledge evidence dispatch repository", () => {
       selectorPass: "initial"
     });
     const auditPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "initial",
       evidence,
       evidenceManifest: currentManifest.message,
       request,
@@ -1297,7 +1299,11 @@ describe("Knowledge evidence dispatch repository", () => {
         userPrompt: auditPrompt.userPrompt
       })
     ] as const;
-    const results = [rawDraft, rawSelector, audit] as const;
+    const results = [
+      rawDraft,
+      rawSelector,
+      knowledgeCoverageAuditFailureV1("coverage_audit_shape_invalid")
+    ] as const;
     for (const [index, snapshot] of snapshots.entries()) {
       const ordinal = index + 1;
       const input: ReserveKnowledgeEvidenceDispatchInput = {
@@ -1346,13 +1352,90 @@ describe("Knowledge evidence dispatch repository", () => {
       modelRunId: "run-1"
     })).resolves.toMatchObject({
       auditor: { attempt: { purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } },
+      auditorRepair: null,
       draft: { attempt: { purpose: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } },
       finalSelector: null,
+      initialAuditor: {
+        attempt: { purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION }
+      },
       initialSelector: {
         attempt: { purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17 }
       },
       selectorRepair: null,
       supplementalDraft: null
+    });
+
+    const repairPrompt = knowledgeCoverageAuditPromptV1({
+      auditPass: "repair",
+      evidence,
+      evidenceManifest: currentManifest.message,
+      repairReason: "coverage_audit_shape_invalid",
+      request,
+      selectorState: {
+        contradictedClaimCount: 0,
+        selectedLiteralCount: 0,
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      },
+      supportedView
+    });
+    const repairSnapshot = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: 1,
+      evidenceReceiptHash: currentManifest.manifestHash,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
+      systemPrompt: repairPrompt.systemPrompt,
+      transport: "native_strict",
+      userPrompt: repairPrompt.userPrompt
+    });
+    const repairInput: ReserveKnowledgeEvidenceDispatchInput = {
+      acceptedRequest: repairSnapshot,
+      checkpointHash: "4".repeat(64),
+      contractVersion: repairSnapshot.contractVersion,
+      draft: currentManifest,
+      estimatedUsage: usage(),
+      evidenceBindings: [{
+        dispatchEvidenceId: "dispatch-evidence-1",
+        evidenceItemId: "evidence-item-1"
+      }],
+      evidenceReceiptHash: currentManifest.manifestHash,
+      idempotencyKey: "run:answer:v21:4",
+      leaseExpiresAt: LEASE,
+      leaseToken: "lease:worker:v21:4",
+      modelRunId: "run-1",
+      now: NOW,
+      ordinal: 4,
+      providerBindingKey: "answer",
+      purpose: repairSnapshot.operation,
+      requestHash: knowledgeAnswerHash(repairSnapshot),
+      retrievalSessionId: "session-1",
+      roundIndex: 0
+    };
+    const reservedRepair = await repository.reserve(repairInput);
+    const repairIdentity = identity(repairInput, reservedRepair.dispatch.attempt.id);
+    await repository.dispatch({
+      ...repairIdentity,
+      dispatchedAt: DISPATCHED,
+      leaseExpiresAt: DISPATCH_LEASE,
+      leaseToken: repairInput.leaseToken
+    });
+    await repository.settle({
+      ...repairIdentity,
+      acceptedResult: audit,
+      actualUsage: usage(),
+      leaseToken: repairInput.leaseToken,
+      providerResponseId: "provider-response-v21-4",
+      resultAcceptedAt: new Date("2026-08-19T10:01:30.000Z"),
+      resultHash: knowledgeAnswerHash(audit),
+      settledAt: SETTLED
+    });
+    await expect(loadSettledKnowledgeAnswerGroundingOperationsV21(fake.client, {
+      modelRunId: "run-1"
+    })).resolves.toMatchObject({
+      auditor: { attempt: { ordinal: 4 } },
+      auditorRepair: { attempt: { ordinal: 4 } },
+      initialAuditor: { attempt: { ordinal: 3 } }
     });
   });
 
