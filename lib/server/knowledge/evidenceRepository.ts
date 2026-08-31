@@ -24,6 +24,7 @@ import {
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
   groundSettledKnowledgeAnswerV17,
+  groundSettledKnowledgeAnswerV18,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -36,6 +37,7 @@ import {
   type KnowledgeGroundingEvidenceV15,
   type KnowledgeGroundingEvidenceV16,
   type KnowledgeGroundingEvidenceV17,
+  type KnowledgeGroundingEvidenceV18,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -1624,6 +1626,9 @@ export async function groundKnowledgeRunAnswerV21(
   if (!primaryRequest || !primaryPrompt) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
+  const requestExecutionPolicy = primaryRequest.version === 2
+    ? { executionPolicy: primaryRequest.executionPolicy }
+    : { reasoningEffort: primaryRequest.reasoningEffort };
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
     expected: ReturnType<typeof createKnowledgeAnswerOperationRequestSnapshotV21>
@@ -1643,7 +1648,7 @@ export async function groundKnowledgeRunAnswerV21(
     evidenceReceiptHash: operations.draft.draft.manifestHash,
     maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-    reasoningEffort: primaryRequest.reasoningEffort,
+    ...requestExecutionPolicy,
     schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
     systemPrompt: initialPrompt.systemPrompt,
     transport: primaryRequest.transport,
@@ -1688,7 +1693,7 @@ export async function groundKnowledgeRunAnswerV21(
       evidenceReceiptHash: operations.draft.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-      reasoningEffort: primaryRequest.reasoningEffort,
+      ...requestExecutionPolicy,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
       systemPrompt: repairPrompt.systemPrompt,
       transport: primaryRequest.transport,
@@ -1735,7 +1740,7 @@ export async function groundKnowledgeRunAnswerV21(
     evidenceReceiptHash: operations.draft.draft.manifestHash,
     maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-    reasoningEffort: primaryRequest.reasoningEffort,
+    ...requestExecutionPolicy,
     schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
     systemPrompt: auditPrompt.systemPrompt,
     transport: primaryRequest.transport,
@@ -1759,6 +1764,7 @@ export async function groundKnowledgeRunAnswerV21(
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
     ? 0
     : primaryDraft.claims.length;
+  let draftClaimCount = primaryClaimCount;
   const correctionRequired = coverage.missingInformation.length > 0 &&
     primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims;
   if (correctionRequired !== Boolean(operations.supplementalDraft)) {
@@ -1795,7 +1801,7 @@ export async function groundKnowledgeRunAnswerV21(
       evidenceReceiptHash: operations.draft.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      reasoningEffort: primaryRequest.reasoningEffort,
+      ...requestExecutionPolicy,
       schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
       systemPrompt: supplementPrompt.systemPrompt,
       transport: primaryRequest.transport,
@@ -1830,6 +1836,9 @@ export async function groundKnowledgeRunAnswerV21(
         primary: primaryDraft,
         supplement
       });
+      draftClaimCount = isKnowledgeDraftMalformed(finalDraft)
+        ? 0
+        : finalDraft.claims.length;
       const finalPrompt = knowledgeGroundedSelectorPromptV17({
         audit,
         draft: finalDraft,
@@ -1847,7 +1856,7 @@ export async function groundKnowledgeRunAnswerV21(
         evidenceReceiptHash: operations.draft.draft.manifestHash,
         maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
         operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
-        reasoningEffort: primaryRequest.reasoningEffort,
+        ...requestExecutionPolicy,
         schema: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
         systemPrompt: finalPrompt.systemPrompt,
         transport: primaryRequest.transport,
@@ -1893,6 +1902,15 @@ export async function groundKnowledgeRunAnswerV21(
     providerModelId: providerSnapshot.providerModelId,
     version: 1
   });
+  const answerBindingFingerprint = knowledgeAnswerHash({
+    bindingKey: "answer",
+    connectionId: providerSnapshot.connectionId,
+    credentialId: providerSnapshot.credentialId,
+    credentialVersionId: providerSnapshot.credentialVersionId,
+    providerFamily: providerSnapshot.providerFamily,
+    providerModelId: providerSnapshot.providerModelId,
+    version: 1
+  });
   const operationEvidence = operationDispatches.map((dispatch, index) => {
     if (!dispatch.attempt.dispatchedAt || !dispatch.attempt.settledAt ||
       !dispatch.attempt.resultHash || !dispatch.attempt.actualUsage ||
@@ -1929,7 +1947,7 @@ export async function groundKnowledgeRunAnswerV21(
       usage: dispatch.attempt.actualUsage
     });
   });
-  const grounding = groundSettledKnowledgeAnswerV17({
+  const groundingInput = {
     audit: {
       coveredDimensionCount: audit.dimensions.filter(
         ({ status }) => status === "covered"
@@ -1948,7 +1966,16 @@ export async function groundKnowledgeRunAnswerV21(
     providerPinFingerprint,
     selectorRepairSucceeded,
     settlement
-  });
+  } as const;
+  const grounding = primaryRequest.version === 2
+    ? groundSettledKnowledgeAnswerV18({
+        ...groundingInput,
+        answerBindingFingerprint,
+        draftClaimCount,
+        executionPolicy: primaryRequest.executionPolicy,
+        executionPolicyFingerprint: knowledgeAnswerHash(primaryRequest.executionPolicy)
+      })
+    : groundSettledKnowledgeAnswerV17(groundingInput);
   return Object.freeze({ grounding });
 }
 
@@ -1958,7 +1985,7 @@ function groundingEvidenceProjection(
     KnowledgeGroundingEvidenceV11 | KnowledgeGroundingEvidenceV12 |
     KnowledgeGroundingEvidenceV13 | KnowledgeGroundingEvidenceV14 |
     KnowledgeGroundingEvidenceV15 | KnowledgeGroundingEvidenceV16 |
-    KnowledgeGroundingEvidenceV17
+    KnowledgeGroundingEvidenceV17 | KnowledgeGroundingEvidenceV18
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

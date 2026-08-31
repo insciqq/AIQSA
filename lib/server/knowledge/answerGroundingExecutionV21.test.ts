@@ -19,6 +19,8 @@ import {
   decodeKnowledgeAnswerOperationRequestSnapshotV21
 } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV1";
+import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
+  "./groundingExecutionPolicy";
 
 const request = "Explain alpha and beta.";
 const usage = Object.freeze({
@@ -29,6 +31,16 @@ const usage = Object.freeze({
   reasoningTokens: 0,
   totalTokens: 15
 });
+const rolePolicy = Object.freeze({
+  auditorReasoningEffort: "high",
+  draftReasoningEffort: "low",
+  egressDestination: "answer_provider",
+  overriddenRoles: Object.freeze(["selector", "auditor", "supplement"]),
+  providerBindingKey: "answer",
+  selectorReasoningEffort: "medium",
+  supplementReasoningEffort: "medium",
+  version: 1
+} as const satisfies KnowledgeGroundingEffectiveExecutionPolicyV1);
 
 function manifest() {
   return packKnowledgeEvidenceDispatchManifest({
@@ -301,6 +313,43 @@ describe("V21 audited Knowledge answer execution", () => {
     expect(new Set(snapshots.map(({ evidenceReceiptHash }) => evidenceReceiptHash)).size)
       .toBe(1);
     expect(snapshots.every(({ auditPayloadHash }) => auditPayloadHash === null)).toBe(true);
+  });
+
+  it("freezes and applies one role policy across every corrected-path operation", async () => {
+    const recorder = lifecycleRecorder();
+    const execute = execution();
+    await executeKnowledgeAnswerGroundingV21({
+      ...pipelineInput(recorder.lifecycle, execute),
+      executionPolicy: rolePolicy,
+      reasoningEffort: undefined
+    });
+    expect(execute.mock.calls.map(([operation]) => operation.reasoningEffort)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "medium",
+      "medium"
+    ]);
+    const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
+      decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
+    expect(snapshots.every((snapshot) => snapshot.version === 2)).toBe(true);
+    expect(snapshots.every((snapshot) => snapshot.version === 2 &&
+      JSON.stringify(snapshot.executionPolicy) === JSON.stringify(rolePolicy))).toBe(true);
+    expect(decodeKnowledgeAnswerOperationRequestSnapshotV21({
+      ...snapshots[1],
+      reasoningEffort: "low"
+    })).toBeNull();
+  });
+
+  it("rejects a malformed or conflicting policy before dispatch preparation", async () => {
+    const recorder = lifecycleRecorder();
+    const execute = execution(true);
+    await expect(executeKnowledgeAnswerGroundingV21({
+      ...pipelineInput(recorder.lifecycle, execute),
+      executionPolicy: rolePolicy
+    })).rejects.toThrow("knowledge_grounding_execution_policy_invalid");
+    expect(recorder.prepare).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("marks an in-flight operation ambiguous and stops immediately on abort", async () => {

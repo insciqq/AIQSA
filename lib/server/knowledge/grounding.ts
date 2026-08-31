@@ -6,6 +6,7 @@ import {
 } from "./evidencePackage";
 import {
   knowledgeAnswerContractPairForVersions,
+  knowledgeAnswerHash,
   type KnowledgeAnswerContractVersions,
   type KnowledgeAnswerFallbackReason,
   type KnowledgeAnswerSettlementV5
@@ -19,7 +20,14 @@ import {
   type KnowledgeAnswerV21ContractVersions
 } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_AUDITOR_OPERATION } from "./coverageAuditV1";
-import type { KnowledgeProviderAttemptUsage } from "./evidenceDispatchRepository";
+import {
+  decodeKnowledgeProviderAttemptUsage,
+  type KnowledgeProviderAttemptUsage
+} from "./evidenceDispatchRepository";
+import {
+  decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
+  type KnowledgeGroundingEffectiveExecutionPolicyV1
+} from "./groundingExecutionPolicy";
 
 export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7 = 7 as const;
@@ -33,6 +41,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V14 = 14 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V15 = 15 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION = 16 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V17 = 17 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18 = 18 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -375,6 +384,17 @@ export type KnowledgeGroundingEvidenceV17 = Readonly<{
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V17;
 }>;
 
+export type KnowledgeGroundingEvidenceV18 = Omit<
+  KnowledgeGroundingEvidenceV17,
+  "version"
+> & Readonly<{
+  answerBindingFingerprint: string;
+  draftClaimCount: number;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  executionPolicyFingerprint: string;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -387,7 +407,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV14
   | KnowledgeGroundingEvidenceV15
   | KnowledgeGroundingEvidenceV16
-  | KnowledgeGroundingEvidenceV17;
+  | KnowledgeGroundingEvidenceV17
+  | KnowledgeGroundingEvidenceV18;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -1280,6 +1301,45 @@ export function groundSettledKnowledgeAnswerV17(input: Readonly<{
     supportedClaimCount: input.settlement.supportedClaimCount,
     unsupportedClaimCount: input.settlement.unsupportedClaimCount,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V17
+  });
+}
+
+/** V18 adds the exact role policy and answer-binding fingerprint used by new
+ * V21 operation snapshots. The V17 validator remains the single owner of the
+ * audited protocol and settlement invariants. */
+export function groundSettledKnowledgeAnswerV18(input: Parameters<
+  typeof groundSettledKnowledgeAnswerV17
+>[0] & Readonly<{
+  answerBindingFingerprint: string;
+  draftClaimCount: number;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  executionPolicyFingerprint: string;
+}>): KnowledgeGroundingEvidenceV18 {
+  const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(
+    input.executionPolicy
+  );
+  if (!executionPolicy ||
+    !/^[0-9a-f]{64}$/u.test(input.answerBindingFingerprint) ||
+    !/^[0-9a-f]{64}$/u.test(input.executionPolicyFingerprint) ||
+    input.executionPolicyFingerprint !== knowledgeAnswerHash(executionPolicy) ||
+    !Number.isSafeInteger(input.draftClaimCount) || input.draftClaimCount < 0 ||
+    input.draftClaimCount > 24 || input.operations.some((operation) => {
+      const usage = decodeKnowledgeProviderAttemptUsage(operation.usage);
+      return !usage || usage.inputTokens === null || usage.outputTokens === null;
+    })) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted Knowledge grounding policy evidence is invalid"
+    );
+  }
+  const legacy = groundSettledKnowledgeAnswerV17(input);
+  return Object.freeze({
+    ...legacy,
+    answerBindingFingerprint: input.answerBindingFingerprint,
+    draftClaimCount: input.draftClaimCount,
+    executionPolicy,
+    executionPolicyFingerprint: input.executionPolicyFingerprint,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18
   });
 }
 

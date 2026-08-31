@@ -1750,7 +1750,25 @@ describe("run recovery", () => {
     expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
   });
 
-  it("recovers V21 from its persisted first operation regardless of the disabled rollout", async () => {
+  it.each([{
+    executionPolicy: undefined,
+    expectedReasoningEfforts: [undefined, undefined],
+    snapshotVersion: 1
+  }, {
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: ["medium", "high"],
+    snapshotVersion: 2
+  }])("recovers persisted V21 snapshot V$snapshotVersion regardless of disabled rollout",
+    async ({ executionPolicy, expectedReasoningEfforts }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
     const dispatch = knowledgeProviderDispatchRecorder("dispatch");
     const acceptedDraft = {
@@ -1771,6 +1789,7 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      ...(executionPolicy ? { executionPolicy } : {}),
       schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
       systemPrompt: primaryPrompt.systemPrompt,
       transport: "provider_neutral_json",
@@ -1860,6 +1879,8 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(requests).toHaveLength(2);
+    expect(requests.map(({ params }) => params.reasoningEffort))
+      .toEqual(expectedReasoningEfforts);
     expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(2);
     expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
       contractVersion: 17,

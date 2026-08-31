@@ -95,6 +95,12 @@ import {
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
 import {
+  resolveKnowledgeGroundingExecutionPolicyV1,
+  type KnowledgeGroundingEffectiveExecutionPolicyV1
+} from "../knowledge/groundingExecutionPolicy";
+import { knowledgeGroundingProviderParams } from
+  "../knowledge/groundingProviderParams";
+import {
   type KnowledgeRunAdmissionAuthorizationSnapshot,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
@@ -2055,6 +2061,7 @@ async function recoverCheckpointedToolLoop(
         runId: run.id,
         seed: {
           draft: dispatchDraft,
+          modelCapabilities: run.normalizedRequest.modelCapabilities,
           reasoningEffort: typeof run.normalizedRequest.params.reasoningEffort === "string"
             ? run.normalizedRequest.params.reasoningEffort
             : null,
@@ -2898,7 +2905,9 @@ type LoadedRecoveryControl = NonNullable<Awaited<ReturnType<typeof loadRecoveryR
 type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
+  executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
   forbiddenIdentityFragments?: readonly string[];
+  modelCapabilities?: ProviderRunRequest["modelCapabilities"];
   reasoningEffort?: string | null;
   request: string;
   routeInstruction: string;
@@ -2965,7 +2974,9 @@ async function recoverKnowledgeAnswerGrounding(
         forbiddenIdentityFragments: input.draftDispatch.draft.items.map(
           (item) => item.evidenceId
         ),
-        reasoningEffort: draftRequest.reasoningEffort,
+        ...(draftRequest.version === 2
+          ? { executionPolicy: draftRequest.executionPolicy }
+          : { reasoningEffort: draftRequest.reasoningEffort }),
         request: prompt.request,
         routeInstruction: prompt.routeInstruction,
         transport: draftRequest.transport
@@ -3020,6 +3031,22 @@ async function recoverKnowledgeAnswerGrounding(
   } else {
     seed = input.seed;
     pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: input.runId });
+    if (pipeline === "v21_audit_v1") {
+      if (!seed.modelCapabilities) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The accepted Knowledge grounding policy cannot be reconstructed."
+        );
+      }
+      seed = Object.freeze({
+        ...seed,
+        executionPolicy: resolveKnowledgeGroundingExecutionPolicyV1({
+          inheritedReasoningEffort: seed.reasoningEffort,
+          modelCapabilities: seed.modelCapabilities
+        }),
+        reasoningEffort: undefined
+      });
+    }
   }
   const groundingUnavailable = !deps.knowledgeProviderDispatch ||
     (pipeline === "v21_audit_v1"
@@ -3067,7 +3094,10 @@ async function recoverKnowledgeAnswerGrounding(
         knowledgeFocusedRequest: undefined,
         mcp: undefined,
         mcpDiscovery: undefined,
-        params: { ...normalized.params, maxOutputTokens: operation.maxOutputTokens },
+        params: knowledgeGroundingProviderParams({
+          baseParams: normalized.params,
+          operation
+        }),
         personalContext: undefined,
         prompt: { developer: null, system: operation.systemPrompt },
         searchPlan: { mode: "all_selected", options: [] },
@@ -3079,10 +3109,10 @@ async function recoverKnowledgeAnswerGrounding(
     return {
       ...providerNeutralBase,
       content: textMessageContent(operation.userPrompt),
-      params: {
-        ...providerNeutralBase.params,
-        maxOutputTokens: operation.maxOutputTokens
-      },
+      params: knowledgeGroundingProviderParams({
+        baseParams: providerNeutralBase.params,
+        operation
+      }),
       prompt: { developer: null, system: operation.systemPrompt }
     };
   };
@@ -3208,7 +3238,9 @@ async function recoverKnowledgeAnswerGrounding(
     ],
     lifecycle: deps.knowledgeProviderDispatch,
     modelRunId: input.runId,
-    reasoningEffort: seed.reasoningEffort,
+    ...(seed.executionPolicy
+      ? { executionPolicy: seed.executionPolicy }
+      : { reasoningEffort: seed.reasoningEffort }),
     request: seed.request,
     routeInstruction: seed.routeInstruction,
     shouldAbort: () => input.signal.aborted,
@@ -3454,6 +3486,7 @@ async function refreshProviderRunOnceRegistered(
         seed: {
           draft: recovered.draft,
           evidenceBindings: recovered.evidenceBindings,
+          modelCapabilities: acceptedRequest.modelCapabilities,
           reasoningEffort: typeof acceptedRequest.params.reasoningEffort === "string"
             ? acceptedRequest.params.reasoningEffort
             : null,
@@ -3714,6 +3747,7 @@ async function refreshProviderRunOnceRegistered(
               source.sourceVersionId,
               source.sourceArtifactId
             ]),
+            modelCapabilities: acceptedRequest.modelCapabilities,
             reasoningEffort: typeof acceptedRequest.params.reasoningEffort === "string"
               ? acceptedRequest.params.reasoningEffort
               : null,

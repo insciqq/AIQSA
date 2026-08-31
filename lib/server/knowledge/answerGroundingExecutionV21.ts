@@ -75,6 +75,10 @@ import {
   type KnowledgeCoverageAuditFailureReasonV1,
   type KnowledgeCoverageAuditSelectorStateV1
 } from "./coverageAuditV1";
+import {
+  decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
+  type KnowledgeGroundingEffectiveExecutionPolicyV1
+} from "./groundingExecutionPolicy";
 
 export type KnowledgeAnswerOperationExecutionV21 = Readonly<{
   output: Readonly<Record<string, unknown>>;
@@ -358,6 +362,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   forbiddenIdentityFragments?: readonly string[];
   lifecycle: KnowledgeProviderDispatchLifecycle;
   modelRunId: string;
+  executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
   reasoningEffort?: string | null;
   recoveryProviderResponseIds?: Partial<Record<OperationOrdinal, string | null>>;
   request: string;
@@ -365,6 +370,16 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   shouldAbort(error: unknown): boolean;
   transport: "native_strict" | "provider_neutral_json";
 }>): Promise<KnowledgeAnswerGroundingExecutionV21Result> {
+  const executionPolicy = input.executionPolicy === undefined
+    ? null
+    : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
+  if (input.executionPolicy !== undefined && !executionPolicy ||
+    input.executionPolicy !== undefined && input.reasoningEffort !== undefined) {
+    throw new Error("knowledge_grounding_execution_policy_invalid");
+  }
+  const requestExecutionPolicy = executionPolicy
+    ? { executionPolicy }
+    : { reasoningEffort: input.reasoningEffort };
   const evidence = knowledgeSelectorEvidenceFromManifest(input.draft);
   const handles = evidence.map(({ handle }) => handle);
   const operations: Array<KnowledgeAnswerGroundingExecutionV21Result["operations"][number]> = [];
@@ -402,7 +417,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     evidenceReceiptHash: input.draft.manifestHash,
     maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-    reasoningEffort: input.reasoningEffort,
+    ...requestExecutionPolicy,
     schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
     systemPrompt: draftPrompt.systemPrompt,
     transport: input.transport,
@@ -459,7 +474,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       evidenceReceiptHash: input.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-      reasoningEffort: input.reasoningEffort,
+      ...requestExecutionPolicy,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -553,7 +568,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     evidenceReceiptHash: input.draft.manifestHash,
     maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-    reasoningEffort: input.reasoningEffort,
+    ...requestExecutionPolicy,
     schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V1,
     systemPrompt: auditPrompt.systemPrompt,
     transport: input.transport,
@@ -626,7 +641,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     evidenceReceiptHash: input.draft.manifestHash,
     maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-    reasoningEffort: input.reasoningEffort,
+    ...requestExecutionPolicy,
     schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
     systemPrompt: supplementPrompt.systemPrompt,
     transport: input.transport,
@@ -694,7 +709,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     evidenceReceiptHash: input.draft.manifestHash,
     maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
-    reasoningEffort: input.reasoningEffort,
+    ...requestExecutionPolicy,
     schema: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
     systemPrompt: finalPrompt.systemPrompt,
     transport: input.transport,

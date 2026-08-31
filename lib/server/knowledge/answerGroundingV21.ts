@@ -49,6 +49,12 @@ import {
   type KnowledgeCoverageAuditV1,
   type KnowledgeSupportedAnswerViewV1
 } from "./coverageAuditV1";
+import {
+  decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
+  knowledgeGroundingReasoningEffortForRoleV1,
+  type KnowledgeGroundingEffectiveExecutionPolicyV1,
+  type KnowledgeGroundingExecutionRole
+} from "./groundingExecutionPolicy";
 
 export type { KnowledgeSupportedAnswerViewV1 } from "./coverageAuditV1";
 
@@ -108,7 +114,7 @@ export type KnowledgeAnswerOperationV21 =
   | typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17
   | typeof KNOWLEDGE_COVERAGE_AUDITOR_OPERATION;
 
-export type KnowledgeAnswerOperationRequestSnapshotV21 = Readonly<{
+export type KnowledgeAnswerOperationRequestSnapshotV21V1 = Readonly<{
   auditPayloadHash: string | null;
   contractVersion: 1 | 17 | 21;
   evidenceReceiptHash: string;
@@ -124,6 +130,28 @@ export type KnowledgeAnswerOperationRequestSnapshotV21 = Readonly<{
   userPrompt: string;
   version: 1;
 }>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21V2 = Readonly<{
+  auditPayloadHash: string | null;
+  contractVersion: 1 | 17 | 21;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  maxOutputTokens: number;
+  name: KnowledgeAnswerOperationV21;
+  operation: KnowledgeAnswerOperationV21;
+  reasoningEffort: string | null;
+  schema: Readonly<Record<string, unknown>>;
+  schemaHash: string;
+  systemPrompt: string;
+  tools: "none";
+  transport: "native_strict" | "provider_neutral_json";
+  userPrompt: string;
+  version: 2;
+}>;
+
+export type KnowledgeAnswerOperationRequestSnapshotV21 =
+  | KnowledgeAnswerOperationRequestSnapshotV21V1
+  | KnowledgeAnswerOperationRequestSnapshotV21V2;
 
 export type KnowledgeGroundedSelectorFailureReasonV17 = Exclude<
   KnowledgeAnswerFallbackReason,
@@ -288,10 +316,27 @@ function v21OperationMetadata(operation: unknown): Readonly<{
   return null;
 }
 
+export function knowledgeAnswerOperationExecutionRoleV21(
+  operation: KnowledgeAnswerOperationV21
+): KnowledgeGroundingExecutionRole {
+  switch (operation) {
+    case KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21:
+      return "draft";
+    case KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21:
+      return "supplement";
+    case KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17:
+    case KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17:
+      return "selector";
+    case KNOWLEDGE_COVERAGE_AUDITOR_OPERATION:
+      return "auditor";
+  }
+}
+
 export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly<{
   auditPayloadHash?: string | null;
   contractVersion: 1 | 17 | 21;
   evidenceReceiptHash: string;
+  executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
   maxOutputTokens: number;
   operation: KnowledgeAnswerOperationV21;
   reasoningEffort?: string | null;
@@ -302,7 +347,12 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
 }>): KnowledgeAnswerOperationRequestSnapshotV21 {
   const metadata = v21OperationMetadata(input.operation);
   const auditPayloadHash = input.auditPayloadHash ?? null;
+  const executionPolicy = input.executionPolicy === undefined
+    ? null
+    : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
   if (!metadata || metadata.contractVersion !== input.contractVersion ||
+    input.executionPolicy !== undefined && !executionPolicy ||
+    input.executionPolicy !== undefined && input.reasoningEffort !== undefined ||
     knowledgeAnswerHash(metadata.schema) !== knowledgeAnswerHash(input.schema) ||
     metadata.requiresAuditPayload !== (auditPayloadHash !== null) ||
     auditPayloadHash !== null && !/^[0-9a-f]{64}$/u.test(auditPayloadHash) ||
@@ -319,22 +369,30 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
       (!input.reasoningEffort.trim() || input.reasoningEffort.length > 32)) {
     throw new Error("knowledge_answer_operation_request_invalid");
   }
-  const snapshot = Object.freeze({
+  const selectedReasoningEffort = executionPolicy
+    ? knowledgeGroundingReasoningEffortForRoleV1(
+        executionPolicy,
+        knowledgeAnswerOperationExecutionRoleV21(input.operation)
+      )
+    : input.reasoningEffort ?? null;
+  const snapshotBase = {
     auditPayloadHash,
     contractVersion: input.contractVersion,
     evidenceReceiptHash: input.evidenceReceiptHash,
     maxOutputTokens: input.maxOutputTokens,
     name: input.operation,
     operation: input.operation,
-    reasoningEffort: input.reasoningEffort ?? null,
+    reasoningEffort: selectedReasoningEffort,
     schema: input.schema,
     schemaHash: knowledgeAnswerHash(input.schema),
     systemPrompt: input.systemPrompt,
     tools: "none" as const,
     transport: input.transport,
-    userPrompt: input.userPrompt,
-    version: 1 as const
-  });
+    userPrompt: input.userPrompt
+  };
+  const snapshot: KnowledgeAnswerOperationRequestSnapshotV21 = executionPolicy
+    ? Object.freeze({ ...snapshotBase, executionPolicy, version: 2 as const })
+    : Object.freeze({ ...snapshotBase, version: 1 as const });
   if (Buffer.byteLength(knowledgeAnswerCanonicalJson(snapshot), "utf8") >
     KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES) {
     throw new Error("knowledge_answer_operation_request_invalid");
@@ -346,7 +404,8 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
   value: unknown
 ): KnowledgeAnswerOperationRequestSnapshotV21 | null {
   const metadata = record(value) ? v21OperationMetadata(value.operation) : null;
-  if (!record(value) || !exactKeys(value, [
+  if (!record(value) || value.version !== 1 && value.version !== 2 ||
+    !exactKeys(value, value.version === 1 ? [
     "version",
     "operation",
     "name",
@@ -361,7 +420,23 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
     "reasoningEffort",
     "evidenceReceiptHash",
     "auditPayloadHash"
-  ]) || value.version !== 1 || !metadata || value.name !== value.operation ||
+  ] : [
+    "version",
+    "operation",
+    "name",
+    "contractVersion",
+    "transport",
+    "tools",
+    "schema",
+    "schemaHash",
+    "systemPrompt",
+    "userPrompt",
+    "maxOutputTokens",
+    "reasoningEffort",
+    "evidenceReceiptHash",
+    "auditPayloadHash",
+    "executionPolicy"
+  ]) || !metadata || value.name !== value.operation ||
     value.contractVersion !== metadata.contractVersion ||
     value.transport !== "native_strict" && value.transport !== "provider_neutral_json" ||
     value.tools !== "none" || !record(value.schema) ||
@@ -387,7 +462,23 @@ export function decodeKnowledgeAnswerOperationRequestSnapshotV21(
         value.reasoningEffort.length > 32) ||
     Buffer.byteLength(knowledgeAnswerCanonicalJson(value), "utf8") >
       KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES) return null;
-  return Object.freeze(value as unknown as KnowledgeAnswerOperationRequestSnapshotV21);
+  if (value.version === 1) {
+    return Object.freeze(
+      value as unknown as KnowledgeAnswerOperationRequestSnapshotV21V1
+    );
+  }
+  const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(
+    value.executionPolicy
+  );
+  if (!executionPolicy || value.reasoningEffort !==
+    knowledgeGroundingReasoningEffortForRoleV1(
+      executionPolicy,
+      knowledgeAnswerOperationExecutionRoleV21(value.operation as KnowledgeAnswerOperationV21)
+    )) return null;
+  return Object.freeze({
+    ...value,
+    executionPolicy
+  } as unknown as KnowledgeAnswerOperationRequestSnapshotV21V2);
 }
 
 export const KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V21 = Object.freeze([
@@ -1141,7 +1232,9 @@ export function decodeKnowledgeAnswerDraftPrimaryPromptV21(input: Readonly<{
       evidenceReceiptHash: input.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      reasoningEffort: input.snapshot.reasoningEffort,
+      ...(input.snapshot.version === 2
+        ? { executionPolicy: input.snapshot.executionPolicy }
+        : { reasoningEffort: input.snapshot.reasoningEffort }),
       schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
       systemPrompt: prompt.systemPrompt,
       transport: input.snapshot.transport,
