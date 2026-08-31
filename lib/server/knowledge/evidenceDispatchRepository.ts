@@ -25,6 +25,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  isCurrentKnowledgeAnswerOperationSnapshotV21,
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_SCOPE_V5_OPERATION } from "./coverageScopeV5";
@@ -1447,7 +1448,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   if (dispatches.some((dispatch, index) =>
     dispatch.attempt.ordinal !== index + 1 ||
     dispatch.attempt.providerBindingKey !== "answer" || !terminal(dispatch) ||
-    !requests[index] || requests[index]!.version !== 5 ||
+    !requests[index] || !isCurrentKnowledgeAnswerOperationSnapshotV21(requests[index]!) ||
     requests[index]!.operation !== purposeSequence[index] ||
     requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
     canonicalJson(dispatch.draft) !== canonicalManifest)) {
@@ -1473,7 +1474,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const finalScopeIndex = scopeRepairIndex ?? initialScopeIndex;
   if (!coverageScopePayloadHash || dispatches.some((_dispatch, index) => {
     const request = requests[index]!;
-    if (request.version !== 5) return true;
+    if (!isCurrentKnowledgeAnswerOperationSnapshotV21(request)) return true;
     const consumesScope = index > finalScopeIndex;
     return consumesScope
       ? request.coverageScopePayloadHash !== coverageScopePayloadHash

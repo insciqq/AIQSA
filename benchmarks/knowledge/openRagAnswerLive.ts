@@ -17,7 +17,8 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
-  decodeKnowledgeAnswerOperationRequestSnapshotV21
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  isCurrentKnowledgeAnswerOperationSnapshotV21
 } from "../../lib/server/knowledge/answerGroundingV21";
 import {
   KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1
@@ -715,7 +716,8 @@ async function loadProductAnswer(input: Readonly<{
           snapshot: draftRequest
         })
       : null;
-    if (!draftRequest || draftRequest.version !== 3 || !decodedPrompt) {
+    if (!draftRequest || !isCurrentKnowledgeAnswerOperationSnapshotV21(draftRequest) ||
+      !decodedPrompt) {
       throw new Error("open_rag_answer_replay_prompt_invalid");
     }
     executionPolicy = draftRequest.executionPolicy;

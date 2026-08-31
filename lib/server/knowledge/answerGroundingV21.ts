@@ -103,6 +103,7 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_V17_CONTRACT_VERSION = 17 as const;
 export const KNOWLEDGE_ANSWER_DRAFT_V21_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_GROUNDED_SELECTOR_V17_PAYLOAD_VERSION = 1 as const;
 export const KNOWLEDGE_ANSWER_SETTLEMENT_V21_VERSION = 6 as const;
+export const KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21 = 5 as const;
 
 export type KnowledgeAnswerV21ContractVersions = Readonly<{
   coverageAuditorContractVersion: typeof KNOWLEDGE_COVERAGE_SCOPE_V5_CONTRACT_VERSION;
@@ -346,7 +347,7 @@ export type KnowledgeAnswerOperationRequestSnapshotV21V5 = Readonly<{
   tools: "none";
   transport: "native_strict" | "provider_neutral_json";
   userPrompt: string;
-  version: 5;
+  version: typeof KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21;
 }>;
 
 export type KnowledgeAnswerOperationRequestSnapshotV21 =
@@ -355,6 +356,12 @@ export type KnowledgeAnswerOperationRequestSnapshotV21 =
   | KnowledgeAnswerOperationRequestSnapshotV21V3
   | KnowledgeAnswerOperationRequestSnapshotV21V4
   | KnowledgeAnswerOperationRequestSnapshotV21V5;
+
+export function isCurrentKnowledgeAnswerOperationSnapshotV21(
+  value: KnowledgeAnswerOperationRequestSnapshotV21
+): value is KnowledgeAnswerOperationRequestSnapshotV21V5 {
+  return value.version === KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21;
+}
 
 export type KnowledgeGroundedSelectorFailureReasonV17 = Exclude<
   KnowledgeAnswerFallbackReason,
@@ -741,7 +748,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
           name: input.operation as KnowledgeAnswerOperationScopeV5,
           operation: input.operation as KnowledgeAnswerOperationScopeV5,
           pipeline: "scope_v5" as const,
-          version: 5 as const
+          version: KNOWLEDGE_ANSWER_OPERATION_SNAPSHOT_CURRENT_VERSION_V21
         })
       : scopeProtocol === "scope_v4"
       ? Object.freeze({

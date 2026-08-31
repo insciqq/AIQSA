@@ -23,7 +23,8 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-  decodeKnowledgeAnswerOperationRequestSnapshotV21
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  isCurrentKnowledgeAnswerOperationSnapshotV21
 } from "./answerGroundingV21";
 import {
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
@@ -838,9 +839,9 @@ describe("V21 sparse unit-map Coverage Scope execution", () => {
     });
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(snapshots.every(({ version }) => version === 5)).toBe(true);
+    expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(true));
-    expect(snapshots.map((snapshot) => snapshot.version === 5
+    expect(snapshots.map((snapshot) => isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot)
       ? snapshot.coverageScopePayloadHash
       : null)).toEqual([null, null, acceptedScopeHash]);
     const scopePayload = JSON.parse(snapshots[1]!.userPrompt) as Record<string, unknown>;
@@ -869,7 +870,8 @@ describe("V21 sparse unit-map Coverage Scope execution", () => {
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(false));
-    expect(snapshots.slice(2).every((snapshot) => snapshot.version === 5 &&
+    expect(snapshots.slice(2).every((snapshot) =>
+      isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 
@@ -917,7 +919,8 @@ describe("V21 sparse unit-map Coverage Scope execution", () => {
       selectorPass: "repair"
     });
     const acceptedScopeHash = knowledgeAnswerHash(scopeOutput(false));
-    expect(snapshots.slice(3).every((snapshot) => snapshot.version === 5 &&
+    expect(snapshots.slice(3).every((snapshot) =>
+      isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 });
