@@ -22,6 +22,7 @@ import {
 } from "../../lib/server/knowledge/answerGroundingExecutionV5";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
+  KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
   type KnowledgeAnswerOperationRequestSnapshotV21
 } from "../../lib/server/knowledge/answerGroundingV21";
 import {
@@ -532,7 +533,8 @@ export function decodeOpenRagAnswerReplaySnapshot(
   if (value.executionPolicy !== null && !executionPolicy ||
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
-    pipeline === "v21_scope_v6" && (engine.groundingEvidenceVersion !== 22 ||
+    pipeline === "v21_scope_v6" && (engine.groundingEvidenceVersion !== 23 ||
+      engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==
       contracts.coverageAuditorContractVersion ||

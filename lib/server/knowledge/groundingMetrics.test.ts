@@ -3,7 +3,8 @@ import type {
   KnowledgeGroundingEvidenceV18,
   KnowledgeGroundingEvidenceV19,
   KnowledgeGroundingEvidenceV21,
-  KnowledgeGroundingEvidenceV22
+  KnowledgeGroundingEvidenceV22,
+  KnowledgeGroundingEvidenceV23
 } from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
@@ -193,6 +194,13 @@ function evidenceV22(durationMs: number): KnowledgeGroundingEvidenceV22 {
   } as unknown as KnowledgeGroundingEvidenceV22;
 }
 
+function evidenceV23(durationMs: number): KnowledgeGroundingEvidenceV23 {
+  return {
+    ...evidenceV22(durationMs),
+    version: 23
+  } as unknown as KnowledgeGroundingEvidenceV23;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
     const metrics = aggregateKnowledgeGroundingMetrics([
@@ -236,23 +244,24 @@ describe("Knowledge grounding operational metrics", () => {
     expect(serialized).not.toContain(hash);
   });
 
-  it("loads only structurally valid V18-V22 metric receipts", async () => {
+  it("loads only structurally valid V18-V23 metric receipts", async () => {
     const findMany = async (query: unknown) => {
       expect(query).toMatchObject({
-        where: { version: { in: [18, 19, 20, 21, 22] } }
+        where: { version: { in: [18, 19, 20, 21, 22, 23] } }
       });
       return [
         { evidence: evidence(100) },
         { evidence: evidenceV19(100) },
         { evidence: evidenceV21(100) },
         { evidence: evidenceV22(100) },
+        { evidence: evidenceV23(100) },
         { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
       ];
     };
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
     } as never, { limit: 5 });
-    expect(metrics.answers).toBe(4);
-    expect(metrics.modelOperations).toBe(12);
+    expect(metrics.answers).toBe(5);
+    expect(metrics.modelOperations).toBe(15);
   });
 });

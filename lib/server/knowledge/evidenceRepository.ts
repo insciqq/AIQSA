@@ -23,7 +23,7 @@ import {
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
-  groundSettledKnowledgeAnswerV22,
+  groundSettledKnowledgeAnswerV23,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -41,6 +41,7 @@ import {
   type KnowledgeGroundingEvidenceV20,
   type KnowledgeGroundingEvidenceV21,
   type KnowledgeGroundingEvidenceV22,
+  type KnowledgeGroundingEvidenceV23,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -101,20 +102,29 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
-  decodeKnowledgeAnswerDraftSupplementV21,
   decodeKnowledgeAnswerDraftV21,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
   isCurrentKnowledgeAnswerOperationSnapshotV21,
-  knowledgeAnswerDraftPromptV21,
-  mergeKnowledgeAnswerDraftsV21,
   settleKnowledgeAnswerV21FromFinalSelector
 } from "./answerGroundingV21";
+import {
+  KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
+  decodeKnowledgeTargetedSupplementFailureV1,
+  decodeKnowledgeTargetedSupplementV1,
+  knowledgeTargetableMissingDimensionsV1,
+  knowledgeTargetedSupplementFitsV1,
+  mergeKnowledgeGroundedCorrectionV1,
+  mergeKnowledgeTargetedSupplementV1
+} from "./answerGroundingCorrectionV21";
+import {
+  knowledgeAnswerTargetedSupplementPromptV1,
+  knowledgeGroundedDeltaSelectorPromptV1
+} from "./answerGroundingCorrectionPromptV21";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
@@ -135,7 +145,6 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
   decodeKnowledgeGroundedSelectorFailureV21,
   decodeKnowledgeGroundedSelectorV21,
-  deriveKnowledgeCoverageV6,
   knowledgeCoverageMissingDimensionsV6,
   knowledgeGroundedSelectorPromptV21
 } from "./answerGroundingSelectorV21";
@@ -1615,7 +1624,7 @@ export async function groundKnowledgeRunAnswerV21(
   }
   const requestExecutionPolicy = {
     executionPolicy: primaryRequest.executionPolicy,
-    protocol: "scope_v6" as const
+    protocol: "scope_v6_targeted_delta_v1" as const
   };
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
@@ -1799,13 +1808,18 @@ export async function groundKnowledgeRunAnswerV21(
     throw new Error("knowledge_grounded_selector_result_invalid");
   }
   const initialSelectorPayloadHash = acceptedInitialSelector.attempt.resultHash;
-  const coverage = deriveKnowledgeCoverageV6(acceptedSelector);
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
     ? 0
     : primaryDraft.claims.length;
   let draftClaimCount = primaryClaimCount;
-  const correctionRequired = coverage.missingInformation.length > 0 &&
-    primaryClaimCount < KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims &&
+  const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector);
+  const targetableMissingDimensions = knowledgeTargetableMissingDimensionsV1(
+    missingDimensions
+  );
+  const correctionRequired = knowledgeTargetedSupplementFitsV1({
+    primaryClaimCount,
+    targetableDimensionCount: targetableMissingDimensions.length
+  }) &&
     acceptedInitialSelector.attempt.ordinal + 2 <= 6;
   if (correctionRequired !== Boolean(operations.supplementalDraft)) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
@@ -1821,10 +1835,8 @@ export async function groundKnowledgeRunAnswerV21(
       selector: acceptedSelector
     });
   } else {
-    const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector);
-    const supplementPrompt = knowledgeAnswerDraftPromptV21({
-      auditDimensions: missingDimensions,
-      draftPass: "supplement",
+    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV1({
+      auditDimensions: targetableMissingDimensions,
       evidenceManifest: operations.draft.draft.message,
       primaryDraft,
       request: primaryPrompt.request,
@@ -1840,7 +1852,7 @@ export async function groundKnowledgeRunAnswerV21(
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
       ...requestExecutionPolicy,
-      schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
+      schema: KNOWLEDGE_ANSWER_TARGETED_SUPPLEMENT_SCHEMA_V1,
       systemPrompt: supplementPrompt.systemPrompt,
       transport: primaryRequest.transport,
       userPrompt: supplementPrompt.userPrompt
@@ -1848,14 +1860,27 @@ export async function groundKnowledgeRunAnswerV21(
     if (!exactRequest(supplementRequest, expectedSupplementRequest)) {
       throw new Error("knowledge_answer_operation_snapshot_conflict");
     }
-    const supplement = decodeKnowledgeAnswerDraftMalformed(
+    const malformedSupplement = decodeKnowledgeAnswerDraftMalformed(
       operations.supplementalDraft.attempt.acceptedResult
-    ) ?? decodeKnowledgeAnswerDraftSupplementV21(
-      operations.supplementalDraft.attempt.acceptedResult,
-      { availableHandles: handles, forbiddenIdentityFragments }
     );
-    if (!supplement) throw new Error("knowledge_answer_draft_result_invalid");
-    if (isKnowledgeDraftMalformed(supplement)) {
+    const targetedSupplementFailure = decodeKnowledgeTargetedSupplementFailureV1(
+      operations.supplementalDraft.attempt.acceptedResult
+    );
+    const supplement = malformedSupplement || targetedSupplementFailure
+      ? null
+      : decodeKnowledgeTargetedSupplementV1(
+          operations.supplementalDraft.attempt.acceptedResult,
+          {
+            availableHandles: handles,
+            forbiddenIdentityFragments,
+            missingDimensions,
+            primaryDraft
+          }
+        );
+    if (!malformedSupplement && !targetedSupplementFailure && !supplement) {
+      throw new Error("knowledge_answer_draft_result_invalid");
+    }
+    if (malformedSupplement || targetedSupplementFailure) {
       if (operations.finalSelector) {
         throw new Error("knowledge_grounded_selector_result_invalid");
       }
@@ -1868,20 +1893,20 @@ export async function groundKnowledgeRunAnswerV21(
       if (!operations.finalSelector) {
         throw new Error("knowledge_answer_operation_snapshot_conflict");
       }
-      const finalDraft = mergeKnowledgeAnswerDraftsV21({
-        primary: primaryDraft,
-        supplement
+      const merged = mergeKnowledgeTargetedSupplementV1({
+        primaryDraft,
+        supplement: supplement!
       });
-      draftClaimCount = isKnowledgeDraftMalformed(finalDraft)
-        ? 0
-        : finalDraft.claims.length;
-      const finalPrompt = knowledgeGroundedSelectorPromptV21({
+      const finalDraft = merged.draft;
+      draftClaimCount = finalDraft.claims.length;
+      const finalPrompt = knowledgeGroundedDeltaSelectorPromptV1({
+        bindings: merged.bindings,
         draft: finalDraft,
         evidence,
         evidenceManifest: operations.draft.draft.message,
+        initialSelector: acceptedSelector,
         request: primaryPrompt.request,
-        scope,
-        selectorPass: "final"
+        scope
       });
       const finalRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
         operations.finalSelector.attempt.acceptedRequest
@@ -1907,10 +1932,16 @@ export async function groundKnowledgeRunAnswerV21(
         { draft: finalDraft, evidence, request: primaryPrompt.request, scope }
       );
       if (!finalSelector) throw new Error("knowledge_grounded_selector_result_invalid");
+      const correctedSelector = mergeKnowledgeGroundedCorrectionV1({
+        bindings: merged.bindings,
+        finalSelector,
+        initialSelector: acceptedSelector,
+        primaryClaimCount
+      });
       settlement = settleKnowledgeAnswerV21FromFinalSelector({
         draft: finalDraft,
         evidence,
-        selector: finalSelector
+        selector: correctedSelector
       });
     }
   }
@@ -2013,7 +2044,7 @@ export async function groundKnowledgeRunAnswerV21(
     selectorRepairSucceeded,
     settlement
   } as const;
-  const grounding = groundSettledKnowledgeAnswerV22(groundingInput);
+  const grounding = groundSettledKnowledgeAnswerV23(groundingInput);
   return Object.freeze({ grounding });
 }
 
@@ -2025,7 +2056,8 @@ function groundingEvidenceProjection(
     KnowledgeGroundingEvidenceV15 | KnowledgeGroundingEvidenceV16 |
     KnowledgeGroundingEvidenceV17 | KnowledgeGroundingEvidenceV18 |
     KnowledgeGroundingEvidenceV19 | KnowledgeGroundingEvidenceV20 |
-    KnowledgeGroundingEvidenceV21 | KnowledgeGroundingEvidenceV22
+    KnowledgeGroundingEvidenceV21 | KnowledgeGroundingEvidenceV22 |
+    KnowledgeGroundingEvidenceV23
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

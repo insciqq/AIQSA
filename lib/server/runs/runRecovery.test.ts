@@ -317,7 +317,7 @@ function recoveredKnowledgeV21Finalization(finalText = "Recovered audited answer
       sessionId: "evidence-session-v21",
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
-      version: 22 as const
+      version: 23 as const
     }
   };
 }
@@ -1831,6 +1831,20 @@ describe("run recovery", () => {
     expectedReasoningEfforts: [],
     snapshotVersion: 5
   }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 6
+  }, {
     current: true,
     executionPolicy: {
       auditorReasoningEffort: "high",
@@ -1843,7 +1857,7 @@ describe("run recovery", () => {
       version: 1
     } as const,
     expectedReasoningEfforts: ["high", "medium"],
-    snapshotVersion: 6
+    snapshotVersion: 7
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -1866,7 +1880,12 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 6
+      ...(snapshotVersion === 7
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: "scope_v6_targeted_delta_v1" as const
+          }
+        : snapshotVersion === 6
         ? { executionPolicy: executionPolicy!, protocol: "scope_v6" as const }
         : snapshotVersion === 5
           ? { executionPolicy: executionPolicy!, protocol: "scope_v5" as const }
@@ -1932,7 +1951,7 @@ describe("run recovery", () => {
             requests.push(request);
             return {
               ...providerResult,
-              finalText: JSON.stringify(snapshotVersion === 6 && requests.length === 1
+              finalText: JSON.stringify(snapshotVersion === 7 && requests.length === 1
                 ? {
                     evidenceUnits: [{
                       findings: [{
@@ -1946,7 +1965,7 @@ describe("run recovery", () => {
                     unsupportedDimensions: [],
                     version: 6
                   }
-                : snapshotVersion === 6
+                : snapshotVersion === 7
                   ? {
                       claims: [{
                         id: "C1",
