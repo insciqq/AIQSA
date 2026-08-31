@@ -31,7 +31,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+  KNOWLEDGE_ANSWER_V21_AUDIT_V2_CONTRACT_VERSIONS,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
@@ -58,8 +58,9 @@ import {
   validateKnowledgeGroundedSelectorFinalV17,
   validateKnowledgeGroundedSelectorV17,
   type KnowledgeAnswerOperationRequestSnapshotV21,
+  type KnowledgeAnswerOperationAuditV2,
   type KnowledgeAnswerOperationV21,
-  type KnowledgeAnswerV21ContractVersions,
+  type KnowledgeAnswerV21AuditV2ContractVersions,
   type KnowledgeGroundedSelectorFailureReasonV17,
   type KnowledgeGroundedSelectorV17
 } from "./answerGroundingV21";
@@ -95,10 +96,10 @@ export type KnowledgeAnswerOperationExecutionOptionsV21 = Readonly<{
   providerResponseId: string | null;
 }>;
 
-export type KnowledgeAnswerGroundingExecutionV21Result = Readonly<{
-  contracts: KnowledgeAnswerV21ContractVersions;
+export type KnowledgeAnswerGroundingExecutionV21AuditV2Result = Readonly<{
+  contracts: KnowledgeAnswerV21AuditV2ContractVersions;
   operations: readonly Readonly<{
-    operation: KnowledgeAnswerOperationV21;
+    operation: KnowledgeAnswerOperationAuditV2;
     ordinal: 1 | 2 | 3 | 4 | 5 | 6;
     providerResponseId: string | null;
     usage: ModelRunUsage;
@@ -106,8 +107,10 @@ export type KnowledgeAnswerGroundingExecutionV21Result = Readonly<{
   settlement: KnowledgeAnswerSettlementV5;
 }>;
 
-type OperationAcceptedResult = Readonly<Record<string, unknown>>;
-type OperationOrdinal = 1 | 2 | 3 | 4 | 5 | 6;
+export type OperationAcceptedResultV21 = Readonly<Record<string, unknown>>;
+export type OperationOrdinalV21 = 1 | 2 | 3 | 4 | 5 | 6;
+type OperationAcceptedResult = OperationAcceptedResultV21;
+type OperationOrdinal = OperationOrdinalV21;
 
 const zeroUsage: ModelRunUsage = Object.freeze({
   cachedInputTokens: 0,
@@ -175,7 +178,7 @@ function auditFallbackReason(error: unknown): KnowledgeCoverageAuditFailureReaso
   return "coverage_audit_provider_error";
 }
 
-async function acceptedOperation(input: Readonly<{
+export async function acceptedOperation(input: Readonly<{
   acceptedFailure(error: unknown): OperationAcceptedResult;
   acceptedOutput(output: Readonly<Record<string, unknown>>): OperationAcceptedResult;
   acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21;
@@ -357,7 +360,7 @@ function selectorState(
  * coverage correction may add Supplement and Final Selector; all operations
  * reuse the same immutable evidence receipt and the total is capped at six.
  */
-export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
+export async function executeKnowledgeAnswerGroundingV21AuditV2(input: Readonly<{
   authorize(): Promise<void>;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
@@ -375,7 +378,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
   transport: "native_strict" | "provider_neutral_json";
-}>): Promise<KnowledgeAnswerGroundingExecutionV21Result> {
+}>): Promise<KnowledgeAnswerGroundingExecutionV21AuditV2Result> {
   const executionPolicy = input.executionPolicy === undefined
     ? null
     : decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
@@ -388,10 +391,12 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     : { reasoningEffort: input.reasoningEffort };
   const evidence = knowledgeSelectorEvidenceFromManifest(input.draft);
   const handles = evidence.map(({ handle }) => handle);
-  const operations: Array<KnowledgeAnswerGroundingExecutionV21Result["operations"][number]> = [];
+  const operations: Array<
+    KnowledgeAnswerGroundingExecutionV21AuditV2Result["operations"][number]
+  > = [];
   const pushOperation = (
     ordinal: OperationOrdinal,
-    operation: KnowledgeAnswerOperationV21,
+    operation: KnowledgeAnswerOperationAuditV2,
     result: Readonly<{
       providerResponseId: string | null;
       usage: ModelRunUsage;
@@ -409,8 +414,8 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   };
   const result = (
     settlement: KnowledgeAnswerSettlementV5
-  ): KnowledgeAnswerGroundingExecutionV21Result => Object.freeze({
-    contracts: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+  ): KnowledgeAnswerGroundingExecutionV21AuditV2Result => Object.freeze({
+    contracts: KNOWLEDGE_ANSWER_V21_AUDIT_V2_CONTRACT_VERSIONS,
     operations: Object.freeze([...operations]),
     settlement
   });

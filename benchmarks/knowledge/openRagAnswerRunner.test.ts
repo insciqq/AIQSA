@@ -438,18 +438,18 @@ describe("OpenRAG answer fail-fast schedule", () => {
     expect(checkpoint.outcomes.size).toBe(0);
   });
 
-  it("accepts the six-operation V21 repair and correction sequence", async () => {
+  it("accepts the six-operation V21 Scope repair and correction sequence", async () => {
     const cases = [benchmarkCase(1)];
     const legacyManifest = manifest(cases);
     const runManifest = manifest(cases, {
       engine: {
         ...legacyManifest.engine,
-        coverageAuditorContractVersion: 2,
+        coverageAuditorContractVersion: 3,
         draftContractVersion: 21,
-        groundingEvidenceVersion: 18,
+        groundingEvidenceVersion: 19,
         pipelineVersion:
-          "knowledge_answer_draft_v21_selector_v17_auditor_v2_settlement_v6",
-        selectorContractVersion: 17,
+          "knowledge_answer_draft_v21_scope_v3_selector_v18_settlement_v6",
+        selectorContractVersion: 18,
         settlementVersion: 6
       }
     });
@@ -464,11 +464,11 @@ describe("OpenRAG answer fail-fast schedule", () => {
       });
       const sequence = [
         "knowledge_answer_draft_v21",
-        "knowledge_grounded_selector_v17",
-        "knowledge_coverage_auditor_v2",
-        "knowledge_coverage_auditor_v2",
+        "knowledge_coverage_scope_v3",
+        "knowledge_coverage_scope_v3",
+        "knowledge_grounded_selector_v18",
         "knowledge_answer_draft_supplement_v21",
-        "knowledge_grounded_selector_final_v17"
+        "knowledge_grounded_selector_final_v18"
       ];
       return {
         ...product,
@@ -477,9 +477,9 @@ describe("OpenRAG answer fail-fast schedule", () => {
         replaySnapshot: {
           ...product.replaySnapshot,
           contracts: {
-            coverageAuditorContractVersion: 2,
+            coverageAuditorContractVersion: 3,
             draftContractVersion: 21,
-            selectorContractVersion: 17,
+            selectorContractVersion: 18,
             settlementVersion: 6
           }
         },

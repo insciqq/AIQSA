@@ -136,11 +136,12 @@ function v21Origin() {
     ...legacy,
     engine: Object.freeze({
       ...legacy.engine,
-      coverageAuditorContractVersion: 2,
+      coverageAuditorContractVersion: 3,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 18,
-      pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v2_settlement_v6",
-      selectorContractVersion: 17,
+      groundingEvidenceVersion: 19,
+      pipelineVersion:
+        "knowledge_answer_draft_v21_scope_v3_selector_v18_settlement_v6",
+      selectorContractVersion: 18,
       settlementVersion: 6
     })
   });
@@ -280,7 +281,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V21 Draft, Selector, Auditor path over frozen evidence", async () => {
+  it("runs the current V21 Draft, blind Scope, Selector path over frozen evidence", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -306,23 +307,23 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 1
         };
       }
-      if (request.name === "knowledge_grounded_selector_v17") {
+      if (request.name === "knowledge_coverage_scope_v3") {
         return {
-          claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-          extractIds: [],
-          insufficientReason: "not_applicable",
-          version: 1
+          scope: [{
+            description: "State the completed-export retention period.",
+            evidenceHandles: ["K1"],
+            id: "D1",
+            requestAnchor: "How long are completed exports retained?"
+          }],
+          version: 3
         };
       }
       return {
+        claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
         coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
-        scope: [{
-          description: "State the completed-export retention period.",
-          evidenceHandles: ["K1"],
-          id: "D1",
-          requestAnchor: "How long are completed exports retained?"
-        }],
-        version: 2
+        extractIds: [],
+        insufficientReason: "not_applicable",
+        version: 1
       };
     });
 
@@ -333,14 +334,14 @@ describe("OpenRAG frozen-evidence replay", () => {
 
     expect(executeStructuredOutput.mock.calls.map(([, request]) => request.name)).toEqual([
       "knowledge_answer_draft_v21",
-      "knowledge_grounded_selector_v17",
-      "knowledge_coverage_auditor_v2"
+      "knowledge_coverage_scope_v3",
+      "knowledge_grounded_selector_v18"
     ]);
     expect(result).toMatchObject({
       contracts: {
-        coverageAuditorContractVersion: 2,
+        coverageAuditorContractVersion: 3,
         draftContractVersion: 21,
-        selectorContractVersion: 17,
+        selectorContractVersion: 18,
         settlementVersion: 6
       },
       coverage: "complete",
@@ -351,7 +352,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "low")).toBe(false);
   });
 
-  it("re-asks one structurally invalid V21 Auditor result with unchanged evidence", async () => {
+  it("re-asks one structurally invalid blind Scope with unchanged evidence", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -367,7 +368,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
       transport: "native_strict"
     });
-    let auditCalls = 0;
+    let scopeCalls = 0;
     const executeStructuredOutput = vi.fn(async (_execution, request) => {
       if (request.name === "knowledge_answer_draft_v21") {
         return {
@@ -378,24 +379,24 @@ describe("OpenRAG frozen-evidence replay", () => {
           version: 1
         };
       }
-      if (request.name === "knowledge_grounded_selector_v17") {
+      if (request.name === "knowledge_coverage_scope_v3") {
+        if (scopeCalls++ === 0) return {};
         return {
-          claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-          extractIds: [],
-          insufficientReason: "not_applicable",
-          version: 1
+          scope: [{
+            description: "State the completed-export retention period.",
+            evidenceHandles: ["K1"],
+            id: "D1",
+            requestAnchor: "How long are completed exports retained?"
+          }],
+          version: 3
         };
       }
-      if (auditCalls++ === 0) return {};
       return {
+        claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
         coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
-        scope: [{
-          description: "State the completed-export retention period.",
-          evidenceHandles: ["K1"],
-          id: "D1",
-          requestAnchor: "How long are completed exports retained?"
-        }],
-        version: 2
+        extractIds: [],
+        insufficientReason: "not_applicable",
+        version: 1
       };
     });
 
@@ -405,35 +406,40 @@ describe("OpenRAG frozen-evidence replay", () => {
     });
 
     expect(result.operationCount).toBe(4);
-    const auditRequests = executeStructuredOutput.mock.calls
+    const scopeRequests = executeStructuredOutput.mock.calls
       .map(([, request]) => request)
-      .filter(({ name }) => name === "knowledge_coverage_auditor_v2");
-    expect(auditRequests).toHaveLength(2);
-    expect(JSON.parse(auditRequests[0]!.userPrompt)).toMatchObject({
-      auditPass: "initial",
-      repairReason: null
+      .filter(({ name }) => name === "knowledge_coverage_scope_v3");
+    expect(scopeRequests).toHaveLength(2);
+    expect(JSON.parse(scopeRequests[0]!.userPrompt)).toMatchObject({
+      repairReason: null,
+      scopePass: "initial"
     });
-    expect(JSON.parse(auditRequests[1]!.userPrompt)).toMatchObject({
-      auditPass: "repair",
-      repairReason: "coverage_audit_shape_invalid"
+    expect(JSON.parse(scopeRequests[1]!.userPrompt)).toMatchObject({
+      repairReason: "coverage_scope_shape_invalid",
+      scopePass: "repair"
     });
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_grounded_selector_v17",
-      "knowledge_coverage_auditor_v2",
-      "knowledge_coverage_auditor_v2"
+      "knowledge_coverage_scope_v3",
+      "knowledge_coverage_scope_v3",
+      "knowledge_grounded_selector_v18"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
       "knowledge_answer_draft_v21",
-      "knowledge_grounded_selector_v17",
-      "knowledge_grounded_selector_v17",
-      "knowledge_coverage_auditor_v2",
-      "knowledge_coverage_auditor_v2",
+      "knowledge_grounded_selector_v18",
+      "knowledge_coverage_scope_v3"
+    ])).toBe(false);
+    expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
+      "knowledge_answer_draft_v21",
+      "knowledge_coverage_scope_v3",
+      "knowledge_coverage_scope_v3",
+      "knowledge_grounded_selector_v18",
+      "knowledge_grounded_selector_v18",
       "knowledge_answer_draft_supplement_v21"
     ])).toBe(false);
   });
 
-  it("reports the final bounded Auditor validation reason without raw output", async () => {
+  it("reports the final bounded Scope validation reason without raw output", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -457,18 +463,10 @@ describe("OpenRAG frozen-evidence replay", () => {
             version: 1
           };
         }
-        if (request.name === "knowledge_grounded_selector_v17") {
-          return {
-            claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-            extractIds: [],
-            insufficientReason: "not_applicable",
-            version: 1
-          };
-        }
         return {};
       },
       snapshot: frozen
-    })).rejects.toThrow("open_rag_replay_coverage_audit_shape_invalid");
+    })).rejects.toThrow("open_rag_replay_coverage_scope_shape_invalid");
   });
 
   it("allows a supported stage override while attesting inherited roles", () => {

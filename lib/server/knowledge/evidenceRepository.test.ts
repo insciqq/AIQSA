@@ -27,31 +27,32 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
-  KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
-  buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftSupplementV21,
   decodeKnowledgeAnswerDraftV21,
-  decodeKnowledgeGroundedSelectorV17,
   knowledgeAnswerDraftPromptV21,
-  knowledgeGroundedSelectorPromptV17,
   mergeKnowledgeAnswerDraftsV21,
   type KnowledgeAnswerOperationRequestSnapshotV21,
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
 import {
-  KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-  KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
-  decodeKnowledgeCoverageAuditV2,
-  knowledgeCoverageAuditFailureV2,
-  knowledgeCoverageAuditMissingDimensionsV2,
-  knowledgeCoverageAuditPromptV2
-} from "./coverageAuditV2";
+  KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3,
+  knowledgeCoverageScopeFailureV3,
+  knowledgeCoverageScopePromptV3
+} from "./coverageScopeV3";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V18,
+  KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
+  KNOWLEDGE_GROUNDED_SELECTOR_V18_MAX_OUTPUT_TOKENS,
+  decodeKnowledgeGroundedSelectorV18,
+  knowledgeCoverageMissingDimensionsV3,
+  knowledgeGroundedSelectorPromptV18
+} from "./answerGroundingSelectorV18";
 import { knowledgeFullContextDispatchPresentation } from "./fullContext";
 import {
   groundKnowledgeAnswer,
@@ -60,7 +61,8 @@ import {
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
-  groundSettledKnowledgeAnswerV17
+  groundSettledKnowledgeAnswerV17,
+  groundSettledKnowledgeAnswerV19
 } from "./grounding";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
@@ -1127,23 +1129,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it.each([{
-    evidenceVersion: 17,
-    executionPolicy: undefined
-  }, {
-    evidenceVersion: 18,
-    executionPolicy: {
-      auditorReasoningEffort: "high",
-      draftReasoningEffort: "low",
-      egressDestination: "answer_provider",
-      overriddenRoles: ["auditor"],
-      providerBindingKey: "answer",
-      selectorReasoningEffort: "low",
-      supplementReasoningEffort: "low",
-      version: 1
-    } as const
-  }])("reconstructs Auditor-repaired V21 snapshot into Evidence V$evidenceVersion",
-    async ({ evidenceVersion, executionPolicy }) => {
+  it("reconstructs blind-Scope-repaired V21 into Evidence V19", async () => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1184,28 +1170,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     });
     expect(acceptedDraft).not.toBeNull();
     const selectorEvidence = knowledgeSelectorEvidenceFromManifest(dispatchDraft);
-    const rawSelector = {
-      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-      extractIds: [],
-      insufficientReason: "not_applicable",
-      version: 1
-    };
-    const acceptedSelector = decodeKnowledgeGroundedSelectorV17(rawSelector, {
-      draft: acceptedDraft!,
-      evidence: selectorEvidence
-    });
-    expect(acceptedSelector).not.toBeNull();
-    const supportedView = buildKnowledgeSupportedAnswerViewV1({
-      draft: acceptedDraft!,
-      evidence: selectorEvidence,
-      selector: acceptedSelector!
-    });
-    const rawAudit = {
-      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
-        id: "D2",
-        status: "missing",
-        supportIds: []
-      }],
+    const rawScope = {
       scope: [{
         description: "State the retention duration for completed Atlas exports.",
         evidenceHandles: ["K1"],
@@ -1217,101 +1182,108 @@ describe("Knowledge Evidence v2 repository projection", () => {
         id: "D2",
         requestAnchor: "when does retention start"
       }],
-      version: 2
+      version: 3
+    } as const;
+    const rawSelector = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
     };
+    const acceptedSelector = decodeKnowledgeGroundedSelectorV18(rawSelector, {
+      draft: acceptedDraft!,
+      evidence: selectorEvidence,
+      request,
+      scope: rawScope
+    });
+    expect(acceptedSelector).not.toBeNull();
+    const executionPolicy = {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const;
     const draftPrompt = knowledgeAnswerDraftPromptV21({
       draftPass: "primary",
       evidenceManifest: dispatchDraft.message,
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const selectorPrompt = knowledgeGroundedSelectorPromptV17({
+    const initialScopePrompt = knowledgeCoverageScopePromptV3({
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      request,
+      scopePass: "initial"
+    });
+    const scopeRepairPrompt = knowledgeCoverageScopePromptV3({
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      repairReason: "coverage_scope_shape_invalid",
+      request,
+      scopePass: "repair"
+    });
+    const selectorPrompt = knowledgeGroundedSelectorPromptV18({
       draft: acceptedDraft!,
       evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
       request,
+      scope: rawScope,
       selectorPass: "initial"
     });
-    const auditPrompt = knowledgeCoverageAuditPromptV2({
-      auditPass: "initial",
-      evidence: selectorEvidence,
-      evidenceManifest: dispatchDraft.message,
-      request,
-      selectorState: {
-        contradictedClaimCount: 0,
-        selectedLiteralCount: 0,
-        supportedClaimCount: 1,
-        unsupportedClaimCount: 0
-      },
-      supportedView
-    });
-    const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: 21,
+    const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
-      ...(executionPolicy ? { executionPolicy } : {}),
+      executionPolicy,
+      protocol: "scope_v3" as const,
+      transport: "native_strict" as const
+    };
+    const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: 21,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
       schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
       systemPrompt: draftPrompt.systemPrompt,
-      transport: "native_strict",
       userPrompt: draftPrompt.userPrompt
     });
+    const initialScopeRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3,
+      systemPrompt: initialScopePrompt.systemPrompt,
+      userPrompt: initialScopePrompt.userPrompt
+    });
+    const scopeRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_VERSION,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V3,
+      systemPrompt: scopeRepairPrompt.systemPrompt,
+      userPrompt: scopeRepairPrompt.userPrompt
+    });
+    const coverageScopePayloadHash = knowledgeAnswerHash(rawScope);
     const selectorRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: 17,
-      evidenceReceiptHash: dispatchDraft.manifestHash,
-      ...(executionPolicy ? { executionPolicy } : {}),
-      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
-      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V18_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V18,
       systemPrompt: selectorPrompt.systemPrompt,
-      transport: "native_strict",
       userPrompt: selectorPrompt.userPrompt
     });
-    const auditRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: 2,
-      evidenceReceiptHash: dispatchDraft.manifestHash,
-      ...(executionPolicy ? { executionPolicy } : {}),
-      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
-      systemPrompt: auditPrompt.systemPrompt,
-      transport: "native_strict",
-      userPrompt: auditPrompt.userPrompt
-    });
-    const auditRepairPrompt = knowledgeCoverageAuditPromptV2({
-      auditPass: "repair",
-      evidence: selectorEvidence,
-      evidenceManifest: dispatchDraft.message,
-      repairReason: "coverage_audit_shape_invalid",
-      request,
-      selectorState: {
-        contradictedClaimCount: 0,
-        selectedLiteralCount: 0,
-        supportedClaimCount: 1,
-        unsupportedClaimCount: 0
-      },
-      supportedView
-    });
-    const auditRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: 2,
-      evidenceReceiptHash: dispatchDraft.manifestHash,
-      ...(executionPolicy ? { executionPolicy } : {}),
-      maxOutputTokens: KNOWLEDGE_COVERAGE_AUDITOR_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
-      schema: KNOWLEDGE_COVERAGE_AUDIT_SCHEMA_V2,
-      systemPrompt: auditRepairPrompt.systemPrompt,
-      transport: "native_strict",
-      userPrompt: auditRepairPrompt.userPrompt
-    });
-    const acceptedAudit = decodeKnowledgeCoverageAuditV2(rawAudit, {
-      evidence: selectorEvidence,
-      request,
-      supportedView
-    });
-    expect(acceptedAudit).not.toBeNull();
-    const missingDimensions = knowledgeCoverageAuditMissingDimensionsV2(
-      acceptedAudit!
-    );
+    const missingDimensions = knowledgeCoverageMissingDimensionsV3(acceptedSelector!);
     const rawSupplement = {
       claims: [{
         citationHints: ["K1"],
@@ -1335,37 +1307,32 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const finalPrompt = knowledgeGroundedSelectorPromptV17({
-      audit: acceptedAudit!,
+    const finalPrompt = knowledgeGroundedSelectorPromptV18({
       draft: mergedDraft,
       evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
       request,
+      scope: rawScope,
       selectorPass: "final"
     });
-    const auditPayloadHash = knowledgeAnswerHash(rawAudit);
     const supplementRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      auditPayloadHash,
+      ...commonRequest,
       contractVersion: 21,
-      evidenceReceiptHash: dispatchDraft.manifestHash,
-      ...(executionPolicy ? { executionPolicy } : {}),
+      coverageScopePayloadHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
       schema: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
       systemPrompt: supplementPrompt.systemPrompt,
-      transport: "native_strict",
       userPrompt: supplementPrompt.userPrompt
     });
     const finalRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      auditPayloadHash,
-      contractVersion: 17,
-      evidenceReceiptHash: dispatchDraft.manifestHash,
-      ...(executionPolicy ? { executionPolicy } : {}),
-      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V17_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
-      schema: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V18_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V18_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V18,
       systemPrompt: finalPrompt.systemPrompt,
-      transport: "native_strict",
       userPrompt: finalPrompt.userPrompt
     });
     const rawFinalSelector = {
@@ -1392,27 +1359,27 @@ describe("Knowledge Evidence v2 repository projection", () => {
         purpose: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
       }),
       v21AttemptRow({
+        acceptedRequest: initialScopeRequest,
+        acceptedResult: knowledgeCoverageScopeFailureV3(
+          "coverage_scope_shape_invalid"
+        ),
+        draft: dispatchDraft,
+        ordinal: 2,
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_OPERATION
+      }),
+      v21AttemptRow({
+        acceptedRequest: scopeRepairRequest,
+        acceptedResult: rawScope,
+        draft: dispatchDraft,
+        ordinal: 3,
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_OPERATION
+      }),
+      v21AttemptRow({
         acceptedRequest: selectorRequest,
         acceptedResult: rawSelector,
         draft: dispatchDraft,
-        ordinal: 2,
-        purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17
-      }),
-      v21AttemptRow({
-        acceptedRequest: auditRequest,
-        acceptedResult: knowledgeCoverageAuditFailureV2(
-          "coverage_audit_shape_invalid"
-        ),
-        draft: dispatchDraft,
-        ordinal: 3,
-        purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
-      }),
-      v21AttemptRow({
-        acceptedRequest: auditRepairRequest,
-        acceptedResult: rawAudit,
-        draft: dispatchDraft,
         ordinal: 4,
-        purpose: KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+        purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V18
       }),
       v21AttemptRow({
         acceptedRequest: supplementRequest,
@@ -1426,7 +1393,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
         acceptedResult: rawFinalSelector,
         draft: dispatchDraft,
         ordinal: 6,
-        purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17
+        purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V18
       })
     ];
 
@@ -1436,16 +1403,19 @@ describe("Knowledge Evidence v2 repository projection", () => {
     }), { runId: "run-1", userId: "user-1" });
 
     expect(result.grounding).toMatchObject({
-      audit: {
+      coverage: {
         coveredDimensionCount: 1,
-        dimensionCount: 2,
         missingDimensionCount: 1,
         status: "accepted"
       },
+      coverageScope: {
+        dimensionCount: 2,
+        status: "accepted"
+      },
       contracts: {
-        coverageAuditorContractVersion: 2,
+        coverageAuditorContractVersion: 3,
         draftContractVersion: 21,
-        selectorContractVersion: 17,
+        selectorContractVersion: 18,
         settlementVersion: 6
       },
       correctionAttempted: true,
@@ -1456,40 +1426,38 @@ describe("Knowledge Evidence v2 repository projection", () => {
       ].join("\n"),
       requestCoverage: "complete",
       supportedClaimCount: 2,
-      version: evidenceVersion
+      version: 19
     });
-    if (evidenceVersion === 18) {
-      expect(result.grounding).toMatchObject({
-        answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        draftClaimCount: 2,
-        executionPolicy,
-        executionPolicyFingerprint: knowledgeAnswerHash(executionPolicy)
-      });
-    }
+    expect(result.grounding).toMatchObject({
+      answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      draftClaimCount: 2,
+      executionPolicy,
+      executionPolicyFingerprint: knowledgeAnswerHash(executionPolicy)
+    });
     expect("operations" in result.grounding &&
       result.grounding.operations.map(({ role }) => role)).toEqual([
       "primary",
+      "scope",
+      "scope_repair",
       "initial",
-      "auditor",
-      "auditor_repair",
       "supplement",
       "final"
     ]);
-    const conflictingAuditRepairRequest = {
-      ...auditRepairRequest,
+    const conflictingScopeRepairRequest = {
+      ...scopeRepairRequest,
       userPrompt: "{}"
     };
     await expect(groundKnowledgeRunAnswerV21(client(row(), {
-      attempts: attempts.map((attempt, index) => index === 3
+      attempts: attempts.map((attempt, index) => index === 2
         ? {
             ...attempt,
-            acceptedRequest: conflictingAuditRepairRequest,
-            requestHash: knowledgeAnswerHash(conflictingAuditRepairRequest)
+            acceptedRequest: conflictingScopeRepairRequest,
+            requestHash: knowledgeAnswerHash(conflictingScopeRepairRequest)
           }
         : attempt),
       providerExecutionSnapshot: fakeProviderExecutionSnapshot()
     }), { runId: "run-1", userId: "user-1" })).rejects.toThrow(
-      "knowledge_answer_operation_snapshot_conflict"
+      "knowledge_coverage_scope_unaccepted"
     );
   });
 
@@ -2166,6 +2134,109 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(JSON.stringify(storedV17)).not.toContain("finalText");
     expect(JSON.stringify(storedV17)).not.toContain("Private V21 final answer");
     expect(JSON.stringify(storedV17)).not.toContain("Completed Atlas exports");
+
+    existing = null;
+    create.mockClear();
+    const scopePayloadHash = "5".repeat(64);
+    const selectorPayloadHash = "6".repeat(64);
+    const currentPolicy = {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const;
+    const groundingV19 = groundSettledKnowledgeAnswerV19({
+      answerBindingFingerprint: "7".repeat(64),
+      contracts: {
+        coverageAuditorContractVersion: 3,
+        draftContractVersion: 21,
+        selectorContractVersion: 18,
+        settlementVersion: 6
+      },
+      coverage: {
+        coveredDimensionCount: 1,
+        missingDimensionCount: 0,
+        selectorPayloadHash
+      },
+      coverageScope: { dimensionCount: 1, payloadHash: scopePayloadHash },
+      draftClaimCount: 1,
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "8".repeat(64),
+      executionPolicy: currentPolicy,
+      executionPolicyFingerprint: knowledgeAnswerHash(currentPolicy),
+      modelPinFingerprint: "9".repeat(64),
+      operations: [{
+        acceptedRequestHash: "a".repeat(64),
+        acceptedResultHash: "b".repeat(64),
+        contractVersion: 21,
+        durationMs: 12,
+        operationId: "draft-operation-v21-scope-v3",
+        ordinal: 1,
+        providerRequestId: "draft-response-v21-scope-v3",
+        purpose: "knowledge_answer_draft_v21",
+        role: "primary",
+        usage
+      }, {
+        acceptedRequestHash: "c".repeat(64),
+        acceptedResultHash: scopePayloadHash,
+        contractVersion: 3,
+        durationMs: 6,
+        operationId: "scope-operation-v3",
+        ordinal: 2,
+        providerRequestId: "scope-response-v3",
+        purpose: "knowledge_coverage_scope_v3",
+        role: "scope",
+        usage
+      }, {
+        acceptedRequestHash: "d".repeat(64),
+        acceptedResultHash: selectorPayloadHash,
+        contractVersion: 18,
+        durationMs: 8,
+        operationId: "selector-operation-v18",
+        ordinal: 3,
+        providerRequestId: "selector-response-v18",
+        purpose: "knowledge_grounded_selector_v18",
+        role: "initial",
+        usage
+      }],
+      providerPinFingerprint: "e".repeat(64),
+      scopeRepairSucceeded: false,
+      selectorRepairSucceeded: false,
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Private V19 final answer must not be persisted. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV19
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    const storedV19 = (existing as { evidence?: unknown } | null)?.evidence;
+    expect(storedV19).toMatchObject({
+      contracts: {
+        coverageAuditorContractVersion: 3,
+        draftContractVersion: 21,
+        selectorContractVersion: 18,
+        settlementVersion: 6
+      },
+      coverage: { selectorPayloadHash, status: "accepted" },
+      coverageScope: { payloadHash: scopePayloadHash, status: "accepted" },
+      operations: [{ role: "primary" }, { role: "scope" }, { role: "initial" }],
+      version: 19
+    });
+    expect(JSON.stringify(storedV19)).not.toContain("finalText");
+    expect(JSON.stringify(storedV19)).not.toContain("Private V19 final answer");
   });
 
 });
