@@ -109,6 +109,7 @@ import {
   decodeKnowledgeAnswerDraftSupplementV21,
   decodeKnowledgeAnswerDraftV21,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  isCurrentKnowledgeAnswerOperationSnapshotV21,
   knowledgeAnswerDraftPromptV21,
   mergeKnowledgeAnswerDraftsV21,
   settleKnowledgeAnswerV21FromFinalSelector
@@ -1607,7 +1608,8 @@ export async function groundKnowledgeRunAnswerV21(
         snapshot: primaryRequest
       })
     : null;
-  if (!primaryRequest || primaryRequest.version !== 5 || !primaryPrompt) {
+  if (!primaryRequest || !isCurrentKnowledgeAnswerOperationSnapshotV21(primaryRequest) ||
+    !primaryPrompt) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
   const requestExecutionPolicy = {

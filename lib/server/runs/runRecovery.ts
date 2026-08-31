@@ -90,7 +90,8 @@ import {
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
-  decodeKnowledgeAnswerOperationRequestSnapshotV21
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  isCurrentKnowledgeAnswerOperationSnapshotV21
 } from "../knowledge/answerGroundingV21";
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
@@ -2959,7 +2960,7 @@ async function recoverKnowledgeAnswerGrounding(
           "The saved Knowledge draft contract snapshot is invalid."
         );
       }
-      if (draftRequest.version !== 5) {
+      if (!isCurrentKnowledgeAnswerOperationSnapshotV21(draftRequest)) {
         throw new ToolLoopRecoveryError(
           "knowledge_answer_contract_failed",
           "The saved Knowledge draft protocol is retired."
