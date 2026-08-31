@@ -20,6 +20,7 @@ import {
   knowledgeAnswerHash,
   knowledgeSelectorEvidenceFromManifest,
   type KnowledgeAnswerDraftSelectorInput,
+  type KnowledgeAnswerSettlementV5,
   type KnowledgeSelectorValidationFailureReason
 } from "./answerGroundingV5";
 import { KnowledgeAnswerOperationDeferredError } from "./answerGroundingExecutionV5";
@@ -50,6 +51,8 @@ import {
   knowledgeGroundedSelectorPromptV17,
   knowledgeGroundedSelectorV17Fallback,
   mergeKnowledgeAnswerDraftsV21,
+  settleKnowledgeAnswerV21FromAudit,
+  settleKnowledgeAnswerV21FromFinalSelector,
   validateKnowledgeAnswerDraftSupplementV21,
   validateKnowledgeAnswerDraftV21,
   validateKnowledgeGroundedSelectorFinalV17,
@@ -98,6 +101,7 @@ export type KnowledgeAnswerGroundingExecutionV21Result = Readonly<{
     providerResponseId: string | null;
     usage: ModelRunUsage;
   }>[];
+  settlement: KnowledgeAnswerSettlementV5;
 }>;
 
 type OperationAcceptedResult = Readonly<Record<string, unknown>>;
@@ -401,9 +405,12 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       usage: result.usage
     }));
   };
-  const result = (): KnowledgeAnswerGroundingExecutionV21Result => Object.freeze({
+  const result = (
+    settlement: KnowledgeAnswerSettlementV5
+  ): KnowledgeAnswerGroundingExecutionV21Result => Object.freeze({
     contracts: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
-    operations: Object.freeze([...operations])
+    operations: Object.freeze([...operations]),
+    settlement
   });
 
   const draftPrompt = knowledgeAnswerDraftPromptV21({
@@ -622,7 +629,13 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     if (!acceptedSelector) {
       throw new Error("knowledge_grounded_selector_result_invalid");
     }
-    return result();
+    return result(settleKnowledgeAnswerV21FromAudit({
+      audit,
+      draft: primaryDraft,
+      evidence,
+      request: input.request,
+      selector: acceptedSelector
+    }));
   }
 
   const supplementOrdinal = (auditOrdinal + 1) as OperationOrdinal;
@@ -686,7 +699,13 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     if (!acceptedSelector) {
       throw new Error("knowledge_grounded_selector_result_invalid");
     }
-    return result();
+    return result(settleKnowledgeAnswerV21FromAudit({
+      audit,
+      draft: primaryDraft,
+      evidence,
+      request: input.request,
+      selector: acceptedSelector
+    }));
   }
 
   const finalDraft = mergeKnowledgeAnswerDraftsV21({
@@ -742,13 +761,19 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     shouldAbort: input.shouldAbort
   });
   pushOperation(finalOrdinal, KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17, finalOperation);
-  if (decodeKnowledgeGroundedSelectorFailureV17(finalOperation.acceptedResult) ||
-    !decodeKnowledgeGroundedSelectorFinalV17(finalOperation.acceptedResult, {
+  const finalSelector = decodeKnowledgeGroundedSelectorFailureV17(
+    finalOperation.acceptedResult
+  ) ? null : decodeKnowledgeGroundedSelectorFinalV17(finalOperation.acceptedResult, {
       audit,
       draft: finalDraft,
       evidence
-    })) {
+    });
+  if (!finalSelector) {
     throw new Error("knowledge_grounded_selector_result_invalid");
   }
-  return result();
+  return result(settleKnowledgeAnswerV21FromFinalSelector({
+    draft: finalDraft,
+    evidence,
+    selector: finalSelector
+  }));
 }

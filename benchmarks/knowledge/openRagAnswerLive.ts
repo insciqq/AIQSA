@@ -8,20 +8,30 @@ import { loadEnvConfig } from "@next/env";
 import { PrismaClient } from "@prisma/client";
 import { normalizeTokenUsage } from "../../lib/domain/usage";
 import {
-  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION,
-  KNOWLEDGE_COVERAGE_PLANNER_CONTRACT_VERSION,
-  KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION,
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16,
   decodeKnowledgeAnswerDraftPromptV20,
   decodeKnowledgeAnswerOperationRequestSnapshotV1
 } from "../../lib/server/knowledge/answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1,
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+  decodeKnowledgeAnswerDraftPrimaryPromptV21,
+  decodeKnowledgeAnswerOperationRequestSnapshotV21
+} from "../../lib/server/knowledge/answerGroundingV21";
+import {
+  KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1
+} from "../../lib/server/knowledge/answerPipelineRollout";
 import {
   createPrismaKnowledgeEvidenceDispatchRepository
 } from "../../lib/server/knowledge/evidenceDispatchRepository";
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18 } from
   "../../lib/server/knowledge/grounding";
+import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
+  "../../lib/server/knowledge/groundingExecutionPolicy";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from
   "../../lib/server/knowledge/indexProfile";
 import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from
@@ -57,6 +67,7 @@ import {
 import {
   createOpenRagAnswerReplaySnapshot,
   decodeOpenRagAnswerReplaySnapshot,
+  isOpenRagAnswerOperationSequence,
   replayOpenRagAnswerSnapshot,
   type OpenRagAnswerReplayOrigin,
   type OpenRagAnswerReplaySnapshot
@@ -656,11 +667,30 @@ async function loadProductAnswer(input: Readonly<{
     if (!dispatch) break;
     dispatches.push(dispatch);
   }
-  if (dispatches.length < 3 || dispatches.length > 5) {
+  if (dispatches.length < 3 || dispatches.length > 6) {
+    throw new Error("open_rag_answer_operation_set_invalid");
+  }
+  const operations = dispatches.map(({ attempt }) => attempt.purpose);
+  const isV21 = input.origin.engine.coverageAuditorContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.coverageAuditorContractVersion &&
+    input.origin.engine.draftContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.draftContractVersion &&
+    input.origin.engine.selectorContractVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.selectorContractVersion &&
+    input.origin.engine.settlementVersion ===
+      KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V17_AUDIT_V1.settlementVersion;
+  if (!isOpenRagAnswerOperationSequence(Object.freeze({
+    coverageAuditorContractVersion: input.origin.engine.coverageAuditorContractVersion,
+    draftContractVersion: input.origin.engine.draftContractVersion,
+    selectorContractVersion: input.origin.engine.selectorContractVersion,
+    settlementVersion: input.origin.engine.settlementVersion
+  }), operations)) {
     throw new Error("open_rag_answer_operation_set_invalid");
   }
   const primaryDispatches = dispatches.filter(({ attempt }) =>
-    attempt.purpose === "knowledge_answer_draft_v20");
+    attempt.purpose === (isV21
+      ? KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+      : KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16.draftOperation));
   const primary = primaryDispatches[0];
   const first = dispatches[0];
   if (!first || primaryDispatches.length !== 1 || !primary ||
@@ -668,14 +698,43 @@ async function loadProductAnswer(input: Readonly<{
       draft.manifestHash !== first.draft.manifestHash)) {
     throw new Error("open_rag_answer_operation_set_invalid");
   }
-  const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV1(
-    primary.attempt.acceptedRequest
-  );
-  const decodedPrompt = draftRequest
-    ? decodeKnowledgeAnswerDraftPromptV20(draftRequest, first.draft)
-    : null;
-  if (!draftRequest || !decodedPrompt || decodedPrompt.draftPass !== "primary") {
-    throw new Error("open_rag_answer_replay_prompt_invalid");
+  let executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1 | null = null;
+  let reasoningEffort: string | null;
+  let request: string;
+  let routeInstruction: string;
+  let transport: "native_strict" | "provider_neutral_json";
+  if (isV21) {
+    const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      primary.attempt.acceptedRequest
+    );
+    const decodedPrompt = draftRequest
+      ? decodeKnowledgeAnswerDraftPrimaryPromptV21({
+          draft: first.draft,
+          snapshot: draftRequest
+        })
+      : null;
+    if (!draftRequest || draftRequest.version !== 2 || !decodedPrompt) {
+      throw new Error("open_rag_answer_replay_prompt_invalid");
+    }
+    executionPolicy = draftRequest.executionPolicy;
+    reasoningEffort = null;
+    request = decodedPrompt.request;
+    routeInstruction = decodedPrompt.routeInstruction;
+    transport = draftRequest.transport;
+  } else {
+    const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV1(
+      primary.attempt.acceptedRequest
+    );
+    const decodedPrompt = draftRequest
+      ? decodeKnowledgeAnswerDraftPromptV20(draftRequest, first.draft)
+      : null;
+    if (!draftRequest || !decodedPrompt || decodedPrompt.draftPass !== "primary") {
+      throw new Error("open_rag_answer_replay_prompt_invalid");
+    }
+    reasoningEffort = draftRequest.reasoningEffort;
+    request = decodedPrompt.request;
+    routeInstruction = decodedPrompt.routeInstruction;
+    transport = draftRequest.transport;
   }
   const run = await input.prisma.modelRun.findUnique({
     select: {
@@ -753,21 +812,46 @@ async function loadProductAnswer(input: Readonly<{
     case: input.case,
     evidence: first.draft,
     evidenceBindings,
+    executionPolicy,
     forbiddenIdentityFragments,
     origin: input.origin,
     originalRunId: input.chat.runId,
-    reasoningEffort: draftRequest.reasoningEffort,
-    request: decodedPrompt.request,
-    routeInstruction: decodedPrompt.routeInstruction,
-    transport: draftRequest.transport
+    reasoningEffort,
+    request,
+    routeInstruction,
+    transport
   });
   const groundingResult = run?.knowledgeRetrievalSession?.groundingResult;
   const groundingEvidence = groundingResult?.evidence;
-  const coverage = isRecord(groundingEvidence) &&
-    ["complete", "none", "partial"].includes(String(groundingEvidence.requestCoverage))
-    ? groundingEvidence.requestCoverage as "complete" | "none" | "partial"
+  const groundingEvidenceRecord = isRecord(groundingEvidence) ? groundingEvidence : null;
+  const coverage = groundingEvidenceRecord &&
+    ["complete", "none", "partial"].includes(
+      String(groundingEvidenceRecord.requestCoverage)
+    )
+    ? groundingEvidenceRecord.requestCoverage as "complete" | "none" | "partial"
     : null;
-  if (!coverage || groundingResult?.finalAnswerHash !== sha256Text(input.chat.answer) ||
+  const groundingContracts = groundingEvidenceRecord &&
+    isRecord(groundingEvidenceRecord.contracts)
+    ? groundingEvidenceRecord.contracts
+    : null;
+  const audit = groundingEvidenceRecord && isRecord(groundingEvidenceRecord.audit)
+    ? groundingEvidenceRecord.audit
+    : null;
+  const auditMissingCount = audit && Number.isSafeInteger(audit.missingDimensionCount) &&
+    Number(audit.missingDimensionCount) >= 0
+    ? Number(audit.missingDimensionCount)
+    : null;
+  if (!coverage || groundingEvidenceRecord?.version !==
+      input.origin.engine.groundingEvidenceVersion ||
+    !groundingContracts ||
+    groundingContracts.draftContractVersion !== input.origin.engine.draftContractVersion ||
+    groundingContracts.selectorContractVersion !==
+      input.origin.engine.selectorContractVersion ||
+    (isV21 && (groundingContracts.coverageAuditorContractVersion !==
+      input.origin.engine.coverageAuditorContractVersion ||
+      groundingContracts.settlementVersion !== input.origin.engine.settlementVersion ||
+      auditMissingCount === null)) ||
+    groundingResult?.finalAnswerHash !== sha256Text(input.chat.answer) ||
     groundingResult.outcome !== "answered" &&
       groundingResult.outcome !== "insufficient_evidence" ||
     (coverage === "none") !==
@@ -783,7 +867,7 @@ async function loadProductAnswer(input: Readonly<{
     snapshot: replaySnapshot
   });
   const facts: OpenRagAnswerObservedFacts = Object.freeze({
-    auditMissingCount: null,
+    auditMissingCount,
     ...factsFromEvidence,
     goldCandidateAfterRerank: null,
     goldCandidateBeforeRerank: null,
@@ -1034,6 +1118,9 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
   baseId: string;
   origin: OpenRagAnswerReplayOrigin;
 }>> {
+  if (Number(KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1.v21CanaryBasisPoints) !== 10_000) {
+    throw new Error("open_rag_answer_v21_rollout_inactive");
+  }
   const profilePath = process.env.AIQSA_OPENRAG_PROFILE_ATTESTATION_PATH?.trim() ||
     resolve(repositoryRoot, ".aiqsa", "openrag100-v8-profile-attestation.json");
   const profile = decodeProfileAttestation(await readPrivateJson(profilePath));
@@ -1130,15 +1217,13 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
       baseFingerprint: snapshot.evidenceFingerprint,
       engine: Object.freeze({
         chunkingProfileVersion: generation.chunkingProfileVersion,
-        coverageAuditorContractVersion: null,
-        draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION,
+        coverageAuditorContractVersion:
+          KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
+        draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V18,
         parserProfileVersion: revision.pdfParserProfileVersion,
-        pipelineVersion:
-          `knowledge_answer_planner_v${KNOWLEDGE_COVERAGE_PLANNER_CONTRACT_VERSION}_` +
-          `draft_v${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION}_` +
-          `selector_v${KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION}_settlement_v5`,
+        pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v1_settlement_v6",
         profileRevisionId: revision.id,
         profileRevisionNumber: revision.revisionNumber,
         rankingProfileVersion: KNOWLEDGE_RANKING_PROFILE_VERSION,
@@ -1149,8 +1234,9 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           providerModelId: rerankerSnapshot.providerModelId,
           upstreamModelId: rerankerSnapshot.model.upstreamModelId
         }) : null,
-        selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION,
-        settlementVersion: 5
+        selectorContractVersion:
+          KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.selectorContractVersion,
+        settlementVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.settlementVersion
       }),
       sourceBindingFingerprint: sha256Canonical(snapshot.sources)
     })

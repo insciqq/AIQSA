@@ -126,6 +126,33 @@ function origin() {
   });
 }
 
+function v21Origin() {
+  const legacy = origin();
+  return Object.freeze({
+    ...legacy,
+    engine: Object.freeze({
+      ...legacy.engine,
+      coverageAuditorContractVersion: 1,
+      draftContractVersion: 21,
+      groundingEvidenceVersion: 18,
+      pipelineVersion: "knowledge_answer_draft_v21_selector_v17_auditor_v1_settlement_v6",
+      selectorContractVersion: 17,
+      settlementVersion: 6
+    })
+  });
+}
+
+const v21ExecutionPolicy = Object.freeze({
+  auditorReasoningEffort: "medium",
+  draftReasoningEffort: "medium",
+  egressDestination: "answer_provider",
+  overriddenRoles: Object.freeze([]),
+  providerBindingKey: "answer",
+  selectorReasoningEffort: "medium",
+  supplementReasoningEffort: "medium",
+  version: 1
+} as const);
+
 describe("OpenRAG frozen-evidence replay", () => {
   it("runs only the V20 answer stages over the immutable dispatch", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
@@ -134,6 +161,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
+      executionPolicy: null,
       forbiddenIdentityFragments: ["run-private", "knowledge-call-1:result:1"],
       origin: origin(),
       originalRunId: "run-original",
@@ -206,6 +234,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
+      executionPolicy: null,
       forbiddenIdentityFragments: [],
       origin: origin(),
       originalRunId: "run-original",
@@ -247,6 +276,76 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
+  it("runs the current V21 Draft, Selector, Auditor path over frozen evidence", async () => {
+    const frozen = createOpenRagAnswerReplaySnapshot({
+      answerExecutionSnapshot: snapshot(),
+      capturedAt: "2026-08-31T00:00:00.000Z",
+      case: benchmarkCase,
+      evidence: evidence(),
+      evidenceBindings: evidenceBindings(),
+      executionPolicy: v21ExecutionPolicy,
+      forbiddenIdentityFragments: [],
+      origin: v21Origin(),
+      originalRunId: "run-original-v21",
+      reasoningEffort: null,
+      request: benchmarkCase.question,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      transport: "native_strict"
+    });
+    const executeStructuredOutput = vi.fn(async (_execution, request) => {
+      if (request.name === "knowledge_answer_draft_v21") {
+        return {
+          claims: [{
+            citationHints: ["K1"],
+            text: "Atlas retains completed exports for 30 days."
+          }],
+          version: 1
+        };
+      }
+      if (request.name === "knowledge_grounded_selector_v17") {
+        return {
+          claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+          extractIds: [],
+          insufficientReason: "not_applicable",
+          version: 1
+        };
+      }
+      return {
+        dimensions: [{
+          description: "State the completed-export retention period.",
+          evidenceHintHandles: [],
+          id: "D1",
+          requestAnchor: "How long are completed exports retained?",
+          status: "covered",
+          supportIds: ["C1"]
+        }],
+        version: 1
+      };
+    });
+
+    const result = await replayOpenRagAnswerSnapshot({
+      executeStructuredOutput,
+      snapshot: frozen
+    });
+
+    expect(executeStructuredOutput.mock.calls.map(([, request]) => request.name)).toEqual([
+      "knowledge_answer_draft_v21",
+      "knowledge_grounded_selector_v17",
+      "knowledge_coverage_auditor_v1"
+    ]);
+    expect(result).toMatchObject({
+      contracts: {
+        coverageAuditorContractVersion: 1,
+        draftContractVersion: 21,
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      },
+      coverage: "complete",
+      operationCount: 3
+    });
+    expect(result.finalText).toContain("30 days");
+  });
+
   it("rejects any snapshot identity or evidence mutation", () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
@@ -254,6 +353,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
+      executionPolicy: null,
       forbiddenIdentityFragments: [],
       origin: origin(),
       originalRunId: "run-original",

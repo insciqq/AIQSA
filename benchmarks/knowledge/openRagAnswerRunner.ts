@@ -42,6 +42,7 @@ import {
 } from "./openRagAnswerEvaluate";
 import {
   decodeOpenRagAnswerReplaySnapshot,
+  isOpenRagAnswerOperationSequence,
   type OpenRagAnswerReplaySnapshot
 } from "./openRagAnswerReplay";
 
@@ -514,16 +515,25 @@ function privateAnswerRecord(
 
 function assertProductAnswerIntegrity(
   answer: OpenRagProductAnswer,
-  benchmarkCase: OpenRagAnswerCase
+  benchmarkCase: OpenRagAnswerCase,
+  manifest: OpenRagAnswerRunManifest
 ): void {
   const operations = answer.acceptedResults.map(({ operation }) => operation);
   const stages = answer.stageRecords.map(({ stage }) => stage);
   if (!answer.answerText.trim() || answer.answerText.includes("\u0000") ||
     Buffer.byteLength(answer.answerText, "utf8") > 2 * 1_024 * 1_024 ||
-    answer.operationCount < 3 || answer.operationCount > 5 ||
+    answer.operationCount < 3 || answer.operationCount > 6 ||
     operations.length !== answer.operationCount || stages.length !== answer.operationCount ||
     operations.some((operation, index) => operation !== stages[index]) ||
-    new Set(operations).size !== operations.length ||
+    !isOpenRagAnswerOperationSequence(answer.replaySnapshot.contracts, operations) ||
+    answer.replaySnapshot.contracts.coverageAuditorContractVersion !==
+      manifest.engine.coverageAuditorContractVersion ||
+    answer.replaySnapshot.contracts.draftContractVersion !==
+      manifest.engine.draftContractVersion ||
+    answer.replaySnapshot.contracts.selectorContractVersion !==
+      manifest.engine.selectorContractVersion ||
+    answer.replaySnapshot.contracts.settlementVersion !==
+      manifest.engine.settlementVersion ||
     !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(answer.answerRunId) ||
     !/^[0-9a-f]{64}$/u.test(answer.replaySnapshot.snapshotHash) ||
     sha256Canonical(answer.replaySnapshot.case) !== sha256Canonical(benchmarkCase) ||
@@ -584,7 +594,14 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
       if (existing) {
         if (Boolean(existing.judgment) !== !manifest.noJudge ||
           existing.diagnosticJudgeRuns.length !==
-            (manifest.noJudge ? 0 : manifest.judgeRepeat - 1)) {
+            (manifest.noJudge ? 0 : manifest.judgeRepeat - 1) ||
+          !isOpenRagAnswerOperationSequence(Object.freeze({
+            coverageAuditorContractVersion:
+              manifest.engine.coverageAuditorContractVersion,
+            draftContractVersion: manifest.engine.draftContractVersion,
+            selectorContractVersion: manifest.engine.selectorContractVersion,
+            settlementVersion: manifest.engine.settlementVersion
+          }), existing.stageRecords.map(({ stage }) => stage))) {
           throw new Error("open_rag_answer_resume_checkpoint_invalid");
         }
         outcomes.push(existing);
@@ -614,7 +631,7 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
               goldDocumentId,
               repeatOrdinal
             });
-        assertProductAnswerIntegrity(answer, benchmarkCase);
+        assertProductAnswerIntegrity(answer, benchmarkCase, manifest);
       } catch (error) {
         const code = errorCode(error);
         await input.checkpoint.writeFailure({

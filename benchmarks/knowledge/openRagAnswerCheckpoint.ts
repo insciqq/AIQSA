@@ -240,7 +240,6 @@ export function decodeOpenRagAnswerOutcome(
   const diagnosticJudgeRuns = value.diagnosticJudgeRuns.map(decodeJudgeStage);
   if (operationCount === null || operationCount < 3 || stageRecords.some((stage) => !stage) ||
     operationCount !== stageRecords.length ||
-    new Set(stageRecords.map((stage) => stage?.stage)).size !== stageRecords.length ||
     value.judgment !== null && judgment === null ||
     diagnosticJudgeRuns.some((stage) => !stage) ||
     judgment === null && value.classification !== null ||

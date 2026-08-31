@@ -17,6 +17,7 @@ import type {
 import {
   decodeOpenRagAnswerQuestionBundle,
   decodeOpenRagAnswerRunManifest,
+  OPEN_RAG_ANSWER_RUNNER_CONTRACT_VERSION,
   OPEN_RAG_ANSWER_SELECTION_FINGERPRINT,
   openRagAnswerManifestFingerprint
 } from "./openRagAnswerContract";
@@ -108,7 +109,7 @@ function manifest(
     noJudge: false,
     repeat: 1,
     revision: "63f6b052ff83508b08e242db42263ee708815c26",
-    runnerContractVersion: 1,
+    runnerContractVersion: OPEN_RAG_ANSWER_RUNNER_CONTRACT_VERSION,
     schedule: { caseStartIntervalMs: 0, concurrency: 1 },
     schemaVersion: 1,
     scoreable: false,
@@ -121,6 +122,12 @@ function manifest(
 function replaySnapshot(caseValue: OpenRagAnswerCase): OpenRagAnswerReplaySnapshot {
   return {
     case: caseValue,
+    contracts: {
+      coverageAuditorContractVersion: null,
+      draftContractVersion: 20,
+      selectorContractVersion: 16,
+      settlementVersion: 5
+    },
     snapshotHash: sha
   } as OpenRagAnswerReplaySnapshot;
 }
@@ -395,7 +402,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
         goldDocumentId: "document-1",
         repeatOrdinal: 1
       });
-      const acceptedResults = Array.from({ length: 6 }, (_, index) => ({
+      const acceptedResults = Array.from({ length: 7 }, (_, index) => ({
         operation: `operation-${index + 1}`,
         output: {}
       }));
@@ -429,6 +436,80 @@ describe("OpenRAG answer fail-fast schedule", () => {
     })).rejects.toThrow("open_rag_answer_product_artifact_invalid");
     expect(checkpoint.failures).toHaveLength(1);
     expect(checkpoint.outcomes.size).toBe(0);
+  });
+
+  it("accepts the six-operation V21 repair and correction sequence", async () => {
+    const cases = [benchmarkCase(1)];
+    const legacyManifest = manifest(cases);
+    const runManifest = manifest(cases, {
+      engine: {
+        ...legacyManifest.engine,
+        coverageAuditorContractVersion: 1,
+        draftContractVersion: 21,
+        groundingEvidenceVersion: 18,
+        pipelineVersion:
+          "knowledge_answer_draft_v21_selector_v17_auditor_v1_settlement_v6",
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      }
+    });
+    const header = createOpenRagAnswerCheckpointHeader({ manifest: runManifest });
+    const checkpoint = memoryCheckpoint();
+    const fakeRuntime = runtime("pass");
+    fakeRuntime.executeAnswer.mockImplementationOnce(async ({ case: caseValue }) => {
+      const product = await runtime("pass").executeAnswer({
+        case: caseValue,
+        goldDocumentId: "document-1",
+        repeatOrdinal: 1
+      });
+      const sequence = [
+        "knowledge_answer_draft_v21",
+        "knowledge_grounded_selector_v17",
+        "knowledge_grounded_selector_v17",
+        "knowledge_coverage_auditor_v1",
+        "knowledge_answer_draft_supplement_v21",
+        "knowledge_grounded_selector_final_v17"
+      ];
+      return {
+        ...product,
+        acceptedResults: sequence.map((operation) => ({ operation, output: {} })),
+        operationCount: sequence.length,
+        replaySnapshot: {
+          ...product.replaySnapshot,
+          contracts: {
+            coverageAuditorContractVersion: 1,
+            draftContractVersion: 21,
+            selectorContractVersion: 17,
+            settlementVersion: 6
+          }
+        },
+        stageRecords: sequence.map((stage) => ({
+          durationMs: 1,
+          providerResponseId: null,
+          requestHash: sha,
+          resultHash: sha,
+          stage,
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 2
+          }
+        }))
+      };
+    });
+
+    const summary = await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: checkpoint.store,
+      goldDocumentIds: { "doc-001": "document-1" },
+      header,
+      resume: false,
+      runtime: fakeRuntime
+    });
+
+    expect(summary.pass).toBe(1);
+    expect(checkpoint.outcomes.get("doc-001-q1:1")?.stageRecords).toHaveLength(6);
   });
 
   it("does not start a later case after the first non-pass", async () => {
