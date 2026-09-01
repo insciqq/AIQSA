@@ -6,6 +6,27 @@
   margin: 0.5rem 0 0.75rem;
   padding-bottom: 0.75rem;
   border-bottom: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+}
+
+/* The rail's Projects destination flashes the block it landed on. */
+.v2-project-navigation[data-flash] {
+  animation: v2-projects-flash 0.9s ease-out;
+}
+
+@keyframes v2-projects-flash {
+  0%,
+  40% {
+    box-shadow: inset 0 0 0 999px var(--project-desk-wash);
+  }
+
+  100% {
+    box-shadow: inset 0 0 0 999px transparent;
+  }
+}
+
+html[data-motion="off"] .v2-project-navigation[data-flash] {
+  animation: none;
 }
 
 /* Sidebar section label: sentence case, 12px/500, text3 (same as the chat
