@@ -110,6 +110,10 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V44 = 44 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45 = 45 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V46 = 46 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47 = 47 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V48 = 48 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V49 = 49 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V50 = 50 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 = 51 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -897,6 +901,50 @@ export type KnowledgeGroundingEvidenceV47 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV48 =
+  KnowledgeGroundingOperationEvidenceV47;
+
+export type KnowledgeGroundingEvidenceV48 = Omit<
+  KnowledgeGroundingEvidenceV47,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV48[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V48;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV49 =
+  KnowledgeGroundingOperationEvidenceV48;
+
+export type KnowledgeGroundingEvidenceV49 = Omit<
+  KnowledgeGroundingEvidenceV48,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV49[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V49;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV50 =
+  KnowledgeGroundingOperationEvidenceV49;
+
+export type KnowledgeGroundingEvidenceV50 = Omit<
+  KnowledgeGroundingEvidenceV49,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV50[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V50;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV51 =
+  KnowledgeGroundingOperationEvidenceV50;
+
+export type KnowledgeGroundingEvidenceV51 = Omit<
+  KnowledgeGroundingEvidenceV50,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV51[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -939,7 +987,11 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV44
   | KnowledgeGroundingEvidenceV45
   | KnowledgeGroundingEvidenceV46
-  | KnowledgeGroundingEvidenceV47;
+  | KnowledgeGroundingEvidenceV47
+  | KnowledgeGroundingEvidenceV48
+  | KnowledgeGroundingEvidenceV49
+  | KnowledgeGroundingEvidenceV50
+  | KnowledgeGroundingEvidenceV51;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3308,6 +3360,62 @@ export function groundSettledKnowledgeAnswerV47(
   return Object.freeze({
     ...grounded,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47
+  });
+}
+
+/** V48 attests Snapshot V32's model-owned set reduction across Scope and the
+ * global Selector. Receipt contents and operation count stay identical to
+ * V47; the server neither semantically merges requirements nor transfers
+ * provenance between them. */
+export function groundSettledKnowledgeAnswerV48(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV48 {
+  const grounded = groundSettledKnowledgeAnswerV47(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V48
+  });
+}
+
+/** V49 attests Snapshot V33's recall-first Scope map and Selector-owned global
+ * redundancy reduction. Receipt contents and operation count stay identical
+ * to V48; zero-dimension and provenance validators remain unchanged. */
+export function groundSettledKnowledgeAnswerV49(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV49 {
+  const grounded = groundSettledKnowledgeAnswerV48(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V49
+  });
+}
+
+/** V50 attests Snapshot V34's fail-closed whole-item rejection for local or
+ * joint findings with structurally invalid provenance. Receipt contents and
+ * operation count stay identical to V49; no finding is moved or repaired. */
+export function groundSettledKnowledgeAnswerV50(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV50 {
+  const grounded = groundSettledKnowledgeAnswerV49(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V50
+  });
+}
+
+/** V51 attests Snapshot V35's global no-data supersession, exact primary
+ * duplicate reduction inside grouped Supplements, primary-Draft co-equal
+ * facet atomization, and target-local accumulative reduce over revalidated
+ * primary map points plus generated deltas. Receipt contents and the bounded
+ * operation graph stay identical to V50; no semantic server-side merge,
+ * coverage promotion, or additional model operation is introduced. */
+export function groundSettledKnowledgeAnswerV51(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV51 {
+  const grounded = groundSettledKnowledgeAnswerV50(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51
   });
 }
 

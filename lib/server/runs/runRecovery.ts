@@ -96,6 +96,7 @@ import {
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
 import {
+  knowledgeGroundingInheritedReasoningEffortV1,
   resolveKnowledgeGroundingExecutionPolicyV1,
   type KnowledgeGroundingEffectiveExecutionPolicyV1
 } from "../knowledge/groundingExecutionPolicy";
@@ -2063,9 +2064,10 @@ async function recoverCheckpointedToolLoop(
         seed: {
           draft: dispatchDraft,
           modelCapabilities: run.normalizedRequest.modelCapabilities,
-          reasoningEffort: typeof run.normalizedRequest.params.reasoningEffort === "string"
-            ? run.normalizedRequest.params.reasoningEffort
-            : null,
+          reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
+            acceptedReasoningEffort: run.normalizedRequest.reasoningEffort,
+            params: run.normalizedRequest.params
+          }),
           request: requestText,
           routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
           transport: providerRuntime?.structuredOutputAdapter
@@ -3492,9 +3494,10 @@ async function refreshProviderRunOnceRegistered(
           draft: recovered.draft,
           evidenceBindings: recovered.evidenceBindings,
           modelCapabilities: acceptedRequest.modelCapabilities,
-          reasoningEffort: typeof acceptedRequest.params.reasoningEffort === "string"
-            ? acceptedRequest.params.reasoningEffort
-            : null,
+          reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
+            acceptedReasoningEffort: acceptedRequest.reasoningEffort,
+            params: acceptedRequest.params
+          }),
           request: requestText,
           routeInstruction: KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
           transport: runtime.structuredOutputAdapter
@@ -3753,9 +3756,10 @@ async function refreshProviderRunOnceRegistered(
               source.sourceArtifactId
             ]),
             modelCapabilities: acceptedRequest.modelCapabilities,
-            reasoningEffort: typeof acceptedRequest.params.reasoningEffort === "string"
-              ? acceptedRequest.params.reasoningEffort
-              : null,
+            reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
+              acceptedReasoningEffort: acceptedRequest.reasoningEffort,
+              params: acceptedRequest.params
+            }),
             request: requestText,
             routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
             transport: runtime.structuredOutputAdapter

@@ -41,9 +41,11 @@ import {
   validateKnowledgeCoverageScopeCompletenessV1
 } from "./coverageScopeCompletenessV1";
 import {
-  decodeKnowledgeCoverageScopeCompletenessPromptV4,
-  decodeKnowledgeCoverageScopePromptV6AnswerGranularityV2
-} from "./coverageScopeAnswerGranularityV2";
+  decodeKnowledgeCoverageScopeCompletenessPromptV5
+} from "./coverageScopeSetReductionV1";
+import {
+  decodeKnowledgeCoverageScopePromptV6RecallMapV1
+} from "./coverageScopeRecallMapV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
 } from "./coverageScopeClosureV1";
@@ -1282,7 +1284,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
     expect(result.settlement).toMatchObject({
       requestCoverage: "complete",
-      supportedClaimCount: 2
+      supportedClaimCount: 3
     });
     expect(result.settlement.finalText).toContain(
       "Beta removes duplicates and preserves stability."
@@ -1562,6 +1564,115 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     expect(result.settlement.requestCoverage).toBe("complete");
   });
 
+  it("drops a single-handle joint finding without a whole-Scope retry", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    let scopeCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION && scopeCalls++ === 0
+        ? {
+            output: {
+              ...scopeOutput(false),
+              jointFindings: [{
+                description: "Do not treat alpha alone as a joint finding.",
+                evidenceAtomIds: ["A1"],
+                requestAnchor: "alpha"
+              }]
+            },
+            providerResponseId: "response-invalid-joint-provenance",
+            usage
+          }
+        : baseline(operation));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(scopeCalls).toBe(1);
+    expect(result.operations.filter(({ operation }) =>
+      operation === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION)).toHaveLength(1);
+    expect(recorder.entries.get(2)?.acceptedResult).toEqual(scopeOutput(false));
+    expect(JSON.stringify(recorder.entries.get(2)?.acceptedResult)).not.toContain(
+      "alpha alone as a joint finding"
+    );
+    expect(result.settlement.requestCoverage).toBe("complete");
+  });
+
+  it("globally supersedes a local no-data item only through its positive anchor peer", async () => {
+    const recorder = lifecycleRecorder();
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
+      output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+        ? draftOutput()
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+          ? {
+              evidenceUnits: [{ findings: [], handle: "K1" }, {
+                findings: [],
+                handle: "K2"
+              }],
+              jointFindings: [],
+              unsupportedDimensions: [{
+                description: "Explain alpha.",
+                requestAnchor: "Q2"
+              }],
+              version: 6
+            }
+          : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+            ? {
+                additions: [{
+                  description: "Explain how alpha preserves order.",
+                  evidenceAtomIds: ["A1"],
+                  requestAnchor: "Q2"
+                }],
+                version: 1
+              }
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+              ? {
+                  claims: [{
+                    id: "C1",
+                    supportHandles: ["K1"],
+                    verdict: "supported"
+                  }],
+                  coverage: [{ id: "D1", status: "excluded", supportIds: [] }, {
+                    id: "D2",
+                    status: "covered",
+                    supportIds: ["C1"]
+                  }],
+                  extractIds: [],
+                  insufficientReason: "not_applicable",
+                  version: 1
+                }
+              : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+                ? closureOutput("D2")
+                : (() => { throw new Error("unexpected_current_operation"); })(),
+      providerResponseId: `response-${operation.name}`,
+      usage
+    }));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+      KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+    ]);
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "complete",
+      supportedClaimCount: 1
+    });
+    expect(recorder.entries.get(4)?.acceptedResult).toMatchObject({
+      coverage: [{ id: "D1", status: "excluded" }, {
+        id: "D2",
+        status: "covered"
+      }]
+    });
+  });
+
   it("reserves both correction calls after one structural repair and closure veto", async () => {
     const recorder = lifecycleRecorder();
     const baseline = currentExecution(false);
@@ -1615,7 +1726,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     expect(snapshots).toHaveLength(8);
     expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
     const packed = manifest();
-    expect(decodeKnowledgeCoverageScopePromptV6AnswerGranularityV2({
+    expect(decodeKnowledgeCoverageScopePromptV6RecallMapV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
       evidenceManifest: packed.message,
@@ -1666,15 +1777,15 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 31
+      version: 35
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 31
+      version: 35
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 31
+      version: 35
     });
   });
 
@@ -1759,7 +1870,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
       recorder.entries.get(4)?.acceptedRequest
     );
-    expect(decodeKnowledgeCoverageScopeCompletenessPromptV4({
+    expect(decodeKnowledgeCoverageScopeCompletenessPromptV5({
       acceptedScope: initialScope,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
@@ -1808,6 +1919,37 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
     expect(finalPayload).not.toHaveProperty("draft");
     expect(finalPayload).not.toHaveProperty("evidenceManifest");
+  });
+
+  it("keeps novel target claims when a grouped Supplement repeats the primary Draft", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+        ? {
+            output: {
+              targets: {
+                D2: ["Alpha preserves order.", "Beta removes duplicates."]
+              },
+              version: 2
+            },
+            providerResponseId: "response-mixed-duplicate-supplement",
+            usage
+          }
+        : baseline(operation));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "complete",
+      supportedClaimCount: 2
+    });
+    expect(recorder.entries.get(6)?.acceptedResult).toEqual({
+      targets: { D2: ["Beta removes duplicates."] },
+      version: 2
+    });
   });
 
   it("canonicalizes harmless Draft presentation before durable acceptance", async () => {
@@ -2051,7 +2193,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const packed = manifest();
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(decodeKnowledgeCoverageScopePromptV6AnswerGranularityV2({
+    expect(decodeKnowledgeCoverageScopePromptV6RecallMapV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
       evidenceManifest: packed.message,

@@ -134,6 +134,9 @@ export type NormalizedRunRequest = {
     skillId: string;
   }>>;
   params: Record<string, unknown>;
+  /** Provider-neutral reasoning control frozen at admission. Historical
+   * accepted requests may omit it and are decoded from their exact params. */
+  reasoningEffort?: string | null;
   prompt: {
     /**
      * Exact standard-chat baseline evidence for ordinary runs: the resolved

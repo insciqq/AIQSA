@@ -98,6 +98,7 @@ import { executeKnowledgeAnswerGroundingV21 } from
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
 import {
+  knowledgeGroundingInheritedReasoningEffortV1,
   resolveKnowledgeGroundingExecutionPolicyV1,
   type KnowledgeGroundingExecutionPolicyV1
 } from "../knowledge/groundingExecutionPolicy";
@@ -1396,9 +1397,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             "The effective Knowledge request is empty"
           );
         }
-        const reasoningEffort = typeof normalizedRequest.params.reasoningEffort === "string"
-          ? normalizedRequest.params.reasoningEffort
-          : null;
+        const reasoningEffort = knowledgeGroundingInheritedReasoningEffortV1({
+          acceptedReasoningEffort: normalizedRequest.reasoningEffort,
+          params: normalizedRequest.params
+        });
         const groundingExecutionPolicy = pipeline === "v21_scope_v6"
           ? resolveKnowledgeGroundingExecutionPolicyV1({
               inheritedReasoningEffort: reasoningEffort,

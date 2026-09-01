@@ -12,6 +12,7 @@ import {
   knowledgeCoverageScopeVerifiedPatchFailureV1,
   mergeKnowledgeCoverageScopeVerifiedPatchesV1,
   rejectKnowledgeCoverageScopeForeignLocalFindingsV1,
+  rejectKnowledgeCoverageScopeInvalidProvenanceFindingsV2,
   validateKnowledgeCoverageScopeV6VerifiedPatchV1
 } from "./coverageScopeVerifiedPatchRepairV1";
 
@@ -152,6 +153,80 @@ describe("Knowledge Coverage Scope verified patch repair V1", () => {
       diagnostic: { code: "anchor_invalid" },
       kind: "rejected"
     });
+  });
+
+  it("drops a single-handle joint finding while preserving valid siblings", () => {
+    const { base, evidence, request } = fixture();
+    const validEvidenceUnits = [{
+      ...base.evidenceUnits[0],
+      findings: [base.evidenceUnits[0]!.findings[0]]
+    }, base.evidenceUnits[1]];
+    const invalidJoint = {
+      ...base,
+      evidenceUnits: validEvidenceUnits,
+      jointFindings: [{
+        description: "Do not treat one source as a joint comparison.",
+        evidenceAtomIds: ["A1"],
+        requestAnchor: "ordering"
+      }]
+    };
+
+    const rejection = rejectKnowledgeCoverageScopeInvalidProvenanceFindingsV2(
+      invalidJoint,
+      { evidence, request }
+    );
+
+    expect(rejection.droppedFindingPaths).toEqual(["/jointFindings/0"]);
+    expect(rejection.validation.kind).toBe("accepted");
+    if (rejection.validation.kind !== "accepted") return;
+    expect(rejection.validation.output.evidenceUnits).toEqual(validEvidenceUnits);
+    expect(rejection.validation.output.jointFindings).toEqual([]);
+    expect(JSON.stringify(rejection.validation.output)).not.toContain(
+      "one source as a joint comparison"
+    );
+  });
+
+  it("drops a latent invalid joint item during verified repair without patching it", () => {
+    const { base, evidence, request } = fixture();
+    const invalidJoint = {
+      ...base,
+      evidenceUnits: [{
+        ...base.evidenceUnits[0],
+        findings: [base.evidenceUnits[0]!.findings[0]]
+      }, base.evidenceUnits[1]],
+      jointFindings: [{
+        description: "Do not retain malformed joint provenance.",
+        evidenceAtomIds: ["A1"],
+        requestAnchor: "ordering"
+      }]
+    };
+    const validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(
+      invalidJoint,
+      { evidence, request }
+    );
+    expect(validation.kind).toBe("rejected");
+    if (validation.kind !== "rejected" || !validation.repairBase) return;
+    expect(validation.diagnostic).toMatchObject({
+      code: "joint_handle_count",
+      path: "/jointFindings/0/evidenceAtomIds"
+    });
+
+    const merged = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
+      base: validation.repairBase,
+      diagnostic: validation.diagnostic,
+      evidence,
+      rejectInvalidProvenanceFindings: true,
+      repair: invalidJoint,
+      request
+    });
+
+    expect(merged.kind).toBe("accepted");
+    if (merged.kind !== "accepted") return;
+    expect(merged.patchedPaths).toEqual([]);
+    expect(merged.output.jointFindings).toEqual([]);
+    expect(JSON.stringify(merged.output)).not.toContain(
+      "malformed joint provenance"
+    );
   });
 
   it("patches only verifier-rejected paths and preserves valid anchors and descriptions", () => {

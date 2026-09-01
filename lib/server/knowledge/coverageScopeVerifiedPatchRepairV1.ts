@@ -29,6 +29,7 @@ import {
 export const KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_VERSION = 1 as const;
 export const KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_LIMIT = 32 as const;
 export const KNOWLEDGE_COVERAGE_SCOPE_LOCAL_PROVENANCE_REJECTION_VERSION = 1 as const;
+export const KNOWLEDGE_COVERAGE_SCOPE_INVALID_PROVENANCE_REJECTION_VERSION = 2 as const;
 
 export const KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_PROTOCOL_V1 = Object.freeze({
   mergeMode: "validator_directed_json_pointer",
@@ -50,6 +51,18 @@ export const KNOWLEDGE_COVERAGE_SCOPE_LOCAL_PROVENANCE_REJECTION_PROTOCOL_V1 =
     revalidation: "whole_scope_after_each_drop",
     trigger: "foreign_evidence_atom",
     version: KNOWLEDGE_COVERAGE_SCOPE_LOCAL_PROVENANCE_REJECTION_VERSION
+  } as const);
+
+export const KNOWLEDGE_COVERAGE_SCOPE_INVALID_PROVENANCE_REJECTION_PROTOCOL_V2 =
+  Object.freeze({
+    action: "drop_entire_invalid_finding",
+    authority: "server_validator_only",
+    eligibleDiagnostics: Object.freeze([
+      "finding_atom_provenance",
+      "joint_handle_count"
+    ]),
+    revalidation: "whole_scope_after_each_drop",
+    version: KNOWLEDGE_COVERAGE_SCOPE_INVALID_PROVENANCE_REJECTION_VERSION
   } as const);
 
 export type KnowledgeCoverageScopeRepairCandidateV1 = KnowledgeCoverageScopeOutputV6;
@@ -482,6 +495,7 @@ export function mergeKnowledgeCoverageScopeVerifiedPatchesV1(input: Readonly<{
   diagnostic: KnowledgeCoverageScopeRepairDiagnosticV1;
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   rejectForeignLocalFindings?: true;
+  rejectInvalidProvenanceFindings?: true;
   repair: unknown;
   request: string;
 }>): KnowledgeCoverageScopeVerifiedPatchMergeV1 {
@@ -517,8 +531,11 @@ export function mergeKnowledgeCoverageScopeVerifiedPatchesV1(input: Readonly<{
         value: validation.value
       });
     }
-    if (input.rejectForeignLocalFindings === true) {
-      const rejection = dropForeignLocalFindingV1(candidate, validation.diagnostic);
+    if (input.rejectForeignLocalFindings === true ||
+      input.rejectInvalidProvenanceFindings === true) {
+      const rejection = input.rejectInvalidProvenanceFindings === true
+        ? dropInvalidProvenanceFindingV2(candidate, validation.diagnostic)
+        : dropForeignLocalFindingV1(candidate, validation.diagnostic);
       if (rejection) {
         candidate = rejection.candidate;
         validation = validateKnowledgeCoverageScopeV6RepairFeedbackV1(candidate, {
@@ -581,6 +598,8 @@ export function knowledgeCoverageScopeRepairBaseHashV1(
 
 const localFindingAtomPathPattern =
   /^\/evidenceUnits\/(0|[1-9]\d{0,3})\/findings\/(0|[1-9]\d{0,3})\/evidenceAtomIds$/u;
+const jointFindingAtomPathPattern =
+  /^\/jointFindings\/(0|[1-9]\d{0,3})\/evidenceAtomIds$/u;
 
 function dropForeignLocalFindingV1(
   candidate: KnowledgeCoverageScopeRepairCandidateV1,
@@ -608,6 +627,33 @@ function dropForeignLocalFindingV1(
     ? Object.freeze({
         candidate: next,
         findingPath: `/evidenceUnits/${unitIndex}/findings/${findingIndex}`
+      })
+    : null;
+}
+
+function dropInvalidProvenanceFindingV2(
+  candidate: KnowledgeCoverageScopeRepairCandidateV1,
+  diagnostic: KnowledgeCoverageScopeRepairDiagnosticV1
+): Readonly<{
+  candidate: KnowledgeCoverageScopeRepairCandidateV1;
+  findingPath: string;
+}> | null {
+  const local = dropForeignLocalFindingV1(candidate, diagnostic);
+  if (local) return local;
+  if (diagnostic.code !== "joint_handle_count") return null;
+  const match = jointFindingAtomPathPattern.exec(diagnostic.path);
+  if (!match) return null;
+  const findingIndex = Number(match[1]);
+  if (findingIndex >= candidate.jointFindings.length) return null;
+
+  const mutable = cloneJson(candidate);
+  if (!record(mutable) || !Array.isArray(mutable.jointFindings)) return null;
+  mutable.jointFindings.splice(findingIndex, 1);
+  const next = decodeKnowledgeCoverageScopeRepairCandidateV1(mutable);
+  return next
+    ? Object.freeze({
+        candidate: next,
+        findingPath: `/jointFindings/${findingIndex}`
       })
     : null;
 }
@@ -642,6 +688,47 @@ export function rejectKnowledgeCoverageScopeForeignLocalFindingsV1(
     removalCount += 1) {
     if (validation.kind === "accepted") break;
     const rejection = dropForeignLocalFindingV1(candidate, validation.diagnostic);
+    if (!rejection) break;
+    candidate = rejection.candidate;
+    droppedFindingPaths.push(rejection.findingPath);
+    validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(candidate, input);
+  }
+
+  return Object.freeze({
+    droppedFindingPaths: Object.freeze([...droppedFindingPaths]),
+    validation
+  });
+}
+
+/**
+ * V2 extends the same fail-closed whole-item rule to a purported joint finding
+ * whose atoms span fewer than two or more than the admitted handle limit. The
+ * server never converts it to a local finding, filters its atoms, or transfers
+ * provenance; valid siblings survive only after whole-Scope revalidation.
+ */
+export function rejectKnowledgeCoverageScopeInvalidProvenanceFindingsV2(
+  value: unknown,
+  input: Readonly<{
+    atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
+    evidence: readonly KnowledgeCoverageEvidenceV6[];
+    request: string;
+  }>
+): KnowledgeCoverageScopeLocalProvenanceRejectionV1 {
+  let candidate = decodeKnowledgeCoverageScopeRepairCandidateV1(value);
+  let validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(value, input);
+  const droppedFindingPaths: string[] = [];
+  if (!candidate) {
+    return Object.freeze({
+      droppedFindingPaths: Object.freeze([]),
+      validation
+    });
+  }
+
+  for (let removalCount = 0;
+    removalCount < KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDimensions;
+    removalCount += 1) {
+    if (validation.kind === "accepted") break;
+    const rejection = dropInvalidProvenanceFindingV2(candidate, validation.diagnostic);
     if (!rejection) break;
     candidate = rejection.candidate;
     droppedFindingPaths.push(rejection.findingPath);

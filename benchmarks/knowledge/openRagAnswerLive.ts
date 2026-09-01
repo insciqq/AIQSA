@@ -31,7 +31,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -656,6 +656,7 @@ function evidenceFacts(input: Readonly<{
 }
 
 export async function loadProductAnswer(input: Readonly<{
+  answerReasoningEffort: string | null;
   case: OpenRagAnswerCase;
   chat: ChatExecution;
   goldDocumentId: string;
@@ -830,6 +831,15 @@ export async function loadProductAnswer(input: Readonly<{
     routeInstruction,
     transport
   });
+  if (!openRagAnswerReplayMatchesReasoningControl(
+    replaySnapshot,
+    input.answerReasoningEffort
+  )) {
+    // A live result that cannot be replayed under its admitted answer control
+    // is invalid evidence. Detect the product/runtime drift at capture time,
+    // before an opaque unreplayable checkpoint is accepted.
+    throw new Error("open_rag_answer_replay_controls_mismatch");
+  }
   const groundingResult = run?.knowledgeRetrievalSession?.groundingResult;
   const groundingEvidence = groundingResult?.evidence;
   const groundingEvidenceRecord = isRecord(groundingEvidence) ? groundingEvidence : null;
@@ -955,6 +965,9 @@ function createLiveRuntime(input: Readonly<{
         stage: "answer"
       });
       return loadProductAnswer({
+        answerReasoningEffort: typeof input.answerControls.reasoningEffort === "string"
+          ? input.answerControls.reasoningEffort
+          : null,
         case: benchmarkCase,
         chat,
         goldDocumentId,
@@ -1231,7 +1244,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51,
         parserProfileVersion: revision.pdfParserProfileVersion,
         pipelineVersion: KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
         profileRevisionId: revision.id,

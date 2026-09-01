@@ -40,14 +40,14 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_ANSWER_LEVEL_COMPRESSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
-  decodeKnowledgeAnswerDraftV21,
-  knowledgeAnswerDraftPromptV21
+  decodeKnowledgeAnswerDraftV21
 } from "./answerGroundingV21";
 import {
-  knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1
-} from "./answerGroundingAnswerLevelCompressionV1";
+  knowledgeAnswerDraftPromptV21GlobalReducerV1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1
+} from "./answerGroundingGlobalReducerV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
@@ -67,9 +67,11 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1
 } from "./coverageScopeCompletenessV1";
 import {
-  knowledgeCoverageScopeCompletenessPromptV4,
-  knowledgeCoverageScopePromptV6AnswerGranularityV2
-} from "./coverageScopeAnswerGranularityV2";
+  knowledgeCoverageScopeCompletenessPromptV5
+} from "./coverageScopeSetReductionV1";
+import {
+  knowledgeCoverageScopePromptV6RecallMapV1
+} from "./coverageScopeRecallMapV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
@@ -1277,13 +1279,13 @@ describe("Knowledge evidence dispatch repository", () => {
       request,
       scope: acceptedScope
     })).not.toBeNull();
-    const draftPrompt = knowledgeAnswerDraftPromptV21({
+    const draftPrompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
       draftPass: "primary",
       evidenceManifest: currentManifest.message,
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const initialScopePrompt = knowledgeCoverageScopePromptV6AnswerGranularityV2({
+    const initialScopePrompt = knowledgeCoverageScopePromptV6RecallMapV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: currentManifest.message,
@@ -1299,7 +1301,7 @@ describe("Knowledge evidence dispatch repository", () => {
       path: "/",
       version: 1
     } as const;
-    const repairScopePrompt = knowledgeCoverageScopePromptV6AnswerGranularityV2({
+    const repairScopePrompt = knowledgeCoverageScopePromptV6RecallMapV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: currentManifest.message,
@@ -1310,7 +1312,7 @@ describe("Knowledge evidence dispatch repository", () => {
       scopePass: "repair"
     });
     const scopePayloadHash = knowledgeAnswerHash(acceptedScope);
-    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV4({
+    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV5({
       acceptedScope,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       completenessPass: "initial",
@@ -1318,21 +1320,21 @@ describe("Knowledge evidence dispatch repository", () => {
       evidenceManifest: currentManifest.message,
       request
     });
-    const selectorPrompt = knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1({
+    const selectorPrompt = knowledgeGroundedSelectorPromptV21GlobalReducerV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       draft: acceptedDraft,
       evidence,
       evidenceManifest: currentManifest.message,
       request,
       scope: acceptedScope,
-      scopeProtocol: "append_only_completeness_v1",
+      scopeProtocol: "append_only_completeness_reduce_v2",
       selectorPass: "initial"
     });
     const common = {
       evidenceReceiptHash: currentManifest.manifestHash,
       executionPolicy,
       protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_ANSWER_LEVEL_COMPRESSION_PROTOCOL_V1,
+        KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
       transport: "native_strict" as const
     };
     const snapshots = [
