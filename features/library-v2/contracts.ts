@@ -1,3 +1,4 @@
+import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { ReactNode } from "react";
 
 export type LibraryTabIdV2 = "assistants" | "knowledge" | "files" | "memory";
@@ -25,6 +26,8 @@ export type LibraryTabV2 = Readonly<{
 export type AssistantSummaryV2 = Readonly<{
   archived: boolean;
   available: boolean;
+  /** Immutable identity recipe pinned in the Assistant revision, when known. */
+  avatar?: AssistantAvatarRecipe;
   description: string;
   id: string;
   name: string;

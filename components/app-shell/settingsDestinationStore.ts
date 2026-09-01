@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type SettingsSection = "appearance" | "mcp";
+export type SettingsSection = "account" | "data" | "defaults" | "general" | "mcp" | "memory";
 
 export type SettingsDestinationSnapshot = {
   memoryOpen: boolean;
@@ -14,12 +14,13 @@ export type SettingsDestinationStore = SettingsDestinationSnapshot & {
   openMemorySettings(): void;
   openMcpSettings(): void;
   openSettings(): void;
+  openSettingsSection(section: SettingsSection): void;
 };
 
 export const initialSettingsDestinationSnapshot: SettingsDestinationSnapshot = {
   memoryOpen: false,
   settingsOpen: false,
-  settingsSection: "appearance"
+  settingsSection: "general"
 };
 
 export const useSettingsDestinationStore = create<SettingsDestinationStore>((set) => ({
@@ -37,6 +38,9 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
     set({ memoryOpen: false, settingsOpen: true, settingsSection: "mcp" });
   },
   openSettings() {
-    set({ memoryOpen: false, settingsOpen: true, settingsSection: "appearance" });
+    set({ memoryOpen: false, settingsOpen: true, settingsSection: "general" });
+  },
+  openSettingsSection(section) {
+    set({ memoryOpen: false, settingsOpen: true, settingsSection: section });
   }
 }));

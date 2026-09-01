@@ -44,7 +44,7 @@ test("administrator-disabled Memory preserves its exact-fact management entry po
 test("Settings has one modal layer, a three-value theme registry, and MCP discard ownership", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=settings&state=dirty");
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
-  await page.getByRole("button", { name: "Appearance" }).click();
+  await page.getByRole("button", { name: "General" }).click();
   const confirmation = page.getByRole("alertdialog", { name: "Unsaved MCP changes" });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole("button", { name: "Discard changes" }).click();

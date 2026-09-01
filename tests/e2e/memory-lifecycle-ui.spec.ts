@@ -330,7 +330,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     .getByRole("menuitem", { name: "Archive" }).click();
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toHaveCount(0);
 
-  await workspace.getByRole("button", { name: "Archived chats" }).click();
+  await page.getByTestId("workspace-rail").getByRole("button", { name: "Archived chats" }).click();
   const archivedDialog = page.getByRole("dialog", { name: "Archived chats" });
   // Anchored: list rows now also carry Restore/Delete actions naming the chat.
   await archivedDialog.getByRole("button", { name: /^Retained lifecycle/ }).click();
