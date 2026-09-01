@@ -108,6 +108,8 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V42 = 42 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V43 = 43 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V44 = 44 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45 = 45 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V46 = 46 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47 = 47 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -873,6 +875,28 @@ export type KnowledgeGroundingEvidenceV45 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV46 =
+  KnowledgeGroundingOperationEvidenceV45;
+
+export type KnowledgeGroundingEvidenceV46 = Omit<
+  KnowledgeGroundingEvidenceV45,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV46[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V46;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV47 =
+  KnowledgeGroundingOperationEvidenceV46;
+
+export type KnowledgeGroundingEvidenceV47 = Omit<
+  KnowledgeGroundingEvidenceV46,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV47[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -913,7 +937,9 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV42
   | KnowledgeGroundingEvidenceV43
   | KnowledgeGroundingEvidenceV44
-  | KnowledgeGroundingEvidenceV45;
+  | KnowledgeGroundingEvidenceV45
+  | KnowledgeGroundingEvidenceV46
+  | KnowledgeGroundingEvidenceV47;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3255,6 +3281,33 @@ export function groundSettledKnowledgeAnswerV45(
   return Object.freeze({
     ...grounded,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45
+  });
+}
+
+/** V46 attests Snapshot V30's query-granularity and epistemic-fidelity
+ * prompts. Receipt contents and operation count stay identical to V45;
+ * historical relevance and modality instructions retain their exact bytes. */
+export function groundSettledKnowledgeAnswerV46(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV46 {
+  const grounded = groundSettledKnowledgeAnswerV45(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V46
+  });
+}
+
+/** V47 attests Snapshot V31's answer-level compression and server-issued
+ * request-anchor-ID prompts. Receipt contents and operation count stay
+ * identical to V46; historical prompts keep their exact query-granularity and
+ * epistemic-fidelity semantics. */
+export function groundSettledKnowledgeAnswerV47(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV47 {
+  const grounded = groundSettledKnowledgeAnswerV46(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V47
   });
 }
 

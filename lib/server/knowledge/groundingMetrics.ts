@@ -68,7 +68,7 @@ type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
   supportedClaimCount: number;
   unsupportedClaimCount: number;
   version: 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 |
-    33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45;
+    33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47;
 }>;
 
 type KnowledgeGroundingMetricsEvidence = KnowledgeGroundingMetricsEvidenceV18 |
@@ -156,7 +156,7 @@ export function aggregateKnowledgeGroundingMetrics(
       || evidence.version === 36 || evidence.version === 37 || evidence.version === 38 ||
       evidence.version === 39 || evidence.version === 40 || evidence.version === 41 ||
       evidence.version === 42 || evidence.version === 43 || evidence.version === 44 ||
-      evidence.version === 45
+      evidence.version === 45 || evidence.version === 46 || evidence.version === 47
       ? evidence.coverage.excludedDimensionCount ?? 0
       : 0;
     totalMissingCoverageDimensions += evidence.version === 18
@@ -170,14 +170,15 @@ export function aggregateKnowledgeGroundingMetrics(
       || evidence.version === 36 || evidence.version === 37 || evidence.version === 38 ||
       evidence.version === 39 || evidence.version === 40 || evidence.version === 41 ||
       evidence.version === 42 || evidence.version === 43 || evidence.version === 44 ||
-      evidence.version === 45
+      evidence.version === 45 || evidence.version === 46 || evidence.version === 47
       ? evidence.completeness?.addedDimensionCount ?? 0
       : 0;
     totalScopeClosureReopenedDimensions += evidence.version === 34 ||
       evidence.version === 35 || evidence.version === 36 || evidence.version === 37 ||
       evidence.version === 38 || evidence.version === 39 || evidence.version === 40 ||
       evidence.version === 41 || evidence.version === 42 || evidence.version === 43 ||
-      evidence.version === 44 || evidence.version === 45
+      evidence.version === 44 || evidence.version === 45 || evidence.version === 46 ||
+      evidence.version === 47
       ? evidence.closure?.reopenedDimensionCount ?? 0
       : 0;
     modelOperations += evidence.operations.length;
@@ -216,7 +217,8 @@ export function aggregateKnowledgeGroundingMetrics(
         evidence.version === 37 || evidence.version === 38 || evidence.version === 39 ||
         evidence.version === 40 || evidence.version === 41 || evidence.version === 42 ||
         evidence.version === 43 || evidence.version === 44 ||
-        evidence.version === 45) &&
+        evidence.version === 45 || evidence.version === 46 ||
+        evidence.version === 47) &&
         evidence.closure !== null).length,
     selectorContradicted,
     selectorSupported,
@@ -250,7 +252,8 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
     value.version !== 35 && value.version !== 36 && value.version !== 37 &&
     value.version !== 38 && value.version !== 39 && value.version !== 40 &&
     value.version !== 41 && value.version !== 42 && value.version !== 43 &&
-    value.version !== 44 && value.version !== 45 ||
+    value.version !== 44 && value.version !== 45 && value.version !== 46 &&
+    value.version !== 47 ||
     typeof value.correctionAttempted !== "boolean" ||
     typeof value.correctionSucceeded !== "boolean" ||
     !counter(value.draftClaimCount) || !counter(value.contradictedClaimCount) ||
@@ -273,7 +276,8 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
   if ((value.version === 34 || value.version === 35 || value.version === 36 ||
     value.version === 37 || value.version === 38 || value.version === 39 ||
     value.version === 40 || value.version === 41 || value.version === 42 ||
-    value.version === 43 || value.version === 44 || value.version === 45) &&
+    value.version === 43 || value.version === 44 || value.version === 45 ||
+    value.version === 46 || value.version === 47) &&
     value.closure !== null &&
     (!record(value.closure) ||
     value.closure.status !== "accepted" ||
@@ -281,7 +285,8 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
   const operationLimit = value.version === 35 || value.version === 36 ||
     value.version === 37 || value.version === 38 || value.version === 39 ||
     value.version === 40 || value.version === 41 || value.version === 42 ||
-    value.version === 43 || value.version === 44 || value.version === 45
+    value.version === 43 || value.version === 44 || value.version === 45 ||
+    value.version === 46 || value.version === 47
     ? KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2
       : value.version === 25 || value.version === 26 || value.version === 27 ||
         value.version === 28 || value.version === 29 || value.version === 30 ||
@@ -298,7 +303,7 @@ function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvid
 
 const METRICS_ROW_LIMIT = 10_000;
 
-/** Loads V18-V45 content-free receipts; malformed rows are ignored. */
+/** Loads V18-V47 content-free receipts; malformed rows are ignored. */
 export async function loadKnowledgeGroundingOperationalMetrics(
   client: Pick<PrismaClient, "knowledgeGroundingResult">,
   input: Readonly<{ limit?: number; since?: Date }> = {}
@@ -313,7 +318,7 @@ export async function loadKnowledgeGroundingOperationalMetrics(
       evidence: { not: Prisma.AnyNull },
       version: {
         in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
-          34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45]
+          34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
       },
       ...(input.since ? { createdAt: { gte: input.since } } : {})
     }
