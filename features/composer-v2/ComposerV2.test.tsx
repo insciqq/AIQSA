@@ -153,19 +153,19 @@ describe("Composer v2", () => {
 
   it("closes each layer from the sheet scrim, the sticky close control, and Escape", async () => {
     render(<ComposerV2 {...props()} />);
-    const plus = screen.getByRole("button", { name: "Capabilities" });
+    const plus = screen.getByRole("button", { name: "Add" });
 
     // Scrim tap: the backdrop button is the touch exit of the bottom sheet.
     fireEvent.click(plus);
-    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+    expect(screen.getByRole("menu", { name: "Add" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Close menu" }));
-    expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Add" })).toBeNull();
     await waitFor(() => expect(plus).toHaveFocus());
 
-    // Always-visible close control in the sheet header.
+    // The sheet header's close control (hidden on the desktop popover).
     fireEvent.click(plus);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Add" })).toBeNull();
     await waitFor(() => expect(plus).toHaveFocus());
 
     // Escape keeps closing the model sheet and restores its trigger.
@@ -177,7 +177,7 @@ describe("Composer v2", () => {
     await waitFor(() => expect(modelTrigger).toHaveFocus());
   });
 
-  it("keeps each picker open across Search, Knowledge, Skills, and MCP toggles", () => {
+  it("routes Search, Knowledge, Skills, and MCP through their own chip menus", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();
     const onSelectMcp = vi.fn();
@@ -208,34 +208,46 @@ describe("Composer v2", () => {
         version: 1
       }]
     };
+    const onOpenSkillLibrary = vi.fn();
     render(<ComposerV2 {...props({
       config,
-      initialLayer: "capabilities",
+      initialLayer: "add",
+      onOpenSkillLibrary,
       onSelectKnowledgeBaseIds: onKnowledge,
       onSelectSearchOptionIds: onSearch,
       onSelectMcp,
       onSelectSkillIds: onSelectSkills,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
-    // One visit combines several selections: no toggle closes its picker, so a
-    // second Search engine or Knowledge Base never needs the trigger reopened.
     const menuOpen = (name: string) =>
       expect(screen.getByRole("menu", { name })).toBeVisible();
+    const menuClosed = (name: string) =>
+      expect(screen.queryByRole("menu", { name })).toBeNull();
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Research Search/ }));
-    expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
-    menuOpen("Capabilities");
-
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Careful editor/ }));
-    expect(onSelectSkills).toHaveBeenCalledWith(["skill-editor"]);
-    menuOpen("Capabilities");
-    // The "+" menu no longer carries Knowledge or MCP rows: each has its own chip.
-    expect(screen.queryByRole("menuitemcheckbox", { name: /Финансы 2026/ })).toBeNull();
+    // "+" is Add only: files, Knowledge, an Assistant, Skills — no Search,
+    // MCP, or Skills lists.
+    menuOpen("Add");
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Research Search/ })).toBeNull();
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Careful editor/ })).toBeNull();
     expect(screen.queryByRole("menuitemradio", { name: /^Load all/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: /Attach files/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Skills…/ }));
+    expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
+    expect(onSelectSkills).not.toHaveBeenCalled();
+    menuClosed("Add");
 
+    // Search: one engine at a time; a choice closes the menu.
+    fireEvent.click(screen.getByRole("button", { name: "Choose web search" }));
+    menuOpen("Web search");
+    expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Research Search/ }));
+    expect(onSearch).toHaveBeenCalledWith(["research-search"]);
+    menuClosed("Web search");
+
+    // Knowledge: None / All my knowledge close; Base and Source toggles keep
+    // the picker open so several can be combined in one visit.
     fireEvent.click(screen.getByRole("button", { name: "Choose Knowledge" }));
     menuOpen("Knowledge");
-    expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["missing-base"]);
     menuOpen("Knowledge");
@@ -243,23 +255,37 @@ describe("Composer v2", () => {
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Unavailable knowledge base/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
     menuOpen("Knowledge");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^None/ }));
+    expect(onKnowledge).toHaveBeenLastCalledWith([]);
+    menuClosed("Knowledge");
 
     fireEvent.click(screen.getByRole("button", { name: "Change MCP mode" }));
     menuOpen("MCP tools");
-    expect(screen.queryByRole("menu", { name: "Knowledge" })).toBeNull();
     // Disclosure of what the modes act on; enabling stays in Settings.
-    expect(screen.getByTestId("composer-v2-mcp-enabled")).toHaveTextContent("Enabled: office-compute");
+    expect(screen.getByTestId("composer-v2-mcp-enabled")).toHaveTextContent("Enabled servers · 2");
+    expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("office-compute");
+    expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("jira");
     expect(screen.queryByRole("menuitemcheckbox", { name: /office-compute/ })).toBeNull();
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^Load all/ }));
     expect(onSelectMcp).toHaveBeenCalledWith({ mode: "load_all" });
-    menuOpen("MCP tools");
+    menuClosed("MCP tools");
+  });
+
+  it("opens the Knowledge menu from the Add menu and returns focus to the chip", async () => {
+    render(<ComposerV2 {...props({ initialLayer: "add" })} />);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Add Knowledge/ }));
+    expect(screen.getByRole("menu", { name: "Knowledge" })).toBeVisible();
+    expect(screen.queryByRole("menu", { name: "Add" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge" }), { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose Knowledge" })).toHaveFocus());
   });
 
   it("keeps blank-chat actions in the single composer capability rail", () => {
     render(<ComposerV2 {...props({ draft: "", onUploadFiles: vi.fn() })} />);
 
     expect(screen.queryByRole("group", { name: "Ways to start" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Capabilities" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Choose web search" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Turn off Search" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Choose Knowledge" })).toBeVisible();
   });
@@ -290,7 +316,9 @@ describe("Composer v2", () => {
       onSelectMcp
     })} />);
     expect(screen.getByTestId("composer-v2-mcp-enabled"))
-      .toHaveTextContent("Enabled: office-compute, jira · 1 needs attention");
+      .toHaveTextContent("Enabled servers · 2 · 1 needs attention");
+    expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("office-compute");
+    expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("jira");
     expect(screen.getByRole("menuitemradio", { name: /^Auto/ })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("menuitemradio", { name: /^Load all/ })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "true");
@@ -304,12 +332,12 @@ describe("Composer v2", () => {
     const onOpenAssistantPicker = vi.fn();
     render(<ComposerV2 {...props({
       assistantRemovedNotice: true,
-      initialLayer: "capabilities",
+      initialLayer: "add",
       onDismissAssistantRemovedNotice: onDismiss,
       onOpenAssistantPicker
     })} />);
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Use an Assistant/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Use an Assistant/ }));
     expect(onOpenAssistantPicker).toHaveBeenCalledOnce();
     expect(screen.getByTestId("composer-assistant-removed-notice")).toHaveTextContent(
       "manual settings now apply"
@@ -322,7 +350,7 @@ describe("Composer v2", () => {
     const onRemoveAssistant = vi.fn();
     const onSelectSearch = vi.fn();
     render(<ComposerV2 {...props({
-      initialLayer: "capabilities",
+      initialLayer: "search",
       onRemoveAssistant,
       onSelectSearchOptionIds: onSelectSearch,
       onToggleMcpServer: vi.fn(),
@@ -333,9 +361,10 @@ describe("Composer v2", () => {
       "Assistant: Research editor"
     );
     expect(screen.getByRole("button", { name: "GPT-5.2" })).toBeDisabled();
-    const searchRows = screen.getAllByRole("menuitemcheckbox", { name: /Web Search/ });
+    expect(screen.getByRole("button", { name: "Choose web search" })).toBeDisabled();
+    const searchRows = screen.getAllByRole("menuitemradio", { name: /Web Search/ });
     expect(searchRows[0]).toBeDisabled();
-    expect(screen.getAllByText("Managed by the Assistant").length).toBeGreaterThan(2);
+    expect(screen.getAllByText("Managed by the Assistant").length).toBeGreaterThan(1);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(onRemoveAssistant).toHaveBeenCalledOnce();
     expect(onSelectSearch).not.toHaveBeenCalled();
@@ -358,7 +387,7 @@ describe("Composer v2", () => {
     };
     render(<ComposerV2 {...props({
       config: { ...composerGalleryConfig, skills: [manualSkill] },
-      initialLayer: "capabilities",
+      initialLayer: "add",
       onOpenSkillLibrary,
       onSelectSkillIds,
       selectedAssistant: {
@@ -379,10 +408,11 @@ describe("Composer v2", () => {
     expect(ledger).toHaveTextContent("Added manually");
     expect(ledger).toHaveTextContent("1. Careful editor");
 
-    const manualRow = screen.getByRole("menuitemcheckbox", { name: /Careful editor/ });
-    expect(manualRow).toBeEnabled();
-    fireEvent.click(manualRow);
-    expect(onSelectSkillIds).toHaveBeenCalledWith([]);
+    // Manual Skills are chosen in the Skill Library; the Add menu only
+    // discloses the current count and names.
+    expect(screen.getByRole("menuitem", { name: /^Skills…/ })).toHaveTextContent("1 selected · Careful editor");
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Careful editor/ })).toBeNull();
+    expect(onSelectSkillIds).not.toHaveBeenCalled();
     fireEvent.click(within(ledger).getByRole("button", { name: "Manage" }));
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
   });
@@ -483,15 +513,24 @@ describe("Composer v2", () => {
     expect(surface).not.toContain("Custom OpenAI");
   });
 
-  it("collapses model capabilities to short tags and keeps one human footer line", () => {
-    render(<ComposerV2 {...props({ initialLayer: "model", onMakeModelDefault: vi.fn() })} />);
+  it("shows model capabilities as glyphs and keeps the Parameters footer", () => {
+    const onOpenModelParameters = vi.fn();
+    render(<ComposerV2 {...props({
+      initialLayer: "model",
+      modelParametersSummary: "Reasoning medium · Temp 1.0",
+      onMakeModelDefault: vi.fn(),
+      onOpenModelParameters
+    })} />);
 
     const option = screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ });
-    const tags = within(option).getByTitle(
+    const glyphs = within(option).getByTitle(
       "Reasoning · PDF and documents · Images · Web search · Tools · Streaming"
     );
-    expect(tags).toHaveTextContent("+3");
+    expect(glyphs.querySelectorAll("svg")).toHaveLength(5);
     expect(within(option).queryByText("Web search")).toBeNull();
+    // The group heading carries the provider family monogram, not a raw id.
+    expect(screen.getByRole("heading", { level: 3, name: /OpenAI/ }).querySelector(".v2-monogram"))
+      .toHaveTextContent("O");
 
     expect(screen.getByText("Applies to your next message.")).toBeVisible();
     expect(screen.queryByText(/Каталог отфильтрован/)).toBeNull();
@@ -499,8 +538,13 @@ describe("Composer v2", () => {
     const makeDefault = screen.getByRole("button", {
       name: "Make GPT-5.2 mini your default model"
     });
-    expect(makeDefault).toHaveTextContent("Make default");
-    expect(makeDefault).toBeVisible();
+    expect(makeDefault).toHaveTextContent("Set as default");
+
+    const parameters = screen.getByTestId("composer-v2-model-parameters");
+    expect(parameters).toHaveTextContent("Reasoning medium · Temp 1.0");
+    fireEvent.click(parameters);
+    expect(onOpenModelParameters).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
   });
 
   it("accepts PDFs through picker, drop, and clipboard with one capability filter", () => {

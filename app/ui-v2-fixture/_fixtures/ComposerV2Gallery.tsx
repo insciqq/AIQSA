@@ -1,5 +1,6 @@
 "use client";
 
+import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
@@ -14,8 +15,8 @@ import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachm
 
 export type ComposerGalleryState =
   | "assistant"
+  | "add"
   | "attachments"
-  | "capabilities"
   | "default"
   | "error"
   | "model"
@@ -300,7 +301,7 @@ const navigationChats: ChatNavigationSummaryWire[] = [{
 
 function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
   if (state === "model") return "model";
-  if (state === "capabilities" || state === "assistant") return "capabilities";
+  if (state === "add" || state === "assistant") return "add";
   return null;
 }
 
@@ -329,6 +330,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
   const [searchIds, setSearchIds] = useState<string[]>(state === "zero" ? [] : ["web-primary"]);
   const [knowledgeIds, setKnowledgeIds] = useState<string[]>(state === "zero" ? [] : ["kb-finance"]);
+  const [mcpSelection, setMcpSelection] = useState<McpRunSelection>({ mode: "auto" });
   const [attachmentItems, setAttachmentItems] = useState<ComposerAttachmentItemV2[]>(
     state === "attachments" ? attachmentGalleryItems : []
   );
@@ -384,11 +386,16 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               configError={state === "error"}
               draft={draft}
               initialLayer={initialLayer(state)}
+              mcpSelection={mcpSelection}
+              modelParametersSummary="Reasoning medium · Temp 1.0"
               onAttachmentCountLimitExceeded={() => undefined}
               onDraftChange={setDraft}
               onMakeModelDefault={() => undefined}
+              onOpenAssistantPicker={() => undefined}
+              onOpenKnowledgeLibrary={() => undefined}
               onOpenMcpSettings={() => undefined}
               onOpenModelParameters={() => undefined}
+              onOpenSkillLibrary={() => undefined}
               onRemoveAssistant={() => undefined}
               onRemoveAttachment={(id) => setAttachmentItems((current) =>
                 current.filter((item) => item.id !== id)
@@ -413,6 +420,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                   : item)
               )}
               onSelectKnowledgeBaseIds={(ids) => setKnowledgeIds([...ids])}
+              onSelectMcp={setMcpSelection}
               onSelectModel={(model) => setSelectedModel({ modelId: model.modelId, provider: model.provider })}
               onSelectSearchOptionIds={(ids) => setSearchIds([...ids])}
               onSend={() => setDraft("")}

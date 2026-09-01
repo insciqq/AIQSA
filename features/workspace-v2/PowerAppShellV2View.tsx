@@ -408,6 +408,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     ),
     [composer.attachments, composer.catalog?.attachmentLimits, composer.currentModel]
   );
+  // Picker footer summary ("Reasoning medium · Temp 1.0") from the controls
+  // the current model actually supports.
+  const modelParametersSummary = useMemo(() => {
+    const controls = composer.currentParameterControls;
+    const parts: string[] = [];
+    if (controls.reasoningEffort.supported) parts.push(`Reasoning ${composer.reasoningEffort}`);
+    if (controls.temperature.supported) parts.push(`Temp ${composer.temperature}`);
+    return parts.length > 0 ? parts.join(" · ") : null;
+  }, [composer.currentParameterControls, composer.reasoningEffort, composer.temperature]);
   const composerSurface = (
     <ComposerV2
       activeRun={thread.activeChatStreaming}
@@ -428,11 +437,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       hasReadyAttachments={attachmentItems.some((item) => !item.blocksSend)}
+      modelParametersSummary={modelParametersSummary}
       onAttachmentCountLimitExceeded={composer.composerActions.rejectAttachmentCount}
       onDismissAssistantRemovedNotice={composer.assistant.clearRemovedNotice}
       onDraftChange={composer.composerActions.changeDraft}
       onMakeModelDefault={composer.makeModelDefault}
       onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
+      onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
       onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={() => {

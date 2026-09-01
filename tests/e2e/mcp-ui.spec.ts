@@ -178,7 +178,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   });
 
   await signIn(page);
-  const capabilitiesTrigger = page.getByRole("button", { name: "Capabilities" });
+  const capabilitiesTrigger = page.getByRole("button", { name: "Add" });
   const toolsTrigger = page.getByRole("button", { name: "Change MCP mode" });
   await page.setViewportSize({ height: 844, width: 390 });
   await expectTouchSafe(capabilitiesTrigger);
@@ -187,10 +187,11 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await page.setViewportSize({ height: 900, width: 1440 });
   // MCP modes live in the Tools chip's own picker, not in the "+" menu.
   await capabilitiesTrigger.click();
-  await expect(page.getByRole("menu", { name: "Capabilities" })).toBeVisible();
-  await expect(page.getByRole("menu", { name: "Capabilities" }).getByRole("menuitemradio", { name: /^Auto/u }))
+  await expect(page.getByRole("menu", { name: "Add" })).toBeVisible();
+  await expect(page.getByRole("menu", { name: "Add" }).getByRole("menuitemradio", { name: /^Auto/u }))
     .toHaveCount(0);
-  await page.getByRole("menu", { name: "Capabilities" }).getByRole("button", { name: "Close" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu", { name: "Add" })).toHaveCount(0);
   await toolsTrigger.click();
   let tools = page.getByRole("menu", { name: "MCP tools" });
   await expect(tools.getByRole("menuitemradio", { name: /^Auto/u }))
@@ -235,22 +236,32 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   const loadAllMode = tools.getByRole("menuitemradio", { name: /^Load all/u });
   const offMode = tools.getByRole("menuitemradio", { name: /^Off/u });
   await expect(autoMode).toHaveAttribute("aria-checked", "true");
+  // A mode choice closes the anchored menu; the chip reflects it and the
+  // reopened menu shows the new checked row.
   await loadAllMode.click();
+  await expect(tools).toHaveCount(0);
+  await expect(toolsTrigger).toContainText("MCP: Load all");
+  await toolsTrigger.click();
   await expect(loadAllMode).toHaveAttribute("aria-checked", "true");
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Todoist/u })).toHaveCount(0);
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Notion/u })).toHaveCount(0);
   await offMode.click();
+  await expect(tools).toHaveCount(0);
+  await toolsTrigger.click();
   await expect(offMode).toHaveAttribute("aria-checked", "true");
   await autoMode.click();
+  await expect(tools).toHaveCount(0);
+  await toolsTrigger.click();
   await expect(autoMode).toHaveAttribute("aria-checked", "true");
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
-  await tools.getByRole("button", { name: "Close" }).click();
+  await page.keyboard.press("Escape");
+  await expect(tools).toHaveCount(0);
 
   expect(skillListRequests).toBe(0);
   await capabilitiesTrigger.click();
-  const capabilities = page.getByRole("menu", { name: "Capabilities" });
-  await capabilities.getByRole("menuitem", { name: "Manage Skills…" }).click();
+  const capabilities = page.getByRole("menu", { name: "Add" });
+  await capabilities.getByRole("menuitem", { name: /^Skills…/u }).click();
   let skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expect(skillLibrary.getByRole("button", { name: "Open Incident brief" })).toBeVisible();
   expect(skillListRequests).toBe(1);

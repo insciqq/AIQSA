@@ -51,7 +51,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "composer") {
     const state = fixtureState(
       query.state,
-      ["assistant", "attachments", "capabilities", "default", "error", "model", "zero"] as const,
+      ["add", "assistant", "attachments", "default", "error", "model", "zero"] as const,
       "default"
     );
     const { ComposerV2Gallery } = await import("./_fixtures/ComposerV2Gallery");
