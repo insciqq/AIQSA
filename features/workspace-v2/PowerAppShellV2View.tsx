@@ -31,7 +31,7 @@ import {
 import {
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
-import type { PowerAppShellV2Props } from "@/components/app-shell/powerAppShellV2Contracts";
+import type { PowerAppShellV2Props, ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import type {
   WorkspaceChatSummary,
   ThreadMessage
@@ -41,7 +41,7 @@ import {
   textFromThreadContent
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import { UiV2IconSprite } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import {
@@ -78,7 +78,19 @@ import {
   runTransportStateV2,
   transportLostForMessageV2
 } from "@/features/workspace-v2/runTransportPresentation";
-import { SettingsV2 } from "@/features/settings-v2/SettingsV2";
+import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
+import {
+  SettingsGroupLabelV2,
+  SettingsRowV2,
+  SettingsSwitchV2,
+  SettingsV2
+} from "@/features/settings-v2/SettingsV2";
+import { accountInitialsV2 } from "@/features/navigation-v2/AccountMenuV2";
+import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
+import {
+  openPermanentChatDeletionStatus,
+  usePermanentChatDeletionStore
+} from "@/components/app-shell/permanentChatDeletionStore";
 import { ProjectNavigationV2 } from "@/features/projects-v2/ProjectNavigationV2";
 import {
   CreateProjectDialogV2,
@@ -1034,6 +1046,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         <SettingsV2
           busy={mcpBusy}
           dirty={mcpDirty}
+          generalSlot={(
+            <SettingsRowV2
+              description="Play a short sound when an answer finishes in a background tab."
+              title="Answer sound"
+            >
+              <SettingsSwitchV2
+                checked={composer.notificationSoundEnabled}
+                label="Answer sound"
+                onChange={() => composer.toggleNotificationSound()}
+              />
+            </SettingsRowV2>
+          )}
           initialSection={settings.settings.section}
           mcpContent={(
             <McpSettingsSection
@@ -1045,6 +1069,59 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           noticeSlot={settings.notice ? (
             <ShellNotice notice={settings.notice} onDismiss={settings.dismissNotice} />
           ) : null}
+          panels={{
+            account: (
+              <SettingsAccountPanelV2
+                accountEmail={session.accountEmail}
+                adminEntryVisible={session.adminEntryVisible}
+              />
+            ),
+            data: (
+              <>
+                <SettingsRowV2
+                  description="Restore or permanently delete chats you archived."
+                  title="Archived chats"
+                >
+                  <UiV2Button
+                    icon="chevron-right"
+                    onClick={() => {
+                      settings.closeSettings();
+                      workspace.pane.actions.openArchivedChats();
+                    }}
+                  >
+                    Manage
+                  </UiV2Button>
+                </SettingsRowV2>
+                <SettingsPendingDeletionRowV2 onReview={settings.closeSettings} />
+                <SettingsRowV2
+                  description="Uploads stay bound to the messages where they were added."
+                  title="Files"
+                >
+                  <UiV2Button
+                    icon="chevron-right"
+                    onClick={() => {
+                      settings.closeSettings();
+                      settings.openLibrary();
+                    }}
+                  >
+                    Open Library
+                  </UiV2Button>
+                </SettingsRowV2>
+              </>
+            ),
+            defaults: (
+              <SettingsDefaultModelRowV2 composer={composer} />
+            ),
+            memory: projectContext ? null : (
+              <MemorySettingsRowsV2
+                onManage={() => {
+                  settings.closeSettings();
+                  settings.openMemory();
+                  setMemoryOwnerOpen(true);
+                }}
+              />
+            )
+          }}
           themeId={settings.settings.themeId}
           onClose={() => {
             settings.dismissNotice();
@@ -1117,5 +1194,125 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : null}
       <PermanentChatDeletionSurface />
     </main>
+  );
+}
+
+
+/* Chat defaults › Default model: the personal default from the picker, or the
+   organization default; the catalog stays the server-filtered source. */
+function SettingsDefaultModelRowV2({ composer }: Readonly<{ composer: ShellComposerView }>) {
+  const catalog = composer.catalog;
+  const personal = catalog?.defaults.personalModelDefault ?? null;
+  const models = catalog?.models ?? [];
+  const value = personal ? `${personal.provider}:${personal.modelId}` : "";
+  return (
+    <SettingsRowV2
+      description="Used for new chats until you pick another model in the composer."
+      title="Default model"
+    >
+      <select
+        aria-label="Default model"
+        disabled={!catalog || models.length === 0}
+        value={value}
+        onChange={(event) => {
+          const next = event.target.value;
+          if (!next) {
+            composer.useOrganizationModelDefault?.();
+            return;
+          }
+          const model = models.find((candidate) => `${candidate.provider}:${candidate.modelId}` === next);
+          if (model) composer.makeModelDefault?.(model);
+        }}
+      >
+        <option value="">
+          {catalog?.defaults.organizationModelDefault ? "Organization default" : "Installation default"}
+        </option>
+        {models.map((model) => (
+          <option key={`${model.provider}:${model.modelId}`} value={`${model.provider}:${model.modelId}`}>
+            {model.displayName}
+          </option>
+        ))}
+      </select>
+    </SettingsRowV2>
+  );
+}
+
+function SettingsPendingDeletionRowV2({ onReview }: Readonly<{ onReview(): void }>) {
+  const reference = usePermanentChatDeletionStore((state) => state.reference);
+  const status = usePermanentChatDeletionStore((state) => state.status?.status ?? null);
+  const pending = Boolean(reference && status && status !== "COMPLETE");
+  return (
+    <SettingsRowV2
+      description={pending
+        ? "A permanent deletion is still in progress."
+        : "Nothing is waiting for permanent deletion."}
+      title="Pending permanent deletion"
+    >
+      {pending ? (
+        <UiV2Button
+          icon="chevron-right"
+          onClick={() => {
+            onReview();
+            openPermanentChatDeletionStatus();
+          }}
+        >
+          Review
+        </UiV2Button>
+      ) : null}
+    </SettingsRowV2>
+  );
+}
+
+function SettingsAccountPanelV2({
+  accountEmail,
+  adminEntryVisible
+}: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean }>) {
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
+  return (
+    <>
+      <div className="v2-settings-identity" data-testid="settings-account-identity">
+        <span className="v2-navigation-account-avatar" aria-hidden="true">
+          {accountInitialsV2(accountEmail)}
+        </span>
+        <div>
+          <strong>{accountEmail ?? "Account"}</strong>
+          <small>{adminEntryVisible ? "Administrator" : "Member"}</small>
+        </div>
+      </div>
+      {adminEntryVisible ? (
+        <SettingsRowV2
+          description="Installation resources, providers, users and policies."
+          title="Control Center"
+        >
+          <a className="v2-button v2-focusable" data-tone="ghost" href="/admin">
+            <UiV2Icon name="shield" />
+            <span>Open</span>
+          </a>
+        </SettingsRowV2>
+      ) : null}
+      <SettingsGroupLabelV2>Session</SettingsGroupLabelV2>
+      <SettingsRowV2
+        description="Ends this browser session. Unsent drafts stay on this device."
+        title="Sign out"
+      >
+        <UiV2Button
+          busy={signingOut}
+          onClick={() => {
+            setSigningOut(true);
+            setSignOutError(false);
+            void signOutCurrentSession().then((result) => {
+              if (!result.ok) {
+                setSignOutError(true);
+                setSigningOut(false);
+              }
+            });
+          }}
+        >
+          Sign out
+        </UiV2Button>
+        {signOutError ? <span className="v2-live-menu-error" role="alert">Could not sign out.</span> : null}
+      </SettingsRowV2>
+    </>
   );
 }

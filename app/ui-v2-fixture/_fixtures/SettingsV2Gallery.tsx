@@ -29,7 +29,7 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
       {open ? (
         <SettingsV2
           dirty={dirty}
-          initialSection={state === "appearance" ? "appearance" : "mcp"}
+          initialSection={state === "appearance" ? "general" : "mcp"}
           mcpContent={(
             <>
               <McpSettingsSummaryV2 servers={[

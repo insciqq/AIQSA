@@ -36,7 +36,7 @@ describe("SettingsV2", () => {
         themeId="dark"
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
     expect(screen.getByRole("alertdialog", { name: "Unsaved MCP changes" })).toBeInTheDocument();
     expect(screen.queryByRole("radiogroup", { name: "Theme" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));

@@ -10,8 +10,10 @@ import {
   UiV2MenuItem,
   UiV2MenuSurface
 } from "@/components/ui-v2";
+import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -166,17 +168,43 @@ export function LibraryV2({
 function SectionHeading({
   action,
   children,
-  description
-}: Readonly<{ action?: ReactNode; children: ReactNode; description: string }>) {
+  description,
+  search
+}: Readonly<{ action?: ReactNode; children: ReactNode; description: string; search?: ReactNode }>) {
   return (
     <header className="v2-resource-heading">
       <div>
         <h2>{children}</h2>
         <p>{description}</p>
       </div>
-      {action ? <div className="v2-resource-heading-action">{action}</div> : null}
+      {action || search ? (
+        <div className="v2-resource-heading-action">
+          {search}
+          {action}
+        </div>
+      ) : null}
     </header>
   );
+}
+
+type AssistantFilterV2 = "all" | "archived" | "pinned" | "shared" | "yours";
+
+const assistantFilterLabels: Record<AssistantFilterV2, string> = {
+  all: "All",
+  archived: "Archived",
+  pinned: "Pinned",
+  shared: "Shared",
+  yours: "Yours"
+};
+
+function assistantMatchesFilter(assistant: AssistantSummaryV2, filter: AssistantFilterV2): boolean {
+  switch (filter) {
+    case "all": return true;
+    case "archived": return assistant.archived;
+    case "pinned": return Boolean(assistant.pinned) && !assistant.archived;
+    case "shared": return !assistant.owned && !assistant.archived;
+    case "yours": return assistant.owned && !assistant.archived;
+  }
 }
 
 export function AssistantsPanelV2({
@@ -198,17 +226,62 @@ export function AssistantsPanelV2({
   onPinToggle?(id: string, pinned: boolean): void;
   onUse?(id: string): void;
 }>) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<AssistantFilterV2>("all");
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const counts = useMemo(() => ({
+    all: assistants.length,
+    pinned: assistants.filter((assistant) => assistant.pinned && !assistant.archived).length
+  }), [assistants]);
+  const visible = assistants.filter((assistant) =>
+    assistantMatchesFilter(assistant, filter) && (
+      !normalizedQuery ||
+      assistant.name.toLocaleLowerCase().includes(normalizedQuery) ||
+      assistant.description.toLocaleLowerCase().includes(normalizedQuery)
+    )
+  );
+  const filters: readonly AssistantFilterV2[] = ["all", "pinned", "yours", "shared", "archived"];
+
   return (
     <div data-testid="library-assistants-panel">
       <SectionHeading
         action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>New Assistant</UiV2Button>}
         description="Pick a ready Assistant or create your own. It applies only through the Use action."
+        search={(
+          <label className="v2-resource-search">
+            <UiV2Icon name="search" />
+            <input
+              aria-label="Search assistants"
+              placeholder="Search assistants…"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+        )}
       >
         Assistants
       </SectionHeading>
-      {assistants.length ? (
+      {/* Filter pills (PRD §4.10): the active pill carries the accent wash. */}
+      <div className="v2-resource-filters" role="group" aria-label="Filter assistants">
+        {filters.map((candidate) => (
+          <button
+            aria-pressed={filter === candidate}
+            className="v2-resource-filter v2-focusable"
+            data-selected={filter === candidate || undefined}
+            key={candidate}
+            type="button"
+            onClick={() => setFilter(candidate)}
+          >
+            {assistantFilterLabels[candidate]}
+            {candidate === "all" ? <span> · {counts.all}</span> : null}
+            {candidate === "pinned" ? <span> · {counts.pinned}</span> : null}
+          </button>
+        ))}
+      </div>
+      {visible.length ? (
         <ul className="v2-assistant-grid" aria-label="Assistants">
-          {assistants.map((assistant) => (
+          {visible.map((assistant) => (
             <AssistantCardV2
               assistant={assistant}
               key={assistant.id}
@@ -221,7 +294,11 @@ export function AssistantsPanelV2({
             />
           ))}
         </ul>
-      ) : <p className="v2-resource-empty">No Assistants yet.</p>}
+      ) : (
+        <p className="v2-resource-empty">
+          {assistants.length ? "No Assistants match this view." : "No Assistants yet."}
+        </p>
+      )}
     </div>
   );
 }
@@ -263,95 +340,118 @@ function AssistantCardV2({
     action();
   };
 
+  const meta = assistant.archived
+    ? "Archived"
+    : assistant.pinned
+      ? "Pinned"
+      : assistant.owned ? "Yours" : "Shared with you";
+
+  // Fixed card anatomy (PRD §4.10): header (avatar · name · meta · "⋯"),
+  // two-line description, tag row, then Use (outline, fills on hover) and
+  // Pin/Unpin; archived cards fade and offer only Restore.
   return (
     <li
       className="v2-assistant-card"
+      data-archived={assistant.archived || undefined}
       data-testid={`assistant-card-${assistant.id}`}
       data-unavailable={!assistant.available || undefined}
     >
       <div className="v2-assistant-card-top">
-        <span className="v2-assistant-avatar" aria-hidden="true">
-          {assistant.name.slice(0, 1).toLocaleUpperCase()}
-        </span>
+        {assistant.avatar ? (
+          <AssistantAvatarV2 className="v2-assistant-avatar" recipe={assistant.avatar} size={36} />
+        ) : (
+          <span className="v2-assistant-avatar" aria-hidden="true">
+            {assistant.name.slice(0, 1).toLocaleUpperCase()}
+          </span>
+        )}
         <div className="v2-assistant-card-title">
           <h3>{assistant.name}</h3>
-          <p>
-            Revision {assistant.revision}
-            {assistant.pinned ? " · Pinned" : ""}
-            {assistant.archived ? " · Archived" : ""}
-          </p>
+          <p>{meta}</p>
         </div>
-      </div>
-      <p className="v2-assistant-description">{assistant.description}</p>
-      {!assistant.available ? (
-        <p className="v2-resource-warning" role="status">
-          {assistant.unavailableReason ?? "Required access unavailable"}
-        </p>
-      ) : null}
-      <div className="v2-resource-actions">
-        <UiV2Button
-          aria-label={`${assistant.pinned ? "Unpin" : "Pin"} ${assistant.name}`}
-          aria-pressed={assistant.pinned}
-          onClick={() => onPinToggle?.(assistant.id, !assistant.pinned)}
+        <span
+          ref={menuContainerRef}
+          className="v2-assistant-actions-menu"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || !menuOpen) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setMenuOpen(false);
+            menuTriggerRef.current?.focus();
+          }}
         >
-          {assistant.pinned ? "Unpin" : "Pin"}
-        </UiV2Button>
-        <UiV2Button
-          aria-label={`Use ${assistant.name}`}
-          disabled={!assistant.available || assistant.archived}
-          onClick={() => onUse?.(assistant.id)}
-        >
-          Use
-        </UiV2Button>
-        {assistant.owned ? (
-          <span
-            ref={menuContainerRef}
-            className="v2-assistant-actions-menu"
-            onKeyDown={(event) => {
-              if (event.key !== "Escape" || !menuOpen) return;
-              event.preventDefault();
-              event.stopPropagation();
-              setMenuOpen(false);
-              menuTriggerRef.current?.focus();
-            }}
-          >
-            <UiV2IconButton
-              ref={menuTriggerRef}
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              icon="more"
-              label={`More actions for ${assistant.name}`}
-              onClick={() => setMenuOpen((open) => !open)}
-            />
-            {menuOpen ? (
-              <UiV2MenuSurface
-                className="v2-assistant-actions-menu-surface"
-                label={`Actions for ${assistant.name}`}
-              >
-                <UiV2MenuItem onClick={() => closeAndRun(() => onOpen?.(assistant.id))}>
-                  Edit
-                </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => closeAndRun(() => onOpenHistory?.(assistant.id))}>
-                  Version history
-                </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => closeAndRun(() => onDuplicate?.(assistant.id))}>
-                  Duplicate
-                </UiV2MenuItem>
+          <UiV2IconButton
+            ref={menuTriggerRef}
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
+            icon="more"
+            label={`More actions for ${assistant.name}`}
+            onClick={() => setMenuOpen((open) => !open)}
+          />
+          {menuOpen ? (
+            <UiV2MenuSurface
+              className="v2-assistant-actions-menu-surface"
+              label={`Actions for ${assistant.name}`}
+            >
+              {assistant.owned ? (
+                <>
+                  <UiV2MenuItem onClick={() => closeAndRun(() => onOpen?.(assistant.id))}>
+                    Edit
+                  </UiV2MenuItem>
+                  <UiV2MenuItem onClick={() => closeAndRun(() => onOpenHistory?.(assistant.id))}>
+                    Version history
+                  </UiV2MenuItem>
+                </>
+              ) : null}
+              <UiV2MenuItem onClick={() => closeAndRun(() => onDuplicate?.(assistant.id))}>
+                Duplicate
+              </UiV2MenuItem>
+              {assistant.owned ? (
                 <UiV2MenuItem
                   onClick={() => closeAndRun(() => onArchiveToggle?.(assistant.id, !assistant.archived))}
                 >
                   {assistant.archived ? "Restore" : "Archive"}
                 </UiV2MenuItem>
-              </UiV2MenuSurface>
-            ) : null}
+              ) : null}
+            </UiV2MenuSurface>
+          ) : null}
+        </span>
+      </div>
+      <p className="v2-assistant-description">{assistant.description}</p>
+      <div className="v2-assistant-tags">
+        {!assistant.available ? (
+          <span className="v2-assistant-tag" data-tone="warn" role="status">
+            {assistant.unavailableReason ?? "Required access unavailable"}
           </span>
+        ) : null}
+      </div>
+      <div className="v2-resource-actions">
+        {assistant.archived ? (
+          assistant.owned ? (
+            <UiV2Button
+              aria-label={`Restore ${assistant.name}`}
+              onClick={() => onArchiveToggle?.(assistant.id, false)}
+            >
+              Restore
+            </UiV2Button>
+          ) : null
         ) : (
-          <UiV2Button
-            aria-label={`Duplicate ${assistant.name}`}
-            onClick={() => onDuplicate?.(assistant.id)}
-          >
-            Duplicate
-          </UiV2Button>
+          <>
+            <UiV2Button
+              aria-label={`Use ${assistant.name}`}
+              className="v2-assistant-use"
+              disabled={!assistant.available}
+              onClick={() => onUse?.(assistant.id)}
+            >
+              Use
+            </UiV2Button>
+            <UiV2Button
+              aria-label={`${assistant.pinned ? "Unpin" : "Pin"} ${assistant.name}`}
+              aria-pressed={assistant.pinned}
+              onClick={() => onPinToggle?.(assistant.id, !assistant.pinned)}
+            >
+              {assistant.pinned ? "Unpin" : "Pin"}
+            </UiV2Button>
+          </>
         )}
       </div>
     </li>

@@ -65,6 +65,7 @@ function LibrarySurfaceV2({
     .map((assistant) => ({
       archived: assistant.archived,
       available: assistant.availability.ok,
+      avatar: assistant.avatar,
       description: assistant.description,
       id: assistant.id,
       name: assistant.name,
