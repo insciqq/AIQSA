@@ -15,6 +15,7 @@ export type UiV2IconName =
   | "book"
   | "branch"
   | "brand"
+  | "chat"
   | "check"
   | "chevron-down"
   | "chevron-right"
@@ -27,6 +28,7 @@ export type UiV2IconName =
   | "globe"
   | "history"
   | "image"
+  | "layers"
   | "library"
   | "lock"
   | "menu"
@@ -34,12 +36,14 @@ export type UiV2IconName =
   | "monitor"
   | "moon"
   | "more"
+  | "panel"
   | "plus"
   | "regenerate"
   | "search"
   | "sliders"
   | "settings"
   | "share"
+  | "shield"
   | "star"
   | "star-fill"
   | "stop"
@@ -83,6 +87,9 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-book" viewBox="0 0 24 24">
           <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H12v18h4.5A3.5 3.5 0 0 1 20 23z" />
         </symbol>
+        <symbol id="v2-icon-chat" viewBox="0 0 24 24">
+          <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4z" />
+        </symbol>
         <symbol id="v2-icon-check" viewBox="0 0 24 24">
           <path d="m5 12.5 4.2 4.2L19 7" />
         </symbol>
@@ -123,6 +130,10 @@ export function UiV2IconSprite() {
           <circle cx="8.5" cy="9.5" r="1.5" />
           <path d="m21 16-5-5-8 8" />
         </symbol>
+        <symbol id="v2-icon-layers" viewBox="0 0 24 24">
+          <path d="m12 3 9 5-9 5-9-5z" />
+          <path d="m3 13 9 5 9-5" />
+        </symbol>
         <symbol id="v2-icon-library" viewBox="0 0 24 24">
           <path d="M5 4h3v16H5zM10.5 4h3v16h-3zM16 5l3-.8L22 19l-3 .8z" />
         </symbol>
@@ -149,6 +160,10 @@ export function UiV2IconSprite() {
           <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
           <circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none" />
         </symbol>
+        <symbol id="v2-icon-panel" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M9 4v16" />
+        </symbol>
         <symbol id="v2-icon-plus" viewBox="0 0 24 24">
           <path d="M12 5v14M5 12h14" />
         </symbol>
@@ -173,6 +188,10 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-share" viewBox="0 0 24 24">
           <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
           <path d="M12 15V3M7 8l5-5 5 5" />
+        </symbol>
+        <symbol id="v2-icon-shield" viewBox="0 0 24 24">
+          <path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z" />
+          <path d="m9 12 2 2 4-4" />
         </symbol>
         <symbol id="v2-icon-star" viewBox="0 0 24 24">
           <path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z" />

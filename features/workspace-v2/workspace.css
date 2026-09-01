@@ -677,25 +677,107 @@
 }
 
 @media (max-width: 899px) {
-  /* Coarse-pointer float buttons are wider: clear them with more room. */
+  /*
+   * Mobile has no header bar (PRD §4.8): the title pill and the "⋯" island
+   * float over the thread beside the menu island (`.v2-sidebar-floats`).
+   */
+  .v2-live-workspace {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .v2-live-header {
-    padding-left: max(7rem, calc(env(safe-area-inset-left) + 7rem));
+    position: absolute;
+    z-index: 20;
+    top: max(0.625rem, env(safe-area-inset-top));
+    right: max(0.75rem, env(safe-area-inset-right));
+    left: max(0.75rem, env(safe-area-inset-left));
+    min-height: 0;
+    height: auto;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0;
+    border-bottom: 0;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .v2-live-header:not(:has(.v2-live-title > *, .v2-live-header-actions > *)) {
+    display: none;
+  }
+
+  .v2-live-title,
+  .v2-live-header-actions {
+    pointer-events: auto;
+  }
+
+  .v2-live-title {
+    max-width: 58%;
+    min-height: 2.5rem;
+    padding: 0 0.875rem;
+    border: 1px solid var(--v2-color-border2);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: var(--v2-shadow-float);
+  }
+
+  .v2-live-title h1 {
+    max-width: 100%;
+    font-size: 0.84375rem;
+  }
+
+  .v2-live-crumb {
+    display: none;
+  }
+
+  .v2-live-header-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    margin-left: 0;
   }
 
   /*
    * The Share text button collapses into the "⋯" menu; the Temporary
-   * indicator and account stay directly visible.
+   * indicator stays directly visible.
    */
   .v2-live-header-actions > .v2-button {
     display: none;
   }
 
-  .v2-live-title h1 {
-    max-width: 36vw;
+  .v2-live-header-actions .v2-icon-button {
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--v2-color-border2);
+    border-radius: 50%;
+    color: var(--v2-color-text);
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: var(--v2-shadow-float);
   }
 
   .v2-live-workspace .v2-conversation-document {
     width: min(var(--v2-measure), calc(100% - 1.25rem));
+    padding-top: max(4.25rem, calc(env(safe-area-inset-top) + 3.625rem));
+  }
+
+  .v2-live-workspace .v2-conversation-turn:first-child {
+    scroll-margin-top: 4.25rem;
+  }
+
+  /* Blank chat: greeting centred in the free space, composer at the bottom. */
+  .v2-live-workspace .v2-conversation-orientation {
+    min-height: 100%;
+    grid-template-rows: minmax(0, 1fr) auto;
+    align-content: stretch;
+    padding-top: max(4.25rem, calc(env(safe-area-inset-top) + 3.625rem));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .v2-live-workspace .v2-conversation-orientation-copy {
+    align-self: center;
+  }
+
+  .v2-live-notice {
+    top: max(3.75rem, calc(env(safe-area-inset-top) + 3.25rem));
   }
 
   .v2-live-composer-dock {
@@ -727,13 +809,7 @@
 }
 
 @media (max-width: 560px) {
-  .v2-live-header {
-    gap: 0.5rem;
-    padding-right: max(0.25rem, env(safe-area-inset-right));
-  }
-
   .v2-live-title h1 {
-    max-width: 34vw;
     font-size: 0.8125rem;
   }
 
