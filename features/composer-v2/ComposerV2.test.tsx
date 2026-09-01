@@ -120,6 +120,21 @@ describe("Composer v2", () => {
     expect(onSend).toHaveBeenCalledOnce();
   });
 
+  it("with Send with Enter off, Enter inserts a newline and Ctrl/⌘+Enter sends", () => {
+    const onSend = vi.fn();
+    render(<ComposerV2 {...props({ onSend })} sendWithEnter={false} />);
+    const input = screen.getByRole("textbox", { name: "Message" });
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(input, { ctrlKey: true, isComposing: true, key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { ctrlKey: true, key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    expect(onSend).toHaveBeenCalledTimes(2);
+  });
+
   it("searches grouped models, wraps keyboard navigation, and restores trigger focus", async () => {
     const onSelectModel = vi.fn();
     render(<ComposerV2 {...props({ onSelectModel })} />);

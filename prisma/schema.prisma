@@ -942,6 +942,9 @@ model UserSettings {
   defaultSearchStrategyId String         @default("openai-native-web-search")
   defaultSearchPlan       Json?
   defaultControlValues    Json           @default("{}")
+  defaultKnowledgePlan    Json?
+  defaultMcpMode          String         @default("auto")
+  sendWithEnter           Boolean        @default(true)
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
   createdAt               DateTime       @default(now())

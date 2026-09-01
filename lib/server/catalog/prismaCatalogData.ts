@@ -50,8 +50,11 @@ type CatalogPrismaClient = Pick<
 
 type UserSettingsRow = {
   defaultControlValues: unknown;
+  defaultKnowledgePlan: unknown;
+  defaultMcpMode: string;
   defaultProviderModelId: string | null;
   defaultSearchPlan: unknown;
+  sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
 };
@@ -616,8 +619,11 @@ export function createPrismaCatalogDataLoader({
         settings: {
           select: {
             defaultControlValues: true,
+            defaultKnowledgePlan: true,
+            defaultMcpMode: true,
             defaultProviderModelId: true,
             defaultSearchPlan: true,
+            sendWithEnter: true,
             showCitations: true,
             showReasoningBlocks: true
           }
@@ -726,8 +732,11 @@ export function createPrismaCatalogDataLoader({
       searchStrategies: exposedSearchOptions,
       settings: {
         defaultControlValues: user.settings.defaultControlValues,
+        defaultKnowledgePlan: user.settings.defaultKnowledgePlan,
+        defaultMcpMode: user.settings.defaultMcpMode,
         defaultProviderModelId: user.settings.defaultProviderModelId,
         defaultSearchPlan: user.settings.defaultSearchPlan,
+        sendWithEnter: user.settings.sendWithEnter,
         showCitations: user.settings.showCitations,
         showReasoningBlocks: user.settings.showReasoningBlocks
       }

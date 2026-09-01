@@ -102,6 +102,25 @@ describe("catalog wire contract", () => {
     });
   });
 
+  it("carries personal chat defaults and tolerates their absence", () => {
+    expect(decodeCatalogResponse(validResponse())?.defaults).toMatchObject({
+      knowledgePlan: null,
+      mcpMode: "auto",
+      sendWithEnter: true
+    });
+    const response = validResponse() as unknown as { catalog: { defaults: Record<string, unknown> } };
+    response.catalog.defaults.knowledgePlan = { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 };
+    response.catalog.defaults.mcpMode = "load_all";
+    response.catalog.defaults.sendWithEnter = false;
+    expect(decodeCatalogResponse(response)?.defaults).toMatchObject({
+      knowledgePlan: { baseIds: ["kb-1"], mode: "explicit" },
+      mcpMode: "load_all",
+      sendWithEnter: false
+    });
+    response.catalog.defaults.mcpMode = "sometimes";
+    expect(decodeCatalogResponse(response)).toBeNull();
+  });
+
   it("represents an unknown context window as null", () => {
     const response = validResponse();
     response.catalog.models[0]!.contextWindow = null;

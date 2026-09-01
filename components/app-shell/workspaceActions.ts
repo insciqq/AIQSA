@@ -10,7 +10,6 @@ import {
   exportFileBaseName,
   responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
-import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import {
   rememberActiveChatId,
   storedActiveChatId
@@ -33,8 +32,12 @@ import {
 import type { SearchPlanMode } from "@/lib/domain/search";
 import {
   EMPTY_KNOWLEDGE_SELECTION,
-  type KnowledgePlan
+  explicitKnowledgeSelection,
+  type KnowledgePlan,
+  type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
+import { chatExportMarkdown } from "@/lib/domain/chatExport";
+import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import {
   decodeChatMessagesPageResponse,
   decodeChatSummaryResponse,
@@ -82,22 +85,8 @@ export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
 
 export type ChatExportFormat = "json" | "markdown";
 
-/**
- * Default export document: the readable Markdown projection of the visible
- * branch — title heading, then each turn under a User/Assistant heading.
- * Deterministic for a given branch; token counts, ids, and provider internals
- * never appear.
- */
-export function chatExportMarkdown(
-  title: string,
-  messages: readonly ThreadMessage[]
-): string {
-  const turns = messages.map((message) => {
-    const speaker = message.role === "assistant" ? "Assistant" : "User";
-    return `## ${speaker}\n\n${textFromThreadContent(message.content).trim()}`;
-  });
-  return `# ${title}\n\n${turns.join("\n\n")}\n`;
-}
+/** The per-chat Markdown export document is shared with the server-side archive export. */
+export { chatExportMarkdown };
 
 type WorkspaceActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
@@ -685,12 +674,44 @@ export function useWorkspaceActions({
         ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
             ?.defaultKnowledgePlan ?? null
         : null;
+      // Personal chat defaults (Settings › Chat defaults) start a new chat; a
+      // folder default still wins for Knowledge. Admission re-checks both.
+      const personalPlan = projectPlan
+        ? null
+        : reconcilePersonalKnowledgeDefault(catalog?.defaults.knowledgePlan ?? null);
       setSelectedKnowledgePlan(
-        projectPlan ?? EMPTY_KNOWLEDGE_SELECTION,
-        projectPlan ? "project" : "off",
+        projectPlan ?? personalPlan ?? EMPTY_KNOWLEDGE_SELECTION,
+        projectPlan ? "project" : personalPlan ? "explicit" : "off",
         "system"
       );
+      useComposerControlStore.getState().setMcpSelection({
+        mode: catalog?.defaults.mcpMode ?? "auto"
+      });
     }
+  }
+
+  /**
+   * Drops bases the user can no longer reach from the personal Knowledge
+   * default and says so; the default is never substituted silently. Unloaded
+   * Knowledge keeps the plan as saved and admission fails closed instead.
+   */
+  function reconcilePersonalKnowledgeDefault(
+    plan: KnowledgeSelection | null
+  ): KnowledgeSelection | null {
+    if (!plan || plan.mode !== "explicit") return plan;
+    const known = useKnowledgeLibraryStore.getState().data?.knowledgeBases;
+    if (!known) return plan;
+    const available = new Set(known.filter((base) => !base.archived).map((base) => base.id));
+    const baseIds = plan.baseIds.filter((id) => available.has(id));
+    if (baseIds.length === plan.baseIds.length) return plan;
+    setNotice({
+      autoDismiss: true,
+      kind: "error",
+      text: "A default knowledge base is no longer available. This chat starts without it."
+    });
+    return baseIds.length > 0 || plan.sourceIds.length > 0
+      ? explicitKnowledgeSelection({ baseIds, sourceIds: plan.sourceIds })
+      : null;
   }
 
   async function setChatKnowledgeDefault(plan: KnowledgePlan | null): Promise<boolean> {

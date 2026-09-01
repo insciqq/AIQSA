@@ -24,7 +24,8 @@ import type {
   ThreadMessage
 } from "@/components/app-shell/types";
 import type { RefObject } from "react";
-import type { SearchPlanMode } from "@/lib/domain/search";
+import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
+import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 import type { ProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 
@@ -194,6 +195,15 @@ export type ShellComposerView = {
     setPickerOpen(open: boolean): void;
     startFromCurrentSetup(): void;
   };
+  /** Personal chat defaults (Settings › Chat defaults); absent inside a Project. */
+  chatDefaults?: {
+    knowledgePlan: KnowledgeSelection | null;
+    mcpMode: ChatDefaultMcpMode;
+    searchPlan: SearchPlan;
+    setKnowledgePlan(plan: KnowledgeSelection | null): void;
+    setMcpMode(mode: ChatDefaultMcpMode): void;
+    setSearchPlan(plan: SearchPlan): void;
+  };
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;
   draft: string;
@@ -228,6 +238,9 @@ export type ShellComposerView = {
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
+  /** Composer keyboard contract: Enter sends, or Ctrl/⌘+Enter when off. */
+  sendWithEnter: boolean;
+  setSendWithEnter(value: boolean): void;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   stopCurrentRun(): Promise<void> | void;

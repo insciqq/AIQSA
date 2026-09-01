@@ -47,6 +47,8 @@ export type SafeUserWithGroups = SafeUser & {
     name: string;
     role: string;
   }[];
+  /** False for accounts that sign in only through an external identity provider. */
+  hasPassword?: boolean;
 };
 
 export type AuthHandlerDeps = {
