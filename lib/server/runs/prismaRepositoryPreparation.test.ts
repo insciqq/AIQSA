@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   finalizeUnavailablePreparingRunAdmission,
   finalizeTemporaryPreparingRunAdmission,
+  memorySpeculativeQueryResolverInventoryDeclared,
   sameMemoryReadOnlyControlRetryScope,
   validMemoryRerankRetrySettlement,
   validMemoryRetrievalExecutionSequence
@@ -176,6 +177,29 @@ describe("initial Memory admission deadline fallback", () => {
 });
 
 describe("Memory retrieval execution sequence", () => {
+  it("declares a cancelled resolver that missed the attachment boundary", () => {
+    const budget = {
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "NOT_READY_AT_ATTACH"
+    };
+    const declared = memorySpeculativeQueryResolverInventoryDeclared(budget);
+
+    expect(declared).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], false, false, declared)).toBe(true);
+    expect(memorySpeculativeQueryResolverInventoryDeclared({
+      ...budget,
+      queryResolverProviderCalls: 0
+    })).toBe(false);
+    expect(memorySpeculativeQueryResolverInventoryDeclared({
+      ...budget,
+      queryResolverState: "UNKNOWN_STATE"
+    })).toBe(false);
+  });
+
   it("allows only one fresh reranker retry after the primary attempt", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },

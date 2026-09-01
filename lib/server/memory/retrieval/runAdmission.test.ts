@@ -31,6 +31,7 @@ import {
   createMemoryRunRetrievalService,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
   MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+  MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
@@ -1198,7 +1199,8 @@ describe("Personal Memory v1 run admission", () => {
       directUserTextsById: { commute: [testimony] },
       expansionTextById: {
         commute: `User: ${testimony}\n\nAssistant: Try another true crime podcast.`
-      }
+      },
+      speculativeBaseline: true
     });
     const options = intentOptions({
       applyResponsePreferences: false,
@@ -1243,17 +1245,6 @@ describe("Personal Memory v1 run admission", () => {
       expect(rerank).toHaveBeenCalledOnce();
       expect(resolve).toHaveBeenCalledOnce();
     });
-    releaseRerank({
-      bindingId: "binding-relevance",
-      decisions: [{
-        applicable: true,
-        current: true,
-        handle: "c0",
-        reasonCode: "DIRECT_RELEVANCE",
-        relevanceScore: 0.9
-      }],
-      status: "READY"
-    });
     releaseResolver({
       bindingId: "binding-query-resolver",
       constraints: [{
@@ -1266,6 +1257,19 @@ describe("Personal Memory v1 run admission", () => {
         kind: "PREFER",
         sourceType: "MEMORY_EVIDENCE",
         targetQuote: "branch out into other genres"
+      }],
+      status: "READY"
+    });
+    await resolve.mock.results[0]?.value;
+    await Promise.resolve();
+    releaseRerank({
+      bindingId: "binding-relevance",
+      decisions: [{
+        applicable: true,
+        current: true,
+        handle: "c0",
+        reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: 0.9
       }],
       status: "READY"
     });
@@ -1362,6 +1366,82 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).toContain('"exact_target_quote":"true crime"');
     expect(local.retrieveSpeculativeBaseline).toHaveBeenCalledOnce();
     expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it("does not start a FINAL resolver call when only the final frontier is usable", async () => {
+    const testimony = "I want to try a different direction than my usual routine.";
+    const local = repository({
+      candidates: [laneCandidate("final-frontier-only")],
+      directUserTextsById: { "final-frontier-only": [testimony] },
+      expansionTextById: { "final-frontier-only": `User: ${testimony}` }
+    });
+    const base = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const resolve = vi.fn(async (): Promise<MemoryQueryResolverResult> => ({
+      bindingId: "binding-forbidden-final-query-resolver",
+      constraints: [],
+      status: "READY"
+    }));
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      queryResolver: { resolve }
+    }).retrieve(runInput("Suggest a different direction for this situation."));
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        queryResolverExecutionStrategy: "SKIPPED",
+        queryResolverProviderCalls: 0,
+        queryResolverState: "SKIPPED"
+      },
+      outcome: "USED"
+    });
+    expect(result.preparedContext?.text).toContain(testimony);
+    expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
+  });
+
+  it("preserves the exact ordinary pack when no speculative resolver execution exists", async () => {
+    const testimony = "I want to try a different activity.";
+    const baselineLocal = repository({
+      candidates: [laneCandidate("resolver-free-baseline")],
+      directUserTextsById: { "resolver-free-baseline": [testimony] },
+      expansionTextById: { "resolver-free-baseline": `User: ${testimony}` }
+    });
+    const configuredLocal = repository({
+      candidates: [laneCandidate("resolver-free-baseline")],
+      directUserTextsById: { "resolver-free-baseline": [testimony] },
+      expansionTextById: { "resolver-free-baseline": `User: ${testimony}` }
+    });
+    const base = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const resolve = vi.fn(async (): Promise<MemoryQueryResolverResult> => ({
+      bindingId: "binding-unexpected-query-resolver",
+      constraints: [],
+      status: "READY"
+    }));
+
+    const baseline = await createMemoryRunRetrievalService(
+      baselineLocal.value,
+      base
+    ).retrieve(runInput("Suggest another activity."));
+    const configured = await createMemoryRunRetrievalService(configuredLocal.value, {
+      ...base,
+      queryResolver: { resolve }
+    }).retrieve(runInput("Suggest another activity."));
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(configured.outcome).toBe(baseline.outcome);
+    expect(configured.items).toEqual(baseline.items);
+    expect(configured.preparedContext).toEqual(baseline.preparedContext);
   });
 
   it("rejects speculative constraints that do not survive the final authoritative pack", async () => {
@@ -1547,7 +1627,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
   });
 
-  it("gives speculative query resolution its complete nine-second child fence", async () => {
+  it("aborts pending query resolution at attachment without waiting for its child fence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -1595,23 +1675,93 @@ describe("Personal Memory v1 run admission", () => {
         });
 
       await resolverStarted;
-      await vi.advanceTimersByTimeAsync(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS - 1);
-      expect(settled).toBe(false);
-      expect(receivedSignals[0]?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
 
-      await expect(pending).resolves.toMatchObject({
+      expect(settled).toBe(true);
+      expect(Date.now()).toBe(now.getTime());
+      expect(result).toMatchObject({
         budgetSnapshot: {
+          componentMetrics: {
+            utilityCallCounts: expect.objectContaining({ MEMORY_QUERY_RESOLVE: 1 }),
+            utilityFailureReasonCounts: expect.objectContaining({
+              memory_query_resolution_outcome_unknown: 1
+            })
+          },
           queryResolverExecutionStrategy: "SPECULATIVE",
-          queryResolverState: "UNAVAILABLE"
+          queryResolverProviderCalls: 1,
+          queryResolverState: "NOT_READY_AT_ATTACH",
+          queryScopeAttachedConstraintKindCounts: {},
+          utilityEgressMode: "CONSENTED_EXTERNAL",
+          utilityExecutions: expect.arrayContaining([expect.objectContaining({
+            externalCallCount: 1,
+            role: "MEMORY_QUERY_RESOLVE",
+            state: "UNAVAILABLE"
+          })])
         },
         outcome: "USED"
       });
       expect(receivedSignals[0]?.aborted).toBe(true);
+      expect(resolve).toHaveBeenCalledOnce();
+      expect(result.degradationCode).toBeUndefined();
+      expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
+      expect(MEMORY_INTERACTIVE_HARD_DEADLINE_MS).toBe(14_000);
       expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(9_000);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not attach a resolver result that becomes ready only after the snapshot", async () => {
+    const testimony = "I want to branch out beyond my usual routine.";
+    const local = repository({
+      candidates: [laneCandidate("late-ready-resolver")],
+      directUserTextsById: { "late-ready-resolver": [testimony] },
+      expansionTextById: { "late-ready-resolver": `User: ${testimony}` },
+      speculativeBaseline: true
+    });
+    const base = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const receivedSignals: AbortSignal[] = [];
+    const resolve = vi.fn((
+      input: Parameters<MemoryQueryResolverService["resolve"]>[0]
+    ) => {
+      receivedSignals.push(input.signal);
+      return new Promise<MemoryQueryResolverResult>((settle) => {
+        input.signal.addEventListener("abort", () => settle({
+          bindingId: "binding-late-ready-query-resolver",
+          constraints: [{
+            itemKey: "RECALL_CHUNK:late-ready-resolver",
+            kind: "AVOID",
+            sourceType: "MEMORY_EVIDENCE",
+            targetQuote: "usual routine"
+          }],
+          status: "READY"
+        }), { once: true });
+      });
+    });
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      queryResolver: { resolve }
+    }).retrieve(runInput("Suggest something different for this situation."));
+
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(receivedSignals[0]?.aborted).toBe(true);
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        queryResolverExecutionStrategy: "SPECULATIVE",
+        queryResolverProviderCalls: 1,
+        queryResolverState: "NOT_READY_AT_ATTACH",
+        queryScopeAttachedConstraintKindCounts: {},
+        queryScopeProposedConstraintCount: 0
+      },
+      outcome: "USED"
+    });
+    expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
   });
 
   it("falls back to the unchanged reader pack when query resolution is unavailable", async () => {
@@ -1619,7 +1769,8 @@ describe("Personal Memory v1 run admission", () => {
     const local = repository({
       candidates: [laneCandidate("commute-fallback")],
       directUserTextsById: { "commute-fallback": [testimony] },
-      expansionTextById: { "commute-fallback": `User: ${testimony}` }
+      expansionTextById: { "commute-fallback": `User: ${testimony}` },
+      speculativeBaseline: true
     });
     const options = intentOptions({
       applyResponsePreferences: false,

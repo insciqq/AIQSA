@@ -106,7 +106,7 @@ import {
 } from "./queryResolver";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v52";
+  "memory-run-retrieval-admission-v53";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v18";
 
@@ -359,8 +359,27 @@ function withMemoryPreparationEvidence(
       ),
       0
     );
+    const resolverEvidence = utilityEvidence(
+      "MEMORY_QUERY_RESOLVE",
+      queryResolverExecution.result
+    );
+    const utilityExecutions = resolverDeclared
+      ? executions.map((entry) =>
+          typeof entry === "object" && entry !== null && !Array.isArray(entry) &&
+          (entry as Readonly<Record<string, unknown>>).role === "MEMORY_QUERY_RESOLVE"
+            ? resolverEvidence
+            : entry)
+      : [...executions, resolverEvidence];
+    const componentMetrics = typeof budget.componentMetrics === "object" &&
+      budget.componentMetrics !== null && !Array.isArray(budget.componentMetrics)
+      ? {
+          ...(budget.componentMetrics as Readonly<Record<string, unknown>>),
+          ...utilityExecutionMetricEvidence(utilityExecutions)
+        }
+      : null;
     budget = {
       ...budget,
+      ...(componentMetrics ? { componentMetrics } : {}),
       queryResolverExecutionStrategy: queryResolverExecution.strategy,
       queryResolverSourceCharacterCount: sourceCharacterCount,
       queryResolverSourceCount: queryResolverExecution.sources.length,
@@ -375,12 +394,7 @@ function withMemoryPreparationEvidence(
         utilityUsedExternal(queryResolverExecution.result)
         ? "CONSENTED_EXTERNAL"
         : "LOCAL_ONLY",
-      ...(!resolverDeclared
-        ? { utilityExecutions: [
-            ...executions,
-            utilityEvidence("MEMORY_QUERY_RESOLVE", queryResolverExecution.result)
-          ] }
-        : {})
+      utilityExecutions
     };
   }
   return {
@@ -831,9 +845,10 @@ export const MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS = 1_500;
 // completion while the 14-second admission deadline remains authoritative.
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 8_000;
 // The resolver starts from the original-query speculative frontier beside the
-// control call. Its nine-second child fence overlaps rather than extends the
-// opening stage; the unchanged fourteen-second admission fence and two-second
-// finalization reserve remain authoritative.
+// control call. Its nine-second child fence is only a provider-execution safety
+// ceiling: the final pack boundary never waits for it, while the unchanged
+// fourteen-second admission fence and terminal-settlement reserve remain
+// authoritative.
 export const MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS = 9_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
 export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 9_000;
@@ -849,8 +864,8 @@ const optionalUtilityBudget = Object.freeze({
   },
   QUERY_RESOLVE: {
     maximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
-    // It shares the reranker stage and must also leave the authoritative
-    // rejoin plus context packing inside the hard admission envelope.
+    // Governed cancellation settlement must stay inside the hard admission
+    // envelope even though the synchronous attachment boundary never waits.
     reserveMs: 2_000
   },
   RERANK: {
@@ -1158,6 +1173,32 @@ function utilityEvidence(
       };
 }
 
+function utilityExecutionMetricEvidence(
+  executions: readonly unknown[]
+): Readonly<{
+  utilityCallCounts: Readonly<Record<string, number>>;
+  utilityFailureReasonCounts: Readonly<Record<string, number>>;
+}> {
+  const utilityCallCounts: Record<string, number> = {};
+  const utilityFailureReasonCounts: Record<string, number> = {};
+  for (const execution of executions) {
+    if (typeof execution !== "object" || execution === null ||
+      Array.isArray(execution)) continue;
+    const record = execution as Readonly<Record<string, unknown>>;
+    if (typeof record.role !== "string" ||
+      !Number.isSafeInteger(record.externalCallCount) ||
+      Number(record.externalCallCount) < 0) continue;
+    incrementCountBy(utilityCallCounts, record.role, Number(record.externalCallCount));
+    if (record.state === "UNAVAILABLE" && typeof record.reason === "string") {
+      incrementCount(utilityFailureReasonCounts, record.reason);
+    }
+  }
+  return Object.freeze({
+    utilityCallCounts: Object.freeze(utilityCallCounts),
+    utilityFailureReasonCounts: Object.freeze(utilityFailureReasonCounts)
+  });
+}
+
 function incrementCount(target: Record<string, number>, key: string): void {
   target[key] = (target[key] ?? 0) + 1;
 }
@@ -1237,14 +1278,8 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
         ? [candidate.metadata.sourceChatId]
         : [])
   );
-  const utilityCallCounts: Record<string, number> = {};
-  const utilityFailureReasonCounts: Record<string, number> = {};
-  for (const utility of input.utilityExecutions) {
-    incrementCountBy(utilityCallCounts, utility.role, utility.externalCallCount);
-    if (utility.state === "UNAVAILABLE" && utility.reason) {
-      incrementCount(utilityFailureReasonCounts, utility.reason);
-    }
-  }
+  const { utilityCallCounts, utilityFailureReasonCounts } =
+    utilityExecutionMetricEvidence(input.utilityExecutions);
   const digestHits = input.digestEvidence.navigationCandidateCount +
     input.navigationExpanded.filter((candidate) =>
       candidate.projectionKind === "CHAT_DIGEST_SAFE_TEXT").length;
@@ -2026,6 +2061,7 @@ export function memoryPackedQueryScopeConstraints(input: Readonly<{
 
 type MemoryQueryScopeAttachmentState =
   | "BUDGET_FALLBACK"
+  | "NOT_READY_AT_ATTACH"
   | "READY_ATTACHED"
   | "READY_NONE"
   | "REJECTED_FINAL"
@@ -2332,7 +2368,7 @@ function mergeSpeculativeRetrieval(
 type MemoryQueryResolverExecution = Readonly<{
   result: MemoryQueryResolverResult;
   sources: readonly MemoryQueryResolverSource[];
-  strategy: "FINAL" | "SPECULATIVE";
+  strategy: "SPECULATIVE";
 }>;
 
 const MEMORY_QUERY_RESOLVER_SPECULATIVE_CANDIDATE_MULTIPLIER = 3;
@@ -2466,6 +2502,8 @@ export function createMemoryRunRetrievalService(
         Promise.resolve(null);
       let speculativeDensePromise: Promise<MemoryLocalRetrievalResult | null> =
         Promise.resolve(null);
+      let speculativeQueryResolverEligible = false;
+      let speculativeQueryResolutionSettled = true;
       let speculativeQueryResolutionPromise: Promise<MemoryQueryResolverExecution | null> =
         Promise.resolve(null);
       try {
@@ -2599,7 +2637,6 @@ export function createMemoryRunRetrievalService(
       );
       const executeQueryResolver = async (
         sources: readonly MemoryQueryResolverSource[],
-        strategy: MemoryQueryResolverExecution["strategy"],
         cancellationSignal?: AbortSignal
       ): Promise<MemoryQueryResolverExecution | null> => {
         if (sources.length === 0 || !options.queryResolver ||
@@ -2630,7 +2667,11 @@ export function createMemoryRunRetrievalService(
               status: "UNAVAILABLE" as const
             })));
         }
-        const execution = Object.freeze({ result, sources, strategy });
+        const execution = Object.freeze({
+          result,
+          sources,
+          strategy: "SPECULATIVE" as const
+        });
         settledQueryResolverExecution = execution;
         return execution;
       };
@@ -2727,6 +2768,8 @@ export function createMemoryRunRetrievalService(
         }).catch(() => null);
       }
       if (options.queryResolver && input.expected.settings.referenceChatHistory) {
+        speculativeQueryResolverEligible = true;
+        speculativeQueryResolutionSettled = false;
         speculativeQueryResolutionPromise = (async () => {
           try {
             const [sparse, dense] = await Promise.all([
@@ -2745,13 +2788,14 @@ export function createMemoryRunRetrievalService(
             });
             return executeQueryResolver(
               sources,
-              "SPECULATIVE",
               speculativeQueryResolverController.signal
             );
           } catch {
             return null;
           }
-        })();
+        })().finally(() => {
+          speculativeQueryResolutionSettled = true;
+        });
       }
       const [controlRefs, queryEmbedding, control] = await Promise.all([
         controlRefsPromise,
@@ -2930,6 +2974,14 @@ export function createMemoryRunRetrievalService(
           broadFallbackBaselinePlan = fallback.baseline;
           broadPlannerFallback = true;
         }
+      }
+      const queryResolverFinalPlanEligible = plan.mode === "PAST_CHAT_SEARCH" &&
+        (!plan.aggregationRequested || broadPlannerFallback);
+      if (!queryResolverFinalPlanEligible &&
+        !speculativeQueryResolverController.signal.aborted) {
+        speculativeQueryResolverController.abort({
+          code: "memory_query_resolution_not_required"
+        });
       }
       const hardExclusionReasons: MemorySourceFamilyHardExclusionReason[] = [
         ...(!input.expected.settings.useMemoryFacts
@@ -3231,10 +3283,16 @@ export function createMemoryRunRetrievalService(
       // to preserve recall. It does not turn an open-ended guidance query into
       // a semantic enumerate/count request, so a previously started resolver
       // may still finish. Explicitly planned aggregation remains excluded.
-      const finalResolverSources = plan.mode === "PAST_CHAT_SEARCH" &&
-        (!plan.aggregationRequested || broadPlannerFallback)
+      const finalResolverSources = queryResolverFinalPlanEligible
         ? memoryQueryResolverSources(plan.originalSanitizedQuery, relevanceInput)
         : Object.freeze([]);
+      const finalResolverApplicable = finalResolverSources.length > 0;
+      if (!finalResolverApplicable &&
+        !speculativeQueryResolverController.signal.aborted) {
+        speculativeQueryResolverController.abort({
+          code: "memory_query_resolution_not_required"
+        });
+      }
       const relevancePromise = (async (): Promise<MemoryRunRerankResult | null> => {
         if (relevanceInput.length === 0) return null;
         if (controlCache.rerankConsumedAttemptId === input.attemptId) {
@@ -3274,38 +3332,14 @@ export function createMemoryRunRetrievalService(
           ).catch(() => ({ reason: "memory_relevance_unavailable",
             status: "UNAVAILABLE" as const })));
       })();
-      const queryResolutionSelectionPromise = (async () => {
-        if (finalResolverSources.length === 0) {
-          if (!speculativeQueryResolverController.signal.aborted) {
-            speculativeQueryResolverController.abort({
-              code: "memory_query_resolution_not_required"
-            });
-          }
-          return Object.freeze({
-            attachment: null,
-            execution: await speculativeQueryResolutionPromise
-          });
-        }
-        const speculative = await speculativeQueryResolutionPromise;
-        const execution = speculative ??
-          await executeQueryResolver(finalResolverSources, "FINAL");
-        return Object.freeze({ attachment: execution, execution });
-      })();
-      const [initialRelevance, queryResolutionSelection] = await Promise.all([
-        relevancePromise,
-        queryResolutionSelectionPromise
-      ]);
-      const queryResolutionExecution = queryResolutionSelection.execution;
-      const queryResolution = queryResolutionSelection.attachment?.result ?? null;
-      const queryResolutionEvidence = queryResolutionExecution?.result ?? null;
-      const resolverSources = queryResolutionSelection.attachment?.sources ??
-        finalResolverSources;
-      const resolverEvidenceSources = queryResolutionExecution?.sources ??
-        finalResolverSources;
+      const initialRelevance = await relevancePromise;
       if (deadline.expired()) {
         return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
           { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
-          { result: queryResolutionEvidence, role: "MEMORY_QUERY_RESOLVE" },
+          {
+            result: settledQueryResolverExecution?.result ?? null,
+            role: "MEMORY_QUERY_RESOLVE"
+          },
           { result: initialRelevance, role: "MEMORY_RERANK" }
         ]);
       }
@@ -3410,7 +3444,10 @@ export function createMemoryRunRetrievalService(
           if (deadline.expired()) {
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
               { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
-              { result: queryResolutionEvidence, role: "MEMORY_QUERY_RESOLVE" },
+              {
+                result: settledQueryResolverExecution?.result ?? null,
+                role: "MEMORY_QUERY_RESOLVE"
+              },
               { result: relevance, role: "MEMORY_RERANK" }
             ]);
           }
@@ -3517,14 +3554,17 @@ export function createMemoryRunRetrievalService(
             safetyFindingCounts: querySafety.findingCounts,
             utilityEgressMode: currentControlExternal ||
               utilityUsedExternal(queryEmbedding) ||
-              utilityUsedExternal(queryResolutionEvidence) ||
+              utilityUsedExternal(settledQueryResolverExecution?.result ?? null) ||
               utilityUsedExternal(relevance)
               ? "CONSENTED_EXTERNAL"
               : "LOCAL_ONLY",
             utilityExecutions: [
               utilityEvidence("MEMORY_CONTROL", controlEvidence),
               utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
-              utilityEvidence("MEMORY_QUERY_RESOLVE", queryResolutionEvidence),
+              utilityEvidence(
+                "MEMORY_QUERY_RESOLVE",
+                settledQueryResolverExecution?.result ?? null
+              ),
               utilityEvidence("MEMORY_RERANK", relevance)
             ],
             vectorEvidence: local.vectorEvidence,
@@ -3539,7 +3579,7 @@ export function createMemoryRunRetrievalService(
         speculativeBaselineUsed || speculativeHybridUsed || broadLexicalFallbackUsed,
         admittedSourceKinds
       );
-      const queryScope = timings.measureSync("packerMs", () => {
+      const queryScopeDecision = timings.measureSync("packerMs", () => {
         const basePack = packMemoryPersonalContext({
           core: selectedCore,
           expanded: dynamicExpanded,
@@ -3548,13 +3588,55 @@ export function createMemoryRunRetrievalService(
           questionDirectedTemporalFallback: broadPlannerFallback,
           ranked: selectedDynamic
         });
-        return applyMemoryQueryScopeResolution({
-          expanded: rejoined,
-          pack: basePack,
-          resolution: queryResolution,
-          sources: resolverSources
+        const resolverAtAttach = finalResolverApplicable
+          ? settledQueryResolverExecution
+          : null;
+        if (!finalResolverApplicable) {
+          return Object.freeze({
+            execution: null,
+            queryScope: Object.freeze({
+              attachedConstraintKindCounts: Object.freeze({}),
+              pack: basePack,
+              proposedConstraintCount: 0,
+              state: "SKIPPED" as const
+            })
+          });
+        }
+        if (!resolverAtAttach) {
+          const pendingAtAttach = speculativeQueryResolverEligible &&
+            !speculativeQueryResolutionSettled;
+          if (pendingAtAttach &&
+            !speculativeQueryResolverController.signal.aborted) {
+            speculativeQueryResolverController.abort({
+              code: "memory_query_resolution_not_ready_at_attach"
+            });
+          }
+          return Object.freeze({
+            execution: null,
+            queryScope: Object.freeze({
+              attachedConstraintKindCounts: Object.freeze({}),
+              pack: basePack,
+              proposedConstraintCount: 0,
+              state: pendingAtAttach
+                ? "NOT_READY_AT_ATTACH" as const
+                : "SKIPPED" as const
+            })
+          });
+        }
+        return Object.freeze({
+          execution: resolverAtAttach,
+          queryScope: applyMemoryQueryScopeResolution({
+            expanded: rejoined,
+            pack: basePack,
+            resolution: resolverAtAttach.result,
+            sources: resolverAtAttach.sources
+          })
         });
       });
+      const queryResolutionExecution = queryScopeDecision.execution;
+      const queryResolutionEvidence = queryResolutionExecution?.result ?? null;
+      const resolverEvidenceSources = queryResolutionExecution?.sources ?? [];
+      const queryScope = queryScopeDecision.queryScope;
       const pack = queryScope.pack;
       const preparedText = pack.text;
       const preparedTokens = pack.approxTokens;
