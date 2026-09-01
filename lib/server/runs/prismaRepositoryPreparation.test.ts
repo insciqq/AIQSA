@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  completePreparingRunAttemptWithClient,
+  finalizePreparingRunWithClient,
   finalizeUnavailablePreparingRunAdmission,
   finalizeTemporaryPreparingRunAdmission,
   memorySpeculativeQueryResolverInventoryDeclared,
@@ -28,6 +30,56 @@ const settingsSnapshot = Object.freeze({
   schemaVersion: 2 as const,
   settingsRevision: 0,
   useMemoryFacts: false
+});
+
+function ownerFirstTransactionClient() {
+  const statements: string[] = [];
+  const tx = {
+    $queryRaw: vi.fn(async (query: Readonly<{ strings: readonly string[] }>) => {
+      const statement = query.strings.join("");
+      statements.push(statement);
+      return statement.includes('FROM "User"') ? [{ id: "user-1" }] : [];
+    })
+  };
+  const client = {
+    $transaction: vi.fn(async (
+      operation: (transaction: typeof tx) => Promise<unknown>
+    ) => operation(tx))
+  };
+  return { client, statements };
+}
+
+describe("Memory preparing transaction lock order", () => {
+  it("locks the owner before the run during retrieval completion", async () => {
+    const { client, statements } = ownerFirstTransactionClient();
+
+    await expect(completePreparingRunAttemptWithClient(client as never, {
+      attemptId: "attempt-1",
+      result: { budgetSnapshot: {}, outcome: "DISABLED" },
+      runId: "run-1",
+      userId: "user-1"
+    })).resolves.toBe(false);
+
+    expect(statements[0]).toContain('FROM "User"');
+    expect(statements[0]).toContain("FOR UPDATE");
+    expect(statements[1]).toContain('FROM "ModelRun"');
+  });
+
+  it("locks the owner before the run during finalization", async () => {
+    const { client, statements } = ownerFirstTransactionClient();
+
+    await expect(finalizePreparingRunWithClient(client as never, {
+      attemptId: "attempt-1",
+      normalizedRequest: {} as never,
+      providerRequestPreview: {},
+      runId: "run-1",
+      userId: "user-1"
+    }, {})).resolves.toBe(false);
+
+    expect(statements[0]).toContain('FROM "User"');
+    expect(statements[0]).toContain("FOR UPDATE");
+    expect(statements[1]).toContain('FROM "ModelRun"');
+  });
 });
 
 describe("Memory preparing settings compatibility", () => {

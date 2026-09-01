@@ -293,6 +293,23 @@ export async function lockPreparingRun(
   return run ?? null;
 }
 
+async function lockPreparingMemoryOwner(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<boolean> {
+  // Item revalidation takes shared locks on UserMemorySettings, while item
+  // persistence acquires an implicit FK lock on User. Take the owner first so
+  // preparation follows the same User -> UserMemorySettings order as every
+  // canonical Memory settings transaction.
+  const owners = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "User"
+    WHERE "id" = ${userId}
+    FOR UPDATE
+  `);
+  return owners.length === 1;
+}
+
 async function lockPreparingAttempt(
   tx: Prisma.TransactionClient,
   input: Readonly<{ attemptId?: string; runId: string; userId: string }>
@@ -1929,6 +1946,7 @@ export async function completePreparingRunAttemptWithClient(
   validateMemoryPreparingAttemptResult(input.result);
   const now = new Date();
   return repeatableReadTransaction(prismaClient, async (tx) => {
+    if (!(await lockPreparingMemoryOwner(tx, input.userId))) return false;
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     const attempt = await lockPreparingAttempt(tx, input);
     if (!run || run.status !== "preparing" || !attempt ||
@@ -2565,6 +2583,9 @@ export async function finalizePreparingRunWithClient(
 ): Promise<boolean> {
   const now = new Date();
   const finalized = await repeatableReadTransaction(prismaClient, async (tx) => {
+    if (!(await lockPreparingMemoryOwner(tx, input.userId))) {
+      return { decayTouch: false, finalized: false };
+    }
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     let attempt = await lockPreparingAttempt(tx, {
       attemptId: input.attemptId,
