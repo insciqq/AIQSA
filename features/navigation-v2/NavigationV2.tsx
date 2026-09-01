@@ -1,6 +1,5 @@
 "use client";
 
-import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import {
   UiV2Icon,
   UiV2IconButton,
@@ -11,6 +10,8 @@ import {
   UiV2Skeleton
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import { AccountMenuV2 } from "./AccountMenuV2";
+import { RailV2, type RailSectionV2 } from "./RailV2";
 import {
   clearChatNavigationSearch,
   loadChatNavigation,
@@ -89,6 +90,12 @@ export type NavigationSidebarProps = Readonly<{
   onFolderProjectSettings?(folder: ChatNavigationFolderWire): void;
   onLibrary?(): void;
   onLoadMore(): void;
+  /**
+   * Mobile drawer only: the rail destinations (Projects, Library, Archived,
+   * Settings, Control Center) and the account entry live in the drawer
+   * footer because the rail is absent below 900px.
+   */
+  drawerDestinations?: boolean;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
@@ -540,26 +547,6 @@ function findAnchoredChatRow(container: HTMLElement, id: string): HTMLElement | 
 
 export function NavigationSidebar(props: NavigationSidebarProps) {
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState<string | null>(null);
-  const {
-    menuRef: accountMenuRef,
-    triggerRef: accountTriggerRef
-  } = useMenuDismissalV2({
-    onClose: () => setAccountOpen(false),
-    open: accountOpen
-  });
-  const signOut = async () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    setSignOutError(null);
-    const result = await signOutCurrentSession();
-    if (!result.ok) {
-      setSignOutError(result.error);
-      setSigningOut(false);
-    }
-  };
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   // "Filter chats…" is a sidebar-scoped lookup over the user's own chats on
@@ -665,12 +652,26 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       data-project-context={props.projectContextActive || undefined}
     >
       <div className="v2-navigation-header">
+        {/* Desktop/compact: the column title plus the hide-list control; the
+            mobile drawer shows the wordmark and a close cross instead. */}
         <div className="v2-navigation-brand">
           <span className="v2-navigation-wordmark">
             <span className="v2-navigation-mark" aria-hidden="true"><UiV2Icon name="brand" /></span>
             AIQSA
           </span>
-          <UiV2IconButton icon="close" label="Close sidebar" onClick={props.onClose} />
+          <span className="v2-navigation-column-title">
+            {props.projectContextActive ? "Project" : "Chats"}
+          </span>
+          <button
+            className="v2-icon-button v2-focusable v2-navigation-close"
+            type="button"
+            aria-label="Close sidebar"
+            title="Hide chat list"
+            onClick={props.onClose}
+          >
+            <UiV2Icon name="panel" />
+            <UiV2Icon name="close" />
+          </button>
         </div>
         <div className="v2-new-chat-wrap">
           <button
@@ -916,58 +917,44 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         </> : null}
       </div>
 
-      <div className="v2-navigation-footer">
-        {props.onArchivedChats ? (
-          <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onArchivedChats}>
-            <UiV2Icon name="archive" /> Archived chats
-          </button>
-        ) : null}
-        <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onLibrary}>
-          <UiV2Icon name="library" />
-          Library
-        </button>
-        {/* One account entry for the shell (UX audit F11): Settings, Control
-            Center, and Sign out live here, not in the chat header. */}
-        <div className="v2-navigation-account">
+      {props.drawerDestinations ? (
+        <div className="v2-navigation-footer">
           <button
-            className="v2-navigation-account-trigger v2-focusable"
+            className="v2-navigation-destination v2-focusable"
             type="button"
-            aria-expanded={accountOpen}
-            aria-haspopup="menu"
-            aria-label="Account menu"
-            ref={accountTriggerRef}
-            onClick={() => setAccountOpen((open) => !open)}
+            onClick={() => {
+              scrollRef.current?.querySelector<HTMLElement>(".v2-project-navigation")?.scrollIntoView({ block: "start" });
+            }}
           >
-            <span className="v2-navigation-account-avatar" aria-hidden="true">
-              {(props.accountLabel?.slice(0, 1) || "A").toLocaleUpperCase()}
-            </span>
-            <span className="v2-chat-title">{props.accountLabel || "Account"}</span>
-            <UiV2Icon name="chevron-down" />
+            <UiV2Icon name="layers" /> Projects
           </button>
-          {accountOpen ? (
-            <UiV2MenuSurface
-              className="v2-navigation-account-menu"
-              label="Account"
-              ref={accountMenuRef}
-            >
-              {props.onSettings ? (
-                <UiV2MenuItem onClick={() => { setAccountOpen(false); props.onSettings?.(); }}>
-                  Settings
-                </UiV2MenuItem>
-              ) : null}
-              {props.adminEntryVisible ? (
-                <UiV2MenuLink href="/admin">Control Center</UiV2MenuLink>
-              ) : null}
-              <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
-                {signingOut ? "Signing out…" : "Sign out"}
-              </UiV2MenuItem>
-              {signOutError ? (
-                <p className="v2-live-menu-error" role="alert">Could not sign out.</p>
-              ) : null}
-            </UiV2MenuSurface>
+          {props.onLibrary ? (
+            <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onLibrary}>
+              <UiV2Icon name="library" /> Library
+            </button>
           ) : null}
+          {props.onArchivedChats ? (
+            <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onArchivedChats}>
+              <UiV2Icon name="archive" /> Archived chats
+            </button>
+          ) : null}
+          {props.onSettings ? (
+            <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onSettings}>
+              <UiV2Icon name="settings" /> Settings
+            </button>
+          ) : null}
+          {props.adminEntryVisible ? (
+            <a className="v2-navigation-destination v2-focusable" href="/admin">
+              <UiV2Icon name="shield" /> Control Center
+            </a>
+          ) : null}
+          <AccountMenuV2
+            accountLabel={props.accountLabel}
+            adminEntryVisible={props.adminEntryVisible}
+            onSettings={props.onSettings}
+          />
         </div>
-      </div>
+      ) : null}
     </aside>
   );
 }
@@ -1047,16 +1034,25 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
 }
 
 type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
-  | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
+  | "activeChatId" | "chats" | "drawerDestinations" | "error" | "folders" | "hasMore" | "loading"
   | "now" | "onClose" | "onLoadMore" | "onRetry" | "onSearch" | "ready"
   | "searchError" | "searchLoading" | "searchQuery"
 > & {
+  /** Marks an open chat so the mobile "+" island yields to the title pill. */
+  chatActive?: boolean;
   children: ReactNode;
+  /** Rail "Chats" while another section is open: returns to the chat. */
+  onChats?(): void;
+  /** Which second-column section is open; the rail marks it. */
+  section?: RailSectionV2;
   sidebar?: ReactNode | ((onClose: () => void) => ReactNode);
 };
 
 export function ReadingRoomShellV2({
+  chatActive = false,
   children,
+  onChats,
+  section = "chats",
   sidebar,
   ...navigationOwnerProps
 }: ReadingRoomShellV2Props) {
@@ -1267,17 +1263,58 @@ export function ReadingRoomShellV2({
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
+      drawerDestinations={composition === "mobile"}
       projectsSlot={navigationProjectsSlot}
+      onArchivedChats={navigationOwnerProps.onArchivedChats
+        ? () => { navigationOwnerProps.onArchivedChats?.(); setMobileOpen(false); }
+        : undefined}
       onClose={closeSidebar}
+      onLibrary={navigationOwnerProps.onLibrary
+        ? () => { navigationOwnerProps.onLibrary?.(); setMobileOpen(false); }
+        : undefined}
       onNewChat={createPersonalChat}
-      onSelectChat={(chat) => { navigationOwnerProps.onSelectChat(chat); setMobileOpen(false); }}
+      onSettings={navigationOwnerProps.onSettings
+        ? () => { navigationOwnerProps.onSettings?.(); setMobileOpen(false); }
+        : undefined}
+      onSelectChat={(chat) => {
+        navigationOwnerProps.onSelectChat(chat);
+        // A drawer (mobile, compact) yields to the chosen chat.
+        setMobileOpen(false);
+        if (composition === "compact") setCompactExpanded(false);
+      }}
     />
   );
+  const revealList = () => {
+    setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
+    if (composition === "mobile") setMobileOpen(true);
+    else if (composition === "compact") setCompactExpanded(true);
+    else setDesktopCollapsed(false);
+  };
+  // Rail destinations: Chats returns to the chat section (or reveals a
+  // hidden list); Projects reveals the list and scrolls to its Projects block.
+  const showChats = () => {
+    if (section !== "chats") {
+      onChats?.();
+      return;
+    }
+    if (collapsed) revealList();
+  };
+  const showProjects = () => {
+    if (section !== "chats") onChats?.();
+    if (collapsed) revealList();
+    window.requestAnimationFrame(() => {
+      const heading = document.querySelector<HTMLElement>(".v2-project-navigation");
+      heading?.scrollIntoView({ block: "start" });
+      heading?.querySelector<HTMLElement>("button")?.focus();
+    });
+  };
 
   return (
     <div
       className="v2-workspace-shell"
+      data-chat-active={chatActive || undefined}
       data-mobile-sidebar={mobileOpen || undefined}
+      data-shell-section={section}
       data-sidebar-collapsed={collapsed || undefined}
       data-sidebar-compact-expanded={composition === "compact" && compactExpanded || undefined}
       data-sidebar-composition={composition}
@@ -1289,6 +1326,18 @@ export function ReadingRoomShellV2({
       }}
     >
       <UiV2IconSprite />
+      {composition !== "mobile" ? (
+        <RailV2
+          accountLabel={navigationOwnerProps.accountLabel}
+          active={section}
+          adminEntryVisible={navigationOwnerProps.adminEntryVisible}
+          onArchivedChats={navigationOwnerProps.onArchivedChats}
+          onChats={showChats}
+          onLibrary={navigationOwnerProps.onLibrary}
+          onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
+          onSettings={navigationOwnerProps.onSettings}
+        />
+      ) : null}
       <button
         className="v2-navigation-scrim"
         type="button"
@@ -1303,15 +1352,11 @@ export function ReadingRoomShellV2({
       >
         <UiV2IconButton
           ref={openButtonRef}
-          icon="menu"
+          icon={composition === "mobile" ? "menu" : "panel"}
           label="Open sidebar"
+          title={composition === "mobile" ? "Open navigation" : "Show chat list"}
           aria-expanded={composition === "mobile" ? mobileOpen : !collapsed}
-          onClick={() => {
-            setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
-            if (composition === "mobile") setMobileOpen(true);
-            else if (composition === "compact") setCompactExpanded(true);
-            else setDesktopCollapsed(false);
-          }}
+          onClick={revealList}
         />
         <UiV2IconButton icon="plus" label="New chat" onClick={() => createPersonalChat("NORMAL")} />
       </div>

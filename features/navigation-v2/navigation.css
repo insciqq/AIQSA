@@ -1,15 +1,32 @@
+/* Shell grid (PRD §4.1): rail | list | content. Collapse and the Library
+   section hide only the list column; the rail stays. */
 .v2-workspace-shell {
   display: grid;
   min-width: 0;
   min-height: 100dvh;
-  grid-template-columns: var(--v2-sidebar-width) minmax(0, 1fr);
+  grid-template-columns: 3.5rem var(--v2-sidebar-width) minmax(0, 1fr);
   color: var(--v2-color-text);
   background: var(--v2-color-canvas);
   transition: grid-template-columns var(--v2-motion-base);
 }
 
-.v2-workspace-shell[data-sidebar-collapsed="true"] {
-  grid-template-columns: 0 minmax(0, 1fr);
+.v2-workspace-shell[data-sidebar-collapsed="true"],
+.v2-workspace-shell[data-shell-section="library"] {
+  grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+}
+
+/* Explicit placement: a fixed-position drawer or scrim must not shift the
+   content column into the list's (zero-width) track. */
+.v2-workspace-shell > .v2-rail {
+  grid-column: 1;
+}
+
+.v2-workspace-shell > .v2-navigation {
+  grid-column: 2;
+}
+
+.v2-workspace-shell > .v2-workspace-content {
+  grid-column: 3;
 }
 
 .v2-workspace-content {
@@ -35,7 +52,8 @@
     transform var(--v2-motion-base);
 }
 
-.v2-workspace-shell[data-sidebar-collapsed="true"] .v2-navigation {
+.v2-workspace-shell[data-sidebar-collapsed="true"] .v2-navigation,
+.v2-workspace-shell[data-shell-section="library"] .v2-navigation {
   pointer-events: none;
   visibility: hidden;
   opacity: 0;
@@ -48,6 +66,8 @@
   padding: 0.875rem 0.75rem 0.5rem;
 }
 
+/* Column head: "Chats" + the hide-list control on desktop/compact; the mobile
+   drawer shows the wordmark and a close cross instead (PRD §4.2 / §4.8). */
 .v2-navigation-brand {
   display: flex;
   min-height: 2rem;
@@ -56,14 +76,28 @@
   gap: 0.5rem;
 }
 
+.v2-navigation-column-title {
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
 .v2-navigation-wordmark {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 0.5625rem;
-  color: var(--v2-color-text2);
+  color: var(--v2-color-text);
   font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+.v2-navigation-close {
+  color: var(--v2-color-text2);
+}
+
+.v2-navigation-close > .v2-icon:last-child {
+  display: none;
 }
 
 /* Bubble-Q brand mark: the chat bubble drawn as a Q, always in the accent. */
@@ -487,11 +521,16 @@
   width: 13.5rem;
 }
 
+/* Drawer footer (mobile only): the rail destinations and the account entry. */
 .v2-navigation-footer {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.125rem;
   padding: 0.625rem 0.75rem max(0.75rem, env(safe-area-inset-bottom));
   border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-navigation-destination {
+  text-decoration: none;
 }
 
 .v2-navigation-destination {
@@ -575,7 +614,7 @@
 .v2-sidebar-floats {
   position: fixed;
   top: env(safe-area-inset-top);
-  left: max(0.75rem, env(safe-area-inset-left));
+  left: calc(3.5rem + max(0.75rem, env(safe-area-inset-left)));
   z-index: 25;
   display: flex;
   height: var(--v2-header-height);
@@ -586,9 +625,34 @@
   transition: opacity var(--v2-motion-fast);
 }
 
+/* "Show list" and "New chat" split by a hairline (PRD §4.1). */
+.v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+  position: relative;
+  margin-left: 0.25rem;
+}
+
+.v2-sidebar-floats > .v2-icon-button + .v2-icon-button::before {
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: -0.25rem;
+  width: 1px;
+  background: var(--v2-color-border);
+  content: "";
+}
+
 .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-sidebar-floats {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* The Library section has no chat list to reveal: no floats beside the rail
+   (the extra attribute outranks the compact-collapsed rule below). */
+@media (min-width: 900px) {
+  .v2-workspace-shell[data-shell-section="library"][data-sidebar-composition] .v2-sidebar-floats {
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 
 .v2-navigation-scrim {
@@ -647,7 +711,32 @@
 
 @media (min-width: 900px) and (max-width: 1023px) {
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) {
-    grid-template-columns: 0 minmax(0, 1fr);
+    grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+  }
+
+  /* Expanded compact list is a drawer beside the rail with a scrim. */
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] {
+    grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+  }
+
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 3.5rem;
+    z-index: 30;
+    box-shadow: var(--v2-shadow-overlay);
+  }
+
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation-scrim {
+    position: fixed;
+    z-index: 29;
+    inset: 0 0 0 3.5rem;
+    display: block;
+    border: 0;
+    background: var(--v2-color-scrim);
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-navigation {
@@ -665,8 +754,69 @@
 
 @media (max-width: 899px) {
   .v2-workspace-shell,
-  .v2-workspace-shell[data-sidebar-collapsed="true"] {
+  .v2-workspace-shell[data-sidebar-collapsed="true"],
+  .v2-workspace-shell[data-shell-section="library"] {
     display: block;
+  }
+
+  /* No rail below 900px; the drawer footer carries its destinations. */
+  .v2-rail {
+    display: none;
+  }
+
+  .v2-navigation-wordmark {
+    display: inline-flex;
+  }
+
+  .v2-navigation-column-title {
+    display: none;
+  }
+
+  .v2-navigation-close > .v2-icon:first-child {
+    display: none;
+  }
+
+  .v2-navigation-close > .v2-icon:last-child {
+    display: block;
+  }
+
+  /* The Library section still offers the drawer through the menu island. */
+  .v2-workspace-shell[data-shell-section="library"][data-mobile-sidebar="true"] .v2-navigation {
+    pointer-events: auto;
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  /* Islands (PRD §4.8): the menu island and, on the blank chat, "+". */
+  .v2-sidebar-floats {
+    top: max(0.625rem, env(safe-area-inset-top));
+    left: max(0.75rem, env(safe-area-inset-left));
+    height: auto;
+    gap: 0.5rem;
+  }
+
+  .v2-sidebar-floats > .v2-icon-button {
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--v2-color-border2);
+    border-radius: 50%;
+    color: var(--v2-color-text);
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: var(--v2-shadow-float);
+  }
+
+  .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+    margin-left: 0;
+  }
+
+  .v2-sidebar-floats > .v2-icon-button + .v2-icon-button::before {
+    content: none;
+  }
+
+  .v2-workspace-shell[data-chat-active="true"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button,
+  .v2-workspace-shell[data-shell-section="library"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+    display: none;
   }
 
   .v2-navigation,
@@ -698,7 +848,7 @@
     inset: 0;
     display: block;
     border: 0;
-    background: color-mix(in srgb, var(--v2-color-canvas) 38%, transparent);
+    background: var(--v2-color-scrim);
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--v2-motion-base);
@@ -768,4 +918,107 @@ html[data-motion="off"] .v2-chat-pulse {
     animation: none;
     transition: none;
   }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Icon rail (PRD §4.1): 56px, the mark on top, destinations, account.    */
+/* ---------------------------------------------------------------------- */
+.v2-rail {
+  position: relative;
+  z-index: 31;
+  display: flex;
+  width: 3.5rem;
+  min-height: 100dvh;
+  max-height: 100dvh;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 0 max(0.75rem, env(safe-area-inset-bottom));
+  border-right: 1px solid var(--v2-color-border);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-rail);
+}
+
+.v2-rail-brand {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  margin-bottom: 0.5rem;
+  color: var(--v2-color-accent);
+}
+
+.v2-rail-brand > .v2-icon {
+  width: 1.375rem;
+  height: 1.375rem;
+  stroke-width: 2;
+}
+
+.v2-rail-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.v2-rail-bottom {
+  margin-top: auto;
+}
+
+.v2-rail-button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0.625rem;
+  color: var(--v2-color-text2);
+  background: transparent;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    color var(--v2-motion-fast),
+    background-color var(--v2-motion-fast);
+}
+
+.v2-rail-button > .v2-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.v2-rail-button:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
+.v2-rail-button[aria-current="page"] {
+  color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+}
+
+/* The rail's account entry is the avatar only; its menu opens upward. */
+.v2-rail .v2-navigation-account {
+  margin-top: 0.25rem;
+}
+
+.v2-rail .v2-navigation-account-trigger {
+  width: 2.5rem;
+  min-height: 2.5rem;
+  justify-content: center;
+  padding: 0;
+  border-radius: 0.625rem;
+}
+
+.v2-rail .v2-navigation-account-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.625rem;
+}
+
+.v2-rail .v2-navigation-account-menu {
+  right: auto;
+  bottom: 0;
+  left: calc(100% + 0.5rem);
+  width: 13rem;
 }

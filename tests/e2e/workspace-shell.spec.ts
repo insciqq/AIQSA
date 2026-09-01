@@ -22,7 +22,10 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
   await expect(page.getByTestId("composer-v2")).toBeVisible();
   const navigation = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(navigation.getByRole("button", { exact: true, name: "New chat" })).toBeVisible();
-  await expect(navigation.getByRole("button", { name: "Library" })).toBeVisible();
+  // Permanent destinations live on the rail beside the list.
+  const rail = page.getByRole("navigation", { name: "Workspace" });
+  await expect(rail.getByRole("button", { name: "Library" })).toBeVisible();
+  await expect(rail.getByRole("button", { exact: true, name: "Chats" })).toHaveAttribute("aria-current", "page");
 
   const actionTrigger = navigation.getByRole("button", { name: /^Actions:/u }).first();
   if (await actionTrigger.count()) {
@@ -49,13 +52,15 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
     await expect(page.getByText("Answer evidence", { exact: true })).toHaveCount(0);
   }
 
-  await navigation.getByRole("button", { name: "Library" }).click();
+  await rail.getByRole("button", { name: "Library" }).click();
   await expect(page.getByTestId("library-v2")).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Library" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("tab", { name: "Assistants" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Memory" })).toBeVisible();
   await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(page.getByTestId("library-v2")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Account menu" }).click();
+  await rail.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
   await expect(page.getByTestId("settings-v2")).toBeVisible();
   await page.getByRole("button", { name: "Close settings" }).click();

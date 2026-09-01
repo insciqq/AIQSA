@@ -2,6 +2,7 @@
 
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import {
+  type UiV2IconName,
   UiV2Button,
   UiV2Icon,
   UiV2IconButton,
@@ -31,17 +32,26 @@ function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
 }
 
 const tabOrder: readonly LibraryTabIdV2[] = ["assistants", "knowledge", "files", "memory"];
+const tabIcons: Record<LibraryTabIdV2, UiV2IconName> = {
+  assistants: "assistant",
+  files: "file",
+  knowledge: "book",
+  memory: "memory"
+};
 
 export function LibraryV2({
   initialTab = "assistants",
   navigationGuard,
   onBack,
+  onOpenSkillLibrary,
   onTabChange,
   tabs
 }: Readonly<{
   initialTab?: LibraryTabIdV2;
   navigationGuard?: LibraryNavigationGuardV2;
   onBack(): void;
+  /** Opens the Skill Library overlay from the "Skills" group of the section column. */
+  onOpenSkillLibrary?(): void;
   onTabChange?(tab: LibraryTabIdV2): void;
   tabs: readonly LibraryTabV2[];
 }>) {
@@ -94,20 +104,19 @@ export function LibraryV2({
   return (
     <main className="v2-library" data-testid="library-v2">
       <UiV2IconSprite />
+      {/* In the shell the header splits into the crumb row (right column) and
+          the section column (left); below 900px it stacks as before. */}
       <header className="v2-library-header">
         <div className="v2-library-heading-row">
+          <nav className="v2-library-crumb" aria-label="Library location">
+            <span>Library</span>
+            <span aria-hidden="true"> / </span>
+            <strong>{selected.label}</strong>
+          </nav>
           <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
-          <div className="v2-library-title">
-            <span className="v2-library-title-icon" aria-hidden="true">
-              <UiV2Icon name="library" />
-            </span>
-            <div>
-              <h1>Library</h1>
-              <p>Your working resources and memory in one place</p>
-            </div>
-          </div>
         </div>
         <div className="v2-library-tabs-scroll">
+          <p className="v2-library-column-title" aria-hidden="true">Library</p>
           <div className="v2-library-tabs" role="tablist" aria-label="Library sections">
             {tabs.map((tab) => (
               <button
@@ -124,10 +133,20 @@ export function LibraryV2({
                 onClick={() => commitTab(tab.id)}
                 onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
               >
-                {tab.label}
+                <UiV2Icon name={tabIcons[tab.id]} />
+                <span>{tab.label}</span>
               </button>
             ))}
           </div>
+          {onOpenSkillLibrary ? (
+            <div className="v2-library-tabs-group">
+              <p className="v2-library-column-label">Skills</p>
+              <button className="v2-library-tab v2-focusable" type="button" onClick={onOpenSkillLibrary}>
+                <UiV2Icon name="wand" />
+                <span>Skill library</span>
+              </button>
+            </div>
+          ) : null}
         </div>
       </header>
       <section

@@ -761,12 +761,20 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   return (
     <main className="v2-live-root" data-testid="app-shell">
       <UiV2IconSprite />
-      {libraryOpen && !projectContext ? (
-        <LibrarySurfaceV2 composer={composer} props={props} onOpenMemoryOwner={() => setMemoryOwnerOpen(true)} />
-      ) : (
+      {/* The Library renders inside the same shell as a rail section: the
+          rail stays, the chat list column yields to the Library's section
+          column (PRD §4.1/§4.10, FRONTEND "Chat Composition"). */}
+      {(
         <ReadingRoomShellV2
           accountLabel={session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
+          chatActive={Boolean(session.activeChatId)}
+          section={libraryOpen && !projectContext ? "library" : "chats"}
+          onChats={() => {
+            settings.library?.onBackToChat();
+            settings.knowledge?.onBackToChat();
+            settings.closeMemory();
+          }}
           chatStateFor={navigationChatState}
           currentNewChatMode={currentNewChatMode}
           editingChatId={workspace.pane.state.editingChatId}
@@ -852,6 +860,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             />
           )}
         >
+          {libraryOpen && !projectContext ? (
+            <LibrarySurfaceV2
+              composer={composer}
+              props={props}
+              onOpenMemoryOwner={() => setMemoryOwnerOpen(true)}
+              onOpenSkillLibrary={() => setSkillLibraryOpen(true)}
+            />
+          ) : (
           <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
@@ -951,6 +967,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               </div>
             ) : null}
           </section>
+          )}
         </ReadingRoomShellV2>
       )}
 

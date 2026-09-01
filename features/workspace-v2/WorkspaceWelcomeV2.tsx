@@ -37,10 +37,12 @@ import { useEffect, useRef, useState } from "react";
 function LibrarySurfaceV2({
   composer,
   onOpenMemoryOwner,
+  onOpenSkillLibrary,
   props
 }: Readonly<{
   composer: ShellComposerView;
   onOpenMemoryOwner(): void;
+  onOpenSkillLibrary?(): void;
   props: PowerAppShellV2Props;
 }>) {
   const { session, settings } = props;
@@ -202,6 +204,7 @@ function LibrarySurfaceV2({
       <LibraryV2
         key={initialTab}
         initialTab={initialTab}
+        onOpenSkillLibrary={onOpenSkillLibrary}
         tabs={tabs}
         onBack={() => {
           assistantView?.onBackToChat();
