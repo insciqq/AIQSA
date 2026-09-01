@@ -446,6 +446,47 @@ describe("Navigation v2", () => {
     expect(within(navigation).getByText("AIQSA")).toBeInTheDocument();
   });
 
+  it("leaves a Project before Library and answers Projects by focusing and flashing its block", () => {
+    vi.useFakeTimers();
+    const onLeaveProject = vi.fn();
+    const onLibrary = vi.fn();
+    render(
+      <ReadingRoomShellV2
+        onLeaveProject={onLeaveProject}
+        onLibrary={onLibrary}
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        projectsSlot={(
+          <div className="v2-project-navigation">
+            <button type="button">Create project</button>
+          </div>
+        )}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    fireEvent.click(within(rail).getByRole("button", { name: "Library" }));
+    expect(onLeaveProject).toHaveBeenCalledTimes(1);
+    expect(onLibrary).toHaveBeenCalledTimes(1);
+    expect(onLeaveProject.mock.invocationCallOrder[0]).toBeLessThan(onLibrary.mock.invocationCallOrder[0]!);
+
+    fireEvent.click(within(rail).getByRole("button", { name: "Projects" }));
+    expect(onLeaveProject).toHaveBeenCalledTimes(2);
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    const block = document.querySelector(".v2-project-navigation");
+    expect(block).toHaveAttribute("data-flash");
+    expect(screen.getByRole("button", { name: "Create project" })).toHaveFocus();
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(block).not.toHaveAttribute("data-flash");
+    vi.useRealTimers();
+  });
+
   it("restores focus to the opener after collapse", () => {
     const onClose = vi.fn();
     const customSidebar = (close: () => void) => (

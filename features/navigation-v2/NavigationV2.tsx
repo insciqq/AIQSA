@@ -88,8 +88,16 @@ export type NavigationSidebarProps = Readonly<{
   onExport?(chat: ChatNavigationSummaryWire): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onFolderProjectSettings?(folder: ChatNavigationFolderWire): void;
+  /**
+   * Rail/drawer Projects and Library are personal-workspace destinations:
+   * inside a shared Project the owner leaves it first so the destination has
+   * a visible answer (the Projects block or the Library column).
+   */
+  onLeaveProject?(): void;
   onLibrary?(): void;
   onLoadMore(): void;
+  /** Rail/drawer Projects: revealed by the shell (scroll, focus, flash). */
+  onProjects?(): void;
   /**
    * Mobile drawer only: the rail destinations (Projects, Library, Archived,
    * Settings, Control Center) and the account entry live in the drawer
@@ -923,7 +931,8 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             className="v2-navigation-destination v2-focusable"
             type="button"
             onClick={() => {
-              scrollRef.current?.querySelector<HTMLElement>(".v2-project-navigation")?.scrollIntoView({ block: "start" });
+              if (props.onProjects) props.onProjects();
+              else revealProjectsBlock(scrollRef.current ?? document);
             }}
           >
             <UiV2Icon name="layers" /> Projects
@@ -1047,6 +1056,22 @@ type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   section?: RailSectionV2;
   sidebar?: ReactNode | ((onClose: () => void) => ReactNode);
 };
+
+/**
+ * Answers a Projects destination visibly even when the block is already on
+ * screen: scroll it into view, focus its first control and flash it. Runs a
+ * beat later so a Project just left has re-rendered the personal list.
+ */
+export function revealProjectsBlock(scope: ParentNode = document): void {
+  window.setTimeout(() => {
+    const block = scope.querySelector<HTMLElement>(".v2-project-navigation");
+    if (!block) return;
+    if (typeof block.scrollIntoView === "function") block.scrollIntoView({ block: "start" });
+    block.querySelector<HTMLElement>("button")?.focus();
+    block.setAttribute("data-flash", "");
+    window.setTimeout(() => block.removeAttribute("data-flash"), 900);
+  }, 60);
+}
 
 export function ReadingRoomShellV2({
   chatActive = false,
@@ -1260,30 +1285,6 @@ export function ReadingRoomShellV2({
     onNewChat(mode);
     if (composition === "mobile") setMobileOpen(false);
   };
-  const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
-    <NavigationSidebarContainer
-      {...navigationOwnerProps}
-      drawerDestinations={composition === "mobile"}
-      projectsSlot={navigationProjectsSlot}
-      onArchivedChats={navigationOwnerProps.onArchivedChats
-        ? () => { navigationOwnerProps.onArchivedChats?.(); setMobileOpen(false); }
-        : undefined}
-      onClose={closeSidebar}
-      onLibrary={navigationOwnerProps.onLibrary
-        ? () => { navigationOwnerProps.onLibrary?.(); setMobileOpen(false); }
-        : undefined}
-      onNewChat={createPersonalChat}
-      onSettings={navigationOwnerProps.onSettings
-        ? () => { navigationOwnerProps.onSettings?.(); setMobileOpen(false); }
-        : undefined}
-      onSelectChat={(chat) => {
-        navigationOwnerProps.onSelectChat(chat);
-        // A drawer (mobile, compact) yields to the chosen chat.
-        setMobileOpen(false);
-        if (composition === "compact") setCompactExpanded(false);
-      }}
-    />
-  );
   const revealList = () => {
     setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
     if (composition === "mobile") setMobileOpen(true);
@@ -1300,14 +1301,44 @@ export function ReadingRoomShellV2({
     if (collapsed) revealList();
   };
   const showProjects = () => {
+    navigationOwnerProps.onLeaveProject?.();
     if (section !== "chats") onChats?.();
     if (collapsed) revealList();
-    window.requestAnimationFrame(() => {
-      const heading = document.querySelector<HTMLElement>(".v2-project-navigation");
-      heading?.scrollIntoView({ block: "start" });
-      heading?.querySelector<HTMLElement>("button")?.focus();
-    });
+    revealProjectsBlock();
   };
+  const showLibrary = navigationOwnerProps.onLibrary
+    ? () => {
+        navigationOwnerProps.onLeaveProject?.();
+        navigationOwnerProps.onLibrary?.();
+      }
+    : undefined;
+  const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
+    <NavigationSidebarContainer
+      {...navigationOwnerProps}
+      drawerDestinations={composition === "mobile"}
+      projectsSlot={navigationProjectsSlot}
+      onArchivedChats={navigationOwnerProps.onArchivedChats
+        ? () => { navigationOwnerProps.onArchivedChats?.(); setMobileOpen(false); }
+        : undefined}
+      onClose={closeSidebar}
+      onProjects={navigationOwnerProps.projectsSlot
+        ? () => { showProjects(); setMobileOpen(false); }
+        : undefined}
+      onLibrary={showLibrary
+        ? () => { showLibrary(); setMobileOpen(false); }
+        : undefined}
+      onNewChat={createPersonalChat}
+      onSettings={navigationOwnerProps.onSettings
+        ? () => { navigationOwnerProps.onSettings?.(); setMobileOpen(false); }
+        : undefined}
+      onSelectChat={(chat) => {
+        navigationOwnerProps.onSelectChat(chat);
+        // A drawer (mobile, compact) yields to the chosen chat.
+        setMobileOpen(false);
+        if (composition === "compact") setCompactExpanded(false);
+      }}
+    />
+  );
 
   return (
     <div
@@ -1333,7 +1364,7 @@ export function ReadingRoomShellV2({
           adminEntryVisible={navigationOwnerProps.adminEntryVisible}
           onArchivedChats={navigationOwnerProps.onArchivedChats}
           onChats={showChats}
-          onLibrary={navigationOwnerProps.onLibrary}
+          onLibrary={showLibrary}
           onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
           onSettings={navigationOwnerProps.onSettings}
         />

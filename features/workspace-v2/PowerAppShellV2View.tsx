@@ -834,6 +834,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             const full = currentWorkspaceFolder(folder.id);
             if (full) workspace.pane.actions.openProjectSettings(full);
           }}
+          onLeaveProject={projectContext ? workspace.projects.actions.leave : undefined}
           onLibrary={settings.openLibrary}
           onMemoryMode={projectContext ? undefined : setNavigationMemoryMode}
           onMove={(chat, folderId) => {
