@@ -586,6 +586,10 @@ export function PowerAppShellV2({
     removeAssistantFromComposer,
     selectModel,
     selectSearchPlan,
+    setDefaultKnowledgePlan,
+    setDefaultMcpMode,
+    setDefaultSearchPlan,
+    setSendWithEnter,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     useOrganizationModelDefault,
@@ -1578,6 +1582,16 @@ export function PowerAppShellV2({
       toggleTemporary: projectContext ? () => undefined : toggleTemporaryComposer
     },
     makeModelDefault: projectContext ? undefined : makeModelDefault,
+    chatDefaults: projectContext || !catalog ? undefined : {
+      knowledgePlan: catalog.defaults.knowledgePlan ?? null,
+      mcpMode: catalog.defaults.mcpMode ?? "auto",
+      searchPlan: catalog.defaults.searchPlan,
+      setKnowledgePlan: setDefaultKnowledgePlan,
+      setMcpMode: setDefaultMcpMode,
+      setSearchPlan: setDefaultSearchPlan
+    },
+    sendWithEnter: catalog?.defaults.sendWithEnter ?? true,
+    setSendWithEnter,
     notificationSoundEnabled,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,

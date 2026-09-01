@@ -83,6 +83,9 @@ describe("catalog handler", () => {
       "organizationSearchPlan",
       "searchPlan",
       "searchPreferenceSource",
+      "knowledgePlan",
+      "mcpMode",
+      "sendWithEnter",
       "showCitations",
       "showReasoningBlocks",
     ]);

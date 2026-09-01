@@ -3,7 +3,8 @@ import {
   resetComposerSessionStoreForTest,
   resetRunSurfaceStoreForTest,
   resetThreadStoreForTest,
-  resetWorkspaceStoreForTest
+  resetWorkspaceStoreForTest,
+  resetKnowledgeLibraryStoreForTest
 } from "@/tests/support/appShellStores";
 import {
   composerSessionKey,
@@ -12,6 +13,8 @@ import {
   useComposerSessionStore,
   type ComposerSessionKey
 } from "./composerSessionStore";
+import { useComposerControlStore } from "./composerControlStore";
+import { useKnowledgeLibraryStore } from "./knowledgeLibraryStore";
 import { useRunSurfaceStore } from "./runSurfaceStore";
 import { chatExportMarkdown, useWorkspaceActions } from "./workspaceActions";
 import {
@@ -2303,5 +2306,72 @@ describe("chat export markdown", () => {
     );
     // No provider internals, ids, or token counts leak into the document.
     expect(markdown).not.toMatch(/token|provider|runId|uuid/iu);
+  });
+});
+
+describe("blank workspace chat defaults", () => {
+  it("starts a new chat with the personal MCP and Knowledge defaults and names a dropped base", () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const catalog = useWorkspaceStore.getState().catalog;
+    if (!catalog) throw new Error("catalog fixture missing");
+    useWorkspaceStore.setState({
+      catalog: {
+        ...catalog,
+        defaults: {
+          ...catalog.defaults,
+          knowledgePlan: { baseIds: ["kb-1", "kb-gone"], mode: "explicit", sourceIds: [], version: 1 },
+          mcpMode: "load_all"
+        }
+      }
+    });
+    useKnowledgeLibraryStore.setState({
+      data: {
+        knowledgeBases: [{
+          archived: false,
+          deletionPending: false,
+          description: "",
+          id: "kb-1",
+          name: "Handbook",
+          owned: true,
+          ownerDisplayName: "Operator",
+          purgeScheduledAt: null,
+          readiness: { indexedSourceCount: 0, state: "ready", totalSourceCount: 0 } as never,
+          scope: "personal" as never,
+          sourceCount: 0,
+          trashed: false,
+          trashedAt: null,
+          updatedAt: "2026-09-01T00:00:00.000Z",
+          version: 1
+        }],
+        publishableGroups: [],
+        viewer: { canCreate: true, canPublishInstallation: false, maxUploadBytes: 1 }
+      }
+    });
+    try {
+      state.actions.activateBlankWorkspace();
+      expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+      expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
+        expect.objectContaining({ baseIds: ["kb-1"], mode: "explicit" }),
+        "explicit",
+        "system"
+      );
+      expect(state.setNotice).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "error",
+        text: expect.stringContaining("no longer available")
+      }));
+
+      useKnowledgeLibraryStore.setState({ data: null });
+      state.setNotice.mockClear();
+      state.actions.activateBlankWorkspace();
+      expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
+        expect.objectContaining({ baseIds: ["kb-1", "kb-gone"] }),
+        "explicit",
+        "system"
+      );
+      expect(state.setNotice).not.toHaveBeenCalled();
+    } finally {
+      useComposerControlStore.getState().setMcpSelection({ mode: "auto" });
+      resetKnowledgeLibraryStoreForTest();
+    }
   });
 });

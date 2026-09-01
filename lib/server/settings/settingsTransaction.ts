@@ -25,16 +25,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function serializeSettings(settings: {
   defaultControlValues: unknown;
+  defaultKnowledgePlan: unknown;
+  defaultMcpMode: string;
   defaultProviderModel: { id: string } | null;
   defaultSearchPlan: unknown;
+  sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
 }): UserSettingsRecord {
   const defaultProviderModelId = settings.defaultProviderModel?.id ?? null;
   return {
     defaultControlValues: settings.defaultControlValues,
+    defaultKnowledgePlan: settings.defaultKnowledgePlan,
+    defaultMcpMode: settings.defaultMcpMode,
     defaultProviderModelId,
     defaultSearchPlan: settings.defaultSearchPlan,
+    sendWithEnter: settings.sendWithEnter,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks
   };
@@ -44,15 +50,29 @@ function settingsUpdateData(
   update: UserSettingsUpdate,
   currentControlValues: unknown
 ): Prisma.UserSettingsUpdateInput {
-  const { defaultControlValues, defaultProviderModelId, defaultSearchPlan, ...rest } = update;
+  const {
+    defaultControlValues,
+    defaultKnowledgePlan,
+    defaultProviderModelId,
+    defaultSearchPlan,
+    ...rest
+  } = update;
   const updatesSearchPlan = Object.prototype.hasOwnProperty.call(update, "defaultSearchPlan");
   const normalizedSearchPlan = updatesSearchPlan ? defaultSearchPlan : undefined;
+  const updatesKnowledgePlan = Object.prototype.hasOwnProperty.call(update, "defaultKnowledgePlan");
   const data: Prisma.UserSettingsUpdateInput = {
     ...rest,
     ...(updatesSearchPlan && normalizedSearchPlan === null
       ? { defaultSearchPlan: Prisma.DbNull }
       : normalizedSearchPlan !== undefined
       ? { defaultSearchPlan: normalizedSearchPlan as Prisma.InputJsonObject }
+      : {}),
+    ...(updatesKnowledgePlan
+      ? {
+          defaultKnowledgePlan: defaultKnowledgePlan
+            ? (defaultKnowledgePlan as unknown as Prisma.InputJsonObject)
+            : Prisma.DbNull
+        }
       : {}),
     ...(typeof defaultProviderModelId !== "undefined"
       ? {
@@ -148,12 +168,15 @@ export async function applySettingsUpdateInTransaction(
     data: settingsUpdateData(update, lockedSettings.defaultControlValues),
     select: {
       defaultControlValues: true,
+      defaultKnowledgePlan: true,
+      defaultMcpMode: true,
       defaultProviderModel: {
         select: {
           id: true
         }
       },
       defaultSearchPlan: true,
+      sendWithEnter: true,
       showCitations: true,
       showReasoningBlocks: true
     },

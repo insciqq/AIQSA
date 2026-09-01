@@ -116,6 +116,11 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     ...(Object.prototype.hasOwnProperty.call(patch, "searchPlan")
       ? { defaultSearchPlan: patch.searchPlan }
       : {}),
+    ...(Object.prototype.hasOwnProperty.call(patch, "knowledgePlan")
+      ? { defaultKnowledgePlan: patch.knowledgePlan ?? null }
+      : {}),
+    ...(patch.mcpMode !== undefined ? { defaultMcpMode: patch.mcpMode } : {}),
+    ...(patch.sendWithEnter !== undefined ? { sendWithEnter: patch.sendWithEnter } : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "showCitations")
       ? { showCitations: patch.showCitations }
       : {}),
@@ -169,6 +174,15 @@ function reconciledPatch(
     patch.searchPlan = settings.defaultSearchPlan;
     patch.organizationSearchPlan = settings.organizationSearchPlan;
     patch.searchPreferenceSource = settings.searchPreferenceSource;
+  }
+  if (Object.prototype.hasOwnProperty.call(sent, "knowledgePlan")) {
+    patch.knowledgePlan = settings.defaultKnowledgePlan;
+  }
+  if (sent.mcpMode !== undefined) {
+    patch.mcpMode = settings.defaultMcpMode;
+  }
+  if (sent.sendWithEnter !== undefined) {
+    patch.sendWithEnter = settings.sendWithEnter;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "showCitations")) {
     patch.showCitations = settings.showCitations;

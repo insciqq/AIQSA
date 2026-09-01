@@ -149,6 +149,8 @@ export type ComposerV2Props = Readonly<{
   onSelectSkillIds?(skillIds: readonly string[]): void;
   onSend?(): void;
   onStop?(runId: string): void;
+  /** Keyboard contract: Enter sends (default), or inserts a newline while Ctrl/⌘+Enter sends. */
+  sendWithEnter?: boolean;
   /** @deprecated MCP availability is configured in Settings; runs use onSelectMcp. */
   onToggleMcpServer?(serverId: string, enabled: boolean): void;
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
@@ -381,6 +383,7 @@ export function ComposerV2({
   onUploadFiles,
   runId = null,
   selectedAssistant = null,
+  sendWithEnter = true,
   mcpSelection = { mode: "auto" },
   selectedKnowledgeSelection,
   selectedKnowledgeBaseIds = [],
@@ -663,7 +666,11 @@ export function ComposerV2({
   }
 
   function submitFromKeyboard(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    if (isImeCompositionEvent(event) || event.key !== "Enter" || event.shiftKey) return;
+    if (isImeCompositionEvent(event) || event.key !== "Enter") return;
+    // Send with Enter on: Enter sends, Shift+Enter inserts a newline.
+    // Off: Enter inserts a newline and only Ctrl/⌘+Enter sends. IME rules are unchanged.
+    const sends = sendWithEnter ? !event.shiftKey : event.ctrlKey || event.metaKey;
+    if (!sends) return;
     event.preventDefault();
     if (!activeRun && !sendDisabled) onSend?.();
   }

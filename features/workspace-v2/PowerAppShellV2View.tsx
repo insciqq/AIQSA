@@ -78,7 +78,12 @@ import {
   runTransportStateV2,
   transportLostForMessageV2
 } from "@/features/workspace-v2/runTransportPresentation";
+import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
+import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
+import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
+import { deleteAllPersonalChats } from "@/components/app-shell/accountApi";
+import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
 import {
   SettingsGroupLabelV2,
   SettingsRowV2,
@@ -498,6 +503,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedModelId={composer.selectedModelId}
       selectedProvider={composer.selectedProvider}
       selectedSearchOptionIds={composer.selectedSearchOptionIds}
+      sendWithEnter={composer.sendWithEnter}
       selectedSkillIds={selectedSkills.map((skill) => skill.id)}
       selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
       sharedProject={projectContext}
@@ -1047,16 +1053,29 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           busy={mcpBusy}
           dirty={mcpDirty}
           generalSlot={(
-            <SettingsRowV2
-              description="Play a short sound when an answer finishes in a background tab."
-              title="Answer sound"
-            >
-              <SettingsSwitchV2
-                checked={composer.notificationSoundEnabled}
-                label="Answer sound"
-                onChange={() => composer.toggleNotificationSound()}
-              />
-            </SettingsRowV2>
+            <>
+              <SettingsRowV2
+                description="Play a short sound when an answer finishes in a background tab."
+                title="Answer sound"
+              >
+                <SettingsSwitchV2
+                  checked={composer.notificationSoundEnabled}
+                  label="Answer sound"
+                  onChange={() => composer.toggleNotificationSound()}
+                />
+              </SettingsRowV2>
+              <SettingsRowV2
+                description="Shift+Enter inserts a new line. Off: Enter inserts a new line, Ctrl+Enter sends."
+                testId="settings-send-with-enter"
+                title="Send with Enter"
+              >
+                <SettingsSwitchV2
+                  checked={composer.sendWithEnter}
+                  label="Send with Enter"
+                  onChange={(next) => composer.setSendWithEnter(next)}
+                />
+              </SettingsRowV2>
+            </>
           )}
           initialSection={settings.settings.section}
           mcpContent={(
@@ -1107,10 +1126,33 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                     Open Library
                   </UiV2Button>
                 </SettingsRowV2>
+                {projectContext ? null : (
+                  <DataSettingsRowsV2
+                    onDeleteAll={deleteAllPersonalChats}
+                    onDeleted={() => {
+                      void workspace.pane.actions.retry();
+                      void loadChatNavigation();
+                    }}
+                  />
+                )}
               </>
             ),
             defaults: (
-              <SettingsDefaultModelRowV2 composer={composer} />
+              <>
+                <SettingsDefaultModelRowV2 composer={composer} />
+                {composer.chatDefaults ? (
+                  <ChatDefaultsRowsV2
+                    knowledgeBases={config?.knowledgeBases ?? []}
+                    knowledgePlan={composer.chatDefaults.knowledgePlan}
+                    mcpMode={composer.chatDefaults.mcpMode}
+                    searchPlan={composer.chatDefaults.searchPlan}
+                    searchStrategies={composer.catalog?.searchStrategies ?? []}
+                    onKnowledgePlan={composer.chatDefaults.setKnowledgePlan}
+                    onMcpMode={composer.chatDefaults.setMcpMode}
+                    onSearchPlan={composer.chatDefaults.setSearchPlan}
+                  />
+                ) : null}
+              </>
             ),
             memory: projectContext ? null : (
               <MemorySettingsRowsV2
@@ -1271,15 +1313,7 @@ function SettingsAccountPanelV2({
   const [signOutError, setSignOutError] = useState(false);
   return (
     <>
-      <div className="v2-settings-identity" data-testid="settings-account-identity">
-        <span className="v2-navigation-account-avatar" aria-hidden="true">
-          {accountInitialsV2(accountEmail)}
-        </span>
-        <div>
-          <strong>{accountEmail ?? "Account"}</strong>
-          <small>{adminEntryVisible ? "Administrator" : "Member"}</small>
-        </div>
-      </div>
+      <AccountSettingsRowsV2 accountEmail={accountEmail} adminEntryVisible={adminEntryVisible} />
       {adminEntryVisible ? (
         <SettingsRowV2
           description="Installation resources, providers, users and policies."
