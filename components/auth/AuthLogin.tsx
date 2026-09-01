@@ -405,6 +405,34 @@ function PasswordVisibilityButton({
   );
 }
 
+/** The Bubble-Q mark (PRD §3.4) with the accent→accent2 gradient stroke. */
+function AuthMark({ className, gradient = false }: { className?: string; gradient?: boolean }) {
+  const stroke = gradient ? "url(#auth-mark-gradient)" : "currentColor";
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke={stroke}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={gradient ? 2 : 2.4}
+      viewBox="0 0 24 24"
+    >
+      {gradient ? (
+        <defs>
+          <linearGradient gradientUnits="userSpaceOnUse" id="auth-mark-gradient" x1="4" x2="21" y1="4" y2="21">
+            <stop offset="0" style={{ stopColor: "var(--v2-color-accent)" }} />
+            <stop offset="1" style={{ stopColor: "var(--v2-color-accent2)" }} />
+          </linearGradient>
+        </defs>
+      ) : null}
+      <rect x="3.5" y="3.5" width="14" height="14" rx="4.5" />
+      <path d="M12.5 12.5 21 21" />
+    </svg>
+  );
+}
+
 export function AuthLogin({
   inviteToken,
   navigateAfterLogin,
@@ -874,73 +902,47 @@ export function AuthLogin({
     }
   }
 
+  const passwordMode = mode === "password";
+
   return (
-    <main
-      className="grid min-h-[100dvh] overflow-x-hidden bg-answer-paper pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] text-ink sm:pb-[max(2rem,env(safe-area-inset-bottom))] sm:pl-[max(1.5rem,env(safe-area-inset-left))] sm:pr-[max(1.5rem,env(safe-area-inset-right))] sm:pt-[max(2rem,env(safe-area-inset-top))] [@media(max-height:32rem)]:!pb-[max(.5rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pl-[max(.5rem,env(safe-area-inset-left))] [@media(max-height:32rem)]:!pr-[max(.5rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pt-[max(.5rem,env(safe-area-inset-top))]"
-      data-testid="auth-root"
-    >
+    <main className="v2-auth-root" data-testid="auth-root">
       <section
         aria-labelledby="auth-screen-title"
-        className="mx-auto flex w-full max-w-[42rem] flex-col self-stretch"
+        className="v2-auth-column"
         data-auth-mode={mode}
         data-testid="auth-workspace"
       >
-        <header className="flex shrink-0 items-center justify-between gap-6 border-b border-trace-subtle pb-4 [@media(max-height:32rem)]:!pb-2">
-          <div className="min-w-0">
-            <p className="text-xl font-semibold tracking-[-0.035em]">AIQSA</p>
-            <p className="mt-0.5 text-xs text-ink-muted">Self-hosted AI workspace</p>
-          </div>
-          <p className="hidden shrink-0 text-xs font-medium text-ink-muted sm:block">
-            Models <span className="px-1.5 text-proof">·</span> Tools <span className="px-1.5 text-proof">·</span> Search
+        <div className="v2-auth-brand">
+          <AuthMark className="v2-auth-mark" gradient />
+          {/* The lockup reads "AIQSA": the mark stands in for the Q visually. */}
+          <p className="v2-auth-lockup" data-testid="auth-lockup">
+            AI
+            <span className="v2-auth-lockup-q" aria-hidden="true"><AuthMark /></span>
+            <span className="sr-only">Q</span>
+            SA
           </p>
-        </header>
-
-        <div className="flex flex-1 items-center py-8 sm:py-10 [@media(max-height:32rem)]:!items-start [@media(max-height:32rem)]:!py-3">
-          <div className="mx-auto w-full max-w-[30rem]">
-            <p className="text-xs font-medium text-proof">{screenCopy.eyebrow}</p>
-            <h1
-              className="mt-2 text-[28px] font-semibold leading-tight tracking-[-0.035em] text-ink focus:outline-none [@media(max-height:32rem)]:!mt-1 [@media(max-height:32rem)]:!text-2xl"
-              id="auth-screen-title"
-              ref={modeHeadingRef}
-              tabIndex={-1}
-            >
-              {screenCopy.title}
+          {passwordMode ? (
+            <h1 className="v2-auth-subtitle" id="auth-screen-title" ref={modeHeadingRef} tabIndex={-1}>
+              Sign in to your workspace
             </h1>
-            <p className="mt-2 text-sm leading-6 text-ink-secondary [@media(max-height:32rem)]:!mt-1 [@media(max-height:32rem)]:!text-xs [@media(max-height:32rem)]:!leading-5">{screenCopy.description}</p>
+          ) : null}
+        </div>
+
+        <div className="v2-auth-card">
+          <div>
+            {passwordMode ? null : (
+              <>
+                <h1 className="v2-auth-heading" id="auth-screen-title" ref={modeHeadingRef} tabIndex={-1}>
+                  {screenCopy.title}
+                </h1>
+                <p className="v2-auth-description">{screenCopy.description}</p>
+              </>
+            )}
 
             {showInitialAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
 
           {mode === "password" ? (
             <form aria-busy={submitting} className={formClassName} noValidate onSubmit={submitPassword}>
-              {oauthProviders.length ? (
-                <div className="space-y-4">
-                  <div className={`grid gap-2 ${oauthProviders.length > 1 ? "sm:grid-cols-2" : ""}`}>
-                    {oauthProviders.map((provider) => (
-                      <a
-                        aria-disabled={submitting || undefined}
-                        className={`${oauthButtonClassName} ${submitting ? "pointer-events-none cursor-not-allowed opacity-60" : ""}`}
-                        href={oauthStartHref(provider, nextPath)}
-                        key={provider}
-                        tabIndex={submitting ? -1 : undefined}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
-                        >
-                          {oauthProviderInitial(provider)}
-                        </span>
-                        Continue with {oauthProviderLabel(provider)}
-                      </a>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-ink-muted" aria-hidden="true">
-                    <span className="h-px flex-1 bg-trace-subtle" />
-                    <span>or use email</span>
-                    <span className="h-px flex-1 bg-trace-subtle" />
-                  </div>
-                </div>
-              ) : null}
-
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="email">
                   Email
@@ -1014,24 +1016,34 @@ export function AuthLogin({
                 />
               ) : null}
 
-              <div className="grid gap-2 border-t border-trace-subtle pt-3 sm:grid-cols-2">
-                <button
-                  className={secondaryButtonClassName}
-                  disabled={submitting}
-                  onClick={() => switchMode("reset-request")}
-                  type="button"
-                >
-                  Reset password
-                </button>
-                <button
-                  className={secondaryButtonClassName}
-                  disabled={submitting}
-                  onClick={() => switchMode("register")}
-                  type="button"
-                >
-                  {registerLabel}
-                </button>
-              </div>
+              {oauthProviders.length ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 text-xs text-ink-muted" aria-hidden="true">
+                    <span className="h-px flex-1 bg-trace-subtle" />
+                    <span>or</span>
+                    <span className="h-px flex-1 bg-trace-subtle" />
+                  </div>
+                  <div className={`grid gap-2 ${oauthProviders.length > 1 ? "sm:grid-cols-2" : ""}`}>
+                    {oauthProviders.map((provider) => (
+                      <a
+                        aria-disabled={submitting || undefined}
+                        className={`${oauthButtonClassName} ${submitting ? "pointer-events-none cursor-not-allowed opacity-60" : ""}`}
+                        href={oauthStartHref(provider, nextPath)}
+                        key={provider}
+                        tabIndex={submitting ? -1 : undefined}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
+                        >
+                          {oauthProviderInitial(provider)}
+                        </span>
+                        Continue with {oauthProviderLabel(provider)}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </form>
           ) : null}
 
@@ -1312,6 +1324,30 @@ export function AuthLogin({
           ) : null}
           </div>
         </div>
+
+        <footer className="v2-auth-footer">
+          <p>Self-hosted · your data stays on your infrastructure</p>
+          {passwordMode ? (
+            <div className="v2-auth-footer-links">
+              <button
+                className="v2-auth-link"
+                disabled={submitting}
+                onClick={() => switchMode("reset-request")}
+                type="button"
+              >
+                Reset password
+              </button>
+              <button
+                className="v2-auth-link"
+                disabled={submitting}
+                onClick={() => switchMode("register")}
+                type="button"
+              >
+                {registerLabel}
+              </button>
+            </div>
+          ) : null}
+        </footer>
       </section>
     </main>
   );
