@@ -55,9 +55,9 @@ for (const theme of ["dark", "light"] as const) {
       url: "http://127.0.0.1:3000"
     }]);
     await page.setViewportSize({ height: 500, width: 1100 });
-    await page.goto("/ui-v2-fixture?fixture=composer&state=capabilities");
+    await page.goto("/ui-v2-fixture?fixture=composer&state=add");
 
-    const sheet = page.getByRole("menu", { name: "Capabilities" });
+    const sheet = page.getByRole("menu", { name: "Add" });
     await expect(sheet).toBeVisible();
     const sheetBox = await sheet.boundingBox();
     const closeBox = await sheet.getByRole("button", { name: "Close" }).boundingBox();
@@ -128,9 +128,9 @@ test("v2 composer owns keyboard traversal and restores focus without leaking bin
   await expect(page.getByRole("dialog", { name: "Choose model" })).toBeHidden();
   await expect(page.getByRole("button", { exact: true, name: "Gemini 3 Pro" })).toBeFocused();
 
-  const plus = page.getByRole("button", { name: "Capabilities" });
+  const plus = page.getByRole("button", { name: "Add" });
   await plus.click();
-  await expect(page.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+  await expect(page.getByRole("menu", { name: "Add" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(plus).toBeFocused();
 

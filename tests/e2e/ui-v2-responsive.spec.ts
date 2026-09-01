@@ -166,11 +166,11 @@ for (const theme of ["dark", "light"] as const) {
       url: "http://127.0.0.1:3000"
     }]);
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto("/ui-v2-fixture?fixture=composer&state=capabilities");
+    await page.goto("/ui-v2-fixture?fixture=composer&state=add");
     await page.addStyleTag({ content: "html { font-size: 20px !important; }" });
-    const sheet = page.getByRole("menu", { name: "Capabilities" });
+    const sheet = page.getByRole("menu", { name: "Add" });
     await expect(sheet).toBeVisible();
-    await expectInsideViewport(page, "[role='menu'][aria-label='Capabilities']");
+    await expectInsideViewport(page, "[role='menu'][aria-label='Add']");
     await expectInsideViewport(page, "[data-testid='composer-v2']");
     await expectNoPageOverflow(page);
   });

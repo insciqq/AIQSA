@@ -56,9 +56,14 @@
 }
 
 /* The blank chat has no header at all (PRD §4.7): when neither island has
-   content the bar and its hairline disappear. */
+   content the bar collapses to zero height (it stays in the grid so the
+   reading column keeps its own row). */
 .v2-live-header:not(:has(.v2-live-title > *, .v2-live-header-actions > *)) {
-  display: none;
+  min-height: 0;
+  height: 0;
+  padding: 0;
+  overflow: hidden;
+  border-bottom: 0;
 }
 
 /* The title group is the only group that yields width: its chip and title

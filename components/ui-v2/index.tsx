@@ -26,6 +26,7 @@ export type UiV2IconName =
   | "folder"
   | "globe"
   | "history"
+  | "image"
   | "library"
   | "lock"
   | "menu"
@@ -39,11 +40,14 @@ export type UiV2IconName =
   | "sliders"
   | "settings"
   | "share"
+  | "star"
+  | "star-fill"
   | "stop"
   | "sun"
   | "slides"
   | "table"
-  | "tool";
+  | "tool"
+  | "wand";
 
 export function UiV2IconSprite() {
   return (
@@ -114,6 +118,11 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-history" viewBox="0 0 24 24">
           <path d="M4 5v5h5M5.6 9.2A8 8 0 1 1 4 14M12 8v5l3 2" />
         </symbol>
+        <symbol id="v2-icon-image" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <circle cx="8.5" cy="9.5" r="1.5" />
+          <path d="m21 16-5-5-8 8" />
+        </symbol>
         <symbol id="v2-icon-library" viewBox="0 0 24 24">
           <path d="M5 4h3v16H5zM10.5 4h3v16h-3zM16 5l3-.8L22 19l-3 .8z" />
         </symbol>
@@ -165,6 +174,12 @@ export function UiV2IconSprite() {
           <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
           <path d="M12 15V3M7 8l5-5 5 5" />
         </symbol>
+        <symbol id="v2-icon-star" viewBox="0 0 24 24">
+          <path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z" />
+        </symbol>
+        <symbol id="v2-icon-star-fill" viewBox="0 0 24 24">
+          <path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z" fill="currentColor" />
+        </symbol>
         <symbol id="v2-icon-stop" viewBox="0 0 24 24">
           <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" />
         </symbol>
@@ -182,6 +197,9 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-tool" viewBox="0 0 24 24">
           <path d="M14.5 6.5a4 4 0 0 0-5-5l2.2 2.2-3 3-2.2-2.2a4 4 0 0 0 5 5L19 17l-2 2-7.5-7.5" />
+        </symbol>
+        <symbol id="v2-icon-wand" viewBox="0 0 24 24">
+          <path d="M3 21 14 10M15 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1zM19 13l.7 1.3 1.3.7-1.3.7L19 17l-.7-1.3-1.3-.7 1.3-.7z" />
         </symbol>
       </defs>
     </svg>
