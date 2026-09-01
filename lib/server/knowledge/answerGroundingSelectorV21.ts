@@ -246,13 +246,10 @@ export function decodeKnowledgeGroundedSelectorV21(
   return validation.kind === "accepted" ? validation.value : null;
 }
 
-/** Canonicalizes only Selector support edges whose impossibility is proven by
- * the immutable provenance graph. Unknown IDs, malformed support nodes, and a
- * covered dimension with no remaining overlapping support stay fail-closed.
- * Historical decoders deliberately keep the strict V21 behavior above. */
-export function normalizeKnowledgeGroundedSelectorSupportEdgesV1(
+function normalizeKnowledgeGroundedSelectorSupportEdges(
   value: unknown,
-  input: Parameters<typeof validateKnowledgeGroundedSelectorV21>[1]
+  input: Parameters<typeof validateKnowledgeGroundedSelectorV21>[1],
+  mode: "provenance_surplus_v1" | "fail_closed_edges_v2"
 ): Readonly<Record<string, unknown>> | null {
   const strictValidation = validateKnowledgeGroundedSelectorV21(value, input);
   if (strictValidation.kind === "accepted") {
@@ -292,16 +289,37 @@ export function normalizeKnowledgeGroundedSelectorSupportEdgesV1(
       !Array.isArray(candidate.supportIds) ||
       !candidate.supportIds.every((id) => typeof id === "string")) return null;
     if (candidate.status !== "covered") {
+      if (mode === "fail_closed_edges_v2" && candidate.supportIds.length !== 0) {
+        changed = true;
+        coverage.push(Object.freeze({
+          ...candidate,
+          supportIds: Object.freeze([])
+        }));
+        continue;
+      }
       coverage.push(candidate);
       continue;
     }
+    const seen = new Set<string>();
     const supportIds = (candidate.supportIds as string[]).filter((id) => {
+      if (mode === "fail_closed_edges_v2" && seen.has(id)) return false;
+      seen.add(id);
       const handles = supportHandlesById.get(id);
       if (!handles) return false;
       return [...handles].some((handle) => scoped.evidenceHandles.includes(handle));
     });
-    if (candidate.supportIds.some((id) => !supportHandlesById.has(id as string)) ||
-      supportIds.length === 0) return null;
+    if (mode === "provenance_surplus_v1" &&
+      (candidate.supportIds.some((id) => !supportHandlesById.has(id as string)) ||
+        supportIds.length === 0)) return null;
+    if (supportIds.length === 0) {
+      changed = true;
+      coverage.push(Object.freeze({
+        ...candidate,
+        status: "missing",
+        supportIds: Object.freeze([])
+      }));
+      continue;
+    }
     if (supportIds.length === candidate.supportIds.length) {
       coverage.push(candidate);
       continue;
@@ -320,6 +338,35 @@ export function normalizeKnowledgeGroundedSelectorSupportEdgesV1(
   return validateKnowledgeGroundedSelectorV21(normalized, input).kind === "accepted"
     ? normalized
     : null;
+}
+
+/** Canonicalizes only surplus Selector support edges whose foreign provenance
+ * is proven by the immutable graph. Historical current-protocol callers retain
+ * the V1 rule that unknown or all-invalid edge sets remain rejected. */
+export function normalizeKnowledgeGroundedSelectorSupportEdgesV1(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeGroundedSelectorV21>[1]
+): Readonly<Record<string, unknown>> | null {
+  return normalizeKnowledgeGroundedSelectorSupportEdges(
+    value,
+    input,
+    "provenance_surplus_v1"
+  );
+}
+
+/** Fail-closed edge normalization for the current protocol. It removes only
+ * duplicate, unknown, provenance-disjoint, or status-forbidden support edges.
+ * A covered dimension with no surviving valid edge is downgraded to missing;
+ * this function can never promote coverage, invent an ID, or change Scope. */
+export function normalizeKnowledgeGroundedSelectorSupportEdgesV2(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeGroundedSelectorV21>[1]
+): Readonly<Record<string, unknown>> | null {
+  return normalizeKnowledgeGroundedSelectorSupportEdges(
+    value,
+    input,
+    "fail_closed_edges_v2"
+  );
 }
 
 export function decodeKnowledgeGroundedSelectorSupportEdgesV1(

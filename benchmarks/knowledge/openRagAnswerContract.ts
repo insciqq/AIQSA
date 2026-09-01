@@ -85,7 +85,7 @@ type OpenRagAnswerQuestionBundle = Readonly<{
 
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const safeIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/u;
-const pipelineIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,511}$/u;
+const pipelineIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,1023}$/u;
 const caseIdPattern = /^doc-[0-9]{3}-q[1-8]$/u;
 const aliasPattern = /^doc-[0-9]{3}$/u;
 const adapterPattern = /^[a-z][a-z0-9_]{0,63}$/u;

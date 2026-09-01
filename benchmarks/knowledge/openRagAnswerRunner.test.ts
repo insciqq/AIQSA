@@ -442,7 +442,7 @@ describe("OpenRAG answer fail-fast schedule", () => {
     expect(checkpoint.outcomes.size).toBe(0);
   });
 
-  it("accepts the eight-operation bounded final-delta review sequence", async () => {
+  it("accepts the current atomic-supplement eight-operation sequence", async () => {
     const cases = [benchmarkCase(1)];
     const legacyManifest = manifest(cases);
     const runManifest = manifest(cases, {
@@ -450,9 +450,9 @@ describe("OpenRAG answer fail-fast schedule", () => {
         ...legacyManifest.engine,
         coverageAuditorContractVersion: 6,
         draftContractVersion: 21,
-        groundingEvidenceVersion: 39,
+        groundingEvidenceVersion: 45,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_settlement_v6",
+          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_settlement_v6",
         selectorContractVersion: 21,
         settlementVersion: 6
       }

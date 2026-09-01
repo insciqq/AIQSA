@@ -40,7 +40,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftV21,
   knowledgeAnswerDraftPromptV21
@@ -57,16 +57,18 @@ import {
 } from "./coverageScopeV6";
 import { KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 } from "./coverageScopeV4";
 import {
-  knowledgeCoverageScopePromptV6VerifiedPatchV1,
   knowledgeCoverageScopeVerifiedPatchFailureV1
 } from "./coverageScopeVerifiedPatchRepairV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
-  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
-  knowledgeCoverageScopeCompletenessPromptV1
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1
 } from "./coverageScopeCompletenessV1";
+import {
+  knowledgeCoverageScopeCompletenessPromptV2,
+  knowledgeCoverageScopePromptV6QueryIntentV1
+} from "./coverageScopeQueryIntentV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
@@ -1280,7 +1282,7 @@ describe("Knowledge evidence dispatch repository", () => {
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const initialScopePrompt = knowledgeCoverageScopePromptV6VerifiedPatchV1({
+    const initialScopePrompt = knowledgeCoverageScopePromptV6QueryIntentV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: currentManifest.message,
@@ -1296,18 +1298,18 @@ describe("Knowledge evidence dispatch repository", () => {
       path: "/",
       version: 1
     } as const;
-    const repairScopePrompt = knowledgeCoverageScopePromptV6VerifiedPatchV1({
+    const repairScopePrompt = knowledgeCoverageScopePromptV6QueryIntentV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: currentManifest.message,
       repairBaseHash: null,
-      repairDiagnostic: scopeRepairDiagnostic,
+      repairDiagnostics: [scopeRepairDiagnostic],
       repairReason: "coverage_scope_shape_invalid",
       request,
       scopePass: "repair"
     });
     const scopePayloadHash = knowledgeAnswerHash(acceptedScope);
-    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV1({
+    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV2({
       acceptedScope,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       completenessPass: "initial",
@@ -1327,7 +1329,7 @@ describe("Knowledge evidence dispatch repository", () => {
     const common = {
       evidenceReceiptHash: currentManifest.manifestHash,
       executionPolicy,
-      protocol: KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+      protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
       transport: "native_strict" as const
     };
     const snapshots = [

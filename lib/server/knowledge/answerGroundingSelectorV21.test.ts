@@ -9,8 +9,17 @@ import {
   deriveKnowledgeCoverageV6,
   knowledgeGroundedSelectorPromptV21,
   normalizeKnowledgeGroundedSelectorSupportEdgesV1,
+  normalizeKnowledgeGroundedSelectorSupportEdgesV2,
   validateKnowledgeGroundedSelectorV21
 } from "./answerGroundingSelectorV21";
+import { knowledgeGroundedSelectorPromptV21TargetClosureV1 } from
+  "./answerGroundingCorrectionPromptV21";
+import {
+  decodeKnowledgeGroundedSelectorDiagnosticFailureV1,
+  diagnoseKnowledgeGroundedSelectorDimensionV1,
+  knowledgeGroundedSelectorDiagnosticFailureV1,
+  knowledgeGroundedSelectorPromptV21RepairDiagnosticV1
+} from "./answerGroundingSelectorRepairDiagnosticV1";
 import {
   knowledgeCoverageEvidenceFromManifestV6,
   validateKnowledgeCoverageScopeV6
@@ -88,6 +97,97 @@ function fixture() {
 }
 
 describe("Knowledge Grounded Selector V21", () => {
+  it("keeps the initial prompt exact and gives dimension repair a content-free path", () => {
+    const { draft, evidence, manifest, request, scope } = fixture();
+    const baseInput = {
+      draft,
+      evidence,
+      evidenceManifest: manifest.message,
+      request,
+      scope,
+      selectorPass: "initial" as const
+    };
+    expect(knowledgeGroundedSelectorPromptV21RepairDiagnosticV1(baseInput)).toEqual(
+      knowledgeGroundedSelectorPromptV21TargetClosureV1(baseInput)
+    );
+
+    const invalid = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: [] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    const diagnostic = diagnoseKnowledgeGroundedSelectorDimensionV1(invalid, {
+      draft,
+      evidence,
+      request,
+      scope
+    });
+    expect(diagnostic).toMatchObject({
+      code: "coverage_support_empty",
+      expectedHandles: ["K1"],
+      expectedId: "D1",
+      path: "/coverage/0/supportIds"
+    });
+    const failure = knowledgeGroundedSelectorDiagnosticFailureV1(diagnostic);
+    expect(decodeKnowledgeGroundedSelectorDiagnosticFailureV1(failure)).toEqual(failure);
+    const repair = knowledgeGroundedSelectorPromptV21RepairDiagnosticV1({
+      ...baseInput,
+      repairDiagnostic: diagnostic,
+      repairReason: "selector_dimension_invalid",
+      selectorPass: "repair"
+    });
+    expect(JSON.parse(repair.userPrompt)).toMatchObject({ repairDiagnostic: diagnostic });
+    expect(repair.userPrompt).not.toContain(JSON.stringify(invalid));
+  });
+
+  it("diagnoses an all-foreign covered support set without copying its IDs", () => {
+    const { evidence, request, scope } = fixture();
+    const draft = decodeKnowledgeAnswerDraftV21({
+      claims: [{
+        citationHints: ["K1"],
+        text: "The Atlas controller enforces a bounded queue."
+      }, {
+        citationHints: ["K2"],
+        text: "A separate source discusses an optional illustration."
+      }],
+      version: 1
+    }, { availableHandles: ["K1", "K2"] })!;
+    const invalid = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }, {
+        id: "C2",
+        supportHandles: ["K2"],
+        verdict: "supported"
+      }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C2"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    const diagnostic = diagnoseKnowledgeGroundedSelectorDimensionV1(invalid, {
+      draft,
+      evidence,
+      request,
+      scope
+    });
+    expect(diagnostic).toMatchObject({
+      code: "coverage_support_provenance",
+      expectedHandles: ["K1"],
+      expectedId: "D1",
+      path: "/coverage/0/supportIds"
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("C2");
+  });
+
   it("exposes covered, excluded, and missing as strict output branches", () => {
     expect(KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21.properties.coverage.items.oneOf
       .map(({ properties }) => properties.status.const)).toEqual([
@@ -206,6 +306,80 @@ describe("Knowledge Grounded Selector V21", () => {
         scope
       })).toBeNull();
     }
+  });
+
+  it("downgrades all-invalid current support edges without promoting coverage", () => {
+    const { draft, evidence, request, scope } = fixture();
+    const base = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    for (const output of [{
+      ...base,
+      claims: [{ id: "C1", supportHandles: ["K2"], verdict: "supported" }]
+    }, {
+      ...base,
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C999"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }]
+    }]) {
+      expect(normalizeKnowledgeGroundedSelectorSupportEdgesV2(output, {
+        draft,
+        evidence,
+        request,
+        scope
+      })?.coverage).toEqual([{
+        id: "D1",
+        status: "missing",
+        supportIds: []
+      }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }]);
+    }
+  });
+
+  it("preserves valid current edges while pruning unknown and duplicate edges", () => {
+    const { draft, evidence, request, scope } = fixture();
+    const output = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{
+        id: "D1",
+        status: "covered",
+        supportIds: ["C1", "C999", "C1"]
+      }, {
+        id: "D2",
+        status: "missing",
+        supportIds: ["C1"]
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    expect(normalizeKnowledgeGroundedSelectorSupportEdgesV2(output, {
+      draft,
+      evidence,
+      request,
+      scope
+    })?.coverage).toEqual([{
+      id: "D1",
+      status: "covered",
+      supportIds: ["C1"]
+    }, {
+      id: "D2",
+      status: "missing",
+      supportIds: []
+    }]);
   });
 
   it("excludes only positive Scope findings that fail exact-atom eligibility", () => {

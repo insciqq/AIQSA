@@ -23,7 +23,7 @@ import {
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
-  groundSettledKnowledgeAnswerV39,
+  groundSettledKnowledgeAnswerV45,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -58,6 +58,12 @@ import {
   type KnowledgeGroundingEvidenceV37,
   type KnowledgeGroundingEvidenceV38,
   type KnowledgeGroundingEvidenceV39,
+  type KnowledgeGroundingEvidenceV40,
+  type KnowledgeGroundingEvidenceV41,
+  type KnowledgeGroundingEvidenceV42,
+  type KnowledgeGroundingEvidenceV43,
+  type KnowledgeGroundingEvidenceV44,
+  type KnowledgeGroundingEvidenceV45,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -120,7 +126,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   buildKnowledgeSupportedAnswerViewV1,
@@ -133,9 +139,9 @@ import {
   settleKnowledgeAnswerV21FromFinalSelector
 } from "./answerGroundingV21";
 import {
-  knowledgeAnswerTargetedSupplementSchemaV2,
+  knowledgeAnswerTargetedSupplementSchemaV3,
   decodeKnowledgeTargetedSupplementFailureV1,
-  decodeKnowledgeTargetedSupplementV3,
+  decodeKnowledgeTargetedSupplementV4,
   knowledgeTargetableMissingDimensionsV1,
   knowledgeTargetedEvidenceAtomIndex,
   knowledgeTargetedSupplementFitsV1,
@@ -143,10 +149,13 @@ import {
   mergeKnowledgeTargetedSupplementV2
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeAnswerTargetedSupplementPromptV3,
-  knowledgeGroundedDeltaSelectorPromptV4,
-  knowledgeGroundedSelectorPromptV21TargetClosureV1
+  knowledgeAnswerTargetedSupplementPromptV5,
+  knowledgeGroundedDeltaSelectorPromptV4
 } from "./answerGroundingCorrectionPromptV21";
+import {
+  decodeKnowledgeGroundedSelectorDiagnosticFailureV1,
+  knowledgeGroundedSelectorPromptV21RepairDiagnosticV1
+} from "./answerGroundingSelectorRepairDiagnosticV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
@@ -157,8 +166,7 @@ import {
   knowledgeCoverageEvidenceFromManifestV6
 } from "./coverageScopeV6";
 import {
-  decodeKnowledgeCoverageScopeVerifiedPatchFailureV1,
-  knowledgeCoverageScopePromptV6VerifiedPatchV1
+  decodeKnowledgeCoverageScopeVerifiedPatchFailureV1
 } from "./coverageScopeVerifiedPatchRepairV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
@@ -168,9 +176,13 @@ import {
   decodeKnowledgeCoverageScopeCompletenessFailureV1,
   decodeKnowledgeCoverageScopeCompletenessV1,
   isKnowledgeCoverageScopeCompletenessValidationFailureReasonV1,
-  knowledgeCoverageScopeCompletenessPromptV1,
   type KnowledgeCoverageScopeCompletenessValidationFailureReasonV1
 } from "./coverageScopeCompletenessV1";
+import {
+  decodeKnowledgeCoverageScopePromptV6QueryIntentV1,
+  knowledgeCoverageScopeCompletenessPromptV2,
+  knowledgeCoverageScopePromptV6QueryIntentV1
+} from "./coverageScopeQueryIntentV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
@@ -1678,14 +1690,14 @@ export async function groundKnowledgeRunAnswerV21(
   }
   const requestExecutionPolicy = {
     executionPolicy: primaryRequest.executionPolicy,
-    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1
   };
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
     expected: ReturnType<typeof createKnowledgeAnswerOperationRequestSnapshotV21>
   ) => Boolean(actual && canonicalJson(actual) === canonicalJson(expected));
 
-  const initialScopePrompt = knowledgeCoverageScopePromptV6VerifiedPatchV1({
+  const initialScopePrompt = knowledgeCoverageScopePromptV6QueryIntentV1({
     atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     evidence,
     evidenceManifest: operations.draft.draft.message,
@@ -1736,19 +1748,36 @@ export async function groundKnowledgeRunAnswerV21(
       !isKnowledgeCoverageScopeValidationFailureReasonV6(initialScopeFailure.reason)) {
       throw new Error("knowledge_answer_operation_snapshot_conflict");
     }
-    const repairPrompt = knowledgeCoverageScopePromptV6VerifiedPatchV1({
+    const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      operations.scopeRepair.attempt.acceptedRequest
+    );
+    const decodedRepairPrompt = repairRequest
+      ? decodeKnowledgeCoverageScopePromptV6QueryIntentV1({
+          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          evidence,
+          evidenceManifest: operations.draft.draft.message,
+          request: primaryPrompt.request,
+          systemPrompt: repairRequest.systemPrompt,
+          userPrompt: repairRequest.userPrompt
+        })
+      : null;
+    if (!decodedRepairPrompt || decodedRepairPrompt.scopePass !== "repair" ||
+      decodedRepairPrompt.repairBaseHash !== initialScopeFailure.repairBaseHash ||
+      canonicalJson(decodedRepairPrompt.repairDiagnostics[0]) !==
+        canonicalJson(initialScopeFailure.diagnostic) ||
+      decodedRepairPrompt.repairReason !== initialScopeFailure.reason) {
+      throw new Error("knowledge_answer_operation_snapshot_conflict");
+    }
+    const repairPrompt = knowledgeCoverageScopePromptV6QueryIntentV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: operations.draft.draft.message,
       repairBaseHash: initialScopeFailure.repairBaseHash,
-      repairDiagnostic: initialScopeFailure.diagnostic,
+      repairDiagnostics: decodedRepairPrompt.repairDiagnostics,
       repairReason: initialScopeFailure.reason,
       request: primaryPrompt.request,
       scopePass: "repair"
     });
-    const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
-      operations.scopeRepair.attempt.acceptedRequest
-    );
     const expectedRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
       evidenceReceiptHash: operations.draft.draft.manifestHash,
@@ -1784,7 +1813,7 @@ export async function groundKnowledgeRunAnswerV21(
   const acceptedScope = scope;
   const initialScopePayloadHash = knowledgeAnswerHash(acceptedScope);
 
-  const initialCompletenessPrompt = knowledgeCoverageScopeCompletenessPromptV1({
+  const initialCompletenessPrompt = knowledgeCoverageScopeCompletenessPromptV2({
     acceptedScope,
     atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     completenessPass: "initial",
@@ -1840,7 +1869,7 @@ export async function groundKnowledgeRunAnswerV21(
   if (operations.completenessRepair) {
     const repairReason = initialCompletenessFailure!.reason as
       KnowledgeCoverageScopeCompletenessValidationFailureReasonV1;
-    const repairPrompt = knowledgeCoverageScopeCompletenessPromptV1({
+    const repairPrompt = knowledgeCoverageScopeCompletenessPromptV2({
       acceptedScope,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       completenessPass: "repair",
@@ -1892,7 +1921,7 @@ export async function groundKnowledgeRunAnswerV21(
   const initialRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
     operations.initialSelector.attempt.acceptedRequest
   );
-  const initialPrompt = knowledgeGroundedSelectorPromptV21TargetClosureV1({
+  const initialPrompt = knowledgeGroundedSelectorPromptV21RepairDiagnosticV1({
     atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     draft: primaryDraft,
     evidence,
@@ -1917,9 +1946,14 @@ export async function groundKnowledgeRunAnswerV21(
   if (!exactRequest(initialRequest, expectedInitialRequest)) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
-  let selectorFailure = decodeKnowledgeGroundedSelectorFailureV21(
-    operations.initialSelector.attempt.acceptedResult
-  );
+  let selectorDiagnosticFailure =
+    decodeKnowledgeGroundedSelectorDiagnosticFailureV1(
+      operations.initialSelector.attempt.acceptedResult
+    );
+  let selectorFailure = selectorDiagnosticFailure ??
+    decodeKnowledgeGroundedSelectorFailureV21(
+      operations.initialSelector.attempt.acceptedResult
+    );
   let acceptedSelector = selectorFailure
     ? null
     : decodeKnowledgeGroundedSelectorV21(
@@ -1944,11 +1978,14 @@ export async function groundKnowledgeRunAnswerV21(
   }
   if (operations.selectorRepair) {
     const repairReason = selectorFailure!.reason as KnowledgeSelectorValidationFailureReason;
-    const repairPrompt = knowledgeGroundedSelectorPromptV21TargetClosureV1({
+    const repairPrompt = knowledgeGroundedSelectorPromptV21RepairDiagnosticV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       draft: primaryDraft,
       evidence,
       evidenceManifest: operations.draft.draft.message,
+      ...(selectorDiagnosticFailure
+        ? { repairDiagnostic: selectorDiagnosticFailure.diagnostic }
+        : {}),
       repairReason,
       request: primaryPrompt.request,
       scope,
@@ -1973,9 +2010,13 @@ export async function groundKnowledgeRunAnswerV21(
     if (!exactRequest(repairRequest, expectedRepairRequest)) {
       throw new Error("knowledge_answer_operation_snapshot_conflict");
     }
-    selectorFailure = decodeKnowledgeGroundedSelectorFailureV21(
+    selectorDiagnosticFailure = decodeKnowledgeGroundedSelectorDiagnosticFailureV1(
       operations.selectorRepair.attempt.acceptedResult
     );
+    selectorFailure = selectorDiagnosticFailure ??
+      decodeKnowledgeGroundedSelectorFailureV21(
+        operations.selectorRepair.attempt.acceptedResult
+      );
     acceptedSelector = selectorFailure
       ? null
       : decodeKnowledgeGroundedSelectorV21(
@@ -2167,7 +2208,7 @@ export async function groundKnowledgeRunAnswerV21(
       selector: correctionBaseSelector
     });
   } else {
-    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV3({
+    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV5({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       auditDimensions: targetableMissingDimensions,
       evidence,
@@ -2175,7 +2216,7 @@ export async function groundKnowledgeRunAnswerV21(
       request: primaryPrompt.request,
       routeInstruction: primaryPrompt.routeInstruction
     });
-    const supplementSchema = knowledgeAnswerTargetedSupplementSchemaV2({
+    const supplementSchema = knowledgeAnswerTargetedSupplementSchemaV3({
       primaryClaimCount,
       targetDimensions: targetableMissingDimensions
     });
@@ -2205,7 +2246,7 @@ export async function groundKnowledgeRunAnswerV21(
     );
     const supplement = malformedSupplement || targetedSupplementFailure
       ? null
-      : decodeKnowledgeTargetedSupplementV3(
+      : decodeKnowledgeTargetedSupplementV4(
           operations.supplementalDraft.attempt.acceptedResult,
           {
             availableHandles: handles,
@@ -2455,7 +2496,7 @@ export async function groundKnowledgeRunAnswerV21(
     selectorRepairSucceeded,
     settlement
   } as const;
-  const grounding = groundSettledKnowledgeAnswerV39(groundingInput);
+  const grounding = groundSettledKnowledgeAnswerV45(groundingInput);
   return Object.freeze({ grounding });
 }
 
@@ -2476,7 +2517,10 @@ function groundingEvidenceProjection(
     KnowledgeGroundingEvidenceV33 | KnowledgeGroundingEvidenceV34 |
     KnowledgeGroundingEvidenceV35 | KnowledgeGroundingEvidenceV36 |
     KnowledgeGroundingEvidenceV37 | KnowledgeGroundingEvidenceV38 |
-    KnowledgeGroundingEvidenceV39
+    KnowledgeGroundingEvidenceV39 | KnowledgeGroundingEvidenceV40 |
+    KnowledgeGroundingEvidenceV41 | KnowledgeGroundingEvidenceV42 |
+    KnowledgeGroundingEvidenceV43 | KnowledgeGroundingEvidenceV44 |
+    KnowledgeGroundingEvidenceV45
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

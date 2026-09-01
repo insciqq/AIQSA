@@ -102,6 +102,12 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V36 = 36 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V37 = 37 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V38 = 38 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39 = 39 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V40 = 40 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V41 = 41 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V42 = 42 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V43 = 43 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V44 = 44 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45 = 45 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -801,6 +807,72 @@ export type KnowledgeGroundingEvidenceV39 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV40 =
+  KnowledgeGroundingOperationEvidenceV39;
+
+export type KnowledgeGroundingEvidenceV40 = Omit<
+  KnowledgeGroundingEvidenceV39,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV40[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V40;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV41 =
+  KnowledgeGroundingOperationEvidenceV40;
+
+export type KnowledgeGroundingEvidenceV41 = Omit<
+  KnowledgeGroundingEvidenceV40,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV41[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V41;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV42 =
+  KnowledgeGroundingOperationEvidenceV41;
+
+export type KnowledgeGroundingEvidenceV42 = Omit<
+  KnowledgeGroundingEvidenceV41,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV42[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V42;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV43 =
+  KnowledgeGroundingOperationEvidenceV42;
+
+export type KnowledgeGroundingEvidenceV43 = Omit<
+  KnowledgeGroundingEvidenceV42,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV43[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V43;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV44 =
+  KnowledgeGroundingOperationEvidenceV43;
+
+export type KnowledgeGroundingEvidenceV44 = Omit<
+  KnowledgeGroundingEvidenceV43,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV44[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V44;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV45 =
+  KnowledgeGroundingOperationEvidenceV44;
+
+export type KnowledgeGroundingEvidenceV45 = Omit<
+  KnowledgeGroundingEvidenceV44,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV45[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -835,7 +907,13 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV36
   | KnowledgeGroundingEvidenceV37
   | KnowledgeGroundingEvidenceV38
-  | KnowledgeGroundingEvidenceV39;
+  | KnowledgeGroundingEvidenceV39
+  | KnowledgeGroundingEvidenceV40
+  | KnowledgeGroundingEvidenceV41
+  | KnowledgeGroundingEvidenceV42
+  | KnowledgeGroundingEvidenceV43
+  | KnowledgeGroundingEvidenceV44
+  | KnowledgeGroundingEvidenceV45;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3097,6 +3175,86 @@ export function groundSettledKnowledgeAnswerV39(
       usage: Object.freeze({ ...operation.usage })
     }))),
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V39
+  });
+}
+
+/** V40 attests Snapshot V24's atomic targeted-supplement publication contract.
+ * Receipt contents and the eight-operation hard cap stay identical to V39;
+ * the version prevents historical grouped supplements from acquiring the new
+ * one-proposition and connector-entailment rules. */
+export function groundSettledKnowledgeAnswerV40(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV40 {
+  const grounded = groundSettledKnowledgeAnswerV39(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V40
+  });
+}
+
+/** V41 attests Snapshot V25's single-call multi-diagnostic Scope repair.
+ * Receipt contents and the eight-operation hard cap stay identical to V40;
+ * the version prevents historical first-error prompts from acquiring the new
+ * bounded diagnostic-set semantics. */
+export function groundSettledKnowledgeAnswerV41(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV41 {
+  const grounded = groundSettledKnowledgeAnswerV40(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V41
+  });
+}
+
+/** V42 attests Snapshot V26's repair-only, content-free initial Selector
+ * diagnostic. Receipt contents and the bounded operation graph stay identical
+ * to V41; historical broad-reason repairs keep their original prompts. */
+export function groundSettledKnowledgeAnswerV42(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV42 {
+  const grounded = groundSettledKnowledgeAnswerV41(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V42
+  });
+}
+
+/** V43 attests Snapshot V27's deterministic fail-closed Selector edge
+ * normalization. Receipt contents and the bounded operation graph stay
+ * identical to V42; historical unknown-edge failures remain strict. */
+export function groundSettledKnowledgeAnswerV43(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV43 {
+  const grounded = groundSettledKnowledgeAnswerV42(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V43
+  });
+}
+
+/** V44 attests Snapshot V28's target-count-aware atomic Supplement capacity.
+ * Receipt contents and the bounded operation graph stay identical to V43;
+ * historical flat 12-claim allocations retain their exact schemas. */
+export function groundSettledKnowledgeAnswerV44(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV44 {
+  const grounded = groundSettledKnowledgeAnswerV43(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V44
+  });
+}
+
+/** V45 attests Snapshot V29's query-intent-preserving Scope and append-only
+ * completeness prompts. Receipt contents and operation count stay identical
+ * to V44; historical prompt bytes retain their exact semantics. */
+export function groundSettledKnowledgeAnswerV45(
+  input: KnowledgeGroundingV35Input
+): KnowledgeGroundingEvidenceV45 {
+  const grounded = groundSettledKnowledgeAnswerV44(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V45
   });
 }
 

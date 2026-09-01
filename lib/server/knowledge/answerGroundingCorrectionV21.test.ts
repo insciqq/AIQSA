@@ -10,13 +10,17 @@ import type {
 import {
   decodeKnowledgeTargetedSupplementV2,
   decodeKnowledgeTargetedSupplementV3,
+  decodeKnowledgeTargetedSupplementV4,
   decodeKnowledgeTargetedSupplementV1,
   decodeKnowledgeTargetedSupplementFailureV1,
   isKnowledgeAnswerTargetedSupplementSchemaV2,
+  isKnowledgeAnswerTargetedSupplementSchemaV3,
   knowledgeAnswerTargetedSupplementSchemaV2,
+  knowledgeAnswerTargetedSupplementSchemaV3,
   knowledgeTargetableMissingDimensionsV1,
   knowledgeTargetedEvidenceAtomIndexV1,
   knowledgeTargetedSupplementClaimLimitsV2,
+  knowledgeTargetedSupplementClaimLimitsV3,
   knowledgeTargetedSupplementFitsV1,
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
   mergeKnowledgeGroundedCorrectionV1,
@@ -26,13 +30,22 @@ import {
   knowledgeTargetedSupplementFailureV1,
   validateKnowledgeTargetedSupplementV1,
   validateKnowledgeTargetedSupplementV2,
-  validateKnowledgeTargetedSupplementV3
+  validateKnowledgeTargetedSupplementV3,
+  validateKnowledgeTargetedSupplementV4
 } from "./answerGroundingCorrectionV21";
 
 const primary = decodeKnowledgeAnswerDraftV21({
   claims: [{ citationHints: ["K1"], text: "Alpha is bounded." }],
   version: 1
 }, { availableHandles: ["K1", "K2", "K3"] })!;
+
+const primaryFour = decodeKnowledgeAnswerDraftV21({
+  claims: Array.from({ length: 4 }, (_, index) => ({
+    citationHints: ["K1"],
+    text: `Primary fact ${index + 1}.`
+  })),
+  version: 1
+}, { availableHandles: ["K1"] })!;
 
 function dimension(
   id: string,
@@ -206,6 +219,53 @@ describe("target-addressed Knowledge correction", () => {
       primaryDraft: primary,
       supplement: accepted!
     }).bindings.at(-1)).toEqual({ claimId: "C8", targetDimensionId: "D5" });
+  });
+
+  it("scales atomic capacity with target count inside the complete-Draft bound", () => {
+    const targets = Array.from({ length: 8 }, (_, index) =>
+      dimension(`D${index + 1}`, "K1", "missing"));
+    expect(knowledgeTargetedSupplementClaimLimitsV2({
+      primaryClaimCount: 4,
+      targetDimensions: targets
+    })?.map(({ maxClaims }) => maxClaims)).toEqual([2, 2, 2, 2, 1, 1, 1, 1]);
+    expect(knowledgeTargetedSupplementClaimLimitsV3({
+      primaryClaimCount: 4,
+      targetDimensions: targets
+    })?.map(({ maxClaims }) => maxClaims)).toEqual([3, 3, 3, 3, 2, 2, 2, 2]);
+    expect(knowledgeTargetedSupplementClaimLimitsV3({
+      primaryClaimCount: 1,
+      targetDimensions: [targets[0]!]
+    })).toEqual([{ maxClaims: 3, targetDimensionId: "D1" }]);
+    const schema = knowledgeAnswerTargetedSupplementSchemaV3({
+      primaryClaimCount: 4,
+      targetDimensions: targets
+    });
+    expect(isKnowledgeAnswerTargetedSupplementSchemaV3(schema)).toBe(true);
+    expect(isKnowledgeAnswerTargetedSupplementSchemaV2(schema)).toBe(false);
+
+    const output = {
+      targets: Object.fromEntries(targets.map(({ id }, index) => [
+        id,
+        Array.from({ length: index < 4 ? 3 : 2 }, (_, claimIndex) =>
+          `${id} atomic fact ${claimIndex + 1}.`)
+      ])),
+      version: 2
+    };
+    const input = {
+      availableHandles: ["K1"],
+      missingDimensions: targets,
+      primaryDraft: primaryFour
+    } as const;
+    expect(validateKnowledgeTargetedSupplementV3(output, input)).toEqual({
+      kind: "rejected",
+      reason: "draft_target_shape_invalid"
+    });
+    expect(validateKnowledgeTargetedSupplementV4(output, input)).toMatchObject({
+      kind: "accepted",
+      value: { version: 2 }
+    });
+    expect(decodeKnowledgeTargetedSupplementV4(output, input)?.draft.claims)
+      .toHaveLength(20);
   });
 
   it("projects only exact immutable atoms assigned to correction targets", () => {
