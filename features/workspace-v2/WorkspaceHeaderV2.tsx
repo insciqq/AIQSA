@@ -199,6 +199,7 @@ export type WorkspaceHeaderFolderV2 = Readonly<{
 export function WorkspaceHeaderV2({
   active,
   archiveDisabled = false,
+  crumb = null,
   deleteDisabled = false,
   editingTitle = null,
   folders = [],
@@ -223,6 +224,11 @@ export function WorkspaceHeaderV2({
 }: Readonly<{
   active: boolean;
   archiveDisabled?: boolean;
+  /**
+   * Folder path shown before the title, only while the chat lives in a
+   * folder ("Workspace 1 / Project 7"); date groups never produce a crumb.
+   */
+  crumb?: string | null;
   deleteDisabled?: boolean;
   /** Non-null while the header title is being renamed inline. */
   editingTitle?: string | null;
@@ -314,6 +320,12 @@ export function WorkspaceHeaderV2({
             </form>
           ) : (
             <h1>
+              {crumb ? (
+                <span className="v2-live-crumb" data-testid="header-crumb">
+                  {crumb}
+                  <span aria-hidden="true"> / </span>
+                </span>
+              ) : null}
               <button
                 className="v2-live-title-button v2-focusable"
                 data-testid="header-title"
@@ -337,7 +349,7 @@ export function WorkspaceHeaderV2({
             F11); the header carries only the chat's own actions. */}
         {active ? (
           <>
-            <UiV2Button disabled={shareDisabled} onClick={onShare}>Share</UiV2Button>
+            <UiV2Button disabled={shareDisabled} icon="share" onClick={onShare}>Share</UiV2Button>
             <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions} />
           </>
         ) : null}

@@ -410,7 +410,8 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   await outputs.getByText("Sources", { exact: true }).click();
   await expect(outputs.getByRole("link", { name: "Cross-language retrieval evaluation" }))
     .toBeVisible();
-  await expect(outputs).toContainText("Knowledge source [K1.1]");
+  await expect(outputs).toContainText("Knowledge source");
+  await expect(outputs.getByRole("button", { name: "Knowledge source [K1.1]" })).toBeVisible();
   const inline = page.getByRole("button", { name: "Open source K1.1" });
   await inline.focus();
   await expect(page.getByRole("tooltip")).toContainText(

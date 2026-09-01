@@ -26,6 +26,7 @@ const shikiMock = vi.hoisted(() => {
 });
 
 vi.mock("shiki/core", () => ({
+  createCssVariablesTheme: (options: { name: string }) => ({ name: options.name, settings: [], type: "dark" }),
   createHighlighterCore: shikiMock.createHighlighterCore
 }));
 
@@ -33,8 +34,6 @@ vi.mock("shiki/engine/javascript", () => ({
   createJavaScriptRegexEngine: vi.fn(() => ({}))
 }));
 
-vi.mock("shiki/themes/github-dark.mjs", () => ({ default: { name: "github-dark", settings: [], type: "dark" } }));
-vi.mock("shiki/themes/github-light.mjs", () => ({ default: { name: "github-light", settings: [], type: "light" } }));
 vi.mock("shiki/langs/typescript.mjs", () => ({ default: [] }));
 vi.mock("shiki/langs/tsx.mjs", () => ({ default: [] }));
 vi.mock("shiki/langs/javascript.mjs", () => ({ default: [] }));
@@ -385,10 +384,7 @@ describe("MarkdownMessage", () => {
     expect(shikiMock.createHighlighterCore).toHaveBeenCalledTimes(1);
     expect(shikiMock.createHighlighterCore).toHaveBeenCalledWith(
       expect.objectContaining({
-        themes: [
-          expect.objectContaining({ name: "github-dark" }),
-          expect.objectContaining({ name: "github-light" })
-        ]
+        themes: [expect.objectContaining({ name: "aiqsa-signal" })]
       })
     );
     expect(shikiMock.codeToHtml).toHaveBeenCalledWith(
@@ -396,7 +392,7 @@ describe("MarkdownMessage", () => {
       expect.objectContaining({
         defaultColor: false,
         lang: "typescript",
-        themes: { dark: "github-dark", light: "github-light" }
+        themes: { dark: "aiqsa-signal", light: "aiqsa-signal" }
       })
     );
     expect(container.querySelector(".token")?.getAttribute("style")).toContain("--shiki-light");
@@ -423,7 +419,7 @@ describe("MarkdownMessage", () => {
         expect.objectContaining({
           defaultColor: false,
           lang: "shellscript",
-          themes: { dark: "github-dark", light: "github-light" }
+          themes: { dark: "aiqsa-signal", light: "aiqsa-signal" }
         })
       )
     );

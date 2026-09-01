@@ -79,7 +79,7 @@ describe("run lifecycle v2 presentation", () => {
     expect(presentRunLifecycleV2(state({ events: [requested] }))).toMatchObject({
       activity: {
         kind: "tool",
-        label: "Using Spreadsheet Studio: create_workbook…",
+        label: "Using Spreadsheet Studio: create workbook…",
         serverName: "Spreadsheet Studio",
         toolName: "create_workbook"
       }

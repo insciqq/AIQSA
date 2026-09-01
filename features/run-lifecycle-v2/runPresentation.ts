@@ -150,16 +150,50 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
   return null;
 }
 
+const webSearchToolNames = new Set([
+  "search",
+  "search_web",
+  "web_search",
+  "websearch",
+  "google_search",
+  "brave_search"
+]);
+
+function humanizeToolName(toolName: string): string {
+  return toolName.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * User-legible label for one tool call (FRONTEND contract: only user-legible
+ * server/tool names). Built-in tools get a plain-language verb; MCP tools
+ * keep their server name plus a de-snaked tool name. Raw identifiers such as
+ * `search_knowledge` never reach the thread.
+ */
+export function describeToolCallV2(
+  call: Readonly<{ serverName?: string; toolName?: string }>,
+  phase: "running" | "settled"
+): string {
+  const running = phase === "running";
+  const toolName = call.toolName ?? "";
+  if (toolName === "find_tools") return running ? "Finding relevant tools" : "Found relevant tools";
+  if (toolName === "search_knowledge") return running ? "Searching Knowledge" : "Searched Knowledge";
+  if (webSearchToolNames.has(toolName.toLowerCase())) {
+    return running ? "Searching the web" : "Searched the web";
+  }
+  const human = humanizeToolName(toolName);
+  if (call.serverName && human) {
+    return `${running ? "Using" : "Used"} ${call.serverName}: ${human}`;
+  }
+  if (human) return `${running ? "Running" : "Ran"} ${human}`;
+  return running ? "Running tools" : "Used tools";
+}
+
 function activityLabel(signal: Omit<ActivitySignal, "index">): string {
   switch (signal.kind) {
     case "search":
       return "Searching the web…";
     case "tool":
-      if (signal.toolName === "find_tools") return "Finding relevant tools…";
-      if (signal.serverName && signal.toolName) {
-        return `Using ${signal.serverName}: ${signal.toolName}…`;
-      }
-      return signal.toolName ? `Running ${signal.toolName}…` : "Running tools…";
+      return `${describeToolCallV2(signal, "running")}…`;
     case "compute":
       return "Computing…";
     case "preview":

@@ -1,6 +1,6 @@
 "use client";
 
-import { UiV2Button, UiV2IconButton } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownCitationRenderer } from "@/components/chat/MarkdownMessage";
@@ -16,6 +16,7 @@ import {
   type ReactNode
 } from "react";
 import {
+  describeToolCallV2,
   settledRunPresentationV2,
   type RunPresentationV2
 } from "./runPresentation";
@@ -43,15 +44,33 @@ function toolDuration(durationMs: number | undefined): string | null {
     : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
 }
 
-function toolStatus(status: ThreadToolActivity["calls"][number]["status"]): string {
-  if (status === "complete") return "Completed";
-  if (status === "error") return "Failed";
-  if (status === "cancelled") return "Stopped";
-  return "Running";
+type ToolCallV2 = ThreadToolActivity["calls"][number];
+
+/* Meta reads "0.8 s · round 2"; only a non-complete state adds a word. */
+function toolMeta(call: ToolCallV2): string {
+  const parts: string[] = [];
+  const duration = toolDuration(call.durationMs);
+  if (call.status === "error") parts.push("Failed");
+  else if (call.status === "cancelled") parts.push("Stopped");
+  if (duration) parts.push(duration);
+  parts.push(`round ${call.round}`);
+  return parts.join(" · ");
+}
+
+function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
+  if (status === "running") {
+    return <span className="v2-tool-activity-mark v2-spinner" data-status={status} aria-hidden="true" />;
+  }
+  return (
+    <span className="v2-tool-activity-mark" data-status={status} aria-hidden="true">
+      {status === "complete" ? <UiV2Icon name="check" /> : null}
+      {status === "error" ? <UiV2Icon name="alert" /> : null}
+    </span>
+  );
 }
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
-  let call: ThreadToolActivity["calls"][number] | undefined;
+  let call: ToolCallV2 | undefined;
   for (let index = activity.calls.length - 1; index >= 0; index -= 1) {
     if (activity.calls[index]?.status === "running") {
       call = activity.calls[index];
@@ -59,10 +78,7 @@ function runningToolLabel(activity: ThreadToolActivity): string | null {
     }
   }
   if (!call) return null;
-  if (call.toolName === "find_tools") return "Finding relevant tools…";
-  return call.serverName
-    ? `Using ${call.serverName}: ${call.toolName}…`
-    : `Running ${call.toolName}…`;
+  return `${describeToolCallV2(call, "running")}…`;
 }
 
 function RunToolActivityV2({
@@ -88,17 +104,14 @@ function RunToolActivityV2({
           </summary>
           <ol>
             {activity.calls.map((call, index) => {
-              const duration = toolDuration(call.durationMs);
               return (
-                <li key={`${call.round}:${index}:${call.toolName}`}>
-                  <span className="v2-tool-activity-mark" data-status={call.status} aria-hidden="true" />
+                <li key={`${call.round}:${index}:${call.toolName}`} data-status={call.status}>
+                  <ToolCallMarkV2 status={call.status} />
                   <span className="v2-tool-activity-copy">
                     <span className="v2-tool-activity-name">
-                      {call.serverName ? `${call.serverName} · ` : ""}{call.toolName}
+                      {describeToolCallV2(call, call.status === "running" ? "running" : "settled")}
                     </span>
-                    <span className="v2-tool-activity-meta">
-                      Round {call.round} · {toolStatus(call.status)}{duration ? ` · ${duration}` : ""}
-                    </span>
+                    <span className="v2-tool-activity-meta">{toolMeta(call)}</span>
                   </span>
                 </li>
               );
@@ -187,6 +200,9 @@ function RunErrorV2({
   const recoverable = presentation.kind === "recoverable_error";
   const autoDiscoveryUnavailable =
     presentation.failure.code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE;
+  // The card is a neutral surface: an alert glyph plus a plain-language
+  // heading and explanation; the primary recovery action comes first and the
+  // safe error code sits quietly on the right as the support reference.
   return (
     <section
       className="v2-run-error-card"
@@ -196,29 +212,32 @@ function RunErrorV2({
         : recoverable ? "Answer interrupted by an error" : "Run failed"}
     >
       <div className="v2-run-error-heading">
+        <UiV2Icon name="alert" />
         <h2>{autoDiscoveryUnavailable
           ? "Automatic tool discovery is unavailable"
           : recoverable ? "Answer interrupted by a provider error" : "Request not completed"}</h2>
-        {presentation.failure.code ? (
-          <code>{presentation.failure.code}</code>
-        ) : null}
       </div>
       <p>{presentation.failure.message}</p>
       <div className="v2-run-error-actions">
         {autoDiscoveryUnavailable && onRetry ? (
-          <UiV2Button onClick={onRetry}>Retry</UiV2Button>
+          <UiV2Button icon="regenerate" tone="primary" onClick={onRetry}>Retry</UiV2Button>
         ) : null}
         {autoDiscoveryUnavailable && onUseLoadAll ? (
           <UiV2Button onClick={onUseLoadAll}>Use Load all</UiV2Button>
         ) : null}
         {!autoDiscoveryUnavailable && recoverable && onRetry ? (
-          <UiV2Button onClick={onRetry}>Retry</UiV2Button>
+          <UiV2Button icon="regenerate" tone="primary" onClick={onRetry}>Retry</UiV2Button>
+        ) : null}
+        {!autoDiscoveryUnavailable && !recoverable && onRegenerate ? (
+          <UiV2Button icon="regenerate" tone="primary" onClick={onRegenerate}>Regenerate</UiV2Button>
         ) : null}
         {!autoDiscoveryUnavailable && !recoverable && onSelectModel ? (
           <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
-        {!autoDiscoveryUnavailable && !recoverable && onRegenerate ? (
-          <UiV2Button onClick={onRegenerate}>Regenerate</UiV2Button>
+        {presentation.failure.code ? (
+          <span className="v2-run-error-reference">
+            Support reference <code>{presentation.failure.code}</code>
+          </span>
         ) : null}
       </div>
     </section>
@@ -259,8 +278,8 @@ export function RunAnswerV2({
 }: RunAnswerV2Props) {
   const runActive = presentation.kind === "activity" || presentation.kind === "streaming";
   const activeLabel = toolActivity
-    ? runningToolLabel(toolActivity) ?? presentation.activity?.label ?? "Writing answer…"
-    : presentation.activity?.label ?? "Writing answer…";
+    ? runningToolLabel(toolActivity) ?? presentation.activity?.label ?? "Answering…"
+    : presentation.activity?.label ?? "Answering…";
   const activityContent = toolActivity
     ? (
         <RunToolActivityV2
@@ -282,6 +301,12 @@ export function RunAnswerV2({
     : null;
   const afterContent = (
     <>
+      {presentation.kind === "streaming" ? (
+        <div className="v2-run-live-line" data-testid="run-live-line">
+          <span className="v2-run-live-dot" aria-hidden="true" />
+          <span>Answering…</span>
+        </div>
+      ) : null}
       {presentation.kind === "connection_lost" ? (
         <RunConnectionLossV2 onRefresh={onRefresh} />
       ) : null}
@@ -389,7 +414,7 @@ function announcementFor(presentation: RunPresentationV2): string {
     case "activity":
       return presentation.activity?.label ?? "";
     case "streaming":
-      return "Writing answer…";
+      return "Answering…";
     case "connection_lost":
       return "Connection lost. Refresh the run state.";
     case "complete":

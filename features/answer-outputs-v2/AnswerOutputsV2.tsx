@@ -7,7 +7,12 @@ import {
   formatMemoryUiCopy,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
-import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
+import {
+  UiV2Button,
+  UiV2Chip,
+  UiV2Icon,
+  UiV2Monogram
+} from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
   ThreadKnowledgeAnswerState,
@@ -97,28 +102,31 @@ function MemoryStatusV2({ status }: Readonly<{
   );
 }
 
+/* Knowledge rows carry the violet handle mark and a book glyph; the only
+   action is "Open source ›" because the citation projection exposes no
+   private base/document name (CRITICAL_INVARIANTS §9). */
 function KnowledgeSourceV2({
   citation,
-  index,
   reference
 }: Readonly<{
   citation: ThreadKnowledgeCitation;
-  index: number;
   reference?: Readonly<{ messageId: string; runId: string }>;
 }>) {
   return (
-    <li>
-      <span className="v2-answer-source-index">{index}</span>
-      <div>
-        {reference ? (
-          <KnowledgeCitationSourceTrigger citation={citation} reference={reference} />
-        ) : <strong>{citation.deleted ? "Deleted Knowledge source" : `Knowledge source [${citation.handle}]`}</strong>}
+    <li data-kind="knowledge">
+      <span className="v2-answer-source-index" data-kind="knowledge">{citation.handle}</span>
+      <UiV2Icon className="v2-answer-source-glyph" name="book" />
+      <span className="v2-answer-source-main">
+        <strong>{citation.deleted ? "Deleted Knowledge source" : "Knowledge source"}</strong>
         <small>
           {citation.deleted
-            ? `${citation.handle} · citation evidence removed`
-            : `${citation.handle} · open exact accepted evidence`}
+            ? "citation evidence removed"
+            : "exact accepted evidence"}
         </small>
-      </div>
+      </span>
+      {reference && !citation.deleted ? (
+        <KnowledgeCitationSourceTrigger citation={citation} reference={reference} />
+      ) : null}
     </li>
   );
 }
@@ -411,8 +419,9 @@ export function SourcesV2({ artifact, knowledgeReference }: Readonly<{
       {count > 0 ? (
         <details className="v2-answer-sources" data-testid="answer-sources">
           <summary aria-label={`Sources, ${count} item${count === 1 ? "" : "s"}`}>
-            <UiV2Icon name="library" />
+            <span className="v2-answer-sources-chevron" aria-hidden="true" />
             <span>Sources</span>
+            <span className="v2-answer-sources-count" aria-hidden="true">· {count}</span>
           </summary>
           <div className="v2-answer-sources-body">
             {presented.sources.length > 0 ? (
@@ -422,17 +431,18 @@ export function SourcesV2({ artifact, knowledgeReference }: Readonly<{
                   return (
                     <li key={`${source.rank}:${source.url}:${index}`}>
                       <span className="v2-answer-source-index">{index + 1}</span>
-                      <span>
+                      <UiV2Monogram className="v2-answer-source-monogram" label={source.domain ?? source.title} />
+                      <span className="v2-answer-source-main">
                         {href ? (
                           <a href={href} rel="noreferrer" target="_blank">{source.title}</a>
                         ) : (
                           <span data-testid="unsafe-source-title">{source.title}</span>
                         )}
-                        {source.domain && source.domain !== source.title ? (
-                          <small>{source.domain}</small>
-                        ) : null}
                         {source.snippet ? <small>{source.snippet}</small> : null}
                       </span>
+                      {source.domain && source.domain !== source.title ? (
+                        <small className="v2-answer-source-domain">{source.domain}</small>
+                      ) : null}
                     </li>
                   );
                 })}
@@ -443,7 +453,6 @@ export function SourcesV2({ artifact, knowledgeReference }: Readonly<{
                 {knowledge.map((citation, index) => (
                   <KnowledgeSourceV2
                     citation={citation}
-                    index={presented.sources.length + index + 1}
                     key={`${citation.handle}:${index}`}
                     reference={knowledgeReference}
                   />

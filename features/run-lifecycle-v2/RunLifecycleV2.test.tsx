@@ -92,8 +92,10 @@ describe("Run lifecycle v2", () => {
     );
     fireEvent.click(screen.getByText("1 tool call"));
     expect(disclosure).toHaveAttribute("open");
-    expect(screen.getByText("AWS Documentation · search_documentation")).toBeVisible();
-    expect(screen.getByText("Round 1 · Completed · 1.3 s")).toBeVisible();
+    // Tool rows read as plain language: no raw `search_documentation`.
+    expect(screen.getByText("Used AWS Documentation: search documentation")).toBeVisible();
+    expect(screen.getByText("1.3 s · round 1")).toBeVisible();
+    expect(screen.queryByText(/search_documentation/u)).toBeNull();
   });
 
   it("restores the semantic shimmering tool status from persisted running activity", () => {
@@ -174,9 +176,9 @@ describe("Run lifecycle v2", () => {
       />
     );
 
-    expect(screen.getByRole("region", { name: "Answer interrupted by an error" })).toHaveTextContent(
-      "Answer interrupted by a provider errorprovider_stream_reset"
-    );
+    const interrupted = screen.getByRole("region", { name: "Answer interrupted by an error" });
+    expect(interrupted).toHaveTextContent("Answer interrupted by a provider error");
+    expect(interrupted).toHaveTextContent("Support reference provider_stream_reset");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
 
@@ -195,9 +197,10 @@ describe("Run lifecycle v2", () => {
         })}
       />
     );
-    expect(screen.getByRole("region", { name: "Run failed" })).toHaveTextContent(
-      "Request not completedcontext_budget_exceeded"
-    );
+    const failed = screen.getByRole("region", { name: "Run failed" });
+    expect(failed).toHaveTextContent("Request not completed");
+    expect(failed).toHaveTextContent("Choose a model with a larger context.");
+    expect(failed).toHaveTextContent("Support reference context_budget_exceeded");
     fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(selectModel).toHaveBeenCalledOnce();
