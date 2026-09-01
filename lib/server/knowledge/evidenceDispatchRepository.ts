@@ -1454,8 +1454,9 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads the exact current V23 positive-finding, append-only completeness, and
- * post-Selector closure protocol. Scope, completeness, initial Selector, and
+/** Loads the exact current V29 positive-finding, query-intent-preserving
+ * append-only completeness, and post-Selector closure protocol. Scope,
+ * completeness, initial Selector, and
  * closure may each occur twice only as their single adjacent structural repair.
  * The final Selector may likewise occur twice only as one bounded validation
  * repair. Every later operation pins the merged accepted Scope hash. */

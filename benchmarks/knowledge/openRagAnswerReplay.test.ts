@@ -136,7 +136,7 @@ function origin() {
   });
 }
 
-function v23Origin() {
+function currentOrigin() {
   const legacy = origin();
   return Object.freeze({
     ...legacy,
@@ -144,18 +144,18 @@ function v23Origin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 39,
-      pipelineVersion: currentV23PipelineVersion,
+      groundingEvidenceVersion: 45,
+      pipelineVersion: currentPipelineVersion,
       selectorContractVersion: 21,
       settlementVersion: 6
     })
   });
 }
 
-const currentV23PipelineVersion =
-  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_settlement_v6";
+const currentPipelineVersion =
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_settlement_v6";
 
-const v23ExecutionPolicy = Object.freeze({
+const currentExecutionPolicy = Object.freeze({
   auditorReasoningEffort: "medium",
   draftReasoningEffort: "medium",
   egressDestination: "answer_provider",
@@ -168,12 +168,12 @@ const v23ExecutionPolicy = Object.freeze({
 
 describe("OpenRAG frozen-evidence replay", () => {
   it("admits bounded append-only pipeline identities beyond generic IDs", () => {
-    expect(currentV23PipelineVersion.length).toBeGreaterThan(200);
-    expect(decodeOpenRagAnswerEnginePin(v23Origin().engine).pipelineVersion)
-      .toBe(currentV23PipelineVersion);
+    expect(currentPipelineVersion.length).toBeGreaterThan(512);
+    expect(decodeOpenRagAnswerEnginePin(currentOrigin().engine).pipelineVersion)
+      .toBe(currentPipelineVersion);
     expect(() => decodeOpenRagAnswerEnginePin({
-      ...v23Origin().engine,
-      pipelineVersion: `p${"x".repeat(512)}`
+      ...currentOrigin().engine,
+      pipelineVersion: `p${"x".repeat(1024)}`
     })).toThrow("open_rag_answer_engine_pin_invalid");
   });
 
@@ -299,17 +299,17 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V23 snapshot with V21 Draft and Selector", async () => {
+  it("runs the current V29 snapshot with V21 Draft and Selector", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
-      executionPolicy: v23ExecutionPolicy,
+      executionPolicy: currentExecutionPolicy,
       forbiddenIdentityFragments: [],
-      origin: v23Origin(),
-      originalRunId: "run-original-v23",
+      origin: currentOrigin(),
+      originalRunId: "run-original-v24",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -402,10 +402,10 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
-      executionPolicy: v23ExecutionPolicy,
+      executionPolicy: currentExecutionPolicy,
       forbiddenIdentityFragments: [],
-      origin: v23Origin(),
-      originalRunId: "run-original-v23-audit-repair",
+      origin: currentOrigin(),
+      originalRunId: "run-original-v24-audit-repair",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -522,10 +522,10 @@ describe("OpenRAG frozen-evidence replay", () => {
       case: benchmarkCase,
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
-      executionPolicy: v23ExecutionPolicy,
+      executionPolicy: currentExecutionPolicy,
       forbiddenIdentityFragments: [],
-      origin: v23Origin(),
-      originalRunId: "run-original-v23-audit-failure",
+      origin: currentOrigin(),
+      originalRunId: "run-original-v24-audit-failure",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -586,13 +586,13 @@ describe("OpenRAG frozen-evidence replay", () => {
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
       executionPolicy: Object.freeze({
-        ...v23ExecutionPolicy,
+        ...currentExecutionPolicy,
         overriddenRoles: Object.freeze(["selector"] as const),
         selectorReasoningEffort: "high"
       }),
       forbiddenIdentityFragments: [],
-      origin: v23Origin(),
-      originalRunId: "run-original-v23-override",
+      origin: currentOrigin(),
+      originalRunId: "run-original-v24-override",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
@@ -610,7 +610,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     }), "medium")).toBe(false);
   });
 
-  it("freezes a current V23 run that inherits the provider reasoning default", () => {
+  it("freezes a current V29 run that inherits the provider reasoning default", () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-09-01T00:00:00.000Z",
@@ -618,15 +618,15 @@ describe("OpenRAG frozen-evidence replay", () => {
       evidence: evidence(),
       evidenceBindings: evidenceBindings(),
       executionPolicy: Object.freeze({
-        ...v23ExecutionPolicy,
+        ...currentExecutionPolicy,
         auditorReasoningEffort: null,
         draftReasoningEffort: null,
         selectorReasoningEffort: null,
         supplementReasoningEffort: null
       }),
       forbiddenIdentityFragments: [],
-      origin: v23Origin(),
-      originalRunId: "run-original-v23-provider-default",
+      origin: currentOrigin(),
+      originalRunId: "run-original-v24-provider-default",
       reasoningEffort: null,
       request: benchmarkCase.question,
       routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,

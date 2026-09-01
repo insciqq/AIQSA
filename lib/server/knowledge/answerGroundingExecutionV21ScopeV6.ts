@@ -26,7 +26,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   buildKnowledgeSupportedAnswerViewV1,
@@ -40,9 +40,9 @@ import {
   type KnowledgeAnswerV21ContractVersions
 } from "./answerGroundingV21";
 import {
-  knowledgeAnswerTargetedSupplementSchemaV2,
+  knowledgeAnswerTargetedSupplementSchemaV3,
   decodeKnowledgeTargetedSupplementFailureV1,
-  decodeKnowledgeTargetedSupplementV3,
+  decodeKnowledgeTargetedSupplementV4,
   isKnowledgeTargetedSupplementFailureReasonV1,
   knowledgeTargetableMissingDimensionsV1,
   knowledgeTargetedEvidenceAtomIndex,
@@ -51,14 +51,20 @@ import {
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
   mergeKnowledgeGroundedCorrectionV2,
   mergeKnowledgeTargetedSupplementV2,
-  validateKnowledgeTargetedSupplementV3,
+  validateKnowledgeTargetedSupplementV4,
   type KnowledgeTargetedSupplementClaimBindingV1
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeAnswerTargetedSupplementPromptV3,
-  knowledgeGroundedDeltaSelectorPromptV4,
-  knowledgeGroundedSelectorPromptV21TargetClosureV1
+  knowledgeAnswerTargetedSupplementPromptV5,
+  knowledgeGroundedDeltaSelectorPromptV4
 } from "./answerGroundingCorrectionPromptV21";
+import {
+  decodeKnowledgeGroundedSelectorDiagnosticFailureV1,
+  diagnoseKnowledgeGroundedSelectorDimensionV1,
+  knowledgeGroundedSelectorDiagnosticFailureV1,
+  knowledgeGroundedSelectorPromptV21RepairDiagnosticV1,
+  type KnowledgeSelectorRepairDiagnosticV1
+} from "./answerGroundingSelectorRepairDiagnosticV1";
 import {
   acceptedOperation,
   type KnowledgeAnswerOperationExecutionOptionsV21,
@@ -80,9 +86,11 @@ import {
   type KnowledgeCoverageScopeRepairDiagnosticV1
 } from "./coverageScopeRepairFeedbackV1";
 import {
+  collectKnowledgeCoverageScopeRepairDiagnosticsV1
+} from "./coverageScopeMultiDiagnosticRepairV1";
+import {
   decodeKnowledgeCoverageScopeRepairCandidateV1,
   decodeKnowledgeCoverageScopeVerifiedPatchFailureV1,
-  knowledgeCoverageScopePromptV6VerifiedPatchV1,
   knowledgeCoverageScopeRepairBaseHashV1,
   knowledgeCoverageScopeVerifiedPatchFailureV1,
   mergeKnowledgeCoverageScopeVerifiedPatchesV1,
@@ -98,11 +106,14 @@ import {
   decodeKnowledgeCoverageScopeCompletenessV1,
   isKnowledgeCoverageScopeCompletenessValidationFailureReasonV1,
   knowledgeCoverageScopeCompletenessFailureV1,
-  knowledgeCoverageScopeCompletenessPromptV1,
   validateKnowledgeCoverageScopeCompletenessV1,
   type KnowledgeCoverageScopeCompletenessFailureReasonV1,
   type KnowledgeCoverageScopeCompletenessValidationFailureReasonV1
 } from "./coverageScopeCompletenessV1";
+import {
+  knowledgeCoverageScopeCompletenessPromptV2,
+  knowledgeCoverageScopePromptV6QueryIntentV1
+} from "./coverageScopeQueryIntentV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
@@ -129,7 +140,7 @@ import {
   decodeKnowledgeGroundedSelectorV21,
   knowledgeCoverageMissingDimensionsV6,
   knowledgeGroundedSelectorV21Fallback,
-  normalizeKnowledgeGroundedSelectorSupportEdgesV1,
+  normalizeKnowledgeGroundedSelectorSupportEdgesV2,
   validateKnowledgeGroundedSelectorV21,
   type KnowledgeGroundedSelectorFailureReasonV21,
   type KnowledgeGroundedSelectorV21
@@ -306,7 +317,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
     ...requestExecutionPolicy,
     protocol:
-      KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+      KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
     schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
     systemPrompt: draftPrompt.systemPrompt,
     transport: input.transport,
@@ -345,23 +356,26 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (!primaryDraft) throw new Error("knowledge_answer_draft_result_invalid");
 
   let transientScopeRepairBase: KnowledgeCoverageScopeRepairCandidateV1 | null = null;
+  let transientScopeRepairDiagnostics:
+    readonly KnowledgeCoverageScopeRepairDiagnosticV1[] | null = null;
   const runScope = async (
     ordinal: OperationOrdinalScopeV6,
     scopePass: "initial" | "repair",
     repair?: Readonly<{
       diagnostic: KnowledgeCoverageScopeRepairDiagnosticV1;
+      diagnostics: readonly KnowledgeCoverageScopeRepairDiagnosticV1[];
       reason: KnowledgeCoverageScopeValidationFailureReasonV6;
       repairBase: KnowledgeCoverageScopeRepairCandidateV1 | null;
       repairBaseHash: string | null;
     }>
   ) => {
-    const prompt = knowledgeCoverageScopePromptV6VerifiedPatchV1({
+    const prompt = knowledgeCoverageScopePromptV6QueryIntentV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence,
       evidenceManifest: input.draft.message,
       repairBaseHash: repair?.repairBaseHash ?? null,
       ...(repair ? {
-        repairDiagnostic: repair.diagnostic,
+        repairDiagnostics: repair.diagnostics,
         repairReason: repair.reason
       } : {}),
       request: input.request,
@@ -374,7 +388,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
       ...requestExecutionPolicy,
       protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+        KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
       schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -414,6 +428,14 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         const validation = localRejection.validation;
         if (scopePass === "initial" && validation.kind === "rejected") {
           transientScopeRepairBase = validation.repairBase;
+          transientScopeRepairDiagnostics =
+            collectKnowledgeCoverageScopeRepairDiagnosticsV1({
+              atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+              base: validation.repairBase,
+              evidence,
+              initialDiagnostic: validation.diagnostic,
+              request: input.request
+            });
         }
         return operationRecord(validation.kind === "accepted"
           ? validation.output
@@ -452,12 +474,17 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     if (transientScopeRepairBaseHash !== initialScopeFailure.repairBaseHash) {
       throw new Error("knowledge_coverage_scope_repair_base_unavailable");
     }
+    if (!transientScopeRepairDiagnostics ||
+      transientScopeRepairDiagnostics.length < 1) {
+      throw new Error("knowledge_coverage_scope_repair_diagnostics_unavailable");
+    }
     scopeOrdinal = 3;
     scopeOperation = await runScope(
       scopeOrdinal,
       "repair",
       {
         diagnostic: initialScopeFailure.diagnostic,
+        diagnostics: transientScopeRepairDiagnostics,
         reason: initialScopeFailure.reason,
         repairBase: transientScopeRepairBase,
         repairBaseHash: initialScopeFailure.repairBaseHash
@@ -482,7 +509,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     completenessPass: "initial" | "repair",
     repairReason?: KnowledgeCoverageScopeCompletenessValidationFailureReasonV1
   ) => {
-    const prompt = knowledgeCoverageScopeCompletenessPromptV1({
+    const prompt = knowledgeCoverageScopeCompletenessPromptV2({
       acceptedScope: scope!,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       completenessPass,
@@ -499,7 +526,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
       ...requestExecutionPolicy,
       protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+        KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
       schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -582,6 +609,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     draft: KnowledgeAnswerDraftSelectorInput;
     operation: typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 |
       typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
+    repairDiagnostic?: KnowledgeSelectorRepairDiagnosticV1;
     ordinal: OperationOrdinalScopeV6;
     repairReason?: KnowledgeSelectorValidationFailureReason;
     selectorPass: "final" | "final_repair" | "initial" | "repair";
@@ -591,7 +619,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     const repairPass = selectorInput.selectorPass === "repair" ||
       selectorInput.selectorPass === "final_repair";
     if (correctionPass !== Boolean(selectorInput.correction) ||
-      repairPass !== Boolean(selectorInput.repairReason)) {
+      repairPass !== Boolean(selectorInput.repairReason) ||
+      selectorInput.repairDiagnostic !== undefined &&
+        selectorInput.repairReason !== "selector_dimension_invalid") {
       throw new Error("knowledge_grounded_selector_correction_state_invalid");
     }
     const prompt = selectorInput.correction
@@ -607,13 +637,16 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           request: input.request,
           scope
         })
-      : knowledgeGroundedSelectorPromptV21TargetClosureV1({
+      : knowledgeGroundedSelectorPromptV21RepairDiagnosticV1({
           atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           draft: selectorInput.draft,
           evidence,
           evidenceManifest: input.draft.message,
           ...(selectorInput.repairReason
             ? { repairReason: selectorInput.repairReason }
+            : {}),
+          ...(selectorInput.repairDiagnostic
+            ? { repairDiagnostic: selectorInput.repairDiagnostic }
             : {}),
           request: input.request,
           scope,
@@ -628,7 +661,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       operation: selectorInput.operation,
       ...requestExecutionPolicy,
       protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+        KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -647,7 +680,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           scope,
           scopeProtocol: "append_only_completeness_v1" as const
         };
-        const normalizedOutput = normalizeKnowledgeGroundedSelectorSupportEdgesV1(
+        const normalizedOutput = normalizeKnowledgeGroundedSelectorSupportEdgesV2(
           output,
           validationInput
         );
@@ -657,6 +690,11 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           validationInput
         );
         if (validation.kind === "rejected") {
+          if (!correctionPass && validation.reason === "selector_dimension_invalid") {
+            return operationRecord(knowledgeGroundedSelectorDiagnosticFailureV1(
+              diagnoseKnowledgeGroundedSelectorDimensionV1(candidate, validationInput)
+            ));
+          }
           return operationRecord(knowledgeGroundedSelectorV21Fallback(validation.reason));
         }
         const coverageReviewRequired = selectorInput.correction !== undefined &&
@@ -695,9 +733,12 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     ordinal: selectorOrdinal,
     selectorPass: "initial"
   });
-  let selectorFailure = decodeKnowledgeGroundedSelectorFailureV21(
-    selectorOperation.acceptedResult
-  );
+  let selectorDiagnosticFailure =
+    decodeKnowledgeGroundedSelectorDiagnosticFailureV1(
+      selectorOperation.acceptedResult
+    );
+  let selectorFailure = selectorDiagnosticFailure ??
+    decodeKnowledgeGroundedSelectorFailureV21(selectorOperation.acceptedResult);
   let acceptedSelector: KnowledgeGroundedSelectorV21 | null = selectorFailure
     ? null
     : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
@@ -721,12 +762,17 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       draft: primaryDraft,
       operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
       ordinal: selectorOrdinal,
+      ...(selectorDiagnosticFailure
+        ? { repairDiagnostic: selectorDiagnosticFailure.diagnostic }
+        : {}),
       repairReason: selectorFailure.reason,
       selectorPass: "repair"
     });
-    selectorFailure = decodeKnowledgeGroundedSelectorFailureV21(
+    selectorDiagnosticFailure = decodeKnowledgeGroundedSelectorDiagnosticFailureV1(
       selectorOperation.acceptedResult
     );
+    selectorFailure = selectorDiagnosticFailure ??
+      decodeKnowledgeGroundedSelectorFailureV21(selectorOperation.acceptedResult);
     acceptedSelector = selectorFailure
       ? null
       : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
@@ -781,7 +827,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
         operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
         ...requestExecutionPolicy,
-        protocol: KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+        protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
         schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
         systemPrompt: prompt.systemPrompt,
         transport: input.transport,
@@ -878,7 +924,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }
 
   const supplementOrdinal = (postSelectorOrdinal + 1) as OperationOrdinalScopeV6;
-  const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV3({
+  const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV5({
     atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     auditDimensions: targetableMissingDimensions,
     evidence,
@@ -886,7 +932,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     request: input.request,
     routeInstruction: input.routeInstruction
   });
-  const supplementSchema = knowledgeAnswerTargetedSupplementSchemaV2({
+  const supplementSchema = knowledgeAnswerTargetedSupplementSchemaV3({
     primaryClaimCount,
     targetDimensions: targetableMissingDimensions
   });
@@ -898,7 +944,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
     ...requestExecutionPolicy,
     protocol:
-      KNOWLEDGE_ANSWER_SCOPE_V6_FINAL_DELTA_REPAIR_PROTOCOL_V1,
+      KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
     schema: supplementSchema,
     systemPrompt: supplementPrompt.systemPrompt,
     transport: input.transport,
@@ -908,7 +954,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     acceptedFailure: () => operationRecord(KNOWLEDGE_DRAFT_MALFORMED),
     acceptedOutput: (output) => {
       const normalizedOutput = normalizeKnowledgeTargetedSupplementPayloadV2(output);
-      const validation = validateKnowledgeTargetedSupplementV3(normalizedOutput, {
+      const validation = validateKnowledgeTargetedSupplementV4(normalizedOutput, {
         availableHandles: handles,
         forbiddenIdentityFragments: input.forbiddenIdentityFragments,
         missingDimensions,
@@ -950,7 +996,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       selector: correctionBaseSelector
     }));
   }
-  const supplement = decodeKnowledgeTargetedSupplementV3(
+  const supplement = decodeKnowledgeTargetedSupplementV4(
     supplementOperation.acceptedResult,
     {
       availableHandles: handles,

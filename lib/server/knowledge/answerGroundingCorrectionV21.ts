@@ -6,6 +6,7 @@ import {
   mergeKnowledgeAnswerDraftsV1,
   validateKnowledgeAnswerDraftSupplementV1,
   validateKnowledgeAnswerDraftSupplementV2,
+  validateKnowledgeAnswerDraftV7,
   type KnowledgeAnswerDraftSelectorInput,
   type KnowledgeAnswerDraftV5,
   type KnowledgeAnswerDraftValidationFailureReason,
@@ -21,7 +22,10 @@ import {
   type KnowledgeCoverageEvidenceAtomContextRoleV2,
   type KnowledgeCoverageEvidenceAtomIndexVersion
 } from "./coverageScopeV4";
-import type { KnowledgeCoverageEvidenceV6 } from "./coverageScopeV6";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
+  type KnowledgeCoverageEvidenceV6
+} from "./coverageScopeV6";
 
 export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1 = 1 as const;
 export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 = 2 as const;
@@ -29,6 +33,17 @@ export const KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 = 2 as const;
 export const KNOWLEDGE_TARGETED_EVIDENCE_ATOM_LIMITS_V1 = Object.freeze({
   maxAtoms: 128,
   maxCodePoints: 32_768
+});
+
+/** The atomic correction budget is derived from the existing complete-Draft
+ * and maximum-Scope bounds. This lets the maximum eight-target Scope spend the
+ * same average claim budget as the complete 24-claim Draft. */
+export const KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1 = Object.freeze({
+  maxClaimsPerTarget: Math.floor(
+    KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims /
+      KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDimensions
+  ),
+  maxTotalClaims: KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims - 1
 });
 
 const targetIdPattern = /^D[1-8]$/u;
@@ -247,6 +262,34 @@ export function knowledgeTargetedSupplementClaimLimitsV2(input: Readonly<{
   })));
 }
 
+/** Allocates the current atomic Supplement capacity from three immutable
+ * bounds: exact target count, remaining complete-Draft capacity, and the
+ * average per-dimension capacity implied by the existing global limits. Every
+ * target keeps at least one slot and capacities differ by at most one. */
+export function knowledgeTargetedSupplementClaimLimitsV3(input: Readonly<{
+  primaryClaimCount: number;
+  targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+}>): readonly KnowledgeTargetedSupplementClaimLimitV2[] | null {
+  const targetable = knowledgeTargetableMissingDimensionsV1(input.targetDimensions);
+  const targetIds = new Set(targetable.map(({ id }) => id));
+  const available = Math.min(
+    KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1.maxTotalClaims,
+    KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims - input.primaryClaimCount,
+    targetable.length *
+      KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1.maxClaimsPerTarget
+  );
+  if (!Number.isSafeInteger(input.primaryClaimCount) || input.primaryClaimCount < 1 ||
+    targetable.length !== input.targetDimensions.length || targetable.length < 1 ||
+    targetIds.size !== targetable.length || targetable.some(({ id }) =>
+      !targetIdPattern.test(id)) || available < targetable.length) return null;
+  const base = Math.floor(available / targetable.length);
+  const remainder = available % targetable.length;
+  return Object.freeze(targetable.map(({ id }, index) => Object.freeze({
+    maxClaims: base + (index < remainder ? 1 : 0),
+    targetDimensionId: id
+  })));
+}
+
 /** Builds a request-specific strict schema whose required object keys are the
  * exact missing Scope IDs. Grouping preserves task identity while still
  * allowing several independently checkable claims for one dimension. */
@@ -255,6 +298,44 @@ export function knowledgeAnswerTargetedSupplementSchemaV2(input: Readonly<{
   targetDimensions: readonly KnowledgeCoverageDimensionV6[];
 }>): Readonly<Record<string, unknown>> {
   const limits = knowledgeTargetedSupplementClaimLimitsV2(input);
+  if (!limits) throw new Error("knowledge_targeted_supplement_schema_invalid");
+  const properties = Object.freeze(Object.fromEntries(limits.map((limit) => [
+    limit.targetDimensionId,
+    Object.freeze({
+      items: targetedClaimTextSchemaV2,
+      maxItems: limit.maxClaims,
+      minItems: 1,
+      type: "array"
+    })
+  ])));
+  return Object.freeze({
+    additionalProperties: false,
+    properties: Object.freeze({
+      targets: Object.freeze({
+        additionalProperties: false,
+        properties,
+        required: Object.freeze(limits.map(({ targetDimensionId }) =>
+          targetDimensionId)),
+        type: "object"
+      }),
+      version: Object.freeze({
+        const: KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2,
+        type: "integer"
+      })
+    }),
+    required: Object.freeze(["version", "targets"]),
+    type: "object"
+  });
+}
+
+/** Current grouped wire shape with target-count-aware atomic capacity. The
+ * payload stays V2; the enclosing append-only answer protocol and exact schema
+ * hash distinguish this allocation from the historical flat 12-claim pool. */
+export function knowledgeAnswerTargetedSupplementSchemaV3(input: Readonly<{
+  primaryClaimCount: number;
+  targetDimensions: readonly KnowledgeCoverageDimensionV6[];
+}>): Readonly<Record<string, unknown>> {
+  const limits = knowledgeTargetedSupplementClaimLimitsV3(input);
   if (!limits) throw new Error("knowledge_targeted_supplement_schema_invalid");
   const properties = Object.freeze(Object.fromEntries(limits.map((limit) => [
     limit.targetDimensionId,
@@ -340,6 +421,67 @@ export function isKnowledgeAnswerTargetedSupplementSchemaV2(
   const base = Math.floor(total / capacities.length);
   const remainder = total % capacities.length;
   return total <= KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS &&
+    capacities.every((capacity, index) =>
+      capacity === base + (index < remainder ? 1 : 0));
+}
+
+/** Recognizes only the adaptive atomic schema family. Exact target IDs and the
+ * primary-Draft-dependent capacities are reconstructed and byte-compared by
+ * recovery; this guard admits no per-target or aggregate capacity above the
+ * immutable atomic budget. */
+export function isKnowledgeAnswerTargetedSupplementSchemaV3(
+  value: unknown
+): value is Readonly<Record<string, unknown>> {
+  if (!record(value) || !exactKeys(value, [
+    "additionalProperties",
+    "properties",
+    "required",
+    "type"
+  ]) || value.additionalProperties !== false || value.type !== "object" ||
+    !Array.isArray(value.required) || !sameStrings(value.required as string[], [
+      "version",
+      "targets"
+    ]) || !record(value.properties) || !exactKeys(value.properties, [
+      "targets",
+      "version"
+    ])) return false;
+  const version = value.properties.version;
+  const targets = value.properties.targets;
+  if (!record(version) || !exactKeys(version, ["const", "type"]) ||
+    version.const !== KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 ||
+    version.type !== "integer" || !record(targets) || !exactKeys(targets, [
+      "additionalProperties",
+      "properties",
+      "required",
+      "type"
+    ]) || targets.additionalProperties !== false || targets.type !== "object" ||
+    !record(targets.properties) || !Array.isArray(targets.required)) return false;
+  const ids = Object.keys(targets.properties);
+  if (ids.length < 1 ||
+    ids.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDimensions ||
+    !sameStrings(targets.required as string[], ids) || ids.some((id, index) =>
+      !targetIdPattern.test(id) || index > 0 &&
+        Number(id.slice(1)) <= Number(ids[index - 1]!.slice(1)))) return false;
+  const capacities: number[] = [];
+  for (const id of ids) {
+    const schema = targets.properties[id];
+    if (!record(schema) || !exactKeys(schema, [
+      "items",
+      "maxItems",
+      "minItems",
+      "type"
+    ]) || schema.type !== "array" || schema.minItems !== 1 ||
+      !Number.isSafeInteger(schema.maxItems) || Number(schema.maxItems) < 1 ||
+      Number(schema.maxItems) >
+        KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1.maxClaimsPerTarget ||
+      knowledgeAnswerHash(schema.items) !==
+        knowledgeAnswerHash(targetedClaimTextSchemaV2)) return false;
+    capacities.push(Number(schema.maxItems));
+  }
+  const total = capacities.reduce((sum, capacity) => sum + capacity, 0);
+  const base = Math.floor(total / capacities.length);
+  const remainder = total % capacities.length;
+  return total <= KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1.maxTotalClaims &&
     capacities.every((capacity, index) =>
       capacity === base + (index < remainder ? 1 : 0));
 }
@@ -436,13 +578,14 @@ export function knowledgeTargetedSupplementFitsV1(input: Readonly<{
 function validateKnowledgeTargetedSupplementWithDraftValidatorV1(
   value: unknown,
   input: KnowledgeTargetedSupplementValidationInputV1,
-  validateDraft: KnowledgeTargetedSupplementDraftValidatorV1
+  validateDraft: KnowledgeTargetedSupplementDraftValidatorV1,
+  maxSupplementClaims = KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS
 ): KnowledgeTargetedSupplementValidationV1 {
   if (isKnowledgeDraftMalformed(input.primaryDraft) || !record(value) ||
     !exactKeys(value, ["version", "claims"]) ||
     value.version !== KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V1 ||
     !Array.isArray(value.claims) || value.claims.length < 1 ||
-    value.claims.length > KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS ||
+    value.claims.length > maxSupplementClaims ||
     input.primaryDraft.claims.length + value.claims.length >
       KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims) {
     return rejected("draft_target_shape_invalid");
@@ -525,6 +668,18 @@ function validateKnowledgeTargetedSupplementCommonMarkV1(
   );
 }
 
+function validateKnowledgeTargetedSupplementCommonMarkAdaptiveV1(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV1 {
+  return validateKnowledgeTargetedSupplementWithDraftValidatorV1(
+    value,
+    input,
+    validateKnowledgeAnswerDraftV7,
+    KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1.maxTotalClaims
+  );
+}
+
 export function decodeKnowledgeTargetedSupplementV1(
   value: unknown,
   input: Parameters<typeof validateKnowledgeTargetedSupplementV1>[1]
@@ -542,13 +697,15 @@ function validateKnowledgeTargetedSupplementGroupedV2(
   validateDraft: (
     value: unknown,
     input: KnowledgeTargetedSupplementValidationInputV1
-  ) => KnowledgeTargetedSupplementValidationV1
+  ) => KnowledgeTargetedSupplementValidationV1,
+  claimLimits: typeof knowledgeTargetedSupplementClaimLimitsV2 =
+    knowledgeTargetedSupplementClaimLimitsV2
 ): KnowledgeTargetedSupplementValidationV2 {
   if (isKnowledgeDraftMalformed(input.primaryDraft) || !record(value) ||
     !exactKeys(value, ["version", "targets"]) ||
     value.version !== KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 ||
     !record(value.targets)) return rejectedV2("draft_target_shape_invalid");
-  const limits = knowledgeTargetedSupplementClaimLimitsV2({
+  const limits = claimLimits({
     primaryClaimCount: input.primaryDraft.claims.length,
     targetDimensions: knowledgeTargetableMissingDimensionsV1(input.missingDimensions)
   });
@@ -609,6 +766,21 @@ export function validateKnowledgeTargetedSupplementV3(
   );
 }
 
+/** Current CommonMark-aware validation over the adaptive atomic allocation.
+ * The V2 payload shape is retained while historical flat-pool validation stays
+ * byte- and behavior-exact in V2/V3. */
+export function validateKnowledgeTargetedSupplementV4(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV2 {
+  return validateKnowledgeTargetedSupplementGroupedV2(
+    value,
+    input,
+    validateKnowledgeTargetedSupplementCommonMarkAdaptiveV1,
+    knowledgeTargetedSupplementClaimLimitsV3
+  );
+}
+
 export type KnowledgeTargetedSupplementValidationV2 =
   | Readonly<{ kind: "accepted"; value: KnowledgeTargetedSupplementV2 }>
   | Readonly<{
@@ -635,6 +807,14 @@ export function decodeKnowledgeTargetedSupplementV3(
   input: Parameters<typeof validateKnowledgeTargetedSupplementV3>[1]
 ): KnowledgeTargetedSupplementV2 | null {
   const validation = validateKnowledgeTargetedSupplementV3(value, input);
+  return validation.kind === "accepted" ? validation.value : null;
+}
+
+export function decodeKnowledgeTargetedSupplementV4(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeTargetedSupplementV4>[1]
+): KnowledgeTargetedSupplementV2 | null {
+  const validation = validateKnowledgeTargetedSupplementV4(value, input);
   return validation.kind === "accepted" ? validation.value : null;
 }
 

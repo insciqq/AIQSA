@@ -37,13 +37,13 @@ import {
 } from "./coverageScopeV6";
 import { KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 } from "./coverageScopeV4";
 import {
-  decodeKnowledgeCoverageScopePromptV6VerifiedPatchV1
-} from "./coverageScopeVerifiedPatchRepairV1";
-import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
-  decodeKnowledgeCoverageScopeCompletenessPromptV1,
   validateKnowledgeCoverageScopeCompletenessV1
 } from "./coverageScopeCompletenessV1";
+import {
+  decodeKnowledgeCoverageScopeCompletenessPromptV2,
+  decodeKnowledgeCoverageScopePromptV6QueryIntentV1
+} from "./coverageScopeQueryIntentV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
 } from "./coverageScopeClosureV1";
@@ -1424,10 +1424,13 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     );
     expect(JSON.parse(snapshots[5]!.userPrompt)).toMatchObject({
       targetClosureProtocol: { version: 1 },
-      version: 3
+      version: 5
     });
     expect(snapshots[5]!.systemPrompt).toContain(
-      'targeted_supplement_contract version="3"'
+      'knowledge_targeted_supplement_contract version="5"'
+    );
+    expect(snapshots[5]!.systemPrompt).toContain(
+      "Omit an unsupported connector"
     );
     expect(JSON.parse(snapshots[6]!.userPrompt)).toMatchObject({
       selectorPass: "final_delta_least_authority",
@@ -1553,7 +1556,13 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                 ...scopeOutput(false).evidenceUnits[0]!.findings[0]!,
                   requestAnchor: "missing request anchor"
                 }]
-              }, scopeOutput(false).evidenceUnits[1]]
+              }, {
+                ...scopeOutput(false).evidenceUnits[1],
+                findings: [{
+                  ...scopeOutput(false).evidenceUnits[1]!.findings[0]!,
+                  requestAnchor: "second missing request anchor"
+                }]
+              }]
             },
             providerResponseId: "response-invalid-scope",
             usage
@@ -1583,7 +1592,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     expect(snapshots).toHaveLength(8);
     expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
     const packed = manifest();
-    expect(decodeKnowledgeCoverageScopePromptV6VerifiedPatchV1({
+    expect(decodeKnowledgeCoverageScopePromptV6QueryIntentV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
       evidenceManifest: packed.message,
@@ -1599,20 +1608,34 @@ describe("V21 positive-finding Coverage Scope execution", () => {
             ...scopeOutput(false).evidenceUnits[0]!.findings[0]!,
             requestAnchor: "missing request anchor"
           }]
-        }, scopeOutput(false).evidenceUnits[1]]
+        }, {
+          ...scopeOutput(false).evidenceUnits[1],
+          findings: [{
+            ...scopeOutput(false).evidenceUnits[1]!.findings[0]!,
+            requestAnchor: "second missing request anchor"
+          }]
+        }]
       }),
-      repairDiagnostic: {
+      repairDiagnostics: [{
         actualCount: null,
         code: "anchor_invalid",
         expectedHandle: null,
         maximumCount: null,
         path: "/evidenceUnits/0/findings/0/requestAnchor",
         version: 1
-      },
+      }, {
+        actualCount: null,
+        code: "anchor_invalid",
+        expectedHandle: null,
+        maximumCount: null,
+        path: "/evidenceUnits/1/findings/0/requestAnchor",
+        version: 1
+      }],
       repairReason: "coverage_scope_anchor_invalid",
       scopePass: "repair"
     });
     expect(snapshots[2]!.userPrompt).not.toContain("Explain alpha.");
+    expect(snapshots[2]!.userPrompt).not.toContain("second missing request anchor");
     expect(recorder.entries.get(2)!.acceptedResult).toMatchObject({
       repairBaseHash: expect.stringMatching(/^[0-9a-f]{64}$/u)
     });
@@ -1620,15 +1643,15 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 23
+      version: 29
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 23
+      version: 29
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 23
+      version: 29
     });
   });
 
@@ -1713,7 +1736,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
       recorder.entries.get(4)?.acceptedRequest
     );
-    expect(decodeKnowledgeCoverageScopeCompletenessPromptV1({
+    expect(decodeKnowledgeCoverageScopeCompletenessPromptV2({
       acceptedScope: initialScope,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
@@ -1977,7 +2000,12 @@ describe("V21 positive-finding Coverage Scope execution", () => {
           : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
             ? { additions: [], version: 1 }
           : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
-            ? selectorCalls++ === 0 ? {} : selectorV21Output(false)
+            ? selectorCalls++ === 0
+              ? {
+                  ...selectorV21Output(false),
+                  coverage: [selectorV21Output(false).coverage[0]]
+                }
+              : selectorV21Output(false)
             : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
               ? closureOutput("D1")
             : (() => { throw new Error("unexpected_current_operation"); })(),
@@ -2000,7 +2028,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const packed = manifest();
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(decodeKnowledgeCoverageScopePromptV6VerifiedPatchV1({
+    expect(decodeKnowledgeCoverageScopePromptV6QueryIntentV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
       evidenceManifest: packed.message,
@@ -2009,24 +2037,86 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       userPrompt: snapshots[2]!.userPrompt
     })).toEqual({
       repairBaseHash: null,
-      repairDiagnostic: {
+      repairDiagnostics: [{
         actualCount: null,
         code: "payload_shape",
         expectedHandle: null,
         maximumCount: null,
         path: "/",
         version: 1
-      },
+      }],
       repairReason: "coverage_scope_shape_invalid",
       scopePass: "repair"
     });
     expect(JSON.parse(snapshots[5]!.userPrompt)).toMatchObject({
-      repairReason: "selector_malformed",
+      repairDiagnostic: {
+        actualCount: 1,
+        code: "coverage_count",
+        expectedCount: 2,
+        expectedHandles: [],
+        expectedId: null,
+        path: "/coverage",
+        version: 1
+      },
+      repairReason: "selector_dimension_invalid",
       selectorPass: "repair"
+    });
+    expect(recorder.entries.get(5)!.acceptedResult).toMatchObject({
+      diagnostic: { code: "coverage_count", path: "/coverage" },
+      kind: "selector_failed",
+      reason: "selector_dimension_invalid"
     });
     const acceptedScopeHash = knowledgeAnswerHash(acceptedScope(false));
     expect(snapshots.slice(3).every((snapshot) =>
       isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
+  });
+
+  it("downgrades an unknown Selector edge and keeps the correction reserve", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    let selectorCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 &&
+        selectorCalls++ === 0
+        ? {
+            output: {
+              ...selectorV21Output(false),
+              coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+                id: "D2",
+                status: "covered",
+                supportIds: ["C999"]
+              }]
+            },
+            providerResponseId: "response-selector-unknown-edge",
+            usage
+          }
+        : baseline(operation));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+      KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+      KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+    ]);
+    expect(recorder.entries.get(4)?.acceptedResult).toMatchObject({
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }]
+    });
+    expect(JSON.stringify(recorder.entries.get(4)?.acceptedResult))
+      .not.toContain("C999");
+    expect(result.settlement.requestCoverage).toBe("complete");
   });
 });

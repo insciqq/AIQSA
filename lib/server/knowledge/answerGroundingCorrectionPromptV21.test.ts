@@ -4,6 +4,8 @@ import {
   knowledgeAnswerTargetedSupplementPromptV1,
   knowledgeAnswerTargetedSupplementPromptV2,
   knowledgeAnswerTargetedSupplementPromptV3,
+  knowledgeAnswerTargetedSupplementPromptV4,
+  knowledgeAnswerTargetedSupplementPromptV5,
   knowledgeGroundedDeltaSelectorPromptV1,
   knowledgeGroundedDeltaSelectorPromptV2,
   knowledgeGroundedDeltaSelectorPromptV3,
@@ -196,6 +198,65 @@ describe("targeted correction prompts", () => {
       },
       version: 3
     });
+  });
+
+  it("atomizes supplement relations without granting component facts connector authority", () => {
+    const { draft, evidence, request, selector } = fixture();
+    const historical = knowledgeAnswerTargetedSupplementPromptV3({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    const current = knowledgeAnswerTargetedSupplementPromptV4({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    expect(historical.systemPrompt).not.toContain("exactly one standalone");
+    expect(current.systemPrompt).toContain('contract version="4"');
+    expect(current.systemPrompt).toContain("exactly one standalone");
+    expect(current.systemPrompt).toContain("causal, enabling, purpose, and consequence");
+    expect(current.systemPrompt).toContain("component facts does not establish");
+    expect(current.systemPrompt).toContain("Omit an unsupported connector");
+    expect(current.systemPrompt).toContain("Do not use reference answers");
+    expect(JSON.parse(current.userPrompt)).toMatchObject({
+      targetingMode: "exact_missing_dimension_groups",
+      version: 4
+    });
+  });
+
+  it("treats adaptive atomic capacity as a ceiling instead of a quota", () => {
+    const { draft, evidence, request, selector } = fixture();
+    const historical = knowledgeAnswerTargetedSupplementPromptV4({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    const current = knowledgeAnswerTargetedSupplementPromptV5({
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    });
+    expect(JSON.parse(historical.userPrompt)).toMatchObject({
+      targetClaimLimits: [{ maxClaims: 12, targetDimensionId: "D2" }],
+      version: 4
+    });
+    expect(JSON.parse(current.userPrompt)).toMatchObject({
+      targetClaimLimits: [{ maxClaims: 3, targetDimensionId: "D2" }],
+      version: 5
+    });
+    expect(current.systemPrompt).toContain('contract version="5"');
+    expect(current.systemPrompt).toContain("upper bounds");
+    expect(current.systemPrompt).toContain("never quotas");
+    expect(current.systemPrompt).toContain("never fill an unused slot");
   });
 
   it("fails closed rather than projecting incomplete target evidence", () => {
