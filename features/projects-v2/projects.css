@@ -8,6 +8,8 @@
   border-bottom: 1px solid var(--v2-color-border);
 }
 
+/* Sidebar section label: sentence case, 12px/500, text3 (same as the chat
+   list's group labels). */
 .v2-project-navigation-heading,
 .v2-project-desk-heading {
   display: flex;
@@ -17,10 +19,9 @@
   gap: 0.5rem;
   padding: 0 0.25rem 0 0.5rem;
   color: var(--v2-color-text3);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.065em;
-  text-transform: uppercase;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .v2-project-list,

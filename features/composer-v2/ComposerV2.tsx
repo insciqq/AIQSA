@@ -18,9 +18,10 @@ import {
   type ComposerAttachmentPolicy
 } from "@/components/app-shell/attachmentSelection";
 import {
+  type UiV2IconName,
   UiV2Icon,
   UiV2IconButton,
-  type UiV2IconName
+  UiV2Monogram
 } from "@/components/ui-v2";
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
@@ -396,6 +397,19 @@ export function ComposerV2({
   const currentModel = models.find(
     (model) => model.modelId === selectedModelId && model.provider === selectedProvider
   );
+  // The chip monogram comes from the provider family (a known vendor glyph),
+  // never from the operator-authored provider name, which may carry hosts.
+  const currentProviderGlyph = currentModel
+    ? (() => {
+        const provider = providers.find((candidate) => candidate.id === currentModel.provider);
+        return provider?.family || provider?.name || currentModel.provider;
+      })()
+    : "";
+  // The context gauge is not a permanent control (PRD §4.5): it appears only
+  // once the estimate reaches 70% of the safe input budget.
+  const contextGaugeVisible = contextStats
+    ? (composerContextGauge(contextStats).fraction ?? 0) >= 0.7
+    : false;
   const noModels = Boolean(config && models.length === 0);
   const controlsLocked = Boolean(selectedAssistant);
   const bootstrapReason = configError
@@ -933,6 +947,7 @@ export function ComposerV2({
             title={controlsLocked ? "Managed by the Assistant" : "Choose model"}
             onClick={(event) => openLayer("model", event.currentTarget)}
           >
+            {currentModel ? <UiV2Monogram label={currentProviderGlyph} /> : null}
             <strong>{currentModel?.displayName ?? (noModels ? "No models available" : "Choose model")}</strong>
             {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
           </button>
@@ -944,9 +959,12 @@ export function ComposerV2({
                 type="button"
                 disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
                 aria-label="Turn off Search"
+                data-glyph="globe"
                 onClick={() => onSelectSearchOptionIds?.([])}
               >
-                <span aria-hidden="true" />Search
+                <span aria-hidden="true" />
+                <UiV2Icon className="v2-composer-indicator-glyph" name="globe" />
+                <span className="v2-composer-indicator-label">Search</span>
                 {!controlsLocked ? <UiV2Icon name="close" /> : null}
               </button>
             ) : null}
@@ -962,21 +980,25 @@ export function ComposerV2({
                   aria-expanded={layer === "knowledge"}
                   aria-haspopup="menu"
                   aria-label="Choose Knowledge"
+                  data-glyph="book"
                   onClick={(event) => openLayer("knowledge", event.currentTarget)}
                 >
                   <span aria-hidden="true" />
-                  {knowledgeSelection.mode === "none" ? (
-                    "Knowledge"
-                  ) : (
-                    <>
-                      <span className="v2-composer-indicator-prefix">Knowledge: </span>
-                      {knowledgeSelection.mode === "all_my_knowledge"
-                        ? "All mine"
-                        : selectedKnowledgeNames.length === 1
-                          ? selectedKnowledgeNames[0]
-                          : selectedKnowledgeNames.length}
-                    </>
-                  )}
+                  <UiV2Icon className="v2-composer-indicator-glyph" name="book" />
+                  <span className="v2-composer-indicator-label">
+                    {knowledgeSelection.mode === "none" ? (
+                      "Knowledge"
+                    ) : (
+                      <>
+                        <span className="v2-composer-indicator-prefix">Knowledge: </span>
+                        {knowledgeSelection.mode === "all_my_knowledge"
+                          ? "All mine"
+                          : selectedKnowledgeNames.length === 1
+                            ? selectedKnowledgeNames[0]
+                            : selectedKnowledgeNames.length}
+                      </>
+                    )}
+                  </span>
                   {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
                 </button>
                 {knowledgeSelection.mode !== "none" && !controlsLocked ? (
@@ -997,6 +1019,7 @@ export function ComposerV2({
                 className="v2-composer-indicator v2-focusable"
                 type="button"
                 data-quiet={mcpSelection.mode === "load_all" ? undefined : ""}
+                data-mcp-mode={mcpSelection.mode}
                 disabled={activeRun || controlsLocked}
                 aria-controls={`${layerId}-tools`}
                 aria-expanded={layer === "tools"}
@@ -1008,9 +1031,12 @@ export function ComposerV2({
                     on demand) and Off stay quiet so the dot never reads as
                     "tools are on" by default. The chip names MCP, not
                     "Tools": Search and Knowledge are tools too. */}
-                <span aria-hidden="true" />MCP: {mcpSelection.mode === "load_all"
-                  ? "Load all"
-                  : mcpSelection.mode === "off" ? "Off" : "Auto"}
+                <span aria-hidden="true" />
+                <span className="v2-composer-indicator-label">
+                  MCP: {mcpSelection.mode === "load_all"
+                    ? "Load all"
+                    : mcpSelection.mode === "off" ? "Off" : "Auto"}
+                </span>
                 <UiV2Icon name="chevron-down" />
               </button>
             ) : null}
@@ -1028,7 +1054,7 @@ export function ComposerV2({
           </div>
 
           <span className="v2-composer-spacer" />
-          {contextStats ? <ContextGaugeV2 stats={contextStats} usage={usageStats} /> : null}
+          {contextStats && contextGaugeVisible ? <ContextGaugeV2 stats={contextStats} usage={usageStats} /> : null}
           <span className="v2-composer-run-action">
             <RunComposerActionV2
               active={activeRun}

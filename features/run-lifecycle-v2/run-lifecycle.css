@@ -26,11 +26,14 @@
   animation: v2-run-shimmer 1.8s ease-in-out infinite;
 }
 
+/* Tool activity (PRD §4.4): one disclosure row ("2 tool calls", 14px text2)
+   and, inside, rows hanging from a hairline with a status glyph, a human
+   label and a quiet meta ("0.8 s · round 2"). */
 .v2-tool-activity {
   min-width: 0;
   margin: 0 0 0.875rem;
   color: var(--v2-color-text2);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 .v2-tool-activity details {
@@ -68,56 +71,78 @@
 
 .v2-tool-activity ol {
   display: grid;
-  gap: 0.625rem;
-  margin: 0.375rem 0 0 0.1875rem;
-  padding: 0.25rem 0 0.125rem 1rem;
-  border-left: 1px solid var(--v2-color-border2);
+  gap: 0.25rem;
+  margin: 0.25rem 0 0 0.375rem;
+  padding: 0.125rem 0 0.125rem 0.75rem;
+  border-left: 1px solid var(--v2-color-border);
   list-style: none;
 }
 
 .v2-tool-activity li {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: 0.5625rem;
+  min-height: 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .v2-tool-activity-mark {
-  width: 0.4375rem;
-  height: 0.4375rem;
+  display: inline-grid;
+  width: 0.875rem;
+  height: 0.875rem;
   flex: 0 0 auto;
-  margin-top: 0.3125rem;
-  border: 1px solid var(--v2-color-text3);
-  border-radius: 50%;
+  place-items: center;
+  color: var(--v2-color-text3);
+}
+
+.v2-tool-activity-mark .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  stroke-width: 2;
 }
 
 .v2-tool-activity-mark[data-status="complete"] {
-  border-color: var(--v2-color-accent);
-  background: var(--v2-color-accent);
+  color: var(--v2-color-ok);
 }
 
 .v2-tool-activity-mark[data-status="error"] {
-  border-color: var(--v2-color-danger);
+  color: var(--v2-color-danger);
 }
 
-.v2-tool-activity-mark[data-status="cancelled"] {
+/* The live spinner is the answer phase's violet; nothing else here is. */
+.v2-tool-activity-mark[data-status="running"] {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-width: 1.5px;
+  color: var(--v2-color-accent2);
+}
+
+.v2-tool-activity-mark[data-status="cancelled"]::before {
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 0.0625rem;
+  background: currentcolor;
+  content: "";
 }
 
 .v2-tool-activity-copy {
-  display: grid;
+  display: flex;
   min-width: 0;
-  gap: 0.0625rem;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .v2-tool-activity-name {
   overflow-wrap: anywhere;
   color: var(--v2-color-text2);
+  font-size: 0.8125rem;
 }
 
 .v2-tool-activity-meta {
   color: var(--v2-color-text3);
-  font-size: 0.71875rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .v2-tool-budget-warning {
@@ -130,15 +155,39 @@
   line-height: 1.45;
 }
 
+/* Streaming caret: a 2px violet bar — the answer phase's only color. */
 .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
   display: inline-block;
-  width: 0.4375rem;
-  height: 0.9375rem;
-  margin-left: 0.125rem;
-  background: var(--v2-color-text2);
+  width: 0.125rem;
+  height: 1.0625rem;
+  margin-left: 0.1875rem;
+  border-radius: 1px;
+  background: var(--v2-color-accent2);
   content: "";
-  vertical-align: -0.125rem;
+  vertical-align: -0.1875rem;
   animation: v2-run-caret 1s steps(1) infinite;
+}
+
+/* "● Answering…" under the live text: 13px/500 accent2 with a glowing dot. */
+.v2-run-live-line {
+  display: flex;
+  min-height: 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  color: var(--v2-color-accent2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.v2-run-live-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--v2-color-accent2);
+  box-shadow: 0 0 0.375rem var(--v2-color-accent2);
 }
 
 /* Terminal and connection-loss strips are semantic statuses: text2 floor. */
@@ -189,11 +238,12 @@
   padding-block: 0.125rem;
 }
 
+/* Error card (PRD §4.4): neutral surface, no colored edge; the alert glyph
+   and the plain-language heading carry the state. */
 .v2-run-error-card {
   margin-top: 0.875rem;
-  padding: 0.75rem 0.875rem;
-  border: 1px solid var(--v2-color-border);
-  border-left: 0.1875rem solid var(--v2-color-danger);
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--v2-color-border2);
   border-radius: var(--v2-radius-m);
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
@@ -202,43 +252,55 @@
 .v2-run-error-heading {
   display: flex;
   min-width: 0;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
-  flex-wrap: wrap;
+}
+
+.v2-run-error-heading > .v2-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--v2-color-danger);
 }
 
 .v2-run-error-heading h2 {
   margin: 0;
   color: var(--v2-color-text);
-  font-size: 0.84375rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.45;
-}
-
-.v2-run-error-heading code {
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  color: var(--v2-color-text3);
-  font-family: var(--font-mono), monospace;
-  font-size: 0.71875rem;
+  line-height: 1.4;
 }
 
 .v2-run-error-card > p {
-  margin: 0.375rem 0 0.625rem;
+  margin: 0.375rem 0 0.75rem;
   color: var(--v2-color-text2);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 
 .v2-run-error-actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
 .v2-run-error-actions .v2-button {
-  min-height: 1.875rem;
+  min-height: 2rem;
+}
+
+.v2-run-error-reference {
+  min-width: 0;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-run-error-reference code {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
 }
 
 .v2-sr-only {
@@ -264,6 +326,7 @@
 }
 
 html[data-motion="off"] .v2-run-shimmer,
+html[data-motion="off"] .v2-tool-activity-mark[data-status="running"],
 html[data-motion="off"] .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
   animation: none;
 }
@@ -296,6 +359,11 @@ html[data-motion="off"] .v2-run-shimmer {
 
   .v2-run-error-actions .v2-button {
     flex: 1 1 auto;
+  }
+
+  .v2-run-error-reference {
+    width: 100%;
+    margin-left: 0;
   }
 }
 

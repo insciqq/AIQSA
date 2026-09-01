@@ -85,10 +85,8 @@ function resolveShikiLanguage(language: string): { display: HighlightedCodeLangu
 
 async function createAiqsaHighlighter(): Promise<HighlighterCore> {
   const [
-    { createHighlighterCore },
+    { createCssVariablesTheme, createHighlighterCore },
     { createJavaScriptRegexEngine },
-    darkTheme,
-    lightTheme,
     ts,
     tsx,
     js,
@@ -107,8 +105,6 @@ async function createAiqsaHighlighter(): Promise<HighlighterCore> {
   ] = await Promise.all([
     import("shiki/core"),
     import("shiki/engine/javascript"),
-    import("shiki/themes/github-dark.mjs"),
-    import("shiki/themes/github-light.mjs"),
     import("shiki/langs/typescript.mjs"),
     import("shiki/langs/tsx.mjs"),
     import("shiki/langs/javascript.mjs"),
@@ -145,9 +141,14 @@ async function createAiqsaHighlighter(): Promise<HighlighterCore> {
       markdown.default,
       diff.default
     ],
-    themes: [darkTheme.default, lightTheme.default]
+    // One CSS-variables theme for both schemes: the token roles it emits
+    // (`--shiki-token-keyword`, …) resolve to the semantic palette in
+    // globals.css, so light and dark switch with the rest of the UI.
+    themes: [createCssVariablesTheme({ fontStyle: true, name: SIGNAL_CODE_THEME, variablePrefix: "--shiki-" })]
   });
 }
+
+const SIGNAL_CODE_THEME = "aiqsa-signal";
 
 function getHighlighter(): Promise<HighlighterCore> {
   highlighterPromise ??= createAiqsaHighlighter();
@@ -174,8 +175,8 @@ export function highlightCodeBlock(code: string, language: string): Promise<Code
         defaultColor: false,
         lang: resolved.shiki,
         themes: {
-          dark: "github-dark",
-          light: "github-light"
+          dark: SIGNAL_CODE_THEME,
+          light: SIGNAL_CODE_THEME
         }
       }),
       language: resolved.display

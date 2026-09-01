@@ -235,6 +235,23 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const closePersonalMemory = settings.closeMemory;
   const libraryOpen = Boolean(settings.library || settings.knowledge || personalMemoryOpen);
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+  // Folder crumb for the header: the folder chain of the active chat, oldest
+  // ancestor first; chats outside folders show no crumb.
+  const activeChatCrumb = useMemo(() => {
+    const folderId = activeChatSummary?.folderId ?? null;
+    if (!folderId) return null;
+    const names: string[] = [];
+    let cursor: string | null = folderId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      const folder = navigationFolders.find((candidate) => candidate.id === cursor);
+      if (!folder) break;
+      names.unshift(folder.name);
+      cursor = folder.parentId;
+    }
+    return names.length ? names.join(" / ") : null;
+  }, [activeChatSummary?.folderId, navigationFolders]);
   const selectedProjectContext = Boolean(
     workspace.projects.detail &&
     workspace.projects.selectedProjectId === workspace.projects.detail.id
@@ -827,6 +844,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
+              crumb={activeChatCrumb}
               archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
                 projectContext && (
                   !activeProject || !activeProject.capabilities.archiveChats || activeProjectChat?.archived

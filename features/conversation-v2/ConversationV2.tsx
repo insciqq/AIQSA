@@ -6,6 +6,7 @@ import {
 } from "@/components/chat/MarkdownMessage";
 import {
   UiV2Button,
+  UiV2Icon,
   UiV2IconButton,
   UiV2MenuItem,
   UiV2MenuSurface,
@@ -549,6 +550,9 @@ export function ConversationV2({
               // The blank chat greets quietly: no canvas wordmark and no
               // marketing subtitle — the greeting alone is the welcome state.
               <div className="v2-conversation-orientation-copy">
+                <span className="v2-conversation-orientation-mark" aria-hidden="true">
+                  <UiV2Icon name="brand" />
+                </span>
                 <h1>What are we working on?</h1>
               </div>
             )}

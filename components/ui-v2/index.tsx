@@ -7,6 +7,7 @@ import {
 } from "react";
 
 export type UiV2IconName =
+  | "alert"
   | "archive"
   | "arrow-up"
   | "assistant"
@@ -23,6 +24,7 @@ export type UiV2IconName =
   | "edit"
   | "file"
   | "folder"
+  | "globe"
   | "history"
   | "library"
   | "lock"
@@ -36,6 +38,7 @@ export type UiV2IconName =
   | "search"
   | "sliders"
   | "settings"
+  | "share"
   | "stop"
   | "sun"
   | "slides"
@@ -46,6 +49,10 @@ export function UiV2IconSprite() {
   return (
     <svg aria-hidden="true" className="absolute size-0 overflow-hidden">
       <defs>
+        <symbol id="v2-icon-alert" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 8v5M12 16h.01" />
+        </symbol>
         <symbol id="v2-icon-archive" viewBox="0 0 24 24">
           <path d="M4 8h16v12H4zM3 4h18v4H3zM9 12h6" />
         </symbol>
@@ -100,6 +107,10 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-folder" viewBox="0 0 24 24">
           <path d="M3 6.5h6l2 2h10v10H3z" />
         </symbol>
+        <symbol id="v2-icon-globe" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+        </symbol>
         <symbol id="v2-icon-history" viewBox="0 0 24 24">
           <path d="M4 5v5h5M5.6 9.2A8 8 0 1 1 4 14M12 8v5l3 2" />
         </symbol>
@@ -150,6 +161,10 @@ export function UiV2IconSprite() {
           <circle cx="12" cy="12" r="3" />
           <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1" />
         </symbol>
+        <symbol id="v2-icon-share" viewBox="0 0 24 24">
+          <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+          <path d="M12 15V3M7 8l5-5 5 5" />
+        </symbol>
         <symbol id="v2-icon-stop" viewBox="0 0 24 24">
           <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" />
         </symbol>
@@ -173,11 +188,25 @@ export function UiV2IconSprite() {
   );
 }
 
-export function UiV2Icon({ name }: { name: UiV2IconName }) {
+export function UiV2Icon({ className = "", name }: { className?: string; name: UiV2IconName }) {
   return (
-    <svg className="v2-icon" aria-hidden="true">
+    <svg className={`v2-icon ${className}`.trim()} aria-hidden="true">
       <use href={`#v2-icon-${name}`} />
     </svg>
+  );
+}
+
+/**
+ * One-letter identity glyph for a provider, domain, or server: the same
+ * monogram in the composer chip, the picker, and the Sources list so a
+ * source reads identically everywhere.
+ */
+export function UiV2Monogram({ className = "", label }: { className?: string; label: string }) {
+  const initial = label.trim().replace(/^www\./iu, "").slice(0, 1).toLocaleUpperCase() || "·";
+  return (
+    <span className={`v2-monogram ${className}`.trim()} aria-hidden="true">
+      {initial}
+    </span>
   );
 }
 

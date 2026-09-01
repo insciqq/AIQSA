@@ -67,17 +67,29 @@ describe("Composer v2", () => {
     expect(dialog).toHaveTextContent("Total messages4");
   });
 
-  it("labels the context gauge in human units and reveals it on hover too", () => {
-    render(<ComposerV2 {...props({
+  it("shows the context gauge only from 70% of the safe budget", () => {
+    const { unmount } = render(<ComposerV2 {...props({
       contextStats: {
         approximateInputTokens: 800,
         safeInputBudgetTokens: 10_000,
         totalContextTokens: 12_000
       }
     })} />);
+    expect(screen.queryByRole("button", { name: /Context estimate/ })).toBeNull();
+    unmount();
+  });
+
+  it("labels the context gauge in human units and reveals it on hover too", () => {
+    render(<ComposerV2 {...props({
+      contextStats: {
+        approximateInputTokens: 7_200,
+        safeInputBudgetTokens: 10_000,
+        totalContextTokens: 12_000
+      }
+    })} />);
 
     const context = screen.getByRole("button", { name: /Context estimate/ });
-    expect(context).toHaveAttribute("title", "~8% of context");
+    expect(context).toHaveAttribute("title", "~72% of context");
     expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
 
     fireEvent.mouseOver(context);
@@ -461,7 +473,10 @@ describe("Composer v2", () => {
     render(<ComposerV2 {...props({ config: leakyConfig })} />);
 
     const trigger = screen.getByRole("button", { name: "GPT-5.2" });
-    expect(trigger.textContent).toBe("GPT-5.2");
+    expect(trigger.querySelector("strong")?.textContent).toBe("GPT-5.2");
+    // The provider glyph is a decorative one-letter family monogram.
+    expect(trigger.querySelector(".v2-monogram")).toHaveAttribute("aria-hidden", "true");
+    expect(trigger.querySelector(".v2-monogram")?.textContent).toBe("O");
     const surface = screen.getByTestId("composer-v2").textContent ?? "";
     expect(surface).not.toContain("codex-lb.psaux.info");
     expect(surface).not.toContain("ref 0N0FNN");

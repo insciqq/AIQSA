@@ -767,7 +767,7 @@ export function KnowledgeCitationControl({
       onMouseLeave={() => viewer.dismissPreview(key)}
       type="button"
     >
-      [{reference.handle}]
+      {reference.handle}
     </button>
   );
 }
@@ -788,6 +788,9 @@ export function KnowledgeCitationSourceTrigger({
         ? "knowledge-citation-preview"
         : undefined}
       aria-haspopup="dialog"
+      aria-label={citation.deleted
+        ? "Deleted Knowledge source"
+        : `Knowledge source [${citation.handle}]`}
       className="v2-answer-knowledge-link"
       onBlur={() => viewer.dismissPreview(key)}
       onClick={(event) => viewer.openCitation(fullReference, event.currentTarget)}
@@ -796,7 +799,7 @@ export function KnowledgeCitationSourceTrigger({
       onMouseLeave={() => viewer.dismissPreview(key)}
       type="button"
     >
-      {citation.deleted ? "Deleted Knowledge source" : `Knowledge source [${citation.handle}]`}
+      {citation.deleted ? "Deleted Knowledge source" : "Open source ›"}
     </button>
   );
 }
