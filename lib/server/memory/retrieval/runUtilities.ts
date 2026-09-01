@@ -70,7 +70,7 @@ import {
 } from "../../admin/providers/approvedRerankers";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
-  "memory-query-embedding-v11";
+  "memory-query-embedding-v12";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v30";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 1;
@@ -105,7 +105,7 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
   // count/retry policy is already frozen by pipelineVersion/policyVersion and
   // must not replace the vector retrieval fingerprint.
   retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
-  schemaVersion: "memory-query-embedding-result-v2"
+  schemaVersion: "memory-query-embedding-result-v3"
 });
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
@@ -166,6 +166,7 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
 export type MemoryRunUtilityUnavailable = Readonly<{
   bindingId?: string;
   externalCallCount?: number;
+  providerRequestRoutes?: readonly (string | null)[];
   reason: string;
   status: "UNAVAILABLE";
 }>;
@@ -175,6 +176,7 @@ export type MemoryRunQueryEmbeddingResult =
   | Readonly<{
       bindingId: string;
       externalCallCount?: number;
+      providerRequestRoutes?: readonly (string | null)[];
       profile: MemoryVectorProfile;
       status: "READY";
       vector: readonly number[];
@@ -1392,7 +1394,8 @@ async function runQueryEmbeddingAttempt(
     }>
   | Readonly<{
       bindingId: string;
-      externalCallCount: 1;
+      externalCallCount: number;
+      providerRequestRoutes?: readonly (string | null)[];
       profile: MemoryVectorProfile;
       snapshotHash: string;
       status: "READY";
@@ -1475,6 +1478,13 @@ async function runQueryEmbeddingAttempt(
       isProviderRetryableHttpStatus(error.httpStatus);
     const uncertain = !(error instanceof EmbeddingAdapterError) ||
       uncertainEmbeddingErrors.has(error.code) || attempt.signal.aborted;
+    const externalCallCount = error instanceof EmbeddingAdapterError &&
+      error.providerRequestCount !== null
+      ? error.providerRequestCount
+      : 1;
+    const providerRequestRoutes = error instanceof EmbeddingAdapterError
+      ? error.providerRequestRoutes
+      : null;
     await settleQuietly(deps, input.userId, started.bindingId, {
       acceptedOutputHash: null,
       errorCode: attemptTimedOut
@@ -1494,13 +1504,16 @@ async function runQueryEmbeddingAttempt(
         : transientHttp
           ? "memory_query_embedding_transient_http_failure"
           : "memory_query_embedding_failed", started.bindingId),
-      externalCallCount: 1,
+      externalCallCount,
+      ...(providerRequestRoutes !== null ? { providerRequestRoutes } : {}),
       ...(transientHttp ? { retryAfterMs: error.retryAfterMs } : {}),
       snapshotHash
     };
   } finally {
     attempt.dispose();
   }
+  const externalCallCount = result.providerRequestCount ?? 1;
+  const providerRequestRoutes = result.providerRequestRoutes ?? null;
   const vector = result.vectors[0];
   const squaredNorm = vector?.reduce((total, value) => total + value * value, 0) ?? 0;
   if (
@@ -1520,7 +1533,8 @@ async function runQueryEmbeddingAttempt(
     });
     return {
       ...unavailable("memory_query_embedding_output_invalid", started.bindingId),
-      externalCallCount: 1,
+      externalCallCount,
+      ...(providerRequestRoutes !== null ? { providerRequestRoutes } : {}),
       snapshotHash
     };
   }
@@ -1539,12 +1553,14 @@ async function runQueryEmbeddingAttempt(
     outputHash
   )) return {
     ...unavailable("memory_execution_policy_drift", started.bindingId),
-    externalCallCount: 1,
+    externalCallCount,
+    ...(providerRequestRoutes !== null ? { providerRequestRoutes } : {}),
     snapshotHash
   };
   return {
     bindingId: started.bindingId,
-    externalCallCount: 1,
+    externalCallCount,
+    ...(providerRequestRoutes !== null ? { providerRequestRoutes } : {}),
     profile: input.profile,
     snapshotHash,
     status: "READY",
@@ -1604,12 +1620,24 @@ export function createMemoryRunUtilityService(
       return result.status === "READY"
         ? {
             bindingId: result.bindingId,
+            ...(result.externalCallCount !== undefined
+              ? { externalCallCount: result.externalCallCount }
+              : {}),
             profile: result.profile,
+            ...(result.providerRequestRoutes !== undefined
+              ? { providerRequestRoutes: result.providerRequestRoutes }
+              : {}),
             status: "READY",
             vector: result.vector
           }
         : {
-            ...unavailable(result.reason, result.bindingId)
+            ...unavailable(result.reason, result.bindingId),
+            ...(result.externalCallCount !== undefined
+              ? { externalCallCount: result.externalCallCount }
+              : {}),
+            ...(result.providerRequestRoutes !== undefined
+              ? { providerRequestRoutes: result.providerRequestRoutes }
+              : {})
           };
     },
 

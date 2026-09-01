@@ -102,6 +102,8 @@ import { normalizeProviderModelConfiguration } from
   "../../lib/server/providers/providerConfiguration";
 import { createPrismaMemoryRebuildRepository } from
   "../../lib/server/memory/rebuild/repository";
+import { parseMemoryRebuildJobFingerprint } from
+  "../../lib/server/memory/rebuild/contract";
 import { createMemoryRebuildService } from
   "../../lib/server/memory/rebuild/service";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
@@ -145,8 +147,9 @@ import {
   decodeLongMemEvalSystemModelId,
   evaluateLongMemEvalComponentMetrics,
   longMemEvalEmbeddingBatchSizeDistribution,
+  longMemEvalDocumentEmbeddingModelMismatch,
   longMemEvalExpectedUtilityModelIds,
-  longMemEvalHybridRebuildFailed,
+  longMemEvalHybridRebuildFailureCode,
   longMemEvalLexicalCutoverHealthy,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
@@ -2387,6 +2390,15 @@ async function waitForHybridIndex(
   timeoutMs: number,
   questionId: string
 ): Promise<Readonly<{ activeChunks: number; hybridEntries: number }>> {
+  const rebuildJob = await prisma.memoryJob.findFirst({
+    select: { idempotencyFingerprint: true },
+    where: { id: rebuildJobId, kind: "REBUILD_INDEX", userId }
+  });
+  const rebuildIdentity = rebuildJob
+    ? parseMemoryRebuildJobFingerprint(rebuildJob.idempotencyFingerprint)
+    : null;
+  if (!rebuildIdentity) throw new Error("longmemeval_hybrid_rebuild_failed");
+  const targetGenerationId = rebuildIdentity.generationId;
   const deadline = Date.now() + timeoutMs;
   let nextProgressAt = 0;
   const rebuildRepository = createPrismaMemoryRebuildRepository(prisma);
@@ -2395,8 +2407,9 @@ async function waitForHybridIndex(
       settings,
       rebuildStatus,
       activeJobs,
-      failedEmbeddingJobs,
       activeChunks,
+      generation,
+      entries,
       documentEmbeddings
     ] =
       await Promise.all([
@@ -2408,55 +2421,71 @@ async function waitForHybridIndex(
         prisma.memoryJob.count({
           where: { state: { in: [...activeJobStates] }, userId }
         }),
-        prisma.memoryJob.count({
-          where: {
-            kind: "EMBED_ITEMS",
-            state: { in: [...unsuccessfulJobStates] },
-            userId
-          }
-        }),
         prisma.memoryRecallChunk.count({ where: { state: "ACTIVE", userId } }),
-        prisma.memoryExecutionBinding.findMany({
-          select: { providerModelId: true, state: true },
-          where: { logicalRole: "MEMORY_DOCUMENT_EMBED", userId }
-        })
-      ]);
-    const rebuildState = rebuildStatus?.state ?? null;
-    if (longMemEvalHybridRebuildFailed(rebuildState)) {
-      throw new Error("longmemeval_hybrid_rebuild_failed");
-    }
-    if (failedEmbeddingJobs > 0) {
-      throw new Error("longmemeval_hybrid_embedding_failed");
-    }
-    const generation = settings?.activeIndexGenerationId
-      ? await prisma.memoryIndexGeneration.findFirst({
-          select: { id: true, indexMode: true, state: true },
-          where: { id: settings.activeIndexGenerationId, userId }
-        })
-      : null;
-    const entries = generation
-      ? await prisma.memorySearchEntry.findMany({
+        prisma.memoryIndexGeneration.findFirst({
+          select: {
+            embeddingProviderModelId: true,
+            id: true,
+            indexMode: true,
+            state: true
+          },
+          where: { id: targetGenerationId, userId }
+        }),
+        prisma.memorySearchEntry.findMany({
           select: { embeddingState: true },
-          where: { indexGenerationId: generation.id, userId }
-        })
-      : [];
-    const successfulEmbeddings = documentEmbeddings.filter(({ state }) =>
-      state === "SUCCEEDED");
-    if (successfulEmbeddings.some(({ providerModelId }) =>
-      providerModelId !== qwenModelId)) {
+          where: { indexGenerationId: targetGenerationId, userId }
+        }),
+        prisma.$queryRaw<Array<{ providerModelId: string | null }>>(Prisma.sql`
+          SELECT execution."providerModelId"
+          FROM "MemoryExecutionBinding" AS execution
+          INNER JOIN "MemoryJob" AS job
+            ON job."userId" = execution."userId"
+           AND job."id" = execution."memoryJobId"
+          WHERE execution."userId" = ${userId}
+            AND execution."logicalRole" = 'MEMORY_DOCUMENT_EMBED'
+            AND execution."state" = 'SUCCEEDED'::"MemoryExecutionState"
+            AND job."kind" = 'EMBED_ITEMS'::"MemoryJobKind"
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM "MemorySearchEntry" AS entry
+                WHERE entry."userId" = job."userId"
+                  AND entry."indexGenerationId" = ${targetGenerationId}
+                  AND job."idempotencyFingerprint" LIKE
+                    ('memory-item-embed-v1:' || entry."id" || ':%')
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM "MemoryEmbeddingBatchItem" AS child
+                WHERE child."userId" = job."userId"
+                  AND child."memoryJobId" = job."id"
+                  AND child."indexGenerationId" = ${targetGenerationId}
+              )
+            )
+        `)
+      ]);
+    const rebuildFailureCode = longMemEvalHybridRebuildFailureCode(rebuildStatus);
+    if (rebuildFailureCode) throw new Error(rebuildFailureCode);
+    const rebuildState = rebuildStatus?.state ?? null;
+    if ((generation && generation.embeddingProviderModelId !== qwenModelId) ||
+      longMemEvalDocumentEmbeddingModelMismatch(
+        documentEmbeddings.map(({ providerModelId }) => providerModelId),
+        qwenModelId
+      )) {
       throw new Error("longmemeval_embedding_model_mismatch");
     }
-    if (generation?.state === "ACTIVE" && generation.indexMode === "HYBRID" &&
+    if (settings?.activeIndexGenerationId === targetGenerationId &&
+      generation?.state === "ACTIVE" && generation.indexMode === "HYBRID" &&
       rebuildState === "SUCCEEDED" && activeJobs === 0 &&
       activeChunks > 0 && entries.length > 0 &&
       entries.every(({ embeddingState }) => embeddingState === "READY") &&
-      successfulEmbeddings.length > 0) {
+      documentEmbeddings.length > 0) {
       return Object.freeze({ activeChunks, hybridEntries: entries.length });
     }
     if (Date.now() >= nextProgressAt) {
       emit("hybrid_index_progress", {
         activeJobs,
-        embeddingExecutions: successfulEmbeddings.length,
+        embeddingExecutions: documentEmbeddings.length,
         indexMode: generation?.indexMode ?? null,
         questionId,
         readyEntries: entries.filter(({ embeddingState }) =>

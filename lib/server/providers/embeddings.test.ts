@@ -164,9 +164,13 @@ describe("OpenAI-compatible embeddings", () => {
       secret: "openrouter-key"
     });
 
-    await adapter.embed({ mode: "query", texts: ["one"] });
+    const result = await adapter.embed({ mode: "query", texts: ["one"] });
 
     expect(fetchFn).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      providerRequestCount: 1,
+      providerRequestRoutes: ["nebius"]
+    });
     const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
     expect(body.provider).toEqual({
       allow_fallbacks: false,
@@ -220,7 +224,9 @@ describe("OpenAI-compatible embeddings", () => {
       );
 
       await expect(pending).resolves.toMatchObject({
-        model: "qwen/qwen3-embedding-8b"
+        model: "qwen/qwen3-embedding-8b",
+        providerRequestCount: 2,
+        providerRequestRoutes: ["nebius", "deepinfra"]
       });
       expect(fetchFn).toHaveBeenCalledTimes(2);
       expect(bodies.map((body) => body.provider)).toEqual([
@@ -238,6 +244,54 @@ describe("OpenAI-compatible embeddings", () => {
         }
       ]);
       expect(primarySignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records both pinned routes when an interactive hedge is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("missing_signal");
+        return new Promise<Response>((_resolve, reject) => {
+          const rejectFromSignal = () => reject(signal.reason);
+          if (signal.aborted) rejectFromSignal();
+          else signal.addEventListener("abort", rejectFromSignal, { once: true });
+        });
+      });
+      const adapter = createOpenAICompatibleEmbeddingAdapter({
+        connection: openRouterConnection,
+        model: {
+          ...embeddingModel(),
+          openRouterRouting: {
+            mode: "only_selected",
+            providers: ["nebius", "deepinfra"]
+          }
+        },
+        network: { fetchFn, retry: { maxAttempts: 1 } },
+        secret: "openrouter-key"
+      });
+      const pending = adapter.embed({
+        latencyClass: "interactive",
+        mode: "document",
+        signal: controller.signal,
+        texts: ["pre-instructed query"]
+      });
+
+      await vi.advanceTimersByTimeAsync(
+        OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS
+      );
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+      controller.abort({ code: "test_query_embedding_timeout" });
+
+      await expect(pending).rejects.toMatchObject({
+        code: "embedding_provider_request_failed",
+        providerRequestCount: 2,
+        providerRequestRoutes: ["nebius", "deepinfra"]
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -424,6 +478,8 @@ describe("OpenAI-compatible embeddings", () => {
       .rejects.toMatchObject({
         code: "embedding_provider_http_error",
         httpStatus: 503,
+        providerRequestCount: 4,
+        providerRequestRoutes: [null, null, null, null],
         retryAfterMs: 1_000
       });
     expect(fetchFn).toHaveBeenCalledTimes(4);

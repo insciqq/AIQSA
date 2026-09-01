@@ -12,7 +12,9 @@ import {
   evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
   longMemEvalEmbeddingBatchSizeDistribution,
+  longMemEvalDocumentEmbeddingModelMismatch,
   longMemEvalExpectedUtilityModelIds,
+  longMemEvalHybridRebuildFailureCode,
   longMemEvalHybridRebuildFailed,
   longMemEvalLexicalCutoverHealthy,
   longMemEvalProfileManifest,
@@ -55,6 +57,32 @@ describe("LongMemEval adapter contract", () => {
     expect(longMemEvalHybridRebuildFailed("CANCELLED")).toBe(true);
     expect(longMemEvalHybridRebuildFailed("CATCHING_UP")).toBe(false);
     expect(longMemEvalHybridRebuildFailed("SUCCEEDED")).toBe(false);
+  });
+
+  it("reports failures from the generation-scoped rebuild status", () => {
+    expect(longMemEvalHybridRebuildFailureCode(null))
+      .toBe("longmemeval_hybrid_rebuild_failed");
+    expect(longMemEvalHybridRebuildFailureCode({
+      errorCode: "memory_embedding_unavailable",
+      state: "FAILED"
+    })).toBe("longmemeval_hybrid_embedding_failed");
+    expect(longMemEvalHybridRebuildFailureCode({
+      errorCode: "memory_action_failed",
+      state: "FAILED"
+    })).toBe("longmemeval_hybrid_rebuild_failed");
+    expect(longMemEvalHybridRebuildFailureCode({
+      errorCode: null,
+      state: "SUCCEEDED"
+    })).toBeNull();
+  });
+
+  it("accepts document embedding evidence only from the expected deployment", () => {
+    expect(longMemEvalDocumentEmbeddingModelMismatch([], "qwen")).toBe(false);
+    expect(longMemEvalDocumentEmbeddingModelMismatch(["qwen"], "qwen"))
+      .toBe(false);
+    expect(longMemEvalDocumentEmbeddingModelMismatch([null], "qwen")).toBe(true);
+    expect(longMemEvalDocumentEmbeddingModelMismatch(["legacy"], "qwen"))
+      .toBe(true);
   });
 
   it("requires USED Memory outcomes independently of oracle scoring", () => {

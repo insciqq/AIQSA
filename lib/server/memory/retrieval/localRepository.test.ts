@@ -20,6 +20,7 @@ import {
   classifyMemoryLexicalCanonicalRejections,
   memorySemanticLexicalTerms,
   projectMemoryAggregationDigestRepresentative,
+  rankMemoryTargetedSessionCompletionRoundIds,
   selectMemoryAggregationSessionRepresentatives,
   selectMemoryTargetedSessionRepresentatives,
   selectMemoryIntraChatRawCandidates,
@@ -490,11 +491,104 @@ describe("local Memory retrieval repository", () => {
     expect(completionSql).toContain('FROM "MemoryRecallRoundSegmentMessage"');
     expect(completionSql).toContain('JOIN "MemoryRecallRoundMessage"');
     expect(completionSql).toContain('segment_message."role" = \'user\'');
+    expect(completionSql).toContain(
+      'selected_seed_items("itemType", "itemId", "sourceChatId")'
+    );
+    expect(completionSql).toContain('FROM selected_seed_messages AS seed_message');
+    expect(completionSql).toContain(
+      'candidate_message."messageId" = seed_message."messageId"'
+    );
+    expect(completionSql).toContain('query_ranked_rounds."queryRank" NULLS LAST');
     expect(completionSql).toContain('WHERE "sourceOrdinal" <=');
     const expansionSql = mocked.laneSql.at(-1)!;
     expect(expansionSql).toContain('segment_message."segmentStartOffset"');
     expect(expansionSql).toContain('round_message."sourceMessageContentHash"');
     expect(expansionSql).toContain('segment_message."role" = \'user\'');
+    expect(expansionSql).toContain('provenance."sourceMessageIds"');
+    expect(expansionSql).toContain(
+      'array_agg(round_message."messageId" ORDER BY round_message."ordinal")'
+    );
+  });
+
+  it("orders targeted user completion by fused query candidates before chronology", async () => {
+    const plan = planMemoryRetrieval({
+      currentUserText: "What should I prepare for the visit?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const completionRow = (
+      itemId: string,
+      roundOrdinal: number,
+      selectionOrdinal: number,
+      root: string
+    ) => ({
+      evidenceRootHash: root.repeat(64),
+      itemId,
+      languageCode: "en",
+      matchedSegmentId: `segment-${itemId}`,
+      matchedSegmentPosition: "SINGLE",
+      occurredFrom: new Date(now.getTime() + roundOrdinal * 60_000),
+      occurredTo: new Date(now.getTime() + (roundOrdinal + 1) * 60_000),
+      parentChunkId: `parent-${itemId}`,
+      roundOrdinal,
+      safetyClass: "NORMAL" as const,
+      selectionOrdinal,
+      sourceAssistantId: null,
+      sourceChatId: "chat-selected",
+      sourceFolderId: null
+    });
+    const mocked = mockClient(snapshotRow(), {
+      completionRows: [
+        completionRow("round-early", 0, 2, "a"),
+        completionRow("round-query", 4, 1, "b")
+      ]
+    });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+    const selected = fuseMemoryRetrievalCandidates(plan, [{
+      candidates: [floorCandidate(
+        "selected",
+        "HISTORY_RECALL_VECTOR",
+        "HISTORY",
+        1
+      )],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+    const queryCandidate = (itemId: string): MemoryRankedCandidate => ({
+      ...selected[0]!,
+      itemId,
+      itemType: "RECALL_ROUND",
+      metadata: { ...selected[0]!.metadata, sourceChatId: "chat-selected" }
+    });
+
+    const completion = await repository.completeSessionEvidence(
+      snapshot,
+      plan,
+      selected,
+      {
+        queryCandidates: [
+          queryCandidate("round-query"),
+          queryCandidate("round-early")
+        ]
+      }
+    );
+
+    expect(completion.candidates.map(({ itemId }) => itemId)).toEqual([
+      "round-query",
+      "round-early"
+    ]);
+    const completionSql = mocked.laneSql.find((query) =>
+      query.includes("ranked_user_rounds"));
+    expect(completionSql).toContain('query_ranked_rounds("itemId", "queryRank")');
+    expect(completionSql).toContain('query_ranked_rounds."queryRank" NULLS LAST');
   });
 
   it("accepts complementary fact baseline and aggregation-history plans", async () => {
@@ -738,6 +832,30 @@ describe("local Memory retrieval repository", () => {
     expect(selected.map(({ itemId }) => itemId)).toEqual(
       Array.from({ length: 8 }, (_, index) => `item-${index}`)
     );
+  });
+
+  it("fuses selected-session dense hits without projection multiplicity", () => {
+    const round = (itemId: string, sourceChatId = "source-a") => ({
+      ...sessionCandidate(itemId, sourceChatId, 0.5, {
+        HISTORY_RECALL_VECTOR: 1
+      }),
+      itemType: "RECALL_ROUND" as const
+    });
+
+    expect(rankMemoryTargetedSessionCompletionRoundIds({
+      queryCandidates: [
+        round("round-a"),
+        round("round-b"),
+        round("round-foreign", "source-foreign")
+      ],
+      selectedSourceChatIds: ["source-a"],
+      vectorHits: [
+        { itemId: "round-b", itemType: "RECALL_ROUND_SEGMENT" },
+        { itemId: "round-c", itemType: "RECALL_ROUND_SEGMENT" },
+        { itemId: "round-c", itemType: "RECALL_ROUND_SEGMENT" },
+        { itemId: "chunk-ignored", itemType: "RECALL_CHUNK" }
+      ]
+    })).toEqual(["round-b", "round-a", "round-c"]);
   });
 
   it("pushes selected aggregation sessions into digest authority reads", async () => {
@@ -1637,6 +1755,7 @@ describe("local Memory retrieval repository", () => {
     expect(expansionSql).toContain("SELECT 1 FROM LATERAL (");
     expect(expansionSql).toContain('round."rawSafeText"');
     expect(expansionSql).toContain('round."parentChunkId" AS "supportingItemId"');
+    expect(expansionSql).toContain('provenance."sourceMessageIds"');
     expect(expansionSql).not.toContain('round."contextualNarrativeText" AS "safeText"');
   });
 

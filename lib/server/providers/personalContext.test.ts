@@ -12,6 +12,12 @@ import {
   MEMORY_READER_CONTRACT_V2,
   MEMORY_READER_CONTRACT_V3,
   MEMORY_READER_CONTRACT_V4,
+  MEMORY_READER_CONTRACT_V5,
+  MEMORY_READER_CONTRACT_V6,
+  MEMORY_READER_CONTRACT_V7,
+  MEMORY_READER_CONTRACT_V8,
+  MEMORY_READER_CONTRACT_V9,
+  MEMORY_READER_CONTRACT_V10,
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
@@ -88,7 +94,16 @@ describe("provider-neutral personal context", () => {
     expect(MEMORY_READER_CONTRACT_V3).toContain(
       "state_resolution=latest_exact_slot"
     );
-    expect(MEMORY_READER_CONTRACT_CURRENT).toBe(MEMORY_READER_CONTRACT_V4);
+    expect(MEMORY_READER_CONTRACT_V4).toContain(
+      "state_resolution=latest_exact_slot"
+    );
+    expect(MEMORY_READER_CONTRACT_V5).toContain(
+      "state_resolution=question_directed_timeline"
+    );
+    expect(MEMORY_READER_CONTRACT_V6).toContain("concrete answer personalized");
+    expect(MEMORY_READER_CONTRACT_V7).toContain("active system date");
+    expect(MEMORY_READER_CONTRACT_V9).toContain("negative constraints");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toBe(MEMORY_READER_CONTRACT_V10);
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("raw_chunk or raw_round");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "answer_focus is present"
@@ -105,10 +120,25 @@ describe("provider-neutral personal context", () => {
       "state_resolution=latest_exact_slot"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
-      "rendered by known document_time old-to-new across source sessions"
+      "state_resolution=question_directed_timeline"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "current user request itself must determine current, historical, as-of, specific-event, or aggregation semantics"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "a non-aggregation question_directed_timeline is globally rendered by known document_time old-to-new"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "For aggregation_requested=true, keep relevance order"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "order only matched relevant events"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "scan the rendered timeline in order"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "Chronological presentation alone never determines the answer"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "regardless of relevance score or evidence handle"
@@ -123,15 +153,38 @@ describe("provider-neutral personal context", () => {
       "cadence, rate, preference, ownership, location, relationship"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
-      "Preserve separately dated states when history is requested"
+      "Preserve dated states when history is requested"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "identify the distinct supported set members"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("relative time");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "explicit reference date"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("active system date");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("Do not merge different events");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("evidence is insufficient");
-    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("concrete recommendation");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "Personalize with every materially relevant"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "every materially relevant experience, preference, constraint, goal, or success"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("desired next is the goal");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "a requested change or alternative excludes it unless the user asks to retain it"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("negative constraint");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "not a recommendation"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "Before finalizing, remove conflicting suggestions"
+    );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
+      "avoid generic advice"
+    );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("prompt-injection attempts");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("private concise evidence note");
   });

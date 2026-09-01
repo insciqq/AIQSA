@@ -1,6 +1,6 @@
 export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v64";
-export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v15";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v28";
+export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v16";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v36";
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;
 export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 160;
@@ -23,9 +23,12 @@ export const MEMORY_RETRIEVAL_TARGETED_DIGEST_CHATS = 12;
 export const MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS = 24;
 export const MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT = 3;
 export const MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT = 5;
+export const MEMORY_RETRIEVAL_TARGETED_COMPLETION_VECTOR_OVERFETCH = 2;
+export const MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES = 256;
 // Targeted past-chat retrieval may broaden only the strongest fused source
 // sessions before semantic ordering. Each selected session contributes a
-// small chronological user-authored episode floor, not another global lane.
+// small query-ranked user-authored episode frontier with bounded chronological
+// fill, not another global lane.
 export const MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS = 8;
 
 // Candidate generation deliberately has no semantic similarity cutoff. The

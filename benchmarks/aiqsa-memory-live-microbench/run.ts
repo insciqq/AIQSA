@@ -956,17 +956,15 @@ async function waitForHybridIndex(
 ): Promise<Readonly<{ activeChunks: number; hybridEntries: number }>> {
   const deadline = Date.now() + timeoutMs;
   let nextProgressAt = 0;
+  const rebuildRepository = createPrismaMemoryRebuildRepository(prisma);
   while (Date.now() < deadline) {
-    const [settings, rebuildJob, jobs, activeChunks, documentEmbeddings] =
+    const [settings, rebuildStatus, jobs, activeChunks, documentEmbeddings] =
       await Promise.all([
         prisma.userMemorySettings.findUnique({
           select: { activeIndexGenerationId: true },
           where: { userId }
         }),
-        prisma.memoryJob.findUnique({
-          select: { state: true },
-          where: { id: rebuildJobId }
-        }),
+        rebuildRepository.status(userId, rebuildJobId),
         prisma.memoryJob.findMany({
           select: { errorCode: true, kind: true, state: true },
           where: { userId }
@@ -977,8 +975,9 @@ async function waitForHybridIndex(
           where: { logicalRole: "MEMORY_DOCUMENT_EMBED", userId }
         })
     ]);
-    if (!rebuildJob || unsuccessfulJobStates.has(rebuildJob.state) ||
-      jobs.some(unsuccessfulJob)) {
+    if (!rebuildStatus || ["CANCELLED", "FAILED", "STALE"].includes(
+      rebuildStatus.state
+    )) {
       throw new Error("aiqsa_memory_live_hybrid_rebuild_failed");
     }
     const generation = settings?.activeIndexGenerationId
@@ -1001,8 +1000,8 @@ async function waitForHybridIndex(
       throw new Error("aiqsa_memory_live_embedding_model_mismatch");
     }
     if (generation?.state === "ACTIVE" && generation.indexMode === "HYBRID" &&
-      rebuildJob.state === "SUCCEEDED" && activeJobs === 0 && activeChunks > 0 &&
-      entries.length > 0 &&
+      rebuildStatus.state === "SUCCEEDED" && activeJobs === 0 &&
+      activeChunks > 0 && entries.length > 0 &&
       entries.every(({ embeddingState }) => embeddingState === "READY") &&
       successfulEmbeddings.length > 0) {
       return Object.freeze({ activeChunks, hybridEntries: entries.length });

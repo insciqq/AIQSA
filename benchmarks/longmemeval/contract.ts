@@ -42,6 +42,25 @@ export function longMemEvalHybridRebuildFailed(
     state === "STALE";
 }
 
+export function longMemEvalHybridRebuildFailureCode(
+  status: Pick<MemoryRebuildStatus, "errorCode" | "state"> | null
+): "longmemeval_hybrid_embedding_failed" |
+  "longmemeval_hybrid_rebuild_failed" | null {
+  if (!longMemEvalHybridRebuildFailed(status?.state ?? null)) return null;
+  return status?.state === "FAILED" &&
+      status.errorCode === "memory_embedding_unavailable"
+    ? "longmemeval_hybrid_embedding_failed"
+    : "longmemeval_hybrid_rebuild_failed";
+}
+
+export function longMemEvalDocumentEmbeddingModelMismatch(
+  providerModelIds: readonly (string | null)[],
+  expectedProviderModelId: string
+): boolean {
+  return providerModelIds.some((providerModelId) =>
+    providerModelId !== expectedProviderModelId);
+}
+
 export type LongMemEvalProfileManifest = Readonly<{
   automaticFactLearning: boolean;
   id: LongMemEvalProfile;

@@ -19,11 +19,13 @@ import {
   MEMORY_RETRIEVAL_LANE_WEIGHTS,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
+  MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES,
   MEMORY_LEXICAL_QUERY_MAX_TERMS,
   MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_RRF_K,
   MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
+  MEMORY_RETRIEVAL_TARGETED_COMPLETION_VECTOR_OVERFETCH,
   MEMORY_RETRIEVAL_TARGETED_DIGEST_CHATS,
   MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT,
   MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS,
@@ -90,6 +92,7 @@ import {
 import {
   createPrismaMemoryVectorRepository,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
+  type MemoryVectorHit,
   type MemoryVectorLaneEvidence,
   type MemoryVectorProfile
 } from "./vector";
@@ -360,6 +363,7 @@ type SessionCompletionRow = Readonly<{
   parentChunkId: string;
   roundOrdinal: number;
   safetyClass: "NORMAL" | "SENSITIVE";
+  selectionOrdinal?: number;
   sourceAssistantId: string | null;
   sourceChatId: string;
   sourceFolderId: string | null;
@@ -378,6 +382,7 @@ type ExpandedRow = Readonly<{
   retrievalHint: string | null;
   safeText: string;
   sourceChatId: string | null;
+  sourceMessageIds?: string[];
   patternSupportingEvidence: Prisma.JsonValue;
   supportingEvidence: Prisma.JsonValue;
   supportingItemId: string | null;
@@ -712,6 +717,7 @@ function decodedPatternSupportingEvidence(
 }
 
 function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
+  const sourceMessageIds = row.sourceMessageIds;
   if (
     !validToken(row.itemId) ||
     !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND", "TOOL_EVENT"]
@@ -723,6 +729,12 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
     typeof row.safeText !== "string" || !row.safeText.trim() || row.safeText.length > 4_000 ||
     row.safeText.includes("\u0000") ||
     (row.sourceChatId !== null && !validToken(row.sourceChatId)) ||
+    (sourceMessageIds !== undefined && (
+      !Array.isArray(sourceMessageIds) ||
+      sourceMessageIds.length > MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES ||
+      sourceMessageIds.some((messageId) => !validToken(messageId)) ||
+      new Set(sourceMessageIds).size !== sourceMessageIds.length
+    )) ||
     (row.supportingItemId !== null && !validToken(row.supportingItemId)) ||
     !validDate(row.occurredFrom) || !validDate(row.occurredTo)
   ) throw new Error("memory_expansion_result_invalid");
@@ -730,13 +742,20 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   if (!safeText) return null;
   const contextual = decodedContextualEvidence(row);
   const patternSupportingEvidence = decodedPatternSupportingEvidence(row);
-  const { patternSupportingEvidence: _rawPatternSupportingEvidence, ...projection } = row;
+  const {
+    patternSupportingEvidence: _rawPatternSupportingEvidence,
+    sourceMessageIds: _rawSourceMessageIds,
+    ...projection
+  } = row;
   return {
     ...projection,
     itemType: row.itemType as MemoryExpandedCandidate["itemType"],
     ...(patternSupportingEvidence.length > 0 ? { patternSupportingEvidence } : {}),
     retrievalHint: contextual.retrievalHint,
     safeText,
+    ...(sourceMessageIds !== undefined
+      ? { sourceMessageIds: Object.freeze([...sourceMessageIds]) }
+      : {}),
     supportingEvidence: contextual.supportingEvidence
   };
 }
@@ -4833,9 +4852,18 @@ function chunkExpansionSql(
       chunk."chatId" AS "sourceChatId", NULL::text AS "supportingItemId",
       chunk."occurredFrom", chunk."occurredTo", NULL::text AS "retrievalHint",
       '[]'::jsonb AS "patternSupportingEvidence",
-      '[]'::jsonb AS "supportingEvidence"
+      '[]'::jsonb AS "supportingEvidence", provenance."sourceMessageIds"
     FROM eligible INNER JOIN "MemoryRecallChunk" AS chunk
       ON chunk."userId" = ${snapshot.userId} AND chunk."id" = eligible."itemId"
+    INNER JOIN LATERAL (
+      SELECT array_agg(chunk_message."messageId" ORDER BY chunk_message."ordinal")
+        AS "sourceMessageIds"
+      FROM "MemoryRecallChunkMessage" AS chunk_message
+      WHERE chunk_message."userId" = chunk."userId"
+        AND chunk_message."chatId" = chunk."chatId"
+        AND chunk_message."chunkId" = chunk."id"
+      HAVING COUNT(*) BETWEEN 1 AND ${MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES}
+    ) AS provenance ON TRUE
     WHERE eligible."itemId" IN (${valuesSql(ids)}) ORDER BY eligible."itemId"
   `;
 }
@@ -4902,9 +4930,18 @@ function rawRoundExpansionSql(
       round."chatId" AS "sourceChatId", round."parentChunkId" AS "supportingItemId",
       round."occurredFrom", round."occurredTo", NULL::text AS "retrievalHint",
       '[]'::jsonb AS "patternSupportingEvidence",
-      '[]'::jsonb AS "supportingEvidence"
+      '[]'::jsonb AS "supportingEvidence", provenance."sourceMessageIds"
     FROM eligible INNER JOIN "MemoryRecallRound" AS round
       ON round."userId" = ${snapshot.userId} AND round."id" = eligible."itemId"
+    INNER JOIN LATERAL (
+      SELECT array_agg(round_message."messageId" ORDER BY round_message."ordinal")
+        AS "sourceMessageIds"
+      FROM "MemoryRecallRoundMessage" AS round_message
+      WHERE round_message."userId" = round."userId"
+        AND round_message."chatId" = round."chatId"
+        AND round_message."roundId" = round."id"
+      HAVING COUNT(*) BETWEEN 1 AND ${MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES}
+    ) AS provenance ON TRUE
     WHERE eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
       AND eligible."itemId" IN (${valuesSql(ids)})
     ORDER BY eligible."itemId", eligible."matchedSegmentId" NULLS FIRST
@@ -4987,7 +5024,7 @@ function segmentRoundExpansionSql(
       CASE WHEN segment."contextualKeyState" = 'GENERATED'
           AND dependencies."allValid"
         THEN dependencies."supportingEvidence" ELSE '[]'::jsonb
-      END AS "supportingEvidence"${userSpanColumn}
+      END AS "supportingEvidence", provenance."sourceMessageIds"${userSpanColumn}
     FROM eligible
     INNER JOIN selected
       ON selected."itemId" = eligible."itemId"
@@ -5002,6 +5039,15 @@ function segmentRoundExpansionSql(
       AND current_round."supportingRoundIds" = segment."supportingRoundIds"
       AND (segment."contextualKeyState" <> 'GENERATED'
         OR current_round."contextualKeyState" = 'GENERATED')
+    INNER JOIN LATERAL (
+      SELECT array_agg(round_message."messageId" ORDER BY round_message."ordinal")
+        AS "sourceMessageIds"
+      FROM "MemoryRecallRoundMessage" AS round_message
+      WHERE round_message."userId" = current_round."userId"
+        AND round_message."chatId" = current_round."chatId"
+        AND round_message."roundId" = current_round."id"
+      HAVING COUNT(*) BETWEEN 1 AND ${MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES}
+    ) AS provenance ON TRUE
     ${userSpanJoin}
     LEFT JOIN LATERAL (
       SELECT
@@ -5193,9 +5239,9 @@ export function selectMemoryAggregationSessionRepresentatives(
 }
 
 /**
- * Selects a small source-session frontier after semantic ordering. The later
+ * Selects a small source-session frontier after local fusion. The bounded
  * completion query may add exact user-authored episodes from those sessions
- * but cannot introduce an unrelated source.
+ * to the one semantic-rerank batch but cannot introduce an unrelated source.
  */
 export function selectMemoryTargetedSessionRepresentatives(
   candidates: readonly MemoryRankedCandidate[]
@@ -5204,6 +5250,58 @@ export function selectMemoryTargetedSessionRepresentatives(
     candidates,
     MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS
   );
+}
+
+/**
+ * Fuses the already bounded global/local RRF frontier with a selected-session
+ * dense overfetch. One round receives at most one vote from either input, so a
+ * segmented episode cannot promote itself by projection multiplicity.
+ */
+export function rankMemoryTargetedSessionCompletionRoundIds(input: Readonly<{
+  queryCandidates: readonly MemoryRankedCandidate[];
+  selectedSourceChatIds: readonly string[];
+  vectorHits: readonly Pick<MemoryVectorHit, "itemId" | "itemType">[];
+}>): readonly string[] {
+  if (
+    input.selectedSourceChatIds.length < 1 ||
+    input.selectedSourceChatIds.length >
+      MEMORY_RETRIEVAL_TARGETED_SESSION_EXPANSION_SOURCE_CHATS ||
+    new Set(input.selectedSourceChatIds).size !== input.selectedSourceChatIds.length ||
+    input.selectedSourceChatIds.some((sourceChatId) => !validToken(sourceChatId))
+  ) throw new Error("memory_session_completion_query_frontier_invalid");
+  const selectedSources = new Set(input.selectedSourceChatIds);
+  type Aggregate = { bestRank: number; score: number };
+  const scores = new Map<string, Aggregate>();
+  const addLane = (itemIds: readonly string[]): void => {
+    itemIds.forEach((itemId, index) => {
+      const previous = scores.get(itemId);
+      scores.set(itemId, {
+        bestRank: Math.min(previous?.bestRank ?? Number.MAX_SAFE_INTEGER, index),
+        score: (previous?.score ?? 0) + 1 / (MEMORY_RETRIEVAL_RRF_K + index + 1)
+      });
+    });
+  };
+  const seenQueryRounds = new Set<string>();
+  addLane(input.queryCandidates.flatMap((candidate) => {
+    const sourceChatId = candidate.metadata.sourceChatId;
+    if (candidate.itemType !== "RECALL_ROUND" || !sourceChatId ||
+      !selectedSources.has(sourceChatId) || seenQueryRounds.has(candidate.itemId)) return [];
+    seenQueryRounds.add(candidate.itemId);
+    return [candidate.itemId];
+  }));
+  const seenVectorRounds = new Set<string>();
+  addLane(input.vectorHits.flatMap((hit) => {
+    if (hit.itemType !== "RECALL_ROUND_SEGMENT" || !validToken(hit.itemId) ||
+      seenVectorRounds.has(hit.itemId)) return [];
+    seenVectorRounds.add(hit.itemId);
+    return [hit.itemId];
+  }));
+  return Object.freeze([...scores.entries()]
+    .sort((left, right) =>
+      right[1].score - left[1].score ||
+      left[1].bestRank - right[1].bestRank ||
+      left[0].localeCompare(right[0]))
+    .map(([itemId]) => itemId));
 }
 
 function aggregationDigestCandidatesSql(
@@ -5284,7 +5382,8 @@ function aggregationSessionRoundCompletionSql(
     SELECT "itemId", "parentChunkId", "sourceChatId", "sourceFolderId",
       "sourceAssistantId", "evidenceRootHash", "languageCode",
       NULL::text AS "matchedSegmentId", NULL::text AS "matchedSegmentPosition",
-      "occurredFrom", "occurredTo", "roundOrdinal", "safetyClass"
+      "occurredFrom", "occurredTo", "roundOrdinal", "safetyClass",
+      "sourceOrdinal"::integer AS "selectionOrdinal"
     FROM ranked_rounds
     WHERE "sourceOrdinal" <= ${MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT}
     ORDER BY "sourceChatId", "roundOrdinal", "itemId"
@@ -5292,19 +5391,60 @@ function aggregationSessionRoundCompletionSql(
 }
 
 /**
- * Expands only already selected targeted source sessions into a bounded
- * chronological floor of exact user-authored episodes. Segment/message joins
- * are rechecked against the canonical round source map so role metadata cannot
- * turn assistant text into user testimony. The later expansion query repeats
- * the full authority rejoin before any text reaches the reranker or reader.
+ * Expands only locally fused targeted source sessions into a bounded candidate
+ * floor of exact user-authored episodes. Segment/message joins are rechecked
+ * against the canonical round source map so role metadata cannot turn
+ * assistant text into user testimony. A completed round must also be
+ * provenance-novel: rounds sharing a canonical source message with the
+ * selected chunk/round seed are another projection of that seed, not linked
+ * evidence, and cannot consume the bounded completion floor. Existing fused
+ * raw-round order fills the frontier first and chronology only fills unused
+ * bounded slots; the one semantic reranker then query-orders the episodes
+ * before packing. The later expansion query repeats the full authority rejoin
+ * before any text reaches the reader.
  */
 function targetedSessionUserCompletionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  sourceChatIds: readonly string[]
+  sourceChatIds: readonly string[],
+  queryRankedRoundIds: readonly string[],
+  selectedSeeds: readonly Readonly<{
+    itemId: string;
+    itemType: MemoryRankedCandidate["itemType"];
+    sourceChatId: string;
+  }>[]
 ): Prisma.Sql {
+  const queryRankedRoundValues = queryRankedRoundIds.length > 0
+    ? Prisma.sql`VALUES ${Prisma.join(queryRankedRoundIds.map((itemId, index) =>
+        Prisma.sql`(${itemId}, ${index + 1})`))}`
+    : Prisma.sql`SELECT NULL::text, NULL::integer WHERE FALSE`;
   return Prisma.sql`
-    WITH ${boundedMemorySearchEntryCandidatesSql(
+    WITH query_ranked_rounds("itemId", "queryRank") AS MATERIALIZED (
+      ${queryRankedRoundValues}
+    ),
+    selected_seed_items("itemType", "itemId", "sourceChatId") AS MATERIALIZED (
+      VALUES ${Prisma.join(selectedSeeds.map((seed) => Prisma.sql`(
+        ${seed.itemType}::text, ${seed.itemId}::text, ${seed.sourceChatId}::text
+      )`))}
+    ),
+    selected_seed_messages AS MATERIALIZED (
+      SELECT seed."sourceChatId", round_message."messageId"
+      FROM selected_seed_items AS seed
+      INNER JOIN "MemoryRecallRoundMessage" AS round_message
+        ON seed."itemType" = 'RECALL_ROUND'
+        AND round_message."userId" = ${snapshot.userId}
+        AND round_message."chatId" = seed."sourceChatId"
+        AND round_message."roundId" = seed."itemId"
+      UNION
+      SELECT seed."sourceChatId", chunk_message."messageId"
+      FROM selected_seed_items AS seed
+      INNER JOIN "MemoryRecallChunkMessage" AS chunk_message
+        ON seed."itemType" = 'RECALL_CHUNK'
+        AND chunk_message."userId" = ${snapshot.userId}
+        AND chunk_message."chatId" = seed."sourceChatId"
+        AND chunk_message."chunkId" = seed."itemId"
+    ),
+    ${boundedMemorySearchEntryCandidatesSql(
       snapshot,
       Prisma.sql`entry."itemType" =
           'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
@@ -5346,6 +5486,16 @@ function targetedSessionUserCompletionSql(
         AND memory_round."id" = segment."roundId"
         AND memory_round."chatId" = eligible."sourceChatId"
       WHERE eligible."sourceChatId" IN (${valuesSql(sourceChatIds)})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM selected_seed_messages AS seed_message
+          INNER JOIN "MemoryRecallRoundMessage" AS candidate_message
+            ON candidate_message."userId" = ${snapshot.userId}
+            AND candidate_message."chatId" = memory_round."chatId"
+            AND candidate_message."roundId" = memory_round."id"
+            AND candidate_message."messageId" = seed_message."messageId"
+          WHERE seed_message."sourceChatId" = memory_round."chatId"
+        )
         AND EXISTS (
           SELECT 1
           FROM "MemoryRecallRoundSegmentMessage" AS segment_message
@@ -5378,21 +5528,25 @@ function targetedSessionUserCompletionSql(
       ORDER BY eligible."itemId", segment."segmentOrdinal", segment."id"
     ),
     ranked_user_rounds AS (
-      SELECT user_round_segments.*,
+      SELECT user_round_segments.*, query_ranked_rounds."queryRank",
         ROW_NUMBER() OVER (
           PARTITION BY user_round_segments."sourceChatId"
-          ORDER BY user_round_segments."roundOrdinal",
+          ORDER BY query_ranked_rounds."queryRank" NULLS LAST,
+            user_round_segments."roundOrdinal",
             user_round_segments."itemId"
         ) AS "sourceOrdinal"
       FROM user_round_segments
+      LEFT JOIN query_ranked_rounds
+        ON query_ranked_rounds."itemId" = user_round_segments."itemId"
     )
     SELECT "itemId", "parentChunkId", "sourceChatId", "sourceFolderId",
       "sourceAssistantId", "evidenceRootHash", "languageCode",
       "matchedSegmentId", "matchedSegmentPosition", "occurredFrom",
-      "occurredTo", "roundOrdinal", "safetyClass"
+      "occurredTo", "roundOrdinal", "safetyClass",
+      "sourceOrdinal"::integer AS "selectionOrdinal"
     FROM ranked_user_rounds
     WHERE "sourceOrdinal" <= ${MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT}
-    ORDER BY "sourceChatId", "roundOrdinal", "itemId"
+    ORDER BY "sourceChatId", "sourceOrdinal", "roundOrdinal", "itemId"
   `;
 }
 
@@ -5427,6 +5581,7 @@ function decodeMemorySessionEvidenceCompletion(
   const decoded: Array<Readonly<{
     candidate: MemoryRankedCandidate;
     roundOrdinal: number;
+    selectionOrdinal: number;
   }>> = [];
   for (const row of rows) {
     const selected = selectedBySource.get(row.sourceChatId);
@@ -5442,6 +5597,9 @@ function decodeMemorySessionEvidenceCompletion(
       typeof row.languageCode !== "string" || row.languageCode.length < 1 ||
       row.languageCode.length > 35 ||
       !Number.isSafeInteger(row.roundOrdinal) || row.roundOrdinal < 0 ||
+      (row.selectionOrdinal !== undefined && (
+        !Number.isSafeInteger(row.selectionOrdinal) || row.selectionOrdinal < 1
+      )) ||
       !validDate(row.occurredFrom) || !validDate(row.occurredTo) ||
       row.occurredTo < row.occurredFrom ||
       (row.safetyClass !== "NORMAL" && row.safetyClass !== "SENSITIVE") ||
@@ -5492,12 +5650,14 @@ function decodeMemorySessionEvidenceCompletion(
           ? selectionReason
           : completionReason
       },
-      roundOrdinal: row.roundOrdinal
+      roundOrdinal: row.roundOrdinal,
+      selectionOrdinal: row.selectionOrdinal ?? row.roundOrdinal + 1
     });
   }
   decoded.sort((left, right) =>
     (sourceOrder.get(left.candidate.metadata.sourceChatId!) ?? Number.MAX_SAFE_INTEGER) -
       (sourceOrder.get(right.candidate.metadata.sourceChatId!) ?? Number.MAX_SAFE_INTEGER) ||
+    left.selectionOrdinal - right.selectionOrdinal ||
     left.roundOrdinal - right.roundOrdinal ||
     left.candidate.itemId.localeCompare(right.candidate.itemId));
   return Object.freeze({
@@ -6089,8 +6249,13 @@ export function createPrismaLocalMemoryRetrievalRepository(
     async completeSessionEvidence(
       snapshot: MemoryLocalRetrievalSnapshot,
       plan: MemoryRetrievalPlan,
-      selectedSources: readonly MemoryRankedCandidate[]
+      selectedSources: readonly MemoryRankedCandidate[],
+      options: Readonly<{
+        queryCandidates?: readonly MemoryRankedCandidate[];
+        vector?: MemoryLocalVectorQuery;
+      }> = {}
     ): Promise<MemorySessionEvidenceCompletion> {
+      const queryCandidates = options.queryCandidates ?? [];
       const candidateLimit = plan.aggregationRequested
         ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
         : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES;
@@ -6103,9 +6268,16 @@ export function createPrismaLocalMemoryRetrievalRepository(
       if (
         snapshot.status !== "READY" ||
         plan.mode !== "PAST_CHAT_SEARCH" || selectedSources.length > candidateLimit ||
+        queryCandidates.length > candidateLimit ||
+        (plan.aggregationRequested && (
+          queryCandidates.length > 0 || options.vector !== undefined
+        )) ||
         new Set(selectedSources.map((candidate) =>
           `${candidate.itemType}:${candidate.itemId}`)).size !== selectedSources.length ||
-        selectedSources.some((candidate) => !validToken(candidate.itemId))
+        new Set(queryCandidates.map((candidate) =>
+          `${candidate.itemType}:${candidate.itemId}`)).size !== queryCandidates.length ||
+        selectedSources.some((candidate) => !validToken(candidate.itemId)) ||
+        queryCandidates.some((candidate) => !validToken(candidate.itemId))
       ) throw new Error("memory_session_completion_contract_invalid");
       const sourceChatIds = [...new Set(selectedSources.flatMap((candidate) =>
         candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
@@ -6117,10 +6289,79 @@ export function createPrismaLocalMemoryRetrievalRepository(
       if (sourceChatIds.some((sourceChatId) => !validToken(sourceChatId))) {
         throw new Error("memory_session_completion_contract_invalid");
       }
+      const selectedSourceSet = new Set(sourceChatIds);
+      const seededSources = new Set<string>();
+      const selectedSeeds = selectedSources.flatMap((candidate) => {
+        const sourceChatId = candidate.metadata.sourceChatId;
+        if (
+          candidate.itemType === "FACT_VERSION" || !sourceChatId ||
+          !selectedSourceSet.has(sourceChatId) || seededSources.has(sourceChatId)
+        ) return [];
+        seededSources.add(sourceChatId);
+        return [{
+          itemId: candidate.itemId,
+          itemType: candidate.itemType,
+          sourceChatId
+        }];
+      });
+      if (selectedSeeds.length !== sourceChatIds.length) {
+        throw new Error("memory_session_completion_contract_invalid");
+      }
+      let vectorHits: readonly MemoryVectorHit[] = [];
+      if (options.vector && snapshot.indexMode === "HYBRID") {
+        const vectorResult = await createPrismaMemoryVectorRepository(client).search({
+          eligibility: {
+            allowedFactSensitivity: ["NORMAL", "SENSITIVE"],
+            allowedHistorySafety: ["NORMAL", "SENSITIVE"],
+            assistantId: snapshot.assistantId,
+            chatId: snapshot.chatId,
+            factMode: "CURRENT",
+            includePatterns: false,
+            factTemporalAsOf: null,
+            folderId: snapshot.folderId,
+            occurredFrom: null,
+            occurredTo: null,
+            sourceAssistantId: plan.filters.scopeType === "ASSISTANT"
+              ? plan.filters.scopeTargetId
+              : null,
+            sourceChatIds,
+            sourceFolderId: plan.filters.scopeType === "FOLDER"
+              ? plan.filters.scopeTargetId
+              : null
+          },
+          itemTypes: ["RECALL_ROUND_SEGMENT"],
+          limit: Math.min(
+            MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
+            sourceChatIds.length * MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT *
+              MEMORY_RETRIEVAL_TARGETED_COMPLETION_VECTOR_OVERFETCH
+          ),
+          minimumScore: options.vector.minimumScore,
+          profile: options.vector.profile,
+          userId: snapshot.userId,
+          vector: options.vector.vector
+        });
+        if (vectorResult.status !== "READY") {
+          throw new Error("memory_session_completion_vector_unavailable");
+        }
+        vectorHits = vectorResult.hits;
+      }
+      const queryRankedRoundIds = plan.aggregationRequested
+        ? []
+        : rankMemoryTargetedSessionCompletionRoundIds({
+            queryCandidates,
+            selectedSourceChatIds: sourceChatIds,
+            vectorHits
+          });
       const rows = await canonicalRead<SessionCompletionRow>(
         plan.aggregationRequested
           ? aggregationSessionRoundCompletionSql(snapshot, plan, sourceChatIds)
-          : targetedSessionUserCompletionSql(snapshot, plan, sourceChatIds)
+          : targetedSessionUserCompletionSql(
+              snapshot,
+              plan,
+              sourceChatIds,
+              queryRankedRoundIds,
+              selectedSeeds
+            )
       );
       if (rows.length > sourceChatIds.length * perSourceLimit) {
         throw new Error("memory_session_completion_result_invalid");
