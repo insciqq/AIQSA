@@ -28,6 +28,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftSupplementV21,
@@ -39,7 +40,9 @@ import {
 import {
   knowledgeAnswerTargetedSupplementSchemaV3,
   decodeKnowledgeTargetedSupplementV4,
-  mergeKnowledgeTargetedSupplementV2
+  decodeKnowledgeTargetedSupplementV5,
+  mergeKnowledgeTargetedSupplementV2,
+  mergeKnowledgeTargetedSupplementV3
 } from "./answerGroundingCorrectionV21";
 import {
   knowledgeGroundedDeltaSelectorPromptV7
@@ -1162,7 +1165,21 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("reconstructs the holistic closure audit into Evidence V52", async () => {
+  it.each([{
+    evidenceVersion: 53 as const,
+    name: "historical V37",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+    targetLocalSupplement: false
+  }, {
+    evidenceVersion: 54 as const,
+    name: "current V38",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
+    targetLocalSupplement: true
+  }])("reconstructs $name closure into its isolated evidence version", async ({
+    evidenceVersion,
+    protocol,
+    targetLocalSupplement
+  }) => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1291,8 +1308,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+      protocol,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1376,13 +1392,17 @@ describe("Knowledge Evidence v2 repository projection", () => {
       },
       version: 2
     };
-    const acceptedSupplement = decodeKnowledgeTargetedSupplementV4(rawSupplement, {
+    const acceptedSupplement = (targetLocalSupplement
+      ? decodeKnowledgeTargetedSupplementV5
+      : decodeKnowledgeTargetedSupplementV4)(rawSupplement, {
       availableHandles: ["K1"],
       missingDimensions,
       primaryDraft: acceptedDraft!
     });
     expect(acceptedSupplement).not.toBeNull();
-    const merged = mergeKnowledgeTargetedSupplementV2({
+    const merged = (targetLocalSupplement
+      ? mergeKnowledgeTargetedSupplementV3
+      : mergeKnowledgeTargetedSupplementV2)({
       primaryDraft: acceptedDraft!,
       supplement: acceptedSupplement!
     });
@@ -1548,6 +1568,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       },
       correctionAttempted: true,
       correctionSucceeded: true,
+      ...(targetLocalSupplement ? { crossTargetExactRepeatCount: 0 } : {}),
       closure: {
         initialCoveredDimensionCount: 1,
         initialExcludedDimensionCount: 0,
@@ -1571,7 +1592,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       scopeRepairAttempted: false,
       scopeRepairSucceeded: false,
       supportedClaimCount: 2,
-      version: 53
+      version: evidenceVersion
     });
     expect(result.grounding).toMatchObject({
       answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),

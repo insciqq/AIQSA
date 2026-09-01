@@ -781,6 +781,96 @@ export function validateKnowledgeTargetedSupplementV4(
   );
 }
 
+/** Validates each immutable correction target as its own claim namespace.
+ * NFC-exact repeats remain invalid inside one target and against the primary
+ * Draft, but a separate server-owned claim replica may carry the same text for
+ * another target. Target order and target-local claim order are preserved. */
+export function validateKnowledgeTargetedSupplementV5(
+  value: unknown,
+  input: KnowledgeTargetedSupplementValidationInputV1
+): KnowledgeTargetedSupplementValidationV2 {
+  if (isKnowledgeDraftMalformed(input.primaryDraft) || !record(value) ||
+    !exactKeys(value, ["version", "targets"]) ||
+    value.version !== KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2 ||
+    !record(value.targets)) return rejectedV2("draft_target_shape_invalid");
+  const targetable = knowledgeTargetableMissingDimensionsV1(input.missingDimensions);
+  const limits = knowledgeTargetedSupplementClaimLimitsV3({
+    primaryClaimCount: input.primaryDraft.claims.length,
+    targetDimensions: targetable
+  });
+  if (!limits) return rejectedV2("draft_target_set_invalid");
+  const targetIds = limits.map(({ targetDimensionId }) => targetDimensionId);
+  if (!exactKeys(value.targets, targetIds)) {
+    return rejectedV2("draft_target_set_invalid");
+  }
+  const dimensionById = new Map(targetable.map((dimension) => [dimension.id, dimension]));
+  const claims: Array<KnowledgeAnswerDraftV5["claims"][number]> = [];
+  const bindings: KnowledgeTargetedSupplementClaimBindingV1[] = [];
+  for (const limit of limits) {
+    const targetClaims = value.targets[limit.targetDimensionId];
+    const dimension = dimensionById.get(limit.targetDimensionId);
+    if (!dimension || !Array.isArray(targetClaims) || targetClaims.length < 1 ||
+      targetClaims.length > limit.maxClaims) {
+      return rejectedV2("draft_target_shape_invalid");
+    }
+    const normalizedTexts = new Set<string>();
+    for (const text of targetClaims) {
+      if (typeof text !== "string") return rejectedV2("draft_claim_shape_invalid");
+      const normalized = text.normalize("NFC");
+      if (normalizedTexts.has(normalized)) return rejectedV2("draft_duplicate_claim");
+      normalizedTexts.add(normalized);
+    }
+    const validation = validateKnowledgeAnswerDraftV7({
+      claims: targetClaims.map((text) => ({
+        citationHints: dimension.evidenceHandles,
+        text
+      })),
+      version: 1
+    }, {
+      availableHandles: input.availableHandles,
+      forbiddenIdentityFragments: input.forbiddenIdentityFragments
+    });
+    if (validation.kind === "rejected") return rejectedV2(validation.reason);
+    for (const claim of validation.value.claims) {
+      const claimId = `C${claims.length + 1}`;
+      claims.push(Object.freeze({
+        citationHints: Object.freeze([...claim.citationHints]),
+        id: claimId,
+        text: claim.text
+      }));
+      bindings.push(Object.freeze({
+        claimId,
+        targetDimensionId: limit.targetDimensionId
+      }));
+    }
+  }
+  if (input.primaryDraft.claims.length + claims.length >
+    KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims) {
+    return rejectedV2("draft_target_shape_invalid");
+  }
+  const primaryTexts = new Set(input.primaryDraft.claims.map(({ text }) =>
+    text.normalize("NFC")));
+  if (claims.some(({ text }) => primaryTexts.has(text.normalize("NFC")))) {
+    return rejectedV2("draft_duplicate_primary_claim");
+  }
+  const claimIds = Object.freeze(claims.map(({ id }) => id));
+  return Object.freeze({
+    kind: "accepted",
+    value: Object.freeze({
+      bindings: Object.freeze(bindings),
+      draft: Object.freeze({
+        blocks: Object.freeze([Object.freeze({
+          claimIds,
+          type: claims.length === 1 ? "paragraph" as const : "bullets" as const
+        })]),
+        claims: Object.freeze(claims),
+        version: 1 as const
+      }),
+      version: KNOWLEDGE_TARGETED_SUPPLEMENT_PAYLOAD_VERSION_V2
+    })
+  });
+}
+
 export type KnowledgeTargetedSupplementValidationV2 =
   | Readonly<{ kind: "accepted"; value: KnowledgeTargetedSupplementV2 }>
   | Readonly<{
@@ -816,6 +906,39 @@ export function decodeKnowledgeTargetedSupplementV4(
 ): KnowledgeTargetedSupplementV2 | null {
   const validation = validateKnowledgeTargetedSupplementV4(value, input);
   return validation.kind === "accepted" ? validation.value : null;
+}
+
+export function decodeKnowledgeTargetedSupplementV5(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeTargetedSupplementV5>[1]
+): KnowledgeTargetedSupplementV2 | null {
+  const validation = validateKnowledgeTargetedSupplementV5(value, input);
+  return validation.kind === "accepted" ? validation.value : null;
+}
+
+/** Counts accepted exact-text replicas that occur in an additional target.
+ * The diagnostic is content-free and intentionally ignores same-target repeats,
+ * which the V5 validator rejects before this projection can be persisted. */
+export function knowledgeTargetedSupplementCrossTargetExactRepeatCountV1(
+  supplement: KnowledgeTargetedSupplementV2
+): number {
+  if (supplement.bindings.length !== supplement.draft.claims.length) {
+    throw new Error("knowledge_targeted_supplement_binding_invalid");
+  }
+  const targetsByText = new Map<string, Set<string>>();
+  let count = 0;
+  supplement.draft.claims.forEach((claim, index) => {
+    const binding = supplement.bindings[index];
+    if (!binding || binding.claimId !== claim.id) {
+      throw new Error("knowledge_targeted_supplement_binding_invalid");
+    }
+    const key = claim.text.normalize("NFC");
+    const targets = targetsByText.get(key) ?? new Set<string>();
+    if (!targets.has(binding.targetDimensionId) && targets.size > 0) count += 1;
+    targets.add(binding.targetDimensionId);
+    targetsByText.set(key, targets);
+  });
+  return count;
 }
 
 /** Removes only NFC-exact repeats of immutable primary claims from grouped
@@ -884,6 +1007,49 @@ export function mergeKnowledgeTargetedSupplementV2(input: Readonly<{
   supplement: KnowledgeTargetedSupplementV2;
 }>): KnowledgeMergedTargetedSupplementV1 {
   return mergeKnowledgeTargetedSupplementV1(input);
+}
+
+/** Rebases a target-local Supplement without globally deduplicating text or
+ * unioning provenance. Each accepted replica remains independently addressable
+ * by the final Selector. */
+export function mergeKnowledgeTargetedSupplementV3(input: Readonly<{
+  primaryDraft: KnowledgeAnswerDraftSelectorInput;
+  supplement: KnowledgeTargetedSupplementV2;
+}>): KnowledgeMergedTargetedSupplementV1 {
+  if (isKnowledgeDraftMalformed(input.primaryDraft) ||
+    input.supplement.bindings.length !== input.supplement.draft.claims.length ||
+    input.primaryDraft.claims.length + input.supplement.draft.claims.length >
+      KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaims) {
+    throw new Error("knowledge_targeted_supplement_merge_invalid");
+  }
+  const claims = [...input.primaryDraft.claims, ...input.supplement.draft.claims]
+    .map((claim, index) => Object.freeze({
+      citationHints: Object.freeze([...claim.citationHints]),
+      id: `C${index + 1}`,
+      text: claim.text
+    }));
+  const offset = input.primaryDraft.claims.length;
+  const bindings = input.supplement.bindings.map((binding, index) => {
+    const localClaim = input.supplement.draft.claims[index];
+    if (!localClaim || binding.claimId !== localClaim.id) {
+      throw new Error("knowledge_targeted_supplement_binding_invalid");
+    }
+    return Object.freeze({
+      claimId: `C${offset + index + 1}`,
+      targetDimensionId: binding.targetDimensionId
+    });
+  });
+  return Object.freeze({
+    bindings: Object.freeze(bindings),
+    draft: Object.freeze({
+      blocks: Object.freeze([Object.freeze({
+        claimIds: Object.freeze(claims.map(({ id }) => id)),
+        type: claims.length === 1 ? "paragraph" as const : "bullets" as const
+      })]),
+      claims: Object.freeze(claims),
+      version: 1 as const
+    })
+  });
 }
 
 function immutableClaim(claim: KnowledgeGroundedSelectorClaimV3) {

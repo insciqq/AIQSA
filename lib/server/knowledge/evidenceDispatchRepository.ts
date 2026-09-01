@@ -28,7 +28,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
-  isCurrentKnowledgeAnswerOperationSnapshotV21,
+  isRecoverableKnowledgeAnswerOperationSnapshotV21,
   knowledgeAnswerScopeV6CorrectionFitsV2,
   type KnowledgeAnswerOperationV21
 } from "./answerGroundingV21";
@@ -1536,6 +1536,11 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     decodeKnowledgeAnswerOperationRequestSnapshotV21(
       dispatch.attempt.acceptedRequest
     ));
+  const firstRequest = requests[0];
+  const snapshotVersion = firstRequest &&
+    isRecoverableKnowledgeAnswerOperationSnapshotV21(firstRequest)
+    ? firstRequest.version
+    : null;
   const terminal = (dispatch: StoredKnowledgeEvidenceDispatch) =>
     dispatch.attempt.state === "settled" && dispatch.attempt.actualUsage !== null &&
     dispatch.attempt.acceptedResult !== null && dispatch.attempt.dispatchedAt !== null &&
@@ -1545,7 +1550,9 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   if (dispatches.some((dispatch, index) =>
     dispatch.attempt.ordinal !== index + 1 ||
     dispatch.attempt.providerBindingKey !== "answer" || !terminal(dispatch) ||
-    !requests[index] || !isCurrentKnowledgeAnswerOperationSnapshotV21(requests[index]!) ||
+    !requests[index] ||
+    !isRecoverableKnowledgeAnswerOperationSnapshotV21(requests[index]!) ||
+    requests[index]!.version !== snapshotVersion ||
     requests[index]!.operation !== purposeSequence[index] ||
     requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
     canonicalJson(dispatch.draft) !== canonicalManifest)) {
@@ -1590,8 +1597,8 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const completenessRequest = requests[initialCompletenessIndex];
   const selectorRequest = requests[initialSelectorIndex];
   if (!completenessRequest ||
-    !isCurrentKnowledgeAnswerOperationSnapshotV21(completenessRequest) ||
-    !selectorRequest || !isCurrentKnowledgeAnswerOperationSnapshotV21(selectorRequest)) {
+    !isRecoverableKnowledgeAnswerOperationSnapshotV21(completenessRequest) ||
+    !selectorRequest || !isRecoverableKnowledgeAnswerOperationSnapshotV21(selectorRequest)) {
     repositoryError("stored_manifest_invalid");
   }
   const initialScopePayloadHash = completenessRequest.coverageScopePayloadHash;
@@ -1599,7 +1606,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   if (!initialScopePayloadHash || !mergedScopePayloadHash ||
     dispatches.some((_dispatch, index) => {
       const request = requests[index]!;
-      if (!isCurrentKnowledgeAnswerOperationSnapshotV21(request)) return true;
+      if (!isRecoverableKnowledgeAnswerOperationSnapshotV21(request)) return true;
       if (index <= finalScopeIndex) return request.coverageScopePayloadHash !== null;
       if (index <= finalCompletenessIndex) {
         return request.coverageScopePayloadHash !== initialScopePayloadHash;

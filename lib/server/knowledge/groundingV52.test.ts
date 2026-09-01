@@ -23,6 +23,7 @@ import {
 import {
   groundSettledKnowledgeAnswerV52,
   groundSettledKnowledgeAnswerV53,
+  groundSettledKnowledgeAnswerV54,
   KnowledgeAnswerContractError
 } from "./grounding";
 
@@ -317,6 +318,34 @@ describe("Grounding Evidence V53", () => {
           ...operation,
           ordinal: index + 1 as 1 | 2 | 3 | 4 | 5 | 6
         }))
+    })).toThrow(KnowledgeAnswerContractError);
+  });
+});
+
+describe("Grounding Evidence V54", () => {
+  it("persists only the bounded cross-target repeat count", () => {
+    const grounded = groundSettledKnowledgeAnswerV54({
+      ...input(),
+      crossTargetExactRepeatCount: 1
+    });
+    expect(grounded).toMatchObject({
+      crossTargetExactRepeatCount: 1,
+      version: 54
+    });
+    expect(JSON.stringify(grounded)).not.toContain("Question");
+    expect(JSON.stringify(grounded)).not.toContain("Evidence");
+  });
+
+  it("rejects an unbounded count or a positive count without Supplement", () => {
+    expect(() => groundSettledKnowledgeAnswerV54({
+      ...input(),
+      crossTargetExactRepeatCount: 23
+    })).toThrow(KnowledgeAnswerContractError);
+    const withoutSupplement = input();
+    expect(() => groundSettledKnowledgeAnswerV54({
+      ...withoutSupplement,
+      crossTargetExactRepeatCount: 1,
+      operations: withoutSupplement.operations.filter(({ role }) => role !== "supplement")
     })).toThrow(KnowledgeAnswerContractError);
   });
 });

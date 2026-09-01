@@ -28,12 +28,14 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
+  KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftV21CommonMarkV1,
   knowledgeAnswerScopeV6CorrectionFitsV2,
   settleKnowledgeAnswerV21FromFinalSelector,
+  settleKnowledgeAnswerV21FromFinalSelectorV38,
   validateKnowledgeAnswerDraftV21CommonMarkV1,
   type KnowledgeAnswerOperationScopeV6ClosureV2,
   type KnowledgeAnswerV21ContractVersions
@@ -42,16 +44,20 @@ import {
   knowledgeAnswerTargetedSupplementSchemaV3,
   decodeKnowledgeTargetedSupplementFailureV1,
   decodeKnowledgeTargetedSupplementV4,
+  decodeKnowledgeTargetedSupplementV5,
   isKnowledgeTargetedSupplementFailureReasonV1,
   knowledgeTargetableMissingDimensionsV1,
   knowledgeTargetedEvidenceAtomIndex,
   knowledgeTargetedSupplementFailureV1,
   knowledgeTargetedSupplementFitsV1,
+  knowledgeTargetedSupplementCrossTargetExactRepeatCountV1,
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
   mergeKnowledgeGroundedCorrectionV3,
   mergeKnowledgeTargetedSupplementV2,
+  mergeKnowledgeTargetedSupplementV3,
   normalizeKnowledgeTargetedSupplementExactPrimaryDuplicatesV1,
   validateKnowledgeTargetedSupplementV4,
+  validateKnowledgeTargetedSupplementV5,
   type KnowledgeTargetedSupplementClaimBindingV1
 } from "./answerGroundingCorrectionV21";
 import {
@@ -162,6 +168,7 @@ type OperationOrdinalScopeV6 = OperationOrdinalV21 | 7 | 8;
 
 export type KnowledgeAnswerGroundingExecutionV21ScopeV6Result = Readonly<{
   contracts: KnowledgeAnswerV21ContractVersions;
+  crossTargetExactRepeatCount: number;
   operations: readonly Readonly<{
     operation: KnowledgeAnswerOperationScopeV6ClosureV2;
     ordinal: OperationOrdinalScopeV6;
@@ -260,6 +267,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   request: string;
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
+  snapshotVersion?: 37 | 38;
   transport: "native_strict" | "provider_neutral_json";
 }>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const inheritedReasoningEffort = input.reasoningEffort ?? null;
@@ -275,16 +283,23 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       version: 1 as const
     })
   );
-  if (!executionPolicy || input.executionPolicy !== undefined &&
-    input.reasoningEffort !== undefined) {
+  if (!executionPolicy ||
+    (input.executionPolicy !== undefined && input.reasoningEffort !== undefined) ||
+    (input.snapshotVersion !== undefined && input.snapshotVersion !== 37 &&
+      input.snapshotVersion !== 38)) {
     throw new Error("knowledge_grounding_execution_policy_invalid");
   }
+  const targetLocalSupplement = input.snapshotVersion !== 37;
+  const protocol = targetLocalSupplement
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
+    : KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1;
   const requestExecutionPolicy = { executionPolicy } as const;
   const evidence = knowledgeCoverageEvidenceFromManifestV6(input.draft);
   const handles = evidence.map(({ handle }) => handle);
   const operations: Array<
     KnowledgeAnswerGroundingExecutionV21ScopeV6Result["operations"][number]
   > = [];
+  let crossTargetExactRepeatCount = 0;
   const pushOperation = (
     ordinal: OperationOrdinalScopeV6,
     operation: KnowledgeAnswerOperationScopeV6ClosureV2,
@@ -308,9 +323,15 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     settlement: KnowledgeAnswerSettlementV5
   ): KnowledgeAnswerGroundingExecutionV21ScopeV6Result => Object.freeze({
     contracts: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
+    crossTargetExactRepeatCount,
     operations: Object.freeze([...operations]),
     settlement
   });
+  const settle = (
+    settlementInput: Parameters<typeof settleKnowledgeAnswerV21FromFinalSelectorV38>[0]
+  ) => targetLocalSupplement
+    ? settleKnowledgeAnswerV21FromFinalSelectorV38(settlementInput)
+    : settleKnowledgeAnswerV21FromFinalSelector(settlementInput);
 
   const draftPrompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
     draftPass: "primary",
@@ -324,8 +345,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
     ...requestExecutionPolicy,
-    protocol:
-      KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+    protocol,
     schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
     systemPrompt: draftPrompt.systemPrompt,
     transport: input.transport,
@@ -396,8 +416,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
       ...requestExecutionPolicy,
-      protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+      protocol,
       schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -419,6 +438,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
             diagnostic: repair.diagnostic,
             evidence,
             isolateInvalidScopeMapUnit: true,
+            ...(targetLocalSupplement
+              ? { rejectInvalidProvenanceFindings: true as const }
+              : {}),
             repair: resolvedOutput,
             request: input.request
           });
@@ -536,8 +558,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
       ...requestExecutionPolicy,
-      protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+      protocol,
       schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -678,8 +699,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
       operation: selectorInput.operation,
       ...requestExecutionPolicy,
-      protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+      protocol,
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
       systemPrompt: prompt.systemPrompt,
       transport: input.transport,
@@ -845,8 +865,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
         operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
         ...requestExecutionPolicy,
-        protocol:
-          KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+        protocol,
         schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
         systemPrompt: prompt.systemPrompt,
         transport: input.transport,
@@ -935,7 +954,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }) &&
     knowledgeAnswerScopeV6CorrectionFitsV2(postSelectorOrdinal);
   if (!correctionRequired) {
-    return result(settleKnowledgeAnswerV21FromFinalSelector({
+    return result(settle({
       draft: primaryDraft,
       evidence,
       selector: correctionBaseSelector,
@@ -963,8 +982,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
     ...requestExecutionPolicy,
-    protocol:
-      KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+    protocol,
     schema: supplementSchema,
     systemPrompt: supplementPrompt.systemPrompt,
     transport: input.transport,
@@ -979,7 +997,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           shapeNormalizedOutput,
           primaryDraft
         );
-      const validation = validateKnowledgeTargetedSupplementV4(normalizedOutput, {
+      const validation = (targetLocalSupplement
+        ? validateKnowledgeTargetedSupplementV5
+        : validateKnowledgeTargetedSupplementV4)(normalizedOutput, {
         availableHandles: handles,
         forbiddenIdentityFragments: input.forbiddenIdentityFragments,
         missingDimensions,
@@ -1015,14 +1035,16 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     supplementOperation.acceptedResult
   );
   if (malformedSupplement || targetedSupplementFailure) {
-    return result(settleKnowledgeAnswerV21FromFinalSelector({
+    return result(settle({
       draft: primaryDraft,
       evidence,
       selector: correctionBaseSelector,
       scopeProtocol: "append_only_completeness_reduce_v2"
     }));
   }
-  const supplement = decodeKnowledgeTargetedSupplementV4(
+  const supplement = (targetLocalSupplement
+    ? decodeKnowledgeTargetedSupplementV5
+    : decodeKnowledgeTargetedSupplementV4)(
     supplementOperation.acceptedResult,
     {
       availableHandles: handles,
@@ -1032,7 +1054,13 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     }
   );
   if (!supplement) throw new Error("knowledge_answer_draft_result_invalid");
-  const merged = mergeKnowledgeTargetedSupplementV2({
+  if (targetLocalSupplement) {
+    crossTargetExactRepeatCount =
+      knowledgeTargetedSupplementCrossTargetExactRepeatCountV1(supplement);
+  }
+  const merged = (targetLocalSupplement
+    ? mergeKnowledgeTargetedSupplementV3
+    : mergeKnowledgeTargetedSupplementV2)({
     primaryDraft,
     supplement
   });
@@ -1089,7 +1117,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     initialSelector: correctionBaseSelector,
     primaryClaimCount
   });
-  return result(settleKnowledgeAnswerV21FromFinalSelector({
+  return result(settle({
     draft: finalDraft,
     evidence,
     selector: correctedSelector,

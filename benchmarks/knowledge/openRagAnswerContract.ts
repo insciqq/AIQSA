@@ -7,7 +7,7 @@ import {
 
 export const OPEN_RAG_ANSWER_RUN_SCHEMA_VERSION = 1 as const;
 export const OPEN_RAG_ANSWER_JUDGE_CONTRACT_VERSION = 1 as const;
-export const OPEN_RAG_ANSWER_RUNNER_CONTRACT_VERSION = 2 as const;
+export const OPEN_RAG_ANSWER_RUNNER_CONTRACT_VERSION = 3 as const;
 export const OPEN_RAG_ANSWER_QUESTION_PACKAGE = "open-rag-v1" as const;
 export const OPEN_RAG_ANSWER_QUESTION_PACKAGE_VERSION = 2 as const;
 export const OPEN_RAG_ANSWER_SELECTION_FINGERPRINT =

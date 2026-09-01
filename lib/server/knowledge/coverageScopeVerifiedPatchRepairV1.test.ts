@@ -358,6 +358,7 @@ describe("Knowledge Coverage Scope verified patch repair V1", () => {
       diagnostic: validation.diagnostic,
       evidence,
       isolateInvalidScopeMapUnit: true,
+      rejectInvalidProvenanceFindings: true,
       repair,
       request
     });
@@ -371,6 +372,46 @@ describe("Knowledge Coverage Scope verified patch repair V1", () => {
     expect(JSON.stringify(merged.output)).not.toContain(
       "Replacement Boreal durability."
     );
+  });
+
+  it("drops only a provenance-invalid finding when its isolated repair stays invalid", () => {
+    const { base, evidence, request } = fixture();
+    const validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(base, {
+      evidence,
+      request
+    });
+    expect(validation.kind).toBe("rejected");
+    if (validation.kind !== "rejected" || !validation.repairBase) return;
+    const repair = {
+      ...base,
+      evidenceUnits: [{
+        findings: [base.evidenceUnits[0]!.findings[0], {
+          description: "Repair still has foreign provenance.",
+          evidenceAtomIds: ["A3"],
+          requestAnchor: "durability"
+        }],
+        handle: "K1"
+      }, base.evidenceUnits[1]]
+    };
+
+    const merged = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
+      base: validation.repairBase,
+      diagnostic: validation.diagnostic,
+      evidence,
+      isolateInvalidScopeMapUnit: true,
+      rejectInvalidProvenanceFindings: true,
+      repair,
+      request
+    });
+
+    expect(merged.kind).toBe("accepted");
+    if (merged.kind !== "accepted") return;
+    expect(merged.patchedPaths).toEqual(["/evidenceUnits/0"]);
+    expect(merged.output.evidenceUnits[0]!.findings).toEqual([
+      base.evidenceUnits[0]!.findings[0]
+    ]);
+    expect(merged.output.evidenceUnits[1]).toEqual(base.evidenceUnits[1]);
+    expect(JSON.stringify(merged.output)).not.toContain("foreign provenance");
   });
 
   it("fills only missing handles from a complete repair map", () => {
