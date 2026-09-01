@@ -63,7 +63,10 @@ import {
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
-import { memoryUserTestimonyText } from "../history/userTestimony";
+import {
+  memoryUserTestimonyFragments,
+  memoryUserTestimonyText
+} from "../history/userTestimony";
 import {
   memoryRedactionHasMeaningfulRemainder,
   redactMemorySecrets
@@ -372,6 +375,7 @@ type SessionCompletionRow = Readonly<{
 type CoreRow = CandidateRow & Readonly<{ safeText: string }>;
 
 type ExpandedRow = Readonly<{
+  directUserTexts?: string[];
   itemId: string;
   itemType: MemorySearchItemType;
   occurredFrom: Date | null;
@@ -383,6 +387,7 @@ type ExpandedRow = Readonly<{
   safeText: string;
   sourceChatId: string | null;
   sourceMessageIds?: string[];
+  userSpans?: Prisma.JsonValue;
   patternSupportingEvidence: Prisma.JsonValue;
   supportingEvidence: Prisma.JsonValue;
   supportingItemId: string | null;
@@ -618,11 +623,13 @@ function safeMemoryProjectionText(value: string): string | null {
 function projectUserTestimonyExpandedRow(
   row: UserSegmentExpandedRow
 ): ExpandedRow | null {
+  const directUserTexts = memoryUserTestimonyFragments(row.safeText, row.userSpans);
   const safeText = memoryUserTestimonyText(row.safeText, row.userSpans);
-  if (!safeText) return null;
+  if (!safeText || !directUserTexts) return null;
   const { userSpans: _userSpans, ...expanded } = row;
   return {
     ...expanded,
+    directUserTexts: [...directUserTexts],
     retrievalHint: null,
     safeText,
     supportingEvidence: []
@@ -718,6 +725,27 @@ function decodedPatternSupportingEvidence(
 
 function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   const sourceMessageIds = row.sourceMessageIds;
+  const suppliedDirectUserTexts = row.directUserTexts;
+  const spanDirectUserTexts = row.userSpans === undefined
+    ? []
+    : Array.isArray(row.userSpans) && row.userSpans.length === 0
+      ? []
+      : memoryUserTestimonyFragments(row.safeText, row.userSpans);
+  if (spanDirectUserTexts === null || suppliedDirectUserTexts !== undefined && (
+    !Array.isArray(suppliedDirectUserTexts) ||
+    suppliedDirectUserTexts.length > 8 ||
+    suppliedDirectUserTexts.some((value) =>
+      typeof value !== "string" || !value || value.length > 4_000 ||
+      value.includes("\u0000") || !row.safeText.includes(value))
+  )) throw new Error("memory_expansion_result_invalid");
+  const directUserTexts: string[] = [];
+  let directUserTextCharacters = 0;
+  for (const value of suppliedDirectUserTexts ?? spanDirectUserTexts) {
+    if (directUserTexts.includes(value)) continue;
+    if (directUserTexts.length >= 8 || directUserTextCharacters + value.length > 8_000) break;
+    directUserTexts.push(value);
+    directUserTextCharacters += value.length;
+  }
   if (
     !validToken(row.itemId) ||
     !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND", "TOOL_EVENT"]
@@ -740,15 +768,23 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   ) throw new Error("memory_expansion_result_invalid");
   const safeText = safeMemoryProjectionText(row.safeText);
   if (!safeText) return null;
+  const safeDirectUserTexts = directUserTexts.every((value) => safeText.includes(value))
+    ? directUserTexts
+    : [];
   const contextual = decodedContextualEvidence(row);
   const patternSupportingEvidence = decodedPatternSupportingEvidence(row);
   const {
+    directUserTexts: _rawDirectUserTexts,
     patternSupportingEvidence: _rawPatternSupportingEvidence,
     sourceMessageIds: _rawSourceMessageIds,
+    userSpans: _rawUserSpans,
     ...projection
   } = row;
   return {
     ...projection,
+    ...(safeDirectUserTexts.length > 0
+      ? { directUserTexts: Object.freeze([...safeDirectUserTexts]) }
+      : {}),
     itemType: row.itemType as MemoryExpandedCandidate["itemType"],
     ...(patternSupportingEvidence.length > 0 ? { patternSupportingEvidence } : {}),
     retrievalHint: contextual.retrievalHint,
@@ -4930,7 +4966,8 @@ function rawRoundExpansionSql(
       round."chatId" AS "sourceChatId", round."parentChunkId" AS "supportingItemId",
       round."occurredFrom", round."occurredTo", NULL::text AS "retrievalHint",
       '[]'::jsonb AS "patternSupportingEvidence",
-      '[]'::jsonb AS "supportingEvidence", provenance."sourceMessageIds"
+      '[]'::jsonb AS "supportingEvidence", provenance."sourceMessageIds",
+      COALESCE(user_spans."spans", '[]'::jsonb) AS "userSpans"
     FROM eligible INNER JOIN "MemoryRecallRound" AS round
       ON round."userId" = ${snapshot.userId} AND round."id" = eligible."itemId"
     INNER JOIN LATERAL (
@@ -4942,6 +4979,20 @@ function rawRoundExpansionSql(
         AND round_message."roundId" = round."id"
       HAVING COUNT(*) BETWEEN 1 AND ${MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES}
     ) AS provenance ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(jsonb_build_object(
+        'ordinal', round_message."ordinal",
+        'start', round_message."roundStartOffset",
+        'end', round_message."roundEndOffset"
+      ) ORDER BY round_message."ordinal") AS "spans"
+      FROM "MemoryRecallRoundMessage" AS round_message
+      WHERE round_message."userId" = round."userId"
+        AND round_message."chatId" = round."chatId"
+        AND round_message."roundId" = round."id"
+        AND round_message."role" = 'user'
+        AND round_message."roundEndOffset" <= 4000
+      HAVING COUNT(*) BETWEEN 1 AND 32
+    ) AS user_spans ON TRUE
     WHERE eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
       AND eligible."itemId" IN (${valuesSql(ids)})
     ORDER BY eligible."itemId", eligible."matchedSegmentId" NULLS FIRST
@@ -4953,15 +5004,10 @@ type RoundSegmentSelection = Readonly<{ itemId: string; segmentId: string }>;
 function segmentRoundExpansionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  selections: readonly RoundSegmentSelection[],
-  evidenceView: "FULL" | "USER_TESTIMONY" = "FULL"
+  selections: readonly RoundSegmentSelection[]
 ): Prisma.Sql {
-  const userSpanColumn = evidenceView === "USER_TESTIMONY"
-    ? Prisma.sql`, user_spans."spans" AS "userSpans"`
-    : Prisma.sql``;
-  const userSpanJoin = evidenceView === "USER_TESTIMONY"
-    ? Prisma.sql`
-      INNER JOIN LATERAL (
+  const userSpanJoin = Prisma.sql`
+      LEFT JOIN LATERAL (
         SELECT jsonb_agg(jsonb_build_object(
           'ordinal', segment_message."ordinal",
           'start', segment_message."segmentStartOffset",
@@ -4990,8 +5036,7 @@ function segmentRoundExpansionSql(
           AND segment_message."sourceEndOffset" > segment_message."sourceStartOffset"
           AND segment_message."segmentEndOffset" > segment_message."segmentStartOffset"
         HAVING COUNT(*) BETWEEN 1 AND 32
-      ) AS user_spans ON TRUE`
-    : Prisma.sql``;
+      ) AS user_spans ON TRUE`;
   return Prisma.sql`
     WITH ${boundedMemorySearchEntryCandidatesSql(
       snapshot,
@@ -5024,7 +5069,8 @@ function segmentRoundExpansionSql(
       CASE WHEN segment."contextualKeyState" = 'GENERATED'
           AND dependencies."allValid"
         THEN dependencies."supportingEvidence" ELSE '[]'::jsonb
-      END AS "supportingEvidence", provenance."sourceMessageIds"${userSpanColumn}
+      END AS "supportingEvidence", provenance."sourceMessageIds",
+      COALESCE(user_spans."spans", '[]'::jsonb) AS "userSpans"
     FROM eligible
     INNER JOIN selected
       ON selected."itemId" = eligible."itemId"
@@ -6126,8 +6172,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
         queries.push(canonicalRead<UserSegmentExpandedRow>(segmentRoundExpansionSql(
           snapshot,
           plan,
-          roundSelections.userSegments,
-          "USER_TESTIMONY"
+          roundSelections.userSegments
         )).then((rows) => rows.flatMap((row) => {
           const projected = projectUserTestimonyExpandedRow(row);
           return projected ? [projected] : [];

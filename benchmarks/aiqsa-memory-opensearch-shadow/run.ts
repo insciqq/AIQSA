@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import {
-  MEMORY_RETRIEVAL_PIPELINE_VERSION
-} from "../../lib/domain/memory/retrieval/config";
-import {
   MEMORY_LEXICAL_ANALYSIS_PROFILE,
   memorySha256,
   normalizeMemorySearchText
@@ -283,7 +280,7 @@ async function createOwner(input: Readonly<{
       languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
       normalizationVersion: MEMORY_OPENSEARCH_NORMALIZATION_VERSION,
       readyAt: now,
-      retrievalPipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
+      retrievalPipelineVersion: MEMORY_OPENSEARCH_RETRIEVAL_PIPELINE_VERSION,
       state: "READY",
       targetMemoryRevision: 0,
       userId

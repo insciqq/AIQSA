@@ -33,6 +33,7 @@ import {
   MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
+  MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
   MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
   mergeMemorySessionEvidenceCompletion,
   memoryRelevanceCandidates,
@@ -44,6 +45,10 @@ import type {
   MemoryRunRerankResult,
   MemoryRunUtilityService
 } from "./runUtilities";
+import type {
+  MemoryQueryResolverResult,
+  MemoryQueryResolverService
+} from "./queryResolver";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } from "./vector";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
@@ -269,6 +274,8 @@ function repository(options: Readonly<{
   completion?: MemorySessionEvidenceCompletion;
   core?: readonly MemoryCoreCandidate[];
   decayEnabled?: boolean;
+  directUserTextsById?: Readonly<Record<string, readonly string[]>>;
+  expansionTextById?: Readonly<Record<string, string>>;
   hybridCandidates?: readonly MemoryLaneCandidate[];
   lexicalEvidence?: readonly MemoryLexicalLaneEvidence[];
   lexicalFailures?: readonly MemoryRetrievalLane[];
@@ -344,19 +351,31 @@ function repository(options: Readonly<{
     const coreExpansion = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
     if (coreExpansion) return coreExpansion;
     if (candidate.itemType === "RECALL_CHUNK") {
+      const safeText = options.expansionTextById?.[candidate.itemId] ??
+        `relevant text ${candidate.itemId}`;
       return {
+          ...(options.directUserTextsById?.[candidate.itemId]
+            ? { directUserTexts: options.directUserTextsById[candidate.itemId] }
+            : {}),
           itemId: candidate.itemId,
           itemType: "RECALL_CHUNK",
           occurredFrom: now,
           occurredTo: new Date(now.getTime() + 60_000),
           projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-          safeText: `relevant text ${candidate.itemId}`,
+          safeText,
           sourceChatId: candidate.metadata.sourceChatId,
           supportingItemId: null
         };
     }
     if (candidate.itemType === "RECALL_ROUND") {
+      const safeText = options.expansionTextById?.[candidate.itemId] ??
+        (candidate.historyEvidenceView === "USER_TESTIMONY"
+          ? `User: direct user episode ${candidate.matchedSegmentId ?? candidate.itemId}`
+          : `relevant round text ${candidate.matchedSegmentId ?? candidate.itemId}`);
       return {
+        ...(options.directUserTextsById?.[candidate.itemId]
+          ? { directUserTexts: options.directUserTextsById[candidate.itemId] }
+          : {}),
         itemId: candidate.itemId,
         itemType: "RECALL_ROUND",
         occurredFrom: now,
@@ -364,9 +383,7 @@ function repository(options: Readonly<{
         projectionKind: candidate.matchedSegmentId
           ? "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT"
           : "RECALL_ROUND_RAW_SAFE_TEXT",
-        safeText: candidate.historyEvidenceView === "USER_TESTIMONY"
-          ? `User: direct user episode ${candidate.matchedSegmentId ?? candidate.itemId}`
-          : `relevant round text ${candidate.matchedSegmentId ?? candidate.itemId}`,
+        safeText,
         sourceChatId: candidate.metadata.sourceChatId,
         supportingItemId: candidate.metadata.parentChunkId ?? "parent-chunk"
       };
@@ -1141,63 +1158,498 @@ describe("Personal Memory v1 run admission", () => {
   });
 
   it("does not start reranking after the ten-second soft deadline", async () => {
+    const local = repository({ candidates: [laneCandidate("soft-deadline-rrf")] });
+    const originalExpand = local.expand.getMockImplementation()!;
+    let deadlineClockMs = 0;
+    local.expand.mockImplementation(async (...args) => {
+      const expanded = await originalExpand(...args);
+      deadlineClockMs = 10_000;
+      return expanded;
+    });
+    const base = intentOptions({
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      admissionDeadlineMs: 120_000,
+      clock: () => deadlineClockMs,
+      monotonicClock: () => deadlineClockMs
+    }).retrieve(runInput("Which releases did I complete?"));
+
+    expect(base.utilities.rerank).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        aggregationState: "READER_REQUIRED",
+        rerankProviderCalls: 0
+      },
+      items: [{ exactItemId: "soft-deadline-rrf" }],
+      outcome: "USED"
+    });
+  });
+
+  it("resolves query-local guidance beside reranking and preserves the evidence pack", async () => {
+    const testimony = "I've listened to true crime during my commute, but I want to branch out into other genres.";
+    const local = repository({
+      candidates: [laneCandidate("commute")],
+      directUserTextsById: { commute: [testimony] },
+      expansionTextById: {
+        commute: `User: ${testimony}\n\nAssistant: Try another true crime podcast.`
+      }
+    });
+    const options = intentOptions({
+      applyResponsePreferences: false,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    let releaseRerank!: (value: MemoryRunRerankResult) => void;
+    let releaseResolver!: (value: MemoryQueryResolverResult) => void;
+    const rerank = vi.fn((
+      input: Parameters<MemoryRunUtilityService["rerank"]>[0]
+    ) => new Promise<MemoryRunRerankResult>((resolve) => {
+      releaseRerank = resolve;
+      expect(input.candidates).toEqual([
+        expect.not.objectContaining({ directUserTexts: expect.anything() })
+      ]);
+    }));
+    const resolve = vi.fn((
+      input: Parameters<MemoryQueryResolverService["resolve"]>[0]
+    ) => new Promise<MemoryQueryResolverResult>((settle) => {
+      releaseResolver = settle;
+      expect(input.sources).toMatchObject([{
+        handle: "R1",
+        itemKey: null,
+        sourceType: "CURRENT_QUERY"
+      }, {
+        handle: "R2",
+        itemKey: "RECALL_CHUNK:commute",
+        sourceType: "MEMORY_EVIDENCE",
+        userTexts: [testimony]
+      }]);
+      expect(JSON.stringify(input.sources)).not.toContain("Assistant:");
+    }));
+    const pending = createMemoryRunRetrievalService(local.value, {
+      ...options,
+      queryResolver: { resolve },
+      utilities: { ...options.utilities, rerank }
+    }).retrieve(runInput("Can you suggest activities for my commute?"));
+
+    await vi.waitFor(() => {
+      expect(rerank).toHaveBeenCalledOnce();
+      expect(resolve).toHaveBeenCalledOnce();
+    });
+    releaseRerank({
+      bindingId: "binding-relevance",
+      decisions: [{
+        applicable: true,
+        current: true,
+        handle: "c0",
+        reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: 0.9
+      }],
+      status: "READY"
+    });
+    releaseResolver({
+      bindingId: "binding-query-resolver",
+      constraints: [{
+        itemKey: "RECALL_CHUNK:commute",
+        kind: "AVOID",
+        sourceType: "MEMORY_EVIDENCE",
+        targetQuote: "true crime"
+      }, {
+        itemKey: "RECALL_CHUNK:commute",
+        kind: "PREFER",
+        sourceType: "MEMORY_EVIDENCE",
+        targetQuote: "branch out into other genres"
+      }],
+      status: "READY"
+    });
+
+    const result = await pending;
+    expect(result.outcome).toBe("USED");
+    expect(result.degradationCode).toBeUndefined();
+    expect(result.preparedContext?.text).toContain('"query_scope_constraints"');
+    expect(result.preparedContext?.text).toContain('"exact_target_quote":"true crime"');
+    expect(result.preparedContext?.text).toContain(
+      "Assistant: Try another true crime podcast."
+    );
+    expect(result.items).toHaveLength(1);
+    expect(result.budgetSnapshot).toMatchObject({
+      queryResolverState: "READY_ATTACHED",
+      queryScopeAttachedConstraintKindCounts: { AVOID: 1, PREFER: 1 },
+      queryScopeProposedConstraintCount: 2,
+      utilityExecutions: expect.arrayContaining([expect.objectContaining({
+        role: "MEMORY_QUERY_RESOLVE",
+        state: "READY"
+      })])
+    });
+    expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(9_000);
+  });
+
+  it("starts query resolution from the original-query frontier before control settles", async () => {
+    const testimony = "I've listened to true crime, but I want to branch out into other genres.";
+    const local = repository({
+      candidates: [laneCandidate("speculative-commute")],
+      directUserTextsById: { "speculative-commute": [testimony] },
+      expansionTextById: { "speculative-commute": `User: ${testimony}` },
+      speculativeBaseline: true
+    });
+    const base = intentOptions({
+      applyResponsePreferences: false,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    let controlSettled = false;
+    let releaseControl!: () => void;
+    const control: MemoryControlService = {
+      decide: vi.fn((input) => new Promise<MemoryControlResult>((resolve) => {
+        releaseControl = () => {
+          controlSettled = true;
+          void base.control.decide(input).then(resolve);
+        };
+      }))
+    };
+    const resolve = vi.fn(async (
+      input: Parameters<MemoryQueryResolverService["resolve"]>[0]
+    ): Promise<MemoryQueryResolverResult> => {
+      expect(controlSettled).toBe(false);
+      expect(input.sources).toMatchObject([{
+        handle: "R1",
+        sourceType: "CURRENT_QUERY"
+      }, {
+        handle: "R2",
+        itemKey: "RECALL_CHUNK:speculative-commute",
+        sourceType: "MEMORY_EVIDENCE",
+        userTexts: [testimony]
+      }]);
+      return {
+        bindingId: "binding-speculative-query-resolver",
+        constraints: [{
+          itemKey: "RECALL_CHUNK:speculative-commute",
+          kind: "AVOID",
+          sourceType: "MEMORY_EVIDENCE",
+          targetQuote: "true crime"
+        }],
+        status: "READY"
+      };
+    });
+    const pending = createMemoryRunRetrievalService(local.value, {
+      ...base,
+      control,
+      queryResolver: { resolve }
+    }).retrieve(runInput("Can you suggest activities for my commute?"));
+
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+    expect(controlSettled).toBe(false);
+    releaseControl();
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        queryResolverState: "READY_ATTACHED",
+        queryScopeAttachedConstraintKindCounts: { AVOID: 1 },
+        queryScopeProposedConstraintCount: 1
+      },
+      outcome: "USED"
+    });
+    expect(result.preparedContext?.text).toContain('"exact_target_quote":"true crime"');
+    expect(local.retrieveSpeculativeBaseline).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it("rejects speculative constraints that do not survive the final authoritative pack", async () => {
+    const speculativeTestimony = "I want to avoid true crime during my commute.";
+    const finalTestimony = "I enjoy history podcasts during my commute.";
+    const local = repository({
+      candidates: [laneCandidate("final-commute")],
+      directUserTextsById: {
+        "final-commute": [finalTestimony],
+        "speculative-only": [speculativeTestimony]
+      },
+      expansionTextById: {
+        "final-commute": `User: ${finalTestimony}`,
+        "speculative-only": `User: ${speculativeTestimony}`
+      },
+      speculativeBaseline: true
+    });
+    local.retrieveSpeculativeBaseline!.mockResolvedValue({
+      core: [],
+      laneResults: [{
+        candidates: [laneCandidate("speculative-only")],
+        lane: "HISTORY_RECALL_VECTOR"
+      }],
+      lexicalEvidence: [],
+      lexicalFailures: [],
+      lexicalState: "READY",
+      snapshot: local.state,
+      vectorEvidence: [],
+      vectorState: "NOT_CONFIGURED"
+    });
+    const base = intentOptions({
+      applyResponsePreferences: false,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const resolve = vi.fn(async () => ({
+      bindingId: "binding-drifted-query-resolver",
+      constraints: [{
+        itemKey: "RECALL_CHUNK:speculative-only",
+        kind: "AVOID" as const,
+        sourceType: "MEMORY_EVIDENCE" as const,
+        targetQuote: "true crime"
+      }],
+      status: "READY" as const
+    }));
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      queryResolver: { resolve }
+    }).retrieve(runInput("Can you suggest activities for my commute?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        queryResolverState: "REJECTED_FINAL",
+        queryScopeAttachedConstraintKindCounts: {},
+        queryScopeProposedConstraintCount: 1
+      },
+      outcome: "USED"
+    });
+    expect(result.degradationCode).toBeUndefined();
+    expect(result.preparedContext?.text).toContain(finalTestimony);
+    expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it("attaches speculative resolution when unavailable control uses broad fallback", async () => {
+    const testimony = "I listen to true crime, but I want to branch out into other podcast genres.";
+    const local = repository({
+      candidates: [laneCandidate("speculative-fallback")],
+      directUserTextsById: { "speculative-fallback": [testimony] },
+      expansionTextById: { "speculative-fallback": `User: ${testimony}` },
+      speculativeBaseline: true
+    });
+    const base = retrievalOptions(["c0"]);
+    let releaseControl!: () => void;
+    const control: MemoryControlService = {
+      decide: vi.fn(() => new Promise<MemoryControlResult>((resolve) => {
+        releaseControl = () => resolve({
+          reason: "memory_action_intent_unavailable",
+          status: "UNAVAILABLE"
+        });
+      }))
+    };
+    const resolve = vi.fn(async (
+      input: Parameters<MemoryQueryResolverService["resolve"]>[0]
+    ): Promise<MemoryQueryResolverResult> => {
+      expect(input.signal.aborted).toBe(false);
+      return {
+        bindingId: "binding-ready-speculative-query-resolver",
+        constraints: [{
+          itemKey: "RECALL_CHUNK:speculative-fallback",
+          kind: "AVOID",
+          sourceType: "MEMORY_EVIDENCE",
+          targetQuote: "true crime"
+        }],
+        status: "READY"
+      };
+    });
+    const pending = createMemoryRunRetrievalService(local.value, {
+      ...base,
+      control,
+      queryResolver: { resolve }
+    }).retrieve(runInput("Can you suggest activities for my commute?"));
+
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+    releaseControl();
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        plan: { aggregationRequested: true },
+        queryResolverBroadFallbackAttachment: true,
+        queryResolverExecutionStrategy: "SPECULATIVE",
+        queryResolverProviderCalls: 1,
+        queryResolverState: "READY_ATTACHED",
+        queryScopeAttachedConstraintKindCounts: { AVOID: 1 },
+        utilityEgressMode: "CONSENTED_EXTERNAL",
+        utilityExecutions: expect.arrayContaining([expect.objectContaining({
+          externalCallCount: 1,
+          role: "MEMORY_QUERY_RESOLVE",
+          state: "READY"
+        })])
+      }
+    });
+    expect(result.preparedContext?.text).toContain('"exact_target_quote":"true crime"');
+  });
+
+  it("cancels speculative resolution for explicitly requested aggregation", async () => {
+    const testimony = "I listen to true crime, but I want to branch out into other genres.";
+    const local = repository({
+      aggregationCandidates: [laneCandidate("explicit-aggregation")],
+      candidates: [laneCandidate("explicit-aggregation")],
+      directUserTextsById: { "explicit-aggregation": [testimony] },
+      expansionTextById: { "explicit-aggregation": `User: ${testimony}` },
+      speculativeBaseline: true
+    });
+    const base = intentOptions({
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    let releaseControl!: () => void;
+    const control: MemoryControlService = {
+      decide: vi.fn((input) => new Promise<MemoryControlResult>((settle) => {
+        releaseControl = () => void base.control.decide(input).then(settle);
+      }))
+    };
+    const receivedSignals: AbortSignal[] = [];
+    const resolve = vi.fn((
+      input: Parameters<MemoryQueryResolverService["resolve"]>[0]
+    ) => {
+      receivedSignals.push(input.signal);
+      return resolveWhenAborted(input.signal, {
+        bindingId: "binding-cancelled-explicit-aggregation-resolver",
+        externalCallCount: 1,
+        reason: "memory_query_resolution_outcome_unknown",
+        status: "UNAVAILABLE" as const
+      });
+    });
+    const pending = createMemoryRunRetrievalService(local.value, {
+      ...base,
+      control,
+      queryResolver: { resolve }
+    }).retrieve(runInput("How many podcast genres have I tried?"));
+
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+    releaseControl();
+
+    const result = await pending;
+    expect(receivedSignals[0]?.aborted).toBe(true);
+    expect(result.budgetSnapshot).toMatchObject({
+      plan: { aggregationRequested: true },
+      queryResolverBroadFallbackAttachment: false,
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "SKIPPED",
+      queryScopeAttachedConstraintKindCounts: {}
+    });
+    expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
+  });
+
+  it("gives speculative query resolution its complete nine-second child fence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
-      const local = repository({ candidates: [laneCandidate("soft-deadline-rrf")] });
-      const originalRetrieve = local.retrieve.getMockImplementation()!;
-      local.retrieve.mockImplementation((input) => new Promise((resolve) => {
-        setTimeout(() => void originalRetrieve(input).then(resolve), 1_200);
-      }));
-      const originalProjection = local.projectAggregationSessions.getMockImplementation()!;
-      local.projectAggregationSessions.mockImplementation((...args) =>
-        new Promise((resolve) => {
-          setTimeout(() => void originalProjection(...args).then(resolve), 1_000);
-        }));
+      const testimony = "I want to branch out beyond true crime.";
+      const local = repository({
+        candidates: [laneCandidate("resolver-deadline")],
+        directUserTextsById: { "resolver-deadline": [testimony] },
+        expansionTextById: { "resolver-deadline": `User: ${testimony}` },
+        speculativeBaseline: true
+      });
       const base = intentOptions({
-        aggregationRequested: true,
         memoryUseful: false,
         pastChatsUseful: true,
         retrievalMode: "PAST_CHAT_SEARCH",
         temporalIntent: "ANY"
       });
-      const originalControl = base.control.decide;
-      const control = {
-        decide: vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) =>
-          new Promise<Awaited<ReturnType<MemoryControlService["decide"]>>>((resolve) => {
-            setTimeout(() => void originalControl(input).then(resolve), 7_900);
-          }))
-      };
+      const receivedSignals: AbortSignal[] = [];
+      let announceResolverStart!: () => void;
+      const resolverStarted = new Promise<void>((resolve) => {
+        announceResolverStart = resolve;
+      });
+      const resolve = vi.fn((
+        input: Parameters<MemoryQueryResolverService["resolve"]>[0]
+      ) => {
+        receivedSignals.push(input.signal);
+        announceResolverStart();
+        return resolveWhenAborted(input.signal, {
+          bindingId: "binding-timed-out-speculative-query-resolver",
+          externalCallCount: 1,
+          reason: "memory_query_resolution_outcome_unknown",
+          status: "UNAVAILABLE" as const
+        });
+      });
       let settled = false;
       const pending = createMemoryRunRetrievalService(local.value, {
         ...base,
         admissionDeadlineMs: 120_000,
         clock: Date.now,
-        control,
-        monotonicClock: Date.now
-      }).retrieve(runInput("Which releases did I complete?"))
+        monotonicClock: Date.now,
+        queryResolver: { resolve }
+      }).retrieve(runInput("Suggest something different for my commute."))
         .then((result) => {
           settled = true;
           return result;
         });
 
-      await vi.advanceTimersByTimeAsync(10_099);
+      await resolverStarted;
+      await vi.advanceTimersByTimeAsync(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS - 1);
       expect(settled).toBe(false);
+      expect(receivedSignals[0]?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
-      const result = await pending;
 
-      expect(base.utilities.rerank).not.toHaveBeenCalled();
-      expect(result).toMatchObject({
+      await expect(pending).resolves.toMatchObject({
         budgetSnapshot: {
-          aggregationState: "READER_REQUIRED",
-          rerankProviderCalls: 0
+          queryResolverExecutionStrategy: "SPECULATIVE",
+          queryResolverState: "UNAVAILABLE"
         },
-        items: [{ exactItemId: "soft-deadline-rrf" }],
         outcome: "USED"
       });
+      expect(receivedSignals[0]?.aborted).toBe(true);
+      expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(9_000);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("falls back to the unchanged reader pack when query resolution is unavailable", async () => {
+    const testimony = "I want to branch out beyond true crime.";
+    const local = repository({
+      candidates: [laneCandidate("commute-fallback")],
+      directUserTextsById: { "commute-fallback": [testimony] },
+      expansionTextById: { "commute-fallback": `User: ${testimony}` }
+    });
+    const options = intentOptions({
+      applyResponsePreferences: false,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options,
+      queryResolver: {
+        resolve: vi.fn(async () => ({
+          reason: "memory_query_resolution_unavailable",
+          status: "UNAVAILABLE" as const
+        }))
+      }
+    }).retrieve(runInput("Suggest something for my commute."));
+
+    expect(result.outcome).toBe("USED");
+    expect(result.degradationCode).toBeUndefined();
+    expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
+    expect(result.budgetSnapshot).toMatchObject({
+      queryResolverState: "UNAVAILABLE",
+      queryScopeAttachedConstraintKindCounts: {},
+      utilityExecutions: expect.arrayContaining([expect.objectContaining({
+        reason: "memory_query_resolution_unavailable",
+        role: "MEMORY_QUERY_RESOLVE",
+        state: "UNAVAILABLE"
+      })])
+    });
   });
 
   it("does not reset the admission deadline for an outer preparing retry", async () => {
@@ -1297,7 +1749,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("caps control at eight seconds despite a longer outer deadline", async () => {
+  it("caps control at nine seconds despite a longer outer deadline", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -1370,7 +1822,7 @@ describe("Personal Memory v1 run admission", () => {
         },
         outcome: "EMPTY"
       });
-      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(8_000);
+      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(9_000);
     } finally {
       vi.useRealTimers();
     }
@@ -3023,6 +3475,7 @@ describe("Personal Memory v1 run admission", () => {
       utilityExecutions: [
         { role: "MEMORY_CONTROL", state: "READY" },
         { role: "MEMORY_QUERY_EMBED", state: "READY" },
+        { role: "MEMORY_QUERY_RESOLVE", state: "SKIPPED" },
         { role: "MEMORY_RERANK", state: "READY" }
       ]
     });
@@ -3157,7 +3610,7 @@ describe("Personal Memory v1 run admission", () => {
         ...base.normalizedRequest,
         modelCapabilities: {
           ...base.normalizedRequest.modelCapabilities,
-          contextWindow: 2_000,
+          contextWindow: 2_400,
           defaultMaxOutputTokens: 0
         }
       }
@@ -3531,7 +3984,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v16"
+        version: "memory-retrieval-component-metrics-v18"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });

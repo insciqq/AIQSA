@@ -151,14 +151,13 @@ npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE --sample-size 1
 ```
 
 FU-09's original content-free selection remains frozen as the provenance-only
-`qualifications/fu09-blind-50-v1.json`. Reader-first `v1` through `v5` preserve
-the diagnostic waves before the hybrid control-fallback, packed-evidence rejoin,
-and reader-deadline settlement fixes. The current qualification is
-`qualifications/fu2-reader-first-blind-50-v7.json`: it reuses the exact 50
+`qualifications/fu09-blind-50-v1.json`. Reader-first `v1` through `v7` preserve
+the earlier diagnostic and pre-resolver waves. The current qualification is
+`qualifications/fu2-reader-first-blind-50-v8.json`: it reuses the exact 50
 case IDs across all six upstream categories while freezing Luna, the official
 profile, OpenSearch-primary lexical retrieval, the ordered three-model
 reranker route and per-model floors, case concurrency two, session concurrency
-sixteen, and all other runtime bounds. It binds the Git `HEAD` and a
+sixteen, the bounded query-scoped resolver, and all other runtime bounds. It binds the Git `HEAD` and a
 deterministic executable-worktree digest; mutable result, task, upstream, and
 manifest paths are excluded from that digest. Run it with the exact lexical
 environment below; selection or runtime override flags are rejected when the
@@ -171,11 +170,11 @@ AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
 AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE \
-  --qualification-manifest fu2-reader-first-blind-50-v7 \
-  --output results/fu2-reader-first-blind-50-v7
+  --qualification-manifest fu2-reader-first-blind-50-v8 \
+  --output results/fu2-reader-first-blind-50-v8
 ```
 
-The old single-Qwen manifest and reader-first `v1` through `v6` fail closed for
+The old single-Qwen manifest and reader-first `v1` through `v7` fail closed for
 new runs. Paid/disposable guards remain mandatory and no manifest authorizes
 provider traffic by itself.
 

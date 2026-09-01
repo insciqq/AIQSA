@@ -28,7 +28,7 @@ import {
   type MemoryExecutionRole
 } from "./roles";
 
-export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v3";
+export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v4";
 
 type MemoryPolicyPrisma = AdmissionPrisma & Pick<
   Prisma.TransactionClient,

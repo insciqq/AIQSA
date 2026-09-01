@@ -35,6 +35,7 @@ import {
   type MemoryCoreCandidate,
   type MemoryExpandedCandidate,
   type MemoryPackedItem,
+  type MemoryPackedQueryScopeConstraint,
   type MemoryRankedCandidate,
   type MemoryRetrievalPlan
 } from "./contracts";
@@ -92,6 +93,7 @@ function itemKey(item: Pick<MemoryExpandedCandidate, "itemId" | "itemType">): st
 }
 
 function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
+  const directUserTexts = expansion.directUserTexts ?? [];
   const retrievalHint = expansion.retrievalHint ?? null;
   const supportingEvidence = expansion.supportingEvidence ?? [];
   const patternSupportingEvidence = expansion.patternSupportingEvidence ?? [];
@@ -101,6 +103,12 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
     !expansion.itemId || expansion.itemId.length > 256 ||
     typeof expansion.safeText !== "string" || expansion.safeText.length > 4_000 ||
     !expansion.safeText.trim() || expansion.safeText.includes("\u0000") ||
+    directUserTexts.length > 8 ||
+    directUserTexts.reduce((length, value) => length + value.length, 0) > 8_000 ||
+    directUserTexts.some((value) =>
+      !value || value.length > 4_000 || value.includes("\u0000") ||
+      !expansion.safeText.includes(value)) ||
+    new Set(directUserTexts).size !== directUserTexts.length ||
     (retrievalHint !== null && (
       typeof retrievalHint !== "string" || !retrievalHint.trim() ||
       retrievalHint.length > 4_000 || retrievalHint.includes("\u0000")
@@ -420,6 +428,78 @@ function render(
     "</aiqsa_memory_evidence>"
   ];
   return lines.join("\n");
+}
+
+export type MemoryQueryScopeConstraintAttachment = Readonly<{
+  attached: boolean;
+  pack: MemoryContextPack;
+  reason: "ATTACHED" | "BUDGET" | "INVALID" | "NO_CONTEXT";
+}>;
+
+/** Adds only a trusted, query-local interpretation header. It never changes
+ * the selected evidence set or its order; when the header cannot fit, the
+ * original lossless pack remains authoritative. */
+export function attachMemoryQueryScopeConstraints(
+  pack: MemoryContextPack,
+  constraints: readonly MemoryPackedQueryScopeConstraint[],
+  maximumAddedTokens = 384
+): MemoryQueryScopeConstraintAttachment {
+  if (!pack.text || pack.items.length === 0) {
+    return { attached: false, pack, reason: "NO_CONTEXT" };
+  }
+  const handles = new Set(pack.items.map(({ evidenceHandle }) => evidenceHandle));
+  const identities = constraints.map((constraint) => [
+    constraint.kind,
+    constraint.evidenceHandle,
+    constraint.targetQuote
+  ].join("\u0000"));
+  if (
+    constraints.length < 1 || constraints.length > 6 ||
+    !Number.isSafeInteger(maximumAddedTokens) || maximumAddedTokens < 1 ||
+    constraints.some((constraint) =>
+      !["AVOID", "PREFER", "PRESERVE"].includes(constraint.kind) ||
+      constraint.targetQuote.length < 1 || constraint.targetQuote.length > 200 ||
+      constraint.targetQuote !== constraint.targetQuote.trim() ||
+      constraint.targetQuote.includes("\u0000") ||
+      constraint.evidenceHandle !== "current_query" &&
+        !handles.has(constraint.evidenceHandle)) ||
+    new Set(identities).size !== identities.length
+  ) return { attached: false, pack, reason: "INVALID" };
+  const ordered = [...constraints].sort((left, right) =>
+    left.kind.localeCompare(right.kind) ||
+    left.evidenceHandle.localeCompare(right.evidenceHandle) ||
+    left.targetQuote.localeCompare(right.targetQuote));
+  const entries = (kind: MemoryPackedQueryScopeConstraint["kind"]) =>
+    ordered.filter((constraint) => constraint.kind === kind).map((constraint) => ({
+      evidence_handle: constraint.evidenceHandle,
+      exact_target_quote: constraint.targetQuote
+    }));
+  const line = safeJsonLine({
+    query_scope_constraints: {
+      avoid: entries("AVOID"),
+      prefer: entries("PREFER"),
+      preserve: entries("PRESERVE"),
+      provenance: "server_validated_direct_user_exact_quote",
+      scope: "current_response_only"
+    }
+  });
+  const marker = "\nEVIDENCE_ITEMS_JSONL\n";
+  if (!pack.text.includes(marker)) {
+    return { attached: false, pack, reason: "INVALID" };
+  }
+  const text = pack.text.replace(marker, `\n${line}${marker}`);
+  const approxTokens = estimateApproxTokens(text);
+  const addedTokens = approxTokens - pack.approxTokens;
+  if (addedTokens < 1 || addedTokens > maximumAddedTokens ||
+    approxTokens > pack.hardCapTokens ||
+    pack.providerTokenLimit !== null && approxTokens > pack.providerTokenLimit) {
+    return { attached: false, pack, reason: "BUDGET" };
+  }
+  return {
+    attached: true,
+    pack: Object.freeze({ ...pack, approxTokens, text }),
+    reason: "ATTACHED"
+  };
 }
 
 export function memoryContextBudgetLimits(

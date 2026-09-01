@@ -6,6 +6,7 @@ import {
   MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS,
   MEMORY_CARDINALITY_PARSER_VERSION,
   MEMORY_CONTEXT_TARGET_TOKENS,
+  MEMORY_QUERY_SCOPE_CONSTRAINT_MAX_TOKENS,
   MEMORY_DECAY_POLICY_VERSION,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
@@ -15,6 +16,7 @@ import {
   MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR,
   MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
   applyMemoryDecay,
+  attachMemoryQueryScopeConstraints,
   fuseMemoryRetrievalCandidates,
   isEligibleMemoryResponsePreferenceCore,
   memoryCandidateIsSupportingObservation,
@@ -27,6 +29,7 @@ import {
   type MemoryContextPack,
   type MemoryCoreCandidate,
   type MemoryExpandedCandidate,
+  type MemoryPackedQueryScopeConstraint,
   type MemoryRankedCandidate,
   type MemoryRetrievalLane,
   type MemoryRetrievalPlan,
@@ -94,11 +97,18 @@ import {
   sanitizeMemoryUtilityText,
   type MemorySanitizedUtilityText
 } from "./querySafety";
+import {
+  createPrismaMemoryQueryResolverService,
+  MEMORY_QUERY_RESOLVER_MAX_SOURCES,
+  type MemoryQueryResolverResult,
+  type MemoryQueryResolverService,
+  type MemoryQueryResolverSource
+} from "./queryResolver";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v46";
+  "memory-run-retrieval-admission-v52";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v16";
+  "memory-retrieval-component-metrics-v18";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -178,6 +188,7 @@ export type MemoryRunRetrievalOptions = Readonly<{
   control?: MemoryControlService;
   controlRefs?: MemoryControlRefProvider;
   monotonicClock?: () => number;
+  queryResolver?: MemoryQueryResolverService;
   utilities?: MemoryRunUtilityService;
   vectorRepository?: Pick<MemoryVectorRepository, "resolveActiveProfile">;
 }>;
@@ -203,6 +214,7 @@ export type MemoryRunControlCache = {
   fallbackControlReuseProof?: MemoryFallbackControlReuseProof;
   readOnlyControlReuseAttemptId?: string;
   readOnlyControlReuseProof?: MemoryReadOnlyControlReuseProof;
+  queryResolverConsumedAttemptId?: string;
   rerankConsumedAttemptId?: string;
   settingsDriftFailedSafeAttemptId?: string;
   settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
@@ -227,7 +239,8 @@ type UtilityEvidence = Readonly<{
   externalCallCount: number;
   providerRequestRoutes?: readonly (string | null)[];
   reason: string | null;
-  role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+  role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_QUERY_RESOLVE" |
+    "MEMORY_RERANK";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
 }>;
 
@@ -238,6 +251,7 @@ type MemoryPreparationStage =
   | "localRetrievalMs"
   | "packerMs"
   | "queryEmbeddingMs"
+  | "queryResolverMs"
   | "rejoinMs"
   | "rerankMs"
   | "snapshotMs";
@@ -262,6 +276,7 @@ function createMemoryPreparationTimings(clock: () => number): MemoryPreparationT
     localRetrievalMs: 0,
     packerMs: 0,
     queryEmbeddingMs: 0,
+    queryResolverMs: 0,
     rejoinMs: 0,
     rerankMs: 0,
     snapshotMs: 0
@@ -325,10 +340,49 @@ function budgetUtilityCallCount(
 
 function withMemoryPreparationEvidence(
   result: MemoryPreparingAttemptResult,
-  timings: MemoryPreparationTimings
+  timings: MemoryPreparationTimings,
+  queryResolverExecution: MemoryQueryResolverExecution | null = null
 ): MemoryPreparingAttemptResult {
   const latency = timings.finish();
-  const budget = result.budgetSnapshot;
+  let budget = result.budgetSnapshot;
+  if (queryResolverExecution) {
+    const executions = Array.isArray(budget.utilityExecutions)
+      ? budget.utilityExecutions
+      : [];
+    const resolverDeclared = executions.some((entry) =>
+      typeof entry === "object" && entry !== null && !Array.isArray(entry) &&
+      (entry as Readonly<Record<string, unknown>>).role === "MEMORY_QUERY_RESOLVE");
+    const sourceCharacterCount = queryResolverExecution.sources.reduce(
+      (total, source) => total + source.userTexts.reduce(
+        (sourceTotal, text) => sourceTotal + text.length,
+        0
+      ),
+      0
+    );
+    budget = {
+      ...budget,
+      queryResolverExecutionStrategy: queryResolverExecution.strategy,
+      queryResolverSourceCharacterCount: sourceCharacterCount,
+      queryResolverSourceCount: queryResolverExecution.sources.length,
+      ...(budget.queryResolverState === undefined
+        ? {
+            queryResolverState: "SKIPPED",
+            queryScopeAttachedConstraintKindCounts: Object.freeze({}),
+            queryScopeProposedConstraintCount: 0
+          }
+        : {}),
+      utilityEgressMode: budget.utilityEgressMode === "CONSENTED_EXTERNAL" ||
+        utilityUsedExternal(queryResolverExecution.result)
+        ? "CONSENTED_EXTERNAL"
+        : "LOCAL_ONLY",
+      ...(!resolverDeclared
+        ? { utilityExecutions: [
+            ...executions,
+            utilityEvidence("MEMORY_QUERY_RESOLVE", queryResolverExecution.result)
+          ] }
+        : {})
+    };
+  }
   return {
     ...result,
     budgetSnapshot: {
@@ -338,6 +392,7 @@ function withMemoryPreparationEvidence(
       controlProviderCalls: budgetUtilityCallCount(budget, "MEMORY_CONTROL"),
       memoryPrepareLatencyBucket: memoryPreparationLatencyBucket(latency.memoryPrepareMs),
       queryEmbeddingProviderCalls: budgetUtilityCallCount(budget, "MEMORY_QUERY_EMBED"),
+      queryResolverProviderCalls: budgetUtilityCallCount(budget, "MEMORY_QUERY_RESOLVE"),
       rerankProviderCalls: budgetUtilityCallCount(budget, "MEMORY_RERANK")
     }
   };
@@ -765,19 +820,23 @@ function createMemoryAdmissionDeadline(
   });
 }
 
-type OptionalMemoryUtilityRole = "CONTROL" | "QUERY_EMBED" | "RERANK";
+type OptionalMemoryUtilityRole = "CONTROL" | "QUERY_EMBED" | "QUERY_RESOLVE" | "RERANK";
 
 export const MEMORY_INTERACTIVE_SOFT_DEADLINE_MS = 10_000;
 export const MEMORY_INTERACTIVE_HARD_DEADLINE_MS = 14_000;
 export const MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS = 1_000;
 export const MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS = 1_500;
-// Query embedding starts beside the control call, whose bounded envelope is
-// already eight seconds. Giving both initial utilities the same envelope does
-// not lengthen that concurrent stage, while the 14-second admission deadline
-// still leaves six seconds for local retrieval, reranking, rejoin and packing.
+// Query embedding starts beside the control call and keeps its own eight-second
+// fence. The control call gets one additional second for a strict structured
+// completion while the 14-second admission deadline remains authoritative.
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 8_000;
+// The resolver starts from the original-query speculative frontier beside the
+// control call. Its nine-second child fence overlaps rather than extends the
+// opening stage; the unchanged fourteen-second admission fence and two-second
+// finalization reserve remain authoritative.
+export const MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS = 9_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
-export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 8_000;
+export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 9_000;
 
 const optionalUtilityBudget = Object.freeze({
   CONTROL: {
@@ -787,6 +846,12 @@ const optionalUtilityBudget = Object.freeze({
   QUERY_EMBED: {
     maximumMs: MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
     reserveMs: 0
+  },
+  QUERY_RESOLVE: {
+    maximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+    // It shares the reranker stage and must also leave the authoritative
+    // rejoin plus context packing inside the hard admission envelope.
+    reserveMs: 2_000
   },
   RERANK: {
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
@@ -1057,7 +1122,7 @@ function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknow
 function utilityEvidence(
   role: UtilityEvidence["role"],
   result: MemoryControlResult | MemoryRunQueryEmbeddingResult |
-    MemoryRunRerankResult | null
+    MemoryQueryResolverResult | MemoryRunRerankResult | null
 ): UtilityEvidence {
   if (!result) return {
     externalCall: false,
@@ -1424,7 +1489,7 @@ function aggregationPlanEvidence(
 
 function utilityUsedExternal(
   result: MemoryControlResult | MemoryRunQueryEmbeddingResult |
-    MemoryRunRerankResult | null
+    MemoryQueryResolverResult | MemoryRunRerankResult | null
 ): boolean {
   if (!result) return false;
   if ("externalCallCount" in result &&
@@ -1468,8 +1533,9 @@ function admissionDeadlineAttempt(
   cache: MemoryRunControlCache,
   attemptId: string,
   utilities: readonly Readonly<{
-    result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null;
-    role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+    result: MemoryQueryResolverResult | MemoryRunQueryEmbeddingResult |
+      MemoryRunRerankResult | null;
+    role: "MEMORY_QUERY_EMBED" | "MEMORY_QUERY_RESOLVE" | "MEMORY_RERANK";
   }>[] = []
 ): MemoryPreparingAttemptResult {
   const readOnlyControlReuse = cache.readOnlyControlReuseAttemptId === attemptId
@@ -1513,8 +1579,9 @@ function settingsDriftFailedSafeBudget(
   cache: MemoryRunControlCache,
   attemptId: string,
   utilities: readonly Readonly<{
-    result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null;
-    role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+    result: MemoryQueryResolverResult | MemoryRunQueryEmbeddingResult |
+      MemoryRunRerankResult | null;
+    role: "MEMORY_QUERY_EMBED" | "MEMORY_QUERY_RESOLVE" | "MEMORY_RERANK";
   }>[] = []
 ): Readonly<Record<string, unknown>> {
   const deadlineBudget = admissionDeadlineAttempt(
@@ -1535,6 +1602,8 @@ export type MemoryRelevanceCandidate = Readonly<{
   authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED" | "SUPPORTING";
   candidate: MemoryRankedCandidate;
   current: boolean;
+  /** Server-proven direct-user source fragments; never sent to the reranker. */
+  directUserTexts: readonly string[];
   directness: "DIRECT" | "INFERRED" | "PARAPHRASED" | null;
   handle: string;
   historical: boolean;
@@ -1821,6 +1890,7 @@ export function memoryRelevanceCandidates(
             : "LEARNED" as const,
       candidate,
       current: candidate.metadata.current,
+      directUserTexts: Object.freeze([...(projection.directUserTexts ?? [])]),
       directness: candidate.metadata.directness,
       handle: "",
       historical: candidate.metadata.historical,
@@ -1861,6 +1931,167 @@ export function memoryRelevanceCandidates(
     ? MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES
     : MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES);
   return bounded.map((entry, index) => ({ ...entry, handle: `c${index}` }));
+}
+
+/** Builds a bounded resolver frontier from exact current-user text and
+ * authoritative direct-user fragments only. Assistant text in a mixed raw
+ * round remains available to the reader, but can never become resolver
+ * authority. */
+export function memoryQueryResolverSources(
+  query: string,
+  candidates: readonly MemoryRelevanceCandidate[]
+): readonly MemoryQueryResolverSource[] {
+  if (!query || query.length > 32_000 || query.includes("\u0000")) return Object.freeze([]);
+  const sources: MemoryQueryResolverSource[] = [{
+    handle: "R1",
+    itemKey: null,
+    sourceType: "CURRENT_QUERY",
+    userTexts: Object.freeze([query])
+  }];
+  const seenItems = new Set<string>();
+  for (const entry of candidates) {
+    if (sources.length >= MEMORY_QUERY_RESOLVER_MAX_SOURCES) break;
+    const itemKey = `${entry.candidate.itemType}:${entry.candidate.itemId}`;
+    if (seenItems.has(itemKey)) continue;
+    const userTexts = [...new Set(entry.directUserTexts)].filter((text) =>
+      text.length > 0 && text.length <= 4_000 && !text.includes("\u0000"));
+    if (userTexts.length === 0) continue;
+    seenItems.add(itemKey);
+    sources.push(Object.freeze({
+      handle: `R${sources.length + 1}`,
+      itemKey,
+      sourceType: "MEMORY_EVIDENCE",
+      userTexts: Object.freeze(userTexts.slice(0, 8))
+    }));
+  }
+  return sources.length > 1 ? Object.freeze(sources) : Object.freeze([]);
+}
+
+export function memoryPackedQueryScopeConstraints(input: Readonly<{
+  expanded: readonly MemoryExpandedCandidate[];
+  pack: MemoryContextPack;
+  resolution: Extract<MemoryQueryResolverResult, { status: "READY" }>;
+  sources: readonly MemoryQueryResolverSource[];
+}>): readonly MemoryPackedQueryScopeConstraint[] | null {
+  if (input.resolution.constraints.length === 0) return Object.freeze([]);
+  const sourceByKey = new Map(input.sources.flatMap((source) => source.itemKey
+    ? [[source.itemKey, source] as const]
+    : []));
+  const currentSource = input.sources.find(({ sourceType }) =>
+    sourceType === "CURRENT_QUERY");
+  const expansionByKey = new Map(input.expanded.map((candidate) => [
+    `${candidate.itemType}:${candidate.itemId}`,
+    candidate
+  ]));
+  const packedByKey = new Map(input.pack.items.map((item) => [
+    `${item.itemType}:${item.itemId}`,
+    item
+  ]));
+  const mapped: MemoryPackedQueryScopeConstraint[] = [];
+  for (const constraint of input.resolution.constraints) {
+    if (constraint.sourceType === "CURRENT_QUERY") {
+      if (constraint.itemKey !== null || !currentSource?.userTexts.some((text) =>
+        text.includes(constraint.targetQuote))) return null;
+      mapped.push(Object.freeze({
+        evidenceHandle: "current_query",
+        kind: constraint.kind,
+        targetQuote: constraint.targetQuote
+      }));
+      continue;
+    }
+    if (!constraint.itemKey) return null;
+    const source = sourceByKey.get(constraint.itemKey);
+    const expansion = expansionByKey.get(constraint.itemKey);
+    const packed = packedByKey.get(constraint.itemKey);
+    if (!source || !expansion || !packed ||
+      !source.userTexts.some((text) => text.includes(constraint.targetQuote)) ||
+      !(expansion.directUserTexts ?? []).some((text) =>
+        text.includes(constraint.targetQuote)) ||
+      !packed.rawSafeText.includes(constraint.targetQuote)) return null;
+    mapped.push(Object.freeze({
+      evidenceHandle: packed.evidenceHandle,
+      kind: constraint.kind,
+      targetQuote: constraint.targetQuote
+    }));
+  }
+  const identities = mapped.map((constraint) => [
+    constraint.kind,
+    constraint.evidenceHandle,
+    constraint.targetQuote
+  ].join("\u0000"));
+  return new Set(identities).size === identities.length
+    ? Object.freeze(mapped)
+    : null;
+}
+
+type MemoryQueryScopeAttachmentState =
+  | "BUDGET_FALLBACK"
+  | "READY_ATTACHED"
+  | "READY_NONE"
+  | "REJECTED_FINAL"
+  | "SKIPPED"
+  | "UNAVAILABLE";
+
+function applyMemoryQueryScopeResolution(input: Readonly<{
+  expanded: readonly MemoryExpandedCandidate[];
+  pack: MemoryContextPack;
+  resolution: MemoryQueryResolverResult | null;
+  sources: readonly MemoryQueryResolverSource[];
+}>): Readonly<{
+  attachedConstraintKindCounts: Readonly<Record<string, number>>;
+  pack: MemoryContextPack;
+  proposedConstraintCount: number;
+  state: MemoryQueryScopeAttachmentState;
+}> {
+  if (!input.resolution) return {
+    attachedConstraintKindCounts: Object.freeze({}),
+    pack: input.pack,
+    proposedConstraintCount: 0,
+    state: "SKIPPED"
+  };
+  if (input.resolution.status === "UNAVAILABLE") return {
+    attachedConstraintKindCounts: Object.freeze({}),
+    pack: input.pack,
+    proposedConstraintCount: 0,
+    state: "UNAVAILABLE"
+  };
+  if (input.resolution.constraints.length === 0) return {
+    attachedConstraintKindCounts: Object.freeze({}),
+    pack: input.pack,
+    proposedConstraintCount: 0,
+    state: "READY_NONE"
+  };
+  const constraints = memoryPackedQueryScopeConstraints({
+    expanded: input.expanded,
+    pack: input.pack,
+    resolution: input.resolution,
+    sources: input.sources
+  });
+  if (!constraints || constraints.length === 0) return {
+    attachedConstraintKindCounts: Object.freeze({}),
+    pack: input.pack,
+    proposedConstraintCount: input.resolution.constraints.length,
+    state: "REJECTED_FINAL"
+  };
+  const attachment = attachMemoryQueryScopeConstraints(
+    input.pack,
+    constraints,
+    MEMORY_QUERY_SCOPE_CONSTRAINT_MAX_TOKENS
+  );
+  if (!attachment.attached) return {
+    attachedConstraintKindCounts: Object.freeze({}),
+    pack: input.pack,
+    proposedConstraintCount: input.resolution.constraints.length,
+    state: attachment.reason === "BUDGET" ? "BUDGET_FALLBACK" : "REJECTED_FINAL"
+  };
+  const counts: Record<string, number> = {};
+  for (const constraint of constraints) incrementCount(counts, constraint.kind);
+  return {
+    attachedConstraintKindCounts: Object.freeze(counts),
+    pack: attachment.pack,
+    proposedConstraintCount: input.resolution.constraints.length,
+    state: "READY_ATTACHED"
+  };
 }
 
 export function applyMemoryRelevance(
@@ -2098,6 +2329,72 @@ function mergeSpeculativeRetrieval(
   });
 }
 
+type MemoryQueryResolverExecution = Readonly<{
+  result: MemoryQueryResolverResult;
+  sources: readonly MemoryQueryResolverSource[];
+  strategy: "FINAL" | "SPECULATIVE";
+}>;
+
+const MEMORY_QUERY_RESOLVER_SPECULATIVE_CANDIDATE_MULTIPLIER = 3;
+
+/** Builds only an early resolver frontier. It has no authority over final
+ * retrieval, ordering, or packing: every returned constraint is still joined
+ * to the final authoritative expansion and opaque packed evidence handle
+ * before it can reach the reader. */
+async function speculativeMemoryQueryResolverSources(input: Readonly<{
+  cancellationSignal: AbortSignal;
+  deadline: MemoryAdmissionDeadline;
+  dense: MemoryLocalRetrievalResult | null;
+  now: Date;
+  plan: MemoryRetrievalPlan;
+  query: string;
+  repository: PrismaLocalMemoryRetrievalRepository;
+  sparse: MemoryLocalRetrievalResult | null;
+}>): Promise<readonly MemoryQueryResolverSource[]> {
+  if (input.cancellationSignal.aborted) return Object.freeze([]);
+  const merged = mergeSpeculativeRetrieval(input.sparse, input.dense);
+  const available = [merged, input.sparse, input.dense].filter(
+    (value): value is MemoryLocalRetrievalResult => value !== null
+  );
+  const local = available.sort((left, right) => {
+    const count = (value: MemoryLocalRetrievalResult) => value.laneResults.reduce(
+      (total, lane) => total + lane.candidates.length,
+      0
+    );
+    return count(right) - count(left);
+  })[0];
+  if (!local) return Object.freeze([]);
+  const candidates = fuseMemoryRetrievalCandidates(
+    input.plan,
+    local.laneResults,
+    input.now
+  ).filter((candidate) => candidate.metadata.sourceAuthority === "PAST_CHAT")
+    .slice(
+      0,
+      (MEMORY_QUERY_RESOLVER_MAX_SOURCES - 1) *
+        MEMORY_QUERY_RESOLVER_SPECULATIVE_CANDIDATE_MULTIPLIER
+    );
+  if (candidates.length === 0 || input.cancellationSignal.aborted) {
+    return Object.freeze([]);
+  }
+  const expanded = await runBoundedMemoryRead(
+    input.deadline,
+    MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+    (expansionSignal) => abortableRead(
+      input.repository.expand(local.snapshot, input.plan, candidates),
+      expansionSignal
+    ),
+    input.cancellationSignal
+  );
+  if (input.cancellationSignal.aborted) return Object.freeze([]);
+  const relevance = memoryRelevanceCandidates(candidates, expanded, {
+    aggregationRequested: false,
+    recencyRequested: false,
+    temporalIntent: input.plan.temporalIntent
+  });
+  return memoryQueryResolverSources(input.query, relevance);
+}
+
 function degradationFor(
   result: MemoryLocalRetrievalResult,
   queryEmbedding: MemoryRunQueryEmbeddingResult | null,
@@ -2150,6 +2447,7 @@ export function createMemoryRunRetrievalService(
       const timings = createMemoryPreparationTimings(
         options.monotonicClock ?? (() => performance.now())
       );
+      let settledQueryResolverExecution: MemoryQueryResolverExecution | null = null;
       const result: MemoryPreparingAttemptResult = await (
         async (): Promise<MemoryPreparingAttemptResult> => {
       if (input.expected.chatMemoryMode === "TEMPORARY") {
@@ -2163,9 +2461,12 @@ export function createMemoryRunRetrievalService(
       );
       const speculativeBaselineController = new AbortController();
       const speculativeDenseController = new AbortController();
+      const speculativeQueryResolverController = new AbortController();
       let speculativeBaselinePromise: Promise<MemoryLocalRetrievalResult | null> =
         Promise.resolve(null);
       let speculativeDensePromise: Promise<MemoryLocalRetrievalResult | null> =
+        Promise.resolve(null);
+      let speculativeQueryResolutionPromise: Promise<MemoryQueryResolverExecution | null> =
         Promise.resolve(null);
       try {
       const signal = deadline.signal;
@@ -2296,6 +2597,43 @@ export function createMemoryRunRetrievalService(
         input,
         provisionalPlan.originalSanitizedQuery
       );
+      const executeQueryResolver = async (
+        sources: readonly MemoryQueryResolverSource[],
+        strategy: MemoryQueryResolverExecution["strategy"],
+        cancellationSignal?: AbortSignal
+      ): Promise<MemoryQueryResolverExecution | null> => {
+        if (sources.length === 0 || !options.queryResolver ||
+          cancellationSignal?.aborted) return null;
+        let result: MemoryQueryResolverResult;
+        if (controlCache.queryResolverConsumedAttemptId === input.attemptId) {
+          result = {
+            reason: "memory_query_resolution_retry_budget_exhausted",
+            status: "UNAVAILABLE"
+          };
+        } else {
+          controlCache.queryResolverConsumedAttemptId = input.attemptId;
+          result = await timings.measure("queryResolverMs", () =>
+            runOptionalMemoryUtility(
+              deadline,
+              "QUERY_RESOLVE",
+              (utilitySignal) => options.queryResolver!.resolve({
+                attemptId: input.attemptId,
+                query: baselineReadPlan.originalSanitizedQuery,
+                signal: cancellationSignal
+                  ? AbortSignal.any([utilitySignal, cancellationSignal])
+                  : utilitySignal,
+                sources,
+                userId: input.userId
+              })
+            ).catch(() => ({
+              reason: "memory_query_resolution_unavailable",
+              status: "UNAVAILABLE" as const
+            })));
+        }
+        const execution = Object.freeze({ result, sources, strategy });
+        settledQueryResolverExecution = execution;
+        return execution;
+      };
       if (typeof repository.retrieveSpeculativeBaseline === "function") {
         speculativeBaselinePromise = timings.measure("localRetrievalMs", () =>
           runBoundedMemoryRead(
@@ -2387,6 +2725,33 @@ export function createMemoryRunRetrievalService(
               speculativeDenseController.signal
             ));
         }).catch(() => null);
+      }
+      if (options.queryResolver && input.expected.settings.referenceChatHistory) {
+        speculativeQueryResolutionPromise = (async () => {
+          try {
+            const [sparse, dense] = await Promise.all([
+              speculativeBaselinePromise,
+              speculativeDensePromise
+            ]);
+            const sources = await speculativeMemoryQueryResolverSources({
+              cancellationSignal: speculativeQueryResolverController.signal,
+              deadline,
+              dense,
+              now: input.now,
+              plan: baselineReadPlan,
+              query: baselineReadPlan.originalSanitizedQuery,
+              repository,
+              sparse
+            });
+            return executeQueryResolver(
+              sources,
+              "SPECULATIVE",
+              speculativeQueryResolverController.signal
+            );
+          } catch {
+            return null;
+          }
+        })();
       }
       const [controlRefs, queryEmbedding, control] = await Promise.all([
         controlRefsPromise,
@@ -2862,51 +3227,89 @@ export function createMemoryRunRetrievalService(
           temporalIntent: plan.temporalIntent
         }
       );
-      let relevance: MemoryRunRerankResult | null = null;
-      if (relevanceInput.length > 0) {
+      // A control-unavailable broad fallback uses aggregation machinery only
+      // to preserve recall. It does not turn an open-ended guidance query into
+      // a semantic enumerate/count request, so a previously started resolver
+      // may still finish. Explicitly planned aggregation remains excluded.
+      const finalResolverSources = plan.mode === "PAST_CHAT_SEARCH" &&
+        (!plan.aggregationRequested || broadPlannerFallback)
+        ? memoryQueryResolverSources(plan.originalSanitizedQuery, relevanceInput)
+        : Object.freeze([]);
+      const relevancePromise = (async (): Promise<MemoryRunRerankResult | null> => {
+        if (relevanceInput.length === 0) return null;
         if (controlCache.rerankConsumedAttemptId === input.attemptId) {
-          relevance = {
+          return {
             reason: "memory_relevance_retry_budget_exhausted",
             status: "UNAVAILABLE"
           };
-        } else if (options.utilities) {
-          // The outer preparing state machine owns at most two distinct
-          // retrieval attempts. A retry gets a new durable attempt owner, so
-          // its read-only rerank may execute once again without replaying an
-          // action or colliding with the first attempt's governed bindings.
-          controlCache.rerankConsumedAttemptId = input.attemptId;
-          relevance = await timings.measure("rerankMs", () =>
-            runOptionalMemoryUtility(
-              deadline,
-              "RERANK",
-              (utilitySignal) => options.utilities!.rerank({
-                  attemptId: input.attemptId,
-                  aggregationRequested: plan.aggregationRequested,
-                  canRetry: deadline.canStartOptional,
-                  candidates: relevanceInput.map(({
-                    candidate: _candidate,
-                    ...candidate
-                  }) => candidate),
-                  profileRequested: plan.profileRequested,
-                  query: plan.originalSanitizedQuery,
-                  retrievalMode: plan.mode,
-                  signal: utilitySignal,
-                  temporalIntent: plan.temporalIntent,
-                  userId: input.userId
-                })
-            ).catch(() => ({ reason: "memory_relevance_unavailable",
-              status: "UNAVAILABLE" as const })));
-          if (deadline.expired()) {
-            return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
-              { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
-              { result: relevance, role: "MEMORY_RERANK" }
-            ]);
-          }
-        } else {
-          relevance = { reason: "memory_relevance_unavailable", status: "UNAVAILABLE" };
         }
+        if (!options.utilities) {
+          return { reason: "memory_relevance_unavailable", status: "UNAVAILABLE" };
+        }
+        // The outer preparing state machine owns at most two distinct
+        // retrieval attempts. A retry gets a new durable attempt owner, so
+        // its read-only rerank may execute once again without replaying an
+        // action or colliding with the first attempt's governed bindings.
+        controlCache.rerankConsumedAttemptId = input.attemptId;
+        return timings.measure("rerankMs", () =>
+          runOptionalMemoryUtility(
+            deadline,
+            "RERANK",
+            (utilitySignal) => options.utilities!.rerank({
+                attemptId: input.attemptId,
+                aggregationRequested: plan.aggregationRequested,
+                canRetry: deadline.canStartOptional,
+                candidates: relevanceInput.map(({
+                  candidate: _candidate,
+                  directUserTexts: _directUserTexts,
+                  ...candidate
+                }) => candidate),
+                profileRequested: plan.profileRequested,
+                query: plan.originalSanitizedQuery,
+                retrievalMode: plan.mode,
+                signal: utilitySignal,
+                temporalIntent: plan.temporalIntent,
+                userId: input.userId
+              })
+          ).catch(() => ({ reason: "memory_relevance_unavailable",
+            status: "UNAVAILABLE" as const })));
+      })();
+      const queryResolutionSelectionPromise = (async () => {
+        if (finalResolverSources.length === 0) {
+          if (!speculativeQueryResolverController.signal.aborted) {
+            speculativeQueryResolverController.abort({
+              code: "memory_query_resolution_not_required"
+            });
+          }
+          return Object.freeze({
+            attachment: null,
+            execution: await speculativeQueryResolutionPromise
+          });
+        }
+        const speculative = await speculativeQueryResolutionPromise;
+        const execution = speculative ??
+          await executeQueryResolver(finalResolverSources, "FINAL");
+        return Object.freeze({ attachment: execution, execution });
+      })();
+      const [initialRelevance, queryResolutionSelection] = await Promise.all([
+        relevancePromise,
+        queryResolutionSelectionPromise
+      ]);
+      const queryResolutionExecution = queryResolutionSelection.execution;
+      const queryResolution = queryResolutionSelection.attachment?.result ?? null;
+      const queryResolutionEvidence = queryResolutionExecution?.result ?? null;
+      const resolverSources = queryResolutionSelection.attachment?.sources ??
+        finalResolverSources;
+      const resolverEvidenceSources = queryResolutionExecution?.sources ??
+        finalResolverSources;
+      if (deadline.expired()) {
+        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+          { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
+          { result: queryResolutionEvidence, role: "MEMORY_QUERY_RESOLVE" },
+          { result: initialRelevance, role: "MEMORY_RERANK" }
+        ]);
       }
-      relevance = atomicMemoryRerankResult(relevanceInput, relevance);
+      const relevance = atomicMemoryRerankResult(relevanceInput, initialRelevance);
       const relevant = applyMemoryRelevance(relevanceInput, relevance, plan);
       const rejoinCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
         ? selectMemoryAggregationRawCandidates(dynamicFused, relevant)
@@ -3007,6 +3410,7 @@ export function createMemoryRunRetrievalService(
           if (deadline.expired()) {
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
               { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
+              { result: queryResolutionEvidence, role: "MEMORY_QUERY_RESOLVE" },
               { result: relevance, role: "MEMORY_RERANK" }
             ]);
           }
@@ -3112,12 +3516,15 @@ export function createMemoryRunRetrievalService(
             querySafetyVersion: querySafety.version,
             safetyFindingCounts: querySafety.findingCounts,
             utilityEgressMode: currentControlExternal ||
-              utilityUsedExternal(queryEmbedding) || utilityUsedExternal(relevance)
+              utilityUsedExternal(queryEmbedding) ||
+              utilityUsedExternal(queryResolutionEvidence) ||
+              utilityUsedExternal(relevance)
               ? "CONSENTED_EXTERNAL"
               : "LOCAL_ONLY",
             utilityExecutions: [
               utilityEvidence("MEMORY_CONTROL", controlEvidence),
               utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
+              utilityEvidence("MEMORY_QUERY_RESOLVE", queryResolutionEvidence),
               utilityEvidence("MEMORY_RERANK", relevance)
             ],
             vectorEvidence: local.vectorEvidence,
@@ -3132,23 +3539,34 @@ export function createMemoryRunRetrievalService(
         speculativeBaselineUsed || speculativeHybridUsed || broadLexicalFallbackUsed,
         admittedSourceKinds
       );
-      const pack = timings.measureSync("packerMs", () => packMemoryPersonalContext({
-        core: selectedCore,
-        expanded: dynamicExpanded,
-        maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
-        plan,
-        questionDirectedTemporalFallback: broadPlannerFallback,
-        ranked: selectedDynamic
-      }));
+      const queryScope = timings.measureSync("packerMs", () => {
+        const basePack = packMemoryPersonalContext({
+          core: selectedCore,
+          expanded: dynamicExpanded,
+          maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
+          plan,
+          questionDirectedTemporalFallback: broadPlannerFallback,
+          ranked: selectedDynamic
+        });
+        return applyMemoryQueryScopeResolution({
+          expanded: rejoined,
+          pack: basePack,
+          resolution: queryResolution,
+          sources: resolverSources
+        });
+      });
+      const pack = queryScope.pack;
       const preparedText = pack.text;
       const preparedTokens = pack.approxTokens;
       const utilityExecutions = [
         utilityEvidence("MEMORY_CONTROL", controlEvidence),
         utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
+        utilityEvidence("MEMORY_QUERY_RESOLVE", queryResolutionEvidence),
         utilityEvidence("MEMORY_RERANK", relevance)
       ];
       const externalUtilityUsed = currentControlExternal ||
-        utilityUsedExternal(queryEmbedding) || utilityUsedExternal(relevance);
+        utilityUsedExternal(queryEmbedding) || utilityUsedExternal(queryResolutionEvidence) ||
+        utilityUsedExternal(relevance);
       const commonEvidence = {
         ...actionEvidence,
         ...aggregationPlanEvidence(plan.aggregationRequested, pack),
@@ -3217,6 +3635,20 @@ export function createMemoryRunRetrievalService(
         speculativeBaselineUsed,
         speculativeHybridUsed,
         providerTokenLimit: pack.providerTokenLimit,
+        queryResolverState: queryScope.state,
+        queryResolverBroadFallbackAttachment: broadPlannerFallback &&
+          queryScope.state === "READY_ATTACHED",
+        queryResolverExecutionStrategy: queryResolutionExecution?.strategy ?? "SKIPPED",
+        queryResolverSourceCharacterCount: resolverEvidenceSources.reduce(
+          (total, source) => total + source.userTexts.reduce(
+            (sourceTotal, text) => sourceTotal + text.length,
+            0
+          ),
+          0
+        ),
+        queryResolverSourceCount: resolverEvidenceSources.length,
+        queryScopeAttachedConstraintKindCounts: queryScope.attachedConstraintKindCounts,
+        queryScopeProposedConstraintCount: queryScope.proposedConstraintCount,
         querySafetyVersion: querySafety.version,
         ...relevanceEvidence(
           relevanceInput,
@@ -3269,10 +3701,16 @@ export function createMemoryRunRetrievalService(
         if (!speculativeDenseController.signal.aborted) {
           speculativeDenseController.abort({ code: "memory_speculation_cancelled" });
         }
+        if (!speculativeQueryResolverController.signal.aborted) {
+          speculativeQueryResolverController.abort({
+            code: "memory_query_resolution_speculation_cancelled"
+          });
+        }
+        await speculativeQueryResolutionPromise.catch(() => null);
         deadline.dispose();
       }
       })();
-      return withMemoryPreparationEvidence(result, timings);
+      return withMemoryPreparationEvidence(result, timings, settledQueryResolverExecution);
     }
   });
 }
@@ -3288,6 +3726,7 @@ export function createPrismaMemoryRunRetrievalService(
       actionExecutor: defaultMemoryIntentActionExecutor,
       control: createPrismaMemoryControlService(authority, client),
       controlRefs: createPrismaMemoryControlRefProvider(client),
+      queryResolver: createPrismaMemoryQueryResolverService(authority, client),
       utilities: createPrismaMemoryRunUtilityService(authority, client),
       vectorRepository: createPrismaMemoryVectorRepository(client)
     }

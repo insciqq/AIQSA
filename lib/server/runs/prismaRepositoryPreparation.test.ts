@@ -180,6 +180,7 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
@@ -217,6 +218,37 @@ describe("Memory retrieval execution sequence", () => {
     ], false, true)).toBe(true);
   });
 
+  it("accounts for one declared speculative resolver in the aggregation bound", () => {
+    const maximumAggregationSequence = [
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
+      ...Array.from(
+        { length: 4 },
+        (_, index) => ({ logicalRole: "MEMORY_QUERY_EMBED", ordinal: index + 1 })
+      ),
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
+      ...Array.from(
+        {
+          length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES *
+            MEMORY_RERANK_MAX_ATTEMPTS
+        },
+        (_, index) => ({ logicalRole: "MEMORY_RERANK", ordinal: index + 2 })
+      )
+    ];
+
+    expect(validMemoryRetrievalExecutionSequence(
+      maximumAggregationSequence,
+      false,
+      true,
+      true
+    )).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence(
+      maximumAggregationSequence,
+      false,
+      true
+    )).toBe(false);
+  });
+
   it("allows earlier-utility degradation while constraining a broad profile inventory", () => {
     const profileSequence = [
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
@@ -243,6 +275,7 @@ describe("Memory retrieval execution sequence", () => {
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
@@ -252,6 +285,25 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 }
     ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 1 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], false, true)).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], false, true, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], true, false, true)).toBe(true);
   });
 
   it.each([
