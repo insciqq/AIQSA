@@ -92,6 +92,8 @@ import {
   KNOWLEDGE_ANSWER_SCOPE_V6_SCOPE_SET_REDUCTION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_SCOPE_RECALL_MAP_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_INVALID_PROVENANCE_REJECTION_PROTOCOL_V2,
+  KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_CLOSURE_AUDIT_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_GRANULARITY_EPISTEMIC_FIDELITY_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
@@ -2284,6 +2286,34 @@ describe("run recovery", () => {
     expectedReasoningEfforts: [],
     snapshotVersion: 34
   }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 35
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 36
+  }, {
     current: true,
     executionPolicy: {
       auditorReasoningEffort: "high",
@@ -2296,7 +2326,7 @@ describe("run recovery", () => {
       version: 1
     } as const,
     expectedReasoningEfforts: ["high", "high", "medium", "high"],
-    snapshotVersion: 35
+    snapshotVersion: 37
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -2314,7 +2344,8 @@ describe("run recovery", () => {
       request: "remember this",
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     } as const;
-    const primaryPrompt = snapshotVersion === 35
+    const primaryPrompt = snapshotVersion === 35 || snapshotVersion === 36 ||
+      snapshotVersion === 37
       ? knowledgeAnswerDraftPromptV21GlobalReducerV1(promptInput)
       : knowledgeAnswerDraftPromptV21(promptInput);
     const acceptedRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -2322,7 +2353,18 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 35
+      ...(snapshotVersion === 37
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1
+          }
+        : snapshotVersion === 36
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_CLOSURE_AUDIT_PROTOCOL_V1
+          }
+        : snapshotVersion === 35
         ? {
             executionPolicy: executionPolicy!,
             protocol: KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1
@@ -2578,7 +2620,7 @@ describe("run recovery", () => {
                   : current
                     ? {
                         decisions: [{ id: "D1", status: "closed" }],
-                        version: 1
+                        version: 2
                       }
                   : {}),
               providerResponseId: `response-v21-${requests.length}`
@@ -2615,9 +2657,9 @@ describe("run recovery", () => {
         }));
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(4,
         expect.objectContaining({
-          contractVersion: 1,
+          contractVersion: 2,
           ordinal: 5,
-          purpose: "knowledge_coverage_scope_closure_v1"
+          purpose: "knowledge_coverage_scope_closure_v2"
         }));
       expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
       expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });

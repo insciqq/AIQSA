@@ -34,7 +34,7 @@ import {
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import { executeKnowledgeAnswerGroundingV21 } from
   "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV6";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 } from
   "../../lib/server/knowledge/grounding";
 import {
   decodeKnowledgeCoverageScopeRepairFeedbackFailureV1
@@ -45,8 +45,8 @@ import {
 import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
 } from "../../lib/server/knowledge/coverageScopeCompletenessV1";
-import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION } from
-  "../../lib/server/knowledge/coverageScopeClosureV1";
+import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION } from
+  "../../lib/server/knowledge/coverageScopeClosureV2";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -426,7 +426,7 @@ export function isOpenRagAnswerOperationSequence(
             ...base,
             ...Array.from(
               { length: closurePasses },
-              () => KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+              () => KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
             )
           ];
           return closureGated.length >
@@ -655,7 +655,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
     pipeline === "v21_scope_v6" &&
-      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 ||
+      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 ||
       engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==

@@ -25,6 +25,7 @@ import {
   type KnowledgeAnswerOperationScopeV6,
   type KnowledgeAnswerOperationScopeV6CompletenessV1,
   type KnowledgeAnswerOperationScopeV6ClosureV1,
+  type KnowledgeAnswerOperationScopeV6ClosureV2,
   type KnowledgeAnswerOperationAuditV2,
   type KnowledgeAnswerV21AuditV2ContractVersions,
   type KnowledgeAnswerV21ContractVersions,
@@ -55,6 +56,9 @@ import {
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
 } from "./coverageScopeClosureV1";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+} from "./coverageScopeClosureV2";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
@@ -114,6 +118,8 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V48 = 48 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V49 = 49 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V50 = 50 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 = 51 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52 = 52 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 = 53 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -945,6 +951,42 @@ export type KnowledgeGroundingEvidenceV51 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV52 = Omit<
+  KnowledgeGroundingOperationEvidenceV51,
+  "contractVersion" | "purpose"
+> & Readonly<{
+  contractVersion: 1 | 2 | 6 | 21;
+  purpose: KnowledgeAnswerOperationScopeV6ClosureV2;
+}>;
+
+export type KnowledgeGroundingEvidenceV52 = Omit<
+  KnowledgeGroundingEvidenceV51,
+  "closure" | "operations" | "version"
+> & Readonly<{
+  closure: Readonly<{
+    initialCoveredDimensionCount: number;
+    initialExcludedDimensionCount: number;
+    payloadHash: string;
+    reopenedCoveredDimensionCount: number;
+    reopenedDimensionCount: number;
+    reopenedExcludedDimensionCount: number;
+    status: "accepted";
+  }> | null;
+  operations: readonly KnowledgeGroundingOperationEvidenceV52[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV53 =
+  KnowledgeGroundingOperationEvidenceV52;
+
+export type KnowledgeGroundingEvidenceV53 = Omit<
+  KnowledgeGroundingEvidenceV52,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV53[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -991,7 +1033,9 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV48
   | KnowledgeGroundingEvidenceV49
   | KnowledgeGroundingEvidenceV50
-  | KnowledgeGroundingEvidenceV51;
+  | KnowledgeGroundingEvidenceV51
+  | KnowledgeGroundingEvidenceV52
+  | KnowledgeGroundingEvidenceV53;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3416,6 +3460,239 @@ export function groundSettledKnowledgeAnswerV51(
   return Object.freeze({
     ...grounded,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51
+  });
+}
+
+type KnowledgeGroundingV52Input = Omit<
+  KnowledgeGroundingV35Input,
+  "closure" | "operations"
+> & Readonly<{
+  closure: Readonly<{
+    initialCoveredDimensionCount: number;
+    initialExcludedDimensionCount: number;
+    payloadHash: string;
+    reopenedCoveredDimensionCount: number;
+    reopenedDimensionCount: number;
+    reopenedExcludedDimensionCount: number;
+  }> | null;
+  operations: readonly KnowledgeGroundingOperationEvidenceV52[];
+}>;
+
+/** V52 attests Snapshot V36's holistic reduction-safety audit. The closure can
+ * only reopen a covered or excluded Scope dimension to missing; separate
+ * aggregate counters make both monotone transitions recoverable without
+ * storing query, evidence, Scope, or answer content. The historical V51
+ * projection retains the same bounded operation graph and all prior receipt
+ * invariants. */
+export function groundSettledKnowledgeAnswerV52(
+  input: KnowledgeGroundingV52Input
+): KnowledgeGroundingEvidenceV52 {
+  const closureOperations = input.operations.filter(({ role }) =>
+    role === "scope_closure" || role === "scope_closure_repair");
+  const acceptedClosure = closureOperations.at(-1);
+  const operationPurposesValid = input.operations.every((operation) => {
+    const closureRole = operation.role === "scope_closure" ||
+      operation.role === "scope_closure_repair";
+    return closureRole
+      ? operation.purpose === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION &&
+          operation.contractVersion === 2
+      : operation.purpose !== KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION;
+  });
+  const closureValid = input.closure === null
+    ? closureOperations.length === 0
+    : closureOperations.length >= 1 && closureOperations.length <= 2 &&
+      Number.isSafeInteger(input.closure.initialCoveredDimensionCount) &&
+      input.closure.initialCoveredDimensionCount >= 1 &&
+      Number.isSafeInteger(input.closure.initialExcludedDimensionCount) &&
+      input.closure.initialExcludedDimensionCount >= 0 &&
+      input.closure.initialCoveredDimensionCount +
+        input.closure.initialExcludedDimensionCount <=
+        input.coverageScope.dimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedCoveredDimensionCount) &&
+      input.closure.reopenedCoveredDimensionCount >= 0 &&
+      input.closure.reopenedCoveredDimensionCount <=
+        input.closure.initialCoveredDimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedExcludedDimensionCount) &&
+      input.closure.reopenedExcludedDimensionCount >= 0 &&
+      input.closure.reopenedExcludedDimensionCount <=
+        input.closure.initialExcludedDimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedDimensionCount) &&
+      input.closure.reopenedDimensionCount ===
+        input.closure.reopenedCoveredDimensionCount +
+          input.closure.reopenedExcludedDimensionCount &&
+      input.coverage.coveredDimensionCount ===
+        input.closure.initialCoveredDimensionCount -
+          input.closure.reopenedCoveredDimensionCount &&
+      input.coverage.excludedDimensionCount ===
+        input.closure.initialExcludedDimensionCount -
+          input.closure.reopenedExcludedDimensionCount &&
+      /^[0-9a-f]{64}$/u.test(input.closure.payloadHash) &&
+      input.closure.payloadHash === acceptedClosure?.acceptedResultHash;
+  if (!operationPurposesValid || !closureValid) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted holistic Scope-closure grounding evidence is invalid"
+    );
+  }
+  const projectedOperations = input.operations.map((operation) => Object.freeze({
+    ...operation,
+    ...(operation.role === "scope_closure" || operation.role === "scope_closure_repair"
+      ? {
+          contractVersion: 1 as const,
+          purpose: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+        }
+      : {}),
+    usage: Object.freeze({ ...operation.usage })
+  })) as readonly KnowledgeGroundingOperationEvidenceV51[];
+  const grounded = groundSettledKnowledgeAnswerV51({
+    ...input,
+    closure: input.closure === null
+      ? null
+      : {
+          initialCoveredDimensionCount: input.closure.initialCoveredDimensionCount,
+          payloadHash: input.closure.payloadHash,
+          reopenedDimensionCount: input.closure.reopenedCoveredDimensionCount
+        },
+    operations: projectedOperations
+  });
+  return Object.freeze({
+    ...grounded,
+    closure: input.closure === null
+      ? null
+      : Object.freeze({ ...input.closure, status: "accepted" as const }),
+    operations: Object.freeze(input.operations.map((operation) => Object.freeze({
+      ...operation,
+      usage: Object.freeze({ ...operation.usage })
+    }))),
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52
+  });
+}
+
+/** V53 attests Snapshot V37's non-missing closure admission. Unlike V52, an
+ * all-excluded Selector must still produce a closure receipt, while an
+ * all-missing Selector must not. The persisted shape stays content-free and
+ * unchanged; the new version prevents historical V52 runs that skipped this
+ * audit from being reinterpreted under the repaired scheduler. */
+export function groundSettledKnowledgeAnswerV53(
+  input: KnowledgeGroundingV52Input
+): KnowledgeGroundingEvidenceV53 {
+  const roles = input.operations.map(({ role }) => role);
+  const closureOperations = input.operations.filter(({ role }) =>
+    role === "scope_closure" || role === "scope_closure_repair");
+  const acceptedClosure = closureOperations.at(-1);
+  const operationPurposesValid = input.operations.every((operation) => {
+    const closureRole = operation.role === "scope_closure" ||
+      operation.role === "scope_closure_repair";
+    return closureRole
+      ? operation.purpose === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION &&
+          operation.contractVersion === 2
+      : operation.purpose !== KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION;
+  });
+  const projectedOperations = input.operations.map((operation) => Object.freeze({
+    ...operation,
+    ...(operation.role === "scope_closure" || operation.role === "scope_closure_repair"
+      ? {
+          contractVersion: 1 as const,
+          purpose: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+        }
+      : {}),
+    usage: Object.freeze({ ...operation.usage })
+  })) as readonly KnowledgeGroundingOperationEvidenceV51[];
+  const operationReceiptsValid = projectedOperations.length <=
+    KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 &&
+    projectedOperations.every((operation, index) =>
+      validGroundingOperationV34(operation, index + 1));
+  const firstClosureIndex = roles.indexOf("scope_closure");
+  const closureBlockValid = closureOperations.length === 0
+    ? firstClosureIndex === -1 && !roles.includes("scope_closure_repair")
+    : firstClosureIndex >= 1 && closureOperations.length <= 2 &&
+      (roles[firstClosureIndex - 1] === "initial" ||
+        roles[firstClosureIndex - 1] === "repair") &&
+      (closureOperations.length === 1 ||
+        roles[firstClosureIndex + 1] === "scope_closure_repair") &&
+      (firstClosureIndex + closureOperations.length === roles.length ||
+        roles[firstClosureIndex + closureOperations.length] === "supplement");
+  const closureValid = input.closure === null
+    ? closureOperations.length === 0 &&
+      input.coverage.coveredDimensionCount === 0 &&
+      input.coverage.excludedDimensionCount === 0
+    : closureOperations.length >= 1 && closureOperations.length <= 2 &&
+      Number.isSafeInteger(input.closure.initialCoveredDimensionCount) &&
+      input.closure.initialCoveredDimensionCount >= 0 &&
+      Number.isSafeInteger(input.closure.initialExcludedDimensionCount) &&
+      input.closure.initialExcludedDimensionCount >= 0 &&
+      input.closure.initialCoveredDimensionCount +
+        input.closure.initialExcludedDimensionCount >= 1 &&
+      input.closure.initialCoveredDimensionCount +
+        input.closure.initialExcludedDimensionCount <=
+        input.coverageScope.dimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedCoveredDimensionCount) &&
+      input.closure.reopenedCoveredDimensionCount >= 0 &&
+      input.closure.reopenedCoveredDimensionCount <=
+        input.closure.initialCoveredDimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedExcludedDimensionCount) &&
+      input.closure.reopenedExcludedDimensionCount >= 0 &&
+      input.closure.reopenedExcludedDimensionCount <=
+        input.closure.initialExcludedDimensionCount &&
+      Number.isSafeInteger(input.closure.reopenedDimensionCount) &&
+      input.closure.reopenedDimensionCount ===
+        input.closure.reopenedCoveredDimensionCount +
+          input.closure.reopenedExcludedDimensionCount &&
+      input.coverage.coveredDimensionCount ===
+        input.closure.initialCoveredDimensionCount -
+          input.closure.reopenedCoveredDimensionCount &&
+      input.coverage.excludedDimensionCount ===
+        input.closure.initialExcludedDimensionCount -
+          input.closure.reopenedExcludedDimensionCount &&
+      /^[0-9a-f]{64}$/u.test(input.closure.payloadHash) &&
+      input.closure.payloadHash === acceptedClosure?.acceptedResultHash;
+  if (!operationPurposesValid || !operationReceiptsValid ||
+    !closureBlockValid || !closureValid) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted non-missing Scope-closure grounding evidence is invalid"
+    );
+  }
+  const allExcludedAdmission = input.closure !== null &&
+    input.closure.initialCoveredDimensionCount === 0;
+  // V51 remains the owner of the historical non-Closure state machine. For the
+  // new all-excluded admission, remove the already validated V2 Closure block
+  // and renumber only this internal historical projection; unlike a fabricated
+  // covered counter, this preserves the actual V53 coverage semantics.
+  const historicalOperations = allExcludedAdmission
+    ? projectedOperations
+        .filter(({ role }) => role !== "scope_closure" &&
+          role !== "scope_closure_repair")
+        .map((operation, index) => Object.freeze({
+          ...operation,
+          ordinal: index + 1 as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+        })) as readonly KnowledgeGroundingOperationEvidenceV51[]
+    : projectedOperations;
+  const historicalClosure = input.closure === null || allExcludedAdmission
+    ? null
+    : {
+        initialCoveredDimensionCount: input.closure.initialCoveredDimensionCount,
+        payloadHash: input.closure.payloadHash,
+        reopenedDimensionCount: input.closure.reopenedCoveredDimensionCount
+      };
+  const grounded = groundSettledKnowledgeAnswerV51({
+    ...input,
+    closure: historicalClosure,
+    operations: historicalOperations
+  });
+  const closureRepairAttempted = roles.includes("scope_closure_repair");
+  return Object.freeze({
+    ...grounded,
+    closure: input.closure === null
+      ? null
+      : Object.freeze({ ...input.closure, status: "accepted" as const }),
+    closureRepairAttempted,
+    closureRepairSucceeded: closureRepairAttempted,
+    operations: Object.freeze(input.operations.map((operation) => Object.freeze({
+      ...operation,
+      usage: Object.freeze({ ...operation.usage })
+    }))),
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53
   });
 }
 

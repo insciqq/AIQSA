@@ -408,6 +408,25 @@ export function knowledgeCoverageEvidenceAtomIndexV2(
   });
 }
 
+/**
+ * Lets the shared Evidence Manifest packer enforce the exact downstream map
+ * capacity before any answer-model request. Invalid evidence still throws;
+ * only the independently bounded atom-cap outcome is reported as not fitting.
+ */
+export function knowledgeCoverageEvidenceFitsAtomLimitV2(
+  evidence: readonly KnowledgeCoverageEvidenceV4[]
+): boolean {
+  if (evidence.length < 1) return true;
+  try {
+    knowledgeCoverageEvidenceAtomIndexV2(evidence);
+    return true;
+  } catch (error) {
+    if (error instanceof Error &&
+      error.message === "knowledge_coverage_atom_limit_exceeded") return false;
+    throw error;
+  }
+}
+
 export function knowledgeCoverageEvidenceAtomIndex(
   evidence: readonly KnowledgeCoverageEvidenceV4[],
   version: KnowledgeCoverageEvidenceAtomIndexVersion

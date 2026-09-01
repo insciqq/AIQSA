@@ -435,7 +435,7 @@ describe("Knowledge System Model PDF parser", () => {
     }));
     const execute = vi.fn(async (_snapshot, request) => {
       expect(request.content.blocks[0]).toMatchObject({
-        text: expect.stringContaining("[[AIQSA_ROW_CONTINUATION]]"),
+        text: expect.stringContaining("Start the record with exactly `Visual data:`"),
         type: "text"
       });
       const metadata = request.attachments[0]!.metadata as {
@@ -530,6 +530,76 @@ describe("Knowledge System Model PDF parser", () => {
         "original-detail page image"
       );
     }
+  });
+
+  it("keeps profile 13 on the immutable text-only Vision prompt", async () => {
+    let prompt = "";
+    const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+      attemptRepository: {
+        markAmbiguous: vi.fn(async () => undefined),
+        markDispatched: vi.fn(async () => true),
+        reserve: vi.fn(async () => ({ attemptId: "attempt-1", kind: "dispatch" as const })),
+        settle: vi.fn(async (input: Record<string, unknown>) => ({
+          artifactId: input.artifactId as string,
+          attemptId: input.attemptId as string,
+          batchIndex: input.batchIndex as number,
+          mode: input.mode as "system_model_vision",
+          pageEnd: input.pageEnd as number,
+          pageStart: input.pageStart as number,
+          processingGeneration: input.processingGeneration as number,
+          requestDigest: input.requestDigest as string,
+          resultText: input.resultText as string,
+          sourceVersionId: input.sourceVersionId as string,
+          usage: input.usage as never
+        }))
+      } as never,
+      execute: vi.fn(async (_snapshot, request) => {
+        prompt = (request.content.blocks[0] as { text: string }).text;
+        return {
+          finalProviderResponsePreview: {},
+          finalText: [
+            modelPdfPageStartMarker(1),
+            "Historical transcription",
+            modelPdfPageEndMarker(1)
+          ].join("\n"),
+          usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 0, totalTokens: 120 }
+        };
+      }) as never,
+      inspect: vi.fn(async () => ({ pageCount: 1 })),
+      prepare: vi.fn(async () => ({
+        images: [{
+          bytes: Buffer.from("image-page"),
+          height: 3_200,
+          mimeType: "image/png" as const,
+          page: 1,
+          sourceHeight: 800,
+          sourceWidth: 600,
+          width: 2_400
+        }],
+        kind: "images" as const,
+        pageEnd: 1,
+        pageStart: 1
+      }))
+    });
+
+    await parser.parse({
+      artifactId: "artifact-vision-v13",
+      bytes: Buffer.from("%PDF-source"),
+      maxBlocks: 100,
+      maxCharacters: 10_000,
+      maxPages: 10,
+      mode: "system_model_vision",
+      ownerUserId: "owner-1",
+      parserProfileVersion: 13,
+      processingGeneration: 0,
+      profileRevisionId: "profile-vision-v13",
+      sourceVersionId: "source-version-vision-v13",
+      systemModelPolicyVersion: 3,
+      systemModelSnapshot: snapshot()
+    });
+
+    expect(prompt).toContain("Do not summarize, interpret, correct, calculate, or omit content.");
+    expect(prompt).not.toContain("Visual data:");
   });
 
   it("bounds concurrent Vision pages and restores source page order", async () => {

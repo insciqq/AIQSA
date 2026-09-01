@@ -26,7 +26,8 @@ import {
   decodeKnowledgeCoverageScopeRepairCandidateV1,
   knowledgeCoverageScopePromptV6VerifiedPatchV1,
   validateKnowledgeCoverageScopeV6VerifiedPatchV1,
-  type KnowledgeCoverageScopeRepairCandidateV1
+  type KnowledgeCoverageScopeRepairCandidateV1,
+  type KnowledgeCoverageScopeTransientRepairBaseV1
 } from "./coverageScopeVerifiedPatchRepairV1";
 
 export const KNOWLEDGE_COVERAGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_VERSION = 1 as const;
@@ -90,7 +91,7 @@ function sameDiagnostic(
  */
 export function collectKnowledgeCoverageScopeRepairDiagnosticsV1(input: Readonly<{
   atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion;
-  base: KnowledgeCoverageScopeRepairCandidateV1 | null;
+  base: KnowledgeCoverageScopeTransientRepairBaseV1 | null;
   evidence: readonly KnowledgeCoverageEvidenceV6[];
   initialDiagnostic: KnowledgeCoverageScopeRepairDiagnosticV1;
   request: string;

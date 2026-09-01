@@ -27,7 +27,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftSupplementV21,
@@ -71,12 +71,12 @@ import {
   knowledgeCoverageScopePromptV6RecallMapV1
 } from "./coverageScopeRecallMapV1";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
-  knowledgeCoverageScopeClosurePromptV1
-} from "./coverageScopeClosureV1";
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
+  knowledgeCoverageScopeClosurePromptV2
+} from "./coverageScopeClosureV2";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
@@ -1162,7 +1162,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("reconstructs the global reducer into Evidence V51", async () => {
+  it("reconstructs the holistic closure audit into Evidence V52", async () => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1292,7 +1292,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
       protocol:
-        KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
+        KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1344,7 +1344,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
         version: acceptedSelector!.version
       }
     });
-    const closurePrompt = knowledgeCoverageScopeClosurePromptV1({
+    const closurePrompt = knowledgeCoverageScopeClosurePromptV2({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       closurePass: "initial",
       evidence: selectorEvidence,
@@ -1355,17 +1355,19 @@ describe("Knowledge Evidence v2 repository projection", () => {
     });
     const closureRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       ...commonRequest,
-      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
       coverageScopePayloadHash,
-      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
       systemPrompt: closurePrompt.systemPrompt,
       userPrompt: closurePrompt.userPrompt
     });
     const rawClosure = {
-      decisions: [{ id: "D1", status: "closed" }],
-      version: 1
+      decisions: [{ id: "D1", status: "closed" }, {
+        id: "D2", status: "missing"
+      }],
+      version: 2
     } as const;
     const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector!);
     const rawSupplement = {
@@ -1494,7 +1496,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
         acceptedResult: rawClosure,
         draft: dispatchDraft,
         ordinal: 5,
-        purpose: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
       }),
       v21AttemptRow({
         acceptedRequest: supplementRequest,
@@ -1548,8 +1550,11 @@ describe("Knowledge Evidence v2 repository projection", () => {
       correctionSucceeded: true,
       closure: {
         initialCoveredDimensionCount: 1,
+        initialExcludedDimensionCount: 0,
         payloadHash: knowledgeAnswerHash(rawClosure),
-        reopenedDimensionCount: 0
+        reopenedCoveredDimensionCount: 0,
+        reopenedDimensionCount: 0,
+        reopenedExcludedDimensionCount: 0
       },
       closureRepairAttempted: false,
       closureRepairSucceeded: false,
@@ -1566,7 +1571,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       scopeRepairAttempted: false,
       scopeRepairSucceeded: false,
       supportedClaimCount: 2,
-      version: 51
+      version: 53
     });
     expect(result.grounding).toMatchObject({
       answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),

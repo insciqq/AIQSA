@@ -37,8 +37,8 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
 } from "./coverageScopeCompletenessV1";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-} from "./coverageScopeClosureV1";
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+} from "./coverageScopeClosureV2";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
@@ -99,6 +99,7 @@ export type KnowledgeProviderAttemptPurpose =
   | "knowledge_coverage_scope_v6"
   | "knowledge_coverage_scope_completeness_v1"
   | "knowledge_coverage_scope_closure_v1"
+  | "knowledge_coverage_scope_closure_v2"
   | "knowledge_grounded_selector_v21"
   | "knowledge_grounded_selector_final_v21"
   | "knowledge_coverage_planner_v20"
@@ -519,6 +520,7 @@ function answerOperationContractVersion(
   if (purpose === "knowledge_coverage_scope_v6") return 6;
   if (purpose === "knowledge_coverage_scope_completeness_v1") return 1;
   if (purpose === "knowledge_coverage_scope_closure_v1") return 1;
+  if (purpose === "knowledge_coverage_scope_closure_v2") return 2;
   if (purpose === "knowledge_coverage_auditor_v2") return 2;
   if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
@@ -636,6 +638,7 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
     value === "knowledge_coverage_scope_v6" ||
     value === "knowledge_coverage_scope_completeness_v1" ||
     value === "knowledge_coverage_scope_closure_v1" ||
+    value === "knowledge_coverage_scope_closure_v2" ||
     value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
@@ -709,6 +712,7 @@ function validReservationPurpose(value: unknown): value is KnowledgeProviderAtte
     value === "knowledge_coverage_scope_v6" ||
     value === "knowledge_coverage_scope_completeness_v1" ||
     value === "knowledge_coverage_scope_closure_v1" ||
+    value === "knowledge_coverage_scope_closure_v2" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
@@ -1454,7 +1458,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads the exact current V35 positive-finding, query-granularity,
+/** Loads the exact current V36 positive-finding, query-granularity,
  * epistemic-fidelity, answer-level-compression, and model-owned Scope set
  * reduction pipeline with a recall-first Scope map, deterministic whole-item
  * invalid-provenance rejection, global no-data reduction, exact Supplement
@@ -1483,7 +1487,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const scope = KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION;
   const completeness = KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION;
   const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21;
-  const closure = KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION;
+  const closure = KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION;
   const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
   const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
   const allowedSequences: KnowledgeAnswerOperationV21[][] = [];

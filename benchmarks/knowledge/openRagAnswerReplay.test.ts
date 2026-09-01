@@ -144,7 +144,7 @@ function currentOrigin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 51,
+      groundingEvidenceVersion: 53,
       pipelineVersion: currentPipelineVersion,
       selectorContractVersion: 21,
       settlementVersion: 6
@@ -153,7 +153,7 @@ function currentOrigin() {
 }
 
 const currentPipelineVersion =
-  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_settlement_v6";
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_settlement_v6";
 
 const currentExecutionPolicy = Object.freeze({
   auditorReasoningEffort: "medium",
@@ -299,7 +299,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V35 snapshot with V21 Draft and Selector", async () => {
+  it("runs the current V36 snapshot with V21 Draft and Selector", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -343,8 +343,8 @@ describe("OpenRAG frozen-evidence replay", () => {
       if (request.name === "knowledge_coverage_scope_completeness_v1") {
         return { additions: [], version: 1 };
       }
-      if (request.name === "knowledge_coverage_scope_closure_v1") {
-        return { decisions: [{ id: "D1", status: "closed" }], version: 1 };
+      if (request.name === "knowledge_coverage_scope_closure_v2") {
+        return { decisions: [{ id: "D1", status: "closed" }], version: 2 };
       }
       return {
         claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
@@ -365,7 +365,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
-      "knowledge_coverage_scope_closure_v1"
+      "knowledge_coverage_scope_closure_v2"
     ]);
     expect(result).toMatchObject({
       contracts: {
@@ -385,7 +385,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       { operation: "knowledge_coverage_scope_v6", ordinal: 2 },
       { operation: "knowledge_coverage_scope_completeness_v1", ordinal: 3 },
       { operation: "knowledge_grounded_selector_v21", ordinal: 4 },
-      { operation: "knowledge_coverage_scope_closure_v1", ordinal: 5 }
+      { operation: "knowledge_coverage_scope_closure_v2", ordinal: 5 }
     ]);
     expect(result.rawProviderOutputs[0]?.output).toMatchObject({
       claims: [{ text: "Atlas retains completed exports for 30 days." }]
@@ -441,8 +441,8 @@ describe("OpenRAG frozen-evidence replay", () => {
       if (request.name === "knowledge_coverage_scope_completeness_v1") {
         return { additions: [], version: 1 };
       }
-      if (request.name === "knowledge_coverage_scope_closure_v1") {
-        return { decisions: [{ id: "D1", status: "closed" }], version: 1 };
+      if (request.name === "knowledge_coverage_scope_closure_v2") {
+        return { decisions: [{ id: "D1", status: "closed" }], version: 2 };
       }
       return {
         claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
@@ -477,7 +477,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
-      "knowledge_coverage_scope_closure_v1",
+      "knowledge_coverage_scope_closure_v2",
       "knowledge_answer_draft_supplement_v21"
     ])).toBe(true);
     expect(isOpenRagAnswerOperationSequence(frozen.contracts, [
@@ -486,7 +486,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
-      "knowledge_coverage_scope_closure_v1",
+      "knowledge_coverage_scope_closure_v2",
       "knowledge_answer_draft_supplement_v21",
       "knowledge_grounded_selector_final_v21"
     ])).toBe(true);
@@ -495,7 +495,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
-      "knowledge_coverage_scope_closure_v1",
+      "knowledge_coverage_scope_closure_v2",
       "knowledge_answer_draft_supplement_v21",
       "knowledge_grounded_selector_final_v21",
       "knowledge_grounded_selector_final_v21"
@@ -511,7 +511,7 @@ describe("OpenRAG frozen-evidence replay", () => {
       "knowledge_coverage_scope_v6",
       "knowledge_coverage_scope_completeness_v1",
       "knowledge_grounded_selector_v21",
-      "knowledge_coverage_scope_closure_v1"
+      "knowledge_coverage_scope_closure_v2"
     ])).toBe(true);
   });
 
@@ -610,7 +610,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     }), "medium")).toBe(false);
   });
 
-  it("freezes a current V35 run that inherits the provider reasoning default", () => {
+  it("freezes a current V36 run that inherits the provider reasoning default", () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-09-01T00:00:00.000Z",

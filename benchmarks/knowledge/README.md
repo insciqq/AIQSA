@@ -44,6 +44,11 @@ Base through the ordinary authenticated chat API. It never uploads,
 reprocesses, retrieves directly from a repository, or grants source authority
 from benchmark metadata. The private profile attestation must name the same
 active 100-source Base and profile revision found by product admission.
+An already indexed historical PDF-parser profile remains admissible only while
+the current parser still declares that version readable. The manifest records
+the exact historical version; the runner never relabels it as current, and a
+future or invalid version fails closed. This permits query-only rolling-upgrade
+checks without a paid corpus reparse while preserving uniform origin pins.
 
 The runner binds exactly one `gpt-5.6-luna` answer deployment and one
 `gpt-5.6-sol` judge deployment on the explicitly supplied codex-lb connection.
@@ -57,17 +62,17 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests current Snapshot V35 over Draft V21 / blind
+The live answer lane attests current Snapshot V37 over Draft V21 / blind
 Coverage Scope V6 / query-granularity, epistemic-fidelity, answer-level
 compression, server-issued request-anchor IDs, and model-owned set reduction
 preserving append-only Scope
-Completeness V1 / Selector V21 / Scope Closure V1 / settlement V6 and refuses
+Completeness V1 / Selector V21 / Scope Closure V2 / settlement V6 and refuses
 to run while the code-owned
 `v21_scope_v6` rollout is not at 100%. This prevents a historical V20 product
-answer from being reported under a V35 manifest. Keep that activation candidate
+answer from being reported under a V37 manifest. Keep that activation candidate
 unpublished until the acceptance gate passes; frozen replay remains available.
-The current replay pin is Snapshot V35 / Grounding Evidence V51 with the
-`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1`
+The current replay pin is Snapshot V37 / Grounding Evidence V53 with the
+`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1`
 pipeline. It retains delimiter-aware claim validation and deterministic removal
 of only provenance-disjoint surplus support edges. Expanded passages use
 persisted content-free boundaries and Source ordinals to build atoms in trusted
@@ -118,17 +123,24 @@ global no-data reconciliation without another model operation: the model may
 exclude an evidence-free placeholder only beside a distinct positive item with
 the exact same immutable request anchor, while the server rechecks that anchor,
 positive provenance, and surviving covered-or-missing decision. It never
-semantically merges items, transfers provenance, or promotes coverage. Every
-other repairable Scope
-failure receives a bounded validator-ordered set of every independently
-detectable stable-path error code, JSON path, expected handle, and applicable
-count bound, plus a content-free hash of any
-transient structurally bounded repair base. The server applies replacement
-values only at independently rejected paths and revalidates after each patch;
-all fields outside those paths remain unchanged. The rejected provider payload
-is neither copied into the repair request nor persisted by the product, and
-recovery without its transient base fails closed. Container repairs whose shape
-could invalidate descendant paths deliberately retain first-error feedback.
+semantically merges items, transfers provenance, or promotes coverage. Current
+V37 supersedes that historical deletion on its active path. Every repairable
+Scope failure receives a bounded validator-ordered set of stable-path error
+codes, JSON paths, expected handles, and applicable count bounds, plus a
+content-free hash when the rejected payload retains the exact bounded Scope
+root container. Invalid leaves do not discard that transient map boundary. For
+a local diagnostic, the server replaces only the repair candidate's evidence
+unit matching the rejected immutable K handle; joint and unsupported
+diagnostics replace only their respective bounded collection. It revalidates
+after every unit replacement and preserves every unrejected unit. For a
+missing, duplicate, malformed, or incomplete unit map, it preserves each
+expected K unit that occurs uniquely in the bounded base and fills only absent
+or indexed-rejected handles from the repair candidate in immutable evidence
+order. If the two candidates cannot yield exactly one unit per expected handle,
+repair fails closed. Only a malformed root without reusable bounded arrays
+requires one independently valid fresh candidate. The rejected payload is
+neither copied into the repair request nor persisted by the product, and
+recovery without its transient base fails closed.
 All diagnostics are handled by the existing single repair call, so this adds no
 operation. Snapshot V25 kept its initial Scope pass byte-exact with V24 and used
 the multi-diagnostic envelope only after initial rejection; V29 appends its
@@ -165,11 +177,15 @@ no valid edge left, it is downgraded to `missing`; it is never promoted,
 remapped, or supplied with a server-chosen edge. Genuine shape, D-ID, order, or
 status errors still take the bounded repair path. This normalization consumes
 no model operation and the fully normalized payload must pass the unchanged
-Selector validator. The independent least-authority Scope Closure pass sees
-only covered Scope items and their mapped
-supported-answer projection. It may veto `covered` back to `missing` when a
-material qualifier, condition, comparison, or conjunct is absent, but cannot
-promote a target, change evidence eligibility, or inspect unrelated evidence.
+Selector validator. The independent least-authority Scope Closure V2 pass sees
+the complete ordered pre-reduction Scope, every item's exact assigned atoms,
+and only the supported-answer text already mapped to covered items. It may veto
+`covered` back to `missing` when a material qualifier, condition, comparison,
+conjunct, set member, or cardinality is absent. It may also reopen an invalidly
+excluded positive item to `missing`, including when a later narrower item does
+not semantically subsume an earlier collective requirement. It cannot promote
+a target, create an exclusion, choose support, change evidence eligibility, or
+inspect unrelated answer text.
 The five-operation path and any path with one adjacent structural repair retain
 both calls for one targeted correction under the eight-call cap. A second repair
 may consume that reserve; it never creates another correction loop. When every
@@ -210,6 +226,15 @@ server-issued request-anchor IDs that are deterministically resolved before
 historical validation. This uses the existing Draft/Scope/Supplement/Selector
 reducer and adds no schema, retrieval, language-specific server splitting,
 semantic inference, or model operation.
+
+Snapshot V36 / Evidence V52 add the holistic reduction-safety audit without a
+new model operation but retain the historical covered-only scheduler. Snapshot
+V37 / Evidence V53 require that same audit after any `covered` or `excluded`
+Selector decision; only an all-`missing` result skips it. The receipt records
+only initial and reopened covered/excluded counts plus the existing hashes,
+timing, usage, and aggregate state; it stores no request, atom, Scope
+description, claim, decision, or answer text.
+
 Snapshot V34 / Evidence V50 retain whole-item invalid-provenance rejection
 without global no-data supersession, exact grouped-Supplement duplicate
 reduction, primary-Draft co-equal facet atomization, or target-local
@@ -259,7 +284,7 @@ npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
 ```
 
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
-The current V35 acceptance campaign always supplies exactly five distinct
+The current V37 acceptance campaign always supplies exactly five distinct
 `--case-id` values and never dispatches `--full`. Each five-case run is
 sequential, fail-fast, and non-scoreable; a corpus result may be assembled only
 after all twenty batches share the exact frozen pins and every case has settled.
@@ -315,9 +340,10 @@ the rejected stage, into the private failure checkpoint before fail-fast exit.
 When the answer stage completed, its private answer and replay snapshot are
 likewise persisted if the judge fails.
 
-Replay schema V2 preserves exact V20 recovery and supports the current V35
-five-call `Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
-normal path, one adjacent structural validation repair for Scope, completeness,
+Replay schema V2 preserves exact V20 recovery and supports the current V37
+`Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
+path whenever Selector made a non-missing decision, while an all-`missing`
+Selector proceeds directly to correction. It permits one adjacent structural validation repair for Scope, completeness,
 initial Selector, or Scope Closure, and an eight-call hard cap that keeps both
 correction slots available after any one repair. It also accepts the bounded
 `Supplement -> final Selector -> final Selector repair` suffix described above.
@@ -335,12 +361,28 @@ item. Selector receives a de-duplicated exact-text index for the atoms assigned
 to merged Scope and independently filters positive findings whose descriptions are not
 entailed by those atoms or are not material direct requirements of the request.
 Those findings are `excluded` from correction, settlement, and the coverage
-denominator. A requested unsupported facet has no atom IDs and can never be
-excluded; it remains `missing`.
+denominator. A requested unsupported facet has no atom IDs and may be excluded
+only by the existing exact-anchor global supersession rule; absent
+that positive surviving peer it remains `missing`. Scope Closure V2 then audits
+the complete ordered pre-reduction Scope and assigned atoms while receiving
+answer text only for covered mappings. The scheduler invokes it whenever any
+dimension is `covered` or `excluded`; only an all-`missing` Selector has no
+reduction decision to audit. It may only preserve state or reopen
+`covered`/`excluded` to `missing`, after which the unchanged bounded correction
+path handles evidence-backed targets.
+Before Draft, the shared manifest packer now checks the downstream
+source-ordered atom capacity alongside byte and token limits. It preserves every
+exact excerpt, first omits only the next lower-ranked item's optional expanded
+context as one labelled field, and excludes that complete candidate under the
+existing budget reason only if its exact excerpt still cannot fit. Draft and
+all grounding stages therefore see the same bounded manifest, and an atom-cap
+overflow cannot surface only after a paid Draft.
 A repair receives unchanged authority inputs plus only bounded content-safe
-validator feedback and an optional transient-base hash. Its candidate is merged
-only at server-rejected paths and revalidated after every replacement; provider
-failures are not retried. Correction starts
+validator feedback and an optional transient-base hash. A local rejection
+recomputes only its immutable-K evidence unit, while a joint or unsupported
+rejection recomputes only that collection; every unrejected map unit survives
+and the result is revalidated after every replacement. Provider failures are
+not retried. Correction starts
 only when both remaining calls fit. Every supplemental candidate names exactly
 one initially missing positive Scope target and carries no model-owned
 provenance. The final Selector independently

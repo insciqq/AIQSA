@@ -10,7 +10,11 @@ import type {
 
 export const MODEL_PDF_OUTPUT_MAX_CHARACTERS_PER_BATCH = 500_000;
 export const MODEL_PDF_OUTPUT_MAX_LINES_PER_PAGE = 20_000;
-export const MODEL_PDF_PROMPT_VERSION = 5;
+export const MODEL_PDF_PROMPT_VERSION = 6;
+/** First immutable model-PDF parser profile whose Vision transcription also
+ * projects information encoded only by charts, plots, diagrams, maps, and
+ * figures into bounded searchable text. Earlier profiles remain text-only. */
+export const MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION = 14 as const;
 export const MODEL_PDF_ROW_CONTINUATION_CELL = "[[AIQSA_ROW_CONTINUATION]]";
 
 export type DecodedModelPdfPage = Readonly<{
@@ -34,7 +38,7 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
   mode: PdfModelProcessingMode;
   pageEnd: number;
   pageStart: number;
-  promptVersion?: 1 | 2 | 3 | 4 | 5;
+  promptVersion?: 1 | 2 | 3 | 4 | 5 | 6;
 }>): string {
   const sections: string[] = [];
   for (let page = input.pageStart; page <= input.pageEnd; page += 1) {
@@ -47,7 +51,10 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
   return [
     "Faithfully transcribe the attached document pages for a private search index.",
     attachmentDescription,
-    "Do not summarize, interpret, correct, calculate, or omit content.",
+    promptVersion >= 6
+      ? "Do not summarize, correct, calculate, or omit textual content. The visual-data " +
+        "projection required below is the only permitted description of non-text marks."
+      : "Do not summarize, interpret, correct, calculate, or omit content.",
     "Preserve headings, labels, values, units, footnotes, and reading order.",
     "Write table rows as tab-separated cells. Keep a label and its value on the same row.",
     ...(promptVersion >= 2 ? [
@@ -76,6 +83,19 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
         "next peer value or visible separator. Decide from layout (borders, alignment, " +
         "indentation, and repeated row pattern), never from the language or meaning of labels. " +
         "Leave genuinely empty cells empty."
+    ] : []),
+    ...(promptVersion >= 6 ? [
+      "For every information-bearing chart, plot, diagram, map, or figure, add one compact " +
+        "searchable visual-data record immediately after its visible caption or labels. " +
+        "Start the record with exactly `Visual data:` and include labeled Type, Title, " +
+        "Axes/legend/labels, Data points/trends, and Caption/annotations fields when they " +
+        "are visible. Preserve visible names, values, units, and series identities.",
+      "For charts and plots, cover every visible series. Record clearly readable data " +
+        "points. Where exact point labels are absent, state only visually evident approximate " +
+        "ranges, direction changes, extrema, plateaus, crossings, and stability across the " +
+        "shown domain. For diagrams, record explicit nodes, labeled links, directions, and " +
+        "grouping. Never infer causes, intent, hidden values, or facts not encoded by the " +
+        "visible marks. Do not add a visual-data record for a purely decorative image."
     ] : []),
     "For an empty page, write [BLANK PAGE].",
     "Return only the following page sections, once each and in this exact order:",

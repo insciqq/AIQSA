@@ -6,6 +6,8 @@ import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifes
 import { knowledgeCoverageEvidenceFromManifestV6 } from "./coverageScopeV6";
 import {
   decodeKnowledgeCoverageScopePromptV6VerifiedPatchV1,
+  decodeKnowledgeCoverageScopeRepairCandidateV1,
+  decodeKnowledgeCoverageScopeTransientRepairBaseV1,
   decodeKnowledgeCoverageScopeVerifiedPatchFailureV1,
   knowledgeCoverageScopePromptV6VerifiedPatchV1,
   knowledgeCoverageScopeRepairBaseHashV1,
@@ -260,6 +262,167 @@ describe("Knowledge Coverage Scope verified patch repair V1", () => {
     expect(merged.output.evidenceUnits[1]).toEqual(base.evidenceUnits[1]);
     expect(JSON.stringify(merged.output)).not.toContain("Atlas expires work");
     expect(JSON.stringify(merged.output)).not.toContain("Rewritten");
+  });
+
+  it("keeps a bounded raw base when a later invalid leaf prevents strict decoding", () => {
+    const { base, evidence, repair, request } = fixture();
+    const rawBase = {
+      ...base,
+      evidenceUnits: [base.evidenceUnits[0], {
+        ...base.evidenceUnits[1],
+        findings: [{
+          ...base.evidenceUnits[1]!.findings[0],
+          requestAnchor: " "
+        }]
+      }]
+    };
+    expect(decodeKnowledgeCoverageScopeRepairCandidateV1(rawBase)).toBeNull();
+    expect(decodeKnowledgeCoverageScopeTransientRepairBaseV1(rawBase)).not.toBeNull();
+
+    const validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(rawBase, {
+      evidence,
+      request
+    });
+    expect(validation.kind).toBe("rejected");
+    if (validation.kind !== "rejected" || !validation.repairBase) return;
+    expect(validation.diagnostic).toMatchObject({
+      code: "finding_atom_provenance",
+      path: "/evidenceUnits/0/findings/1/evidenceAtomIds"
+    });
+    expect(knowledgeCoverageScopeRepairBaseHashV1(validation.repairBase))
+      .toMatch(/^[0-9a-f]{64}$/u);
+
+    const repairWithValidLaterAnchor = {
+      ...repair,
+      evidenceUnits: [repair.evidenceUnits[0], {
+        ...repair.evidenceUnits[1],
+        findings: [{
+          ...repair.evidenceUnits[1]!.findings[0],
+          requestAnchor: "durability"
+        }]
+      }]
+    };
+    const merged = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
+      base: validation.repairBase,
+      diagnostic: validation.diagnostic,
+      evidence,
+      repair: repairWithValidLaterAnchor,
+      request
+    });
+
+    expect(merged.kind).toBe("accepted");
+    if (merged.kind !== "accepted") return;
+    expect(merged.patchedPaths).toEqual([
+      "/evidenceUnits/0/findings/1/evidenceAtomIds",
+      "/evidenceUnits/1/findings/0/requestAnchor"
+    ]);
+    expect(merged.output.evidenceUnits[0]!.findings.map(({ description }) =>
+      description)).toEqual([
+      "State Atlas ordering.",
+      "State Atlas retention."
+    ]);
+    expect(merged.output.evidenceUnits[1]!.findings[0]!.description)
+      .toBe("State Boreal durability.");
+    expect(JSON.stringify(merged.output)).not.toContain("Rewritten");
+  });
+
+  it("recomputes one rejected map unit and preserves valid sibling units", () => {
+    const { base, evidence, request } = fixture();
+    const validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(base, {
+      evidence,
+      request
+    });
+    expect(validation.kind).toBe("rejected");
+    if (validation.kind !== "rejected" || !validation.repairBase) return;
+    const repair = {
+      ...base,
+      evidenceUnits: [{
+        findings: [{
+          description: "Replacement Atlas ordering.",
+          evidenceAtomIds: ["A1"],
+          requestAnchor: "ordering"
+        }],
+        handle: "K1"
+      }, {
+        findings: [{
+          description: "Replacement Boreal durability.",
+          evidenceAtomIds: ["A3"],
+          requestAnchor: "durability"
+        }],
+        handle: "K2"
+      }]
+    };
+
+    const merged = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
+      base: validation.repairBase,
+      diagnostic: validation.diagnostic,
+      evidence,
+      isolateInvalidScopeMapUnit: true,
+      repair,
+      request
+    });
+
+    expect(merged.kind).toBe("accepted");
+    if (merged.kind !== "accepted") return;
+    expect(merged.patchedPaths).toEqual(["/evidenceUnits/0"]);
+    expect(merged.output.evidenceUnits[0]!.findings[0]!.description)
+      .toBe("Replacement Atlas ordering.");
+    expect(merged.output.evidenceUnits[1]).toEqual(base.evidenceUnits[1]);
+    expect(JSON.stringify(merged.output)).not.toContain(
+      "Replacement Boreal durability."
+    );
+  });
+
+  it("fills only missing handles from a complete repair map", () => {
+    const { base, evidence, request } = fixture();
+    const partial = {
+      ...base,
+      evidenceUnits: [{
+        ...base.evidenceUnits[0],
+        findings: [base.evidenceUnits[0]!.findings[0]]
+      }]
+    };
+    const validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(partial, {
+      evidence,
+      request
+    });
+    expect(validation.kind).toBe("rejected");
+    if (validation.kind !== "rejected" || !validation.repairBase) return;
+    expect(validation.diagnostic).toMatchObject({
+      actualCount: 1,
+      code: "unit_map_count",
+      maximumCount: 2,
+      path: "/evidenceUnits"
+    });
+    const repair = {
+      ...base,
+      evidenceUnits: [{
+        findings: [{
+          description: "Replacement Atlas ordering.",
+          evidenceAtomIds: ["A1"],
+          requestAnchor: "ordering"
+        }],
+        handle: "K1"
+      }, base.evidenceUnits[1]]
+    };
+
+    const merged = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
+      base: validation.repairBase,
+      diagnostic: validation.diagnostic,
+      evidence,
+      isolateInvalidScopeMapUnit: true,
+      repair,
+      request
+    });
+
+    expect(merged.kind).toBe("accepted");
+    if (merged.kind !== "accepted") return;
+    expect(merged.patchedPaths).toEqual(["/evidenceUnits"]);
+    expect(merged.output.evidenceUnits[0]).toEqual(partial.evidenceUnits[0]);
+    expect(merged.output.evidenceUnits[1]).toEqual(base.evidenceUnits[1]);
+    expect(JSON.stringify(merged.output)).not.toContain(
+      "Replacement Atlas ordering."
+    );
   });
 
   it("drops latent foreign provenance after repairing an earlier invalid field", () => {
