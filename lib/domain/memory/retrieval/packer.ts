@@ -24,7 +24,9 @@ import {
   MEMORY_CONTEXT_PROFILE_MAX_FACTS,
   MEMORY_CONTEXT_TARGET_TOKENS,
   MEMORY_CORE_CONTEXT_TARGET_TOKENS,
-  MEMORY_CORE_MAX_FACTS
+  MEMORY_CORE_MAX_FACTS,
+  MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES,
+  MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT
 } from "./config";
 import {
   MEMORY_SAFE_PROJECTION_KINDS,
@@ -93,6 +95,7 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
   const retrievalHint = expansion.retrievalHint ?? null;
   const supportingEvidence = expansion.supportingEvidence ?? [];
   const patternSupportingEvidence = expansion.patternSupportingEvidence ?? [];
+  const sourceMessageIds = expansion.sourceMessageIds ?? [];
   if (
     !MEMORY_SAFE_PROJECTION_KINDS.includes(expansion.projectionKind) ||
     !expansion.itemId || expansion.itemId.length > 256 ||
@@ -134,6 +137,10 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
       patternSupportingEvidence.length ||
     new Set(patternSupportingEvidence.map(({ sourceRootHash }) => sourceRootHash)).size !==
       patternSupportingEvidence.length ||
+    sourceMessageIds.length > MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES ||
+    sourceMessageIds.some((messageId) =>
+      !messageId || messageId.length > 256 || messageId.includes("\u0000")) ||
+    new Set(sourceMessageIds).size !== sourceMessageIds.length ||
     (expansion.supportingItemId !== null &&
       (expansion.supportingItemId.length < 1 || expansion.supportingItemId.length > 256))
   ) return false;
@@ -355,10 +362,15 @@ function renderedEvidenceLines(items: readonly SectionedItem[]): readonly string
 function render(
   items: readonly SectionedItem[],
   plan: MemoryRetrievalPlan,
-  budgetProfile: MemoryContextBudgetProfile
+  budgetProfile: MemoryContextBudgetProfile,
+  questionDirectedTemporalFallback: boolean
 ): string {
   const currentStateFold = plan.mode === "PAST_CHAT_SEARCH" &&
     plan.temporalIntent === "CURRENT" && !plan.aggregationRequested;
+  const questionDirectedTimeline = plan.mode === "PAST_CHAT_SEARCH" &&
+    questionDirectedTemporalFallback && !currentStateFold;
+  const questionDirectedAggregation = questionDirectedTimeline &&
+    plan.aggregationRequested;
   const lines = [
     contextPreamble,
     ...(items.some(({ item }) => item.itemType === "TOOL_EVENT")
@@ -375,7 +387,9 @@ function render(
       profile_inventory: plan.profileRequested,
       state_resolution: currentStateFold
         ? "latest_exact_slot"
-        : "none",
+        : questionDirectedTimeline
+          ? "question_directed_timeline"
+          : "none",
       temporal_intent: plan.temporalIntent.toLocaleLowerCase("und")
     }),
     ...(currentStateFold
@@ -384,6 +398,20 @@ function render(
           "across source sessions. Apply only clear direct-user assertions matching " +
           "the exact requested subject, predicate, and role; each later matching " +
           "assertion replaces the earlier value. Unrelated evidence is not an update."
+        ]
+      : []),
+    ...(questionDirectedTimeline
+      ? [
+          "QUESTION_DIRECTED_TEMPORAL_RESOLUTION: optional control classification is " +
+          "unavailable. Infer the request's temporal operation. Anchor request-relative " +
+          "time to its explicit reference date, otherwise the active system date. " +
+          (questionDirectedAggregation
+            ? "Evidence remains relevance-first: scan distinct relevant completed " +
+              "events, then compare or order only that matched set by event_time or " +
+              "document_time. "
+            : "Dated evidence is rendered old-to-new; fold only a current mutable " +
+              "exact slot or select the requested historical, as-of, or specific event. ") +
+          "Exclude habits, rates, plans, goals, and out-of-window events."
         ]
       : []),
     ...(plan.aggregationRequested ? [MEMORY_CONTEXT_AGGREGATION_GUIDANCE] : []),
@@ -454,11 +482,16 @@ function chronologicalGroupOrder(items: readonly SectionedItem[]): readonly Sect
 
 function readerEvidenceOrder(
   items: readonly SectionedItem[],
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  questionDirectedTemporalFallback: boolean
 ): readonly SectionedItem[] {
   const grouped = chronologicalGroupOrder(items);
-  if (plan.mode !== "PAST_CHAT_SEARCH" || plan.temporalIntent !== "CURRENT" ||
-    plan.aggregationRequested) return grouped;
+  const currentStateFold = plan.temporalIntent === "CURRENT" &&
+    !plan.aggregationRequested;
+  const questionDirectedTimelineOrder = questionDirectedTemporalFallback &&
+    !plan.aggregationRequested;
+  if (plan.mode !== "PAST_CHAT_SEARCH" ||
+    (!currentStateFold && !questionDirectedTimelineOrder)) return grouped;
   const timeline = grouped.filter(({ item }) => item.itemType !== "FACT_VERSION")
     .sort((left, right) => {
       if (left.chronologyTime === null && right.chronologyTime === null) {
@@ -644,7 +677,8 @@ function packedItem(input: Readonly<{
 
 function sourceDiversityOrder(
   ranked: readonly MemoryRankedCandidate[],
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  expansions: ReadonlyMap<string, MemoryExpandedCandidate>
 ): readonly MemoryRankedCandidate[] {
   const sourceChatId = (candidate: MemoryRankedCandidate): string | null =>
     candidate.itemType === "FACT_VERSION"
@@ -655,7 +689,15 @@ function sourceDiversityOrder(
     return orderMemoryCandidatesWithLinkedEvidenceCoverage(
       ranked,
       sourceChatId,
-      (candidate) => candidate.historyEvidenceView === "USER_TESTIMONY"
+      (candidate) => candidate.historyEvidenceView === "USER_TESTIMONY",
+      (anchor, linked) => {
+        const anchorMessages = expansions.get(itemKey(anchor))?.sourceMessageIds ?? [];
+        const linkedMessages = expansions.get(itemKey(linked))?.sourceMessageIds ?? [];
+        if (anchorMessages.length === 0 || linkedMessages.length === 0) return true;
+        const anchorMessageSet = new Set(anchorMessages);
+        return !linkedMessages.some((messageId) => anchorMessageSet.has(messageId));
+      },
+      MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT
     );
   }
   const order = plan.mode === "HISTORY_OVERVIEW"
@@ -702,10 +744,13 @@ export function packMemoryPersonalContext(input: Readonly<{
   hardCapTokens?: number;
   maximumTokens?: number | null;
   plan: MemoryRetrievalPlan;
+  questionDirectedTemporalFallback?: boolean;
   ranked: readonly MemoryRankedCandidate[];
   targetTokens?: number;
 }>): MemoryContextPack {
   const aggregation = input.plan.aggregationRequested;
+  const questionDirectedTemporalFallback =
+    input.questionDirectedTemporalFallback === true;
   const defaults = memoryContextBudgetLimits(input.plan);
   const requestedHardCapTokens = input.hardCapTokens ?? defaults.hardCapTokens;
   const requestedTargetTokens = input.targetTokens ?? defaults.targetTokens;
@@ -777,9 +822,10 @@ export function packMemoryPersonalContext(input: Readonly<{
     });
     const proposed = [...selected, entry];
     if (estimateApproxTokens(render(
-      readerEvidenceOrder(proposed, input.plan),
+      readerEvidenceOrder(proposed, input.plan, questionDirectedTemporalFallback),
       input.plan,
-      defaults.profile
+      defaults.profile,
+      questionDirectedTemporalFallback
     )) > Math.min(MEMORY_CORE_CONTEXT_TARGET_TOKENS, targetTokens)) {
       increment(omissionCounts, "core_token_budget");
       continue;
@@ -792,9 +838,10 @@ export function packMemoryPersonalContext(input: Readonly<{
   const coreTokens = selected.length === 0
     ? 0
     : estimateApproxTokens(render(
-        readerEvidenceOrder(selected, input.plan),
+        readerEvidenceOrder(selected, input.plan, questionDirectedTemporalFallback),
         input.plan,
-        defaults.profile
+        defaults.profile,
+        questionDirectedTemporalFallback
       ));
   const sourceChats = new Set<string>();
   let factCount = 0;
@@ -803,7 +850,8 @@ export function packMemoryPersonalContext(input: Readonly<{
   let historyTokens = 0;
   for (const candidate of sourceDiversityOrder(
     input.ranked,
-    input.plan
+    input.plan,
+    dynamicExpansions
   )) {
     if (candidate.metadata.sourceAuthority === "SYNTHESIS" &&
       !input.plan.includePatterns) {
@@ -920,9 +968,10 @@ export function packMemoryPersonalContext(input: Readonly<{
       continue;
     }
     if (estimateApproxTokens(render(
-      readerEvidenceOrder(proposed, input.plan),
+      readerEvidenceOrder(proposed, input.plan, questionDirectedTemporalFallback),
       input.plan,
-      defaults.profile
+      defaults.profile,
+      questionDirectedTemporalFallback
     )) > targetTokens) {
       increment(omissionCounts, "token_budget");
       continue;
@@ -960,11 +1009,16 @@ export function packMemoryPersonalContext(input: Readonly<{
       text: null
     };
   }
-  const ordered = readerEvidenceOrder(selected, input.plan);
+  const ordered = readerEvidenceOrder(
+    selected,
+    input.plan,
+    questionDirectedTemporalFallback
+  );
   const text = render(
     ordered,
     input.plan,
-    defaults.profile
+    defaults.profile,
+    questionDirectedTemporalFallback
   );
   const approxTokens = estimateApproxTokens(text);
   if (approxTokens > targetTokens || approxTokens > hardCapTokens) {

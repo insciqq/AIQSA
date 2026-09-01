@@ -732,9 +732,18 @@ describe("Personal Memory v1 run admission", () => {
   it("records content-free monotonic stage latency and provider call evidence", async () => {
     const local = repository({ candidates: [laneCandidate("timed-memory")] });
     const options = retrievalOptions(["c0"]);
+    const embedQuery = vi.fn(async () => ({
+      bindingId: "binding-embedding",
+      externalCallCount: 2,
+      profile,
+      providerRequestRoutes: ["nebius", "deepinfra"] as const,
+      status: "READY" as const,
+      vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0)
+    }));
     let tick = 0;
     const result = await createMemoryRunRetrievalService(local.value, {
       ...options,
+      utilities: { ...options.utilities, embedQuery },
       monotonicClock: () => {
         tick += 5;
         return tick;
@@ -746,9 +755,17 @@ describe("Personal Memory v1 run admission", () => {
       aggregationProviderCalls: 0,
       controlProviderCalls: 1,
       memoryPrepareLatencyBucket: "LT_1S",
-      queryEmbeddingProviderCalls: 1,
+      queryEmbeddingProviderCalls: 2,
       rerankProviderCalls: 1
     });
+    expect(budget.utilityExecutions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        externalCallCount: 2,
+        providerRequestRoutes: ["nebius", "deepinfra"],
+        role: "MEMORY_QUERY_EMBED",
+        state: "READY"
+      })
+    ]));
     for (const field of [
       "aggregationProviderMs",
       "controlMs",
@@ -1499,6 +1516,67 @@ describe("Personal Memory v1 run admission", () => {
     expect(merged.expansions.map(({ itemId }) => itemId)).toEqual([
       "anchor", "completed-round"
     ]);
+    expect(merged.completionCandidateCount).toBe(1);
+  });
+
+  it("keeps compact user testimony when a secondary query match shares its root", () => {
+    const primary = {
+      ...rankedHistory("primary", "NORMAL"),
+      metadata: {
+        ...rankedHistory("primary", "NORMAL").metadata,
+        evidenceRootHash: "a".repeat(64)
+      }
+    };
+    const secondaryBase = rankedHistory("secondary", "NORMAL");
+    const secondary = {
+      ...secondaryBase,
+      itemType: "RECALL_ROUND" as const,
+      metadata: {
+        ...secondaryBase.metadata,
+        evidenceRootHash: "b".repeat(64),
+        parentChunkId: "secondary-parent"
+      }
+    };
+    const userTestimony = {
+      ...secondary,
+      entryId: null,
+      historyEvidenceView: "USER_TESTIMONY" as const,
+      matchedSegmentId: "secondary-user-segment",
+      matchedSegmentPosition: "SINGLE" as const,
+      selectionReason: "targeted_session_completion_user_evidence"
+    };
+    const fullRound: MemoryExpandedCandidate = {
+      itemId: "secondary",
+      itemType: "RECALL_ROUND",
+      occurredFrom: now,
+      occurredTo: new Date(now.getTime() + 60_000),
+      projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      safeText: "User: relevant preference. Assistant: ".padEnd(8_000, "x"),
+      sourceChatId: "chat-source",
+      supportingItemId: "secondary-parent"
+    };
+    const compactUserSpan: MemoryExpandedCandidate = {
+      ...fullRound,
+      projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+      safeText: "User: relevant preference."
+    };
+
+    const merged = mergeMemorySessionEvidenceCompletion(
+      [primary, secondary],
+      [expandedHistory("primary"), fullRound],
+      { candidates: [userTestimony], sourceChatCount: 1 },
+      [compactUserSpan]
+    );
+
+    expect(merged.candidates.map(({ itemId }) => itemId)).toEqual([
+      "primary", "secondary"
+    ]);
+    expect(merged.candidates[0]!.historyEvidenceView).toBeUndefined();
+    expect(merged.candidates[1]).toMatchObject({
+      historyEvidenceView: "USER_TESTIMONY",
+      matchedSegmentId: "secondary-user-segment"
+    });
+    expect(merged.expansions[1]!.safeText).toBe("User: relevant preference.");
     expect(merged.completionCandidateCount).toBe(1);
   });
 
@@ -2306,6 +2384,12 @@ describe("Personal Memory v1 run admission", () => {
       },
       plannerFallbackReason: "memory_action_intent_unavailable"
     });
+    expect(result.preparedContext?.text).toContain(
+      '"state_resolution":"question_directed_timeline"'
+    );
+    expect(result.preparedContext?.text).toContain(
+      "QUESTION_DIRECTED_TEMPORAL_RESOLUTION"
+    );
     expect(local.retrieve).toHaveBeenCalledOnce();
     expect(actionExecutor.execute).not.toHaveBeenCalled();
   });
@@ -2928,7 +3012,7 @@ describe("Personal Memory v1 run admission", () => {
           intent: { action: "NONE", queryText: "What is my name?" },
           sourceAttemptId: "attempt-1",
           sourceBindingId: "binding-control",
-          version: 7
+          version: 8
         },
         utilityEgressMode: "CONSENTED_EXTERNAL"
       },
@@ -3221,6 +3305,14 @@ describe("Personal Memory v1 run admission", () => {
       .retrieve(runInput("What is the total across all completed trips?"));
 
     expect(local.completeSessionEvidence).toHaveBeenCalledOnce();
+    expect(options.utilities.rerank).toHaveBeenCalledOnce();
+    expect(vi.mocked(options.utilities.rerank).mock.calls[0]![0].candidates).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({ text: "relevant round text completed-round" })
+      ])
+    );
+    expect(vi.mocked(options.utilities.rerank).mock.invocationCallOrder[0])
+      .toBeLessThan(local.completeSessionEvidence!.mock.invocationCallOrder[0]!);
     expect(local.expand).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ mode: "PAST_CHAT_SEARCH" }),
@@ -3242,7 +3334,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).toContain("relevant round text completed-round");
   });
 
-  it("expands exact user episodes from reranked targeted sources before packing", async () => {
+  it("query-ranks bounded exact user episodes before targeted packing", async () => {
     const userEpisode: MemoryRankedCandidate = {
       ...rankedHistory("user-episode", "NORMAL"),
       entryId: null,
@@ -3263,7 +3355,7 @@ describe("Personal Memory v1 run admission", () => {
       candidates: [laneCandidate("query-anchor")],
       completion: { candidates: [userEpisode], sourceChatCount: 1 }
     });
-    const runUtilities = utilities(null);
+    const runUtilities = utilities(["c1"]);
     const options = {
       ...intentOptions({
         aggregationRequested: false,
@@ -3279,13 +3371,14 @@ describe("Personal Memory v1 run admission", () => {
       .retrieve(runInput("Which route did I choose in that earlier discussion?"));
 
     expect(local.completeSessionEvidence).toHaveBeenCalledOnce();
+    expect(runUtilities.rerank).toHaveBeenCalledOnce();
     expect(vi.mocked(runUtilities.rerank).mock.calls[0]![0].candidates).toEqual(
-      expect.not.arrayContaining([
+      expect.arrayContaining([
         expect.objectContaining({ text: "User: direct user episode user-segment" })
       ])
     );
-    expect(vi.mocked(runUtilities.rerank).mock.invocationCallOrder[0])
-      .toBeLessThan(local.completeSessionEvidence!.mock.invocationCallOrder[0]!);
+    expect(local.completeSessionEvidence!.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(runUtilities.rerank).mock.invocationCallOrder[0]!);
     expect(result).toMatchObject({
       budgetSnapshot: {
         componentMetrics: {
@@ -3297,6 +3390,7 @@ describe("Personal Memory v1 run admission", () => {
       items: expect.arrayContaining([
         expect.objectContaining({
           exactItemId: "user-episode",
+          finalScore: 0.9,
           featureSnapshot: expect.objectContaining({
             historyEvidenceView: "USER_TESTIMONY"
           }),
@@ -3437,7 +3531,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v15"
+        version: "memory-retrieval-component-metrics-v16"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });

@@ -559,7 +559,10 @@ describe("Memory run utility execution", () => {
       }
     } as unknown as PrismaMemoryExecutionService;
     const embed = vi.fn(async () => {
-      throw new EmbeddingAdapterError("embedding_provider_request_failed");
+      throw new EmbeddingAdapterError("embedding_provider_request_failed", {
+        providerRequestCount: 2,
+        providerRequestRoutes: ["nebius", "deepinfra"]
+      });
     });
     const service = createMemoryRunUtilityService({
       embeddingRuntime: {
@@ -577,6 +580,8 @@ describe("Memory run utility execution", () => {
 
     expect(result).toMatchObject({
       bindingId: "embedding-binding-1",
+      externalCallCount: 2,
+      providerRequestRoutes: ["nebius", "deepinfra"],
       reason: "memory_query_embedding_outcome_unknown",
       status: "UNAVAILABLE"
     });

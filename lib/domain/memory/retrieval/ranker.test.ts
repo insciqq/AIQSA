@@ -104,6 +104,72 @@ describe("linked source evidence coverage", () => {
       () => false
     )).toBe(candidates);
   });
+
+  it("uses a provenance-novel linked child for the coverage slot", () => {
+    const candidates = [
+      { id: "anchor", linked: false, messages: ["message-shared"], source: "a" },
+      {
+        id: "same-episode-user-view",
+        linked: true,
+        messages: ["message-user", "message-shared"],
+        source: "a"
+      },
+      {
+        id: "novel-user-episode",
+        linked: true,
+        messages: ["message-novel"],
+        source: "a"
+      },
+      { id: "tail", linked: false, messages: ["message-tail"], source: "a" }
+    ];
+
+    const ordered = orderMemoryCandidatesWithLinkedEvidenceCoverage(
+      candidates,
+      ({ source }) => source,
+      ({ linked }) => linked,
+      (anchor, linked) => {
+        const anchorMessages = new Set(anchor.messages);
+        return !linked.messages.some((messageId) => anchorMessages.has(messageId));
+      }
+    );
+
+    expect(ordered.map(({ id }) => id)).toEqual([
+      "anchor",
+      "novel-user-episode",
+      "same-episode-user-view",
+      "tail"
+    ]);
+  });
+
+  it("traverses a bounded multi-child neighborhood best-first", () => {
+    const candidates = [
+      { id: "a-anchor", linked: false, source: "a" },
+      { id: "b-anchor", linked: false, source: "b" },
+      { id: "c-anchor", linked: false, source: "c" },
+      { id: "a-user-1", linked: true, source: "a" },
+      { id: "b-user-1", linked: true, source: "b" },
+      { id: "a-user-2", linked: true, source: "a" },
+      { id: "c-user-1", linked: true, source: "c" }
+    ];
+
+    const ordered = orderMemoryCandidatesWithLinkedEvidenceCoverage(
+      candidates,
+      ({ source }) => source,
+      ({ linked }) => linked,
+      undefined,
+      2
+    );
+
+    expect(ordered.map(({ id }) => id)).toEqual([
+      "a-anchor",
+      "b-anchor",
+      "a-user-1",
+      "c-anchor",
+      "a-user-2",
+      "b-user-1",
+      "c-user-1"
+    ]);
+  });
 });
 
 function metadata(id: string): MemoryCandidateMetadata {

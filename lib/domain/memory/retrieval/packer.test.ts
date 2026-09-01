@@ -164,7 +164,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v28");
+    expect(pack.packerVersion).toBe("memory-context-packer-v36");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -332,14 +332,44 @@ describe("Personal Memory context pack", () => {
         }
       };
     });
-    const rankedCandidates = [anchors[0]!, tail, ...anchors.slice(1), ...userEpisodes];
+    const duplicateBase = ranked("user-duplicate", true, "DYNAMIC", sourceIds[0]);
+    const duplicateEpisode: MemoryRankedCandidate = {
+      ...duplicateBase,
+      entryId: null,
+      historyEvidenceView: "USER_TESTIMONY",
+      itemType: "RECALL_ROUND",
+      matchedSegmentId: "segment-duplicate",
+      matchedSegmentPosition: "SINGLE",
+      metadata: {
+        ...duplicateBase.metadata,
+        evidenceRootHash: "f".repeat(64),
+        parentChunkId: "parent-duplicate"
+      }
+    };
+    const rankedCandidates = [
+      anchors[0]!, duplicateEpisode, tail, ...anchors.slice(1), ...userEpisodes
+    ];
     const expanded = [
-      ...anchors.map((candidate) => expansion(
-        candidate.itemId,
-        true,
-        `anchor evidence ${candidate.itemId}`,
-        candidate.metadata.sourceChatId!
-      )),
+      ...anchors.map((candidate, index) => ({
+        ...expansion(
+          candidate.itemId,
+          true,
+          `anchor evidence ${candidate.itemId}`,
+          candidate.metadata.sourceChatId!
+        ),
+        sourceMessageIds: [`anchor-message-${index}`]
+      })),
+      {
+        itemId: duplicateEpisode.itemId,
+        itemType: "RECALL_ROUND" as const,
+        occurredFrom: now,
+        occurredTo: now,
+        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" as const,
+        safeText: "User: duplicate projection of anchor episode",
+        sourceChatId: sourceIds[0]!,
+        sourceMessageIds: ["duplicate-user-message", "anchor-message-0"],
+        supportingItemId: "parent-duplicate"
+      },
       expansion(tail.itemId, true, "lower-ranked same-source tail", sourceIds[0]),
       ...userEpisodes.map((candidate, index): MemoryExpandedCandidate => ({
         itemId: candidate.itemId,
@@ -349,6 +379,7 @@ describe("Personal Memory context pack", () => {
         projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
         safeText: `User: exact episode ${index}`,
         sourceChatId: candidate.metadata.sourceChatId,
+        sourceMessageIds: [`novel-user-message-${index}`],
         supportingItemId: `parent-${index}`
       }))
     ];
@@ -362,8 +393,9 @@ describe("Personal Memory context pack", () => {
     expect(pack.items).toHaveLength(20);
     expect(pack.items.filter(({ speakerScope }) => speakerScope === "user"))
       .toHaveLength(10);
+    expect(pack.items.map(({ itemId }) => itemId)).not.toContain(duplicateEpisode.itemId);
     expect(pack.items.map(({ itemId }) => itemId)).not.toContain(tail.itemId);
-    expect(pack.omissionCounts.item_limit).toBe(1);
+    expect(pack.omissionCounts.item_limit).toBe(2);
   });
 
   it("quarantines a round whose projection disagrees with its segment identity", () => {
@@ -1243,6 +1275,82 @@ describe("Personal Memory context pack", () => {
     expect(pack.items.map(({ evidenceHandle }) => evidenceHandle)).toEqual([
       "M4", "M3", "M1", "M2"
     ]);
+  });
+
+  it("keeps aggregation fallback relevance-first and resolves time over matched events", () => {
+    const newer = ranked("fallback-newer", true, "DYNAMIC", "chat-newer");
+    const older = ranked("fallback-older", true, "DYNAMIC", "chat-older");
+    const undated = ranked("fallback-undated", true, "DYNAMIC", "chat-undated");
+    const fallback = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion("fallback-newer", true, "newer", "chat-newer"),
+        occurredFrom: new Date("2026-08-01T00:00:00.000Z")
+      }, {
+        ...expansion("fallback-older", true, "older", "chat-older"),
+        occurredFrom: new Date("2025-01-01T00:00:00.000Z")
+      }, {
+        ...expansion("fallback-undated", true, "undated", "chat-undated"),
+        occurredFrom: null
+      }],
+      plan: aggregationPlan,
+      questionDirectedTemporalFallback: true,
+      ranked: [newer, older, undated]
+    });
+    const ordinary = packMemoryPersonalContext({
+      expanded: [expansion("fallback-newer", true, "newer", "chat-newer")],
+      plan: aggregationPlan,
+      ranked: [newer]
+    });
+
+    expect(renderedHeader(fallback)).toMatchObject({
+      aggregation_requested: true,
+      state_resolution: "question_directed_timeline",
+      temporal_intent: "any"
+    });
+    expect(fallback.items.map(({ itemId }) => itemId)).toEqual([
+      "fallback-newer", "fallback-older", "fallback-undated"
+    ]);
+    expect(fallback.items.map(({ evidenceHandle }) => evidenceHandle)).toEqual([
+      "M1", "M2", "M3"
+    ]);
+    expect(fallback.text).toContain("QUESTION_DIRECTED_TEMPORAL_RESOLUTION");
+    expect(fallback.text).toContain("explicit reference date");
+    expect(fallback.text).toContain("Evidence remains relevance-first");
+    expect(fallback.text).toContain("order only that matched set");
+    expect(fallback.text).toContain(
+      "Exclude habits, rates, plans, goals"
+    );
+    expect(renderedHeader(ordinary)).toMatchObject({ state_resolution: "none" });
+    expect(ordinary.text).not.toContain("QUESTION_DIRECTED_TEMPORAL_RESOLUTION");
+  });
+
+  it("renders a non-aggregation broad fallback old-to-new for state resolution", () => {
+    const newer = ranked("fallback-newer", true, "DYNAMIC", "chat-newer");
+    const older = ranked("fallback-older", true, "DYNAMIC", "chat-older");
+    const undated = ranked("fallback-undated", true, "DYNAMIC", "chat-undated");
+    const fallback = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion("fallback-newer", true, "newer", "chat-newer"),
+        occurredFrom: new Date("2026-08-01T00:00:00.000Z")
+      }, {
+        ...expansion("fallback-older", true, "older", "chat-older"),
+        occurredFrom: new Date("2025-01-01T00:00:00.000Z")
+      }, {
+        ...expansion("fallback-undated", true, "undated", "chat-undated"),
+        occurredFrom: null
+      }],
+      plan: pastChatPlan,
+      questionDirectedTemporalFallback: true,
+      ranked: [newer, older, undated]
+    });
+
+    expect(fallback.items.map(({ itemId }) => itemId)).toEqual([
+      "fallback-undated", "fallback-older", "fallback-newer"
+    ]);
+    expect(fallback.items.map(({ evidenceHandle }) => evidenceHandle)).toEqual([
+      "M3", "M2", "M1"
+    ]);
+    expect(fallback.text).toContain("Dated evidence is rendered old-to-new");
   });
 
   it("orders selected evidence old-to-new only inside its source session", () => {

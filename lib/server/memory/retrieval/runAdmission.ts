@@ -96,9 +96,9 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v45";
+  "memory-run-retrieval-admission-v46";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v15";
+  "memory-retrieval-component-metrics-v16";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -225,6 +225,7 @@ type MemoryAdmissionDeadline = Readonly<{
 type UtilityEvidence = Readonly<{
   externalCall: boolean;
   externalCallCount: number;
+  providerRequestRoutes?: readonly (string | null)[];
   reason: string | null;
   role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
@@ -1069,10 +1070,15 @@ function utilityEvidence(
     typeof result.externalCallCount === "number"
     ? result.externalCallCount
     : utilityUsedExternal(result) ? 1 : 0;
+  const providerRequestRoutes = "providerRequestRoutes" in result &&
+    Array.isArray(result.providerRequestRoutes)
+    ? result.providerRequestRoutes as readonly (string | null)[]
+    : null;
   return result.status === "READY"
     ? {
         externalCall: externalCallCount > 0,
         externalCallCount,
+        ...(providerRequestRoutes !== null ? { providerRequestRoutes } : {}),
         reason: null,
         role,
         state: "READY"
@@ -1080,6 +1086,7 @@ function utilityEvidence(
     : {
         externalCall: externalCallCount > 0,
         externalCallCount,
+        ...(providerRequestRoutes !== null ? { providerRequestRoutes } : {}),
         reason: result.reason,
         role,
         state: "UNAVAILABLE"
@@ -1678,14 +1685,29 @@ export function mergeMemorySessionEvidenceCompletion(
       !completionCandidateKeys.has(`${expansion.itemType}:${expansion.itemId}`))) {
     throw new Error("memory_session_completion_invalid");
   }
-  type RejoinEntry = Readonly<{
+  type RejoinEntry = {
     candidate: MemoryRankedCandidate;
     completion: boolean;
     expansion: MemoryExpandedCandidate;
-  }>;
+    sourceKey: string;
+  };
   const sourceGroups = new Map<string, RejoinEntry[]>();
-  const seenItems = new Set<string>();
-  const seenRoots = new Set<string>();
+  const entriesByItem = new Map<string, RejoinEntry>();
+  const entriesByRoot = new Map<string, RejoinEntry>();
+  const primaryQueryEntryBySource = new Map<string, RejoinEntry>();
+  const register = (entry: RejoinEntry): void => {
+    entriesByItem.set(
+      `${entry.candidate.itemType}:${entry.candidate.itemId}`,
+      entry
+    );
+    entriesByRoot.set(memoryRetrievalEvidenceRootKey(entry.candidate), entry);
+  };
+  const unregister = (entry: RejoinEntry): void => {
+    const itemKey = `${entry.candidate.itemType}:${entry.candidate.itemId}`;
+    const evidenceRoot = memoryRetrievalEvidenceRootKey(entry.candidate);
+    if (entriesByItem.get(itemKey) === entry) entriesByItem.delete(itemKey);
+    if (entriesByRoot.get(evidenceRoot) === entry) entriesByRoot.delete(evidenceRoot);
+  };
   const append = (
     candidate: MemoryRankedCandidate,
     expansion: MemoryExpandedCandidate | undefined,
@@ -1694,14 +1716,16 @@ export function mergeMemorySessionEvidenceCompletion(
     if (!expansion || expansion.sourceChatId !== candidate.metadata.sourceChatId) return false;
     const itemKey = `${candidate.itemType}:${candidate.itemId}`;
     const evidenceRoot = memoryRetrievalEvidenceRootKey(candidate);
-    if (seenItems.has(itemKey) || seenRoots.has(evidenceRoot)) return false;
-    seenItems.add(itemKey);
-    seenRoots.add(evidenceRoot);
+    if (entriesByItem.has(itemKey) || entriesByRoot.has(evidenceRoot)) return false;
     const sourceKey = candidate.metadata.sourceChatId ?? itemKey;
     const source = sourceGroups.get(sourceKey);
-    const entry = { candidate, completion: completionCandidate, expansion };
+    const entry = { candidate, completion: completionCandidate, expansion, sourceKey };
     if (source) source.push(entry);
     else sourceGroups.set(sourceKey, [entry]);
+    register(entry);
+    if (!completionCandidate && !primaryQueryEntryBySource.has(sourceKey)) {
+      primaryQueryEntryBySource.set(sourceKey, entry);
+    }
     return true;
   };
   for (const candidate of candidates) {
@@ -1712,11 +1736,33 @@ export function mergeMemorySessionEvidenceCompletion(
     );
   }
   for (const candidate of completion.candidates) {
-    append(
-      candidate,
-      completionExpansionByKey.get(`${candidate.itemType}:${candidate.itemId}`),
-      true
-    );
+    const itemKey = `${candidate.itemType}:${candidate.itemId}`;
+    const expansion = completionExpansionByKey.get(itemKey);
+    if (!expansion || expansion.sourceChatId !== candidate.metadata.sourceChatId) continue;
+    const evidenceRoot = memoryRetrievalEvidenceRootKey(candidate);
+    const itemDuplicate = entriesByItem.get(itemKey);
+    const rootDuplicate = entriesByRoot.get(evidenceRoot);
+    const duplicate = itemDuplicate ?? rootDuplicate;
+    const sourceKey = candidate.metadata.sourceChatId ?? itemKey;
+    if (
+      duplicate && (!itemDuplicate || !rootDuplicate || itemDuplicate === rootDuplicate) &&
+      duplicate.sourceKey === sourceKey && !duplicate.completion &&
+      primaryQueryEntryBySource.get(sourceKey) !== duplicate &&
+      candidate.historyEvidenceView === "USER_TESTIMONY"
+    ) {
+      // The best query-matched episode remains a complete conversational
+      // anchor. For a secondary episode, however, the compact authoritative
+      // user span must not be shadowed by a verbose whole-round projection of
+      // the same evidence root before the packer can apply its user-evidence
+      // coverage floor.
+      unregister(duplicate);
+      duplicate.candidate = candidate;
+      duplicate.completion = true;
+      duplicate.expansion = expansion;
+      register(duplicate);
+      continue;
+    }
+    append(candidate, expansion, true);
   }
   // Traverse strong source sessions best-first instead of placing every
   // completion round behind the full weak-source tail. Query-matched anchors
@@ -2669,6 +2715,7 @@ export function createMemoryRunRetrievalService(
       });
       let sessionCompletionExpansions: readonly MemoryExpandedCandidate[] = [];
       let sessionCompletionState: "READY" | "SKIPPED" | "UNAVAILABLE" = "SKIPPED";
+      let sessionCompletionCandidateCount = 0;
       const targetedSessionCompletionEnabled = !plan.aggregationRequested &&
         plan.mode === "PAST_CHAT_SEARCH" &&
         typeof repository.completeSessionEvidence === "function";
@@ -2686,22 +2733,110 @@ export function createMemoryRunRetrievalService(
                 ))
             : dynamicFused;
           if (dynamicCandidates.length > 0) {
-            navigationExpanded = await timings.measure("localRetrievalMs", () =>
-              runBoundedMemoryRead(
-                deadline,
-                MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-                (expansionSignal) => abortableRead(
-                  expandWithSourceFamilyPlans({
-                    candidates: dynamicCandidates,
-                    navigation: plan.aggregationRequested &&
-                      plan.mode === "PAST_CHAT_SEARCH",
-                    plans,
-                    repository,
-                    snapshot: local.snapshot
-                  }),
-                  expansionSignal
-                )
-              ));
+            const targetedCompletionSources = targetedSessionCompletionEnabled
+              ? selectMemoryTargetedSessionRepresentatives(dynamicCandidates)
+              : [];
+            const targetedCompletionSourceChatCount = new Set(
+              targetedCompletionSources.flatMap((candidate) =>
+                candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
+                  ? [candidate.metadata.sourceChatId]
+                  : [])
+            ).size;
+            if (targetedCompletionSourceChatCount > 0) {
+              sessionCompletion = Object.freeze({
+                candidates: Object.freeze([]),
+                sourceChatCount: targetedCompletionSourceChatCount
+              });
+            }
+            const [expandedResult, completionResult] = await timings.measure(
+              "localRetrievalMs",
+              () => Promise.all([
+                runBoundedMemoryRead(
+                  deadline,
+                  MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+                  (expansionSignal) => abortableRead(
+                    expandWithSourceFamilyPlans({
+                      candidates: dynamicCandidates,
+                      navigation: plan.aggregationRequested &&
+                        plan.mode === "PAST_CHAT_SEARCH",
+                      plans,
+                      repository,
+                      snapshot: local.snapshot
+                    }),
+                    expansionSignal
+                  )
+                ).then(
+                  (value) => ({ error: null, value }),
+                  (error: unknown) => ({
+                    error,
+                    value: [] as readonly MemoryExpandedCandidate[]
+                  })
+                ),
+                targetedCompletionSourceChatCount > 0
+                  ? runBoundedMemoryRead(
+                      deadline,
+                      MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+                      (completionSignal) => abortableRead((async () => {
+                        const value = await repository.completeSessionEvidence!(
+                          local.snapshot,
+                          plan,
+                          targetedCompletionSources,
+                          {
+                            queryCandidates: dynamicCandidates,
+                            ...(queryEmbedding?.status === "READY"
+                              ? { vector: {
+                                  minimumScore:
+                                    MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
+                                  profile: queryEmbedding.profile,
+                                  vector: queryEmbedding.vector
+                                } }
+                              : {})
+                          }
+                        );
+                        const expansions = await expandWithSourceFamilyPlans({
+                          candidates: value.candidates,
+                          navigation: false,
+                          plans,
+                          repository,
+                          snapshot: local.snapshot
+                        });
+                        return { expansions, value };
+                      })(), completionSignal)
+                    ).then(
+                      ({ expansions, value }) => ({ error: null, expansions, value }),
+                      (error: unknown) => ({
+                        error,
+                        expansions: [] as readonly MemoryExpandedCandidate[],
+                        value: sessionCompletion
+                      })
+                    )
+                  : Promise.resolve({
+                      error: null,
+                      expansions: [] as readonly MemoryExpandedCandidate[],
+                      value: sessionCompletion
+                    })
+              ])
+            );
+            if (expandedResult.error) throw expandedResult.error;
+            navigationExpanded = expandedResult.value;
+            if (targetedCompletionSourceChatCount > 0) {
+              if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
+              else {
+                sessionCompletion = completionResult.value;
+                sessionCompletionExpansions = completionResult.expansions;
+                sessionCompletionState = "READY";
+                const completedNavigation = mergeMemorySessionEvidenceCompletion(
+                  dynamicCandidates,
+                  navigationExpanded,
+                  sessionCompletion,
+                  sessionCompletionExpansions
+                );
+                dynamicCandidates = completedNavigation.candidates;
+                navigationExpanded = completedNavigation.expansions;
+                sessionCompletionCandidateCount =
+                  completedNavigation.completionCandidateCount;
+              }
+            }
           }
         } catch (error) {
           if (deadline.expired()) {
@@ -2780,33 +2915,32 @@ export function createMemoryRunRetrievalService(
       const aggregationSessionCompletionEnabled = plan.aggregationRequested &&
         plan.mode === "PAST_CHAT_SEARCH" &&
         typeof repository.completeSessionEvidence === "function";
-      const sessionCompletionSources = aggregationSessionCompletionEnabled
+      const aggregationSessionCompletionSources = aggregationSessionCompletionEnabled
         ? relevant
-        : targetedSessionCompletionEnabled
-          ? selectMemoryTargetedSessionRepresentatives(relevant)
-          : [];
-      const sessionCompletionSourceChatCount = new Set(
-        sessionCompletionSources.flatMap((candidate) =>
+        : [];
+      const aggregationSessionCompletionSourceChatCount = new Set(
+        aggregationSessionCompletionSources.flatMap((candidate) =>
           candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
             ? [candidate.metadata.sourceChatId]
             : [])
       ).size;
-      const sessionCompletionEnabled = sessionCompletionSourceChatCount > 0;
-      if (sessionCompletionEnabled) {
+      if (aggregationSessionCompletionSourceChatCount > 0) {
         sessionCompletion = Object.freeze({
           candidates: Object.freeze([]),
-          sourceChatCount: sessionCompletionSourceChatCount
+          sourceChatCount: aggregationSessionCompletionSourceChatCount
         });
       }
       if (rejoinCandidates.length > 0) {
         try {
           // The reranker operates on the first safe expansion. Reload its
           // bounded accepted set so decay and packing see only rows that still
-          // satisfy every authoritative admission fence. A second local query
-          // completes only source sessions selected by the reranker, then
-          // every linked item passes the same final authoritative expansion as
-          // an ordinary retrieval hit. Its failure never hides admitted
-          // anchors.
+          // satisfy every authoritative admission fence. Aggregation alone
+          // completes reranker-selected source sessions here because its
+          // chronological window is part of answer-time comparison. Targeted
+          // user episodes already entered the single rerank batch above. Every
+          // linked item passes the same final authoritative expansion as an
+          // ordinary retrieval hit, and completion failure never hides an
+          // admitted anchor.
           const [expandedResult, completionResult] = await timings.measure("rejoinMs", () =>
             Promise.all([
               runBoundedMemoryRead(
@@ -2826,16 +2960,16 @@ export function createMemoryRunRetrievalService(
                   value: [] as readonly MemoryExpandedCandidate[]
                 })
               ),
-              sessionCompletionEnabled
+              aggregationSessionCompletionSourceChatCount > 0
                 ? runBoundedMemoryRead(
                     deadline,
                     MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
                     (completionSignal) => abortableRead((async () => {
-                      const value = await repository.completeSessionEvidence!(
-                        local.snapshot,
-                        plan,
-                        sessionCompletionSources
-                      );
+                        const value = await repository.completeSessionEvidence!(
+                          local.snapshot,
+                          plan,
+                          aggregationSessionCompletionSources
+                        );
                       const expansions = await expandWithSourceFamilyPlans({
                         candidates: value.candidates,
                         navigation: false,
@@ -2861,7 +2995,7 @@ export function createMemoryRunRetrievalService(
             ]));
           if (expandedResult.error) throw expandedResult.error;
           rejoined = expandedResult.value;
-          if (sessionCompletionEnabled) {
+          if (aggregationSessionCompletionSourceChatCount > 0) {
             if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
             else {
               sessionCompletion = completionResult.value;
@@ -2887,7 +3021,8 @@ export function createMemoryRunRetrievalService(
         rejoinedByKey.has(`${candidate.itemType}:${candidate.itemId}`));
       const sessionCompletionCandidateKeys = new Set(sessionCompletion.candidates.map(
         (candidate) => `${candidate.itemType}:${candidate.itemId}`));
-      const mergedRejoin = sessionCompletionState === "READY"
+      const mergedRejoin = aggregationSessionCompletionSourceChatCount > 0 &&
+        sessionCompletionState === "READY"
         ? mergeMemorySessionEvidenceCompletion(
             queryMatchedRelevant,
             rejoined,
@@ -2896,7 +3031,8 @@ export function createMemoryRunRetrievalService(
           )
         : Object.freeze({
             candidates: queryMatchedRelevant,
-            completionCandidateCount: queryMatchedRelevant.filter((candidate) =>
+            completionCandidateCount: sessionCompletionCandidateCount ||
+              queryMatchedRelevant.filter((candidate) =>
               candidate.historyEvidenceView === "USER_TESTIMONY" &&
               sessionCompletionCandidateKeys.has(
                 `${candidate.itemType}:${candidate.itemId}`
@@ -3001,6 +3137,7 @@ export function createMemoryRunRetrievalService(
         expanded: dynamicExpanded,
         maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
         plan,
+        questionDirectedTemporalFallback: broadPlannerFallback,
         ranked: selectedDynamic
       }));
       const preparedText = pack.text;

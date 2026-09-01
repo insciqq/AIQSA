@@ -64,17 +64,24 @@ export function orderMemoryCandidatesWithSoftSourceDiversity<T>(
 }
 
 /**
- * Traverses each relevance-ranked source as a bounded neighborhood: its first
- * primary hit, then one linked evidence child, before the remaining global
- * tail. Null-source candidates keep their original slots. This makes a source
- * expansion reachable under a token budget without promoting every child or
- * allowing one prolific source to occupy the whole prefix.
+ * Traverses each relevance-ranked source as a bounded neighborhood. The
+ * single-child default preserves ordinary coverage behavior; callers with a
+ * bounded multi-child expansion may request best-first traversal, where
+ * source rank × child rank balances deeper evidence from a strong source
+ * against anchors from weaker sources. Null-source candidates keep their
+ * original slots, and deferred candidates are never removed.
  */
 export function orderMemoryCandidatesWithLinkedEvidenceCoverage<T>(
   candidates: readonly T[],
   sourceChatId: (candidate: T) => string | null,
-  linkedEvidence: (candidate: T) => boolean
+  linkedEvidence: (candidate: T) => boolean,
+  linkedEvidenceIsNovel?: (anchor: T, linked: T) => boolean,
+  maximumLinkedEvidencePerSource = 1
 ): readonly T[] {
+  if (!Number.isSafeInteger(maximumLinkedEvidencePerSource) ||
+    maximumLinkedEvidencePerSource < 1) {
+    throw new Error("memory_linked_evidence_limit_invalid");
+  }
   type Entry = Readonly<{
     candidate: T;
     index: number;
@@ -102,9 +109,50 @@ export function orderMemoryCandidatesWithLinkedEvidenceCoverage<T>(
     selected.add(entry.index);
     ordered.push(entry);
   };
-  for (const group of groups.values()) {
-    append(group.find(({ linked }) => !linked) ?? group[0]);
-    append(group.find(({ linked }) => linked));
+  if (maximumLinkedEvidencePerSource === 1) {
+    for (const group of groups.values()) {
+      const anchor = group.find(({ linked }) => !linked) ?? group[0];
+      append(anchor);
+      append(group.find(({ candidate, linked }) => linked && (
+        !anchor || !linkedEvidenceIsNovel ||
+        linkedEvidenceIsNovel(anchor.candidate, candidate)
+      )));
+    }
+  } else {
+    const neighborhood: Array<Readonly<{
+      childRank: number;
+      entry: Entry;
+      routeRank: number;
+      sourceRank: number;
+    }>> = [];
+    [...groups.values()].forEach((group, sourceRank) => {
+      const anchor = group.find(({ linked }) => !linked) ?? group[0];
+      if (!anchor) return;
+      const selectedEntries = [anchor];
+      const linkedEntries: Entry[] = [];
+      for (const entry of group) {
+        if (entry.index === anchor.index || !entry.linked ||
+          linkedEntries.length >= maximumLinkedEvidencePerSource ||
+          linkedEvidenceIsNovel && selectedEntries.some((selectedEntry) =>
+            !linkedEvidenceIsNovel(selectedEntry.candidate, entry.candidate))) continue;
+        linkedEntries.push(entry);
+        selectedEntries.push(entry);
+      }
+      [anchor, ...linkedEntries].forEach((entry, childRank) => {
+        neighborhood.push({
+          childRank,
+          entry,
+          routeRank: (sourceRank + 1) * (childRank + 1),
+          sourceRank
+        });
+      });
+    });
+    neighborhood.sort((left, right) =>
+      left.routeRank - right.routeRank ||
+      left.childRank - right.childRank ||
+      left.sourceRank - right.sourceRank ||
+      left.entry.index - right.entry.index
+    ).forEach(({ entry }) => append(entry));
   }
   for (const entry of sourceEntries) append(entry);
 

@@ -224,7 +224,7 @@ const readerFirstManifestV7Schema = readerFirstManifestV1Schema.extend({
     }).strict()
   }).strict(),
   source: z.object({
-    appCommit: z.literal("9ed2a90f8320ed028fcc2a239e7844e13e318fec"),
+    appCommit: z.literal("6683814244b442bc23c57928b80785151caa853b"),
     appWorktreeSha256: sha256Schema,
     datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
     evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),

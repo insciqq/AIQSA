@@ -316,6 +316,11 @@ export type MemoryExpandedCandidate = Readonly<{
   occurredFrom: Date | null;
   occurredTo: Date | null;
   projectionKind: MemorySafeProjectionKind;
+  /**
+   * Bounded canonical provenance used only for internal episode-overlap
+   * checks. These identifiers are never rendered into reader context.
+   */
+  sourceMessageIds?: readonly string[];
   patternSupportingEvidence?: readonly Readonly<{
     itemId: string;
     observedAt: Date;

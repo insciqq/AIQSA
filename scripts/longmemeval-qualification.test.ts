@@ -88,7 +88,7 @@ describe("LongMemEval frozen qualification manifest", () => {
     expect(manifest.selection).toEqual(fifth.selection);
     expect(manifest.selection).toEqual(prior.selection);
     expect(manifest.source.appCommit)
-      .toBe("9ed2a90f8320ed028fcc2a239e7844e13e318fec");
+      .toBe("6683814244b442bc23c57928b80785151caa853b");
     await expect(currentLongMemEvalQualificationRevision(process.cwd()))
       .resolves.toEqual({
         headCommit: manifest.source.appCommit,

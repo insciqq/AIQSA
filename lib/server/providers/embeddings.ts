@@ -45,6 +45,8 @@ export type EmbeddingUsage = Readonly<{
 
 export type EmbeddingResult = Readonly<{
   model: string;
+  providerRequestCount?: number;
+  providerRequestRoutes?: readonly (string | null)[];
   requestId: string | null;
   usage: EmbeddingUsage;
   vectors: readonly (readonly number[])[];
@@ -77,17 +79,35 @@ export type EmbeddingErrorCode =
 
 export class EmbeddingAdapterError extends Error {
   readonly httpStatus: number | null;
+  readonly providerRequestCount: number | null;
+  readonly providerRequestRoutes: readonly (string | null)[] | null;
   readonly retryAfterMs: number | null;
 
   constructor(
     readonly code: EmbeddingErrorCode,
-    options: Readonly<{ httpStatus?: number; retryAfterMs?: number | null }> = {}
+    options: Readonly<{
+      httpStatus?: number;
+      providerRequestCount?: number;
+      providerRequestRoutes?: readonly (string | null)[];
+      retryAfterMs?: number | null;
+    }> = {}
   ) {
     super(code);
     this.name = "EmbeddingAdapterError";
     this.httpStatus = Number.isSafeInteger(options.httpStatus) &&
       Number(options.httpStatus) >= 100 && Number(options.httpStatus) <= 599
       ? Number(options.httpStatus)
+      : null;
+    this.providerRequestCount = Number.isSafeInteger(options.providerRequestCount) &&
+      Number(options.providerRequestCount) >= 0
+      ? Number(options.providerRequestCount)
+      : null;
+    this.providerRequestRoutes = Array.isArray(options.providerRequestRoutes) &&
+      options.providerRequestRoutes.length <= 64 &&
+      options.providerRequestRoutes.every((route) => route === null ||
+        typeof route === "string" && route.length > 0 && route.length <= 128 &&
+        !/[\u0000-\u001f\u007f]/u.test(route))
+      ? Object.freeze([...options.providerRequestRoutes])
       : null;
     this.retryAfterMs = Number.isSafeInteger(options.retryAfterMs) &&
       Number(options.retryAfterMs) > 0
@@ -385,6 +405,7 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
       const prepared = requestInputs(request.texts, request.mode, model.embedding!);
       const timeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
       const timeout = withTimeoutSignal(request.signal, timeoutMs);
+      const providerRequestRoutes: Array<string | null> = [];
       try {
         const secret = authenticationMode === "bearer"
           ? await resolveProviderCredentialSource(
@@ -399,9 +420,11 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
         if (secret !== null) headers.set("authorization", `Bearer ${secret}`);
         const executeRequest = (
           serialized: string,
-          signal: AbortSignal
+          signal: AbortSignal,
+          pinnedOpenRouterProvider: string | null
         ) => executeWithProviderRetry({
           operation: async () => {
+            providerRequestRoutes.push(pinnedOpenRouterProvider);
             const response = await fetchFn(providerRequestEndpoint(
               connection,
               "openai_embeddings_compatible"
@@ -441,10 +464,16 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
         });
         const hedgeProviders = interactiveOpenRouterProviders(request, model);
         if (hedgeProviders.length === 0) {
-          return await executeRequest(
+          const result = await executeRequest(
             serializedRequestBody(prepared, model),
-            timeout.signal
+            timeout.signal,
+            null
           );
+          return Object.freeze({
+            ...result,
+            providerRequestCount: providerRequestRoutes.length,
+            providerRequestRoutes: Object.freeze([...providerRequestRoutes])
+          });
         }
 
         const settled = new AbortController();
@@ -459,11 +488,16 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
             }
             return executeRequest(
               serializedRequestBody(prepared, model, provider),
-              hedgeSignal
+              hedgeSignal,
+              provider
             );
           }));
           settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
-          return result;
+          return Object.freeze({
+            ...result,
+            providerRequestCount: providerRequestRoutes.length,
+            providerRequestRoutes: Object.freeze([...providerRequestRoutes])
+          });
         } catch (error) {
           throw hedgeFailure(error);
         } finally {
@@ -476,13 +510,29 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
           isProviderDeadlineExceededError(error) ||
           timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)
         ) {
-          throw new EmbeddingAdapterError("embedding_request_timed_out");
+          throw new EmbeddingAdapterError("embedding_request_timed_out", {
+            providerRequestCount: providerRequestRoutes.length,
+            providerRequestRoutes
+          });
         }
-        if (error instanceof EmbeddingAdapterError) throw error;
+        if (error instanceof EmbeddingAdapterError) {
+          throw new EmbeddingAdapterError(error.code, {
+            ...(error.httpStatus !== null ? { httpStatus: error.httpStatus } : {}),
+            providerRequestCount: providerRequestRoutes.length,
+            providerRequestRoutes,
+            retryAfterMs: error.retryAfterMs
+          });
+        }
         if (error instanceof ProviderResponseTooLargeError) {
-          throw new EmbeddingAdapterError("embedding_response_too_large");
+          throw new EmbeddingAdapterError("embedding_response_too_large", {
+            providerRequestCount: providerRequestRoutes.length,
+            providerRequestRoutes
+          });
         }
-        throw new EmbeddingAdapterError("embedding_provider_request_failed");
+        throw new EmbeddingAdapterError("embedding_provider_request_failed", {
+          providerRequestCount: providerRequestRoutes.length,
+          providerRequestRoutes
+        });
       } finally {
         timeout.clear();
       }
