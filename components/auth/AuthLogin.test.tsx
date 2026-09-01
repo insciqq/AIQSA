@@ -40,15 +40,12 @@ describe("AuthLogin", () => {
   it("presents a restrained, labeled sign-in workspace with autofill-safe field contracts", () => {
     render(<AuthLogin nextPath="/" />);
 
-    expect(screen.getByText("AIQSA")).toBeInTheDocument();
-    expect(screen.getByTestId("auth-root")).toHaveClass("bg-answer-paper", "overflow-x-hidden");
-    expect(screen.getByTestId("auth-workspace")).toHaveClass("max-w-[42rem]");
-    expect(screen.getByTestId("auth-workspace")).not.toHaveClass("rounded-panel", "border");
-    expect(
-      screen.getByText((_, element) => element?.textContent === "Models · Tools · Search")
-    ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
-    expect(screen.getByText("Use the email and password for your active account.")).toBeInTheDocument();
+    expect(screen.getByTestId("auth-lockup")).toHaveTextContent("AIQSA");
+    expect(screen.getByTestId("auth-root")).toHaveClass("v2-auth-root");
+    expect(screen.getByTestId("auth-workspace")).toHaveClass("v2-auth-column");
+    expect(screen.getByRole("heading", { level: 1, name: "Sign in to your workspace" })).toBeInTheDocument();
+    expect(screen.getByText("Self-hosted · your data stays on your infrastructure")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" }).closest(".v2-auth-card")).not.toBeNull();
     expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
     expect(screen.getByLabelText("Email")).toHaveAttribute("inputmode", "email");
     expect(screen.getByLabelText("Email")).toHaveClass(
@@ -119,7 +116,12 @@ describe("AuthLogin", () => {
     );
     expect(googleLink).toHaveClass("w-full");
     expect(googleLink.parentElement).toHaveClass("sm:grid-cols-2");
-    expect(screen.getByText("or use email")).toBeInTheDocument();
+    expect(screen.getByText("or")).toBeInTheDocument();
+    // OAuth follows the primary action (PRD §4.11): Sign in → or → Continue with …
+    expect(
+      screen.getByRole("button", { name: "Sign in" }).compareDocumentPosition(googleLink) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
   });
 
   it("does not expose unconfigured OAuth actions or carry an unsafe destination", () => {
@@ -894,7 +896,7 @@ describe("AuthLogin", () => {
     fireEvent.submit(screen.getByRole("button", { name: "Set password and verify" }).closest("form")!);
 
     expect(await screen.findByText("Email verified and password set. Access is pending admin approval.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Sign in to your workspace" })).toBeInTheDocument();
     rerender(<AuthLogin nextPath="/admin" verifyToken="verify-token" />);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -962,7 +964,7 @@ describe("AuthLogin", () => {
       );
     });
     expect(await screen.findByText("Password updated. Sign in to continue.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Sign in to your workspace" })).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveFocus();
     expect(window.location.search).toBe("?next=%2Fsettings");
   });
@@ -988,13 +990,13 @@ describe("AuthLogin", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
 
-    expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Sign in to your workspace" })).toBeInTheDocument();
     expect(window.location.search).toBe("?next=%2Fadmin");
     expect(screen.getByRole("button", { name: "Request access" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create account" })).not.toBeInTheDocument();
 
     rerender(<AuthLogin {...proofProps} />);
-    expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Sign in to your workspace" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Request access" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Request access" }));

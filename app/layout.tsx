@@ -18,6 +18,7 @@ import "../features/answer-outputs-v2/answer-outputs.css";
 import "../features/branches-v2/branches.css";
 import "../features/library-v2/library.css";
 import "../features/settings-v2/settings.css";
+import "../components/auth/auth.css";
 import "../features/projects-v2/projects.css";
 import "../features/workspace-v2/workspace.css";
 import "./globals.css";
@@ -39,14 +40,21 @@ export const metadata: Metadata = {
   },
   description: "Self-hosted AI workspace with multi-provider chat, MCP tools, and web search",
   icons: {
-    apple: "/icon.svg",
-    icon: "/favicon.svg",
+    apple: "/apple-touch-icon.png",
+    icon: [
+      { type: "image/svg+xml", url: "/favicon.svg" },
+      { sizes: "32x32", type: "image/x-icon", url: "/favicon.ico" }
+    ],
     shortcut: "/favicon.svg"
   }
 };
 
 export const viewport: Viewport = {
   initialScale: 1,
+  themeColor: [
+    { color: "#f5f7fa", media: "(prefers-color-scheme: light)" },
+    { color: "#0c1017", media: "(prefers-color-scheme: dark)" }
+  ],
   interactiveWidget: "resizes-content",
   viewportFit: "cover",
   width: "device-width"

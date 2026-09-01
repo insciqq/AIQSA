@@ -198,6 +198,15 @@
 .v2-composer-controls > .v2-composer-indicators {
   flex: 0 1 auto;
   min-width: 0;
+  /* When the row is narrower than its chips (compact compositions), the strip
+     scrolls instead of clipping a chip's close control under its neighbour. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.v2-composer-controls > .v2-composer-indicators::-webkit-scrollbar {
+  display: none;
 }
 
 .v2-composer-controls > .v2-icon-button {
@@ -271,6 +280,12 @@
   align-items: center;
   gap: 0.375rem;
   overflow: hidden;
+}
+
+/* Chips keep their full label; a narrow strip scrolls rather than squeezing
+   a chip's chevron and close control together. */
+.v2-composer-indicators > * {
+  flex: 0 0 auto;
 }
 
 .v2-composer-indicator:not([data-quiet]) {

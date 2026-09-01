@@ -104,7 +104,7 @@ export function AccountSettingsRowsV2({
           </small>
         </div>
       </div>
-      {profileError ? <p className="v2-settings-note" role="alert">{profileError}</p> : null}
+      {profileError ? <p className="v2-settings-error" role="alert">{profileError}</p> : null}
       <SettingsRowV2
         description="Shown to Project members next to your questions."
         testId="settings-display-name"

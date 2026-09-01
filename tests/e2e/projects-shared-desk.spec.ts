@@ -270,7 +270,9 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await expect(toolActivity).toBeVisible({ timeout: 8_000 });
     await toolActivity.locator("summary").click();
     await expect(toolActivity).toContainText("MCP tool");
-    await expect(toolActivity).toContainText("Completed");
+    // Signal tool rows name the settled call ("Ran <tool>") with its duration
+    // instead of a separate "Completed" status label.
+    await expect(toolActivity).toContainText("Ran MCP tool");
     await expect(contributorPage.getByText(privateMarker, { exact: false })).toHaveCount(0);
 
     const contributorAnswer = contributorPage.locator('article[data-role="assistant"]').last();
