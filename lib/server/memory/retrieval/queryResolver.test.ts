@@ -298,8 +298,12 @@ describe("query-scoped Memory resolver", () => {
       reason: "memory_query_resolution_outcome_unknown",
       status: "UNAVAILABLE"
     });
+    expect(settle).toHaveBeenCalledOnce();
     expect(settle).toHaveBeenCalledWith("user-1", "resolver-binding",
-      expect.objectContaining({ state: "CANCELLED" }));
+      expect.objectContaining({
+        state: "CANCELLED",
+        usage: expect.any(Object)
+      }));
     expect(withAuthorizedResultCommit).not.toHaveBeenCalled();
 
     releaseProvider(providerResult(resolved));

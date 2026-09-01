@@ -1487,12 +1487,27 @@ function aggregationInventoryDeclared(value: unknown): boolean {
   return value.plan.aggregationRequested === true;
 }
 
-function speculativeQueryResolverInventoryDeclared(value: unknown): boolean {
+const nonAttachedSpeculativeQueryResolverStates = new Set([
+  "BUDGET_FALLBACK",
+  "NOT_READY_AT_ATTACH",
+  "READY_NONE",
+  "REJECTED_FINAL",
+  "SKIPPED",
+  "UNAVAILABLE"
+]);
+
+export function memorySpeculativeQueryResolverInventoryDeclared(
+  value: unknown
+): boolean {
   if (!isRecord(value) ||
     value.queryResolverExecutionStrategy !== "SPECULATIVE" ||
     !Number.isSafeInteger(value.queryResolverProviderCalls) ||
     Number(value.queryResolverProviderCalls) < 1) return false;
-  if (value.queryResolverState !== "READY_ATTACHED") return true;
+  if (typeof value.queryResolverState !== "string") return false;
+  if (nonAttachedSpeculativeQueryResolverStates.has(value.queryResolverState)) {
+    return true;
+  }
+  if (value.queryResolverState !== "READY_ATTACHED") return false;
   return value.queryResolverBroadFallbackAttachment === true &&
     isRecord(value.plan) && value.plan.aggregationRequested === true &&
     isRecord(value.componentMetrics) &&
@@ -1760,7 +1775,7 @@ async function loadPreparingAttemptExecutionEvidence(
         bindings,
         profileInventoryDeclared(budgetSnapshot),
         aggregationInventoryDeclared(budgetSnapshot),
-        speculativeQueryResolverInventoryDeclared(budgetSnapshot)
+        memorySpeculativeQueryResolverInventoryDeclared(budgetSnapshot)
       ) ||
       !validMemoryRerankRetrySettlement(bindings)
     ) {

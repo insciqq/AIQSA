@@ -824,6 +824,26 @@ describe("LongMemEval adapter contract", () => {
     });
   });
 
+  it("retains the content-free resolver not-ready attachment state", () => {
+    const audit = sanitizeLongMemEvalRetrievalAudit({
+      privateResolverTarget: "must not leave the application",
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "NOT_READY_AT_ATTACH",
+      queryScopeAttachedConstraintKindCounts: {},
+      queryScopeProposedConstraintCount: 0
+    });
+
+    expect(audit).toMatchObject({
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "NOT_READY_AT_ATTACH",
+      queryScopeAttachedConstraintKindCounts: {},
+      queryScopeProposedConstraintCount: 0
+    });
+    expect(JSON.stringify(audit)).not.toContain("must not leave the application");
+  });
+
   it("accepts only the acknowledged loopback ports and disposable database identity", () => {
     expect(assertBenchmarkBaseUrl("http://127.0.0.1:3137/", 3137).origin)
       .toBe("http://127.0.0.1:3137");
