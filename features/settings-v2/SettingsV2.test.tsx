@@ -16,8 +16,8 @@ describe("SettingsV2", () => {
     const radios = screen.getAllByRole("radio");
     expect(radios.map((radio) => radio.getAttribute("aria-label"))).toEqual([
       "Use System theme, Follow this device",
-      "Use Light theme, Warm paper reading room",
-      "Use Dark theme, Warm graphite reading room"
+      "Use Light theme, Cool paper",
+      "Use Dark theme, Deep navy"
     ]);
     fireEvent.keyDown(radios[0]!, { key: "ArrowRight" });
     expect(onThemeChange).toHaveBeenCalledWith("light");

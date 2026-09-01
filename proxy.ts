@@ -19,6 +19,7 @@ const publicPrefixes = [
   "/favicon.ico",
   "/favicon.svg",
   "/favicon-alert.svg",
+  "/icon.svg",
   "/login",
   "/s",
   "/api/health",
