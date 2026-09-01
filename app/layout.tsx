@@ -39,7 +39,9 @@ export const metadata: Metadata = {
   },
   description: "Self-hosted AI workspace with multi-provider chat, MCP tools, and web search",
   icons: {
-    icon: "/favicon.svg"
+    apple: "/icon.svg",
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg"
   }
 };
 

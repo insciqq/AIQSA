@@ -667,7 +667,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       <div className="v2-navigation-header">
         <div className="v2-navigation-brand">
           <span className="v2-navigation-wordmark">
-            <span className="v2-navigation-mark" aria-hidden="true">A</span>
+            <span className="v2-navigation-mark" aria-hidden="true"><UiV2Icon name="brand" /></span>
             AIQSA
           </span>
           <UiV2IconButton icon="close" label="Close sidebar" onClick={props.onClose} />

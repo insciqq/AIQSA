@@ -13,6 +13,7 @@ export type UiV2IconName =
   | "attach"
   | "book"
   | "branch"
+  | "brand"
   | "check"
   | "chevron-down"
   | "chevron-right"
@@ -57,6 +58,10 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-attach" viewBox="0 0 24 24">
           <path d="m20.5 11.5-8.4 8.4a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7L9.3 17a2 2 0 1 1-2.8-2.8l8.5-8.5" />
+        </symbol>
+        <symbol id="v2-icon-brand" viewBox="0 0 24 24">
+          <rect x="3.5" y="3.5" width="14" height="14" rx="4.5" />
+          <path d="M12.5 12.5 21 21" />
         </symbol>
         <symbol id="v2-icon-branch" viewBox="0 0 24 24">
           <circle cx="6" cy="5" r="2" />
