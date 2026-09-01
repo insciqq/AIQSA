@@ -23,7 +23,7 @@ import {
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
-  groundSettledKnowledgeAnswerV51,
+  groundSettledKnowledgeAnswerV53,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -70,6 +70,8 @@ import {
   type KnowledgeGroundingEvidenceV49,
   type KnowledgeGroundingEvidenceV50,
   type KnowledgeGroundingEvidenceV51,
+  type KnowledgeGroundingEvidenceV52,
+  type KnowledgeGroundingEvidenceV53,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -132,7 +134,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   buildKnowledgeSupportedAnswerViewV1,
@@ -194,17 +196,18 @@ import {
   knowledgeCoverageScopePromptV6RecallMapV1
 } from "./coverageScopeRecallMapV1";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
-  applyKnowledgeCoverageScopeClosureV1,
-  decodeKnowledgeCoverageScopeClosureFailureV1,
-  decodeKnowledgeCoverageScopeClosureV1,
-  isKnowledgeCoverageScopeClosureValidationFailureReasonV1,
-  knowledgeCoverageScopeClosurePromptV1,
-  type KnowledgeCoverageScopeClosureValidationFailureReasonV1
-} from "./coverageScopeClosureV1";
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
+  applyKnowledgeCoverageScopeClosureV2,
+  decodeKnowledgeCoverageScopeClosureFailureV2,
+  decodeKnowledgeCoverageScopeClosureV2,
+  isKnowledgeCoverageScopeClosureValidationFailureReasonV2,
+  knowledgeCoverageScopeClosureAuditRequiredV2,
+  knowledgeCoverageScopeClosurePromptV2,
+  type KnowledgeCoverageScopeClosureValidationFailureReasonV2
+} from "./coverageScopeClosureV2";
 import { KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 } from "./coverageScopeV4";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
@@ -1701,7 +1704,7 @@ export async function groundKnowledgeRunAnswerV21(
   const requestExecutionPolicy = {
     executionPolicy: primaryRequest.executionPolicy,
     protocol:
-      KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1
+      KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1
   };
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
@@ -2058,11 +2061,14 @@ export async function groundKnowledgeRunAnswerV21(
   let postSelectorDispatch = acceptedInitialSelector;
   let closureReceipt: Readonly<{
     initialCoveredDimensionCount: number;
+    initialExcludedDimensionCount: number;
     payloadHash: string;
+    reopenedCoveredDimensionCount: number;
     reopenedDimensionCount: number;
+    reopenedExcludedDimensionCount: number;
   }> | null = null;
-  const closureRequired = acceptedSelector.coverage.some(
-    ({ status }) => status === "covered"
+  const closureRequired = knowledgeCoverageScopeClosureAuditRequiredV2(
+    acceptedSelector
   );
   if (closureRequired !== Boolean(operations.initialClosure)) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
@@ -2086,7 +2092,7 @@ export async function groundKnowledgeRunAnswerV21(
       selector: acceptedSelector,
       supportedView
     } as const;
-    const initialClosurePrompt = knowledgeCoverageScopeClosurePromptV1({
+    const initialClosurePrompt = knowledgeCoverageScopeClosurePromptV2({
       ...closureInput,
       closurePass: "initial"
     });
@@ -2094,13 +2100,13 @@ export async function groundKnowledgeRunAnswerV21(
       operations.initialClosure.attempt.acceptedRequest
     );
     const expectedInitialClosureRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
       coverageScopePayloadHash,
       evidenceReceiptHash: operations.draft.draft.manifestHash,
-      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
-      operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
       ...requestExecutionPolicy,
-      schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
       systemPrompt: initialClosurePrompt.systemPrompt,
       transport: primaryRequest.transport,
       userPrompt: initialClosurePrompt.userPrompt
@@ -2108,12 +2114,12 @@ export async function groundKnowledgeRunAnswerV21(
     if (!exactRequest(initialClosureRequest, expectedInitialClosureRequest)) {
       throw new Error("knowledge_answer_operation_snapshot_conflict");
     }
-    let closureFailure = decodeKnowledgeCoverageScopeClosureFailureV1(
+    let closureFailure = decodeKnowledgeCoverageScopeClosureFailureV2(
       operations.initialClosure.attempt.acceptedResult
     );
     let closure = closureFailure
       ? null
-      : decodeKnowledgeCoverageScopeClosureV1(
+      : decodeKnowledgeCoverageScopeClosureV2(
           operations.initialClosure.attempt.acceptedResult,
           closureInput
         );
@@ -2121,7 +2127,7 @@ export async function groundKnowledgeRunAnswerV21(
       throw new Error("knowledge_coverage_scope_closure_unaccepted");
     }
     const closureRepairRequired = closureFailure !== null &&
-      isKnowledgeCoverageScopeClosureValidationFailureReasonV1(
+      isKnowledgeCoverageScopeClosureValidationFailureReasonV2(
         closureFailure.reason
       ) && operations.initialClosure.attempt.ordinal <
         KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2;
@@ -2130,8 +2136,8 @@ export async function groundKnowledgeRunAnswerV21(
     }
     if (operations.closureRepair) {
       const repairReason = closureFailure!.reason as
-        KnowledgeCoverageScopeClosureValidationFailureReasonV1;
-      const repairPrompt = knowledgeCoverageScopeClosurePromptV1({
+        KnowledgeCoverageScopeClosureValidationFailureReasonV2;
+      const repairPrompt = knowledgeCoverageScopeClosurePromptV2({
         ...closureInput,
         closurePass: "repair",
         repairReason
@@ -2140,13 +2146,13 @@ export async function groundKnowledgeRunAnswerV21(
         operations.closureRepair.attempt.acceptedRequest
       );
       const expectedRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-        contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
+        contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
         coverageScopePayloadHash,
         evidenceReceiptHash: operations.draft.draft.manifestHash,
-        maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
-        operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+        maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+        operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
         ...requestExecutionPolicy,
-        schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V1,
+        schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
         systemPrompt: repairPrompt.systemPrompt,
         transport: primaryRequest.transport,
         userPrompt: repairPrompt.userPrompt
@@ -2154,12 +2160,12 @@ export async function groundKnowledgeRunAnswerV21(
       if (!exactRequest(repairRequest, expectedRepairRequest)) {
         throw new Error("knowledge_answer_operation_snapshot_conflict");
       }
-      closureFailure = decodeKnowledgeCoverageScopeClosureFailureV1(
+      closureFailure = decodeKnowledgeCoverageScopeClosureFailureV2(
         operations.closureRepair.attempt.acceptedResult
       );
       closure = closureFailure
         ? null
-        : decodeKnowledgeCoverageScopeClosureV1(
+        : decodeKnowledgeCoverageScopeClosureV2(
             operations.closureRepair.attempt.acceptedResult,
             closureInput
           );
@@ -2169,20 +2175,34 @@ export async function groundKnowledgeRunAnswerV21(
         operations.closure.attempt.resultHash) {
       throw new Error("knowledge_coverage_scope_closure_unaccepted");
     }
-    correctionBaseSelector = applyKnowledgeCoverageScopeClosureV1({
+    correctionBaseSelector = applyKnowledgeCoverageScopeClosureV2({
       closure,
       selector: acceptedSelector
     });
     const initialCoveredDimensionCount = acceptedSelector.coverage.filter(
       ({ status }) => status === "covered"
     ).length;
+    const initialExcludedDimensionCount = acceptedSelector.coverage.filter(
+      ({ status }) => status === "excluded"
+    ).length;
     const finalCoveredDimensionCount = correctionBaseSelector.coverage.filter(
       ({ status }) => status === "covered"
     ).length;
+    const finalExcludedDimensionCount = correctionBaseSelector.coverage.filter(
+      ({ status }) => status === "excluded"
+    ).length;
+    const reopenedCoveredDimensionCount = initialCoveredDimensionCount -
+      finalCoveredDimensionCount;
+    const reopenedExcludedDimensionCount = initialExcludedDimensionCount -
+      finalExcludedDimensionCount;
     closureReceipt = Object.freeze({
       initialCoveredDimensionCount,
+      initialExcludedDimensionCount,
       payloadHash: operations.closure.attempt.resultHash,
-      reopenedDimensionCount: initialCoveredDimensionCount - finalCoveredDimensionCount
+      reopenedCoveredDimensionCount,
+      reopenedDimensionCount: reopenedCoveredDimensionCount +
+        reopenedExcludedDimensionCount,
+      reopenedExcludedDimensionCount
     });
     postSelectorDispatch = operations.closure;
   } else if (operations.closureRepair || operations.closure) {
@@ -2453,7 +2473,7 @@ export async function groundKnowledgeRunAnswerV21(
     return Object.freeze({
       acceptedRequestHash: dispatch.attempt.requestHash,
       acceptedResultHash: dispatch.attempt.resultHash,
-      contractVersion: dispatch.attempt.contractVersion as 1 | 6 | 21,
+      contractVersion: dispatch.attempt.contractVersion as 1 | 2 | 6 | 21,
       durationMs: dispatch.attempt.settledAt.valueOf() -
         dispatch.attempt.dispatchedAt.valueOf(),
       operationId: dispatch.attempt.id,
@@ -2463,7 +2483,7 @@ export async function groundKnowledgeRunAnswerV21(
         | typeof KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
         | typeof KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
         | typeof KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
-        | typeof KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+        | typeof KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
         | typeof KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
         | typeof KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
         | typeof KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
@@ -2510,7 +2530,7 @@ export async function groundKnowledgeRunAnswerV21(
     selectorRepairSucceeded,
     settlement
   } as const;
-  const grounding = groundSettledKnowledgeAnswerV51(groundingInput);
+  const grounding = groundSettledKnowledgeAnswerV53(groundingInput);
   return Object.freeze({ grounding });
 }
 
@@ -2537,7 +2557,8 @@ function groundingEvidenceProjection(
     KnowledgeGroundingEvidenceV45 | KnowledgeGroundingEvidenceV46 |
     KnowledgeGroundingEvidenceV47 | KnowledgeGroundingEvidenceV48 |
     KnowledgeGroundingEvidenceV49 | KnowledgeGroundingEvidenceV50 |
-    KnowledgeGroundingEvidenceV51
+    KnowledgeGroundingEvidenceV51 | KnowledgeGroundingEvidenceV52 |
+    KnowledgeGroundingEvidenceV53
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

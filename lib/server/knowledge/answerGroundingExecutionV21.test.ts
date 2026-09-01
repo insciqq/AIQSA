@@ -47,8 +47,9 @@ import {
   decodeKnowledgeCoverageScopePromptV6RecallMapV1
 } from "./coverageScopeRecallMapV1";
 import {
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-} from "./coverageScopeClosureV1";
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION as
+    KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+} from "./coverageScopeClosureV2";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
@@ -842,10 +843,19 @@ function acceptedScope(complete: boolean) {
   return validation.value;
 }
 
-function closureOutput(...dimensionIds: string[]) {
+function closureOutput(operation: Readonly<{ userPrompt: string }>) {
+  const payload = JSON.parse(operation.userPrompt) as Readonly<{
+    dimensions: readonly Readonly<{
+      id: string;
+      selectorStatus: "covered" | "excluded" | "missing";
+    }>[];
+  }>;
   return {
-    decisions: dimensionIds.map((id) => ({ id, status: "closed" as const })),
-    version: 1 as const
+    decisions: payload.dimensions.map(({ id, selectorStatus }) => ({
+      id,
+      status: selectorStatus === "covered" ? "closed" as const : selectorStatus
+    })),
+    version: 2 as const
   };
 }
 
@@ -860,7 +870,7 @@ function currentExecution(complete: boolean) {
         : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
           ? selectorV21Output(complete)
           : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-            ? closureOutput("D1")
+            ? closureOutput(operation)
           : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
             ? {
                 targets: { D2: ["Beta removes duplicates."] },
@@ -901,7 +911,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
               : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
                 ? selectorV21Output(false)
                 : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-                  ? closureOutput("D1")
+                  ? closureOutput(operation)
                   : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
                     ? {
                         targets: {
@@ -1021,7 +1031,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                   };
                 })()
               : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-                ? closureOutput("D1")
+                ? closureOutput(operation)
               : (() => { throw new Error("unexpected_current_operation"); })(),
       providerResponseId: `response-${operation.name}`,
       usage
@@ -1117,7 +1127,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
             : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
               ? selectorV21Output(false)
               : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-                ? closureOutput("D1")
+                ? closureOutput(operation)
               : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
                 ? {
                     targets: {
@@ -1228,7 +1238,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                     decisions: [{ id: "D1", status: "closed" }, {
                       id: "D2", status: "missing"
                     }],
-                    version: 1
+                    version: 2
                   }
                 : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
                   ? {
@@ -1277,7 +1287,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       decisions: [{ id: "D1", status: "closed" }, {
         id: "D2", status: "missing"
       }],
-      version: 1
+      version: 2
     });
     expect(recorder.entries.get(6)?.acceptedResult).toMatchObject({
       targets: { D2: ["Beta removes duplicates and preserves stability."] }
@@ -1359,7 +1369,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                   version: 1
                 }
               : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-                ? closureOutput("D1")
+                ? closureOutput(operation)
               : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
                 ? {
                     targets: {
@@ -1522,7 +1532,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
   });
 
-  it("drops a foreign-provenance finding without a whole-Scope retry", async () => {
+  it("recomputes only a foreign-provenance map unit", async () => {
     const recorder = lifecycleRecorder();
     const baseline = currentExecution(false);
     let scopeCalls = 0;
@@ -1554,17 +1564,22 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       pipelineInput(recorder.lifecycle, execute)
     );
 
-    expect(scopeCalls).toBe(1);
+    expect(scopeCalls).toBe(2);
     expect(result.operations.filter(({ operation }) =>
-      operation === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION)).toHaveLength(1);
-    expect(recorder.entries.get(2)?.acceptedResult).toEqual(scopeOutput(false));
-    expect(JSON.stringify(recorder.entries.get(2)?.acceptedResult)).not.toContain(
+      operation === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION)).toHaveLength(2);
+    expect(recorder.entries.get(2)?.acceptedResult).toMatchObject({
+      diagnostic: { code: "finding_atom_provenance" },
+      kind: "coverage_scope_failed",
+      repairBaseHash: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+    expect(recorder.entries.get(3)?.acceptedResult).toEqual(scopeOutput(false));
+    expect(JSON.stringify(recorder.entries.get(3)?.acceptedResult)).not.toContain(
       "Do not attribute beta evidence"
     );
     expect(result.settlement.requestCoverage).toBe("complete");
   });
 
-  it("drops a single-handle joint finding without a whole-Scope retry", async () => {
+  it("recomputes only an invalid joint-finding map", async () => {
     const recorder = lifecycleRecorder();
     const baseline = currentExecution(false);
     let scopeCalls = 0;
@@ -1590,11 +1605,16 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       pipelineInput(recorder.lifecycle, execute)
     );
 
-    expect(scopeCalls).toBe(1);
+    expect(scopeCalls).toBe(2);
     expect(result.operations.filter(({ operation }) =>
-      operation === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION)).toHaveLength(1);
-    expect(recorder.entries.get(2)?.acceptedResult).toEqual(scopeOutput(false));
-    expect(JSON.stringify(recorder.entries.get(2)?.acceptedResult)).not.toContain(
+      operation === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION)).toHaveLength(2);
+    expect(recorder.entries.get(2)?.acceptedResult).toMatchObject({
+      diagnostic: { code: "joint_handle_count" },
+      kind: "coverage_scope_failed",
+      repairBaseHash: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+    expect(recorder.entries.get(3)?.acceptedResult).toEqual(scopeOutput(false));
+    expect(JSON.stringify(recorder.entries.get(3)?.acceptedResult)).not.toContain(
       "alpha alone as a joint finding"
     );
     expect(result.settlement.requestCoverage).toBe("complete");
@@ -1644,7 +1664,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                   version: 1
                 }
               : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-                ? closureOutput("D2")
+                ? closureOutput(operation)
                 : (() => { throw new Error("unexpected_current_operation"); })(),
       providerResponseId: `response-${operation.name}`,
       usage
@@ -1670,6 +1690,238 @@ describe("V21 positive-finding Coverage Scope execution", () => {
         id: "D2",
         status: "covered"
       }]
+    });
+  });
+
+  it("reopens an invalidly excluded collective before correcting a narrower answer", async () => {
+    const recorder = lifecycleRecorder();
+    const collectiveManifest = packKnowledgeEvidenceDispatchManifest({
+      candidates: [{
+        ambiguity: "none",
+        evidenceId: "knowledge-call-collective:result:1",
+        exactExcerpt: "Atlas and Boreal both degrade at 1B operations. Atlas degrades at 1B operations.",
+        fileName: "scaling.txt",
+        handle: "K1",
+        locator: "page=1; heading=Scaling",
+        operationOrdinal: 1,
+        resultOrdinal: 1,
+        sourceAlias: "S1",
+        sourceLabel: "Scaling",
+        sourceTruncated: false,
+        sourceVersionNumber: 1,
+        state: "available"
+      }],
+      coverageStatement: "Coverage is limited to the supplied SOURCE blocks.",
+      footer: "</private_knowledge_evidence>",
+      header: '<private_knowledge_evidence version="4">',
+      maximumBytes: 32_000,
+      maximumTokens: 8_000,
+      profileId: "fake:answer",
+      promptFragmentVersion: 1,
+      runtimeVersion: 1
+    });
+    const collectiveRequest = "At what size do both Atlas and Boreal degrade?";
+    const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
+      output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+        ? draftOutput("Atlas degrades at 1B operations.")
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+          ? {
+              evidenceUnits: [{
+                findings: [{
+                  description: "State the size at which both Atlas and Boreal degrade.",
+                  evidenceAtomIds: ["A1"],
+                  requestAnchor: "At"
+                }, {
+                  description: "State the size at which Atlas degrades.",
+                  evidenceAtomIds: ["A2"],
+                  requestAnchor: "At"
+                }],
+                handle: "K1"
+              }],
+              jointFindings: [],
+              unsupportedDimensions: [],
+              version: 6
+            }
+          : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+            ? { additions: [], version: 1 }
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+              ? {
+                  claims: [{
+                    id: "C1",
+                    supportHandles: ["K1"],
+                    verdict: "supported"
+                  }],
+                  coverage: [{ id: "D1", status: "excluded", supportIds: [] }, {
+                    id: "D2", status: "covered", supportIds: ["C1"]
+                  }],
+                  extractIds: [],
+                  insufficientReason: "not_applicable",
+                  version: 1
+                }
+              : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+                ? {
+                    decisions: [{ id: "D1", status: "missing" }, {
+                      id: "D2", status: "closed"
+                    }],
+                    version: 2
+                  }
+                : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+                  ? {
+                      targets: {
+                        D1: ["Atlas and Boreal both degrade at 1B operations."]
+                      },
+                      version: 2
+                    }
+                  : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+                    ? {
+                        claims: [{
+                          id: "C1",
+                          supportHandles: ["K1"],
+                          verdict: "supported"
+                        }, {
+                          id: "C2",
+                          supportHandles: ["K1"],
+                          verdict: "supported"
+                        }],
+                        coverage: [{
+                          id: "D1", status: "covered", supportIds: ["C2"]
+                        }, {
+                          id: "D2", status: "covered", supportIds: ["C1"]
+                        }],
+                        extractIds: [],
+                        insufficientReason: "not_applicable",
+                        version: 1
+                      }
+                    : (() => { throw new Error("unexpected_current_operation"); })(),
+      providerResponseId: `response-${operation.name}`,
+      usage
+    }));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6({
+      ...pipelineInput(recorder.lifecycle, execute),
+      draft: collectiveManifest,
+      request: collectiveRequest
+    });
+
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+      KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+      KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+    ]);
+    expect(recorder.entries.get(5)?.acceptedResult).toEqual({
+      decisions: [{ id: "D1", status: "missing" }, {
+        id: "D2", status: "closed"
+      }],
+      version: 2
+    });
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "complete",
+      supportedClaimCount: 2
+    });
+    expect(result.settlement.finalText).toContain(
+      "Atlas and Boreal both degrade at 1B operations."
+    );
+  });
+
+  it("audits an all-excluded reduction before taking the ordinary correction path", async () => {
+    const recorder = lifecycleRecorder();
+    let closureCalls = 0;
+    const execute = vi.fn(async (operation):
+      Promise<KnowledgeAnswerOperationExecutionV21> => ({
+      output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+        ? draftOutput("Alpha is associated with order preservation.")
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+          ? scopeOutput(false)
+          : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+            ? { additions: [], version: 1 }
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+              ? {
+                  claims: [{
+                    id: "C1",
+                    supportHandles: ["K1"],
+                    verdict: "supported"
+                  }],
+                  coverage: [{ id: "D1", status: "excluded", supportIds: [] }, {
+                    id: "D2", status: "excluded", supportIds: []
+                  }],
+                  extractIds: [],
+                  insufficientReason: "not_applicable",
+                  version: 1
+                }
+              : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+                ? (() => {
+                    closureCalls += 1;
+                    return {
+                      decisions: [{ id: "D1", status: "missing" }, {
+                        id: "D2", status: "missing"
+                      }],
+                      version: 2
+                    };
+                  })()
+                : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+                  ? {
+                      targets: {
+                        D1: ["Alpha preserves order."],
+                        D2: ["Beta removes duplicates."]
+                      },
+                      version: 2
+                    }
+                  : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+                    ? {
+                        claims: [{
+                          id: "C1",
+                          supportHandles: ["K1"],
+                          verdict: "supported"
+                        }, {
+                          id: "C2",
+                          supportHandles: ["K1"],
+                          verdict: "supported"
+                        }, {
+                          id: "C3",
+                          supportHandles: ["K2"],
+                          verdict: "supported"
+                        }],
+                        coverage: [{
+                          id: "D1", status: "covered", supportIds: ["C2"]
+                        }, {
+                          id: "D2", status: "covered", supportIds: ["C3"]
+                        }],
+                        extractIds: [],
+                        insufficientReason: "not_applicable",
+                        version: 1
+                      }
+                    : (() => { throw new Error("unexpected_current_operation"); })(),
+      providerResponseId: `response-${operation.name}`,
+      usage
+    }));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(closureCalls).toBe(1);
+    expect(result.operations.map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+      KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+      KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+      KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
+      KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+    ]);
+    expect(recorder.entries.get(5)?.acceptedResult).toEqual({
+      decisions: [{ id: "D1", status: "missing" }, {
+        id: "D2", status: "missing"
+      }],
+      version: 2
+    });
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "complete",
+      supportedClaimCount: 2
     });
   });
 
@@ -1777,16 +2029,68 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 35
+      version: 37
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 35
+      version: 37
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 35
+      version: 37
     });
+  });
+
+  it("recomputes only validator-rejected Scope map units", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    const invalidScope = {
+      ...scopeOutput(false),
+      evidenceUnits: [{
+        ...scopeOutput(false).evidenceUnits[0],
+        findings: [{
+          description: "Retain the alpha answer obligation.",
+          evidenceAtomIds: ["A2"],
+          requestAnchor: "alpha"
+        }]
+      }, {
+        ...scopeOutput(false).evidenceUnits[1],
+        findings: [{
+          description: "Retain the beta answer obligation.",
+          evidenceAtomIds: ["A2"],
+          requestAnchor: " "
+        }]
+      }]
+    };
+    let scopeCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION && scopeCalls++ === 0
+        ? {
+            output: invalidScope,
+            providerResponseId: "response-invalid-multi-leaf-scope",
+            usage
+          }
+        : baseline(operation));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(result.settlement.requestCoverage).toBe("complete");
+    expect(recorder.entries.get(2)?.acceptedResult).toMatchObject({
+      diagnostic: {
+        code: "finding_atom_provenance",
+        path: "/evidenceUnits/0/findings/0/evidenceAtomIds"
+      },
+      repairBaseHash: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+    expect(recorder.entries.get(3)?.acceptedResult).toEqual(scopeOutput(false));
+    expect(JSON.stringify(recorder.entries.get(3)?.acceptedResult))
+      .not.toContain("Retain the alpha answer obligation.");
+    expect(JSON.stringify(recorder.entries.get(3)?.acceptedResult))
+      .not.toContain("Retain the beta answer obligation.");
   });
 
   it("fails closed when recovery lost a transient verified-patch base", async () => {
@@ -1846,7 +2150,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
             : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
               ? selectorV21Output(true)
               : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-                ? closureOutput("D1")
+                ? closureOutput(operation)
               : (() => { throw new Error("unexpected_current_operation"); })(),
       providerResponseId: `response-${operation.name}`,
       usage
@@ -2113,7 +2417,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                 version: 1
               }
             : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-              ? closureOutput("D1")
+              ? closureOutput(operation)
             : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
               ? {
                   targets: {
@@ -2172,7 +2476,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
                 }
               : selectorV21Output(false)
             : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
-              ? closureOutput("D1")
+              ? closureOutput(operation)
             : (() => { throw new Error("unexpected_current_operation"); })(),
       providerResponseId: `response-${operation.name}`,
       usage

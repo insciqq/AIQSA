@@ -5,6 +5,9 @@ import {
   decodeLegacyKnowledgeSummaryDispatchCandidate,
   type LegacyKnowledgeSummaryDispatchCandidate
 } from "./legacySummaryReceipt";
+import {
+  knowledgeCoverageEvidenceFitsAtomLimitV2
+} from "./coverageScopeV4";
 import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion";
 import type { KnowledgeExpandedContextOrderV1 } from "./retrievalTypes";
 
@@ -516,10 +519,19 @@ function renderMessage(
 
 function fitsLimits(
   message: string,
+  items: readonly KnowledgeEvidenceDispatchManifestItem[],
   limits: Readonly<{ maximumBytes: number; maximumTokens: number }>
 ): boolean {
   return utf8Bytes(message) <= limits.maximumBytes &&
-    estimateApproxTokens(message) <= limits.maximumTokens;
+    estimateApproxTokens(message) <= limits.maximumTokens &&
+    knowledgeCoverageEvidenceFitsAtomLimitV2(items.map((item) => ({
+      exactExcerpt: item.exactExcerpt,
+      expandedContext: item.expandedContext,
+      ...(item.expandedContextOrder
+        ? { expandedContextOrder: item.expandedContextOrder }
+        : {}),
+      handle: item.handle
+    })));
 }
 
 function deepFreeze<T>(value: T): T {
@@ -553,7 +565,7 @@ export function packKnowledgeEvidenceDispatchManifest(
     throw new Error("knowledge_evidence_dispatch_config_invalid");
   }
   const emptyMessage = renderMessage(input.header, input.coverageStatement, [], input.footer);
-  if (!fitsLimits(emptyMessage, limits)) {
+  if (!fitsLimits(emptyMessage, [], limits)) {
     throw new Error("knowledge_evidence_dispatch_envelope_exceeds_budget");
   }
 
@@ -619,7 +631,8 @@ export function packKnowledgeEvidenceDispatchManifest(
       [...items.map(({ text }) => text), item.text],
       input.footer
     );
-    if (!fitsLimits(message, limits) && allowExpandedContextOmission &&
+    if (!fitsLimits(message, [...items, item], limits) &&
+      allowExpandedContextOmission &&
       !("kind" in candidate) && Boolean(candidate.expandedContext)) {
       item = materializeItem(candidate, items.length + 1, true);
       message = renderMessage(
@@ -629,7 +642,7 @@ export function packKnowledgeEvidenceDispatchManifest(
         input.footer
       );
     }
-    if (!fitsLimits(message, limits)) {
+    if (!fitsLimits(message, [...items, item], limits)) {
       exclusions.push({
         duplicateOfEvidenceId: null,
         evidenceId: candidate.evidenceId,

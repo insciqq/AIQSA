@@ -31,7 +31,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -1179,7 +1179,9 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
     revision.id !== profile.profileRevisionId ||
     revision.revisionNumber !== profile.profileRevisionNumber ||
     generation.chunkingProfileVersion !== KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
-    revision.pdfParserProfileVersion !== KNOWLEDGE_PDF_PARSER_PROFILE_VERSION) {
+    !Number.isSafeInteger(revision.pdfParserProfileVersion) ||
+    revision.pdfParserProfileVersion < 1 ||
+    revision.pdfParserProfileVersion > KNOWLEDGE_PDF_PARSER_PROFILE_VERSION) {
     throw new Error("open_rag_answer_base_attestation_failed");
   }
   const snapshot = await input.prisma.knowledgeBaseSnapshot.findFirst({
@@ -1244,7 +1246,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53,
         parserProfileVersion: revision.pdfParserProfileVersion,
         pipelineVersion: KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
         profileRevisionId: revision.id,
