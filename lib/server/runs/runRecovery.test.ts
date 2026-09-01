@@ -89,11 +89,18 @@ import {
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_CLOSURE_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_VERIFIED_PATCH_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_ANSWER_LEVEL_COMPRESSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SCOPE_SET_REDUCTION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SCOPE_RECALL_MAP_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_INVALID_PROVENANCE_REJECTION_PROTOCOL_V2,
+  KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_GRANULARITY_EPISTEMIC_FIDELITY_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   knowledgeAnswerDraftPromptV21
 } from "../knowledge/answerGroundingV21";
+import {
+  knowledgeAnswerDraftPromptV21GlobalReducerV1
+} from "../knowledge/answerGroundingGlobalReducerV1";
 import type {
   KnowledgeProviderDispatchLifecycle,
   KnowledgeProviderDispatchRecovery,
@@ -2221,6 +2228,62 @@ describe("run recovery", () => {
     expectedReasoningEfforts: [],
     snapshotVersion: 30
   }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 31
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 32
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 33
+  }, {
+    current: false,
+    executionPolicy: {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "medium",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const,
+    expectedReasoningEfforts: [],
+    snapshotVersion: 34
+  }, {
     current: true,
     executionPolicy: {
       auditorReasoningEffort: "high",
@@ -2233,7 +2296,7 @@ describe("run recovery", () => {
       version: 1
     } as const,
     expectedReasoningEfforts: ["high", "high", "medium", "high"],
-    snapshotVersion: 31
+    snapshotVersion: 35
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -2245,18 +2308,42 @@ describe("run recovery", () => {
       }],
       version: 1
     };
-    const primaryPrompt = knowledgeAnswerDraftPromptV21({
+    const promptInput = {
       draftPass: "primary",
       evidenceManifest: dispatch.draft.message,
       request: "remember this",
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
-    });
+    } as const;
+    const primaryPrompt = snapshotVersion === 35
+      ? knowledgeAnswerDraftPromptV21GlobalReducerV1(promptInput)
+      : knowledgeAnswerDraftPromptV21(promptInput);
     const acceptedRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
       contractVersion: 21,
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 31
+      ...(snapshotVersion === 35
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_GLOBAL_REDUCER_PROTOCOL_V1
+          }
+        : snapshotVersion === 34
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol:
+              KNOWLEDGE_ANSWER_SCOPE_V6_INVALID_PROVENANCE_REJECTION_PROTOCOL_V2
+          }
+        : snapshotVersion === 33
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_SCOPE_RECALL_MAP_PROTOCOL_V1
+          }
+        : snapshotVersion === 32
+        ? {
+            executionPolicy: executionPolicy!,
+            protocol: KNOWLEDGE_ANSWER_SCOPE_V6_SCOPE_SET_REDUCTION_PROTOCOL_V1
+          }
+        : snapshotVersion === 31
         ? {
             executionPolicy: executionPolicy!,
             protocol: KNOWLEDGE_ANSWER_SCOPE_V6_ANSWER_LEVEL_COMPRESSION_PROTOCOL_V1

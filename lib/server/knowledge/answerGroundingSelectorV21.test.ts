@@ -29,9 +29,20 @@ import {
   knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1
 } from "./answerGroundingAnswerLevelCompressionV1";
 import {
+  KNOWLEDGE_GROUNDED_SELECTOR_SCOPE_SET_REDUCTION_CONTRACT_V1,
+  knowledgeGroundedSelectorPromptV21ScopeSetReductionV1
+} from "./answerGroundingScopeSetReductionV1";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_UNSUPPORTED_SUPERSESSION_CONTRACT_V1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1
+} from "./answerGroundingGlobalReducerV1";
+import {
   knowledgeCoverageEvidenceFromManifestV6,
   validateKnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
+import {
+  validateKnowledgeCoverageScopeCompletenessV1
+} from "./coverageScopeCompletenessV1";
 import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
 
 function fixture() {
@@ -147,6 +158,29 @@ describe("Knowledge Grounded Selector V21", () => {
     expect(current.systemPrompt).toContain("exact request's answer-level granularity");
     expect(current.systemPrompt).toContain("source-explicit summary claim");
     expect(current.systemPrompt).toContain("partial list");
+  });
+
+  it("keeps V31 Selector bytes and performs one global redundancy reduction", () => {
+    const { draft, evidence, manifest, request, scope } = fixture();
+    const input = {
+      draft,
+      evidence,
+      evidenceManifest: manifest.message,
+      request,
+      scope,
+      selectorPass: "initial" as const
+    };
+    const historical = knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1(input);
+    const current = knowledgeGroundedSelectorPromptV21ScopeSetReductionV1(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_SCOPE_SET_REDUCTION_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("keep the earliest Scope item eligible");
+    expect(current.systemPrompt).toContain("mark every later equivalent positive item excluded");
+    expect(current.systemPrompt).toContain("server performs no semantic deduplication");
+    expect(current.systemPrompt).toContain("An evidence-free requested facet can never be excluded");
   });
 
   it("keeps the initial prompt exact and gives dimension repair a content-free path", () => {
@@ -481,6 +515,108 @@ describe("Knowledge Grounded Selector V21", () => {
       kind: "rejected",
       reason: "selector_dimension_invalid"
     });
+  });
+
+  it("lets the global reducer supersede no-data only with a positive anchor peer", () => {
+    const { draft, evidence, request } = fixture();
+    const initial = validateKnowledgeCoverageScopeV6({
+      evidenceUnits: [{ findings: [], handle: "K1" }, {
+        findings: [],
+        handle: "K2"
+      }],
+      jointFindings: [],
+      unsupportedDimensions: [{
+        description: "State the controller guarantee.",
+        requestAnchor: "guarantees"
+      }],
+      version: 6
+    }, { evidence, request });
+    expect(initial.kind).toBe("accepted");
+    if (initial.kind !== "accepted") return;
+    const completeness = validateKnowledgeCoverageScopeCompletenessV1({
+      additions: [{
+        description: "State that the controller enforces a bounded queue.",
+        evidenceAtomIds: ["A1"],
+        requestAnchor: "guarantees"
+      }],
+      version: 1
+    }, {
+      acceptedScope: initial.value,
+      evidence,
+      request
+    });
+    expect(completeness.kind).toBe("accepted");
+    if (completeness.kind !== "accepted") return;
+    const output = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "excluded", supportIds: [] }, {
+        id: "D2",
+        status: "covered",
+        supportIds: ["C1"]
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+
+    expect(validateKnowledgeGroundedSelectorV21(output, {
+      draft,
+      evidence,
+      request,
+      scope: completeness.scope,
+      scopeProtocol: "append_only_completeness_v1"
+    })).toEqual({ kind: "rejected", reason: "selector_dimension_invalid" });
+    const reduced = validateKnowledgeGroundedSelectorV21(output, {
+      draft,
+      evidence,
+      request,
+      scope: completeness.scope,
+      scopeProtocol: "append_only_completeness_reduce_v2"
+    });
+    expect(reduced.kind).toBe("accepted");
+    if (reduced.kind !== "accepted") return;
+    expect(deriveKnowledgeCoverageV6(reduced.value)).toEqual({
+      coveredDimensionCount: 1,
+      excludedDimensionCount: 1,
+      missingInformation: [],
+      requestCoverage: "complete",
+      supportedContentCount: 1
+    });
+    expect(() => settleKnowledgeAnswerV21FromFinalSelector({
+      draft,
+      evidence,
+      selector: reduced.value
+    })).toThrow("knowledge_answer_v21_settlement_invalid");
+    expect(settleKnowledgeAnswerV21FromFinalSelector({
+      draft,
+      evidence,
+      selector: reduced.value,
+      scopeProtocol: "append_only_completeness_reduce_v2"
+    }).requestCoverage).toBe("complete");
+
+    const historicalPrompt = knowledgeGroundedSelectorPromptV21ScopeSetReductionV1({
+      draft,
+      evidence,
+      evidenceManifest: "manifest",
+      request,
+      scope: completeness.scope,
+      scopeProtocol: "append_only_completeness_reduce_v2",
+      selectorPass: "initial"
+    });
+    const currentPrompt = knowledgeGroundedSelectorPromptV21GlobalReducerV1({
+      draft,
+      evidence,
+      evidenceManifest: "manifest",
+      request,
+      scope: completeness.scope,
+      scopeProtocol: "append_only_completeness_reduce_v2",
+      selectorPass: "initial"
+    });
+    expect(currentPrompt.userPrompt).toBe(historicalPrompt.userPrompt);
+    expect(currentPrompt.systemPrompt).toBe(
+      `${historicalPrompt.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_UNSUPPORTED_SUPERSESSION_CONTRACT_V1
+    );
   });
 
   it("keeps excluded supported content out of settlement", () => {

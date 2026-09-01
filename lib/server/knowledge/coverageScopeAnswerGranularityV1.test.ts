@@ -22,6 +22,19 @@ import {
   resolveKnowledgeCoverageRequestAnchorIdsV1
 } from "./coverageScopeRequestAnchorIdsV1";
 import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SET_REDUCTION_CONTRACT_V1,
+  KNOWLEDGE_COVERAGE_SCOPE_SET_REDUCTION_CONTRACT_V1,
+  decodeKnowledgeCoverageScopeCompletenessPromptV5,
+  decodeKnowledgeCoverageScopePromptV6SetReductionV1,
+  knowledgeCoverageScopeCompletenessPromptV5,
+  knowledgeCoverageScopePromptV6SetReductionV1
+} from "./coverageScopeSetReductionV1";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_RECALL_MAP_CONTRACT_V1,
+  decodeKnowledgeCoverageScopePromptV6RecallMapV1,
+  knowledgeCoverageScopePromptV6RecallMapV1
+} from "./coverageScopeRecallMapV1";
+import {
   knowledgeCoverageScopeCompletenessPromptV2,
   knowledgeCoverageScopePromptV6QueryIntentV1
 } from "./coverageScopeQueryIntentV1";
@@ -223,6 +236,98 @@ describe("Knowledge Coverage Scope answer granularity", () => {
       request: input.request,
       ...current
     })).toEqual({ completenessPass: "initial", repairReason: null });
+  });
+
+  it("keeps V31 Scope bytes and reduces repeated evidence to one answer task", () => {
+    const input = fixture();
+    const args = {
+      atomIndexVersion: 2 as const,
+      evidence: input.evidence,
+      evidenceManifest: input.manifest.message,
+      repairBaseHash: null,
+      request: input.request,
+      scopePass: "initial" as const
+    };
+    const historical = knowledgeCoverageScopePromptV6AnswerGranularityV2(args);
+    const current = knowledgeCoverageScopePromptV6SetReductionV1(args);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n${KNOWLEDGE_COVERAGE_SCOPE_SET_REDUCTION_CONTRACT_V1}`
+    );
+    expect(current.systemPrompt).toContain("never one finding per evidence unit");
+    expect(current.systemPrompt).toContain("earliest supplied evidence unit");
+    expect(current.systemPrompt).toContain("server never semantically merges findings");
+    expect(decodeKnowledgeCoverageScopePromptV6SetReductionV1({
+      atomIndexVersion: 2,
+      evidence: input.evidence,
+      evidenceManifest: input.manifest.message,
+      request: input.request,
+      ...current
+    })).toMatchObject({ scopePass: "initial" });
+  });
+
+  it("keeps V31 completeness bytes and appends only distinct answer tasks", () => {
+    const input = fixture();
+    const args = {
+      acceptedScope: input.scope,
+      atomIndexVersion: 2 as const,
+      completenessPass: "initial" as const,
+      evidence: input.evidence,
+      evidenceManifest: input.manifest.message,
+      request: input.request
+    };
+    const historical = knowledgeCoverageScopeCompletenessPromptV4(args);
+    const current = knowledgeCoverageScopeCompletenessPromptV5(args);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SET_REDUCTION_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("semantically equivalent");
+    expect(current.systemPrompt).toContain("global Selector");
+    expect(decodeKnowledgeCoverageScopeCompletenessPromptV5({
+      acceptedScope: input.scope,
+      atomIndexVersion: 2,
+      evidence: input.evidence,
+      evidenceManifest: input.manifest.message,
+      request: input.request,
+      ...current
+    })).toEqual({ completenessPass: "initial", repairReason: null });
+  });
+
+  it("keeps V32 bytes historical and restores recall-first Scope map", () => {
+    const input = fixture();
+    const args = {
+      atomIndexVersion: 2 as const,
+      evidence: input.evidence,
+      evidenceManifest: input.manifest.message,
+      repairBaseHash: null,
+      request: input.request,
+      scopePass: "initial" as const
+    };
+    const v31 = knowledgeCoverageScopePromptV6AnswerGranularityV2(args);
+    const v32 = knowledgeCoverageScopePromptV6SetReductionV1(args);
+    const current = knowledgeCoverageScopePromptV6RecallMapV1(args);
+    expect(v32.systemPrompt).toBe(
+      `${v31.systemPrompt}\n\n${KNOWLEDGE_COVERAGE_SCOPE_SET_REDUCTION_CONTRACT_V1}`
+    );
+    expect(current.userPrompt).toBe(v31.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${v31.systemPrompt}\n\n${KNOWLEDGE_COVERAGE_SCOPE_RECALL_MAP_CONTRACT_V1}`
+    );
+    expect(current.systemPrompt).not.toContain(
+      "emit it exactly once under the earliest supplied evidence unit"
+    );
+    expect(current.systemPrompt).toContain("Never suppress all representatives");
+    expect(current.systemPrompt).toContain("global Selector is the sole semantic");
+    expect(current.systemPrompt).toContain("zero-finding answer is valid only");
+    expect(decodeKnowledgeCoverageScopePromptV6RecallMapV1({
+      atomIndexVersion: 2,
+      evidence: input.evidence,
+      evidenceManifest: input.manifest.message,
+      request: input.request,
+      ...current
+    })).toMatchObject({ scopePass: "initial" });
   });
 
   it("resolves server-issued query IDs before unchanged V6 validation", () => {

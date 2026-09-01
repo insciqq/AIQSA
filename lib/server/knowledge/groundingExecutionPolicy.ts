@@ -196,6 +196,56 @@ export function resolveKnowledgeGroundingExecutionPolicyV1(input: Readonly<{
   });
 }
 
+/**
+ * Reads the provider-neutral control frozen by current admission. Historical
+ * accepted requests are decoded once from their immutable provider params;
+ * conflicting recognized dialect fields fail closed instead of silently
+ * selecting a different reasoning level during execution or recovery.
+ */
+export function knowledgeGroundingInheritedReasoningEffortV1(input: Readonly<{
+  acceptedReasoningEffort?: unknown;
+  params: Readonly<Record<string, unknown>>;
+}>): string | null {
+  if (input.acceptedReasoningEffort !== undefined) {
+    if (!nullableReasoningEffort(input.acceptedReasoningEffort)) {
+      throw new Error("knowledge_grounding_reasoning_control_invalid");
+    }
+    return input.acceptedReasoningEffort;
+  }
+
+  const candidates: string[] = [];
+  const add = (value: unknown): void => {
+    if (value === undefined) return;
+    if (!reasoningEffort(value)) {
+      throw new Error("knowledge_grounding_reasoning_control_invalid");
+    }
+    candidates.push(value);
+  };
+  const reasoning = record(input.params.reasoning) ? input.params.reasoning : null;
+  const outputConfig = record(input.params.outputConfig)
+    ? input.params.outputConfig
+    : null;
+  const outputConfigAlias = record(input.params.output_config)
+    ? input.params.output_config
+    : null;
+
+  if (typeof input.params.verbosity === "string") {
+    // OpenRouter's verbosity-backed profiles suppress reasoning.effort on the
+    // wire, even if a catalog default remains in the nested object.
+    add(input.params.verbosity);
+  } else if (reasoning?.enabled !== false) {
+    add(reasoning?.effort);
+  }
+  add(outputConfig?.effort);
+  add(outputConfigAlias?.effort);
+
+  const distinct = [...new Set(candidates)];
+  if (distinct.length > 1) {
+    throw new Error("knowledge_grounding_reasoning_control_invalid");
+  }
+  return distinct[0] ?? null;
+}
+
 export function knowledgeGroundingReasoningEffortForRoleV1(
   policy: KnowledgeGroundingEffectiveExecutionPolicyV1,
   role: KnowledgeGroundingExecutionRole

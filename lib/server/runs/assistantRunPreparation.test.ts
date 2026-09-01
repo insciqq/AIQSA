@@ -501,6 +501,7 @@ describe("assistant run admission", () => {
         reasoning: { effort: "high" },
         temperature: 0.3
       });
+      expect(request.reasoningEffort).toBe("high");
       expect(result.prepared.assistant).toEqual({
         assistantId: "assistant-1",
         revisionId: "revision-1"

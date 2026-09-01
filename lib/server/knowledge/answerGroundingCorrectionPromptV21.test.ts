@@ -24,6 +24,10 @@ import {
   knowledgeGroundedDeltaSelectorPromptV6
 } from "./answerGroundingAnswerLevelCompressionV1";
 import {
+  KNOWLEDGE_GROUNDED_SELECTOR_ACCUMULATIVE_TARGET_REDUCE_CONTRACT_V1,
+  knowledgeGroundedDeltaSelectorPromptV7
+} from "./answerGroundingAccumulativeReduceV1";
+import {
   knowledgeCoverageEvidenceFromManifestV6,
   validateKnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
@@ -490,6 +494,37 @@ describe("targeted correction prompts", () => {
     );
     expect(current.systemPrompt).toContain("source-explicit summary claim");
     expect(current.systemPrompt).toContain("Never require a partial list");
+  });
+
+  it("reduces current targets over provenance-local primary and supplemental points", () => {
+    const { correctedDraft, evidence, request, scope, selector } = fixture();
+    const input = {
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      initialSelector: selector,
+      request,
+      scope
+    };
+    const historical = knowledgeGroundedDeltaSelectorPromptV6(input);
+    const current = knowledgeGroundedDeltaSelectorPromptV7(input);
+    const { targetPrimaryClaims, ...historicalPayload } = JSON.parse(
+      current.userPrompt
+    ) as Record<string, unknown>;
+    expect(historicalPayload).toEqual(JSON.parse(historical.userPrompt));
+    expect(targetPrimaryClaims).toEqual([{
+      id: "C1",
+      supportHandles: ["K1"],
+      targetDimensionIds: ["D2"],
+      text: "Alpha is bounded."
+    }]);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_ACCUMULATIVE_TARGET_REDUCE_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("candidate map points");
+    expect(current.systemPrompt).toContain("targetEvidenceAtomIndex remains the sole");
+    expect(current.systemPrompt).toContain("either source may be absent");
   });
 
   it("rejects an incomplete or cross-target delta prompt before dispatch", () => {

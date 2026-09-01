@@ -23,10 +23,13 @@ import {
   knowledgeTargetedSupplementClaimLimitsV3,
   knowledgeTargetedSupplementFitsV1,
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
+  knowledgeTargetPrimaryClaimsV1,
   mergeKnowledgeGroundedCorrectionV1,
   mergeKnowledgeGroundedCorrectionV2,
+  mergeKnowledgeGroundedCorrectionV3,
   mergeKnowledgeTargetedSupplementV2,
   mergeKnowledgeTargetedSupplementV1,
+  normalizeKnowledgeTargetedSupplementExactPrimaryDuplicatesV1,
   knowledgeTargetedSupplementFailureV1,
   validateKnowledgeTargetedSupplementV1,
   validateKnowledgeTargetedSupplementV2,
@@ -266,6 +269,51 @@ describe("target-addressed Knowledge correction", () => {
     });
     expect(decodeKnowledgeTargetedSupplementV4(output, input)?.draft.claims)
       .toHaveLength(20);
+  });
+
+  it("drops exact primary repeats only when every target retains a candidate", () => {
+    const input = {
+      availableHandles: ["K1", "K2", "K3"],
+      missingDimensions: missing,
+      primaryDraft: primary
+    } as const;
+    const mixed = {
+      targets: {
+        D2: ["Alpha is bounded.", "Beta preserves order."],
+        D3: ["Gamma removes duplicates."]
+      },
+      version: 2
+    };
+    const normalized = normalizeKnowledgeTargetedSupplementExactPrimaryDuplicatesV1(
+      mixed,
+      primary
+    );
+    expect(normalized).toEqual({
+      targets: {
+        D2: ["Beta preserves order."],
+        D3: ["Gamma removes duplicates."]
+      },
+      version: 2
+    });
+    expect(validateKnowledgeTargetedSupplementV4(normalized, input).kind).toBe(
+      "accepted"
+    );
+
+    const wouldEmptyTarget = {
+      ...mixed,
+      targets: {
+        ...mixed.targets,
+        D2: ["Alpha is bounded."]
+      }
+    };
+    expect(normalizeKnowledgeTargetedSupplementExactPrimaryDuplicatesV1(
+      wouldEmptyTarget,
+      primary
+    )).toBe(wouldEmptyTarget);
+    expect(validateKnowledgeTargetedSupplementV4(
+      wouldEmptyTarget,
+      input
+    )).toEqual({ kind: "rejected", reason: "draft_duplicate_primary_claim" });
   });
 
   it("projects only exact immutable atoms assigned to correction targets", () => {
@@ -624,5 +672,103 @@ describe("target-addressed Knowledge correction", () => {
         coverage: final.coverage
       })
     })).toBe(false);
+  });
+
+  it("lets the current target reduce reuse only immutable provenance-local primary points", () => {
+    const initial = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([dimension("D1", "K1", "missing")])
+    });
+    expect(knowledgeTargetPrimaryClaimsV1({
+      draft: primary,
+      initialSelector: initial
+    })).toEqual([{
+      id: "C1",
+      supportHandles: ["K1"],
+      targetDimensionIds: ["D1"],
+      text: "Alpha is bounded."
+    }]);
+    const final = selector({
+      claims: Object.freeze([initial.claims[0]!, Object.freeze({
+        id: "C2",
+        supportHandles: Object.freeze([]),
+        verdict: "unsupported" as const
+      })]),
+      coverage: Object.freeze([dimension("D1", "K1", "covered", ["C1"])])
+    });
+    const input = {
+      bindings: [{ claimId: "C2", targetDimensionId: "D1" }],
+      finalSelector: final,
+      initialSelector: initial,
+      primaryClaimCount: 1
+    } as const;
+    expect(mergeKnowledgeGroundedCorrectionV2(input).coverage[0]).toMatchObject({
+      status: "missing",
+      supportIds: []
+    });
+    expect(mergeKnowledgeGroundedCorrectionV3(input).coverage[0]).toMatchObject({
+      status: "covered",
+      supportIds: ["C1"]
+    });
+
+    const foreignInitial = selector({
+      claims: initial.claims,
+      coverage: Object.freeze([dimension("D1", "K2", "missing")])
+    });
+    const foreignFinal = selector({
+      claims: final.claims,
+      coverage: Object.freeze([dimension("D1", "K2", "covered", ["C1"])])
+    });
+    expect(mergeKnowledgeGroundedCorrectionV3({
+      ...input,
+      finalSelector: foreignFinal,
+      initialSelector: foreignInitial
+    }).coverage[0]).toMatchObject({ status: "missing", supportIds: [] });
+  });
+
+  it("canonicalizes primary-state drift before accumulative target reduction", () => {
+    const initial = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([dimension("D1", "K1", "missing")])
+    });
+    const final = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze([]),
+        verdict: "unsupported" as const
+      }), Object.freeze({
+        id: "C2",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([dimension("D1", "K1", "covered", ["C2"])])
+    });
+    const corrected = mergeKnowledgeGroundedCorrectionV3({
+      bindings: [{ claimId: "C2", targetDimensionId: "D1" }],
+      finalSelector: final,
+      initialSelector: initial,
+      primaryClaimCount: 1
+    });
+    expect(corrected.claims).toEqual([{
+      id: "C1",
+      supportHandles: ["K1"],
+      verdict: "supported"
+    }, {
+      id: "C2",
+      supportHandles: ["K1"],
+      verdict: "supported"
+    }]);
+    expect(corrected.coverage[0]).toMatchObject({
+      status: "covered",
+      supportIds: ["C2"]
+    });
   });
 });

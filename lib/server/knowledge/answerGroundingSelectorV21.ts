@@ -70,7 +70,8 @@ export type KnowledgeGroundedSelectorFailureV21 = KnowledgeGroundedSelectorFailu
 
 export type KnowledgeCoverageScopeValidationProtocolV21 =
   | "canonical_v6"
-  | "append_only_completeness_v1";
+  | "append_only_completeness_v1"
+  | "append_only_completeness_reduce_v2";
 
 export type KnowledgeCoverageDerivationV6 = Readonly<{
   coveredDimensionCount: number;
@@ -152,9 +153,11 @@ function validCoverageScopeV21(input: Readonly<{
   scopeProtocol?: KnowledgeCoverageScopeValidationProtocolV21;
 }>): boolean {
   if (input.scopeProtocol !== undefined && input.scopeProtocol !== "canonical_v6" &&
-    input.scopeProtocol !== "append_only_completeness_v1") return false;
+    input.scopeProtocol !== "append_only_completeness_v1" &&
+    input.scopeProtocol !== "append_only_completeness_reduce_v2") return false;
   try {
-    return input.scopeProtocol === "append_only_completeness_v1"
+    return input.scopeProtocol === "append_only_completeness_v1" ||
+      input.scopeProtocol === "append_only_completeness_reduce_v2"
       ? validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(input.scope, {
           atomIndexVersion: input.atomIndexVersion,
           evidence: input.evidence,
@@ -193,6 +196,17 @@ export function validateKnowledgeGroundedSelectorV21(
   const legacyCoverage: Record<string, unknown>[] = [];
   for (const [index, candidate] of value.coverage.entries()) {
     const scoped = input.scope.scope[index];
+    const unsupportedSuperseded = input.scopeProtocol ===
+        "append_only_completeness_reduce_v2" &&
+      scoped?.evidenceAtomIds.length === 0 &&
+      input.scope.scope.some((possibleRepresentative, representativeIndex) => {
+        if (representativeIndex === index ||
+          possibleRepresentative.evidenceAtomIds.length === 0 ||
+          possibleRepresentative.requestAnchor !== scoped.requestAnchor) return false;
+        const decision = value.coverage[representativeIndex];
+        return record(decision) && decision.id === possibleRepresentative.id &&
+          (decision.status === "covered" || decision.status === "missing");
+      });
     if (!scoped || !record(candidate) ||
       !exactKeys(candidate, ["id", "status", "supportIds"]) ||
       candidate.id !== scoped.id ||
@@ -202,7 +216,8 @@ export function validateKnowledgeGroundedSelectorV21(
       !candidate.supportIds.every((id) => typeof id === "string") ||
       !uniqueStrings(candidate.supportIds as string[]) ||
       candidate.status !== "covered" && candidate.supportIds.length !== 0 ||
-      candidate.status === "excluded" && scoped.evidenceAtomIds.length === 0) {
+      candidate.status === "excluded" && scoped.evidenceAtomIds.length === 0 &&
+        !unsupportedSuperseded) {
       return rejected("selector_dimension_invalid");
     }
     statuses.push(candidate.status);

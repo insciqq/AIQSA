@@ -818,6 +818,37 @@ export function decodeKnowledgeTargetedSupplementV4(
   return validation.kind === "accepted" ? validation.value : null;
 }
 
+/** Removes only NFC-exact repeats of immutable primary claims from grouped
+ * Supplement output. The reduction is applied only when every target retains
+ * at least one candidate; otherwise the original payload remains fail-closed.
+ * No fuzzy comparison, cross-target movement, or semantic merge is performed. */
+export function normalizeKnowledgeTargetedSupplementExactPrimaryDuplicatesV1(
+  value: unknown,
+  primaryDraft: KnowledgeAnswerDraftSelectorInput
+): unknown {
+  if (isKnowledgeDraftMalformed(primaryDraft) || !record(value) ||
+    !exactKeys(value, ["version", "targets"]) || !record(value.targets)) return value;
+  const primaryTexts = new Set(primaryDraft.claims.map(({ text }) =>
+    text.normalize("NFC")));
+  let changed = false;
+  const targets: Record<string, readonly string[]> = {};
+  for (const [id, rawClaims] of Object.entries(value.targets)) {
+    if (!Array.isArray(rawClaims) || rawClaims.length < 1 ||
+      !rawClaims.every((claim): claim is string => typeof claim === "string")) return value;
+    const claims = rawClaims.filter((claim) =>
+      !primaryTexts.has(claim.normalize("NFC")));
+    if (claims.length < 1) return value;
+    if (claims.length !== rawClaims.length) changed = true;
+    targets[id] = Object.freeze(claims);
+  }
+  return changed
+    ? Object.freeze({
+        targets: Object.freeze(targets),
+        version: value.version
+      })
+    : value;
+}
+
 /** Rebase the locally assigned Supplement claim IDs after the immutable primary
  * Draft. Validation guarantees no semantic-text deduplication or truncation can
  * occur, so the target binding remains lossless. */
@@ -861,6 +892,47 @@ function immutableClaim(claim: KnowledgeGroundedSelectorClaimV3) {
     supportHandles: Object.freeze([...claim.supportHandles]),
     verdict: claim.verdict
   });
+}
+
+export type KnowledgeTargetPrimaryClaimV1 = Readonly<{
+  id: string;
+  supportHandles: readonly string[];
+  targetDimensionIds: readonly string[];
+  text: string;
+}>;
+
+/** Projects only accepted supported primary map points whose complete accepted
+ * support provenance is contained by at least one initially missing positive
+ * target. Handle containment is a deterministic authority bound, not a
+ * semantic mapping: the final target-only verifier must recheck the claim text
+ * against that target's exact atoms before it may use the ID for coverage. */
+export function knowledgeTargetPrimaryClaimsV1(input: Readonly<{
+  draft: KnowledgeAnswerDraftSelectorInput;
+  initialSelector: KnowledgeGroundedSelectorV21;
+}>): readonly KnowledgeTargetPrimaryClaimV1[] {
+  if (isKnowledgeDraftMalformed(input.draft) ||
+    input.draft.claims.length < input.initialSelector.claims.length ||
+    input.draft.claims.slice(0, input.initialSelector.claims.length)
+      .some((claim, index) =>
+      claim.id !== input.initialSelector.claims[index]?.id)) {
+    throw new Error("knowledge_target_primary_claims_invalid");
+  }
+  const targets = input.initialSelector.coverage.filter((dimension) =>
+    dimension.status === "missing" && dimension.evidenceHandles.length > 0);
+  return Object.freeze(input.initialSelector.claims.flatMap((claim, index) => {
+    if (claim.verdict !== "supported" || claim.supportHandles.length < 1) return [];
+    const targetDimensionIds = targets
+      .filter((target) => claim.supportHandles.every((handle) =>
+        target.evidenceHandles.includes(handle)))
+      .map(({ id }) => id);
+    if (targetDimensionIds.length < 1) return [];
+    return [Object.freeze({
+      id: claim.id,
+      supportHandles: Object.freeze([...claim.supportHandles]),
+      targetDimensionIds: Object.freeze(targetDimensionIds),
+      text: input.draft.claims[index]!.text
+    })];
+  }));
 }
 
 /** Detects one narrow final-delta consistency state worth a fresh bounded
@@ -912,7 +984,10 @@ function mergeKnowledgeGroundedCorrection(input: Readonly<{
   finalSelector: KnowledgeGroundedSelectorV21;
   initialSelector: KnowledgeGroundedSelectorV21;
   primaryClaimCount: number;
-}>, allowTargetExclusion: boolean): KnowledgeGroundedSelectorV21 {
+}>, options: Readonly<{
+  allowPrimaryTargetSupport: boolean;
+  allowTargetExclusion: boolean;
+}>): KnowledgeGroundedSelectorV21 {
   const { finalSelector, initialSelector } = input;
   if (!Number.isSafeInteger(input.primaryClaimCount) || input.primaryClaimCount < 1 ||
     initialSelector.claims.length !== input.primaryClaimCount ||
@@ -938,7 +1013,12 @@ function mergeKnowledgeGroundedCorrection(input: Readonly<{
   if (supplementalClaims.some((claim) => !bindingByClaimId.has(claim.id))) {
     throw new Error("knowledge_grounded_correction_invalid");
   }
-  const finalClaimById = new Map(finalSelector.claims.map((claim) => [claim.id, claim]));
+  const finalClaimById = new Map([
+    ...(options.allowPrimaryTargetSupport
+      ? initialSelector.claims
+      : finalSelector.claims.slice(0, input.primaryClaimCount)),
+    ...supplementalClaims
+  ].map((claim) => [claim.id, claim] as const));
   const coverage = initialSelector.coverage.map((initialDimension, index) => {
     const finalDimension = finalSelector.coverage[index];
     if (!finalDimension || initialDimension.id !== finalDimension.id ||
@@ -956,15 +1036,23 @@ function mergeKnowledgeGroundedCorrection(input: Readonly<{
         supportIds: Object.freeze([...initialDimension.supportIds])
       });
     }
-    const allowed = new Set(input.bindings
+    const allowedSupplement = new Set(input.bindings
       .filter(({ targetDimensionId }) => targetDimensionId === initialDimension.id)
       .map(({ claimId }) => claimId));
-    const status = allowTargetExclusion && finalDimension.status === "excluded"
+    const allowedPrimary = options.allowPrimaryTargetSupport
+      ? new Set(initialSelector.claims
+          .filter((claim) => claim.verdict === "supported" &&
+            claim.supportHandles.length > 0 && claim.supportHandles.every((handle) =>
+              initialDimension.evidenceHandles.includes(handle)))
+          .map(({ id }) => id))
+      : new Set<string>();
+    const status = options.allowTargetExclusion && finalDimension.status === "excluded"
       ? "excluded" as const
       : finalDimension.status;
     const supportIds = status === "covered"
       ? finalDimension.supportIds.filter((id) =>
-          allowed.has(id) && finalClaimById.get(id)?.verdict === "supported" &&
+          (allowedSupplement.has(id) || allowedPrimary.has(id)) &&
+          finalClaimById.get(id)?.verdict === "supported" &&
           finalClaimById.get(id)!.supportHandles.every((handle) =>
             initialDimension.evidenceHandles.includes(handle)))
       : [];
@@ -1020,7 +1108,10 @@ export function mergeKnowledgeGroundedCorrectionV1(input: Readonly<{
   initialSelector: KnowledgeGroundedSelectorV21;
   primaryClaimCount: number;
 }>): KnowledgeGroundedSelectorV21 {
-  return mergeKnowledgeGroundedCorrection(input, false);
+  return mergeKnowledgeGroundedCorrection(input, {
+    allowPrimaryTargetSupport: false,
+    allowTargetExclusion: false
+  });
 }
 
 /** Current least-authority delta merge. A final target-only verifier may veto
@@ -1034,5 +1125,26 @@ export function mergeKnowledgeGroundedCorrectionV2(input: Readonly<{
   initialSelector: KnowledgeGroundedSelectorV21;
   primaryClaimCount: number;
 }>): KnowledgeGroundedSelectorV21 {
-  return mergeKnowledgeGroundedCorrection(input, true);
+  return mergeKnowledgeGroundedCorrection(input, {
+    allowPrimaryTargetSupport: false,
+    allowTargetExclusion: true
+  });
+}
+
+/** Current accumulative target reduce. Accepted base verdicts remain immutable,
+ * while a final target-only verifier may reuse an initially supported primary
+ * claim for an initially missing target only when its complete accepted support
+ * provenance is contained by that target and the verifier explicitly maps it.
+ * The verifier still owns semantic relevance and complete target entailment;
+ * the server performs no text matching or coverage promotion. */
+export function mergeKnowledgeGroundedCorrectionV3(input: Readonly<{
+  bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
+  finalSelector: KnowledgeGroundedSelectorV21;
+  initialSelector: KnowledgeGroundedSelectorV21;
+  primaryClaimCount: number;
+}>): KnowledgeGroundedSelectorV21 {
+  return mergeKnowledgeGroundedCorrection(input, {
+    allowPrimaryTargetSupport: true,
+    allowTargetExclusion: true
+  });
 }

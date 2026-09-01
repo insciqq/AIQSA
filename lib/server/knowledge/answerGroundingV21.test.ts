@@ -37,6 +37,10 @@ import {
   type KnowledgeGroundedSelectorV17
 } from "./answerGroundingV21";
 import {
+  KNOWLEDGE_ANSWER_DRAFT_COEQUAL_FACET_ATOMIZATION_CONTRACT_V1,
+  knowledgeAnswerDraftPromptV21GlobalReducerV1
+} from "./answerGroundingGlobalReducerV1";
+import {
   decodeKnowledgeCoverageAuditV2,
   knowledgeCoverageAuditDimensionsV2,
   type KnowledgeCoverageAuditV2
@@ -228,6 +232,25 @@ describe("Knowledge grounding V21 contracts", () => {
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     } as never)).toThrow("knowledge_answer_draft_v21_prompt_invalid");
+  });
+
+  it("atomizes co-equal current Draft facets without changing historical bytes", () => {
+    const input = {
+      draftPass: "primary" as const,
+      evidenceManifest,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    };
+    const historical = knowledgeAnswerDraftPromptV21(input);
+    const current = knowledgeAnswerDraftPromptV21GlobalReducerV1(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_ANSWER_DRAFT_COEQUAL_FACET_ATOMIZATION_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("one claim per facet");
+    expect(current.systemPrompt).toContain("independent-verdict test");
+    expect(current.systemPrompt).toContain("later Selector may combine multiple");
   });
 
   it("assigns Draft IDs/layout server-side and rejects malformed candidates", () => {

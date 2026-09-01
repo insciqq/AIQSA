@@ -28,7 +28,11 @@ import type {
   KnowledgeGroundingEvidenceV44,
   KnowledgeGroundingEvidenceV45,
   KnowledgeGroundingEvidenceV46,
-  KnowledgeGroundingEvidenceV47
+  KnowledgeGroundingEvidenceV47,
+  KnowledgeGroundingEvidenceV48,
+  KnowledgeGroundingEvidenceV49,
+  KnowledgeGroundingEvidenceV50,
+  KnowledgeGroundingEvidenceV51
 } from "./grounding";
 import {
   aggregateKnowledgeGroundingMetrics,
@@ -489,6 +493,34 @@ function evidenceV47(durationMs: number): KnowledgeGroundingEvidenceV47 {
   } as KnowledgeGroundingEvidenceV47;
 }
 
+function evidenceV48(durationMs: number): KnowledgeGroundingEvidenceV48 {
+  return {
+    ...evidenceV47(durationMs),
+    version: 48
+  } as KnowledgeGroundingEvidenceV48;
+}
+
+function evidenceV49(durationMs: number): KnowledgeGroundingEvidenceV49 {
+  return {
+    ...evidenceV48(durationMs),
+    version: 49
+  } as KnowledgeGroundingEvidenceV49;
+}
+
+function evidenceV50(durationMs: number): KnowledgeGroundingEvidenceV50 {
+  return {
+    ...evidenceV49(durationMs),
+    version: 50
+  } as KnowledgeGroundingEvidenceV50;
+}
+
+function evidenceV51(durationMs: number): KnowledgeGroundingEvidenceV51 {
+  return {
+    ...evidenceV50(durationMs),
+    version: 51
+  } as KnowledgeGroundingEvidenceV51;
+}
+
 describe("Knowledge grounding operational metrics", () => {
   it("aggregates stage histograms, usage, verdicts, audit, and correction counts", () => {
     const metrics = aggregateKnowledgeGroundingMetrics([
@@ -558,26 +590,31 @@ describe("Knowledge grounding operational metrics", () => {
       evidenceV44(100),
       evidenceV45(100),
       evidenceV46(100),
-      evidenceV47(100)
+      evidenceV47(100),
+      evidenceV48(100),
+      evidenceV49(100),
+      evidenceV50(100),
+      evidenceV51(100)
     ]);
-    expect(metrics.scopeCompletenessAccepted).toBe(24);
-    expect(metrics.totalScopeCompletenessAdditions).toBe(48);
-    expect(metrics.scopeClosureAccepted).toBe(14);
-    expect(metrics.totalScopeClosureReopenedDimensions).toBe(14);
-    expect(metrics.stages.scope_completeness.calls).toBe(24);
-    expect(metrics.stages.scope_closure.calls).toBe(14);
+    expect(metrics.scopeCompletenessAccepted).toBe(28);
+    expect(metrics.totalScopeCompletenessAdditions).toBe(56);
+    expect(metrics.scopeClosureAccepted).toBe(18);
+    expect(metrics.totalScopeClosureReopenedDimensions).toBe(18);
+    expect(metrics.stages.scope_completeness.calls).toBe(28);
+    expect(metrics.stages.scope_closure.calls).toBe(18);
     expect(metrics.stages.scope_repair.calls).toBe(13);
-    expect(metrics.stages.final.calls).toBe(32);
+    expect(metrics.stages.final.calls).toBe(40);
     expect(JSON.stringify(metrics)).not.toContain("PRIVATE");
   });
 
-  it("loads only structurally valid V18-V47 metric receipts", async () => {
+  it("loads only structurally valid V18-V51 metric receipts", async () => {
     const findMany = async (query: unknown) => {
       expect(query).toMatchObject({
         where: {
           version: {
             in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
-              34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+              34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+              50, 51]
           }
         }
       });
@@ -611,6 +648,10 @@ describe("Knowledge grounding operational metrics", () => {
         { evidence: evidenceV45(100) },
         { evidence: evidenceV46(100) },
         { evidence: evidenceV47(100) },
+        { evidence: evidenceV48(100) },
+        { evidence: evidenceV49(100) },
+        { evidence: evidenceV50(100) },
+        { evidence: evidenceV51(100) },
         { evidence: { ...evidenceV35(100), version: 34 } },
         { evidence: { ...evidenceV25(100), version: 24 } },
         { evidence: { finalText: "PRIVATE", operations: [], version: 18 } }
@@ -619,7 +660,7 @@ describe("Knowledge grounding operational metrics", () => {
     const metrics = await loadKnowledgeGroundingOperationalMetrics({
       knowledgeGroundingResult: { findMany }
     } as never, { limit: 5 });
-    expect(metrics.answers).toBe(29);
-    expect(metrics.modelOperations).toBe(193);
+    expect(metrics.answers).toBe(33);
+    expect(metrics.modelOperations).toBe(225);
   });
 });

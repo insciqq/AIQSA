@@ -1454,9 +1454,14 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
   });
 }
 
-/** Loads the exact current V31 positive-finding, query-granularity,
- * epistemic-fidelity, and answer-level-compression pipeline, plus post-Selector
- * closure. Scope, completeness, initial Selector, and
+/** Loads the exact current V35 positive-finding, query-granularity,
+ * epistemic-fidelity, answer-level-compression, and model-owned Scope set
+ * reduction pipeline with a recall-first Scope map, deterministic whole-item
+ * invalid-provenance rejection, global no-data reduction, exact Supplement
+ * duplicate reduction, co-equal primary-Draft facet atomization, target-local
+ * accumulative reduce over revalidated primary and supplemental map points,
+ * plus post-Selector closure.
+ * Scope, completeness, initial Selector, and
  * closure may each occur twice only as their single adjacent structural repair.
  * The final Selector may likewise occur twice only as one bounded validation
  * repair. Every later operation pins the merged accepted Scope hash. */

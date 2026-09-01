@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   KNOWLEDGE_GROUNDING_EXECUTION_POLICY_V1,
   decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
+  knowledgeGroundingInheritedReasoningEffortV1,
   resolveKnowledgeGroundingExecutionPolicyV1
 } from "./groundingExecutionPolicy";
 
@@ -82,5 +83,37 @@ describe("Knowledge grounding execution policy V1", () => {
       supplementReasoningEffort: "low",
       version: 1
     })).toBeNull();
+  });
+
+  it("uses the frozen provider-neutral effort and decodes historical dialects", () => {
+    expect(knowledgeGroundingInheritedReasoningEffortV1({
+      acceptedReasoningEffort: "medium",
+      params: { reasoning: { effort: "low" } }
+    })).toBe("medium");
+    expect(knowledgeGroundingInheritedReasoningEffortV1({
+      params: { reasoning: { effort: "medium" } }
+    })).toBe("medium");
+    expect(knowledgeGroundingInheritedReasoningEffortV1({
+      params: {
+        reasoning: { effort: "low", enabled: true },
+        verbosity: "high"
+      }
+    })).toBe("high");
+    expect(knowledgeGroundingInheritedReasoningEffortV1({
+      params: { reasoning: { effort: "high", enabled: false } }
+    })).toBeNull();
+  });
+
+  it("fails closed on malformed or conflicting historical reasoning controls", () => {
+    expect(() => knowledgeGroundingInheritedReasoningEffortV1({
+      acceptedReasoningEffort: " bad ",
+      params: {}
+    })).toThrow("knowledge_grounding_reasoning_control_invalid");
+    expect(() => knowledgeGroundingInheritedReasoningEffortV1({
+      params: {
+        outputConfig: { effort: "high" },
+        reasoning: { effort: "low" }
+      }
+    })).toThrow("knowledge_grounding_reasoning_control_invalid");
   });
 });

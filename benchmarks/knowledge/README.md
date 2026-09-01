@@ -57,31 +57,48 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests current Snapshot V31 over Draft V21 / blind
+The live answer lane attests current Snapshot V35 over Draft V21 / blind
 Coverage Scope V6 / query-granularity, epistemic-fidelity, answer-level
-compression, and server-issued request-anchor IDs preserving append-only Scope
+compression, server-issued request-anchor IDs, and model-owned set reduction
+preserving append-only Scope
 Completeness V1 / Selector V21 / Scope Closure V1 / settlement V6 and refuses
 to run while the code-owned
 `v21_scope_v6` rollout is not at 100%. This prevents a historical V20 product
-answer from being reported under a V31 manifest. Keep that activation candidate
+answer from being reported under a V35 manifest. Keep that activation candidate
 unpublished until the acceptance gate passes; frozen replay remains available.
-The current replay pin is Snapshot V31 / Grounding Evidence V47 with the
-`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1`
+The current replay pin is Snapshot V35 / Grounding Evidence V51 with the
+`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1`
 pipeline. It retains delimiter-aware claim validation and deterministic removal
 of only provenance-disjoint surplus support edges. Expanded passages use
 persisted content-free boundaries and Source ordinals to build atoms in trusted
 `previous -> exact -> next` Source order; provider-facing labels are never
 parsed as ordering metadata. During the bounded delta pass, Supplement and the
 final verifier receive only the complete atoms assigned to their exact targets.
-The final verifier receives no full manifest, literal index, unrelated atom
-ledger, or primary Draft text; it rechecks each target hypothesis and every
-supplemental statement's semantic roles, beneficiary, and risk/value-flow
+The final verifier receives no full manifest, literal index, or unrelated atom
+ledger. It additionally receives only the bounded primary map points that were
+already accepted as supported and whose complete support-handle set is contained
+by an exact correction target. Those points are candidate protocol state, not
+evidence: the verifier must revalidate their complete text against that target's
+exact atoms and request before combining them with supported target-bound
+Supplement points. Either source may close a target alone when complete; a prior
+verdict, handle overlap, or candidate membership never establishes coverage.
+Primary verdicts remain immutable, and the server performs no semantic matching,
+mapping, or promotion. The verifier also rechecks each target hypothesis and
+every supplemental statement's semantic roles, beneficiary, and risk/value-flow
 direction. A false-positive positive target may be vetoed to `excluded`, while
-an evidence-free requested facet never enters correction and cannot be hidden.
+an evidence-free requested facet never enters correction. It remains missing
+unless the global Selector identifies it as a false local no-data placeholder
+for a distinct evidence-backed item with the exact same request anchor; that
+positive peer must survive as covered or missing.
 Supplement itself must split independently falsifiable subordinate, relative,
 comparative, conditional, causal, enabling, purpose, and consequence relations
 into standalone claims. Supported component facts do not authorize an unstated
-connector or explanation. Supplement capacity now scales with the exact target
+connector or explanation. Before validation, Snapshot V35 may remove only
+NFC-exact repeats of immutable primary Draft claims from a grouped Supplement,
+and only when every target group remains non-empty. If any group would empty,
+the original payload fails closed; there is no fuzzy deduplication, rewriting,
+target movement, coverage inference, or extra model call. Supplement capacity
+now scales with the exact target
 count inside the existing 24-claim complete-Draft and eight-dimension Scope
 bounds: no target receives more than three atomic slots, remaining primary
 claims may reduce capacities fairly, and every `maxClaims` is a ceiling rather
@@ -89,12 +106,20 @@ than a quota. Every supplemental claim is then adjudicated
 atomically, while an ordered set of
 supported claims bound to the same target may collectively entail one compound
 Scope dimension. Unknown, foreign-target, unrelated, redundant, partial-case,
-or unsupported edges still fail closed. When validation proves that a local
-finding cites an atom owned by another evidence unit, Snapshot V31 retains
-V30's inherited V26 rule and drops that
-entire finding and revalidates the remaining Scope; it never filters or remaps
-atom IDs. This applies both before repair and when another verified patch
-exposes the violation, and consumes no model retry. Every other repairable Scope
+or unsupported edges still fail closed. Snapshot V34 extends the existing
+V26-derived local-provenance rule: when validation proves that a local finding
+cites an atom owned by another evidence unit, or that a purported joint finding
+spans fewer than two or more than the admitted number of evidence handles, it
+drops that entire invalid item and revalidates the remaining Scope. It never
+converts joint to local, filters or remaps atom IDs, transfers provenance, or
+promotes coverage. This applies both before repair and when another verified
+patch exposes the violation, and consumes no model retry. Snapshot V35 adds one
+global no-data reconciliation without another model operation: the model may
+exclude an evidence-free placeholder only beside a distinct positive item with
+the exact same immutable request anchor, while the server rechecks that anchor,
+positive provenance, and surviving covered-or-missing decision. It never
+semantically merges items, transfers provenance, or promotes coverage. Every
+other repairable Scope
 failure receives a bounded validator-ordered set of every independently
 detectable stable-path error code, JSON path, expected handle, and applicable
 count bound, plus a content-free hash of any
@@ -116,7 +141,16 @@ receive a bounded server-authored ledger of exact request fragments with `Q...`
 IDs. The model selects an ID instead of copying control-plane identity text; the
 server resolves known IDs to immutable request substrings before the unchanged
 V6 anchor validator. Unknown IDs and unrelated literals still fail closed, and
-the resolver performs no semantic matching, filtering, or promotion. The
+the resolver performs no semantic matching, filtering, or promotion. V33 uses
+the SOTA map/reduce boundary: Scope is recall-first and may retain equivalent
+locally entailed findings from repeated, paraphrased, tabulated, or independently
+sourced evidence, while the existing global Selector is the sole semantic
+redundancy reducer and keeps the earliest equivalent positive item eligible.
+Scope must never suppress every representative because a fact repeats.
+Materially different truth conditions and every evidence-free requested facet
+remain distinct. The server performs no semantic merge, similarity decision,
+representative selection, or provenance transfer; zero-dimension validation
+remains fail-closed and no retry or model operation is added. The
 initial Selector still receives the same
 least-authority evidence projection. Only when its
 coverage map fails deterministic structural validation does the existing repair
@@ -140,8 +174,8 @@ The five-operation path and any path with one adjacent structural repair retain
 both calls for one targeted correction under the eight-call cap. A second repair
 may consume that reserve; it never creates another correction loop. When every
 exact-target supplemental claim is supported only by that target's provenance
-but the first final map still leaves the target missing, Snapshot V31 retains
-V30's bounded review, records a
+but the first final map still leaves the target missing, Snapshot V35 inherits
+V31's bounded review, records a
 content-free validation failure and uses the eighth slot for one fresh
 target-only final verifier. It never promotes coverage, reuses the rejected
 payload as evidence, or retries twice; the second valid result may remain
@@ -157,15 +191,35 @@ and preserves source-side belief, expectation, conjecture, possibility,
 limitation, unknown, attribution, and omitted-proof status through correction
 and verification. A literal fragment cannot synthesize a broad relation. These
 are model-owned relevance and entailment rules with no new schema, retrieval,
-server semantic inference, or model operation. Snapshot V31 / Evidence V47
+server semantic inference, or model operation. Snapshot V35 / Evidence V51
 additionally reduce a broad answer to the smallest source-explicit proposition
 set while preserving material uncertainty, conditions, contradictions, and
-co-equal key points. Examples, rows, parameter values, proof steps, and exception
-inventories remain required only when explicitly requested or independently
-answer-bearing. Scope and completeness choose server-issued request-anchor IDs
-that are deterministically resolved before historical validation. This uses the
-existing Scope/Supplement/Selector reducer and adds no schema, retrieval, server
+co-equal key points. The primary Draft emits independently verifiable
+properties, comparison axes, mechanisms, risks, benefits, outcomes, actors,
+and beneficiaries as separate bounded claims; a material qualifier remains
+attached to the facet it governs, and the Selector may combine several
+supported claims into one compound task. When correction is needed, the final
+target-local reducer may reconsider only those already-supported primary points
+whose entire accepted handle set is contained by the exact missing target. It
+must revalidate their text against that target's atoms and may reduce their union
+with supported Supplement points; the server bounds provenance but never decides
+semantic relevance or promotes coverage. Examples, rows, parameter values,
+proof steps, and exception inventories remain required only when explicitly
+requested or independently answer-bearing. Scope and completeness choose
+server-issued request-anchor IDs that are deterministically resolved before
+historical validation. This uses the existing Draft/Scope/Supplement/Selector
+reducer and adds no schema, retrieval, language-specific server splitting,
 semantic inference, or model operation.
+Snapshot V34 / Evidence V50 retain whole-item invalid-provenance rejection
+without global no-data supersession, exact grouped-Supplement duplicate
+reduction, primary-Draft co-equal facet atomization, or target-local
+accumulative reduce.
+Snapshot V33 / Evidence V49 retain the recall-first Scope map and global
+Selector reduction without whole-item rejection for invalid joint provenance.
+Snapshot V32 / Evidence V48 retain early cross-unit reduction in Scope as well
+as the global Selector without the recall-first Scope correction.
+Snapshot V31 / Evidence V47 retain answer-level compression and server-issued
+request-anchor IDs without cross-unit set reduction.
 Snapshot V30 / Evidence V46 retain query granularity and epistemic fidelity
 without answer-level compression. Snapshot V29 / Evidence V45
 retain query-intent preservation without these rules. Snapshot V28 / Evidence V44
@@ -205,7 +259,7 @@ npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
 ```
 
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
-The current V31 acceptance campaign always supplies exactly five distinct
+The current V35 acceptance campaign always supplies exactly five distinct
 `--case-id` values and never dispatches `--full`. Each five-case run is
 sequential, fail-fast, and non-scoreable; a corpus result may be assembled only
 after all twenty batches share the exact frozen pins and every case has settled.
@@ -261,7 +315,7 @@ the rejected stage, into the private failure checkpoint before fail-fast exit.
 When the answer stage completed, its private answer and replay snapshot are
 likewise persisted if the judge fails.
 
-Replay schema V2 preserves exact V20 recovery and supports the current V31
+Replay schema V2 preserves exact V20 recovery and supports the current V35
 five-call `Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
 normal path, one adjacent structural validation repair for Scope, completeness,
 initial Selector, or Scope Closure, and an eight-call hard cap that keeps both
