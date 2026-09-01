@@ -698,6 +698,32 @@ export function mergeKnowledgeCoverageScopeVerifiedPatchesV1(input: Readonly<{
     throw new Error("knowledge_coverage_scope_verified_patch_base_invalid");
   }
   const patchedPaths: string[] = [];
+  const rejectCurrentInvalidProvenance = (
+    diagnostic: KnowledgeCoverageScopeRepairDiagnosticV1
+  ): boolean => {
+    const strictCandidate = decodeKnowledgeCoverageScopeRepairCandidateV1(candidate);
+    const rejection = !strictCandidate
+      ? null
+      : input.rejectInvalidProvenanceFindings === true
+        ? dropInvalidProvenanceFindingV2(strictCandidate, diagnostic)
+        : input.rejectForeignLocalFindings === true
+          ? dropForeignLocalFindingV1(strictCandidate, diagnostic)
+          : null;
+    if (!rejection) return false;
+    candidate = rejection.candidate;
+    validation = validateKnowledgeCoverageScopeV6RepairFeedbackV1(candidate, {
+      ...(input.atomIndexVersion !== undefined
+        ? { atomIndexVersion: input.atomIndexVersion }
+        : {}),
+      evidence: input.evidence,
+      request: input.request
+    });
+    return true;
+  };
+  const repairBeforeProvenanceRejection =
+    input.isolateInvalidScopeMapUnit === true &&
+    (input.rejectForeignLocalFindings === true ||
+      input.rejectInvalidProvenanceFindings === true);
   for (let index = 0; index < KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_LIMIT;
     index += 1) {
     if (validation.kind === "accepted") {
@@ -710,25 +736,9 @@ export function mergeKnowledgeCoverageScopeVerifiedPatchesV1(input: Readonly<{
         value: validation.value
       });
     }
-    if (input.rejectForeignLocalFindings === true ||
-      input.rejectInvalidProvenanceFindings === true) {
-      const strictCandidate = decodeKnowledgeCoverageScopeRepairCandidateV1(candidate);
-      const rejection = !strictCandidate
-        ? null
-        : input.rejectInvalidProvenanceFindings === true
-          ? dropInvalidProvenanceFindingV2(strictCandidate, validation.diagnostic)
-          : dropForeignLocalFindingV1(strictCandidate, validation.diagnostic);
-      if (rejection) {
-        candidate = rejection.candidate;
-        validation = validateKnowledgeCoverageScopeV6RepairFeedbackV1(candidate, {
-          ...(input.atomIndexVersion !== undefined
-            ? { atomIndexVersion: input.atomIndexVersion }
-            : {}),
-          evidence: input.evidence,
-          request: input.request
-        });
-        continue;
-      }
+    if (!repairBeforeProvenanceRejection &&
+      rejectCurrentInvalidProvenance(validation.diagnostic)) {
+      continue;
     }
     const path = validation.diagnostic.path;
     if (input.isolateInvalidScopeMapUnit === true && repair) {
@@ -739,27 +749,31 @@ export function mergeKnowledgeCoverageScopeVerifiedPatchesV1(input: Readonly<{
         input.evidence.map(({ handle }) => handle)
       );
       if (replacement) {
-        if (patchedPaths.includes(replacement.path) ||
-          knowledgeAnswerCanonicalJson(replacement.candidate) ===
+        if (!patchedPaths.includes(replacement.path) &&
+          knowledgeAnswerCanonicalJson(replacement.candidate) !==
             knowledgeAnswerCanonicalJson(candidate)) {
-          return Object.freeze({
-            diagnostic: validation.diagnostic,
-            kind: "rejected",
-            reason: validation.reason
+          candidate = replacement.candidate;
+          patchedPaths.push(replacement.path);
+          validation = validateKnowledgeCoverageScopeV6RepairFeedbackV1(candidate, {
+            ...(input.atomIndexVersion !== undefined
+              ? { atomIndexVersion: input.atomIndexVersion }
+              : {}),
+            evidence: input.evidence,
+            request: input.request
           });
+          continue;
         }
-        candidate = replacement.candidate;
-        patchedPaths.push(replacement.path);
-        validation = validateKnowledgeCoverageScopeV6RepairFeedbackV1(candidate, {
-          ...(input.atomIndexVersion !== undefined
-            ? { atomIndexVersion: input.atomIndexVersion }
-            : {}),
-          evidence: input.evidence,
-          request: input.request
+        if (repairBeforeProvenanceRejection &&
+          rejectCurrentInvalidProvenance(validation.diagnostic)) continue;
+        return Object.freeze({
+          diagnostic: validation.diagnostic,
+          kind: "rejected",
+          reason: validation.reason
         });
-        continue;
       }
     }
+    if (repairBeforeProvenanceRejection &&
+      rejectCurrentInvalidProvenance(validation.diagnostic)) continue;
     if (patchedPaths.includes(path)) {
       return Object.freeze({
         diagnostic: validation.diagnostic,

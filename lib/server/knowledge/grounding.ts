@@ -71,6 +71,9 @@ import {
   decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
   type KnowledgeGroundingEffectiveExecutionPolicyV1
 } from "./groundingExecutionPolicy";
+import {
+  KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1
+} from "./answerGroundingCorrectionV21";
 
 export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7 = 7 as const;
@@ -120,6 +123,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V50 = 50 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 = 51 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52 = 52 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 = 53 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 = 54 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -987,6 +991,18 @@ export type KnowledgeGroundingEvidenceV53 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV54 =
+  KnowledgeGroundingOperationEvidenceV53;
+
+export type KnowledgeGroundingEvidenceV54 = Omit<
+  KnowledgeGroundingEvidenceV53,
+  "operations" | "version"
+> & Readonly<{
+  crossTargetExactRepeatCount: number;
+  operations: readonly KnowledgeGroundingOperationEvidenceV54[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -1035,7 +1051,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV50
   | KnowledgeGroundingEvidenceV51
   | KnowledgeGroundingEvidenceV52
-  | KnowledgeGroundingEvidenceV53;
+  | KnowledgeGroundingEvidenceV53
+  | KnowledgeGroundingEvidenceV54;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3693,6 +3710,41 @@ export function groundSettledKnowledgeAnswerV53(
       usage: Object.freeze({ ...operation.usage })
     }))),
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53
+  });
+}
+
+type KnowledgeGroundingV54Input = KnowledgeGroundingV52Input & Readonly<{
+  crossTargetExactRepeatCount: number;
+}>;
+
+/** V54 attests Snapshot V38's target-local exact-text replicas. The camelCase
+ * field is the code-contract representation of the PRD diagnostic
+ * `cross_target_exact_repeat_count`; it remains a bounded content-free count.
+ * Claim text, target identities, and provenance stay in the private operation
+ * boundary. */
+export function groundSettledKnowledgeAnswerV54(
+  input: KnowledgeGroundingV54Input
+): KnowledgeGroundingEvidenceV54 {
+  const supplementAttempted = input.operations.some(({ role }) => role === "supplement");
+  if (!Number.isSafeInteger(input.crossTargetExactRepeatCount) ||
+    input.crossTargetExactRepeatCount < 0 ||
+    input.crossTargetExactRepeatCount >=
+      KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1.maxTotalClaims ||
+    input.crossTargetExactRepeatCount > 0 && !supplementAttempted) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted target-local Supplement diagnostic is invalid"
+    );
+  }
+  const {
+    crossTargetExactRepeatCount,
+    ...historicalInput
+  } = input;
+  const grounded = groundSettledKnowledgeAnswerV53(historicalInput);
+  return Object.freeze({
+    ...grounded,
+    crossTargetExactRepeatCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54
   });
 }
 

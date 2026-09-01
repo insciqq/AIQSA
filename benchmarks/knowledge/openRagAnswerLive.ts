@@ -31,7 +31,7 @@ import {
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
 } from "../../lib/server/knowledge/evidenceDispatchManifest";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 } from
   "../../lib/server/knowledge/grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "../../lib/server/knowledge/groundingExecutionPolicy";
@@ -110,6 +110,10 @@ const defaultSliceRoot = resolve(
 const maxRunMilliseconds = 15 * 60 * 1_000;
 const safeIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/u;
 const documentIdPattern = /^[0-9]{4}\.[0-9]{5}v[0-9]+$/u;
+const answerUpstreamModelIds = new Set([
+  "gpt-5.6-luna",
+  "gpt-5.6-sol"
+]);
 
 type ProfileAttestation = Readonly<{
   baseId: string;
@@ -175,6 +179,15 @@ function loopbackUrl(value: string, code: string): URL {
     url.username || url.password || url.search || url.hash ||
     url.protocol !== "http:" && url.protocol !== "https:") throw new Error(code);
   return url;
+}
+
+function answerUpstreamModelId(): string {
+  const value = process.env.AIQSA_OPENRAG_ANSWER_UPSTREAM_MODEL_ID?.trim() ||
+    "gpt-5.6-luna";
+  if (!answerUpstreamModelIds.has(value)) {
+    throw new Error("open_rag_answer_model_selection_invalid");
+  }
+  return value;
 }
 
 function openRagDatabaseUrl(): string {
@@ -1246,7 +1259,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
           KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.coverageAuditorContractVersion,
         draftContractVersion: KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS.draftContractVersion,
         evidencePackingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53,
+        groundingEvidenceVersion: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54,
         parserProfileVersion: revision.pdfParserProfileVersion,
         pipelineVersion: KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
         profileRevisionId: revision.id,
@@ -1302,7 +1315,7 @@ async function livePreflight(
   const answerModel = pinModel({
     catalog: catalogPayload.catalog,
     connectionId,
-    upstreamModelId: "gpt-5.6-luna"
+    upstreamModelId: answerUpstreamModelId()
   });
   const judgeModel = options.noJudge ? null : pinModel({
     catalog: catalogPayload.catalog,
@@ -1434,7 +1447,7 @@ export async function runOpenRagAnswerLive(argv: readonly string[]): Promise<voi
       repeat: preflight.manifest.repeat,
       scoreable: preflight.manifest.scoreable
     }));
-    await runOpenRagAnswerBenchmark({
+    const benchmarkInput = {
       cases: preflight.cases,
       checkpoint,
       emit,
@@ -1461,7 +1474,15 @@ export async function runOpenRagAnswerLive(argv: readonly string[]): Promise<voi
         }),
         prisma
       })
-    });
+    } as const;
+    if (options.batchSize === null) {
+      await runOpenRagAnswerBenchmark(benchmarkInput);
+    } else {
+      await runOpenRagAnswerBenchmark({
+        ...benchmarkInput,
+        maxNewOutcomes: options.batchSize
+      });
+    }
   } finally {
     await prisma.$disconnect();
   }

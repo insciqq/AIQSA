@@ -257,8 +257,8 @@ describe("OpenRAG answer runner contracts", () => {
     ])).toMatchObject({ mode: "focused", preflightOnly: true });
     expect(parseOpenRagAnswerCli([
       "--confirm-paid", "OPENRAG", "--full", "--resume", "--output",
-      ".aiqsa/openrag/run-1"
-    ])).toMatchObject({ mode: "full", resume: true });
+      ".aiqsa/openrag/run-1", "--batch-size", "5"
+    ])).toMatchObject({ batchSize: 5, mode: "full", resume: true });
     expect(() => parseOpenRagAnswerCli([
       "--confirm-paid", "OPENRAG", "--full", "--case-id", "doc-027-q2"
     ])).toThrow("open_rag_answer_selection_invalid");
@@ -275,6 +275,16 @@ describe("OpenRAG answer runner contracts", () => {
     expect(() => parseOpenRagAnswerCli([
       "--confirm-paid", "OPENRAG", "--full", "--full"
     ])).toThrow("open_rag_answer_argument_duplicate");
+    expect(() => parseOpenRagAnswerCli([
+      "--confirm-paid", "OPENRAG", "--case-id", "doc-027-q2", "--batch-size", "5"
+    ])).toThrow("open_rag_answer_batch_mode_invalid");
+    expect(() => parseOpenRagAnswerCli([
+      "--confirm-paid", "OPENRAG", "--full", "--no-judge", "--batch-size", "5",
+      "--output", ".aiqsa/openrag/run-1"
+    ])).toThrow("open_rag_answer_batch_mode_invalid");
+    expect(() => parseOpenRagAnswerCli([
+      "--confirm-paid", "OPENRAG", "--full", "--batch-size", "5"
+    ])).toThrow("open_rag_answer_batch_output_required");
   });
 
   it("confines private inputs and outputs to ignored benchmark roots", () => {
@@ -393,7 +403,7 @@ describe("OpenRAG answer runner contracts", () => {
   });
 });
 
-describe("OpenRAG answer fail-fast schedule", () => {
+describe("OpenRAG answer mode-aware non-pass schedule", () => {
   it("rejects product artifacts beyond the grounding operation bound", async () => {
     const cases = [benchmarkCase(1)];
     const runManifest = manifest(cases);
@@ -450,9 +460,9 @@ describe("OpenRAG answer fail-fast schedule", () => {
         ...legacyManifest.engine,
         coverageAuditorContractVersion: 6,
         draftContractVersion: 21,
-        groundingEvidenceVersion: 53,
+        groundingEvidenceVersion: 54,
         pipelineVersion:
-          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_settlement_v6",
+          "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_target_local_supplement_v1_settlement_v6",
         selectorContractVersion: 21,
         settlementVersion: 6
       }
@@ -489,6 +499,14 @@ describe("OpenRAG answer fail-fast schedule", () => {
             settlementVersion: 6
           }
         },
+        rawProviderOutputs: sequence.map((operation, index) => ({
+          operation,
+          ordinal: index + 1,
+          output: operation === "knowledge_answer_draft_supplement_v21"
+            ? { targets: { D2: ["Target-local candidate."] }, version: 2 }
+            : {},
+          providerResponseId: null
+        })),
         stageRecords: sequence.map((stage) => ({
           durationMs: 1,
           providerResponseId: null,
@@ -516,6 +534,12 @@ describe("OpenRAG answer fail-fast schedule", () => {
 
     expect(summary.pass).toBe(1);
     expect(checkpoint.outcomes.get("doc-001-q1:1")?.stageRecords).toHaveLength(8);
+    expect(checkpoint.privateRecords[0]?.rawProviderOutputs).toContainEqual({
+      operation: "knowledge_answer_draft_supplement_v21",
+      ordinal: 6,
+      output: { targets: { D2: ["Target-local candidate."] }, version: 2 },
+      providerResponseId: null
+    });
   });
 
   it("does not start a later case after the first non-pass", async () => {
@@ -535,6 +559,143 @@ describe("OpenRAG answer fail-fast schedule", () => {
     expect(fakeRuntime.executeAnswer).toHaveBeenCalledOnce();
     expect(checkpoint.outcomes.size).toBe(1);
     expect(checkpoint.summaries).toHaveLength(0);
+  });
+
+  it("collects every non-pass in a full run and resumes past settled ones", async () => {
+    const cases = Array.from({ length: 100 }, (_, index) => benchmarkCase(index + 1));
+    const runManifest = manifest(cases, { mode: "full", scoreable: true });
+    const header = createOpenRagAnswerCheckpointHeader({ manifest: runManifest });
+    const firstCheckpoint = memoryCheckpoint();
+    const partialRuntime = runtime("partial");
+    const events: Readonly<Record<string, unknown>>[] = [];
+
+    const firstSummary = await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: firstCheckpoint.store,
+      emit: (event) => events.push(event),
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header,
+      resume: false,
+      runtime: partialRuntime
+    });
+
+    expect(firstSummary).toMatchObject({ partial: 100, scoreable: true, total: 100 });
+    expect(partialRuntime.executeAnswer).toHaveBeenCalledTimes(100);
+    expect(events.filter(({ event }) =>
+      event === "benchmark_non_pass_collected")).toHaveLength(100);
+    expect(firstCheckpoint.summaries).toHaveLength(1);
+
+    const firstOutcome = [...firstCheckpoint.outcomes.values()][0]!;
+    const resumedCheckpoint = memoryCheckpoint([firstOutcome]);
+    const resumedRuntime = runtime("pass");
+    const resumedSummary = await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: resumedCheckpoint.store,
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header,
+      resume: true,
+      runtime: resumedRuntime
+    });
+
+    expect(resumedSummary).toMatchObject({ partial: 1, pass: 99, total: 100 });
+    expect(resumedRuntime.executeAnswer).toHaveBeenCalledTimes(99);
+  });
+
+  it("batches one frozen full manifest and summarizes only after completion", async () => {
+    const cases = Array.from({ length: 100 }, (_, index) => benchmarkCase(index + 1));
+    const unscoreableManifest = manifest(cases, {
+      judgeControlsFingerprint: null,
+      judgeModel: null,
+      mode: "full",
+      noJudge: true,
+      scoreable: false
+    });
+    await expect(runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: memoryCheckpoint().store,
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header: createOpenRagAnswerCheckpointHeader({ manifest: unscoreableManifest }),
+      maxNewOutcomes: 5,
+      resume: false,
+      runtime: runtime("pass")
+    })).rejects.toThrow("open_rag_answer_batch_limit_invalid");
+
+    const runManifest = manifest(cases, { mode: "full", scoreable: true });
+    const header = createOpenRagAnswerCheckpointHeader({ manifest: runManifest });
+    const checkpoint = memoryCheckpoint();
+    const firstRuntime = runtime("pass");
+
+    const firstProgress = await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: checkpoint.store,
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header,
+      maxNewOutcomes: 5,
+      resume: false,
+      runtime: firstRuntime
+    });
+    expect(firstProgress).toMatchObject({
+      kind: "paused",
+      newlySettled: 5,
+      settled: 5,
+      totalExpected: 100
+    });
+    expect(firstRuntime.executeAnswer).toHaveBeenCalledTimes(5);
+    expect(checkpoint.outcomes.size).toBe(5);
+    expect(checkpoint.summaries).toHaveLength(0);
+
+    const resumedRuntime = runtime("pass");
+    const resumedProgress = await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: checkpoint.store,
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header,
+      maxNewOutcomes: 5,
+      resume: true,
+      runtime: resumedRuntime
+    });
+    expect(resumedProgress).toMatchObject({
+      kind: "paused",
+      newlySettled: 5,
+      settled: 10,
+      totalExpected: 100
+    });
+    expect(resumedRuntime.executeAnswer).toHaveBeenCalledTimes(5);
+    expect(checkpoint.outcomes.size).toBe(10);
+    expect(checkpoint.summaries).toHaveLength(0);
+
+    const completedCheckpoint = memoryCheckpoint();
+    await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: completedCheckpoint.store,
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header,
+      resume: false,
+      runtime: runtime("pass")
+    });
+    const finalCheckpoint = memoryCheckpoint(
+      [...completedCheckpoint.outcomes.values()].slice(0, 95)
+    );
+    const finalRuntime = runtime("pass");
+    const finalSummary = await runOpenRagAnswerBenchmark({
+      cases,
+      checkpoint: finalCheckpoint.store,
+      goldDocumentIds: Object.fromEntries(cases.map(({ documentAlias }) =>
+        [documentAlias, `document-${documentAlias}`])),
+      header,
+      maxNewOutcomes: 5,
+      resume: true,
+      runtime: finalRuntime
+    });
+    expect(finalSummary).toMatchObject({ pass: 100, scoreable: true, total: 100 });
+    expect(finalRuntime.executeAnswer).toHaveBeenCalledTimes(5);
+    expect(finalCheckpoint.summaries).toHaveLength(1);
   });
 
   it("preserves the private answer replay when the judge fails", async () => {

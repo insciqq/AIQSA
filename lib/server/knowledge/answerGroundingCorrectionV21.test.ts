@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   decodeKnowledgeAnswerDraftMalformed
 } from "./answerGroundingV5";
-import { decodeKnowledgeAnswerDraftV21 } from "./answerGroundingV21";
+import {
+  decodeKnowledgeAnswerDraftV21,
+  settleKnowledgeAnswerV21FromFinalSelectorV38
+} from "./answerGroundingV21";
 import type {
   KnowledgeCoverageDimensionV6,
   KnowledgeGroundedSelectorV21
@@ -11,6 +14,7 @@ import {
   decodeKnowledgeTargetedSupplementV2,
   decodeKnowledgeTargetedSupplementV3,
   decodeKnowledgeTargetedSupplementV4,
+  decodeKnowledgeTargetedSupplementV5,
   decodeKnowledgeTargetedSupplementV1,
   decodeKnowledgeTargetedSupplementFailureV1,
   isKnowledgeAnswerTargetedSupplementSchemaV2,
@@ -22,19 +26,22 @@ import {
   knowledgeTargetedSupplementClaimLimitsV2,
   knowledgeTargetedSupplementClaimLimitsV3,
   knowledgeTargetedSupplementFitsV1,
+  knowledgeTargetedSupplementCrossTargetExactRepeatCountV1,
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
   knowledgeTargetPrimaryClaimsV1,
   mergeKnowledgeGroundedCorrectionV1,
   mergeKnowledgeGroundedCorrectionV2,
   mergeKnowledgeGroundedCorrectionV3,
   mergeKnowledgeTargetedSupplementV2,
+  mergeKnowledgeTargetedSupplementV3,
   mergeKnowledgeTargetedSupplementV1,
   normalizeKnowledgeTargetedSupplementExactPrimaryDuplicatesV1,
   knowledgeTargetedSupplementFailureV1,
   validateKnowledgeTargetedSupplementV1,
   validateKnowledgeTargetedSupplementV2,
   validateKnowledgeTargetedSupplementV3,
-  validateKnowledgeTargetedSupplementV4
+  validateKnowledgeTargetedSupplementV4,
+  validateKnowledgeTargetedSupplementV5
 } from "./answerGroundingCorrectionV21";
 
 const primary = decodeKnowledgeAnswerDraftV21({
@@ -269,6 +276,230 @@ describe("target-addressed Knowledge correction", () => {
     });
     expect(decodeKnowledgeTargetedSupplementV4(output, input)?.draft.claims)
       .toHaveLength(20);
+  });
+
+  it("keeps exact claim replicas target-local in deterministic order", () => {
+    const input = {
+      availableHandles: ["K1", "K2", "K3"],
+      missingDimensions: missing,
+      primaryDraft: primary
+    } as const;
+    const output = {
+      targets: {
+        D3: ["A shared mechanism is enabled."],
+        D2: ["A shared mechanism is enabled.", "The first path is bounded."]
+      },
+      version: 2
+    } as const;
+    expect(validateKnowledgeTargetedSupplementV4(output, input)).toEqual({
+      kind: "rejected",
+      reason: "draft_duplicate_claim"
+    });
+    const accepted = decodeKnowledgeTargetedSupplementV5(output, input);
+    expect(accepted?.bindings).toEqual([
+      { claimId: "C1", targetDimensionId: "D2" },
+      { claimId: "C2", targetDimensionId: "D2" },
+      { claimId: "C3", targetDimensionId: "D3" }
+    ]);
+    expect(accepted?.draft.claims.map(({ citationHints, text }) => ({
+      citationHints,
+      text
+    }))).toEqual([{
+      citationHints: ["K2"],
+      text: "A shared mechanism is enabled."
+    }, {
+      citationHints: ["K2"],
+      text: "The first path is bounded."
+    }, {
+      citationHints: ["K3"],
+      text: "A shared mechanism is enabled."
+    }]);
+    expect(knowledgeTargetedSupplementCrossTargetExactRepeatCountV1(accepted!)).toBe(1);
+    const merged = mergeKnowledgeTargetedSupplementV3({
+      primaryDraft: primary,
+      supplement: accepted!
+    });
+    expect(merged.draft.claims.map(({ citationHints, id, text }) => ({
+      citationHints,
+      id,
+      text
+    }))).toEqual([{
+      citationHints: ["K1"], id: "C1", text: "Alpha is bounded."
+    }, {
+      citationHints: ["K2"], id: "C2", text: "A shared mechanism is enabled."
+    }, {
+      citationHints: ["K2"], id: "C3", text: "The first path is bounded."
+    }, {
+      citationHints: ["K3"], id: "C4", text: "A shared mechanism is enabled."
+    }]);
+  });
+
+  it("keeps separate identities when cross-target replicas share one handle", () => {
+    const accepted = decodeKnowledgeTargetedSupplementV5({
+      targets: {
+        D2: ["A shared mechanism is enabled."],
+        D3: ["A shared mechanism is enabled."]
+      },
+      version: 2
+    }, {
+      availableHandles: ["K1", "K2"],
+      missingDimensions: Object.freeze([
+        dimension("D2", "K2", "missing"),
+        dimension("D3", "K2", "missing")
+      ]),
+      primaryDraft: primary
+    });
+    expect(accepted?.bindings).toEqual([{
+      claimId: "C1",
+      targetDimensionId: "D2"
+    }, {
+      claimId: "C2",
+      targetDimensionId: "D3"
+    }]);
+    expect(accepted?.draft.claims.map(({ citationHints, id }) => ({
+      citationHints,
+      id
+    }))).toEqual([{
+      citationHints: ["K2"],
+      id: "C1"
+    }, {
+      citationHints: ["K2"],
+      id: "C2"
+    }]);
+  });
+
+  it("rejects exact repeats inside one target and against the primary Draft", () => {
+    const input = {
+      availableHandles: ["K1", "K2", "K3"],
+      missingDimensions: missing,
+      primaryDraft: primary
+    } as const;
+    expect(validateKnowledgeTargetedSupplementV5({
+      targets: {
+        D2: ["Caf\u00e9 is bounded.", "Cafe\u0301 is bounded."],
+        D3: ["A separate mechanism applies."]
+      },
+      version: 2
+    }, input)).toEqual({ kind: "rejected", reason: "draft_duplicate_claim" });
+    expect(validateKnowledgeTargetedSupplementV5({
+      targets: {
+        D2: ["Alpha is bounded."],
+        D3: ["A separate mechanism applies."]
+      },
+      version: 2
+    }, input)).toEqual({
+      kind: "rejected",
+      reason: "draft_duplicate_primary_claim"
+    });
+  });
+
+  it("adjudicates identical target replicas independently and deduplicates only egress", () => {
+    const accepted = decodeKnowledgeTargetedSupplementV5({
+      targets: {
+        D2: ["A shared mechanism is enabled."],
+        D3: ["A shared mechanism is enabled."]
+      },
+      version: 2
+    }, {
+      availableHandles: ["K1", "K2", "K3"],
+      missingDimensions: missing,
+      primaryDraft: primary
+    })!;
+    const merged = mergeKnowledgeTargetedSupplementV3({
+      primaryDraft: primary,
+      supplement: accepted
+    });
+    const initial = selector({
+      claims: Object.freeze([Object.freeze({
+        id: "C1",
+        supportHandles: Object.freeze(["K1"]),
+        verdict: "supported" as const
+      })]),
+      coverage: Object.freeze([
+        dimension("D1", "K1", "covered", ["C1"]),
+        ...missing
+      ])
+    });
+    const corrected = (
+      secondVerdict: "supported" | "unsupported",
+      thirdVerdict: "supported" | "unsupported"
+    ) => mergeKnowledgeGroundedCorrectionV3({
+      bindings: merged.bindings,
+      finalSelector: selector({
+        claims: Object.freeze([Object.freeze({
+          id: "C1", supportHandles: Object.freeze([]), verdict: "unsupported" as const
+        }), Object.freeze({
+          id: "C2",
+          supportHandles: Object.freeze(secondVerdict === "supported" ? ["K2"] : []),
+          verdict: secondVerdict
+        }), Object.freeze({
+          id: "C3",
+          supportHandles: Object.freeze(thirdVerdict === "supported" ? ["K3"] : []),
+          verdict: thirdVerdict
+        })]),
+        coverage: Object.freeze([
+          dimension("D1", "K1", "missing"),
+          dimension(
+            "D2",
+            "K2",
+            secondVerdict === "supported" ? "covered" : "missing",
+            secondVerdict === "supported" ? ["C2"] : []
+          ),
+          dimension(
+            "D3",
+            "K3",
+            thirdVerdict === "supported" ? "covered" : "missing",
+            thirdVerdict === "supported" ? ["C3"] : []
+          ),
+          dimension("D4", null, "missing")
+        ])
+      }),
+      initialSelector: initial,
+      primaryClaimCount: 1
+    });
+
+    const firstOnly = corrected("supported", "unsupported");
+    expect(firstOnly.claims.slice(1).map(({ verdict }) => verdict)).toEqual([
+      "supported", "unsupported"
+    ]);
+    expect(firstOnly.coverage.slice(1, 3).map(({ status }) => status)).toEqual([
+      "covered", "missing"
+    ]);
+    const secondOnly = corrected("unsupported", "supported");
+    expect(secondOnly.claims.slice(1).map(({ verdict }) => verdict)).toEqual([
+      "unsupported", "supported"
+    ]);
+    expect(secondOnly.coverage.slice(1, 3).map(({ status }) => status)).toEqual([
+      "missing", "covered"
+    ]);
+
+    const evidence = [{
+      exactExcerpt: "Alpha is bounded.", handle: "K1"
+    }, {
+      exactExcerpt: "A shared mechanism is enabled.", handle: "K2"
+    }, {
+      exactExcerpt: "A shared mechanism is enabled.", handle: "K3"
+    }] as const;
+    const bothSupported = settleKnowledgeAnswerV21FromFinalSelectorV38({
+      draft: merged.draft,
+      evidence,
+      selector: corrected("supported", "supported"),
+      scopeProtocol: "append_only_completeness_reduce_v2"
+    });
+    expect(bothSupported.supportedClaimCount).toBe(3);
+    expect(bothSupported.finalText.match(/A shared mechanism is enabled\./gu))
+      .toHaveLength(1);
+    expect(bothSupported.finalText).toContain("[K2]");
+    expect(bothSupported.finalText).not.toContain("[K3]");
+
+    const neitherSupported = settleKnowledgeAnswerV21FromFinalSelectorV38({
+      draft: merged.draft,
+      evidence,
+      selector: corrected("unsupported", "unsupported"),
+      scopeProtocol: "append_only_completeness_reduce_v2"
+    });
+    expect(neitherSupported.supportedClaimCount).toBe(1);
+    expect(neitherSupported.finalText).not.toContain("A shared mechanism is enabled.");
   });
 
   it("drops exact primary repeats only when every target retains a candidate", () => {

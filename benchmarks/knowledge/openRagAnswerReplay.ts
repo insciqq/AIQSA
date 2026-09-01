@@ -34,7 +34,7 @@ import {
 } from "../../lib/server/knowledge/answerGroundingExecutionV21";
 import { executeKnowledgeAnswerGroundingV21 } from
   "../../lib/server/knowledge/answerGroundingExecutionV21ScopeV6";
-import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 } from
+import { KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 } from
   "../../lib/server/knowledge/grounding";
 import {
   decodeKnowledgeCoverageScopeRepairFeedbackFailureV1
@@ -655,7 +655,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
     pipeline === "v20_v16" && (executionPolicy !== null ||
       engine.groundingEvidenceVersion !== 16) ||
     pipeline === "v21_scope_v6" &&
-      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 ||
+      (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 ||
       engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==

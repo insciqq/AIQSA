@@ -144,7 +144,7 @@ function currentOrigin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 53,
+      groundingEvidenceVersion: 54,
       pipelineVersion: currentPipelineVersion,
       selectorContractVersion: 21,
       settlementVersion: 6
@@ -153,7 +153,7 @@ function currentOrigin() {
 }
 
 const currentPipelineVersion =
-  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_settlement_v6";
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_target_local_supplement_v1_settlement_v6";
 
 const currentExecutionPolicy = Object.freeze({
   auditorReasoningEffort: "medium",
@@ -299,7 +299,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V36 snapshot with V21 Draft and Selector", async () => {
+  it("runs the current V38 snapshot with V21 Draft and Selector", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -393,6 +393,106 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "medium")).toBe(true);
     expect(openRagAnswerReplayMatchesReasoningControl(frozen, "low")).toBe(false);
+  });
+
+  it("retains a validator-rejected raw Supplement only in replay output", async () => {
+    const frozen = createOpenRagAnswerReplaySnapshot({
+      answerExecutionSnapshot: snapshot(),
+      capturedAt: "2026-08-31T00:00:00.000Z",
+      case: benchmarkCase,
+      evidence: evidence(),
+      evidenceBindings: evidenceBindings(),
+      executionPolicy: currentExecutionPolicy,
+      forbiddenIdentityFragments: [],
+      origin: currentOrigin(),
+      originalRunId: "run-original-v38-raw-supplement",
+      reasoningEffort: null,
+      request: benchmarkCase.question,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      transport: "native_strict"
+    });
+    const rawSupplement = Object.freeze({
+      targets: Object.freeze({
+        D2: Object.freeze([
+          "A bounded candidate survives.",
+          "A bounded candidate survives."
+        ])
+      }),
+      version: 2 as const
+    });
+    const executeStructuredOutput = vi.fn(async (_execution, request) => {
+      if (request.name === "knowledge_answer_draft_v21") {
+        return {
+          claims: [{
+            citationHints: ["K1"],
+            text: "Atlas retains completed exports for 30 days."
+          }],
+          version: 1
+        };
+      }
+      if (request.name === "knowledge_coverage_scope_v6") {
+        return {
+          evidenceUnits: [{
+            findings: [{
+              description: "State the completed-export retention period.",
+              evidenceAtomIds: ["A1"],
+              requestAnchor: "How long are completed exports retained?"
+            }, {
+              description: "State the retention boundary separately.",
+              evidenceAtomIds: ["A1"],
+              requestAnchor: "completed exports retained"
+            }],
+            handle: "K1"
+          }],
+          jointFindings: [],
+          unsupportedDimensions: [],
+          version: 6
+        };
+      }
+      if (request.name === "knowledge_coverage_scope_completeness_v1") {
+        return { additions: [], version: 1 };
+      }
+      if (request.name === "knowledge_grounded_selector_v21") {
+        return {
+          claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+          coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+            id: "D2", status: "missing", supportIds: []
+          }],
+          extractIds: [],
+          insufficientReason: "not_applicable",
+          version: 1
+        };
+      }
+      if (request.name === "knowledge_coverage_scope_closure_v2") {
+        return {
+          decisions: [{ id: "D1", status: "closed" }, {
+            id: "D2", status: "missing"
+          }],
+          version: 2
+        };
+      }
+      if (request.name === "knowledge_answer_draft_supplement_v21") {
+        return rawSupplement;
+      }
+      throw new Error("unexpected_replay_operation");
+    });
+
+    const result = await replayOpenRagAnswerSnapshot({
+      executeStructuredOutput,
+      snapshot: frozen
+    });
+
+    expect(result).toMatchObject({ coverage: "partial", operationCount: 6 });
+    expect(result.acceptedResults.at(-1)).toEqual({
+      operation: "knowledge_answer_draft_supplement_v21",
+      output: { kind: "draft_malformed", reason: "draft_duplicate_claim" }
+    });
+    expect(result.rawProviderOutputs.at(-1)).toEqual({
+      operation: "knowledge_answer_draft_supplement_v21",
+      ordinal: 6,
+      output: rawSupplement,
+      providerResponseId: null
+    });
   });
 
   it("re-asks one structurally invalid blind Scope with unchanged evidence", async () => {

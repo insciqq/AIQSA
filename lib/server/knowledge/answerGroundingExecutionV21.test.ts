@@ -1579,6 +1579,100 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     expect(result.settlement.requestCoverage).toBe("complete");
   });
 
+  it("keeps V38 running when isolated Scope repair repeats foreign provenance", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    const baseScope = scopeOutput(false);
+    const initialScope = {
+      ...baseScope,
+      evidenceUnits: [{
+        ...baseScope.evidenceUnits[0],
+        findings: [...baseScope.evidenceUnits[0]!.findings, {
+          description: "Do not bind beta evidence to alpha.",
+          evidenceAtomIds: ["A2"],
+          requestAnchor: "alpha"
+        }]
+      }, {
+        ...baseScope.evidenceUnits[1],
+        findings: [...baseScope.evidenceUnits[1]!.findings, {
+          description: "Do not bind alpha evidence to beta.",
+          evidenceAtomIds: ["A1"],
+          requestAnchor: "beta"
+        }]
+      }]
+    };
+    const repairedScope = {
+      ...baseScope,
+      evidenceUnits: [baseScope.evidenceUnits[0], {
+        ...baseScope.evidenceUnits[1],
+        findings: [...baseScope.evidenceUnits[1]!.findings, {
+          description: "Repair still binds alpha evidence to beta.",
+          evidenceAtomIds: ["A1"],
+          requestAnchor: "beta"
+        }]
+      }]
+    };
+    let scopeCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+        ? {
+            output: scopeCalls++ === 0 ? initialScope : repairedScope,
+            providerResponseId: `response-repeated-provenance-${scopeCalls}`,
+            usage
+          }
+        : baseline(operation));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(scopeCalls).toBe(2);
+    expect(recorder.entries.get(2)?.acceptedResult).toMatchObject({
+      diagnostic: { code: "finding_atom_provenance" },
+      kind: "coverage_scope_failed"
+    });
+    expect(recorder.entries.get(3)?.acceptedResult).toEqual(baseScope);
+    expect(JSON.stringify(recorder.entries.get(3)?.acceptedResult))
+      .not.toContain("bind alpha evidence to beta");
+    expect(result.settlement.requestCoverage).toBe("complete");
+  });
+
+  it("keeps V37 repeated-provenance Scope repair behavior historical", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    const baseScope = scopeOutput(false);
+    const invalidScope = {
+      ...baseScope,
+      evidenceUnits: [{
+        ...baseScope.evidenceUnits[0],
+        findings: [...baseScope.evidenceUnits[0]!.findings, {
+          description: "Historical foreign beta evidence.",
+          evidenceAtomIds: ["A2"],
+          requestAnchor: "alpha"
+        }]
+      }, baseScope.evidenceUnits[1]]
+    };
+    let scopeCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+        ? {
+            output: invalidScope,
+            providerResponseId: `response-v37-provenance-${++scopeCalls}`,
+            usage
+          }
+        : baseline(operation));
+
+    await expect(executeKnowledgeAnswerGroundingV21ScopeV6({
+      ...pipelineInput(recorder.lifecycle, execute),
+      snapshotVersion: 37
+    })).rejects.toThrow("knowledge_coverage_scope_unaccepted");
+    expect(scopeCalls).toBe(2);
+  });
+
   it("recomputes only an invalid joint-finding map", async () => {
     const recorder = lifecycleRecorder();
     const baseline = currentExecution(false);
@@ -2029,15 +2123,15 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 37
+      version: 38
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 37
+      version: 38
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 37
+      version: 38
     });
   });
 
@@ -2368,7 +2462,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
   });
 
-  it("preserves accepted coverage and rejects a supported cross-target mapping", async () => {
+  it("keeps exact replicas target-local and rejects a cross-target support edge", async () => {
     const recorder = lifecycleRecorder();
     const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => ({
       output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
@@ -2422,7 +2516,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
               ? {
                   targets: {
                     D2: ["Beta removes duplicates."],
-                    D3: ["Beta preserves stability."]
+                    D3: ["Beta removes duplicates."]
                   },
                   version: 2
                 }
@@ -2453,8 +2547,9 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       requestCoverage: "partial",
       supportedClaimCount: 2
     });
+    expect(result.crossTargetExactRepeatCount).toBe(1);
     expect(result.settlement.finalText).toContain("Alpha preserves order.");
-    expect(result.settlement.finalText).not.toContain("stability");
+    expect(result.settlement.finalText.match(/Beta removes duplicates\./gu)).toHaveLength(1);
   });
 
   it("repairs Scope and Selector structurally without starting an over-cap correction", async () => {

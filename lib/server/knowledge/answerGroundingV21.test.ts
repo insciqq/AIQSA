@@ -14,14 +14,18 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_SCHEMA_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V17,
   buildKnowledgeSupportedAnswerViewV1,
+  createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftSupplementV21,
   decodeKnowledgeAnswerDraftV21,
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeGroundedSelectorFailureV17,
   decodeKnowledgeGroundedSelectorFinalV17,
   decodeKnowledgeGroundedSelectorV17,
@@ -30,6 +34,8 @@ import {
   knowledgeGroundedSelectorPromptV17,
   knowledgeGroundedSelectorV17Fallback,
   mergeKnowledgeAnswerDraftsV21,
+  isCurrentKnowledgeAnswerOperationSnapshotV21,
+  isRecoverableKnowledgeAnswerOperationSnapshotV21,
   settleKnowledgeAnswerV21FromAudit,
   settleKnowledgeAnswerV21FromFinalSelector,
   validateKnowledgeGroundedSelectorFinalV17,
@@ -178,6 +184,54 @@ const threeDimensions = Object.freeze([
 ]);
 
 describe("Knowledge grounding V21 contracts", () => {
+  it("keeps historical V37 and current V38 snapshots protocol-isolated", () => {
+    const prompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
+      draftPass: "primary",
+      evidenceManifest,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    });
+    const executionPolicy = {
+      auditorReasoningEffort: "low",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: [],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const;
+    const create = (protocol:
+      | typeof KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1
+      | typeof KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1) =>
+      createKnowledgeAnswerOperationRequestSnapshotV21({
+        contractVersion: 21,
+        evidenceReceiptHash: "a".repeat(64),
+        executionPolicy,
+        maxOutputTokens: 4_096,
+        operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+        protocol,
+        schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+        systemPrompt: prompt.systemPrompt,
+        transport: "native_strict",
+        userPrompt: prompt.userPrompt
+      });
+    const historical = create(
+      KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1
+    );
+    const current = create(KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1);
+    expect(historical.version).toBe(37);
+    expect(current.version).toBe(38);
+    expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(historical)).toBe(true);
+    expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(current)).toBe(true);
+    expect(isCurrentKnowledgeAnswerOperationSnapshotV21(historical)).toBe(false);
+    expect(isCurrentKnowledgeAnswerOperationSnapshotV21(current)).toBe(true);
+    expect(decodeKnowledgeAnswerOperationRequestSnapshotV21({
+      ...historical,
+      version: 38
+    })).toBeNull();
+  });
+
   it("declares side-by-side operation and strict schema identities", () => {
     expect([
       KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,

@@ -50,8 +50,10 @@ the exact historical version; the runner never relabels it as current, and a
 future or invalid version fails closed. This permits query-only rolling-upgrade
 checks without a paid corpus reparse while preserving uniform origin pins.
 
-The runner binds exactly one `gpt-5.6-luna` answer deployment and one
-`gpt-5.6-sol` judge deployment on the explicitly supplied codex-lb connection.
+The runner binds exactly one answer deployment selected by
+`AIQSA_OPENRAG_ANSWER_UPSTREAM_MODEL_ID` (`gpt-5.6-luna` by default, or the
+explicitly permitted `gpt-5.6-sol`) and one `gpt-5.6-sol` judge deployment on
+the explicitly supplied codex-lb connection.
 It freezes their full admitted execution-snapshot hashes, the Base/source
 snapshot, the full reranker deployment snapshot, parser/chunking/ranking
 identities, answer/judge control fingerprints, the runner and judge contracts,
@@ -62,17 +64,17 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests current Snapshot V37 over Draft V21 / blind
+The live answer lane attests current Snapshot V38 over Draft V21 / blind
 Coverage Scope V6 / query-granularity, epistemic-fidelity, answer-level
 compression, server-issued request-anchor IDs, and model-owned set reduction
 preserving append-only Scope
 Completeness V1 / Selector V21 / Scope Closure V2 / settlement V6 and refuses
 to run while the code-owned
 `v21_scope_v6` rollout is not at 100%. This prevents a historical V20 product
-answer from being reported under a V37 manifest. Keep that activation candidate
+answer from being reported under a V38 manifest. Keep that activation candidate
 unpublished until the acceptance gate passes; frozen replay remains available.
-The current replay pin is Snapshot V37 / Grounding Evidence V53 with the
-`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1`
+The current replay pin is Snapshot V38 / Grounding Evidence V54 with the
+`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_target_local_supplement_v1`
 pipeline. It retains delimiter-aware claim validation and deterministic removal
 of only provenance-disjoint surplus support edges. Expanded passages use
 persisted content-free boundaries and Source ordinals to build atoms in trusted
@@ -110,9 +112,16 @@ claims may reduce capacities fairly, and every `maxClaims` is a ceiling rather
 than a quota. Every supplemental claim is then adjudicated
 atomically, while an ordered set of
 supported claims bound to the same target may collectively entail one compound
-Scope dimension. Unknown, foreign-target, unrelated, redundant, partial-case,
-or unsupported edges still fail closed. Snapshot V34 extends the existing
-V26-derived local-provenance rule: when validation proves that a local finding
+Scope dimension. Snapshot V38 treats NFC-exact Supplement text as duplicate
+only inside one target group: replicas in different targets retain separate
+server-owned identities and target-local provenance for independent final
+Selector adjudication. After adjudication, exact supported replicas render
+once in Draft order with only the first replica's citations, while coverage
+still accounts for every target identity. Same-target and primary-Draft
+duplicates remain invalid. Unknown, foreign-target, unrelated, redundant,
+partial-case, or unsupported edges still fail closed. Snapshot V34 extends the
+existing V26-derived local-provenance rule: when validation proves that a local
+finding
 cites an atom owned by another evidence unit, or that a purported joint finding
 spans fewer than two or more than the admitted number of evidence handles, it
 drops that entire invalid item and revalidates the remaining Scope. It never
@@ -124,7 +133,7 @@ exclude an evidence-free placeholder only beside a distinct positive item with
 the exact same immutable request anchor, while the server rechecks that anchor,
 positive provenance, and surviving covered-or-missing decision. It never
 semantically merges items, transfers provenance, or promotes coverage. Current
-V37 supersedes that historical deletion on its active path. Every repairable
+V38 inherits that active-path behavior. Every repairable
 Scope failure receives a bounded validator-ordered set of stable-path error
 codes, JSON paths, expected handles, and applicable count bounds, plus a
 content-free hash when the rejected payload retains the exact bounded Scope
@@ -233,7 +242,9 @@ V37 / Evidence V53 require that same audit after any `covered` or `excluded`
 Selector decision; only an all-`missing` result skips it. The receipt records
 only initial and reopened covered/excluded counts plus the existing hashes,
 timing, usage, and aggregate state; it stores no request, atom, Scope
-description, claim, decision, or answer text.
+description, claim, decision, or answer text. Snapshot V38 / Evidence V54 add
+only the bounded content-free cross-target exact-repeat count and preserve the
+same operation schedule and 5/7/8 call budget.
 
 Snapshot V34 / Evidence V50 retain whole-item invalid-provenance rejection
 without global no-data supersession, exact grouped-Supplement duplicate
@@ -278,16 +289,17 @@ Run a focused, non-scoreable case first:
 ```bash
 AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
 AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
+AIQSA_OPENRAG_ANSWER_UPSTREAM_MODEL_ID='gpt-5.6-luna' \
 npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
-  --confirm-paid OPENRAG --case-id doc-027-q2 \
-  --output .aiqsa/openrag-answer-runs/doc-027-q2-canary
+  --confirm-paid OPENRAG --case-id doc-027-q3 \
+  --output .aiqsa/openrag-answer-runs/v38-doc-027-q3-canary
 ```
 
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
-The current V37 acceptance campaign always supplies exactly five distinct
-`--case-id` values and never dispatches `--full`. Each five-case run is
-sequential, fail-fast, and non-scoreable; a corpus result may be assembled only
-after all twenty batches share the exact frozen pins and every case has settled.
+The V38 acceptance campaign first runs `doc-027-q3`, then `doc-029-q1` and
+`doc-029-q2` as focused sequential fail-fast canaries. After those canaries,
+code, configuration, answer/judge models, reranker, Base, profile, and source
+snapshot are frozen for one scoreable `--full` 100-case run.
 Add `--preflight-only` to validate the dataset, ignored paths, session,
 codex-lb pins, and either the live Base/profile/source snapshot or the frozen
 replay origin manifest. Frozen replay preflight also locks the exact admitted
@@ -298,50 +310,58 @@ unsupported by the admitted model. This validation makes no provider/network
 request and creates no checkpoint.
 `--judge-repeat N` is diagnostic: the first frozen judgment remains official
 and later judgments never rewrite it. `--no-judge` runs answer-stage diagnosis
-only. All of these modes are non-scoreable. A future monolithic scoreable run
-would require exactly the pinned 100 cases, one answer and one judge per case,
-but this command is not used by the current five-case acceptance campaign:
+only. All of these modes are non-scoreable. The official scoreable run requires
+exactly the pinned 100 cases, one answer and one judge per case:
 
 ```bash
 AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
 AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
+AIQSA_OPENRAG_ANSWER_UPSTREAM_MODEL_ID='gpt-5.6-sol' \
 npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
-  --confirm-paid OPENRAG --full \
-  --output .aiqsa/openrag-answer-runs/v29-full-1
+  --confirm-paid OPENRAG --full --batch-size 5 \
+  --output .aiqsa/openrag-answer-runs/v38-frozen-full-1
 ```
 
-After an infrastructure interruption, repeat that exact scoreable command
-with `--resume`. Resume verifies the entire manifest and pacing identity,
-preserves the original run id, skips only atomically settled passes, and
-refuses a completed summary or a checkpoint containing a non-pass.
+Each invocation settles at most five new cases and then exits successfully
+without writing an aggregate summary. Continue the same 100-case run by
+repeating the exact command with `--resume`; the final invocation writes the
+only aggregate summary. `--batch-size` changes invocation segmentation, not
+the frozen manifest or scoring identity. After an infrastructure interruption,
+use the same resume command. Resume verifies the entire manifest and pacing identity,
+preserves the original run id, skips every atomically settled outcome including
+a non-pass, and refuses a completed summary.
 
-Execution is deliberately sequential and fail-fast. The first `partial`,
-`fail`, judge error, or provider/infrastructure error prevents the next case
-from starting. A non-pass run has no aggregate score; diagnose its immutable
-stage evidence, implement a general product fix, and start a new uniformly
-pinned run. Runtime code must never branch on a benchmark case id, document
-alias, or reference answer.
+Execution is deliberately sequential. A focused canary remains fail-fast on
+the first `partial` or `fail`. The full run instead records every settled
+verdict and its classification, continues without mutations, and writes one
+aggregate after all 100 cases settle. A judge, provider, or infrastructure
+error records a content-free failure checkpoint and interrupts the run; repeat
+the exact frozen command with `--resume` rather than changing code or pins.
+Runtime code must never branch on a benchmark case id, document alias, or
+reference answer.
 
 Every settled case writes a hash-only resumable outcome plus a private replay
 record containing the exact evidence dispatch, source/version/artifact
 bindings, grounding contract versions, accepted grounding outputs, answer,
-cited evidence, and judge raw result. Frozen-evidence replay additionally
-captures each raw structured provider payload before server validation, so a
-rejected operation remains diagnosable. Raw payloads stay out of product
-persistence and content-safe outcomes; private artifacts are written mode
-`0600`. Both output and replay input are
+cited evidence, and judge raw result. Frozen-evidence replay captures each raw
+structured provider payload before server validation, including a rejected
+Supplement, in that same private artifact boundary. A live product-owned call
+retains only its canonical accepted result or content-safe failure; use its
+frozen replay snapshot when the pre-validation payload is required for private
+diagnosis. Raw payloads stay out of product persistence and content-safe
+outcomes; private artifacts are written mode `0600`. Both output and replay input are
 refused unless they are beneath ignored `.aiqsa/`,
 `benchmarks/knowledge/.data/`, or `benchmarks/knowledge/results/` paths.
 
 A judge/provider failure remains content-free in the public failure record.
 When replay raises after a provider response, a non-enumerable error envelope
 carries the partial accepted stages and every returned raw payload, including
-the rejected stage, into the private failure checkpoint before fail-fast exit.
+the rejected stage, into the private failure checkpoint before interruption.
 When the answer stage completed, its private answer and replay snapshot are
 likewise persisted if the judge fails.
 
-Replay schema V2 preserves exact V20 recovery and supports the current V37
-`Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
+Replay schema V2 preserves its exact V20 compatibility path and supports current
+V38 `Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
 path whenever Selector made a non-missing decision, while an all-`missing`
 Selector proceeds directly to correction. It permits one adjacent structural validation repair for Scope, completeness,
 initial Selector, or Scope Closure, and an eight-call hard cap that keeps both
@@ -411,6 +431,7 @@ retrieval state is consulted:
 ```bash
 AIQSA_OPENRAG_DATABASE_URL='<loopback-development-database-url>' \
 AIQSA_OPENRAG_CODEX_LB_CONNECTION_ID='<exact-local-connection-id>' \
+AIQSA_OPENRAG_ANSWER_UPSTREAM_MODEL_ID='<snapshot-answer-model-id>' \
 npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
   --confirm-paid OPENRAG \
   --frozen-evidence .aiqsa/openrag-answer-runs/<run>/replay-snapshots/<case>.json \

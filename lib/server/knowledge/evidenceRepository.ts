@@ -24,6 +24,7 @@ import {
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
   groundSettledKnowledgeAnswerV53,
+  groundSettledKnowledgeAnswerV54,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -72,6 +73,7 @@ import {
   type KnowledgeGroundingEvidenceV51,
   type KnowledgeGroundingEvidenceV52,
   type KnowledgeGroundingEvidenceV53,
+  type KnowledgeGroundingEvidenceV54,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -136,25 +138,30 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
+  KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
   decodeKnowledgeAnswerDraftV21CommonMarkV1,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
-  isCurrentKnowledgeAnswerOperationSnapshotV21,
+  isRecoverableKnowledgeAnswerOperationSnapshotV21,
   knowledgeAnswerScopeV6CorrectionFitsV2,
-  settleKnowledgeAnswerV21FromFinalSelector
+  settleKnowledgeAnswerV21FromFinalSelector,
+  settleKnowledgeAnswerV21FromFinalSelectorV38
 } from "./answerGroundingV21";
 import {
   knowledgeAnswerTargetedSupplementSchemaV3,
   decodeKnowledgeTargetedSupplementFailureV1,
   decodeKnowledgeTargetedSupplementV4,
+  decodeKnowledgeTargetedSupplementV5,
   knowledgeTargetableMissingDimensionsV1,
   knowledgeTargetedEvidenceAtomIndex,
   knowledgeTargetedSupplementFitsV1,
+  knowledgeTargetedSupplementCrossTargetExactRepeatCountV1,
   mergeKnowledgeGroundedCorrectionV3,
-  mergeKnowledgeTargetedSupplementV2
+  mergeKnowledgeTargetedSupplementV2,
+  mergeKnowledgeTargetedSupplementV3
 } from "./answerGroundingCorrectionV21";
 import {
   knowledgeGroundedDeltaSelectorPromptV7
@@ -1697,15 +1704,24 @@ export async function groundKnowledgeRunAnswerV21(
         snapshot: primaryRequest
       })
     : null;
-  if (!primaryRequest || !isCurrentKnowledgeAnswerOperationSnapshotV21(primaryRequest) ||
+  if (!primaryRequest ||
+    !isRecoverableKnowledgeAnswerOperationSnapshotV21(primaryRequest) ||
     !primaryPrompt) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
+  const targetLocalSupplement = primaryRequest.version === 38;
+  const protocol = targetLocalSupplement
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
+    : KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1;
   const requestExecutionPolicy = {
     executionPolicy: primaryRequest.executionPolicy,
-    protocol:
-      KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1
+    protocol
   };
+  const settle = (
+    settlementInput: Parameters<typeof settleKnowledgeAnswerV21FromFinalSelectorV38>[0]
+  ) => targetLocalSupplement
+    ? settleKnowledgeAnswerV21FromFinalSelectorV38(settlementInput)
+    : settleKnowledgeAnswerV21FromFinalSelector(settlementInput);
   const exactRequest = (
     actual: ReturnType<typeof decodeKnowledgeAnswerOperationRequestSnapshotV21>,
     expected: ReturnType<typeof createKnowledgeAnswerOperationRequestSnapshotV21>
@@ -2212,6 +2228,7 @@ export async function groundKnowledgeRunAnswerV21(
     ? 0
     : primaryDraft.claims.length;
   let draftClaimCount = primaryClaimCount;
+  let crossTargetExactRepeatCount = 0;
   const missingDimensions = knowledgeCoverageMissingDimensionsV6(correctionBaseSelector);
   const targetableMissingDimensions = knowledgeTargetableMissingDimensionsV1(
     missingDimensions
@@ -2233,7 +2250,7 @@ export async function groundKnowledgeRunAnswerV21(
     if (operations.finalSelector) {
       throw new Error("knowledge_grounded_selector_result_invalid");
     }
-    settlement = settleKnowledgeAnswerV21FromFinalSelector({
+    settlement = settle({
       draft: primaryDraft,
       evidence,
       selector: correctionBaseSelector,
@@ -2278,7 +2295,9 @@ export async function groundKnowledgeRunAnswerV21(
     );
     const supplement = malformedSupplement || targetedSupplementFailure
       ? null
-      : decodeKnowledgeTargetedSupplementV4(
+      : (targetLocalSupplement
+          ? decodeKnowledgeTargetedSupplementV5
+          : decodeKnowledgeTargetedSupplementV4)(
           operations.supplementalDraft.attempt.acceptedResult,
           {
             availableHandles: handles,
@@ -2295,7 +2314,7 @@ export async function groundKnowledgeRunAnswerV21(
         operations.finalSelector) {
         throw new Error("knowledge_grounded_selector_result_invalid");
       }
-      settlement = settleKnowledgeAnswerV21FromFinalSelector({
+      settlement = settle({
         draft: primaryDraft,
         evidence,
         selector: correctionBaseSelector,
@@ -2305,7 +2324,13 @@ export async function groundKnowledgeRunAnswerV21(
       if (!operations.initialFinalSelector || !operations.finalSelector) {
         throw new Error("knowledge_answer_operation_snapshot_conflict");
       }
-      const merged = mergeKnowledgeTargetedSupplementV2({
+      if (targetLocalSupplement) {
+        crossTargetExactRepeatCount =
+          knowledgeTargetedSupplementCrossTargetExactRepeatCountV1(supplement!);
+      }
+      const merged = (targetLocalSupplement
+        ? mergeKnowledgeTargetedSupplementV3
+        : mergeKnowledgeTargetedSupplementV2)({
         primaryDraft,
         supplement: supplement!
       });
@@ -2402,7 +2427,7 @@ export async function groundKnowledgeRunAnswerV21(
         initialSelector: correctionBaseSelector,
         primaryClaimCount
       });
-      settlement = settleKnowledgeAnswerV21FromFinalSelector({
+      settlement = settle({
         draft: finalDraft,
         evidence,
         selector: correctedSelector,
@@ -2530,7 +2555,12 @@ export async function groundKnowledgeRunAnswerV21(
     selectorRepairSucceeded,
     settlement
   } as const;
-  const grounding = groundSettledKnowledgeAnswerV53(groundingInput);
+  const grounding = targetLocalSupplement
+    ? groundSettledKnowledgeAnswerV54({
+        ...groundingInput,
+        crossTargetExactRepeatCount
+      })
+    : groundSettledKnowledgeAnswerV53(groundingInput);
   return Object.freeze({ grounding });
 }
 
@@ -2558,7 +2588,7 @@ function groundingEvidenceProjection(
     KnowledgeGroundingEvidenceV47 | KnowledgeGroundingEvidenceV48 |
     KnowledgeGroundingEvidenceV49 | KnowledgeGroundingEvidenceV50 |
     KnowledgeGroundingEvidenceV51 | KnowledgeGroundingEvidenceV52 |
-    KnowledgeGroundingEvidenceV53
+    KnowledgeGroundingEvidenceV53 | KnowledgeGroundingEvidenceV54
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

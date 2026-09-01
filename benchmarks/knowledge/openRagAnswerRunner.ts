@@ -53,6 +53,7 @@ import {
 } from "./openRagAnswerReplay";
 
 export type OpenRagAnswerCliOptions = Readonly<{
+  batchSize: number | null;
   caseIds: readonly string[];
   confirmPaid: true;
   frozenEvidencePath: string | null;
@@ -154,8 +155,17 @@ export type OpenRagAnswerRunSummary = Readonly<{
   total: number;
 }>;
 
+export type OpenRagAnswerBatchProgress = Readonly<{
+  kind: "paused";
+  newlySettled: number;
+  runId: string;
+  settled: number;
+  totalExpected: number;
+}>;
+
 const caseIdPattern = /^doc-[0-9]{3}-q[1-8]$/u;
 const singletonArguments = new Set([
+  "--batch-size",
   "--confirm-paid",
   "--frozen-evidence",
   "--full",
@@ -184,6 +194,7 @@ function integerArgument(value: string | undefined, minimum: number, maximum: nu
 }
 
 export function parseOpenRagAnswerCli(argv: readonly string[]): OpenRagAnswerCliOptions {
+  let batchSize: number | null = null;
   let confirmPaid = false;
   let frozenEvidencePath: string | null = null;
   let full = false;
@@ -205,6 +216,10 @@ export function parseOpenRagAnswerCli(argv: readonly string[]): OpenRagAnswerCli
       seenSingletons.add(argument);
     }
     switch (argument) {
+      case "--batch-size":
+        batchSize = integerArgument(next, 1, 100);
+        index += 1;
+        break;
       case "--case-id":
         if (!next || !caseIdPattern.test(next)) {
           throw new Error("open_rag_answer_case_id_invalid");
@@ -268,10 +283,20 @@ export function parseOpenRagAnswerCli(argv: readonly string[]): OpenRagAnswerCli
     throw new Error("open_rag_answer_judge_mode_invalid");
   }
   const scoreable = full && repeat === 1 && judgeRepeat === 1 && !noJudge;
+  if (batchSize !== null && !full) {
+    throw new Error("open_rag_answer_batch_mode_invalid");
+  }
+  if (batchSize !== null && !scoreable) {
+    throw new Error("open_rag_answer_batch_mode_invalid");
+  }
+  if (batchSize !== null && outputPath === null && !preflightOnly) {
+    throw new Error("open_rag_answer_batch_output_required");
+  }
   if (resume && (!scoreable || outputPath === null || preflightOnly)) {
     throw new Error("open_rag_answer_resume_mode_invalid");
   }
   return Object.freeze({
+    batchSize,
     caseIds: Object.freeze([...caseIds].sort()),
     confirmPaid: true,
     frozenEvidencePath,
@@ -594,7 +619,7 @@ export class OpenRagAnswerNonPassError extends Error {
   }
 }
 
-export async function runOpenRagAnswerBenchmark(input: Readonly<{
+type OpenRagAnswerBenchmarkInput = Readonly<{
   cases: readonly OpenRagAnswerCase[];
   checkpoint: OpenRagAnswerCheckpointStore;
   emit?: (event: Readonly<Record<string, unknown>>) => void;
@@ -605,7 +630,17 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
   resume: boolean;
   runtime: OpenRagAnswerRuntime;
   sleep?: (milliseconds: number) => Promise<void>;
-}>): Promise<OpenRagAnswerRunSummary> {
+}>;
+
+export function runOpenRagAnswerBenchmark(
+  input: OpenRagAnswerBenchmarkInput & Readonly<{ maxNewOutcomes: number }>
+): Promise<OpenRagAnswerBatchProgress | OpenRagAnswerRunSummary>;
+export function runOpenRagAnswerBenchmark(
+  input: OpenRagAnswerBenchmarkInput
+): Promise<OpenRagAnswerRunSummary>;
+export async function runOpenRagAnswerBenchmark(
+  input: OpenRagAnswerBenchmarkInput & Readonly<{ maxNewOutcomes?: number }>
+): Promise<OpenRagAnswerBatchProgress | OpenRagAnswerRunSummary> {
   const manifest = decodeOpenRagAnswerRunManifest(input.header.manifest);
   const expectedFingerprint = openRagAnswerManifestFingerprint(manifest);
   if (input.header.manifestFingerprint !== expectedFingerprint ||
@@ -613,6 +648,13 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
       manifest.caseIds.join("\u0000") ||
     manifest.mode === "replay" !== Boolean(input.replaySnapshot)) {
     throw new Error("open_rag_answer_schedule_identity_invalid");
+  }
+  const expectedOutcomeCount = input.cases.length * manifest.repeat;
+  if (input.maxNewOutcomes !== undefined &&
+    (manifest.mode !== "full" || !manifest.scoreable ||
+      !Number.isSafeInteger(input.maxNewOutcomes) ||
+      input.maxNewOutcomes < 1 || input.maxNewOutcomes > expectedOutcomeCount)) {
+    throw new Error("open_rag_answer_batch_limit_invalid");
   }
   const header = await input.checkpoint.initialize({
     header: input.header,
@@ -623,6 +665,7 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
   const sleep = input.sleep ?? ((milliseconds: number) =>
     new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds)));
   const outcomes: OpenRagAnswerOutcome[] = [];
+  let newlySettled = 0;
   let previousStart = 0;
   for (const benchmarkCase of input.cases) {
     const goldDocumentId = input.goldDocumentIds[benchmarkCase.documentAlias];
@@ -644,7 +687,8 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
           throw new Error("open_rag_answer_resume_checkpoint_invalid");
         }
         outcomes.push(existing);
-        if (existing.judgment && existing.judgment.judgment.verdict !== "pass") {
+        if (manifest.mode !== "full" && existing.judgment &&
+          existing.judgment.judgment.verdict !== "pass") {
           throw new Error("open_rag_answer_resume_contains_non_pass");
         }
         emit(Object.freeze({
@@ -765,6 +809,7 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
         privateRecord: privateAnswerRecord(answer, judgeProducts)
       });
       outcomes.push(outcome);
+      newlySettled += 1;
       const verdict = officialJudge?.judgment.verdict ?? "unjudged";
       emit(Object.freeze({
         caseId: benchmarkCase.caseId,
@@ -778,13 +823,35 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
         emit(Object.freeze({
           caseId: benchmarkCase.caseId,
           classification,
-          event: "benchmark_fail_fast_stop",
+          event: manifest.mode === "full"
+            ? "benchmark_non_pass_collected"
+            : "benchmark_fail_fast_stop",
           verdict: officialJudge.judgment.verdict
         }));
-        throw new OpenRagAnswerNonPassError(
-          benchmarkCase.caseId,
-          officialJudge.judgment.verdict
-        );
+        if (manifest.mode !== "full") {
+          throw new OpenRagAnswerNonPassError(
+            benchmarkCase.caseId,
+            officialJudge.judgment.verdict
+          );
+        }
+      }
+      if (input.maxNewOutcomes !== undefined &&
+        newlySettled >= input.maxNewOutcomes &&
+        outcomes.length < expectedOutcomeCount) {
+        const progress = Object.freeze({
+          kind: "paused" as const,
+          newlySettled,
+          runId: header.runId,
+          settled: outcomes.length,
+          totalExpected: expectedOutcomeCount
+        });
+        emit(Object.freeze({
+          event: "run_batch_paused",
+          newlySettled: progress.newlySettled,
+          settled: progress.settled,
+          totalExpected: progress.totalExpected
+        }));
+        return progress;
       }
     }
   }
@@ -797,7 +864,6 @@ export async function runOpenRagAnswerBenchmark(input: Readonly<{
     scoreable: manifest.scoreable,
     total: outcomes.length
   });
-  const expectedOutcomeCount = input.cases.length * manifest.repeat;
   if (outcomes.length !== expectedOutcomeCount ||
     !manifest.noJudge && judgments.length !== expectedOutcomeCount) {
     throw new Error("open_rag_answer_summary_incomplete");

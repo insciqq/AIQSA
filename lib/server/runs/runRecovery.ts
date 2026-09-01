@@ -91,7 +91,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
   decodeKnowledgeAnswerDraftPrimaryPromptV21,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
-  isCurrentKnowledgeAnswerOperationSnapshotV21
+  isRecoverableKnowledgeAnswerOperationSnapshotV21
 } from "../knowledge/answerGroundingV21";
 import { selectKnowledgeAnswerPipelineForNewRun } from
   "../knowledge/answerPipelineRollout";
@@ -2938,6 +2938,7 @@ async function recoverKnowledgeAnswerGrounding(
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
   let pipeline: "v20_v16" | "v21_scope_v6";
+  let scopeV6SnapshotVersion: 37 | 38 | undefined;
   if (input.draftDispatch) {
     if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
       if (input.draftDispatch.attempt.ordinal !== 1 ||
@@ -2962,12 +2963,13 @@ async function recoverKnowledgeAnswerGrounding(
           "The saved Knowledge draft contract snapshot is invalid."
         );
       }
-      if (!isCurrentKnowledgeAnswerOperationSnapshotV21(draftRequest)) {
+      if (!isRecoverableKnowledgeAnswerOperationSnapshotV21(draftRequest)) {
         throw new ToolLoopRecoveryError(
           "knowledge_answer_contract_failed",
           "The saved Knowledge draft protocol is retired."
         );
       }
+      scopeV6SnapshotVersion = draftRequest.version;
       pipeline = "v21_scope_v6";
       seed = Object.freeze({
         draft: input.draftDispatch.draft,
@@ -3256,6 +3258,7 @@ async function recoverKnowledgeAnswerGrounding(
   const operationResult = pipeline === "v21_scope_v6"
     ? await executeKnowledgeAnswerGroundingV21({
         ...groundingInput,
+        ...(scopeV6SnapshotVersion ? { snapshotVersion: scopeV6SnapshotVersion } : {}),
         recoveryProviderResponseIds: input.control.providerResponseId
           ? {
               1: input.control.providerResponseId,
