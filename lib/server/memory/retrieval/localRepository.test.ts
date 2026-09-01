@@ -480,6 +480,7 @@ describe("local Memory retrieval repository", () => {
     await expect(repository.expand(snapshot, plan, completion.candidates)).resolves.toEqual([
       expect.objectContaining({
         itemId: "round-user-2",
+        directUserTexts: [userText],
         retrievalHint: null,
         safeText: `User: ${userText}`,
         sourceChatId: "chat-selected",

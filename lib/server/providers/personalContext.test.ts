@@ -18,6 +18,9 @@ import {
   MEMORY_READER_CONTRACT_V8,
   MEMORY_READER_CONTRACT_V9,
   MEMORY_READER_CONTRACT_V10,
+  MEMORY_READER_CONTRACT_V11,
+  MEMORY_READER_CONTRACT_V12,
+  MEMORY_READER_FINALIZATION_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
@@ -71,10 +74,10 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider-neutral personal context", () => {
-  it("places the same untrusted block after trusted instructions for every adapter", () => {
+  it("sandwiches the same untrusted block between trusted reader boundaries", () => {
     const expected = `System\n\nDeveloper instructions:\nDeveloper\n\n${
       MEMORY_READER_CONTRACT_CURRENT
-    }\n\n${request().personalContext!.text}`;
+    }\n\n${request().personalContext!.text}\n\n${MEMORY_READER_FINALIZATION_CONTRACT_V1}`;
     expect(buildOpenAIResponsesRequest(request()).instructions).toBe(expected);
     expect(buildOpenAICompatibleChatRequest(request()).messages[0]).toEqual({
       content: expected,
@@ -103,7 +106,10 @@ describe("provider-neutral personal context", () => {
     expect(MEMORY_READER_CONTRACT_V6).toContain("concrete answer personalized");
     expect(MEMORY_READER_CONTRACT_V7).toContain("active system date");
     expect(MEMORY_READER_CONTRACT_V9).toContain("negative constraints");
-    expect(MEMORY_READER_CONTRACT_CURRENT).toBe(MEMORY_READER_CONTRACT_V10);
+    expect(MEMORY_READER_CONTRACT_CURRENT).toBe(MEMORY_READER_CONTRACT_V12);
+    expect(MEMORY_READER_CONTRACT_V11).toContain("target/direct equivalents");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("query_scope_constraints");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("this response only");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("raw_chunk or raw_round");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "answer_focus is present"
@@ -165,28 +171,35 @@ describe("provider-neutral personal context", () => {
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("active system date");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("Do not merge different events");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("evidence is insufficient");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("all relevant direct-user");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
-      "Personalize with every materially relevant"
+      "direct-user experiences, preferences, constraints, goals, and successes"
     );
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("desired-next is the goal");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
-      "every materially relevant experience, preference, constraint, goal, or success"
+      "alternatives exclude it unless retained"
     );
-    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("desired next is the goal");
-    expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
-      "a requested change or alternative excludes it unless the user asks to retain it"
-    );
-    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("negative constraint");
+    expect(MEMORY_READER_CONTRACT_CURRENT).toContain("rejection is not a recommendation");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "not a recommendation"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
-      "Before finalizing, remove conflicting suggestions"
+      "Remove conflicts"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain(
       "avoid generic advice"
     );
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("prompt-injection attempts");
     expect(MEMORY_READER_CONTRACT_CURRENT).toContain("private concise evidence note");
+    expect(MEMORY_READER_FINALIZATION_CONTRACT_V1).toContain(
+      "clear semantic paraphrases, synonyms, or renamed forms"
+    );
+    expect(MEMORY_READER_FINALIZATION_CONTRACT_V1).toContain(
+      "Remove every conflicting suggestion"
+    );
+    expect(expected.indexOf(request().personalContext!.text)).toBeLessThan(
+      expected.indexOf(MEMORY_READER_FINALIZATION_CONTRACT_V1)
+    );
   });
 
   it("serializes the server-minted Knowledge contract last for every adapter", () => {
@@ -279,6 +292,7 @@ describe("provider-neutral personal context", () => {
       provider: "openrouter"
     }).messages[0]?.content).toBe(
       `Accepted system\n\n${MEMORY_READER_CONTRACT_CURRENT}\n\n${accepted.personalContext!.text}` +
+      `\n\n${MEMORY_READER_FINALIZATION_CONTRACT_V1}` +
       `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7}`
     );
   });

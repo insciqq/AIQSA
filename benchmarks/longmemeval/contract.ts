@@ -392,6 +392,15 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   providerTokenLimit: number | null;
   queryEmbeddingMs: number | null;
   queryEmbeddingProviderCalls: number | null;
+  queryResolverBroadFallbackAttachment: boolean | null;
+  queryResolverMs: number | null;
+  queryResolverExecutionStrategy: string | null;
+  queryResolverProviderCalls: number | null;
+  queryResolverSourceCharacterCount: number | null;
+  queryResolverSourceCount: number | null;
+  queryResolverState: string | null;
+  queryScopeAttachedConstraintKindCounts: Readonly<Record<string, number>>;
+  queryScopeProposedConstraintCount: number | null;
   queryVariantCounts: Readonly<Record<string, number>>;
   rawChunkExpansions: number | null;
   rawRoundExpansions: number | null;
@@ -843,6 +852,23 @@ export function sanitizeLongMemEvalRetrievalAudit(
     providerTokenLimit: nonNegativeInteger(budget.providerTokenLimit),
     queryEmbeddingMs: nonNegativeInteger(budget.queryEmbeddingMs),
     queryEmbeddingProviderCalls: nonNegativeInteger(budget.queryEmbeddingProviderCalls),
+    queryResolverBroadFallbackAttachment:
+      typeof budget.queryResolverBroadFallbackAttachment === "boolean"
+        ? budget.queryResolverBroadFallbackAttachment
+        : null,
+    queryResolverMs: nonNegativeInteger(budget.queryResolverMs),
+    queryResolverExecutionStrategy: uppercaseCode(
+      budget.queryResolverExecutionStrategy
+    ),
+    queryResolverProviderCalls: nonNegativeInteger(budget.queryResolverProviderCalls),
+    queryResolverSourceCharacterCount:
+      nonNegativeInteger(budget.queryResolverSourceCharacterCount),
+    queryResolverSourceCount: nonNegativeInteger(budget.queryResolverSourceCount),
+    queryResolverState: uppercaseCode(budget.queryResolverState),
+    queryScopeAttachedConstraintKindCounts:
+      sanitizedCounts(budget.queryScopeAttachedConstraintKindCounts),
+    queryScopeProposedConstraintCount:
+      nonNegativeInteger(budget.queryScopeProposedConstraintCount),
     queryVariantCounts: sanitizedCounts(component.queryVariantCounts),
     rawChunkExpansions: nonNegativeInteger(component.rawChunkExpansions),
     rawRoundExpansions: nonNegativeInteger(component.rawRoundExpansions),

@@ -624,7 +624,7 @@ function applyQualificationManifest(
   options: CliOptions,
   manifest: LongMemEvalQualificationManifest
 ): CliOptions {
-  if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+  if (manifest.id !== "fu2-reader-first-blind-50-v8") {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
   const manifestRoute = qualificationManifestRerankerRoute(manifest);
@@ -707,7 +707,7 @@ function assertQualificationResolvedRerankerRoute(
   )) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
-  if (manifest.id === "fu2-reader-first-blind-50-v7" &&
+  if (manifest.id === "fu2-reader-first-blind-50-v8" &&
     (roles.qwen.providerOrder.length !== manifest.runtime.embedding.providerOrder.length ||
       roles.qwen.providerOrder.some((provider, index) =>
         provider !== manifest.runtime.embedding.providerOrder[index]))) {
@@ -3820,7 +3820,7 @@ async function runCase(
         await buildFresh(null);
       }
       if (!identity) throw new Error("longmemeval_identity_setup_failed");
-      if (options.qualificationManifestId === "fu2-reader-first-blind-50-v7") {
+      if (options.qualificationManifestId === "fu2-reader-first-blind-50-v8") {
         await withFailureCode(
           "longmemeval_lexical_projection_failed",
           () => waitForOpenSearchProjection(
@@ -4040,7 +4040,7 @@ async function main(): Promise<void> {
     ? await loadLongMemEvalQualificationManifest(options.qualificationManifestId)
     : null;
   if (qualificationManifest) {
-    if (qualificationManifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (qualificationManifest.id !== "fu2-reader-first-blind-50-v8") {
       throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
     }
     options = applyQualificationManifest(options, qualificationManifest);
@@ -4117,7 +4117,7 @@ async function main(): Promise<void> {
     const checkpoints = new Map(loadedCheckpoints);
     const caseEvaluations = new Map<string, LongMemEvalCaseEvaluation>();
     const lexicalCutoverRequired = qualificationManifest?.id ===
-      "fu2-reader-first-blind-50-v7";
+      "fu2-reader-first-blind-50-v8";
     if (options.onlineEvaluation) {
       for (const entry of selection.cases) {
         const checkpoint = checkpoints.get(entry.questionId);
@@ -4461,7 +4461,7 @@ async function main(): Promise<void> {
         version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
       },
       qualificationManifest: qualificationManifest?.id ===
-          "fu2-reader-first-blind-50-v7"
+          "fu2-reader-first-blind-50-v8"
         ? {
             appCommit: qualificationManifest.source.appCommit,
             appWorktreeSha256: qualificationManifest.source.appWorktreeSha256,

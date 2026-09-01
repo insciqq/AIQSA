@@ -31,7 +31,7 @@ describe("LongMemEval frozen qualification manifest", () => {
   });
 
   it("freezes the reader-first reranker route and case concurrency two", async () => {
-    const [legacy, first, second, third, fourth, fifth, prior, manifest] =
+    const [legacy, first, second, third, fourth, fifth, sixth, prior, manifest] =
       await Promise.all([
       loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1"),
@@ -40,9 +40,10 @@ describe("LongMemEval frozen qualification manifest", () => {
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v4"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v5"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v6"),
-      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v7")
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v7"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v8")
     ]);
-    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v8") {
       throw new Error("reader_first_manifest_expected");
     }
 
@@ -86,15 +87,16 @@ describe("LongMemEval frozen qualification manifest", () => {
     expect(manifest.selection).toEqual(third.selection);
     expect(manifest.selection).toEqual(fourth.selection);
     expect(manifest.selection).toEqual(fifth.selection);
+    expect(manifest.selection).toEqual(sixth.selection);
     expect(manifest.selection).toEqual(prior.selection);
     expect(manifest.source.appCommit)
-      .toBe("6683814244b442bc23c57928b80785151caa853b");
+      .toBe("255d7de09305e15959ebd7803cfc2c5e8e540061");
     await expect(currentLongMemEvalQualificationRevision(process.cwd()))
       .resolves.toEqual({
         headCommit: manifest.source.appCommit,
         worktreeSha256: manifest.source.appWorktreeSha256
       });
-  });
+  }, 15_000);
 
   it("binds every selected id to its frozen upstream category", async () => {
     const manifest = await loadLongMemEvalQualificationManifest("fu09-blind-50-v1");
@@ -117,9 +119,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first reranker route drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v7"
+      "fu2-reader-first-blind-50-v8"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v8") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {
@@ -139,9 +141,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first embedding provider-order drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v7"
+      "fu2-reader-first-blind-50-v8"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v8") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {

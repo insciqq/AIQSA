@@ -3,8 +3,6 @@ import type { MemorySearchItemType } from "@prisma/client";
 import {
   MEMORY_LEXICAL_QUERY_ANALYSIS_VERSION
 } from "../../../domain/memory/retrieval/lexical";
-import { MEMORY_RETRIEVAL_PIPELINE_VERSION } from
-  "../../../domain/memory/retrieval/config";
 import { AIQSA_OPENSEARCH_VERSION } from "./contract";
 
 export const MEMORY_OPENSEARCH_BACKEND_KIND =
@@ -15,8 +13,12 @@ export const MEMORY_OPENSEARCH_ANALYSIS_PROFILE =
   "memory-unicode-icu-v1" as const;
 export const MEMORY_OPENSEARCH_NORMALIZATION_VERSION =
   MEMORY_LEXICAL_QUERY_ANALYSIS_VERSION;
+// Projection compatibility is owned by the lexical document/query contract,
+// not by the broader reader, packer, resolver, or admission pipeline. Keep the
+// existing persisted wire value until one of those lexical shapes changes;
+// unrelated answer-time revisions must not force a full OpenSearch rebuild.
 export const MEMORY_OPENSEARCH_RETRIEVAL_PIPELINE_VERSION =
-  MEMORY_RETRIEVAL_PIPELINE_VERSION;
+  "memory-personal-retrieval-v64" as const;
 export const MEMORY_OPENSEARCH_READ_ALIAS =
   "aiqsa-memory-lexical-read" as const;
 export const MEMORY_OPENSEARCH_WRITE_ALIAS =

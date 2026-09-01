@@ -46,7 +46,7 @@ describe("administrator-owned Memory egress consent", () => {
     const accepted = tx({
       acceptedAt: new Date("2026-08-11T10:00:00.000Z"),
       acceptedDestinations: [destination],
-      acceptedPolicyVersion: "memory-utility-egress-v3"
+      acceptedPolicyVersion: "memory-utility-egress-v4"
     });
 
     await expect(requireAdminAcceptedMemoryDestination(accepted, {
@@ -72,7 +72,7 @@ describe("administrator-owned Memory egress consent", () => {
     const destinations = currentMemoryAdminDestinations([{
       destinations: [],
       fingerprint: "f".repeat(64),
-      policyVersion: "memory-utility-egress-v3",
+      policyVersion: "memory-utility-egress-v4",
       rerankerTargets: [
         { destinationFingerprint: "a".repeat(64) },
         { destinationFingerprint: "b".repeat(64) }
