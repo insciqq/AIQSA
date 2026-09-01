@@ -41,9 +41,9 @@ import {
   validateKnowledgeCoverageScopeCompletenessV1
 } from "./coverageScopeCompletenessV1";
 import {
-  decodeKnowledgeCoverageScopeCompletenessPromptV2,
-  decodeKnowledgeCoverageScopePromptV6QueryIntentV1
-} from "./coverageScopeQueryIntentV1";
+  decodeKnowledgeCoverageScopeCompletenessPromptV4,
+  decodeKnowledgeCoverageScopePromptV6AnswerGranularityV2
+} from "./coverageScopeAnswerGranularityV2";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
 } from "./coverageScopeClosureV1";
@@ -804,6 +804,20 @@ function scopeOutput(complete: boolean) {
   };
 }
 
+function scopeOutputWithRequestAnchorIds(complete: boolean) {
+  const output = scopeOutput(complete);
+  return {
+    ...output,
+    evidenceUnits: output.evidenceUnits.map((unit) => ({
+      ...unit,
+      findings: unit.findings.map((finding) => ({
+        ...finding,
+        requestAnchor: finding.requestAnchor === "alpha" ? "Q2" : "Q4"
+      }))
+    }))
+  };
+}
+
 function selectorV21Output(complete: boolean) {
   return {
     claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
@@ -838,7 +852,7 @@ function currentExecution(complete: boolean) {
     output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
       ? draftOutput()
       : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
-        ? scopeOutput(complete)
+        ? scopeOutputWithRequestAnchorIds(complete)
         : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
           ? { additions: [], version: 1 }
         : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
@@ -949,15 +963,20 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
+    expect(snapshots[1]!.systemPrompt).toContain("lowest answer-level abstraction");
+    expect(snapshots[1]!.systemPrompt).toContain("put exactly one supplied Q ID");
+    expect(snapshots[3]!.systemPrompt).toContain("answer-level granularity");
     const acceptedScopeHash = knowledgeAnswerHash(acceptedScope(true));
     expect(snapshots.map((snapshot) => isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot)
       ? snapshot.coverageScopePayloadHash
       : null)).toEqual([null, null, acceptedScopeHash, acceptedScopeHash,
         acceptedScopeHash]);
     const scopePayload = JSON.parse(snapshots[1]!.userPrompt) as Record<string, unknown>;
+    expect(scopePayload).toHaveProperty("requestAnchorIndex.items");
     expect(scopePayload).not.toHaveProperty("draft");
     expect(scopePayload).not.toHaveProperty("supportedView");
     expect(scopePayload).not.toHaveProperty("selectorState");
+    expect(recorder.entries.get(2)?.acceptedResult).toEqual(scopeOutput(true));
   });
 
   it("canonicalizes a surplus disjoint Selector edge without consuming repair", async () => {
@@ -1312,7 +1331,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       additions: [{
         description: "Explain how alpha and beta work together.",
         evidenceAtomIds: ["A1", "A2"],
-        requestAnchor: "alpha and beta"
+        requestAnchor: "Q2"
       }],
       version: 1
     } as const;
@@ -1389,8 +1408,12 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       supportedClaimCount: 2
     });
     const initialScope = acceptedScope(true);
+    const acceptedCompletenessOutput = recorder.entries.get(3)?.acceptedResult;
+    expect(acceptedCompletenessOutput).toMatchObject({
+      additions: [{ requestAnchor: "alpha" }]
+    });
     const completeness = validateKnowledgeCoverageScopeCompletenessV1(
-      completenessOutput,
+      acceptedCompletenessOutput,
       {
         acceptedScope: initialScope,
         evidence: knowledgeCoverageEvidenceFromManifestV6(manifest()),
@@ -1592,7 +1615,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     expect(snapshots).toHaveLength(8);
     expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
     const packed = manifest();
-    expect(decodeKnowledgeCoverageScopePromptV6QueryIntentV1({
+    expect(decodeKnowledgeCoverageScopePromptV6AnswerGranularityV2({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
       evidenceManifest: packed.message,
@@ -1643,15 +1666,15 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 29
+      version: 31
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 29
+      version: 31
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 29
+      version: 31
     });
   });
 
@@ -1736,7 +1759,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const repairRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
       recorder.entries.get(4)?.acceptedRequest
     );
-    expect(decodeKnowledgeCoverageScopeCompletenessPromptV2({
+    expect(decodeKnowledgeCoverageScopeCompletenessPromptV4({
       acceptedScope: initialScope,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
@@ -2028,7 +2051,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const packed = manifest();
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(decodeKnowledgeCoverageScopePromptV6QueryIntentV1({
+    expect(decodeKnowledgeCoverageScopePromptV6AnswerGranularityV2({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: knowledgeCoverageEvidenceFromManifestV6(packed),
       evidenceManifest: packed.message,

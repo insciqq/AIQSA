@@ -144,7 +144,7 @@ function currentOrigin() {
       ...legacy.engine,
       coverageAuditorContractVersion: 6,
       draftContractVersion: 21,
-      groundingEvidenceVersion: 45,
+      groundingEvidenceVersion: 47,
       pipelineVersion: currentPipelineVersion,
       selectorContractVersion: 21,
       settlementVersion: 6
@@ -153,7 +153,7 @@ function currentOrigin() {
 }
 
 const currentPipelineVersion =
-  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_settlement_v6";
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_settlement_v6";
 
 const currentExecutionPolicy = Object.freeze({
   auditorReasoningEffort: "medium",
@@ -299,7 +299,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     expect(result.finalText).toContain("30 days");
   });
 
-  it("runs the current V29 snapshot with V21 Draft and Selector", async () => {
+  it("runs the current V31 snapshot with V21 Draft and Selector", async () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-08-31T00:00:00.000Z",
@@ -610,7 +610,7 @@ describe("OpenRAG frozen-evidence replay", () => {
     }), "medium")).toBe(false);
   });
 
-  it("freezes a current V29 run that inherits the provider reasoning default", () => {
+  it("freezes a current V31 run that inherits the provider reasoning default", () => {
     const frozen = createOpenRagAnswerReplaySnapshot({
       answerExecutionSnapshot: snapshot(),
       capturedAt: "2026-09-01T00:00:00.000Z",

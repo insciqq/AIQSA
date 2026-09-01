@@ -102,6 +102,10 @@ const KNOWLEDGE_ADAPTIVE_ATOMIC_SUPPLEMENT_BUDGET_V1_MIGRATION =
   "20260901070000_knowledge_adaptive_atomic_supplement_budget_v1";
 const KNOWLEDGE_QUERY_INTENT_COMPLETENESS_V1_MIGRATION =
   "20260901080000_knowledge_query_intent_completeness_v1";
+const KNOWLEDGE_QUERY_GRANULARITY_EPISTEMIC_FIDELITY_V1_MIGRATION =
+  "20260901090000_knowledge_query_granularity_epistemic_fidelity_v1";
+const KNOWLEDGE_ANSWER_LEVEL_COMPRESSION_V1_MIGRATION =
+  "20260901100000_knowledge_answer_level_compression_v1";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
@@ -1305,6 +1309,20 @@ function runKnowledgeH2DurableDispatchMigrationProof(
     queryIntentCompletenessV1Index > adaptiveAtomicSupplementBudgetV1Index,
     "Knowledge query-intent completeness V1 migration is missing",
   );
+  const queryGranularityEpistemicFidelityV1Index = committed.indexOf(
+    KNOWLEDGE_QUERY_GRANULARITY_EPISTEMIC_FIDELITY_V1_MIGRATION,
+  );
+  assert.ok(
+    queryGranularityEpistemicFidelityV1Index > queryIntentCompletenessV1Index,
+    "Knowledge query-granularity epistemic-fidelity V1 migration is missing",
+  );
+  const answerLevelCompressionV1Index = committed.indexOf(
+    KNOWLEDGE_ANSWER_LEVEL_COMPRESSION_V1_MIGRATION,
+  );
+  assert.ok(
+    answerLevelCompressionV1Index > queryGranularityEpistemicFidelityV1Index,
+    "Knowledge answer-level compression V1 migration is missing",
+  );
   const probeParent = join(repositoryRoot, ".aiqsa");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
@@ -1898,6 +1916,28 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       `),
       "1",
       "Grounding Evidence V45 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%46%';
+      `),
+      "1",
+      "Grounding Evidence V46 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%47%';
+      `),
+      "1",
+      "Grounding Evidence V47 is missing from the durable evidence constraint",
     );
     assert.equal(
       psqlScalar(database, `
@@ -3553,6 +3593,52 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       DELETE FROM "KnowledgeGroundingResult"
       WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 45;
       SELECT 'knowledge-v29-grounding-evidence-v45-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 46, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":46,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v30-grounding-evidence-v46-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 46;
+      `),
+      "1",
+      "Grounding Evidence V46 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 46;
+      SELECT 'knowledge-v30-grounding-evidence-v46-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 47, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":47,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v31-grounding-evidence-v47-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 47;
+      `),
+      "1",
+      "Grounding Evidence V47 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 47;
+      SELECT 'knowledge-v31-grounding-evidence-v47-cleaned';
     `);
     psqlScalar(database, `
       INSERT INTO "KnowledgeGroundingResult" (

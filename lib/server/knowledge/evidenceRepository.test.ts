@@ -27,7 +27,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-  KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_ANSWER_LEVEL_COMPRESSION_PROTOCOL_V1,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
   decodeKnowledgeAnswerDraftSupplementV21,
@@ -43,10 +43,10 @@ import {
   mergeKnowledgeTargetedSupplementV2
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeAnswerTargetedSupplementPromptV5,
-  knowledgeGroundedDeltaSelectorPromptV4,
-  knowledgeGroundedSelectorPromptV21TargetClosureV1
-} from "./answerGroundingCorrectionPromptV21";
+  knowledgeAnswerTargetedSupplementPromptV7,
+  knowledgeGroundedDeltaSelectorPromptV6,
+  knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1
+} from "./answerGroundingAnswerLevelCompressionV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
@@ -63,9 +63,9 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1
 } from "./coverageScopeCompletenessV1";
 import {
-  knowledgeCoverageScopeCompletenessPromptV2,
-  knowledgeCoverageScopePromptV6QueryIntentV1
-} from "./coverageScopeQueryIntentV1";
+  knowledgeCoverageScopeCompletenessPromptV4,
+  knowledgeCoverageScopePromptV6AnswerGranularityV2
+} from "./coverageScopeAnswerGranularityV2";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_CONTRACT_VERSION,
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_MAX_OUTPUT_TOKENS,
@@ -1158,7 +1158,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("reconstructs query-intent completeness into Evidence V45", async () => {
+  it("reconstructs answer-level compression into Evidence V47", async () => {
     const evidenceRow = row().evidenceItems[0]!;
     const request =
       "How long are completed Atlas exports retained, and when does retention start?";
@@ -1258,7 +1258,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const initialScopePrompt = knowledgeCoverageScopePromptV6QueryIntentV1({
+    const initialScopePrompt = knowledgeCoverageScopePromptV6AnswerGranularityV2({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: selectorEvidence,
       evidenceManifest: dispatchDraft.message,
@@ -1266,7 +1266,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       scopePass: "initial"
     });
-    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV2({
+    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV4({
       acceptedScope: acceptedScope!,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       completenessPass: "initial",
@@ -1274,7 +1274,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       evidenceManifest: dispatchDraft.message,
       request
     });
-    const selectorPrompt = knowledgeGroundedSelectorPromptV21TargetClosureV1({
+    const selectorPrompt = knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       draft: acceptedDraft!,
       evidence: selectorEvidence,
@@ -1287,7 +1287,8 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const commonRequest = {
       evidenceReceiptHash: dispatchDraft.manifestHash,
       executionPolicy,
-      protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUERY_INTENT_COMPLETENESS_PROTOCOL_V1,
+      protocol:
+        KNOWLEDGE_ANSWER_SCOPE_V6_ANSWER_LEVEL_COMPRESSION_PROTOCOL_V1,
       transport: "native_strict" as const
     };
     const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
@@ -1380,7 +1381,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       supplement: acceptedSupplement!
     });
     const mergedDraft = merged.draft;
-    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV5({
+    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV7({
       auditDimensions: missingDimensions,
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       evidence: selectorEvidence,
@@ -1388,7 +1389,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV4({
+    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV6({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       bindings: merged.bindings,
       draft: mergedDraft,
@@ -1397,7 +1398,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       scope: acceptedScope!
     });
-    const finalRepairPrompt = knowledgeGroundedDeltaSelectorPromptV4({
+    const finalRepairPrompt = knowledgeGroundedDeltaSelectorPromptV6({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       bindings: merged.bindings,
       draft: mergedDraft,
@@ -1561,7 +1562,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       scopeRepairAttempted: false,
       scopeRepairSucceeded: false,
       supportedClaimCount: 2,
-      version: 45
+      version: 47
     });
     expect(result.grounding).toMatchObject({
       answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),

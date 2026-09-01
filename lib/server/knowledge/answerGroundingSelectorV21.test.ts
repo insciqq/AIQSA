@@ -21,6 +21,14 @@ import {
   knowledgeGroundedSelectorPromptV21RepairDiagnosticV1
 } from "./answerGroundingSelectorRepairDiagnosticV1";
 import {
+  KNOWLEDGE_GROUNDED_SELECTOR_RELEVANCE_FIDELITY_CONTRACT_V1,
+  knowledgeGroundedSelectorPromptV21RelevanceFidelityV1
+} from "./answerGroundingRelevanceFidelityV1";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_ANSWER_LEVEL_COMPRESSION_CONTRACT_V1,
+  knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1
+} from "./answerGroundingAnswerLevelCompressionV1";
+import {
   knowledgeCoverageEvidenceFromManifestV6,
   validateKnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
@@ -97,6 +105,50 @@ function fixture() {
 }
 
 describe("Knowledge Grounded Selector V21", () => {
+  it("adds relevance and epistemic fidelity without changing the Selector payload", () => {
+    const { draft, evidence, manifest, request, scope } = fixture();
+    const input = {
+      draft,
+      evidence,
+      evidenceManifest: manifest.message,
+      request,
+      scope,
+      selectorPass: "initial" as const
+    };
+    const historical = knowledgeGroundedSelectorPromptV21RepairDiagnosticV1(input);
+    const current = knowledgeGroundedSelectorPromptV21RelevanceFidelityV1(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_RELEVANCE_FIDELITY_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("truth-conditional support");
+    expect(current.systemPrompt).toContain("Raw fragments, list continuations");
+    expect(current.systemPrompt).toContain("non-exhaustive overview");
+  });
+
+  it("keeps V30 Selector bytes and judges broad targets at answer-level granularity", () => {
+    const { draft, evidence, manifest, request, scope } = fixture();
+    const input = {
+      draft,
+      evidence,
+      evidenceManifest: manifest.message,
+      request,
+      scope,
+      selectorPass: "initial" as const
+    };
+    const historical = knowledgeGroundedSelectorPromptV21RelevanceFidelityV1(input);
+    const current = knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_ANSWER_LEVEL_COMPRESSION_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("exact request's answer-level granularity");
+    expect(current.systemPrompt).toContain("source-explicit summary claim");
+    expect(current.systemPrompt).toContain("partial list");
+  });
+
   it("keeps the initial prompt exact and gives dimension repair a content-free path", () => {
     const { draft, evidence, manifest, request, scope } = fixture();
     const baseInput = {

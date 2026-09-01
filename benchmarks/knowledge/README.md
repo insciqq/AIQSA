@@ -57,14 +57,16 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests current Snapshot V29 over Draft V21 / blind
-Coverage Scope V6 / query-intent-preserving append-only Scope Completeness V1 / Selector V21 / Scope
-Closure V1 / settlement V6 and refuses to run while the code-owned
+The live answer lane attests current Snapshot V31 over Draft V21 / blind
+Coverage Scope V6 / query-granularity, epistemic-fidelity, answer-level
+compression, and server-issued request-anchor IDs preserving append-only Scope
+Completeness V1 / Selector V21 / Scope Closure V1 / settlement V6 and refuses
+to run while the code-owned
 `v21_scope_v6` rollout is not at 100%. This prevents a historical V20 product
-answer from being reported under a V29 manifest. Keep that activation candidate
+answer from being reported under a V31 manifest. Keep that activation candidate
 unpublished until the acceptance gate passes; frozen replay remains available.
-The current replay pin is Snapshot V29 / Grounding Evidence V45 with the
-`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1`
+The current replay pin is Snapshot V31 / Grounding Evidence V47 with the
+`scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1`
 pipeline. It retains delimiter-aware claim validation and deterministic removal
 of only provenance-disjoint surplus support edges. Expanded passages use
 persisted content-free boundaries and Source ordinals to build atoms in trusted
@@ -88,8 +90,8 @@ atomically, while an ordered set of
 supported claims bound to the same target may collectively entail one compound
 Scope dimension. Unknown, foreign-target, unrelated, redundant, partial-case,
 or unsupported edges still fail closed. When validation proves that a local
-finding cites an atom owned by another evidence unit, Snapshot V29 inherits
-V26's rule and drops that
+finding cites an atom owned by another evidence unit, Snapshot V31 retains
+V30's inherited V26 rule and drops that
 entire finding and revalidates the remaining Scope; it never filters or remaps
 atom IDs. This applies both before repair and when another verified patch
 exposes the violation, and consumes no model retry. Every other repairable Scope
@@ -105,8 +107,18 @@ could invalidate descendant paths deliberately retain first-error feedback.
 All diagnostics are handled by the existing single repair call, so this adds no
 operation. Snapshot V25 kept its initial Scope pass byte-exact with V24 and used
 the multi-diagnostic envelope only after initial rejection; V29 appends its
-query-intent contract without changing the underlying payload. The
-initial Selector likewise keeps the exact V25 provider prompt. Only when its
+query-intent contract without changing the underlying payload. V30 appends
+query-granularity and epistemic-fidelity rules to the same Scope, completeness,
+Supplement, and Selector payloads. V31 appends answer-level compression rules
+to those same payloads so broad key points prefer a source-stated summary over
+an unrequested subordinate inventory. Its Scope and completeness prompts also
+receive a bounded server-authored ledger of exact request fragments with `Q...`
+IDs. The model selects an ID instead of copying control-plane identity text; the
+server resolves known IDs to immutable request substrings before the unchanged
+V6 anchor validator. Unknown IDs and unrelated literals still fail closed, and
+the resolver performs no semantic matching, filtering, or promotion. The
+initial Selector still receives the same
+least-authority evidence projection. Only when its
 coverage map fails deterministic structural validation does the existing repair
 call receive a content-free diagnostic with the stable JSON path, expected D
 identity or count, and permitted K handles. The rejected claim IDs, support IDs,
@@ -128,17 +140,35 @@ The five-operation path and any path with one adjacent structural repair retain
 both calls for one targeted correction under the eight-call cap. A second repair
 may consume that reserve; it never creates another correction loop. When every
 exact-target supplemental claim is supported only by that target's provenance
-but the first final map still leaves the target missing, Snapshot V29 retains
-V26's bounded review, records a
+but the first final map still leaves the target missing, Snapshot V31 retains
+V30's bounded review, records a
 content-free validation failure and uses the eighth slot for one fresh
 target-only final verifier. It never promotes coverage, reuses the rejected
 payload as evidence, or retries twice; the second valid result may remain
-partial. Snapshot V29 additionally preserves the exact request's semantic
+partial. Snapshot V29 preserves the exact request's semantic
 operator in both blind Scope and its existing append-only completeness audit.
 For `why`/`how`/explanation requests, a premise or conclusion restatement is not
 complete: Scope must retain the evidence-backed connector, or record the
 requested facet as unsupported. This changes no schema, server semantic
-authority, retrieval, or model-operation count. Snapshot V28 / Evidence V44
+authority, retrieval, or model-operation count. Snapshot V30 additionally
+treats the eight-dimension bound as a ceiling, keeps broad non-exhaustive
+requests at the smallest non-overlapping high-importance answer granularity,
+and preserves source-side belief, expectation, conjecture, possibility,
+limitation, unknown, attribution, and omitted-proof status through correction
+and verification. A literal fragment cannot synthesize a broad relation. These
+are model-owned relevance and entailment rules with no new schema, retrieval,
+server semantic inference, or model operation. Snapshot V31 / Evidence V47
+additionally reduce a broad answer to the smallest source-explicit proposition
+set while preserving material uncertainty, conditions, contradictions, and
+co-equal key points. Examples, rows, parameter values, proof steps, and exception
+inventories remain required only when explicitly requested or independently
+answer-bearing. Scope and completeness choose server-issued request-anchor IDs
+that are deterministically resolved before historical validation. This uses the
+existing Scope/Supplement/Selector reducer and adds no schema, retrieval, server
+semantic inference, or model operation.
+Snapshot V30 / Evidence V46 retain query granularity and epistemic fidelity
+without answer-level compression. Snapshot V29 / Evidence V45
+retain query-intent preservation without these rules. Snapshot V28 / Evidence V44
 retain adaptive atomic Supplement capacity without this query-intent contract.
 Snapshot V27 / Evidence V43 retain the historical flat 12-claim
 Supplement allocation with fail-closed Selector edge normalization. Snapshot
@@ -175,7 +205,7 @@ npx tsx benchmarks/knowledge/openRagAnswerRunner.ts \
 ```
 
 `--case-id` is repeatable and `--repeat N` repeats every selected case.
-The current V29 acceptance campaign always supplies exactly five distinct
+The current V31 acceptance campaign always supplies exactly five distinct
 `--case-id` values and never dispatches `--full`. Each five-case run is
 sequential, fail-fast, and non-scoreable; a corpus result may be assembled only
 after all twenty batches share the exact frozen pins and every case has settled.
@@ -231,7 +261,7 @@ the rejected stage, into the private failure checkpoint before fail-fast exit.
 When the answer stage completed, its private answer and replay snapshot are
 likewise persisted if the judge fails.
 
-Replay schema V2 preserves exact V20 recovery and supports the current V29
+Replay schema V2 preserves exact V20 recovery and supports the current V31
 five-call `Draft -> blind Scope -> append-only completeness -> Selector -> Scope Closure`
 normal path, one adjacent structural validation repair for Scope, completeness,
 initial Selector, or Scope Closure, and an eight-call hard cap that keeps both

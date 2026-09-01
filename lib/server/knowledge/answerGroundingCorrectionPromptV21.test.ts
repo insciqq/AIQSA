@@ -13,6 +13,17 @@ import {
   knowledgeGroundedSelectorPromptV21TargetClosureV1
 } from "./answerGroundingCorrectionPromptV21";
 import {
+  KNOWLEDGE_TARGETED_SUPPLEMENT_EPISTEMIC_FIDELITY_CONTRACT_V1,
+  knowledgeAnswerTargetedSupplementPromptV6,
+  knowledgeGroundedDeltaSelectorPromptV5
+} from "./answerGroundingRelevanceFidelityV1";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_ANSWER_LEVEL_COMPRESSION_CONTRACT_V1,
+  KNOWLEDGE_TARGETED_SUPPLEMENT_ANSWER_LEVEL_COMPRESSION_CONTRACT_V1,
+  knowledgeAnswerTargetedSupplementPromptV7,
+  knowledgeGroundedDeltaSelectorPromptV6
+} from "./answerGroundingAnswerLevelCompressionV1";
+import {
   knowledgeCoverageEvidenceFromManifestV6,
   validateKnowledgeCoverageScopeV6
 } from "./coverageScopeV6";
@@ -259,6 +270,48 @@ describe("targeted correction prompts", () => {
     expect(current.systemPrompt).toContain("never fill an unused slot");
   });
 
+  it("preserves epistemic status without changing the V5 Supplement payload", () => {
+    const { draft, evidence, request, selector } = fixture();
+    const input = {
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    };
+    const historical = knowledgeAnswerTargetedSupplementPromptV5(input);
+    const current = knowledgeAnswerTargetedSupplementPromptV6(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_TARGETED_SUPPLEMENT_EPISTEMIC_FIDELITY_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("attribution are part of every atomic");
+    expect(current.systemPrompt).toContain("Never turn an author's belief");
+    expect(JSON.parse(current.userPrompt)).toMatchObject({ version: 5 });
+  });
+
+  it("keeps V30 Supplement bytes and compresses unrequested inventories", () => {
+    const { draft, evidence, request, selector } = fixture();
+    const input = {
+      auditDimensions: [selector.coverage[1]!],
+      evidence,
+      primaryClaimCount: draft.claims.length,
+      request,
+      routeInstruction: "Answer from supplied Knowledge evidence only."
+    };
+    const historical = knowledgeAnswerTargetedSupplementPromptV6(input);
+    const current = knowledgeAnswerTargetedSupplementPromptV7(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_TARGETED_SUPPLEMENT_ANSWER_LEVEL_COMPRESSION_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("smallest source-explicit proposition set");
+    expect(current.systemPrompt).toContain("never emit a partial list");
+    expect(current.systemPrompt).toContain("Stop as soon as the minimal supported");
+  });
+
   it("fails closed rather than projecting incomplete target evidence", () => {
     const { request, selector } = fixture();
     expect(() => knowledgeAnswerTargetedSupplementPromptV1({
@@ -416,6 +469,27 @@ describe("targeted correction prompts", () => {
     );
     expect(repair.systemPrompt).toContain("prior rejected payload is absent");
     expect(repair.userPrompt).not.toContain("Generated JSON");
+  });
+
+  it("keeps V30 final-verifier bytes and judges answer-level sufficiency", () => {
+    const { correctedDraft, evidence, request, scope, selector } = fixture();
+    const input = {
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      initialSelector: selector,
+      request,
+      scope
+    };
+    const historical = knowledgeGroundedDeltaSelectorPromptV5(input);
+    const current = knowledgeGroundedDeltaSelectorPromptV6(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_ANSWER_LEVEL_COMPRESSION_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain("source-explicit summary claim");
+    expect(current.systemPrompt).toContain("Never require a partial list");
   });
 
   it("rejects an incomplete or cross-target delta prompt before dispatch", () => {
