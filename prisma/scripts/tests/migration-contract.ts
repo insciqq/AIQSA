@@ -2083,6 +2083,17 @@ function runKnowledgeH2DurableDispatchMigrationProof(
     assert.equal(
       psqlScalar(database, `
         SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%55%';
+      `),
+      "1",
+      "Grounding Evidence V55 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
         WHERE conname IN (
           'KnowledgeRun_evidence_shape_check',
           'KnowledgeRun_limits_check',
@@ -4004,6 +4015,29 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       DELETE FROM "KnowledgeGroundingResult"
       WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 54;
       SELECT 'knowledge-v38-grounding-evidence-v54-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 55, 'answered', repeat('a', 64), repeat('b', 64),
+        '{"version":55,"crossTargetExactRepeatCount":1,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v39-grounding-evidence-v55-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 55;
+      `),
+      "1",
+      "Grounding Evidence V55 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 55;
+      SELECT 'knowledge-v39-grounding-evidence-v55-cleaned';
     `);
     psqlScalar(database, `
       INSERT INTO "KnowledgeGroundingResult" (

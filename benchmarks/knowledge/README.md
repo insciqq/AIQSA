@@ -64,18 +64,19 @@ An OpenRouter-backed retrieval reranker is refused unless a separate explicit
 paid-run authority is supplied; the answer/judge acknowledgement alone does
 not authorize it. Frozen replay does not invoke retrieval or a reranker.
 
-The live answer lane attests current Snapshot V38 over Draft V21 / blind
+The live answer lane attests current Snapshot V39 over Draft V21 / blind
 Coverage Scope V6 / query-granularity, epistemic-fidelity, answer-level
 compression, server-issued request-anchor IDs, and model-owned set reduction
 preserving append-only Scope
 Completeness V1 / Selector V21 / Scope Closure V2 / settlement V6 and refuses
 to run while the code-owned
 `v21_scope_v6` rollout is not at 100%. This prevents a historical V20 product
-answer from being reported under a V38 manifest. Keep that activation candidate
+answer from being reported under a V39 manifest. Keep that activation candidate
 unpublished until the acceptance gate passes; frozen replay remains available.
-The current replay pin is Snapshot V38 / Grounding Evidence V54 with the
+The current replay pin is Snapshot V39 / Grounding Evidence V55 with the
 `scope_v6_completeness_v1_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_target_local_supplement_v1`
-pipeline. It retains delimiter-aware claim validation and deterministic removal
+`_qrep_v1` suffix (quality-ranked representative reduction). It retains delimiter-aware claim
+validation and deterministic removal
 of only provenance-disjoint surplus support edges. Expanded passages use
 persisted content-free boundaries and Source ordinals to build atoms in trusted
 `previous -> exact -> next` Source order; provider-facing labels are never
@@ -243,8 +244,11 @@ Selector decision; only an all-`missing` result skips it. The receipt records
 only initial and reopened covered/excluded counts plus the existing hashes,
 timing, usage, and aggregate state; it stores no request, atom, Scope
 description, claim, decision, or answer text. Snapshot V38 / Evidence V54 add
-only the bounded content-free cross-target exact-repeat count and preserve the
-same operation schedule and 5/7/8 call budget.
+only the bounded content-free cross-target exact-repeat count. Snapshot V39 /
+Evidence V55 retain that receipt shape and operation schedule while selecting
+one semantic-duplicate representative by its own supported answer quality,
+with source order only as a tie-breaker and no provenance transfer. The 5/7/8
+call budget is unchanged.
 
 Snapshot V34 / Evidence V50 retain whole-item invalid-provenance rejection
 without global no-data supersession, exact grouped-Supplement duplicate

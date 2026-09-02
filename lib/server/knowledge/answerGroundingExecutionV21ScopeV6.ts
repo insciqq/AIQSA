@@ -27,6 +27,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
@@ -66,7 +67,8 @@ import {
 import {
   knowledgeAnswerDraftPromptV21GlobalReducerV1,
   knowledgeAnswerTargetedSupplementPromptV8,
-  knowledgeGroundedSelectorPromptV21GlobalReducerV1
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV2
 } from "./answerGroundingGlobalReducerV1";
 import {
   decodeKnowledgeGroundedSelectorDiagnosticFailureV1,
@@ -267,7 +269,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   request: string;
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
-  snapshotVersion?: 37 | 38;
+  snapshotVersion?: 37 | 38 | 39;
   transport: "native_strict" | "provider_neutral_json";
 }>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const inheritedReasoningEffort = input.reasoningEffort ?? null;
@@ -286,11 +288,15 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (!executionPolicy ||
     (input.executionPolicy !== undefined && input.reasoningEffort !== undefined) ||
     (input.snapshotVersion !== undefined && input.snapshotVersion !== 37 &&
-      input.snapshotVersion !== 38)) {
+      input.snapshotVersion !== 38 && input.snapshotVersion !== 39)) {
     throw new Error("knowledge_grounding_execution_policy_invalid");
   }
   const targetLocalSupplement = input.snapshotVersion !== 37;
-  const protocol = targetLocalSupplement
+  const qualityRepresentativeReduction = input.snapshotVersion !== 37 &&
+    input.snapshotVersion !== 38;
+  const protocol = qualityRepresentativeReduction
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1
+    : targetLocalSupplement
     ? KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
     : KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1;
   const requestExecutionPolicy = { executionPolicy } as const;
@@ -676,7 +682,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           request: input.request,
           scope
         })
-      : knowledgeGroundedSelectorPromptV21GlobalReducerV1({
+      : (qualityRepresentativeReduction
+        ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
+        : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
           atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           draft: selectorInput.draft,
           evidence,

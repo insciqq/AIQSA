@@ -8,7 +8,8 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_COEQUAL_FACET_ATOMIZATION_CONTRACT_V1
 } from "./answerGroundingDraftFacetAtomizationV1";
 import {
-  knowledgeGroundedSelectorPromptV21ScopeSetReductionV1
+  knowledgeGroundedSelectorPromptV21ScopeSetReductionV1,
+  knowledgeGroundedSelectorPromptV21ScopeSetReductionV2
 } from "./answerGroundingScopeSetReductionV1";
 
 export {
@@ -52,6 +53,17 @@ export function knowledgeGroundedSelectorPromptV21GlobalReducerV1(
   input: Parameters<typeof knowledgeGroundedSelectorPromptV21ScopeSetReductionV1>[0]
 ): Readonly<{ systemPrompt: string; userPrompt: string }> {
   const base = knowledgeGroundedSelectorPromptV21ScopeSetReductionV1(input);
+  return Object.freeze({
+    systemPrompt: `${base.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_UNSUPPORTED_SUPERSESSION_CONTRACT_V1,
+    userPrompt: base.userPrompt
+  });
+}
+
+export function knowledgeGroundedSelectorPromptV21GlobalReducerV2(
+  input: Parameters<typeof knowledgeGroundedSelectorPromptV21ScopeSetReductionV2>[0]
+): Readonly<{ systemPrompt: string; userPrompt: string }> {
+  const base = knowledgeGroundedSelectorPromptV21ScopeSetReductionV2(input);
   return Object.freeze({
     systemPrompt: `${base.systemPrompt}\n\n` +
       KNOWLEDGE_GROUNDED_SELECTOR_UNSUPPORTED_SUPERSESSION_CONTRACT_V1,

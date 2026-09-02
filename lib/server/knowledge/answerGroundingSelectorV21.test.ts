@@ -30,11 +30,14 @@ import {
 } from "./answerGroundingAnswerLevelCompressionV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_SCOPE_SET_REDUCTION_CONTRACT_V1,
-  knowledgeGroundedSelectorPromptV21ScopeSetReductionV1
+  KNOWLEDGE_GROUNDED_SELECTOR_SCOPE_SET_REDUCTION_CONTRACT_V2,
+  knowledgeGroundedSelectorPromptV21ScopeSetReductionV1,
+  knowledgeGroundedSelectorPromptV21ScopeSetReductionV2
 } from "./answerGroundingScopeSetReductionV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_UNSUPPORTED_SUPERSESSION_CONTRACT_V1,
-  knowledgeGroundedSelectorPromptV21GlobalReducerV1
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV2
 } from "./answerGroundingGlobalReducerV1";
 import {
   knowledgeCoverageEvidenceFromManifestV6,
@@ -181,6 +184,38 @@ describe("Knowledge Grounded Selector V21", () => {
     expect(current.systemPrompt).toContain("mark every later equivalent positive item excluded");
     expect(current.systemPrompt).toContain("server performs no semantic deduplication");
     expect(current.systemPrompt).toContain("An evidence-free requested facet can never be excluded");
+  });
+
+  it("keeps V1 bytes and ranks an equivalent representative by publishable quality", () => {
+    const { draft, evidence, manifest, request, scope } = fixture();
+    const input = {
+      draft,
+      evidence,
+      evidenceManifest: manifest.message,
+      request,
+      scope,
+      selectorPass: "initial" as const
+    };
+    const historical = knowledgeGroundedSelectorPromptV21ScopeSetReductionV1(input);
+    const base = knowledgeGroundedSelectorPromptV21AnswerLevelCompressionV1(input);
+    const current = knowledgeGroundedSelectorPromptV21ScopeSetReductionV2(input);
+    const currentGlobal = knowledgeGroundedSelectorPromptV21GlobalReducerV2(input);
+    expect(historical.systemPrompt).toContain("keep the earliest Scope item eligible");
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${base.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_SCOPE_SET_REDUCTION_CONTRACT_V2
+    );
+    expect(current.systemPrompt).toContain("best publishable representative");
+    expect(current.systemPrompt).toContain("complete supported Draft claim");
+    expect(current.systemPrompt).toContain("OCR-damaged");
+    expect(current.systemPrompt).toContain("earlier Scope order only as the tie-breaker");
+    expect(current.systemPrompt).toContain("does not delete, merge");
+    expect(current.systemPrompt).not.toContain("keep the earliest Scope item eligible");
+    expect(currentGlobal.systemPrompt).toBe(
+      `${current.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_UNSUPPORTED_SUPERSESSION_CONTRACT_V1
+    );
   });
 
   it("keeps the initial prompt exact and gives dimension repair a content-free path", () => {

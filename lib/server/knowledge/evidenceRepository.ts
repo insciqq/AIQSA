@@ -25,6 +25,7 @@ import {
   groundSettledKnowledgeAnswerV16,
   groundSettledKnowledgeAnswerV53,
   groundSettledKnowledgeAnswerV54,
+  groundSettledKnowledgeAnswerV55,
   groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingEvidenceV7,
   type KnowledgeGroundingEvidenceV8,
@@ -74,6 +75,7 @@ import {
   type KnowledgeGroundingEvidenceV52,
   type KnowledgeGroundingEvidenceV53,
   type KnowledgeGroundingEvidenceV54,
+  type KnowledgeGroundingEvidenceV55,
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
@@ -137,6 +139,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
@@ -168,7 +171,8 @@ import {
 } from "./answerGroundingAccumulativeReduceV1";
 import {
   knowledgeAnswerTargetedSupplementPromptV8,
-  knowledgeGroundedSelectorPromptV21GlobalReducerV1
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV2
 } from "./answerGroundingGlobalReducerV1";
 import {
   decodeKnowledgeGroundedSelectorDiagnosticFailureV1
@@ -1709,8 +1713,12 @@ export async function groundKnowledgeRunAnswerV21(
     !primaryPrompt) {
     throw new Error("knowledge_answer_operation_snapshot_conflict");
   }
-  const targetLocalSupplement = primaryRequest.version === 38;
-  const protocol = targetLocalSupplement
+  const targetLocalSupplement = primaryRequest.version === 38 ||
+    primaryRequest.version === 39;
+  const qualityRepresentativeReduction = primaryRequest.version === 39;
+  const protocol = qualityRepresentativeReduction
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1
+    : targetLocalSupplement
     ? KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
     : KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1;
   const requestExecutionPolicy = {
@@ -1951,7 +1959,9 @@ export async function groundKnowledgeRunAnswerV21(
   const initialRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
     operations.initialSelector.attempt.acceptedRequest
   );
-  const initialPrompt = knowledgeGroundedSelectorPromptV21GlobalReducerV1({
+  const initialPrompt = (qualityRepresentativeReduction
+    ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
+    : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
     atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
     draft: primaryDraft,
     evidence,
@@ -2008,7 +2018,9 @@ export async function groundKnowledgeRunAnswerV21(
   }
   if (operations.selectorRepair) {
     const repairReason = selectorFailure!.reason as KnowledgeSelectorValidationFailureReason;
-    const repairPrompt = knowledgeGroundedSelectorPromptV21GlobalReducerV1({
+    const repairPrompt = (qualityRepresentativeReduction
+      ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
+      : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       draft: primaryDraft,
       evidence,
@@ -2555,7 +2567,12 @@ export async function groundKnowledgeRunAnswerV21(
     selectorRepairSucceeded,
     settlement
   } as const;
-  const grounding = targetLocalSupplement
+  const grounding = qualityRepresentativeReduction
+    ? groundSettledKnowledgeAnswerV55({
+        ...groundingInput,
+        crossTargetExactRepeatCount
+      })
+    : targetLocalSupplement
     ? groundSettledKnowledgeAnswerV54({
         ...groundingInput,
         crossTargetExactRepeatCount
@@ -2588,7 +2605,8 @@ function groundingEvidenceProjection(
     KnowledgeGroundingEvidenceV47 | KnowledgeGroundingEvidenceV48 |
     KnowledgeGroundingEvidenceV49 | KnowledgeGroundingEvidenceV50 |
     KnowledgeGroundingEvidenceV51 | KnowledgeGroundingEvidenceV52 |
-    KnowledgeGroundingEvidenceV53 | KnowledgeGroundingEvidenceV54
+    KnowledgeGroundingEvidenceV53 | KnowledgeGroundingEvidenceV54 |
+    KnowledgeGroundingEvidenceV55
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;

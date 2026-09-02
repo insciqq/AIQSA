@@ -124,6 +124,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V51 = 51 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52 = 52 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 = 53 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 = 54 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55 = 55 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -1003,6 +1004,17 @@ export type KnowledgeGroundingEvidenceV54 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV55 =
+  KnowledgeGroundingOperationEvidenceV54;
+
+export type KnowledgeGroundingEvidenceV55 = Omit<
+  KnowledgeGroundingEvidenceV54,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV55[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -1052,7 +1064,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV51
   | KnowledgeGroundingEvidenceV52
   | KnowledgeGroundingEvidenceV53
-  | KnowledgeGroundingEvidenceV54;
+  | KnowledgeGroundingEvidenceV54
+  | KnowledgeGroundingEvidenceV55;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3745,6 +3758,19 @@ export function groundSettledKnowledgeAnswerV54(
     ...grounded,
     crossTargetExactRepeatCount,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54
+  });
+}
+
+/** V55 attests Snapshot V39's quality-ranked representative reduction. The
+ * operation schedule and content-free receipt fields remain identical to V54;
+ * the version distinguishes the immutable Selector prompt contract. */
+export function groundSettledKnowledgeAnswerV55(
+  input: KnowledgeGroundingV54Input
+): KnowledgeGroundingEvidenceV55 {
+  const grounded = groundSettledKnowledgeAnswerV54(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55
   });
 }
 

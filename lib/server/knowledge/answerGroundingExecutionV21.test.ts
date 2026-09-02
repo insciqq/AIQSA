@@ -2123,15 +2123,15 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 38
+      version: 39
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 38
+      version: 39
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 38
+      version: 39
     });
   });
 
