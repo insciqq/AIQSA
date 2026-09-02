@@ -970,13 +970,10 @@ export function AuthLogin({
                   <label className="text-sm font-medium text-ink" htmlFor="password">
                     Password
                   </label>
-                  <span className="text-xs text-ink-muted" id="password-help">
-                    Case-sensitive
-                  </span>
                 </div>
                 <div className="relative">
                   <input
-                    aria-describedby={fieldDescription("password-help", "password")}
+                    aria-describedby={loginPasswordInvalid ? feedbackId : undefined}
                     aria-errormessage={loginPasswordInvalid ? feedbackId : undefined}
                     aria-invalid={loginPasswordInvalid || undefined}
                     autoComplete="current-password"

@@ -54,7 +54,7 @@ describe("AuthLogin", () => {
       "disabled:border-trace-subtle"
     );
     expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "current-password");
-    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription("Case-sensitive");
+    expect(screen.getByLabelText("Password")).not.toHaveAttribute("aria-describedby");
     expect(screen.getByRole("button", { name: "Show password" })).toHaveAttribute("aria-controls", "password");
     expect(screen.getByLabelText("Email")).not.toHaveFocus();
     expect(screen.getByLabelText("Email")).not.toHaveAttribute("style");
@@ -486,7 +486,7 @@ describe("AuthLogin", () => {
     expect(submit.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(alert.compareDocumentPosition(resetPassword) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expectAssociatedInvalidField(screen.getByLabelText("Email"), alert);
-    expectAssociatedInvalidField(screen.getByLabelText("Password"), alert, "password-help");
+    expectAssociatedInvalidField(screen.getByLabelText("Password"), alert);
   });
 
   it("shows a readable network error when credential login cannot reach the server", async () => {

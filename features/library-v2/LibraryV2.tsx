@@ -246,7 +246,7 @@ export function AssistantsPanelV2({
     <div data-testid="library-assistants-panel">
       <SectionHeading
         action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>New Assistant</UiV2Button>}
-        description="Pick a ready Assistant or create your own. It applies only through the Use action."
+        description="Saved setups for the model: instructions, model and tools. Choose one with Use, or create your own."
         search={(
           <label className="v2-resource-search">
             <UiV2Icon name="search" />

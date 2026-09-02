@@ -327,32 +327,57 @@
   cursor: default;
 }
 
-/* A selected Knowledge chip pairs its picker trigger with a small clear
-   control; the pair reads as one chip. */
+/* An active Search/Knowledge chip pairs its picker trigger with a clear
+   control inside ONE accent pill (UX audit 2026-09-02 #9): the group carries
+   the pill chrome and both buttons inside are flat, so the "×" never reads as
+   a stray glyph between chips. */
 .v2-composer-indicator-group {
   display: inline-flex;
   min-width: 0;
   align-items: center;
 }
 
+.v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
+  height: 1.75rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+  border-radius: 999px;
+  background: var(--v2-color-accent-dim);
+  transition: border-color var(--v2-motion-fast);
+}
+
+.v2-composer-indicator-group:has(.v2-composer-indicator-clear):hover {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 40%, transparent);
+}
+
+.v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator {
+  height: calc(1.75rem - 2px);
+  min-height: 0;
+  padding-right: 0.25rem;
+  border: 0;
+  border-radius: 999px 0 0 999px;
+  background: transparent;
+}
+
 .v2-composer-indicator-clear {
   display: inline-flex;
   width: 1.5rem;
-  height: 1.75rem;
+  height: calc(1.75rem - 2px);
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  margin-left: -0.125rem;
+  padding-right: 0.125rem;
   border: 0;
-  border-radius: 999px;
-  color: var(--v2-color-text3);
+  border-radius: 0 999px 999px 0;
+  color: var(--v2-color-accent);
   background: transparent;
+  opacity: 0.75;
   cursor: pointer;
+  transition: opacity var(--v2-motion-fast), background-color var(--v2-motion-fast);
 }
 
 .v2-composer-indicator-clear:hover:not(:disabled) {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
+  background: color-mix(in srgb, var(--v2-color-accent) 14%, transparent);
+  opacity: 1;
 }
 
 .v2-composer-indicator-clear .v2-icon {
@@ -492,10 +517,19 @@
   opacity: 1;
 }
 
-/* Stop keeps the accent circle; the 10px square is the only change. */
+/* Stop keeps the accent circle; the 10px square is the only change. While the
+   server has not yet acknowledged the run the control only waits: it stays an
+   accent Stop (dimmed), never a grey disabled send (UX audit 2026-09-02 #8). */
 .v2-composer-run-action .v2-icon-button:has(.v2-icon use[href="#v2-icon-stop"]) .v2-icon {
   width: 0.75rem;
   height: 0.75rem;
+}
+
+.v2-composer-run-action .v2-icon-button:disabled:has(.v2-icon use[href="#v2-icon-stop"]) {
+  color: var(--v2-color-accent-ink);
+  background: var(--v2-color-accent);
+  opacity: 0.6;
+  cursor: progress;
 }
 
 .v2-composer-layer-backdrop {
@@ -1476,8 +1510,10 @@
   }
 }
 
-/* Phones keep one control row (UX audit F9): chips shorten their labels and
-   scroll sideways inside their strip instead of wrapping under the row. */
+/* Phones keep one control row (UX audit F9; 2026-09-02 #1): the model chip
+   yields first (a very large shrink weight down to 4rem) so the icon pills —
+   MCP included — stay in reach without scrolling; only when even that is not
+   enough does the strip scroll. */
 @media (max-width: 26rem) {
   .v2-composer {
     padding-right: 0.625rem;
@@ -1488,24 +1524,23 @@
     gap: 0.125rem;
   }
 
-  .v2-composer-model-trigger {
+  .v2-composer-controls > .v2-composer-model-trigger {
+    flex: 0 1000 auto;
+    min-width: 4rem;
     max-width: 10.625rem;
   }
 
-  /* `contain: inline-size` keeps the strip's intrinsic width at zero so its
-     non-shrinking chips scroll inside it instead of widening the composer;
-     the strip takes the row's free space and the spacer yields it. */
   .v2-composer-controls > .v2-composer-indicators {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    contain: inline-size;
     scrollbar-width: none;
   }
 
   .v2-composer-controls > .v2-composer-spacer {
-    flex: 0 0 0;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .v2-composer-indicators::-webkit-scrollbar {
@@ -1522,5 +1557,60 @@
 
   .v2-composer-indicator-prefix {
     display: none;
+  }
+}
+
+/* Very narrow phones (≤352px): slightly tighter controls so the full row —
+   Add, model, Search, Knowledge, MCP, Send — still fits without scrolling. */
+@media (max-width: 22rem) {
+  .v2-composer {
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+  }
+
+  .v2-composer-controls {
+    gap: 0;
+  }
+
+  .v2-composer-controls > .v2-icon-button,
+  .v2-composer-indicator[data-glyph],
+  .v2-composer-run-action .v2-icon-button {
+    width: 2.5rem;
+    min-width: 2.5rem;
+  }
+
+  .v2-composer-controls > .v2-composer-model-trigger {
+    min-width: 3.5rem;
+  }
+}
+
+/* Icon pills (≤899px) hide the clear control, so the chip group hands the
+   pill chrome back to its trigger. */
+@media (max-width: 899px) {
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
+    height: auto;
+    border: 0;
+    background: transparent;
+  }
+
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator {
+    height: 1.75rem;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+    border-radius: 999px;
+    background: var(--v2-color-accent-dim);
+  }
+}
+
+/* Coarse pointers keep the 44px hit area inside the grouped pill. */
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
+    min-height: 2.75rem;
+  }
+
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator,
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator-clear {
+    height: auto;
+    min-height: 2.75rem;
   }
 }

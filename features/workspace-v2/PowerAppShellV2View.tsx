@@ -82,6 +82,7 @@ import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRow
 import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
+import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
 import { deleteAllPersonalChats } from "@/components/app-shell/accountApi";
 import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
 import {
@@ -926,6 +927,21 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 const full = chatId ? currentWorkspaceChat(chatId) : null;
                 if (full) workspace.pane.actions.exportChat(full, format);
               }}
+              favorite={Boolean(session.activeChatId && currentWorkspaceChat(session.activeChatId)?.pinned)}
+              memoryUsed={projectContext || !session.activeChatId
+                ? null
+                : (currentWorkspaceChat(session.activeChatId)?.memoryMode ?? "NORMAL") !== "EXCLUDED"}
+              onFavorite={projectContext
+                ? null
+                : withActiveChat((full) => void workspace.pane.actions.toggleChatFavorite(full))}
+              onMemoryMode={projectContext
+                ? null
+                : (mode) => {
+                    const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+                    if (full && full.memoryMode !== mode) {
+                      void workspace.pane.actions.toggleChatMemorySource(full, mode);
+                    }
+                  }}
               onMove={(folderId) => {
                 const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
                 if (full) void workspace.pane.actions.moveChat(full.id, folderId);
@@ -1253,12 +1269,22 @@ function SettingsDefaultModelRowV2({ composer }: Readonly<{ composer: ShellCompo
       description="Used for new chats until you pick another model in the composer."
       title="Default model"
     >
-      <select
-        aria-label="Default model"
+      <SettingsSelectV2
         disabled={!catalog || models.length === 0}
+        label="Default model"
+        options={[
+          {
+            label: catalog?.defaults.organizationModelDefault ? "Organization default" : "Installation default",
+            value: ""
+          },
+          ...models.map((model) => ({
+            label: model.displayName,
+            sub: model.provider,
+            value: `${model.provider}:${model.modelId}`
+          }))
+        ]}
         value={value}
-        onChange={(event) => {
-          const next = event.target.value;
+        onChange={(next) => {
           if (!next) {
             composer.useOrganizationModelDefault?.();
             return;
@@ -1266,16 +1292,7 @@ function SettingsDefaultModelRowV2({ composer }: Readonly<{ composer: ShellCompo
           const model = models.find((candidate) => `${candidate.provider}:${candidate.modelId}` === next);
           if (model) composer.makeModelDefault?.(model);
         }}
-      >
-        <option value="">
-          {catalog?.defaults.organizationModelDefault ? "Organization default" : "Installation default"}
-        </option>
-        {models.map((model) => (
-          <option key={`${model.provider}:${model.modelId}`} value={`${model.provider}:${model.modelId}`}>
-            {model.displayName}
-          </option>
-        ))}
-      </select>
+      />
     </SettingsRowV2>
   );
 }

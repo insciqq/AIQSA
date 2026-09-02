@@ -3,7 +3,7 @@
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import { AccountMenuV2 } from "./AccountMenuV2";
 
-export type RailSectionV2 = "chats" | "library";
+export type RailSectionV2 = "chats" | "library" | "projects";
 
 function RailButton({
   active = false,
@@ -22,7 +22,8 @@ function RailButton({
       type="button"
       aria-current={active ? "page" : undefined}
       aria-label={label}
-      title={label}
+      data-tooltip={label}
+      data-tooltip-side="right"
       onClick={onClick}
     >
       <UiV2Icon name={icon} />
@@ -62,7 +63,9 @@ export function RailV2({
       </span>
       <div className="v2-rail-group">
         <RailButton active={active === "chats"} icon="chat" label="Chats" onClick={onChats} />
-        {onProjects ? <RailButton icon="layers" label="Projects" onClick={onProjects} /> : null}
+        {onProjects ? (
+          <RailButton active={active === "projects"} icon="layers" label="Projects" onClick={onProjects} />
+        ) : null}
         {onLibrary ? (
           <RailButton active={active === "library"} icon="library" label="Library" onClick={onLibrary} />
         ) : null}
@@ -77,7 +80,8 @@ export function RailV2({
             className="v2-rail-button v2-focusable"
             href="/admin"
             aria-label="Control Center"
-            title="Control Center"
+            data-tooltip="Control Center"
+            data-tooltip-side="right"
           >
             <UiV2Icon name="shield" />
           </a>

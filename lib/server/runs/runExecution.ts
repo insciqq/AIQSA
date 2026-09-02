@@ -73,6 +73,7 @@ import {
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { memorySha256 } from "../memory/persistence/lexical";
 import {
   FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID,
@@ -232,6 +233,8 @@ export type RunExecutionRepository = Pick<
 
 export type RunExecutionInput = Readonly<{
   adapter: ProviderAdapter;
+  /** Names a personal chat after its first answer; absent on recovery paths. */
+  chatTitleGenerator?: ChatTitleGenerator;
   created: Readonly<{
     assistantMessageId: string;
     runId: string;
@@ -2440,6 +2443,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           }
         } else {
           providerResult = await streamProviderRequest(providerRequest);
+        }
+        // First-turn chat title (UX audit 2026-09-02 #4): the System Model
+        // names the chat before the run settles so its usage lands in this
+        // run's own accounting; any failure keeps the heuristic title.
+        if (input.chatTitleGenerator && providerResult.finalText) {
+          const titleOutcome = await input.chatTitleGenerator.generate({
+            answerText: providerResult.finalText,
+            chatId: normalizedRequest.chatId,
+            userId: input.userId,
+            userMessageId: input.created.userMessageId
+          }, { signal }).catch(() => null);
+          if (titleOutcome && titleOutcome.status !== "skipped" && titleOutcome.usage) {
+            rememberReportedUsage(titleOutcome.usage.provider, titleOutcome.usage.modelId, titleOutcome.usage.usage);
+          }
         }
         const attributedProviderResult = {
           ...providerResult,

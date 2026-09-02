@@ -710,6 +710,36 @@
     pointer-events: auto;
   }
 
+  /* A canvas band under the islands so the thread fades beneath them instead
+     of showing through between them (UX audit 2026-09-02 #2). */
+  .v2-live-workspace::before {
+    position: absolute;
+    z-index: 19;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: max(5rem, calc(env(safe-area-inset-top) + 4.5rem));
+    background: linear-gradient(
+      to bottom,
+      var(--v2-color-canvas) 0%,
+      color-mix(in srgb, var(--v2-color-canvas) 90%, transparent) 55%,
+      transparent 100%
+    );
+    content: "";
+    pointer-events: none;
+  }
+
+  /* No title pill on phones (operator, 2026-09-02): the drawer and the
+     thread itself carry the name and Rename lives in "⋯". The island
+     survives only for the Project chip or the inline rename form. */
+  .v2-live-title > h1 {
+    display: none;
+  }
+
+  .v2-live-title:not(:has(> :not(h1))) {
+    display: none;
+  }
+
   .v2-live-title {
     max-width: 58%;
     min-height: 2.5rem;

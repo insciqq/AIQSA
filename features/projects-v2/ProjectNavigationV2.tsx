@@ -162,7 +162,7 @@ export function ProjectNavigationV2({
               <span className="v2-project-mark" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
               <span className="v2-project-row-copy">
                 <span className="v2-chat-title">{project.name}</span>
-                <span>{project.audienceCount} active members · {project.effectiveRole.toLowerCase()}</span>
+                <span>{project.audienceCount} active {project.audienceCount === 1 ? "member" : "members"} · {project.effectiveRole.toLowerCase()}</span>
               </span>
               {project.status !== "ACTIVE" ? <span className="v2-project-state">Archived</span> : null}
             </button>

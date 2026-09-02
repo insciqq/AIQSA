@@ -1,7 +1,7 @@
 export const defaultChatTitle = "New Chat";
 const maxGeneratedTitleLength = 56;
 
-function textFromContent(content: unknown): string {
+export function messageTextFromContent(content: unknown): string {
   if (typeof content !== "object" || content === null || !("blocks" in content)) {
     return "";
   }
@@ -28,7 +28,7 @@ function textFromContent(content: unknown): string {
 }
 
 export function titleFromMessageContent(content: unknown): string {
-  const normalized = textFromContent(content).replace(/\s+/g, " ").trim();
+  const normalized = messageTextFromContent(content).replace(/\s+/g, " ").trim();
   if (!normalized) {
     return defaultChatTitle;
   }
