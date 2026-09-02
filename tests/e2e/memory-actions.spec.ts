@@ -218,6 +218,8 @@ test("opens an exact Personal Memory source through the opaque action redirect",
   });
   await signInWithLocalToken(page);
 
+  // Memory recall folds under "Used N memories" (UX audit 2026-09-02 B1).
+  await page.getByTestId("answer-memory-sources").locator("summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });
@@ -293,6 +295,8 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
   });
   await signInWithLocalToken(page);
 
+  // Memory recall folds under "Used N memories" (UX audit 2026-09-02 B1).
+  await page.getByTestId("answer-memory-sources").locator("summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });

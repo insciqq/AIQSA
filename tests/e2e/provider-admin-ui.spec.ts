@@ -1760,7 +1760,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   expect(submittedKey).toBe("e2e-write-only-provider-key");
   await expect(section.getByText("e2e-write-only-provider-key")).toHaveCount(0);
 
-  await section.getByRole("tab", { name: "Models" }).click();
+  await section.getByRole("tab", { exact: true, name: "Models" }).click();
   const modelWorkflow = section.getByTestId("provider-task-models");
   const modelCatalogResponse = page.waitForResponse((response) => {
     const request = response.request();
@@ -1863,7 +1863,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(section.getByText("Ready to activate.")).toBeVisible();
 
   await expect(section.getByRole("tab", { name: "Diagnostics" })).toHaveCount(0);
-  await section.getByRole("tab", { name: "Models" }).click();
+  await section.getByRole("tab", { exact: true, name: "Models" }).click();
   await section.getByRole("button", { name: "Open E2E Model capabilities" }).click();
   const capabilities = section.getByTestId("provider-model-capabilities-model-e2e");
   await capabilities.getByRole("button", { name: "Run compatibility checks" }).click();

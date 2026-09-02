@@ -177,7 +177,9 @@ test("administrator activates a content-safe Knowledge processing route", async 
   });
   await expect(maximumSearches).toHaveValue("12");
   await maximumSearches.fill("18");
-  await section.getByRole("button", { name: "Save" }).click();
+  // The search limit and ingestion parallelism rows each own a Save.
+  await section.getByTestId("knowledge-search-limit-row")
+    .getByRole("button", { name: "Save" }).click();
   await expect(section.getByText(
     "Answer retrieval settings saved. New answers use the updated limit."
   )).toBeVisible();
