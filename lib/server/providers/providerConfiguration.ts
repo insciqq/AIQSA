@@ -529,15 +529,33 @@ function openRouterDefaultParams(
   routing: OpenRouterRoutingConfiguration
 ): Record<string, unknown> {
   const selected = routing.mode === "only_selected" ? [...routing.providers] : [];
+  const requestedProvider = isRecord(defaultParams.provider)
+    ? defaultParams.provider
+    : {};
+  const requestedDataCollection = requestedProvider.dataCollection ??
+    requestedProvider.data_collection;
+  const dataCollection = requestedDataCollection === "allow"
+    ? "allow"
+    : "deny";
+  const requestedStructuredOutputToolChoice =
+    requestedProvider.structuredOutputToolChoice ??
+    requestedProvider.structured_output_tool_choice;
+  const structuredOutputToolChoice = requestedStructuredOutputToolChoice === "auto" ||
+    requestedStructuredOutputToolChoice === "required"
+    ? requestedStructuredOutputToolChoice
+    : undefined;
   return {
     ...defaultParams,
     provider: {
       allowFallbacks: routing.mode === "automatic",
-      dataCollection: "deny",
+      dataCollection,
       only: selected,
       order: selected,
       requireParameters: false,
       sort: "throughput",
+      ...(structuredOutputToolChoice
+        ? { structuredOutputToolChoice }
+        : {}),
       zdr: false
     }
   };

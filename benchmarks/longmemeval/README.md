@@ -7,8 +7,11 @@ revision, and SHA-256 in `upstream.json`. Generated downloads and results are
 ignored by Git.
 
 The qualification profiles use an explicitly selected reviewed System Model
-through codex-lb for the answer and structured Memory roles: `gpt-5.6-luna` is
-the frozen default, and `gpt-5.6-sol` is the only tracked alternate.
+for the answer and structured Memory roles. `gpt-5.6-luna` remains the frozen
+codex-lb comparison, while the current answer-time matrix also pins DeepSeek
+V4 Flash, GLM 5.3 Flash, and Gemini 3.7 Flash through OpenRouter. The latter
+three runs select only their native endpoint (`deepseek`, `z-ai/fp8`, or
+`google-vertex/global`) and disable provider fallback.
 `qwen/qwen3-embedding-8b` through OpenRouter handles document and query
 embeddings. The current qualification freezes the dedicated reranker route as
 Voyage Rerank 2.5, Cohere Rerank 4 Pro, then Qwen3 Reranker 8B; every fallback
@@ -27,17 +30,20 @@ Official-profile replays keep a crash-safe prepared-case snapshot in this
 disposable benchmark database. Its identity covers the exact source sessions,
 applied schema migrations, import/history projection contracts, and governed
 System Model used to derive history, while deliberately excluding reader,
-packer, retrieval, and reranker versions. A reader-only diagnostic therefore
-reuses the unchanged indexed sources; a history-contract change builds a new
-snapshot, and an embedding-pin change re-embeds it without re-importing source
-chats. A PostgreSQL advisory lock serializes each snapshot lifecycle. Every
-reuse validates the complete imported message graph, provenance, READY history
-checkpoints, current hybrid generation, and quiescent prior queries before
-admission. Question chats remain `EXCLUDED`: their terminal run and immutable
-usage receipts are retained for accounting but cannot become Memory sources,
-and a fresh auth session is removed after every attempt. Product and forced
-Dream diagnostics continue to use disposable one-run users because those
-profiles intentionally mutate learned state.
+packer, retrieval, and reranker versions. The fast-model matrix may therefore
+promote a completely settled Luna snapshot to an answer-time model without
+re-importing chats, re-embedding documents, or rebuilding the hybrid index;
+the run summary marks that projection as `CACHED_PRIOR_SYSTEM_MODEL`. If a
+settled compatible cache or READY hybrid generation is absent, the matrix
+fails closed instead of silently reindexing. A PostgreSQL advisory lock
+serializes each snapshot lifecycle. Every reuse validates the complete
+imported message graph, provenance, READY history checkpoints, current hybrid
+generation, and quiescent prior queries before admission. Question chats
+remain `EXCLUDED`: their terminal run and immutable usage receipts are
+retained for accounting but cannot become Memory sources, and a fresh auth
+session is removed after every attempt. Product and forced Dream diagnostics
+continue to use disposable one-run users because those profiles intentionally
+mutate learned state.
 
 The non-comparable `product` profile replays those same unchanged sessions
 through the ordinary persisted-chat settlement lifecycle. It enables automatic
@@ -71,7 +77,7 @@ The overlay has an explicit compose name, container names, network names,
 volume names, database identity, and loopback-only ports. Its defaults are app
 `3137`, PostgreSQL `55437`, OpenSearch `19237`, MinIO `19100`, and MinIO console
 `19101`; it does not share state with the default development installation.
-The frozen v7 qualification runs Memory lexical retrieval on OpenSearch-primary
+The frozen reader-first qualifications run Memory lexical retrieval on OpenSearch-primary
 and keeps PostgreSQL fallback available, but any observed fallback, dirty
 projection, or non-OpenSearch candidate-provider lane fails that case before
 judging. Canonical exact/entity and deferred digest authority lanes remain
@@ -151,17 +157,30 @@ npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE --sample-size 1
 ```
 
 FU-09's original content-free selection remains frozen as the provenance-only
-`qualifications/fu09-blind-50-v1.json`. Reader-first `v1` through `v7` preserve
-the earlier diagnostic and pre-resolver waves. The current qualification is
-`qualifications/fu2-reader-first-blind-50-v8.json`: it reuses the exact 50
-case IDs across all six upstream categories while freezing Luna, the official
-profile, OpenSearch-primary lexical retrieval, the ordered three-model
-reranker route and per-model floors, case concurrency two, session concurrency
-sixteen, the bounded query-scoped resolver, and all other runtime bounds. It binds the Git `HEAD` and a
-deterministic executable-worktree digest; mutable result, task, upstream, and
-manifest paths are excluded from that digest. Run it with the exact lexical
-environment below; selection or runtime override flags are rejected when the
-manifest is present:
+`qualifications/fu09-blind-50-v1.json`. Reader-first `v1` through `v12` preserve
+the earlier diagnostic, pre-resolver, interrupted, Luna, and 9-second fast-model
+comparison waves.
+The current matrix reuses the exact 50 case IDs across all six upstream
+categories and freezes the official profile, OpenSearch-primary lexical
+retrieval, the ordered three-model reranker route and per-model floors, case
+concurrency two, session concurrency sixteen, and all other runtime bounds.
+Each manifest binds the same Git `HEAD` and deterministic executable-worktree
+digest; only the answer-time model/provider differs:
+
+- `fu2-reader-first-blind-50-v13`: DeepSeek V4 Flash 0731 via `deepseek`.
+- `fu2-reader-first-blind-50-v14`: GLM 5.3 Flash via `z-ai/fp8`.
+- `fu2-reader-first-blind-50-v15`: Gemini 3.7 Flash via `google-vertex/global`.
+
+The active matrix gives both System Model utilities a 20-second provider
+window inside a 26-second Memory envelope. The resolver remains speculative
+and is never awaited at the final pack boundary. Incorrect official-evaluator
+labels are journaled and counted without stopping the next two-case wave;
+runtime failures, non-`USED` Memory, and unhealthy lexical cutover still stop
+admission.
+
+These are frozen dated model IDs (not the mutable Gemini `latest` alias).
+Selection or runtime override flags are rejected when a manifest is present.
+Run each manifest with the exact lexical environment below:
 
 ```bash
 AIQSA_MEMORY_LEXICAL_BACKEND=OPENSEARCH \
@@ -170,13 +189,15 @@ AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
 AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE \
-  --qualification-manifest fu2-reader-first-blind-50-v8 \
-  --output results/fu2-reader-first-blind-50-v8
+  --qualification-manifest fu2-reader-first-blind-50-v13 \
+  --output results/fu2-reader-first-blind-50-v13
 ```
 
-The old single-Qwen manifest and reader-first `v1` through `v7` fail closed for
-new runs. Paid/disposable guards remain mandatory and no manifest authorizes
-provider traffic by itself.
+Repeat the same command with `v14`/`v15` and matching output directories for
+GLM and Gemini. The manifests select only the named native provider and do not
+authorize cross-provider fallback. The old single-Qwen manifest and reader-first
+`v1` through `v9` fail closed for new runs. Paid/disposable guards remain
+mandatory and no manifest authorizes provider traffic by itself.
 
 Use repeated `--question-id ID` arguments for an explicit ad hoc set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.
@@ -232,11 +253,11 @@ case scheduling; the override is recorded in the summary and every attempt.
 These resume controls do not weaken the paid/disposable guards or permit any
 other qualification-manifest override.
 
-The v7 qualification judges each completed answer immediately with the
+The active qualification judges each completed answer immediately with the
 unchanged official evaluator and atomically binds the private verdict to the
 answer hash and checkpoint attempt under `case-evaluations/`. A runtime
-failure, unhealthy OpenSearch cutover observation, or incorrect verdict stops
-admission of new cases; already-started work is allowed to settle safely. On
+failure or unhealthy OpenSearch cutover observation stops admission of new
+cases; an incorrect verdict remains visible and the next wave continues. On
 resume, a missing verdict is recovered before new work, while an existing
 verdict is never purchased again. A product-code change invalidates the frozen
 worktree digest and requires a new homogeneous manifest. After all 50 cases

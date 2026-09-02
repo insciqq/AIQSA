@@ -106,7 +106,7 @@ import {
 } from "./queryResolver";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v53";
+  "memory-run-retrieval-admission-v54";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v18";
 
@@ -836,22 +836,25 @@ function createMemoryAdmissionDeadline(
 
 type OptionalMemoryUtilityRole = "CONTROL" | "QUERY_EMBED" | "QUERY_RESOLVE" | "RERANK";
 
-export const MEMORY_INTERACTIVE_SOFT_DEADLINE_MS = 10_000;
-export const MEMORY_INTERACTIVE_HARD_DEADLINE_MS = 14_000;
+// Keep enough room for a measured 20-second System Model utility followed by
+// the unchanged four-second reranker and the two-second terminal reserve. The
+// installation-wide 30-second admission deadline remains the outer authority.
+export const MEMORY_INTERACTIVE_SOFT_DEADLINE_MS = 20_000;
+export const MEMORY_INTERACTIVE_HARD_DEADLINE_MS = 26_000;
 export const MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS = 1_000;
 export const MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS = 1_500;
 // Query embedding starts beside the control call and keeps its own eight-second
-// fence. The control call gets one additional second for a strict structured
-// completion while the 14-second admission deadline remains authoritative.
+// fence. System Model utilities get a wider measurement window without
+// extending embedding or reranker provider budgets.
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 8_000;
 // The resolver starts from the original-query speculative frontier beside the
-// control call. Its nine-second child fence is only a provider-execution safety
-// ceiling: the final pack boundary never waits for it, while the unchanged
-// fourteen-second admission fence and terminal-settlement reserve remain
-// authoritative.
-export const MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS = 9_000;
+// control call. Its child fence is only a provider-execution safety ceiling:
+// the final pack boundary never waits for it, while the admission fence and
+// terminal-settlement reserve remain authoritative.
+export const MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS = 20_000;
+export const MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS = 2_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
-export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 9_000;
+export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 20_000;
 
 const optionalUtilityBudget = Object.freeze({
   CONTROL: {
@@ -866,7 +869,7 @@ const optionalUtilityBudget = Object.freeze({
     maximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
     // Governed cancellation settlement must stay inside the hard admission
     // envelope even though the synchronous attachment boundary never waits.
-    reserveMs: 2_000
+    reserveMs: MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS
   },
   RERANK: {
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,

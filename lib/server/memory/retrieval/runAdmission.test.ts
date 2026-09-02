@@ -1158,13 +1158,13 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("does not start reranking after the ten-second soft deadline", async () => {
+  it("does not start reranking after the twenty-second soft deadline", async () => {
     const local = repository({ candidates: [laneCandidate("soft-deadline-rrf")] });
     const originalExpand = local.expand.getMockImplementation()!;
     let deadlineClockMs = 0;
     local.expand.mockImplementation(async (...args) => {
       const expanded = await originalExpand(...args);
-      deadlineClockMs = 10_000;
+      deadlineClockMs = 20_000;
       return expanded;
     });
     const base = intentOptions({
@@ -1292,7 +1292,7 @@ describe("Personal Memory v1 run admission", () => {
         state: "READY"
       })])
     });
-    expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(9_000);
+    expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(20_000);
   });
 
   it("starts query resolution from the original-query frontier before control settles", async () => {
@@ -1704,8 +1704,8 @@ describe("Personal Memory v1 run admission", () => {
       expect(resolve).toHaveBeenCalledOnce();
       expect(result.degradationCode).toBeUndefined();
       expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
-      expect(MEMORY_INTERACTIVE_HARD_DEADLINE_MS).toBe(14_000);
-      expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(9_000);
+      expect(MEMORY_INTERACTIVE_HARD_DEADLINE_MS).toBe(26_000);
+      expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(20_000);
     } finally {
       vi.useRealTimers();
     }
@@ -1973,7 +1973,7 @@ describe("Personal Memory v1 run admission", () => {
         },
         outcome: "EMPTY"
       });
-      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(9_000);
+      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(20_000);
     } finally {
       vi.useRealTimers();
     }

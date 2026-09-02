@@ -204,9 +204,15 @@ describe("LongMemEval adapter contract", () => {
     })).toThrow("longmemeval_profile_manifest_invalid");
   });
 
-  it("allows only the reviewed codex-lb qualification System Models", () => {
+  it("allows only the reviewed qualification System Models", () => {
     expect(decodeLongMemEvalSystemModelId("gpt-5.6-sol")).toBe("gpt-5.6-sol");
     expect(decodeLongMemEvalSystemModelId("gpt-5.6-luna")).toBe("gpt-5.6-luna");
+    expect(decodeLongMemEvalSystemModelId("deepseek/deepseek-v4-flash-0731"))
+      .toBe("deepseek/deepseek-v4-flash-0731");
+    expect(decodeLongMemEvalSystemModelId("z-ai/glm-5.3-flash"))
+      .toBe("z-ai/glm-5.3-flash");
+    expect(decodeLongMemEvalSystemModelId("google/gemini-3.7-flash"))
+      .toBe("google/gemini-3.7-flash");
     expect(() => decodeLongMemEvalSystemModelId("openai/gpt-5.6-luna"))
       .toThrow("longmemeval_system_model_invalid");
     expect(() => decodeLongMemEvalSystemModelId("gpt-5.6-sol-benchmark-tuned"))
