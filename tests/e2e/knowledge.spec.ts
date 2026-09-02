@@ -744,9 +744,15 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
 
   await setViewport(page, { height: 844, width: 384 });
   await library.getByRole("button", { name: "New base" }).click();
+  // The sub-view renders inside the Library column under its own crumb; the
+  // Back control is the Library's and takes focus (UX audit 2026-09-02 A14).
   const knowledge = page.getByTestId("knowledge-library");
   await expect(knowledge).toBeVisible();
-  await expect(knowledge.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
+  await expect(library.getByRole("navigation", { name: "Library location" }))
+    .toHaveText("Library / Knowledge / New Knowledge base");
+  await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
+  await expect(library.getByRole("button", { name: "Back to chat" })).toHaveCount(0);
+  await expect(library.getByRole("tab", { name: "Knowledge" })).toHaveAttribute("aria-selected", "true");
   await knowledge.getByLabel("Name").fill("E2E runbooks");
   await knowledge.getByLabel("Description").fill("Operational references");
   await knowledge.getByLabel("Choose files").setInputFiles([
@@ -757,8 +763,10 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
     .toContainText("handbook.md");
   await knowledge.getByRole("button", { name: "Create knowledge base" }).click();
 
-  await expect(knowledge.getByRole("heading", { level: 1, name: "E2E runbooks" })).toBeVisible();
-  await expect(knowledge.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
+  await expect(knowledge.getByRole("heading", { level: 2, name: "E2E runbooks" })).toBeVisible();
+  await expect(library.getByRole("navigation", { name: "Library location" }))
+    .toHaveText("Library / Knowledge / E2E runbooks");
+  await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
   const partialFile = knowledge.getByTestId("knowledge-source-source-upload-1");
   await expect(partialFile.getByText("handbook.md", { exact: true })).toBeVisible();
   await expect(partialFile.getByText("Ready with warnings", { exact: true })).toBeVisible();
@@ -770,11 +778,13 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   expectUserSafeKnowledgeText(await knowledge.innerText());
 
   await affectedFile.getByRole("button", { name: "Open Source" }).click();
-  await expect(knowledge.getByRole("heading", { level: 1, name: "incident.txt" })).toBeVisible();
+  await expect(knowledge.getByRole("heading", { level: 2, name: "incident.txt" })).toBeVisible();
+  await expect(library.getByRole("navigation", { name: "Library location" }))
+    .toHaveText("Library / Knowledge / incident.txt");
   await expect(knowledge).toContainText(`Support reference ${fileSupportReference}`);
   await knowledge.getByRole("button", { name: "Retry processing" }).click();
   await expect(knowledge.getByText("Ready", { exact: true }).first()).toBeVisible();
-  await knowledge.getByRole("button", { name: "Back to base" }).click();
+  await library.getByRole("button", { name: "Back to base" }).click();
   await expect(knowledge.getByTestId("knowledge-source-source-upload-2"))
     .toContainText("Ready");
 
@@ -797,8 +807,10 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   await expectNoHorizontalOverflow(page);
   expectUserSafeKnowledgeText(await knowledge.innerText());
 
-  await knowledge.getByRole("button", { name: "Back to Knowledge" }).click();
+  await library.getByRole("button", { name: "Back to Knowledge" }).click();
   await expect(knowledge).toHaveCount(0);
+  await expect(library.getByRole("navigation", { name: "Library location" }))
+    .toHaveText("Library / Knowledge");
   await library.getByRole("button", { name: "Back to chat" }).click();
   await expect(page).toHaveTitle("New chat · AIQSA");
 
@@ -808,8 +820,10 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
   await library.getByRole("button", { name: "Open" }).click();
-  await expect(knowledge.getByRole("heading", { level: 1, name: "E2E runbooks" })).toBeVisible();
-  await expectWithinViewport(page, knowledge);
+  // The sub-view scrolls inside the Library column: the Library itself fits
+  // the viewport and the sub-view heading is the first thing in view.
+  await expect(knowledge.getByRole("heading", { level: 2, name: "E2E runbooks" })).toBeInViewport();
+  await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
   expectUserSafeKnowledgeText(await knowledge.innerText());
 });
@@ -866,6 +880,8 @@ test("reuses one Source across Bases with distinct Add, Move, and Remove journey
   const library = page.getByTestId("library-v2");
   await library.getByRole("button", { name: "Browse Sources" }).click();
   const knowledge = page.getByTestId("knowledge-library");
+  await expect(library.getByRole("navigation", { name: "Library location" }))
+    .toHaveText("Library / Knowledge / Sources");
 
   const sourceRow = knowledge.getByTestId("knowledge-source-source-e2e");
   await expect(sourceRow).toContainText("Reusable product guide");
@@ -880,14 +896,17 @@ test("reuses one Source across Bases with distinct Add, Move, and Remove journey
     { height: 800, width: 1280 }
   ]) {
     await setViewport(page, viewport);
-    await expectWithinViewport(page, knowledge);
+    await expectWithinViewport(page, library);
+    await expect(knowledge.getByRole("heading", { level: 2, name: "Sources" })).toBeInViewport();
+    await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeInViewport();
     await expectNoHorizontalOverflow(page);
   }
 
   await setViewport(page, { height: 844, width: 384 });
   await sourceRow.getByRole("button").click();
-  await expect(knowledge.getByRole("heading", { level: 1, name: "Reusable product guide" }))
+  await expect(knowledge.getByRole("heading", { level: 2, name: "Reusable product guide" }))
     .toBeVisible();
+  await expect(library.getByRole("button", { name: "Back to Sources" })).toBeFocused();
   await expect(knowledge.getByText("One canonical file identity, reused wherever you add it."))
     .toBeVisible();
   const previewSource = knowledge.getByRole("button", { name: "Preview" });

@@ -17,6 +17,7 @@ import "../features/attachments-v2/attachments.css";
 import "../features/answer-outputs-v2/answer-outputs.css";
 import "../features/branches-v2/branches.css";
 import "../features/library-v2/library.css";
+import "../features/library-v2/knowledge.css";
 import "../features/settings-v2/settings.css";
 import "../components/auth/auth.css";
 import "../features/projects-v2/projects.css";

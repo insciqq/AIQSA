@@ -215,8 +215,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByText("Personal value configured")).toBeVisible();
   await expect(secret).toHaveValue("");
 
-  await settings.getByRole("button", { name: "Enable Mem0" }).click();
-  await settings.getByRole("button", { name: "Enable Todoist" }).click();
+  // Rows toggle with a switch (UX audit 2026-09-02 A13); the switch appears
+  // for Mem0 only after its personal value is saved.
+  await settings.getByRole("switch", { name: "Mem0" }).click();
+  await settings.getByRole("switch", { name: "Todoist" }).click();
   await expect(settings.getByText("Activating", { exact: true })).toBeVisible();
 
   await settings.getByRole("button", { name: "Close settings" }).click();
@@ -227,6 +229,9 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByText("Ready", { exact: true })).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="enabled"]')).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(1);
+  await expect(settings.getByRole("switch", { name: "Mem0" })).toHaveAttribute("aria-checked", "true");
+  await expect(settings.getByText("2 of 3 servers enabled · 2 tools")).toBeVisible();
+  await expect(settings.getByText("How tools use data").locator("xpath=..")).not.toHaveAttribute("open", "");
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
 
   await settings.getByRole("button", { name: "Close settings" }).click();
@@ -302,7 +307,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
-  await expectTouchSafe(settings.getByRole("button", { name: "Disable Mem0" }));
+  await expectTouchSafe(settings.getByRole("switch", { name: "Mem0" }));
   await expectTouchSafe(settings.getByRole("button", { name: "Close settings" }));
 
   await page.setViewportSize({ height: 390, width: 844 });

@@ -14,7 +14,13 @@ import type {
   ShellComposerView
 } from "@/components/app-shell/powerAppShellV2Contracts";
 import { AssistantLibrary } from "@/components/assistants/AssistantLibrary";
-import { KnowledgeLibrary } from "@/components/knowledge/KnowledgeLibrary";
+import {
+  isKnowledgeSubview,
+  KnowledgeLibrary,
+  knowledgeReadinessText,
+  knowledgeSubviewChrome,
+  useKnowledgeLibraryExit
+} from "@/components/knowledge/KnowledgeLibrary";
 import { useKnowledgeSourceViewer } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   AssistantsPanelV2,
@@ -51,6 +57,7 @@ function LibrarySurfaceV2({
   const fileLoadState = useFileLibraryStore((state) => state.loadState);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
+  const knowledgeExit = useKnowledgeLibraryExit(knowledgeView ?? null);
   const openKnowledgeSourceViewer = useKnowledgeSourceViewer();
   const initialTab: LibraryTabIdV2 = settings.memory.open
     ? "memory"
@@ -74,17 +81,27 @@ function LibrarySurfaceV2({
         ? { unavailableReason: assistant.availability.reason.replaceAll("_", " ") }
         : {})
     }));
-  const knowledge: KnowledgeSummaryV2[] = (knowledgeView?.list.knowledgeBases ?? composer.knowledge.bases)
-    .map((base) => ({
-      description: base.description,
-      sourceCount: "sourceCount" in base && typeof base.sourceCount === "number"
-        ? base.sourceCount
-        : 0,
-      id: base.id,
-      name: base.name,
-      owned: base.owned,
-      status: knowledgeSummaryStatusV2(base)
-    }));
+  const knowledge: KnowledgeSummaryV2[] = knowledgeView
+    ? knowledgeView.list.knowledgeBases.map((base) => ({
+        description: base.description,
+        sourceCount: base.sourceCount,
+        id: base.id,
+        name: base.name,
+        owned: base.owned,
+        readinessLabel: knowledgeReadinessText(base.readiness),
+        status: knowledgeSummaryStatusV2(base),
+        updatedLabel: formatLibraryDate(base.updatedAt)
+      }))
+    : composer.knowledge.bases.map((base) => ({
+        description: base.description,
+        sourceCount: "sourceCount" in base && typeof base.sourceCount === "number"
+          ? base.sourceCount
+          : 0,
+        id: base.id,
+        name: base.name,
+        owned: base.owned,
+        status: knowledgeSummaryStatusV2(base)
+      }));
   const knowledgeBusy = knowledgeView?.busy ?? false;
   const knowledgeCatalog = knowledgeView?.list.catalog ?? null;
   const knowledgeTask = knowledgeView?.task ?? null;
@@ -138,9 +155,14 @@ function LibrarySurfaceV2({
       label: "Assistants"
     },
     {
-      content: (
+      // A base, the Sources catalog, base creation and Source detail render
+      // as sub-views of this section under the Library's own crumb (A14).
+      content: knowledgeView && isKnowledgeSubview(knowledgeView) ? (
+        <KnowledgeLibrary onPreviewSource={openKnowledgeSourceViewer} view={knowledgeView} />
+      ) : (
         <KnowledgePanelV2
           bases={knowledge}
+          canCreate={knowledgeView?.list.canCreate ?? true}
           error={knowledgeView?.dataError}
           loadState={knowledgeView?.dataState ?? "loading"}
           onBrowseSources={() => knowledgeView?.list.onCatalogChange("sources")}
@@ -197,7 +219,21 @@ function LibrarySurfaceV2({
       <LibraryV2
         key={initialTab}
         initialTab={initialTab}
+        navigationGuard={(intent, proceed) => {
+          // A dirty Knowledge draft asks for an explicit discard before the
+          // section changes or the Library closes; a clean sub-view simply
+          // stays open behind the other tab.
+          if (activeTab === "knowledge" && knowledgeExit.dirty) knowledgeExit.requestExit(proceed);
+          else proceed();
+        }}
         onOpenSkillLibrary={onOpenSkillLibrary}
+        subview={activeTab === "knowledge" && knowledgeView && isKnowledgeSubview(knowledgeView)
+          ? {
+              ...knowledgeSubviewChrome(knowledgeView),
+              busy: knowledgeView.busy,
+              onBack: () => knowledgeExit.requestExit()
+            }
+          : null}
         tabs={tabs}
         onBack={() => {
           assistantView?.onBackToChat();
@@ -212,14 +248,9 @@ function LibrarySurfaceV2({
           if (tab === "memory") settings.openMemory();
         }}
       />
+      {knowledgeExit.confirmation}
       {assistantView && assistantView.task !== "list" ? (
         <AssistantLibrary view={assistantView} />
-      ) : null}
-      {knowledgeView && (knowledgeView.task !== "list" || knowledgeView.list.catalog === "sources") ? (
-        <KnowledgeLibrary
-          onPreviewSource={openKnowledgeSourceViewer}
-          view={knowledgeView}
-        />
       ) : null}
       <span className="v2-sr-only">Account {session.accountId}</span>
     </>

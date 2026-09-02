@@ -24,6 +24,7 @@ import type {
   FileSummaryV2,
   KnowledgeSummaryV2,
   LibraryNavigationGuardV2,
+  LibrarySubviewV2,
   LibraryTabIdV2,
   LibraryTabV2,
   MemoryOverviewV2
@@ -47,6 +48,7 @@ export function LibraryV2({
   onBack,
   onOpenSkillLibrary,
   onTabChange,
+  subview = null,
   tabs
 }: Readonly<{
   initialTab?: LibraryTabIdV2;
@@ -55,12 +57,31 @@ export function LibraryV2({
   /** Opens the Skill Library overlay from the "Skills" group of the section column. */
   onOpenSkillLibrary?(): void;
   onTabChange?(tab: LibraryTabIdV2): void;
+  /** The resource sub-view open in the selected section, if any (A14). */
+  subview?: LibrarySubviewV2 | null;
   tabs: readonly LibraryTabV2[];
 }>) {
   const [activeTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
   const tabRefs = useRef<Partial<Record<LibraryTabIdV2, HTMLButtonElement | null>>>({});
+  const backRef = useRef<HTMLButtonElement>(null);
+  const previousSubviewKey = useRef<string | null>(null);
   const availableTabs = tabOrder.filter((id) => tabs.some((tab) => tab.id === id));
   const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
+  const subviewKey = subview?.key ?? null;
+  const selectedId = selected?.id ?? null;
+
+  // Entering a sub-view (or moving between two) focuses its Back control;
+  // leaving it returns focus to the section tab so keyboard users stay in
+  // the Library rather than on the document body.
+  useEffect(() => {
+    const previous = previousSubviewKey.current;
+    previousSubviewKey.current = subviewKey;
+    if (subviewKey && subviewKey !== previous) {
+      backRef.current?.focus({ preventScroll: true });
+    } else if (!subviewKey && previous && selectedId) {
+      tabRefs.current[selectedId]?.focus({ preventScroll: true });
+    }
+  }, [selectedId, subviewKey]);
 
   const commitTab = (next: LibraryTabIdV2, focusAfterCommit = false) => {
     if (next === activeTab || !tabs.some((tab) => tab.id === next)) return;
@@ -110,12 +131,24 @@ export function LibraryV2({
           the section column (left); below 900px it stacks as before. */}
       <header className="v2-library-header">
         <div className="v2-library-heading-row">
-          <nav className="v2-library-crumb" aria-label="Library location">
+          <nav className="v2-library-crumb" aria-label="Library location" data-subview={subview ? "true" : undefined}>
             <span>Library</span>
             <span aria-hidden="true"> / </span>
-            <strong>{selected.label}</strong>
+            {subview ? (
+              <>
+                <span>{selected.label}</span>
+                <span aria-hidden="true"> / </span>
+                <strong>{subview.label}</strong>
+              </>
+            ) : <strong>{selected.label}</strong>}
           </nav>
-          <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
+          {subview ? (
+            <UiV2Button ref={backRef} disabled={subview.busy} icon="arrow-left" onClick={subview.onBack}>
+              {subview.backLabel}
+            </UiV2Button>
+          ) : (
+            <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
+          )}
         </div>
         <div className="v2-library-tabs-scroll">
           <p className="v2-library-column-title" aria-hidden="true">Library</p>
@@ -473,6 +506,7 @@ const knowledgeStatusLabel: Record<KnowledgeSummaryV2["status"], string> = {
 
 export function KnowledgePanelV2({
   bases,
+  canCreate = true,
   error,
   loadState = "ready",
   onBrowseSources,
@@ -481,6 +515,8 @@ export function KnowledgePanelV2({
   onRetry
 }: Readonly<{
   bases: readonly KnowledgeSummaryV2[];
+  /** False while the installation cannot create or reprocess Knowledge. */
+  canCreate?: boolean;
   error?: string | null;
   loadState?: "error" | "loading" | "ready";
   onBrowseSources?(): void;
@@ -494,13 +530,19 @@ export function KnowledgePanelV2({
         action={(
           <>
             <UiV2Button onClick={onBrowseSources}>Browse Sources</UiV2Button>
-            <UiV2Button icon="plus" tone="primary" onClick={onCreate}>New base</UiV2Button>
+            <UiV2Button disabled={!canCreate} icon="plus" tone="primary" onClick={onCreate}>New base</UiV2Button>
           </>
         )}
         description="Bases group reusable Sources into the exact Knowledge scopes selected for Chat, Projects, and Assistants."
       >
         Knowledge
       </SectionHeading>
+      {!canCreate ? (
+        <div className="v2-memory-disabled" role="status">
+          <strong>Knowledge is temporarily unavailable</strong>
+          You can still open existing bases. Contact your administrator before creating or reprocessing content.
+        </div>
+      ) : null}
       {loadState === "loading" && bases.length === 0 ? (
         <p className="v2-resource-empty" role="status">Loading knowledge…</p>
       ) : loadState === "error" && bases.length === 0 ? (
@@ -516,10 +558,13 @@ export function KnowledgePanelV2({
               <div className="v2-resource-row-main">
                 <div className="v2-resource-row-title">
                   <h3>{base.name}</h3>
-                  <span data-status={base.status}>{knowledgeStatusLabel[base.status]}</span>
+                  <span data-status={base.status}>{base.readinessLabel ?? knowledgeStatusLabel[base.status]}</span>
                 </div>
                 <p>{base.description}</p>
-                <small>{base.owned ? "Your base" : "Shared with you"} · {base.sourceCount} {base.sourceCount === 1 ? "Source" : "Sources"}</small>
+                <small>
+                  {base.owned ? "Your base" : "Shared with you"} · {base.sourceCount} {base.sourceCount === 1 ? "Source" : "Sources"}
+                  {base.updatedLabel ? ` · Updated ${base.updatedLabel}` : ""}
+                </small>
               </div>
               <UiV2Button onClick={() => onOpen?.(base.id)}>Open</UiV2Button>
             </li>
