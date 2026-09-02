@@ -93,6 +93,9 @@ export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
 export type AdminProviderCompatibilityEvidence = {
   directPdf: AdminProviderCompatibilityStatus;
+  /** Exact forced, strict function-call contract used by Memory action roles.
+   * Omitted by pre-v1-extension evidence and therefore not verified. */
+  forcedToolCall?: AdminProviderCompatibilityStatus;
   modelAccess: AdminProviderCompatibilityStatus;
   probeVersion: 1;
   streaming: AdminProviderCompatibilityStatus;
@@ -109,6 +112,19 @@ export type AdminProviderTestEvidence = {
     adapterKind:
       | "anthropic_messages"
       | "gemini_interactions_native"
+      | "openai_responses_compatible"
+      | "openai_responses_native"
+      | "openrouter_chat_completions";
+    probeVersion: 1;
+    upstreamModelId: string;
+    verified: true;
+  };
+  forcedToolCall?: {
+    adapterKind:
+      | "anthropic_messages"
+      | "deepseek_responses_native"
+      | "gemini_interactions_native"
+      | "openai_chat_completions_compatible"
       | "openai_responses_compatible"
       | "openai_responses_native"
       | "openrouter_chat_completions";

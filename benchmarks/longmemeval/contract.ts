@@ -437,6 +437,7 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   localRetrievalMs: number | null;
   memoryPrepareLatencyBucket: string | null;
   memoryPrepareMs: number | null;
+  memoryReadUtilityPolicy: string | null;
   mode: string | null;
   omissionCounts: Readonly<Record<string, number>>;
   packedTokens: number | null;
@@ -895,6 +896,11 @@ export function sanitizeLongMemEvalRetrievalAudit(
     localRetrievalMs: nonNegativeInteger(budget.localRetrievalMs),
     memoryPrepareLatencyBucket: memoryLatencyBucket(budget.memoryPrepareLatencyBucket),
     memoryPrepareMs: nonNegativeInteger(budget.memoryPrepareMs),
+    memoryReadUtilityPolicy:
+      budget.memoryReadUtilityPolicy === "CONTROL_RESOLVER_V1" ||
+      budget.memoryReadUtilityPolicy === "DETERMINISTIC_READ_V1"
+        ? budget.memoryReadUtilityPolicy
+        : null,
     mode,
     omissionCounts: sanitizedCounts(budget.omissionCounts),
     packedTokens: nonNegativeInteger(budget.packedTokens),

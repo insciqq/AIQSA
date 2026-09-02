@@ -2,6 +2,7 @@ import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 
 export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
   defaultReasoningEffort: string | null;
+  forcedToolCall: "not_verified" | "unsupported" | "verified";
   reasoningEfforts: string[];
   structuredOutput: "not_verified" | "unsupported" | "verified";
 };
@@ -57,6 +58,9 @@ function candidate(value: unknown): value is AdminSystemModelCandidate {
     value.reasoningEfforts.length > 16 ||
     !value.reasoningEfforts.every((effort) => boundedText(effort, 32)) ||
     new Set(value.reasoningEfforts).size !== value.reasoningEfforts.length ||
+    (value.forcedToolCall !== "verified" &&
+      value.forcedToolCall !== "not_verified" &&
+      value.forcedToolCall !== "unsupported") ||
     (value.structuredOutput !== "verified" &&
       value.structuredOutput !== "not_verified" &&
       value.structuredOutput !== "unsupported")) return false;

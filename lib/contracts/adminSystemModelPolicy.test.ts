@@ -8,6 +8,7 @@ const response = {
       connectionId: "connection-1",
       defaultReasoningEffort: "medium",
       displayName: "Model",
+      forcedToolCall: "verified",
       id: "model-1",
       reasoningEfforts: ["low", "medium", "high", "xhigh"],
       structuredOutput: "verified"

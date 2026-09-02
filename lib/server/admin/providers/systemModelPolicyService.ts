@@ -14,6 +14,11 @@ import {
   type AdminAnswerModelRow
 } from "./modelPolicyService";
 import { structuredOutputVerificationStatus } from "../../providers/structuredOutputEvidence";
+import {
+  forcedToolCallVerificationStatus,
+  supportsForcedToolCallProbe
+} from
+  "../../providers/forcedToolCallEvidence";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import { RERANKER_ROUTE_POLICY_VERSION } from "../../../domain/rerankerModels";
 import {
@@ -69,6 +74,7 @@ type ActiveRefresh = (input: Readonly<{
 function serializeSystemModel(row: SystemModelRow) {
   let reasoningEfforts: string[] = [];
   let defaultReasoningEffort: string | null = null;
+  let forcedToolCall: "not_verified" | "unsupported" | "verified" = "unsupported";
   let structuredOutput: "not_verified" | "unsupported" | "verified" = "unsupported";
   try {
     const configuration = normalizeProviderModelConfiguration(row.activeConfig);
@@ -93,6 +99,10 @@ function serializeSystemModel(row: SystemModelRow) {
       check?.evidence,
       configuration
     );
+    forcedToolCall = forcedToolCallVerificationStatus(
+      check?.evidence,
+      configuration
+    );
   } catch {
     // An unavailable retained target remains inspectable without trusting its
     // stale or malformed capability payload.
@@ -100,6 +110,7 @@ function serializeSystemModel(row: SystemModelRow) {
   return {
     ...serializeAdminAnswerModel(row),
     defaultReasoningEffort,
+    forcedToolCall,
     reasoningEfforts,
     structuredOutput
   };
@@ -370,7 +381,8 @@ export function createAdminSystemModelPolicyService(
           "system_model_policy_target_unavailable"
         );
       }
-      if (!supportsStructuredOutputAdapter(configuration.adapterKind)) {
+      if (!supportsStructuredOutputAdapter(configuration.adapterKind) ||
+        !supportsForcedToolCallProbe(configuration.adapterKind)) {
         throw new AdminSystemModelPolicyServiceError(
           "system_model_policy_structured_output_unsupported"
         );
@@ -383,10 +395,12 @@ export function createAdminSystemModelPolicyService(
         check.modelVersion === model.activeVersion &&
         check.status === "available"
       );
-      if (structuredOutputVerificationStatus(
-        existingCheck?.evidence,
-        configuration
-      ) === "verified") return;
+      if (
+        structuredOutputVerificationStatus(existingCheck?.evidence, configuration) ===
+          "verified" &&
+        forcedToolCallVerificationStatus(existingCheck?.evidence, configuration) ===
+          "verified"
+      ) return;
 
       if (!dependencies.refreshActive) {
         throw new AdminSystemModelPolicyServiceError(
@@ -403,7 +417,8 @@ export function createAdminSystemModelPolicyService(
         });
         if (
           result.status !== "available" ||
-          structuredOutputVerificationStatus(result.evidence, configuration) !== "verified"
+          structuredOutputVerificationStatus(result.evidence, configuration) !== "verified" ||
+          forcedToolCallVerificationStatus(result.evidence, configuration) !== "verified"
         ) {
           throw new Error("structured_output_not_verified");
         }

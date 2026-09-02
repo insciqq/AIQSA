@@ -498,6 +498,7 @@ function retrievalOptions(
         status: "READY" as const
       }))
     },
+    readUtilityPolicy: "CONTROL_RESOLVER_V1" as const,
     utilities: utilities(relevantHandles),
     vectorRepository: {
       resolveActiveProfile: vi.fn(async () => ({ profile, status: "READY" as const }))
@@ -557,6 +558,148 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
+  it("runs production ordinary reads without control or resolver calls", async () => {
+    const local = repository({
+      candidates: [laneCandidate("deterministic-read")]
+    });
+    const base = retrievalOptions(["c0"]);
+    const {
+      readUtilityPolicy: _legacyReadUtilityPolicy,
+      ...deterministicBase
+    } = base;
+    const controlRefs = {
+      load: vi.fn(async () => ["memory-ref-forbidden"])
+    };
+    const queryResolver = {
+      resolve: vi.fn(async (): Promise<MemoryQueryResolverResult> => ({
+        bindingId: "binding-query-resolver-forbidden",
+        constraints: [],
+        status: "READY"
+      }))
+    };
+    const actionExecutor = {
+      execute: vi.fn(async () => ({ operation: "SAVE" as const, status: "COMMITTED" as const }))
+    };
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...deterministicBase,
+      actionExecutor,
+      controlRefs,
+      queryResolver
+    }).retrieve(runInput("Which details did I mention?"));
+
+    expect(base.control.decide).not.toHaveBeenCalled();
+    expect(controlRefs.load).not.toHaveBeenCalled();
+    expect(queryResolver.resolve).not.toHaveBeenCalled();
+    expect(actionExecutor.execute).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        controlProviderCalls: 0,
+        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        memoryActionAdmissionReason: "NO_DIRECTIVE",
+        memoryActionAdmissionState: "ORDINARY",
+        memoryActionControlRequested: false,
+        memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
+        plannerFallbackReason: null,
+        queryResolverExecutionStrategy: "SKIPPED",
+        queryResolverProviderCalls: 0,
+        utilityExecutions: expect.arrayContaining([
+          expect.objectContaining({
+            externalCallCount: 0,
+            role: "MEMORY_CONTROL",
+            state: "SKIPPED"
+          }),
+          expect.objectContaining({
+            externalCallCount: 0,
+            role: "MEMORY_QUERY_RESOLVE",
+            state: "SKIPPED"
+          })
+        ])
+      },
+      outcome: "USED"
+    });
+  });
+
+  it("uses strict action control without allowing a false-positive gate to mutate", async () => {
+    const local = repository({ candidates: [laneCandidate("ordinary-after-none")] });
+    const legacy = retrievalOptions(["c0"]);
+    const { readUtilityPolicy: _legacyReadUtilityPolicy, ...options } = legacy;
+    const actionExecutor = { execute: vi.fn() };
+    const queryResolver = { resolve: vi.fn() } as unknown as MemoryQueryResolverService;
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options,
+      actionExecutor,
+      queryResolver
+    }).retrieve(runInput("Remember this phrase, then answer normally."));
+
+    expect(legacy.control.decide).toHaveBeenCalledOnce();
+    expect(actionExecutor.execute).not.toHaveBeenCalled();
+    expect(queryResolver.resolve).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        controlProviderCalls: 1,
+        memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
+        memoryActionControlRequested: true,
+        memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
+        plannerFallbackReason: null,
+        queryResolverProviderCalls: 0
+      },
+      items: [{ exactItemId: "ordinary-after-none" }],
+      outcome: "USED"
+    });
+  });
+
+  it("executes an explicit action plus the independent deterministic read", async () => {
+    const local = repository({ candidates: [laneCandidate("action-plus-read")] });
+    const legacy = intentOptions({
+      action: "SAVE" as const,
+      category: "preferences" as const,
+      memoryUseful: true,
+      queryText: "preferred answer style",
+      reasonCode: "save_request" as const,
+      responsePreference: true,
+      statement: "I prefer concise answers."
+    });
+    const { readUtilityPolicy: _legacyReadUtilityPolicy, ...options } = legacy;
+    const actionExecutor = {
+      execute: vi.fn(async () => ({
+        memoryRef: "saved-memory-ref",
+        operation: "SAVE" as const,
+        statement: "I prefer concise answers.",
+        status: "COMMITTED" as const
+      }))
+    };
+    const queryResolver = { resolve: vi.fn() } as unknown as MemoryQueryResolverService;
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options,
+      actionExecutor,
+      queryResolver
+    }).retrieve(runInput(
+      "Remember that I prefer concise answers, then tell me what style I used before."
+    ));
+
+    expect(legacy.control.decide).toHaveBeenCalledOnce();
+    expect(actionExecutor.execute).toHaveBeenCalledOnce();
+    expect(queryResolver.resolve).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        memoryActionAnswerResult: {
+          operation: "SAVE",
+          status: "COMMITTED",
+          version: 1
+        },
+        memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
+        memoryActionControlRequested: true,
+        plannerFallbackReason: null,
+        queryResolverProviderCalls: 0
+      },
+      items: [{ exactItemId: "action-plus-read" }],
+      outcome: "USED"
+    });
+  });
+
   it("times out optional control early and keeps deterministic local evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
@@ -2981,11 +3124,13 @@ describe("Personal Memory v1 run admission", () => {
     });
     expect(result.budgetSnapshot).toMatchObject({
       memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 1 },
+      memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
+      memoryActionControlRequested: true,
       plan: {
         filterSourceKinds: ["HISTORY"],
         temporalIntent: "ANY"
       },
-      plannerFallbackReason: "memory_action_intent_unavailable"
+      plannerFallbackReason: null
     });
     expect(result.preparedContext?.text).toContain(
       '"state_resolution":"question_directed_timeline"'
@@ -3293,7 +3438,10 @@ describe("Personal Memory v1 run admission", () => {
       }))
     };
     const controlCache: MemoryRunControlCache = {};
-    const service = createMemoryRunRetrievalService(local.value, { control });
+    const service = createMemoryRunRetrievalService(local.value, {
+      control,
+      readUtilityPolicy: "CONTROL_RESOLVER_V1"
+    });
     await service.retrieve({ ...runInput("What did I decide?"), controlCache });
     const retry = await service.retrieve({
       ...runInput("What did I decide?"),
@@ -4135,7 +4283,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v18"
+        version: "memory-retrieval-component-metrics-v19"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });

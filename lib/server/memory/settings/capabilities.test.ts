@@ -111,6 +111,7 @@ function target(kind: "embedding" | "system"): ResolvedMemoryExecutionTarget {
           nativePdfInput: false,
           nativeSearch: false,
           pdf: false,
+          forcedToolCalling: true,
           reasoning: false,
           structuredOutput: true,
           toolCalling: true,
