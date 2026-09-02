@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resetRunSurfaceStoreForTest } from "@/tests/support/appShellStores";
 import {
   emptyRunSurfaceSnapshot,
+  liveWorkDurationMs,
   selectRunSurface,
   useRunSurfaceStore
 } from "./runSurfaceStore";
@@ -38,10 +39,14 @@ describe("run surface store", () => {
     });
 
     expect(surface("chat-a")).toEqual({
-      events: [{ data: { message: "started" }, type: "start" }]
+      answerStartedAt: null,
+      events: [{ data: { message: "started" }, type: "start" }],
+      startedAt: expect.any(Number)
     });
     expect(surface("chat-b")).toEqual({
-      events: [{ data: { status: "complete" }, type: "done" }]
+      answerStartedAt: null,
+      events: [{ data: { status: "complete" }, type: "done" }],
+      startedAt: expect.any(Number)
     });
   });
 
@@ -67,15 +72,36 @@ describe("run surface store", () => {
 
     useRunSurfaceStore.getState().resetSurface("chat-a");
 
-    expect(surface("chat-a")).toBe(emptyRunSurfaceSnapshot);
+    expect(surface("chat-a")).toEqual({
+      answerStartedAt: null,
+      events: [],
+      startedAt: expect.any(Number)
+    });
     expect(surface("chat-b").events).toHaveLength(1);
 
     useRunSurfaceStore.getState().removeSurface("chat-b");
 
-    expect(useRunSurfaceStore.getState().surfacesByChatId).toHaveProperty(
-      "chat-a",
-      emptyRunSurfaceSnapshot
-    );
+    expect(useRunSurfaceStore.getState().surfacesByChatId).toHaveProperty("chat-a");
     expect(useRunSurfaceStore.getState().surfacesByChatId).not.toHaveProperty("chat-b");
+  });
+
+  it("marks the send and the first answer token of the current round", () => {
+    useRunSurfaceStore.getState().resetSurface("chat-a");
+    const { startedAt } = surface("chat-a");
+    useRunSurfaceStore.getState().appendEvent("chat-a", { data: {}, type: "run_start" });
+    expect(surface("chat-a").answerStartedAt).toBeNull();
+    expect(liveWorkDurationMs(surface("chat-a"))).toBeNull();
+
+    useRunSurfaceStore.getState().appendEvent("chat-a", { data: { delta: "a" }, type: "token" });
+    const answerStartedAt = surface("chat-a").answerStartedAt;
+    expect(answerStartedAt).toEqual(expect.any(Number));
+    expect(liveWorkDurationMs(surface("chat-a"))).toBe(answerStartedAt! - startedAt!);
+
+    useRunSurfaceStore.getState().appendEvent("chat-a", { data: { delta: "b" }, type: "token" });
+    expect(surface("chat-a").answerStartedAt).toBe(answerStartedAt);
+
+    useRunSurfaceStore.getState().appendEvent("chat-a", { data: { round: 1 }, type: "message_reset" });
+    expect(surface("chat-a").answerStartedAt).toBeNull();
+    expect(surface("chat-a").startedAt).toBe(startedAt);
   });
 });

@@ -49,6 +49,7 @@ import {
   BranchPagerSlotV2,
   EditBranchStripV2
 } from "@/features/branches-v2/BranchesV2";
+import { branchPagerForMessageV2 } from "@/features/branches-v2/branchModel";
 import { AssistantPickerV2 } from "@/features/composer-v2/AssistantPickerV2";
 import {
   ComposerV2,
@@ -62,9 +63,9 @@ import {
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
 import {
-  AnswerOutputsV2,
-  ReasoningV2
+  AnswerOutputsV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import {
   ReadingRoomShellV2,
   type NavigationChatRowState,
@@ -696,43 +697,41 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // post-hoc execution surface.
     const settled = settledRunPresentationV2(presentation);
     const identity = answerIdentityV2(source);
-    // Answer anatomy (F6): identity and Reasoning lead the answer; Sources,
-    // Memory feedback, and the branch pager follow it.
-    const reasoningTexts = settled && composer.showReasoningBlocks
-      ? artifact?.reasoningText ?? []
-      : [];
-    const leadingSlot = identity || reasoningTexts.some((text) => text.trim()) ? (
+    // Answer anatomy: identity leads; the process fold (Thinking → Steps →
+    // Memory) sits above the text with the memory-saved notice under it; the
+    // actions row below carries the pager, the Sources chip and the verbs.
+    const leadingSlot = identity && source.assistantIdentity ? (
       <div className="v2-answer-lead">
-        {identity && source.assistantIdentity ? (
-          <span className="v2-answer-identity" data-testid={identity.testId}>
-            <AssistantAvatarV2 recipe={source.assistantIdentity.avatar} size={20} />
-            <span>{identity.label}</span>
-          </span>
-        ) : null}
-        <ReasoningV2 texts={reasoningTexts} />
+        <span className="v2-answer-identity" data-testid={identity.testId}>
+          <AssistantAvatarV2 recipe={source.assistantIdentity.avatar} size={20} />
+          <span>{identity.label}</span>
+        </span>
       </div>
+    ) : null;
+    const noticeSlot = settled && artifact?.memoryAction ? (
+      <MemoryActionConfirmationV2
+        action={artifact.memoryAction}
+        onOpenMemorySettings={settings.openMemory}
+      />
     ) : null;
     const knowledgeHandles = new Set(
       artifact?.knowledgeCitations?.map((citation) => citation.handle) ?? []
     );
     const knowledgeReference = knowledgeReferenceForMessageV2(source, artifact, settled);
+    // The persisted work duration wins once the run settles; while it streams
+    // the client clock (send → first token) fills the same slot.
+    const workDurationMs = artifact?.workDurationMs ??
+      (source.runId === thread.currentRunId ? thread.liveWorkDurationMs : null);
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
-        actionsSlot={settled ? (
-          <>
-            <AnswerOutputsV2
-              artifact={artifact}
-              knowledgeReference={knowledgeReference}
-              onOpenMemorySettings={settings.openMemory}
-              showReasoning={false}
-            />
-            {pagerSlot}
-          </>
-        ) : pagerSlot}
+        actionsSlot={settled ? <AnswerOutputsV2 artifact={artifact} /> : null}
         anchorId={source.id}
+        artifact={artifact}
         content={messageText(source)}
+        knowledgeReference={knowledgeReference}
         leadingSlot={leadingSlot}
+        noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
         onRetry={() => {
@@ -755,7 +754,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               />
             ) : null
           : undefined}
+        showReasoning={composer.showReasoningBlocks}
+        toolbarLeading={branches.graph && branchPagerForMessageV2(branches.graph, source.id)
+          ? pagerSlot
+          : null}
         toolActivity={toolActivity}
+        workDurationMs={workDurationMs}
       />
     );
   };

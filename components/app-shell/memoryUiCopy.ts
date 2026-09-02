@@ -148,6 +148,7 @@ const EN = {
   "source.heading": "Memory · {count}",
   "source.usedOne": "Used 1 memory",
   "source.usedMany": "Used {count} memories",
+  "source.actions": "Memory actions",
   "library.description": "Choose whether AIQSA can use and learn personal context.",
   "library.statusNeedsSetup": "Memory needs administrator setup",
   "library.statusOn": "Memory is on",

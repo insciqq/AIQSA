@@ -2,22 +2,26 @@
 
 import type {
   ChatNavigationSummaryWire,
-  ThreadArtifactSummary
+  ThreadArtifactSummary,
+  ThreadToolActivity
 } from "@/lib/contracts/chats";
 import {
   NavigationSidebar,
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
 import {
+  ConversationTurnV2,
   ConversationV2,
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
+import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { useState } from "react";
 import {
   AnswerOutputsV2,
   ToolApprovalCardV2,
   type ToolApprovalStatusV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import {
   KnowledgeCitationControl,
   KnowledgeCitationViewerProvider
@@ -31,6 +35,7 @@ export type AnswerOutputsGalleryState =
   | "citation-visual"
   | "complete"
   | "empty"
+  | "memory"
   | "reasoning";
 
 function citationSurface(state: AnswerOutputsGalleryState) {
@@ -76,6 +81,19 @@ const visualMessages: ConversationMessageV2[] = [
   }
 ];
 
+const memoryMessages: ConversationMessageV2[] = [
+  {
+    content: "Где я живу и как зовут мою собаку? Запомни, что я предпочитаю единицы СИ.",
+    id: "answer-outputs-question",
+    role: "user"
+  },
+  {
+    content: "Вы живёте в Лиссабоне, а собаку зовут Бруно. Единицы СИ теперь в памяти.",
+    id: "answer-outputs-answer",
+    role: "assistant"
+  }
+];
+
 const completeArtifact: ThreadArtifactSummary = {
   citations: [
     {
@@ -114,7 +132,8 @@ const completeArtifact: ThreadArtifactSummary = {
 const reasoningArtifact: ThreadArtifactSummary = {
   citations: [],
   reasoningText: ["**Сопоставление источников**\n\nПроверяю, что вывод следует из доступных материалов."],
-  sources: []
+  sources: [],
+  workDurationMs: 12_400
 };
 
 const visualArtifact: ThreadArtifactSummary = {
@@ -122,6 +141,46 @@ const visualArtifact: ThreadArtifactSummary = {
   knowledgeCitations: [{ handle: "K1.1" }],
   reasoningText: [],
   sources: []
+};
+
+/* The full settled anatomy: Thinking → Steps → Memory in the fold, a
+   "Memory saved." notice above the text, and no Sources chip. */
+const memoryArtifact: ThreadArtifactSummary = {
+  citations: [],
+  memoryAction: {
+    memoryRef: "mr1.gallery-save-reference",
+    operation: "SAVE",
+    statement: "I prefer SI units in answers.",
+    status: "COMMITTED"
+  },
+  memorySources: [
+    {
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+      date: "2026-09-02T09:00:00.000Z",
+      memoryRef: "mr1.gallery-source-1",
+      sourceAvailable: true,
+      sourceType: "SAVED_MEMORY",
+      text: "My dog is called Bruno and he is a beagle."
+    },
+    {
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+      date: "2026-08-28T09:00:00.000Z",
+      memoryRef: "mr1.gallery-source-2",
+      sourceAvailable: true,
+      sourceType: "LEARNED_MEMORY",
+      text: "I live in Lisbon."
+    }
+  ],
+  reasoningText: ["Two facts are already in memory; the unit preference is new and worth saving."],
+  sources: [],
+  workDurationMs: 8_300
+};
+
+const memoryToolActivity: ThreadToolActivity = {
+  calls: [
+    { durationMs: 640, round: 1, status: "complete", toolName: "search_knowledge" },
+    { durationMs: 1_400, round: 2, serverName: "Memory", status: "complete", toolName: "save_memory" }
+  ]
 };
 
 function ApprovalOutput() {
@@ -138,25 +197,20 @@ function ApprovalOutput() {
   );
 }
 
-function AnswerOutput({ state }: { state: AnswerOutputsGalleryState }) {
-  if (state === "approval") return <ApprovalOutput />;
-  if (state === "empty") return null;
-  const artifact = state === "reasoning"
-    ? reasoningArtifact
-    : state === "citation-visual"
-      ? visualArtifact
-      : completeArtifact;
-  const surface = citationSurface(state);
-  return (
-    <AnswerOutputsV2
-      artifact={artifact}
-      identitySlot={surface === "assistant" ? <span>Research assistant</span> : null}
-      knowledgeReference={surface
-        ? { messageId: "answer-outputs-answer", runId: "answer-outputs-run" }
-        : undefined}
-      showReasoning
-    />
-  );
+function artifactFor(state: AnswerOutputsGalleryState): ThreadArtifactSummary | null {
+  switch (state) {
+    case "approval":
+    case "empty":
+      return null;
+    case "reasoning":
+      return reasoningArtifact;
+    case "citation-visual":
+      return visualArtifact;
+    case "memory":
+      return memoryArtifact;
+    default:
+      return completeArtifact;
+  }
 }
 
 export function AnswerOutputsV2Gallery({
@@ -165,6 +219,10 @@ export function AnswerOutputsV2Gallery({
   state?: AnswerOutputsGalleryState;
 }) {
   const surface = citationSurface(state);
+  const artifact = artifactFor(state);
+  const knowledgeReference = surface
+    ? { messageId: "answer-outputs-answer", runId: "answer-outputs-run" }
+    : undefined;
   const sidebar = (onClose: () => void) => (
     <NavigationSidebar
       activeChatId="answer-outputs-fixture"
@@ -201,31 +259,67 @@ export function AnswerOutputsV2Gallery({
         >
           <main className="v2-conversation-gallery-main">
             <ConversationV2
-              getMessageActions={(message) => message.role === "assistant" ? {
-                onCopy: () => undefined,
-                onMore: () => undefined,
-                onRegenerate: () => undefined
-              } : {
-                onCopy: () => undefined,
-                onEdit: () => undefined,
-                onMore: () => undefined
-              }}
-              getMessagePresentation={(message) => message.role === "assistant" ? {
-                afterContent: <AnswerOutput state={state} />,
-                renderCitation: surface
-                  ? (handle, key) => handle === "K1.1" ? (
-                      <KnowledgeCitationControl
-                        key={key}
-                        reference={{
-                          handle,
-                          messageId: "answer-outputs-answer",
-                          runId: "answer-outputs-run"
-                        }}
-                      />
-                    ) : null
-                  : undefined
-              } : undefined}
-              messages={state === "citation-visual" ? visualMessages : messages}
+              messages={state === "citation-visual"
+                ? visualMessages
+                : state === "memory"
+                  ? memoryMessages
+                  : messages}
+              renderMessage={(message) => message.role === "user" ? (
+                <ConversationTurnV2
+                  actions={{
+                    onCopy: () => undefined,
+                    onEdit: () => undefined,
+                    onMore: () => undefined
+                  }}
+                  anchorId={message.id}
+                  content={message.content}
+                  role="user"
+                />
+              ) : (
+                <RunAnswerV2
+                  actions={{
+                    onCopy: () => undefined,
+                    onMore: () => undefined,
+                    onRegenerate: () => undefined
+                  }}
+                  actionsSlot={(
+                    <>
+                      {state === "approval" ? <ApprovalOutput /> : null}
+                      <AnswerOutputsV2 artifact={artifact} />
+                    </>
+                  )}
+                  anchorId={message.id}
+                  artifact={artifact}
+                  content={message.content}
+                  knowledgeReference={knowledgeReference}
+                  leadingSlot={surface === "assistant" ? (
+                    <div className="v2-answer-lead">
+                      <span className="v2-answer-identity">Research assistant</span>
+                    </div>
+                  ) : null}
+                  noticeSlot={artifact?.memoryAction ? (
+                    <MemoryActionConfirmationV2
+                      action={artifact.memoryAction}
+                      onOpenMemorySettings={() => undefined}
+                    />
+                  ) : null}
+                  presentation={{ kind: "complete", runId: "answer-outputs-run" }}
+                  renderCitation={surface
+                    ? (handle, key) => handle === "K1.1" ? (
+                        <KnowledgeCitationControl
+                          key={key}
+                          reference={{
+                            handle,
+                            messageId: "answer-outputs-answer",
+                            runId: "answer-outputs-run"
+                          }}
+                        />
+                      ) : null
+                    : undefined}
+                  toolActivity={state === "memory" ? memoryToolActivity : null}
+                  workDurationMs={artifact?.workDurationMs ?? null}
+                />
+              )}
             />
           </main>
         </ReadingRoomShellV2>

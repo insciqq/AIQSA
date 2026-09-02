@@ -6,6 +6,7 @@ import {
   type ButtonHTMLAttributes,
   type CSSProperties,
   type HTMLAttributes,
+  type KeyboardEvent,
   type ReactNode
 } from "react";
 
@@ -636,4 +637,33 @@ export function UiV2Toast({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Keyboard contract of an open menu surface: arrows, Home and End move focus
+ * between enabled items and Escape hands control back to the trigger.
+ */
+export function moveMenuFocusV2(
+  event: KeyboardEvent<HTMLElement>,
+  menu: HTMLElement | null,
+  onEscape: () => void
+): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    onEscape();
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = [...(menu?.querySelectorAll<HTMLElement>("[role='menuitem']:not(:disabled)") ?? [])];
+  if (items.length === 0) return;
+  const current = items.indexOf(document.activeElement as HTMLElement);
+  const next = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? items.length - 1
+      : event.key === "ArrowDown"
+        ? (current + 1 + items.length) % items.length
+        : (current - 1 + items.length) % items.length;
+  event.preventDefault();
+  items[next]?.focus();
 }

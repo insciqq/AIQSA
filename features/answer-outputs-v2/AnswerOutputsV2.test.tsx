@@ -1,8 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
+import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
+import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { describe, expect, it, vi } from "vitest";
 import { AnswerOutputsV2 } from "./AnswerOutputsV2";
+import { AnswerProcessV2 } from "./AnswerProcessV2";
 
 const shellFetch = vi.hoisted(() => vi.fn());
 
@@ -24,34 +27,36 @@ const artifact: ThreadArtifactSummary = {
     snippet: "Bounded safe snippet.",
     title: "Cross-language retrieval",
     url: "https://example.com/retrieval"
-  }]
+  }],
+  workDurationMs: 12_400
 };
 
-function memorySourceArtifact(): ThreadArtifactSummary {
+function memorySource(): MemoryAnswerSource {
   return {
-    citations: [],
-    memorySources: [{
-      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
-      date: "2026-08-21T05:00:00.000Z",
-      memoryRef: "opaque-memory-ref",
-      sourceAvailable: true,
-      sourceType: "SAVED_MEMORY",
-      text: "I prefer concise answers."
-    }],
-    reasoningText: [],
-    sources: []
+    actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+    date: "2026-08-21T05:00:00.000Z",
+    memoryRef: "opaque-memory-ref",
+    sourceAvailable: true,
+    sourceType: "SAVED_MEMORY",
+    text: "I prefer concise answers."
   };
 }
 
-/** The Memory fold is collapsed by default (B1); tests open it first. */
-function openMemorySources() {
-  for (const fold of screen.getAllByTestId("answer-memory-sources")) {
+/** The process fold is collapsed by default; tests open it first. */
+function openProcess() {
+  for (const fold of screen.getAllByTestId("tool-activity-disclosure")) {
     (fold as HTMLDetailsElement).open = true;
   }
 }
 
+/** Memory row verbs wait behind the row's "⋯" menu. */
+function pickMemoryAction(name: string, index = 0) {
+  fireEvent.click(screen.getAllByRole("button", { name: "Memory actions" })[index]!);
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+}
+
 describe("answer outputs v2", () => {
-  it("shows only safe Sources, reauthorized Project evidence, Reasoning, and identity", async () => {
+  it("shows safe Sources under the actions row, reauthorized Project evidence, and Thinking above", async () => {
     shellFetch.mockResolvedValue(new Response(JSON.stringify({
       citation: {
         blocks: [],
@@ -76,17 +81,29 @@ describe("answer outputs v2", () => {
     }), { status: 200 }));
     render(
       <KnowledgeCitationViewerProvider>
-        <AnswerOutputsV2
+        <RunAnswerV2
+          actions={{ onCopy: () => undefined, onRegenerate: () => undefined }}
           artifact={artifact}
-          identitySlot={<span>Quarterly analyst</span>}
+          content="Answer [K1.1]"
           knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
-          showReasoning
+          leadingSlot={<span>Quarterly analyst</span>}
+          presentation={{ kind: "complete", runId: "run-1" }}
         />
       </KnowledgeCitationViewerProvider>
     );
 
     expect(screen.getByText("Quarterly analyst")).toBeVisible();
-    fireEvent.click(screen.getByText("Sources"));
+    // The process line is a human phrase, never a count of tool calls.
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Thought for 12s");
+    expect(screen.queryByTestId("answer-sources")).not.toBeInTheDocument();
+    const toolbar = screen.getByRole("toolbar", { name: "Answer actions" });
+    const toggle = screen.getByTestId("answer-sources-toggle");
+    expect(toolbar).toContainElement(toggle);
+    expect(toggle).toHaveAccessibleName("Sources, 2 items");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAttribute("aria-controls", screen.getByTestId("answer-sources").id);
     expect(screen.getByRole("link", { name: "Cross-language retrieval" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));
     expect(await screen.findByText("The accepted Project passage.")).toBeVisible();
@@ -95,6 +112,8 @@ describe("answer outputs v2", () => {
       expect.objectContaining({ method: "GET" })
     );
     expect(screen.getByText(/retrieval-policy\.pdf · version 3/)).toBeVisible();
+    openProcess();
+    expect(screen.getByTestId("answer-reasoning")).toHaveTextContent("Thinking");
     expect(screen.getByTestId("answer-reasoning").textContent).not.toContain("**");
 
     const text = document.body.textContent ?? "";
@@ -104,7 +123,7 @@ describe("answer outputs v2", () => {
     expect(text).not.toContain("private-call-id");
     expect(text).not.toContain("private-argument");
     expect(text).not.toContain("private-result");
-    expect(text).not.toMatch(/invocation|threshold|candidate|Run details|Answer evidence/iu);
+    expect(text).not.toMatch(/invocation|threshold|candidate|Run details|Answer evidence|tool call/iu);
   });
 
   it("fails closed when a Project citation is no longer authorized", async () => {
@@ -113,22 +132,24 @@ describe("answer outputs v2", () => {
     }), { status: 404 }));
     render(
       <KnowledgeCitationViewerProvider>
-        <AnswerOutputsV2
+        <RunAnswerV2
           artifact={artifact}
+          content="Answer"
           knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
+          presentation={{ kind: "complete", runId: "run-1" }}
           showReasoning={false}
         />
       </KnowledgeCitationViewerProvider>
     );
-    fireEvent.click(screen.getByText("Sources"));
+    // Reasoning hidden by preference leaves nothing for the process line.
+    expect(screen.queryByTestId("tool-activity-disclosure")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("answer-sources-toggle"));
     fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));
     expect((await screen.findAllByText("Source unavailable"))[0]).toBeVisible();
   });
 
   it("renders no placeholder when there is no output", () => {
-    const { container } = render(
-      <AnswerOutputsV2 artifact={null} showReasoning={false} />
-    );
+    const { container } = render(<AnswerOutputsV2 artifact={null} />);
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -145,7 +166,6 @@ describe("answer outputs v2", () => {
           reasoningText: [],
           sources: []
         }}
-        showReasoning={false}
       />
     );
 
@@ -156,16 +176,26 @@ describe("answer outputs v2", () => {
     expect(state).toHaveTextContent(/still processing/iu);
   });
 
-  it("renders a quiet Memory source trace without refs, scores, or technical metadata", () => {
+  it("renders a quiet Memory source row without refs, scores, or technical metadata", () => {
     shellFetch.mockReset();
-    render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
-    openMemorySources();
+    render(<AnswerProcessV2 memorySources={[memorySource()]} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Used 1 memory");
+    openProcess();
 
-    expect(screen.getByRole("heading", { name: "Used 1 memory" })).toBeVisible();
-    expect(screen.getByText("Saved memory")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Memory" })).toBeVisible();
+    expect(screen.getByText("Saved memory")).toBeInTheDocument();
     expect(screen.getByText("I prefer concise answers.")).toBeVisible();
     expect(screen.getByText("Saved by you")).toBeVisible();
     expect(screen.getByText("Aug 21, 2026")).toBeVisible();
+    // The verbs wait behind one "⋯" per row, Forget last and destructive.
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Memory actions" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Correct",
+      "Not relevant",
+      "Forget"
+    ]);
+    expect(screen.getByRole("menuitem", { name: "Forget" })).toHaveAttribute("data-tone", "destructive");
     const text = document.body.textContent ?? "";
     expect(text).not.toContain("opaque-memory-ref");
     expect(text).not.toContain("score");
@@ -176,14 +206,14 @@ describe("answer outputs v2", () => {
   it("keeps Memory source headings and correction controls unique across answers", () => {
     const { container } = render(
       <>
-        <AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />
-        <AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />
+        <AnswerProcessV2 memorySources={[memorySource()]} />
+        <AnswerProcessV2 memorySources={[memorySource()]} />
       </>
     );
+    openProcess();
 
-    for (const button of screen.getAllByRole("button", { name: "Correct" })) {
-      fireEvent.click(button);
-    }
+    pickMemoryAction("Correct", 0);
+    pickMemoryAction("Correct", 0);
 
     const ids = Array.from(container.querySelectorAll<HTMLElement>("[id]"))
       .map((element) => element.id);
@@ -193,6 +223,7 @@ describe("answer outputs v2", () => {
       expect(headingId).toBeTruthy();
       expect(document.getElementById(headingId ?? "")).toBeInstanceOf(HTMLHeadingElement);
     }
+    expect(screen.getAllByRole("textbox", { name: "Correct this statement" })).toHaveLength(2);
     for (const textbox of screen.getAllByRole("textbox", { name: "Correct this statement" })) {
       const helpId = textbox.getAttribute("aria-describedby");
       expect(document.getElementById(helpId ?? "")).toBeInstanceOf(HTMLElement);
@@ -204,10 +235,10 @@ describe("answer outputs v2", () => {
     shellFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
-    render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
-    openMemorySources();
+    render(<AnswerProcessV2 memorySources={[memorySource()]} />);
+    openProcess();
 
-    fireEvent.click(screen.getByRole("button", { name: "Correct" }));
+    pickMemoryAction("Correct");
     const textbox = screen.getByRole("textbox", { name: "Correct this statement" });
     fireEvent.change(textbox, { target: { value: "  I prefer brief answers.  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
@@ -222,9 +253,8 @@ describe("answer outputs v2", () => {
     });
     expect(JSON.parse(String(correctionRequest.body)).requestNonce).toMatch(/^[a-f0-9]{48}$/u);
     expect(document.body.textContent).not.toContain("opaque-memory-ref");
-    expect(screen.queryByRole("button", { name: "Correct" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Forget" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Not relevant" })).not.toBeInTheDocument();
+    expect(screen.getByText("I prefer brief answers.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Memory actions" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open source" })).not.toBeInTheDocument();
     expect(shellFetch).toHaveBeenCalledOnce();
   });
@@ -234,10 +264,10 @@ describe("answer outputs v2", () => {
     shellFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
-    render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
-    openMemorySources();
+    render(<AnswerProcessV2 memorySources={[memorySource()]} />);
+    openProcess();
 
-    fireEvent.click(screen.getByRole("button", { name: "Not relevant" }));
+    pickMemoryAction("Not relevant");
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("not relevant"));
     const feedbackRequest = shellFetch.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(feedbackRequest.body))).toMatchObject({
@@ -251,18 +281,17 @@ describe("answer outputs v2", () => {
     shellFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
-    render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
-    openMemorySources();
+    render(<AnswerProcessV2 memorySources={[memorySource()]} />);
+    openProcess();
 
-    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    pickMemoryAction("Forget");
 
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("forgotten"));
     expect(screen.queryByText("I prefer concise answers.")).not.toBeInTheDocument();
     expect(screen.getByText("Source unavailable")).toBeVisible();
     expect(screen.getByText("This Memory source is unavailable.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Correct" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Forget" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Not relevant" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Memory actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open source" })).not.toBeInTheDocument();
   });
 
@@ -272,8 +301,7 @@ describe("answer outputs v2", () => {
     shellFetch.mockResolvedValueOnce(new Response(JSON.stringify({ href, status: "READY" }), {
       status: 200
     }));
-    const pastChatArtifact = memorySourceArtifact();
-    pastChatArtifact.memorySources = [{
+    render(<AnswerProcessV2 memorySources={[{
       actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
       date: "2026-08-21T05:00:00.000Z",
       memoryRef: "opaque-memory-ref",
@@ -281,9 +309,8 @@ describe("answer outputs v2", () => {
       sourceAvailable: true,
       sourceType: "PAST_CHAT",
       text: "The earlier discussion chose concise answers."
-    }];
-    render(<AnswerOutputsV2 artifact={pastChatArtifact} showReasoning={false} />);
-    openMemorySources();
+    }]} />);
+    openProcess();
 
     fireEvent.click(screen.getByRole("button", { name: "Open source" }));
     await waitFor(() => expect(screen.getByRole("link", { name: "Open source" })).toHaveAttribute(
@@ -295,22 +322,19 @@ describe("answer outputs v2", () => {
   });
 
   it("does not show private source text or actions when a source is unavailable", () => {
-    const unavailable = memorySourceArtifact();
-    unavailable.memorySources = unavailable.memorySources?.map((source) => ({
+    render(<AnswerProcessV2 memorySources={[{
       actions: [],
-      date: source.date,
+      date: "2026-08-21T05:00:00.000Z",
       sourceAvailable: false,
-      sourceType: source.sourceType
-    }));
-    render(<AnswerOutputsV2 artifact={unavailable} showReasoning={false} />);
-    openMemorySources();
+      sourceType: "SAVED_MEMORY"
+    }]} />);
+    openProcess();
 
     expect(screen.getByText("Source unavailable")).toBeVisible();
     expect(screen.getByText("This Memory source is unavailable.")).toBeVisible();
     expect(screen.queryByText("private text that must stay hidden")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Correct" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Forget" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Not relevant" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Memory actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
   });
 
   it("shows a bounded friendly notice when Memory was unavailable for this response", () => {
@@ -319,7 +343,7 @@ describe("answer outputs v2", () => {
       memoryStatus: "UNAVAILABLE",
       reasoningText: [],
       sources: []
-    }} showReasoning={false} />);
+    }} />);
 
     expect(screen.getByRole("status")).toHaveTextContent(
       "Memory was unavailable for this response."
@@ -335,7 +359,7 @@ describe("answer outputs v2", () => {
       memoryStatus: "LIMITED",
       reasoningText: [],
       sources: []
-    }} showReasoning={false} />);
+    }} />);
 
     expect(screen.getByRole("status")).toHaveTextContent(
       "Memory was used with limitations for this response."

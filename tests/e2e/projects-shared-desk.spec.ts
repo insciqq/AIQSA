@@ -279,9 +279,10 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await expect(contributorAnswer).toContainText(promptTail, { timeout: 25_000 });
     await expect(projectChatRow(contributorPage, promptHead).getByLabel("Answer in progress"))
       .toHaveCount(0, { timeout: 8_000 });
+    const sourcesToggle = contributorPage.getByTestId("answer-sources-toggle").last();
+    await expect(sourcesToggle).toBeVisible();
+    await sourcesToggle.click();
     const sources = contributorPage.getByTestId("answer-sources").last();
-    await expect(sources).toBeVisible();
-    await sources.locator("summary").click();
     await expect(sources.getByRole("link", { name: "Project Search fixture" }).first()).toBeVisible();
 
     // Continue from the exact client state that admitted the draft chat. No

@@ -68,6 +68,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "citation-visual",
         "complete",
         "empty",
+        "memory",
         "reasoning"
       ] as const,
       "complete"

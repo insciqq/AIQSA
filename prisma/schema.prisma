@@ -2632,6 +2632,7 @@ model ModelRun {
   estimatedCostMicros         Int                                 @default(0)
   errorPayload                Json?
   toolLoopState               Json?
+  answerStartedAt             DateTime?
   createdAt                   DateTime                            @default(now())
   updatedAt                   DateTime                            @updatedAt
   assistantMessage            Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)

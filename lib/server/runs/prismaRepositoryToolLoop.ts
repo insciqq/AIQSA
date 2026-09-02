@@ -416,6 +416,7 @@ export type PrismaRunToolLoopOperations = Pick<
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadFocusedKnowledgeScopeExclusions"
   | "loadProviderDispatchRecoveryRequest"
+  | "markRunAnswerStarted"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
   | "recordRunUsageEvents"
@@ -1706,10 +1707,16 @@ export function createPrismaRunToolLoopOperations(
         });
         if (reset.count !== 1) return false;
         await tx.modelRun.update({
-          data: { updatedAt: new Date() },
+          data: { answerStartedAt: null, updatedAt: new Date() },
           where: { id: input.runId }
         });
         return true;
+      });
+    },
+    markRunAnswerStarted: async (input) => {
+      await prismaClient.modelRun.updateMany({
+        data: { answerStartedAt: input.at },
+        where: { answerStartedAt: null, id: input.runId }
       });
     },
     settleRecoveredRunError: async (input) => {

@@ -7,12 +7,21 @@ import {
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
 import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
-import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
+import {
+  UiV2Button,
+  UiV2Chip,
+  UiV2Icon,
+  UiV2IconButton,
+  UiV2MenuActions,
+  UiV2MenuSurface,
+  moveMenuFocusV2,
+  type UiV2MenuAction
+} from "@/components/ui-v2";
 import {
   MEMORY_STATEMENT_MAX_LENGTH,
   type MemoryActionFeedback
 } from "@/lib/contracts/memoryClient";
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 type MemoryActionResultItem = NonNullable<MemoryActionFeedback["items"]>[number];
 
@@ -239,6 +248,141 @@ function MemoryActionConfirmationContent({
   const committedEditable = action.status === "COMMITTED" &&
     (action.operation === "SAVE" || action.operation === "UPDATE") &&
     Boolean(action.memoryRef && action.statement);
+  // A committed save/update/forget is a one-line notice under the process
+  // line ("Memory saved." · statement · "⋯"), like ChatGPT's "Memory updated";
+  // lists, searches and choices keep a card built from the same rows.
+  const committedNotice = action.status === "COMMITTED" &&
+    (action.operation === "SAVE" || action.operation === "UPDATE" || action.operation === "FORGET");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuId = `${headingId}-menu`;
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    queueMicrotask(() => {
+      menuRef.current?.querySelector<HTMLElement>("[role='menuitem']:not(:disabled)")?.focus();
+    });
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menuRef.current?.contains(target) || menuButtonRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [menuOpen]);
+
+  function closeMenu({ restoreFocus = false } = {}): void {
+    setMenuOpen(false);
+    if (restoreFocus) queueMicrotask(() => menuButtonRef.current?.focus());
+  }
+
+  const editForm = committedEditable && editing ? (
+    <form className="v2-memory-source-correction" onSubmit={submitEdit}>
+      <label htmlFor={`${headingId}-statement`}>{t("action.correctMemory")}</label>
+      <textarea
+        id={`${headingId}-statement`}
+        maxLength={MEMORY_STATEMENT_MAX_LENGTH}
+        onChange={(event) => setStatement(event.target.value)}
+        rows={3}
+        value={statement}
+      />
+      <div className="v2-memory-action-buttons">
+        <UiV2Button
+          busy={pendingRef === action.memoryRef}
+          disabled={pendingRef !== null}
+          tone="primary"
+          type="submit"
+        >
+          {t("action.saveCorrection")}
+        </UiV2Button>
+        <UiV2Button
+          disabled={pendingRef !== null}
+          onClick={() => setEditing(false)}
+          type="button"
+        >
+          {t("manager.cancel")}
+        </UiV2Button>
+      </div>
+    </form>
+  ) : null;
+
+  if (committedNotice) {
+    const menuActions: UiV2MenuAction[] = [
+      ...(committedEditable && completedRef === null ? [
+        {
+          icon: "edit" as const,
+          label: t("manager.edit"),
+          onSelect: () => {
+            setStatement(action.statement ?? "");
+            setError(null);
+            setEditing(true);
+          }
+        },
+        {
+          icon: "trash" as const,
+          label: t("manager.forget"),
+          onSelect: () => void mutate(action.memoryRef!, "FORGET"),
+          tone: "destructive" as const
+        }
+      ] : []),
+      ...(onOpenMemorySettings ? [{
+        icon: "memory" as const,
+        label: t("action.manage"),
+        onSelect: onOpenMemorySettings,
+        separatorBefore: true
+      }] : [])
+    ];
+    const showMenu = !editing && menuActions.length > 0 && action.operation !== "FORGET";
+    return (
+      <section
+        aria-labelledby={headingId}
+        className="v2-memory-notice"
+        data-testid="memory-action-confirmation"
+        role="region"
+      >
+        <div className="v2-memory-notice-line">
+          <UiV2Icon name="check" />
+          <p aria-live="polite" id={headingId} role="status">{statusMessage(action)}</p>
+          {action.statement && action.operation !== "FORGET" ? (
+            <blockquote data-testid="memory-action-statement">“{action.statement}”</blockquote>
+          ) : null}
+          {showMenu ? (
+            <span className="v2-memory-source-menu-wrap">
+              <UiV2IconButton
+                ref={menuButtonRef}
+                aria-controls={menuOpen ? menuId : undefined}
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                data-testid="memory-action-menu"
+                disabled={pendingRef !== null}
+                icon="more"
+                label={t("source.actions")}
+                tooltip={t("source.actions")}
+                onClick={() => setMenuOpen((open) => !open)}
+              />
+              {menuOpen ? (
+                <UiV2MenuSurface
+                  ref={menuRef}
+                  className="v2-memory-source-menu"
+                  id={menuId}
+                  label={t("source.actions")}
+                  onKeyDown={(event) => moveMenuFocusV2(event, menuRef.current, () => closeMenu({ restoreFocus: true }))}
+                >
+                  <UiV2MenuActions actions={menuActions} onClose={() => closeMenu()} />
+                </UiV2MenuSurface>
+              ) : null}
+            </span>
+          ) : null}
+        </div>
+        {editForm}
+        {notice ? <p aria-live="polite" role="status">{notice}</p> : null}
+        {error ? <p aria-live="assertive" role="alert">{error}</p> : null}
+      </section>
+    );
+  }
+
   return (
     <section
       aria-labelledby={headingId}
@@ -276,59 +420,6 @@ function MemoryActionConfirmationContent({
         ) : (
           <Statement statement={action.status === "REJECTED" ? undefined : action.statement} />
         )}
-        {committedEditable && !editing && completedRef === null ? (
-          <div className="v2-memory-action-buttons">
-            <UiV2Button
-              disabled={pendingRef !== null}
-              onClick={() => {
-                setStatement(action.statement ?? "");
-                setError(null);
-                setEditing(true);
-              }}
-              type="button"
-            >
-              {t("manager.edit")}
-            </UiV2Button>
-            <UiV2Button
-              busy={pendingRef === action.memoryRef}
-              disabled={pendingRef !== null}
-              onClick={() => void mutate(action.memoryRef!, "FORGET")}
-              tone="destructive"
-              type="button"
-            >
-              {t("manager.forget")}
-            </UiV2Button>
-          </div>
-        ) : null}
-        {committedEditable && editing ? (
-          <form className="v2-memory-source-correction" onSubmit={submitEdit}>
-            <label htmlFor={`${headingId}-statement`}>{t("action.correctMemory")}</label>
-            <textarea
-              id={`${headingId}-statement`}
-              maxLength={MEMORY_STATEMENT_MAX_LENGTH}
-              onChange={(event) => setStatement(event.target.value)}
-              rows={3}
-              value={statement}
-            />
-            <div className="v2-memory-action-buttons">
-              <UiV2Button
-                busy={pendingRef === action.memoryRef}
-                disabled={pendingRef !== null}
-                tone="primary"
-                type="submit"
-              >
-                {t("action.saveCorrection")}
-              </UiV2Button>
-              <UiV2Button
-                disabled={pendingRef !== null}
-                onClick={() => setEditing(false)}
-                type="button"
-              >
-                {t("manager.cancel")}
-              </UiV2Button>
-            </div>
-          </form>
-        ) : null}
         {action.status === "CONFIRMATION_REQUIRED" && action.operation === "RESET" &&
           onOpenMemorySettings ? (
             <div className="v2-memory-action-buttons">

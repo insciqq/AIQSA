@@ -2814,7 +2814,7 @@ describe("message run actions", () => {
       activeLeafId: null,
       messages: []
     });
-    expect(actions.surface(createdChat.id)).toEqual({
+    expect(actions.surface(createdChat.id)).toMatchObject({
       events: []
     });
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({

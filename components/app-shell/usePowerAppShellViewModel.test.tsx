@@ -34,7 +34,7 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       pendingChatFolderId: null,
       projectSettingsFolderId: null,
       renderActiveLeafId: null,
-      runSurface: { events: [] },
+      runSurface: { answerStartedAt: null, events: [], startedAt: null },
       selectedAssistantPromptCharacterCount: null,
       selectedModelId: "gpt-5.5",
       selectedProvider: "openai",

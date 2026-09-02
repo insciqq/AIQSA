@@ -2,8 +2,10 @@
 
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
-import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownCitationRenderer } from "@/components/chat/MarkdownMessage";
+import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
+import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import {
   ConversationTurnV2,
   type ConversationMessageActionsV2
@@ -18,56 +20,13 @@ import {
 import {
   describeToolCallV2,
   settledRunPresentationV2,
+  stepDurationSumV2,
   type RunPresentationV2
 } from "./runPresentation";
 
 type MaybePromise = Promise<unknown> | unknown;
 
-function RunActivityLineV2({ presentation }: { presentation: RunPresentationV2 }) {
-  if (presentation.kind !== "activity" || !presentation.activity) return null;
-
-  return (
-    <div
-      className="v2-run-status-line"
-      data-activity={presentation.activity.kind}
-      data-testid="run-status-line"
-    >
-      <span className="v2-run-shimmer">{presentation.activity.label}</span>
-    </div>
-  );
-}
-
-function toolDuration(durationMs: number | undefined): string | null {
-  if (durationMs === undefined) return null;
-  return durationMs < 1_000
-    ? `${durationMs} ms`
-    : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
-}
-
 type ToolCallV2 = ThreadToolActivity["calls"][number];
-
-/* Meta reads "0.8 s · round 2"; only a non-complete state adds a word. */
-function toolMeta(call: ToolCallV2): string {
-  const parts: string[] = [];
-  const duration = toolDuration(call.durationMs);
-  if (call.status === "error") parts.push("Failed");
-  else if (call.status === "cancelled") parts.push("Stopped");
-  if (duration) parts.push(duration);
-  parts.push(`round ${call.round}`);
-  return parts.join(" · ");
-}
-
-function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
-  if (status === "running") {
-    return <span className="v2-tool-activity-mark v2-spinner" data-status={status} aria-hidden="true" />;
-  }
-  return (
-    <span className="v2-tool-activity-mark" data-status={status} aria-hidden="true">
-      {status === "complete" ? <UiV2Icon name="check" /> : null}
-      {status === "error" ? <UiV2Icon name="alert" /> : null}
-    </span>
-  );
-}
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
   let call: ToolCallV2 | undefined;
@@ -79,53 +38,6 @@ function runningToolLabel(activity: ThreadToolActivity): string | null {
   }
   if (!call) return null;
   return `${describeToolCallV2(call, "running")}…`;
-}
-
-function RunToolActivityV2({
-  active,
-  activeLabel,
-  activity
-}: {
-  active: boolean;
-  activeLabel: string;
-  activity: ThreadToolActivity;
-}) {
-  const count = activity.calls.length;
-  const settledLabel = `${count} tool ${count === 1 ? "call" : "calls"}`;
-  return (
-    <div className="v2-tool-activity" data-active={active || undefined}>
-      {count > 0 ? (
-        <details data-testid="tool-activity-disclosure">
-          <summary className="v2-focusable">
-            <span className="v2-tool-activity-chevron" aria-hidden="true" />
-            <span className={active ? "v2-run-shimmer" : undefined}>
-              {active ? activeLabel : settledLabel}
-            </span>
-          </summary>
-          <ol>
-            {activity.calls.map((call, index) => {
-              return (
-                <li key={`${call.round}:${index}:${call.toolName}`} data-status={call.status}>
-                  <ToolCallMarkV2 status={call.status} />
-                  <span className="v2-tool-activity-copy">
-                    <span className="v2-tool-activity-name">
-                      {describeToolCallV2(call, call.status === "running" ? "running" : "settled")}
-                    </span>
-                    <span className="v2-tool-activity-meta">{toolMeta(call)}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-        </details>
-      ) : null}
-      {activity.warning ? (
-        <div className="v2-tool-budget-warning" data-kind={activity.warning.kind} role="status">
-          Tool {activity.warning.kind === "calls" ? "call" : "round"} limit ({activity.warning.limit}) stopped further tool use.
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function RunConnectionLossV2({
@@ -246,11 +158,17 @@ function RunErrorV2({
 
 export type RunAnswerV2Props = Readonly<{
   actions?: ConversationMessageActionsV2;
+  /** Quiet status lines between the body and the actions row. */
   actionsSlot?: ReactNode;
   anchorId?: string;
+  /** Settled answer outputs: Sources chip + list and the process fold's memory rows. */
+  artifact?: ThreadArtifactSummary | null;
   content: string;
-  /** Quiet identity/reasoning block rendered above tool activity and the body. */
+  knowledgeReference?: Readonly<{ messageId: string; runId: string }>;
+  /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
+  /** The memory-saved notice, rendered under the process line and above the text. */
+  noticeSlot?: ReactNode;
   onRefresh?(): MaybePromise;
   onRegenerate?(): void;
   onRetry?(): void;
@@ -258,15 +176,23 @@ export type RunAnswerV2Props = Readonly<{
   onUseLoadAll?(): void;
   presentation: RunPresentationV2;
   renderCitation?: MarkdownCitationRenderer;
+  showReasoning?: boolean;
+  /** Leading toolbar controls (the branch pager) placed before the Sources chip. */
+  toolbarLeading?: ReactNode;
   toolActivity?: ThreadToolActivity | null;
+  /** Send → first answer token; the live value while streaming, the persisted one once settled. */
+  workDurationMs?: number | null;
 }>;
 
 export function RunAnswerV2({
   actions,
   actionsSlot,
   anchorId,
+  artifact = null,
   content,
+  knowledgeReference,
   leadingSlot = null,
+  noticeSlot = null,
   onRefresh,
   onRegenerate,
   onRetry,
@@ -274,39 +200,34 @@ export function RunAnswerV2({
   onUseLoadAll,
   presentation,
   renderCitation,
-  toolActivity = null
+  showReasoning = true,
+  toolbarLeading = null,
+  toolActivity = null,
+  workDurationMs = null
 }: RunAnswerV2Props) {
-  const runActive = presentation.kind === "activity" || presentation.kind === "streaming";
-  const activeLabel = toolActivity
-    ? runningToolLabel(toolActivity) ?? presentation.activity?.label ?? "Answering…"
-    : presentation.activity?.label ?? "Answering…";
-  const activityContent = toolActivity
-    ? (
-        <RunToolActivityV2
-          active={runActive}
-          activeLabel={activeLabel}
-          activity={toolActivity}
-        />
-      )
-    : presentation.kind === "activity"
-      ? <RunActivityLineV2 presentation={presentation} />
-      : null;
-  const beforeContent = leadingSlot || activityContent
-    ? (
-        <>
-          {leadingSlot}
-          {activityContent}
-        </>
-      )
+  const settled = settledRunPresentationV2(presentation);
+  const sources = useAnswerSourcesV2({
+    artifact: settled ? artifact : null,
+    knowledgeReference
+  });
+  // The live status occupies the process line's slot until the first answer
+  // token; from then on the same line is the fold with whatever settled facts
+  // exist (steps, then reasoning and memory once the artifact summary lands).
+  const liveLabel = presentation.kind === "activity"
+    ? (toolActivity ? runningToolLabel(toolActivity) : null) ??
+      presentation.activity?.label ?? "Thinking…"
     : null;
+  const process = (
+    <AnswerProcessV2
+      liveLabel={liveLabel}
+      memorySources={settled ? artifact?.memorySources ?? [] : []}
+      reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
+      toolActivity={toolActivity}
+      workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}
+    />
+  );
   const afterContent = (
     <>
-      {presentation.kind === "streaming" ? (
-        <div className="v2-run-live-line" data-testid="run-live-line">
-          <span className="v2-run-live-dot" aria-hidden="true" />
-          <span>Answering…</span>
-        </div>
-      ) : null}
       {presentation.kind === "connection_lost" ? (
         <RunConnectionLossV2 onRefresh={onRefresh} />
       ) : null}
@@ -327,15 +248,28 @@ export function RunAnswerV2({
   return (
     <ConversationTurnV2
       actions={actions}
+      afterActions={sources.list}
       afterContent={afterContent}
       anchorId={anchorId}
-      beforeContent={beforeContent}
+      beforeContent={(
+        <>
+          {leadingSlot}
+          {process}
+          {noticeSlot}
+        </>
+      )}
       className={`v2-run-answer v2-run-answer-${presentation.kind}`}
       content={content}
       hideEmptyContent={!content.trim() && presentation.kind !== "idle"}
       role="assistant"
       renderCitation={renderCitation}
       streaming={presentation.kind === "streaming"}
+      toolbarLeading={toolbarLeading || sources.chip ? (
+        <>
+          {toolbarLeading}
+          {sources.chip}
+        </>
+      ) : null}
     />
   );
 }

@@ -218,8 +218,8 @@ test("opens an exact Personal Memory source through the opaque action redirect",
   });
   await signInWithLocalToken(page);
 
-  // Memory recall folds under "Used N memories" (UX audit 2026-09-02 B1).
-  await page.getByTestId("answer-memory-sources").locator("summary").click();
+  // Memory recall lives inside the answer's process fold ("Used 1 memory").
+  await page.getByTestId("tool-activity-disclosure").locator("summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });
@@ -295,8 +295,8 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
   });
   await signInWithLocalToken(page);
 
-  // Memory recall folds under "Used N memories" (UX audit 2026-09-02 B1).
-  await page.getByTestId("answer-memory-sources").locator("summary").click();
+  // Memory recall lives inside the answer's process fold ("Used 1 memory").
+  await page.getByTestId("tool-activity-disclosure").locator("summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });
@@ -361,8 +361,10 @@ for (const locale of ["EN", "RU"] as const) {
     const answer = page.locator(`[data-message-id="assistant-action-${locale}"]`);
     await expect(answer.getByTestId("memory-action-statement")).toContainText(action.statement!);
     await expect(answer.getByText("Memory saved.", { exact: true })).toBeVisible();
-    await expect(answer.getByRole("button", { name: "Edit" })).toBeVisible();
-    await expect(answer.getByRole("button", { name: "Forget" })).toBeVisible();
+    // One quiet line: Edit and Forget wait behind the notice's "⋯" menu.
+    await answer.getByTestId("memory-action-menu").click();
+    await expect(answer.getByRole("menuitem", { name: "Edit" })).toBeVisible();
+    await expect(answer.getByRole("menuitem", { name: "Forget" })).toBeVisible();
   });
 }
 
