@@ -2497,7 +2497,9 @@ export function createMemoryRunRetrievalService(
       const timings = createMemoryPreparationTimings(
         options.monotonicClock ?? (() => performance.now())
       );
-      let settledQueryResolverExecution: MemoryQueryResolverExecution | null = null;
+      const queryResolverState: { execution: MemoryQueryResolverExecution | null } = {
+        execution: null
+      };
       const result: MemoryPreparingAttemptResult = await (
         async (): Promise<MemoryPreparingAttemptResult> => {
       if (input.expected.chatMemoryMode === "TEMPORARY") {
@@ -2703,7 +2705,7 @@ export function createMemoryRunRetrievalService(
           sources,
           strategy: "SPECULATIVE" as const
         });
-        settledQueryResolverExecution = execution;
+        queryResolverState.execution = execution;
         return execution;
       };
       if (typeof repository.retrieveSpeculativeBaseline === "function") {
@@ -3394,7 +3396,7 @@ export function createMemoryRunRetrievalService(
         return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
           { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
           {
-            result: settledQueryResolverExecution?.result ?? null,
+            result: queryResolverState.execution?.result ?? null,
             role: "MEMORY_QUERY_RESOLVE"
           },
           { result: initialRelevance, role: "MEMORY_RERANK" }
@@ -3502,7 +3504,7 @@ export function createMemoryRunRetrievalService(
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
               { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
               {
-                result: settledQueryResolverExecution?.result ?? null,
+                result: queryResolverState.execution?.result ?? null,
                 role: "MEMORY_QUERY_RESOLVE"
               },
               { result: relevance, role: "MEMORY_RERANK" }
@@ -3611,7 +3613,7 @@ export function createMemoryRunRetrievalService(
             safetyFindingCounts: querySafety.findingCounts,
             utilityEgressMode: currentControlExternal ||
               utilityUsedExternal(queryEmbedding) ||
-              utilityUsedExternal(settledQueryResolverExecution?.result ?? null) ||
+              utilityUsedExternal(queryResolverState.execution?.result ?? null) ||
               utilityUsedExternal(relevance)
               ? "CONSENTED_EXTERNAL"
               : "LOCAL_ONLY",
@@ -3620,7 +3622,7 @@ export function createMemoryRunRetrievalService(
               utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
               utilityEvidence(
                 "MEMORY_QUERY_RESOLVE",
-                settledQueryResolverExecution?.result ?? null
+                queryResolverState.execution?.result ?? null
               ),
               utilityEvidence("MEMORY_RERANK", relevance)
             ],
@@ -3646,7 +3648,7 @@ export function createMemoryRunRetrievalService(
           ranked: selectedDynamic
         });
         const resolverAtAttach = finalResolverApplicable
-          ? settledQueryResolverExecution
+          ? queryResolverState.execution
           : null;
         if (!finalResolverApplicable) {
           return Object.freeze({
@@ -3849,7 +3851,7 @@ export function createMemoryRunRetrievalService(
         deadline.dispose();
       }
       })();
-      return withMemoryPreparationEvidence(result, timings, settledQueryResolverExecution);
+      return withMemoryPreparationEvidence(result, timings, queryResolverState.execution);
     }
   });
 }

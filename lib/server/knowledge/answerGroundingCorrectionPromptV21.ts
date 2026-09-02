@@ -602,9 +602,13 @@ export function knowledgeGroundedDeltaSelectorPromptV4(
     scope: KnowledgeCoverageScopeV6;
   }>
 ): Readonly<{ systemPrompt: string; userPrompt: string }> {
+  if (isKnowledgeDraftMalformed(input.draft)) {
+    throw new Error("knowledge_grounded_delta_selector_prompt_invalid");
+  }
+  const draft = input.draft;
   const atomIndexVersion = input.atomIndexVersion ?? 1;
   const primaryClaimCount = input.initialSelector.claims.length;
-  const supplementalClaims = input.draft.claims.slice(primaryClaimCount);
+  const supplementalClaims = draft.claims.slice(primaryClaimCount);
   const bindingByClaimId = new Map(input.bindings.map((binding) =>
     [binding.claimId, binding] as const));
   const targetable = input.initialSelector.coverage.filter((dimension) =>
@@ -622,7 +626,7 @@ export function knowledgeGroundedDeltaSelectorPromptV4(
     targetIds.size === targetable.length && targetIds.size > 0 &&
     input.scope.scope.length === input.initialSelector.coverage.length &&
     input.initialSelector.claims.every((claim, index) =>
-      input.draft.claims[index]?.id === claim.id) &&
+      draft.claims[index]?.id === claim.id) &&
     supplementalClaims.every((claim) => bindingByClaimId.has(claim.id)) &&
     input.bindings.every(({ targetDimensionId }) => targetIds.has(targetDimensionId)) &&
     targetable.every(({ id }) => input.bindings.some((binding) =>

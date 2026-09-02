@@ -3,7 +3,8 @@ import { fileURLToPath } from "node:url";
 export const vitestBaseExcludes = [
   "node_modules/**",
   ".next/**",
-  "tests/e2e/**"
+  "tests/e2e/**",
+  "scripts/longmemeval-qualification.test.ts"
 ];
 
 export const vitestStatefulTests = [

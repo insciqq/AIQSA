@@ -36,7 +36,7 @@ const executionPolicy = Object.freeze({
   auditorReasoningEffort: "high",
   draftReasoningEffort: "low",
   egressDestination: "answer_provider",
-  overriddenRoles: Object.freeze(["auditor"]),
+  overriddenRoles: Object.freeze(["auditor"] as const),
   providerBindingKey: "answer",
   selectorReasoningEffort: "low",
   supplementReasoningEffort: "low",

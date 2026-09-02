@@ -120,7 +120,10 @@ const allowedTopLevelKeys: Record<string, Set<string>> = {
   ])
 };
 
-function invalid(): RunParamValidationResult {
+function invalid(): Readonly<{
+  code: typeof invalidRunParamsError;
+  ok: false;
+}> {
   return {
     code: invalidRunParamsError,
     ok: false

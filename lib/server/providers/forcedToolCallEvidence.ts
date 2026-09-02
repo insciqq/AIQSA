@@ -2,7 +2,7 @@ import type { CatalogAdapterKind } from "../../domain/catalog";
 
 export const FORCED_TOOL_CALL_PROBE_VERSION = 1 as const;
 
-const supportedAdapters = new Set<CatalogAdapterKind>([
+const supportedAdapterKinds = [
   "anthropic_messages",
   "deepseek_responses_native",
   "gemini_interactions_native",
@@ -10,10 +10,14 @@ const supportedAdapters = new Set<CatalogAdapterKind>([
   "openai_responses_compatible",
   "openai_responses_native",
   "openrouter_chat_completions"
-]);
+] as const satisfies readonly CatalogAdapterKind[];
+
+export type ForcedToolCallAdapterKind = typeof supportedAdapterKinds[number];
+
+const supportedAdapters = new Set<ForcedToolCallAdapterKind>(supportedAdapterKinds);
 
 export type ForcedToolCallVerificationEvidence = Readonly<{
-  adapterKind: CatalogAdapterKind;
+  adapterKind: ForcedToolCallAdapterKind;
   probeVersion: typeof FORCED_TOOL_CALL_PROBE_VERSION;
   upstreamModelId: string;
   verified: true;
@@ -30,8 +34,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function supportsForcedToolCallProbe(
   adapterKind: CatalogAdapterKind | string
-): adapterKind is CatalogAdapterKind {
-  return supportedAdapters.has(adapterKind as CatalogAdapterKind);
+): adapterKind is ForcedToolCallAdapterKind {
+  return supportedAdapters.has(adapterKind as ForcedToolCallAdapterKind);
 }
 
 export function forcedToolCallVerificationEvidence(
