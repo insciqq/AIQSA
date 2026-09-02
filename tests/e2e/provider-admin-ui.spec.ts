@@ -1422,7 +1422,8 @@ test("administrator activates a Custom replacement and deletes its complete conf
   await section.getByRole("tab", { name: "Connections" }).click();
   await section.getByTestId("provider-connection-index")
     .getByRole("button", { name: /Lifecycle Custom/ }).click();
-  await section.getByRole("tab", { name: "Models" }).click();
+  // Exact: the workspace strip also has a "System Models" tab.
+  await section.getByRole("tab", { exact: true, name: "Models" }).click();
   await section.getByTestId("provider-task-models")
     .getByRole("button", { name: "Add model" }).click();
   await expect.poll(() => compatibleDiscoveryBodies.length).toBe(1);
