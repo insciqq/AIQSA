@@ -468,7 +468,7 @@ describe("provider model configuration", () => {
     expect(automatic.openRouterRouting).toEqual({ mode: "automatic", providers: [] });
     expect(automatic.defaultParams.provider).toEqual({
       allowFallbacks: true,
-      dataCollection: "deny",
+      dataCollection: "allow",
       only: [],
       order: [],
       requireParameters: false,

@@ -99,4 +99,12 @@ describe("provider parameter defaults", () => {
       temperature: 0
     });
   });
+
+  it("preserves the explicit structured-output tool-choice capability", () => {
+    expect(normalizeOpenRouterParams({
+      provider: { structured_output_tool_choice: "auto" }
+    }).provider.structuredOutputToolChoice).toBe("auto");
+    expect(normalizeOpenRouterParams({}).provider.structuredOutputToolChoice)
+      .toBeUndefined();
+  });
 });

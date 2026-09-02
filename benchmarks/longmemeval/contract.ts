@@ -20,7 +20,10 @@ export const LONGMEMEVAL_MAX_EVALUATOR_CONCURRENCY = 32;
 export const LONGMEMEVAL_PROFILES = ["official", "product"] as const;
 export const LONGMEMEVAL_SYSTEM_MODEL_IDS = [
   "gpt-5.6-sol",
-  "gpt-5.6-luna"
+  "gpt-5.6-luna",
+  "deepseek/deepseek-v4-flash-0731",
+  "z-ai/glm-5.3-flash",
+  "google/gemini-3.7-flash"
 ] as const;
 export const LONGMEMEVAL_QUESTION_TYPES = [
   "knowledge-update",
@@ -34,6 +37,56 @@ export const LONGMEMEVAL_QUESTION_TYPES = [
 export type LongMemEvalProfile = (typeof LONGMEMEVAL_PROFILES)[number];
 export type LongMemEvalSystemModelId =
   (typeof LONGMEMEVAL_SYSTEM_MODEL_IDS)[number];
+
+/**
+ * Runtime bindings used by the isolated paid qualification matrix.  These
+ * are deliberately kept in the benchmark contract so a manifest, provider
+ * admission, and emitted evidence cannot silently disagree about the native
+ * OpenRouter route or the reasoning budget.
+ */
+export const LONGMEMEVAL_SYSTEM_MODEL_RUNTIME = Object.freeze({
+  "deepseek/deepseek-v4-flash-0731": Object.freeze({
+    dataCollection: "allow",
+    provider: "OpenRouter",
+    providerOrder: Object.freeze(["deepseek"]),
+    reasoningEffort: "medium",
+    structuredOutputToolChoice: "auto"
+  }),
+  "google/gemini-3.7-flash": Object.freeze({
+    dataCollection: "deny",
+    provider: "OpenRouter",
+    providerOrder: Object.freeze(["google-vertex/global"]),
+    reasoningEffort: "medium",
+    structuredOutputToolChoice: "required"
+  }),
+  "gpt-5.6-luna": Object.freeze({
+    dataCollection: null,
+    provider: "codex-lb",
+    providerOrder: Object.freeze([]),
+    reasoningEffort: "medium",
+    structuredOutputToolChoice: "required"
+  }),
+  "gpt-5.6-sol": Object.freeze({
+    dataCollection: null,
+    provider: "codex-lb",
+    providerOrder: Object.freeze([]),
+    reasoningEffort: "medium",
+    structuredOutputToolChoice: "required"
+  }),
+  "z-ai/glm-5.3-flash": Object.freeze({
+    dataCollection: "deny",
+    provider: "OpenRouter",
+    providerOrder: Object.freeze(["z-ai/fp8"]),
+    reasoningEffort: "medium",
+    structuredOutputToolChoice: "auto"
+  })
+} as const);
+
+export function longMemEvalSystemModelRuntime(
+  modelId: LongMemEvalSystemModelId
+): (typeof LONGMEMEVAL_SYSTEM_MODEL_RUNTIME)[LongMemEvalSystemModelId] {
+  return LONGMEMEVAL_SYSTEM_MODEL_RUNTIME[modelId];
+}
 
 export function longMemEvalHybridRebuildFailed(
   state: MemoryRebuildStatus["state"] | null

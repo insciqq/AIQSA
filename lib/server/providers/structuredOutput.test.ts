@@ -406,6 +406,21 @@ describe("provider structured output", () => {
       .not.toHaveProperty("parallel_tool_calls");
   });
 
+  it("uses an endpoint-declared automatic tool choice when required is unsupported", () => {
+    const body = buildOpenRouterStructuredOutputRequest({
+      ...openRouterModel,
+      defaultParams: {
+        ...openRouterModel.defaultParams,
+        provider: {
+          ...openRouterModel.defaultParams.provider,
+          structuredOutputToolChoice: "auto"
+        }
+      }
+    }, request);
+    expect(body.tool_choice).toBe("auto");
+    expect(body.tools).toHaveLength(1);
+  });
+
   it("reserves enough OpenRouter completion budget for reasoning before a strict tool call", () => {
     const reasoningModel: ProviderModelConfiguration = {
       ...openRouterModel,
