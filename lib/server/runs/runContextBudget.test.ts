@@ -10,6 +10,7 @@ import {
 } from "../providers/memoryActionAnswer";
 import {
   MEMORY_READER_CONTRACT_CURRENT,
+  MEMORY_READER_FINALIZATION_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING
 } from "../providers/personalContext";
 import type { ProviderRunRequest } from "../providers/types";
@@ -82,6 +83,7 @@ describe("provider request context budget", () => {
       estimateApproxTokens("trusted system") -
       estimateApproxTokens("trusted developer") -
       estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) -
+      estimateApproxTokens(MEMORY_READER_FINALIZATION_CONTRACT_V1) -
       estimateApproxTokens({ blocks: [{ text: "private skill context", type: "text" }] }) -
       estimateApproxTokens({ blocks: [{ text: "current question", type: "text" }] })
     );

@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS,
   assertLongMemEvalQualificationDataset,
   decodeLongMemEvalQualificationManifest,
-  loadLongMemEvalQualificationManifest
+  loadLongMemEvalQualificationManifest,
+  longMemEvalEvaluationRequiresStop
 } from "../benchmarks/longmemeval/qualification";
 import { currentLongMemEvalQualificationRevision } from
   "../benchmarks/longmemeval/qualificationRevision";
 
 describe("LongMemEval frozen qualification manifest", () => {
+  it("continues after incorrect labels only when the manifest disables fail-fast", () => {
+    expect(longMemEvalEvaluationRequiresStop(false, false)).toBe(false);
+    expect(longMemEvalEvaluationRequiresStop(true, false)).toBe(true);
+    expect(longMemEvalEvaluationRequiresStop(true, true)).toBe(false);
+  });
+
   it("loads the content-free blind 50 contract with all category quotas", async () => {
     const manifest = await loadLongMemEvalQualificationManifest("fu09-blind-50-v1");
 
@@ -30,8 +38,11 @@ describe("LongMemEval frozen qualification manifest", () => {
     );
   });
 
-  it("freezes the reader-first reranker route and case concurrency two", async () => {
-    const [legacy, first, second, third, fourth, fifth, prior, manifest] =
+  it("freezes the reader-first reranker route and fast-model matrix", async () => {
+    const [legacy, first, second, third, fourth, fifth, sixth, prior, previous,
+      luna, historicalDeepSeek, historicalGlm, historicalGemini,
+      deepSeek, glm, gemini, deterministicGemini, deterministicLuna,
+      productionLuna, finalProductionLuna] =
       await Promise.all([
       loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1"),
@@ -40,20 +51,35 @@ describe("LongMemEval frozen qualification manifest", () => {
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v4"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v5"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v6"),
-      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v7")
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v7"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v8"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v9"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v10"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v11"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v12"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v13"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v14"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v15"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v16"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-luna-25-v17"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-luna-25-v18"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-luna-25-v19")
     ]);
-    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (luna.id !== "fu2-reader-first-blind-50-v9") {
       throw new Error("reader_first_manifest_expected");
     }
+    expect(LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS).toEqual([
+      "fu2-reader-first-luna-25-v19"
+    ]);
 
-    expect(manifest.runtime.caseConcurrency).toBe(2);
-    expect(manifest.runtime.sessionConcurrency).toBe(16);
-    expect(manifest.runtime.embedding).toEqual({
+    expect(luna.runtime.caseConcurrency).toBe(2);
+    expect(luna.runtime.sessionConcurrency).toBe(16);
+    expect(luna.runtime.embedding).toEqual({
       provider: "OpenRouter",
       providerOrder: ["nebius", "deepinfra"],
       upstreamModelId: "qwen/qwen3-embedding-8b"
     });
-    expect(manifest.runtime.reranker).toEqual({
+    expect(luna.runtime.reranker).toEqual({
       policyVersion: "openrouter-reranker-route-v1",
       provider: "OpenRouter",
       route: [
@@ -71,36 +97,132 @@ describe("LongMemEval frozen qualification manifest", () => {
         }
       ]
     });
-    expect(manifest.runtime.evaluation).toMatchObject({
+    expect(luna.runtime.evaluation).toMatchObject({
       failFast: true,
       mode: "per_case",
       model: "gpt-4o-2024-08-06"
     });
-    expect(manifest.runtime.lexical).toEqual({
+    expect(luna.runtime.lexical).toEqual({
       backend: "OPENSEARCH",
       indexBuildId: "20260831-lme-v7-r2"
     });
-    expect(manifest.selection).toEqual(legacy.selection);
-    expect(manifest.selection).toEqual(first.selection);
-    expect(manifest.selection).toEqual(second.selection);
-    expect(manifest.selection).toEqual(third.selection);
-    expect(manifest.selection).toEqual(fourth.selection);
-    expect(manifest.selection).toEqual(fifth.selection);
-    expect(manifest.selection).toEqual(prior.selection);
-    // The manifest records the exact commit and executable-worktree digest
-    // it was qualified on. Whether the current checkout still matches is
-    // enforced where it matters — the benchmark runner refuses a drifted
-    // manifest (`benchmarks/longmemeval/run.ts`) — not by the hermetic lane,
-    // where every product change would otherwise be a permanent failure
-    // until the next paid qualification.
-    expect(manifest.source.appCommit)
-      .toBe("6683814244b442bc23c57928b80785151caa853b");
-    expect(manifest.source.appWorktreeSha256)
-      .toBe("39807b75ad4070f4d4680f13eeedee09b4c2849f10c234ad50e1049aebc2fce6");
-    const current = await currentLongMemEvalQualificationRevision(process.cwd());
-    expect(current.headCommit).toMatch(/^[a-f0-9]{40}$/u);
-    expect(current.worktreeSha256).toMatch(/^[a-f0-9]{64}$/u);
-  });
+    expect(luna.selection).toEqual(legacy.selection);
+    expect(luna.selection).toEqual(first.selection);
+    expect(luna.selection).toEqual(second.selection);
+    expect(luna.selection).toEqual(third.selection);
+    expect(luna.selection).toEqual(fourth.selection);
+    expect(luna.selection).toEqual(fifth.selection);
+    expect(luna.selection).toEqual(sixth.selection);
+    expect(luna.selection).toEqual(prior.selection);
+    expect(luna.selection).toEqual(previous.selection);
+    expect(luna.selection).toEqual(historicalDeepSeek.selection);
+    expect(luna.selection).toEqual(historicalGlm.selection);
+    expect(luna.selection).toEqual(historicalGemini.selection);
+    expect(luna.selection).toEqual(deterministicGemini.selection);
+    expect(luna.source.appCommit)
+      .toBe("3e4c098975130e2829c67973632d8eb51d4ca732");
+    await expect(currentLongMemEvalQualificationRevision(process.cwd()))
+      .resolves.toEqual({
+        headCommit: finalProductionLuna.source.appCommit,
+        worktreeSha256: finalProductionLuna.source.appWorktreeSha256
+      });
+    for (const manifest of [deepSeek, glm, gemini]) {
+      expect(manifest.runtime.evaluation).toMatchObject({
+        failFast: false,
+        mode: "per_case",
+        model: "gpt-4o-2024-08-06"
+      });
+      expect(manifest.runtime.memoryAdmission).toEqual({
+        controlMaximumMs: 20_000,
+        hardDeadlineMs: 26_000,
+        queryResolverMaximumMs: 20_000,
+        queryResolverSettlementReserveMs: 2_000,
+        softDeadlineMs: 20_000,
+        version: "memory-run-retrieval-admission-v54"
+      });
+    }
+    expect(deterministicGemini.runtime.memoryAdmission).toEqual({
+      controlMaximumMs: 20_000,
+      hardDeadlineMs: 26_000,
+      queryResolverMaximumMs: 20_000,
+      queryResolverSettlementReserveMs: 2_000,
+      readUtilityPolicy: "DETERMINISTIC_READ_V1",
+      softDeadlineMs: 20_000,
+      version: "memory-run-retrieval-admission-v54"
+    });
+    expect(deterministicGemini.runtime.caseConcurrency).toBe(1);
+    expect(deterministicGemini.runtime.systemModel).toEqual(
+      gemini.runtime.systemModel
+    );
+    expect(deterministicLuna.runtime.memoryAdmission).toEqual(
+      deterministicGemini.runtime.memoryAdmission
+    );
+    expect(deterministicLuna.runtime.systemModel).toEqual({
+      dataCollection: null,
+      provider: "codex-lb",
+      providerOrder: [],
+      reasoningEffort: "medium",
+      structuredOutputToolChoice: "required",
+      upstreamModelId: "gpt-5.6-luna"
+    });
+    expect(productionLuna.runtime.memoryAdmission).toEqual({
+      ...deterministicLuna.runtime.memoryAdmission,
+      version: "memory-run-retrieval-admission-v55"
+    });
+    expect(productionLuna.runtime.systemModel).toEqual(
+      deterministicLuna.runtime.systemModel
+    );
+    expect(productionLuna.selection).toEqual(deterministicLuna.selection);
+    expect(finalProductionLuna.runtime).toEqual(productionLuna.runtime);
+    expect(finalProductionLuna.selection).toEqual(productionLuna.selection);
+    expect(deterministicLuna.selection.cases).toHaveLength(25);
+    expect(deterministicLuna.selection.quotas).toEqual({
+      "knowledge-update": 4,
+      "multi-session": 5,
+      "single-session-assistant": 4,
+      "single-session-preference": 4,
+      "single-session-user": 4,
+      "temporal-reasoning": 4
+    });
+    expect([deepSeek, glm, gemini].map(({ runtime, selection }) => ({
+      model: runtime.systemModel,
+      selection
+    }))).toEqual([
+      {
+        model: {
+          dataCollection: "allow",
+          provider: "OpenRouter",
+          providerOrder: ["deepseek"],
+          reasoningEffort: "medium",
+          structuredOutputToolChoice: "auto",
+          upstreamModelId: "deepseek/deepseek-v4-flash-0731"
+        },
+        selection: luna.selection
+      },
+      {
+        model: {
+          dataCollection: "deny",
+          provider: "OpenRouter",
+          providerOrder: ["z-ai/fp8"],
+          reasoningEffort: "medium",
+          structuredOutputToolChoice: "auto",
+          upstreamModelId: "z-ai/glm-5.3-flash"
+        },
+        selection: luna.selection
+      },
+      {
+        model: {
+          dataCollection: "deny",
+          provider: "OpenRouter",
+          providerOrder: ["google-vertex/global"],
+          reasoningEffort: "medium",
+          structuredOutputToolChoice: "required",
+          upstreamModelId: "google/gemini-3.7-flash"
+        },
+        selection: luna.selection
+      }
+    ]);
+  }, 15_000);
 
   it("binds every selected id to its frozen upstream category", async () => {
     const manifest = await loadLongMemEvalQualificationManifest("fu09-blind-50-v1");
@@ -123,9 +245,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first reranker route drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v7"
+      "fu2-reader-first-blind-50-v9"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v9") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {
@@ -145,9 +267,9 @@ describe("LongMemEval frozen qualification manifest", () => {
 
   it("rejects reader-first embedding provider-order drift", async () => {
     const manifest = await loadLongMemEvalQualificationManifest(
-      "fu2-reader-first-blind-50-v7"
+      "fu2-reader-first-blind-50-v9"
     );
-    if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (manifest.id !== "fu2-reader-first-blind-50-v9") {
       throw new Error("reader_first_manifest_expected");
     }
     const drifted: unknown = {

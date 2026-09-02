@@ -536,7 +536,7 @@ describe("Composer v2", () => {
           family: "openai",
           id: "openai-work",
           models: ["gpt-5.2", "gpt-5.2-mini"],
-          name: "Custom OpenAI · codex-lb.psaux.info · ref 0N0FNN"
+          name: "Custom OpenAI · provider.invalid · ref 0N0FNN"
         }, {
           family: "google",
           id: "google-work",
@@ -550,7 +550,7 @@ describe("Composer v2", () => {
     // The composer row carries no model trigger: the model lives in the header.
     expect(screen.getByTestId("composer-v2").querySelector("[aria-haspopup='dialog']")).toBeNull();
     const surface = screen.getByTestId("composer-v2").textContent ?? "";
-    expect(surface).not.toContain("codex-lb.psaux.info");
+    expect(surface).not.toContain("provider.invalid");
     expect(surface).not.toContain("ref 0N0FNN");
     expect(surface).not.toContain("Custom OpenAI");
     // Group headers carry the monochrome family mark (or a monogram for an

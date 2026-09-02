@@ -15,6 +15,7 @@ import {
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
   groundSettledKnowledgeAnswerV16,
+  groundSettledKnowledgeAnswerV17,
   groundKnowledgeToolLoopAnswer,
   KnowledgeAnswerContractError
 } from "./grounding";
@@ -652,6 +653,234 @@ describe("Knowledge answer citation contract", () => {
     });
     expect(JSON.stringify(result)).not.toContain(privateSourceId);
     expect(JSON.stringify(result)).not.toContain("requested alpha value");
+  });
+
+  it("records the audited V21 protocol in content-free Grounding Evidence V17", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const auditPayloadHash = "f".repeat(64);
+    const result = groundSettledKnowledgeAnswerV17({
+      audit: {
+        coveredDimensionCount: 1,
+        dimensionCount: 1,
+        missingDimensionCount: 0,
+        payloadHash: auditPayloadHash
+      },
+      contracts: {
+        coverageAuditorContractVersion: 2,
+        draftContractVersion: 21,
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      },
+      evidence: evidence(),
+      evidenceReceiptHash: "1".repeat(64),
+      modelPinFingerprint: "2".repeat(64),
+      operations: [{
+        acceptedRequestHash: "3".repeat(64),
+        acceptedResultHash: "4".repeat(64),
+        contractVersion: 21,
+        durationMs: 20,
+        operationId: "operation-primary-v21",
+        ordinal: 1,
+        providerRequestId: "provider-primary-v21",
+        purpose: "knowledge_answer_draft_v21",
+        role: "primary",
+        usage
+      }, {
+        acceptedRequestHash: "5".repeat(64),
+        acceptedResultHash: "6".repeat(64),
+        contractVersion: 17,
+        durationMs: 18,
+        operationId: "operation-initial-v17",
+        ordinal: 2,
+        providerRequestId: "provider-initial-v17",
+        purpose: "knowledge_grounded_selector_v17",
+        role: "initial",
+        usage
+      }, {
+        acceptedRequestHash: "7".repeat(64),
+        acceptedResultHash: "9".repeat(64),
+        contractVersion: 2,
+        durationMs: 16,
+        operationId: "operation-auditor-v2",
+        ordinal: 3,
+        providerRequestId: "provider-auditor-v2",
+        purpose: "knowledge_coverage_auditor_v2",
+        role: "auditor",
+        usage
+      }, {
+        acceptedRequestHash: "a".repeat(64),
+        acceptedResultHash: auditPayloadHash,
+        contractVersion: 2,
+        durationMs: 14,
+        operationId: "operation-auditor-repair-v2",
+        ordinal: 4,
+        providerRequestId: "provider-auditor-repair-v2",
+        purpose: "knowledge_coverage_auditor_v2",
+        role: "auditor_repair",
+        usage
+      }],
+      providerPinFingerprint: "8".repeat(64),
+      selectorRepairSucceeded: false,
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Supported audited result. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      audit: { dimensionCount: 1, payloadHash: auditPayloadHash, status: "accepted" },
+      contracts: {
+        coverageAuditorContractVersion: 2,
+        draftContractVersion: 21,
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      },
+      correctionAttempted: false,
+      correctionSucceeded: false,
+      selectorRepairAttempted: false,
+      selectorRepairSucceeded: false,
+      version: 17
+    });
+    expect(result.operations.map(({ role }) => role)).toEqual([
+      "primary",
+      "initial",
+      "auditor",
+      "auditor_repair"
+    ]);
+    expect(JSON.stringify(result.operations)).not.toContain("Supported audited result");
+    expect(JSON.stringify(result)).not.toContain(privateSourceId);
+  });
+
+  it("allows one accepted V21 correction to advance audited partial coverage to complete", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const auditPayloadHash = "a".repeat(64);
+    const operation = (
+      acceptedRequestHash: string,
+      acceptedResultHash: string,
+      contractVersion: 1 | 2 | 17 | 21,
+      ordinal: 1 | 2 | 3 | 4 | 5,
+      purpose:
+        | "knowledge_answer_draft_supplement_v21"
+        | "knowledge_answer_draft_v21"
+        | "knowledge_coverage_auditor_v2"
+        | "knowledge_grounded_selector_final_v17"
+        | "knowledge_grounded_selector_v17",
+      role: "auditor" | "final" | "initial" | "primary" | "supplement"
+    ) => ({
+      acceptedRequestHash,
+      acceptedResultHash,
+      contractVersion,
+      durationMs: 10,
+      operationId: `operation-${role}-v21`,
+      ordinal,
+      providerRequestId: `provider-${role}-v21`,
+      purpose,
+      role,
+      usage
+    });
+    const result = groundSettledKnowledgeAnswerV17({
+      audit: {
+        coveredDimensionCount: 1,
+        dimensionCount: 2,
+        missingDimensionCount: 1,
+        payloadHash: auditPayloadHash
+      },
+      contracts: {
+        coverageAuditorContractVersion: 2,
+        draftContractVersion: 21,
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      },
+      evidence: evidence(),
+      evidenceReceiptHash: "b".repeat(64),
+      modelPinFingerprint: "c".repeat(64),
+      operations: [
+        operation(
+          "1".repeat(64),
+          "2".repeat(64),
+          21,
+          1,
+          "knowledge_answer_draft_v21",
+          "primary"
+        ),
+        operation(
+          "3".repeat(64),
+          "4".repeat(64),
+          17,
+          2,
+          "knowledge_grounded_selector_v17",
+          "initial"
+        ),
+        operation(
+          "5".repeat(64),
+          auditPayloadHash,
+          2,
+          3,
+          "knowledge_coverage_auditor_v2",
+          "auditor"
+        ),
+        operation(
+          "6".repeat(64),
+          "7".repeat(64),
+          21,
+          4,
+          "knowledge_answer_draft_supplement_v21",
+          "supplement"
+        ),
+        operation(
+          "8".repeat(64),
+          "9".repeat(64),
+          17,
+          5,
+          "knowledge_grounded_selector_final_v17",
+          "final"
+        )
+      ],
+      providerPinFingerprint: "d".repeat(64),
+      selectorRepairSucceeded: false,
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Both corrected dimensions are supported. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 2,
+        unsupportedClaimCount: 0
+      }
+    });
+
+    expect(result).toMatchObject({
+      audit: { missingDimensionCount: 1 },
+      correctionAttempted: true,
+      correctionSucceeded: true,
+      requestCoverage: "complete",
+      version: 17
+    });
   });
 
   it("accepts ANSWERED only with a dispatched citation", () => {

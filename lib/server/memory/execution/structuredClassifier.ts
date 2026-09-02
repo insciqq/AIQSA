@@ -8,6 +8,7 @@ import type {
   ProviderStructuredOutputRequest
 } from "../../providers/structuredOutput";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+import { memoryRoleRequiresForcedToolCall } from "./roles";
 import {
   memoryExecutionNow,
   resolveCurrentMemoryExecutionAuthority,
@@ -272,8 +273,10 @@ export async function probeMemoryStructuredOutputAuthority(input: Readonly<{
       if (
         model.adapterKind === "fake" ||
         model.modelClass !== "answer" ||
-        model.capabilities.structuredOutput !== true ||
-        !supportsStructuredOutputAdapter(model.adapterKind)
+        (memoryRoleRequiresForcedToolCall(input.role)
+          ? model.capabilities.forcedToolCalling !== true
+          : model.capabilities.structuredOutput !== true ||
+            !supportsStructuredOutputAdapter(model.adapterKind))
       ) {
         throw new MemoryExecutionError("memory_execution_capability_unavailable");
       }

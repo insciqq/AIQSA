@@ -8,6 +8,8 @@ import {
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodeForcedToolCallVerificationEvidence } from
+  "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
@@ -184,6 +186,9 @@ function validatedEvidence(
   const structuredOutput = decodeStructuredOutputVerificationEvidence(
     outcome.evidence.structuredOutput
   );
+  const forcedToolCall = decodeForcedToolCallVerificationEvidence(
+    outcome.evidence.forcedToolCall
+  );
   const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(
@@ -203,11 +208,16 @@ function validatedEvidence(
     (compatibility && (
       compatibility.modelAccess !== "verified" ||
       (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
+      (compatibility.forcedToolCall === "verified") !== Boolean(forcedToolCall) ||
       (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput)
     )) ||
     (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
+    (forcedToolCall !== null && (
+      forcedToolCall.adapterKind !== model.adapterKind ||
+      forcedToolCall.upstreamModelId !== model.upstreamModelId
+    )) ||
     (structuredOutput !== null && (
       structuredOutput.adapterKind !== model.adapterKind ||
       structuredOutput.upstreamModelId !== model.upstreamModelId
@@ -223,6 +233,7 @@ function validatedEvidence(
     method: "tiny_generation",
     selectedProviders: [],
     ...(pdfInput ? { pdfInput } : {}),
+    ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: model.upstreamModelId
   };

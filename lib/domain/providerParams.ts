@@ -106,6 +106,9 @@ export type OpenRouterParams = {
     only: string[];
     requireParameters: boolean;
     sort: "latency" | "price" | "throughput";
+    /** Some OpenRouter endpoints accept strict schemas only with an
+     * automatic tool choice; omitted means the portable required choice. */
+    structuredOutputToolChoice?: "auto" | "required";
     zdr: boolean;
   };
   reasoning: {
@@ -260,6 +263,12 @@ function openRouterDataCollection(value: unknown, fallback: OpenRouterParams["pr
   return value === "allow" || value === "deny" ? value : fallback;
 }
 
+function openRouterStructuredOutputToolChoice(
+  value: unknown
+): OpenRouterParams["provider"]["structuredOutputToolChoice"] {
+  return value === "auto" || value === "required" ? value : undefined;
+}
+
 export function defaultOpenRouterParams(): OpenRouterParams {
   return {
     maxTokens: 128000,
@@ -292,6 +301,9 @@ export function normalizeOpenRouterParams(params: Record<string, unknown> = {}):
   const temperature =
     typeof params.temperature === "number" ? numberValue(params.temperature, defaults.temperature ?? 1) : undefined;
   const verbosity = optionalAnthropicEffort(params.verbosity, defaults.verbosity);
+  const structuredOutputToolChoice = openRouterStructuredOutputToolChoice(
+    provider.structuredOutputToolChoice ?? provider.structured_output_tool_choice
+  );
 
   return {
     maxTokens,
@@ -311,6 +323,7 @@ export function normalizeOpenRouterParams(params: Record<string, unknown> = {}):
         defaults.provider.requireParameters
       ),
       sort: openRouterSort(provider.sort, defaults.provider.sort),
+      ...(structuredOutputToolChoice ? { structuredOutputToolChoice } : {}),
       zdr: booleanValue(provider.zdr, defaults.provider.zdr)
     },
     reasoning: {

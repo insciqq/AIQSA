@@ -6,6 +6,7 @@ import {
 } from "./policy";
 import {
   isMemoryEmbeddingRole,
+  memoryRoleRequiresForcedToolCall,
   memoryRoleRequiresStrictOutput,
   type MemoryExecutionRole
 } from "./roles";
@@ -82,9 +83,12 @@ export function resolveMemoryExecutionCompatibility(input: Readonly<{
   const requiresStrictStructuredOutput = rerankerRole
     ? model.modelClass === "answer"
     : memoryRoleRequiresStrictOutput(input.role);
+  const requiresForcedToolCall = memoryRoleRequiresForcedToolCall(input.role);
   if (requiresStrictStructuredOutput && (
     model.capabilities.toolCalling !== true ||
-    model.capabilities.structuredOutput !== true
+    (requiresForcedToolCall
+      ? model.capabilities.forcedToolCalling !== true
+      : model.capabilities.structuredOutput !== true)
   )) {
     return memoryExecutionFailure("memory_execution_capability_unavailable");
   }

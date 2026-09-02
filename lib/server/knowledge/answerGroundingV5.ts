@@ -4,6 +4,7 @@ import {
   STRUCTURED_OUTPUT_LIMITS,
   structuredOutputPromptFits
 } from "../providers/structuredOutputLimits";
+import { containsKnowledgeClaimMarkdownEmphasisV1 } from "./answerClaimMarkdownV1";
 
 export const KNOWLEDGE_COVERAGE_PLANNER_CONTRACT_VERSION = 20 as const;
 export const KNOWLEDGE_COVERAGE_PLAN_PAYLOAD_VERSION = 1 as const;
@@ -1974,6 +1975,23 @@ function validPlainClaimText(
     !containsForbiddenIdentity(value, forbiddenIdentityFragments);
 }
 
+function validPlainClaimTextCommonMarkV1(
+  value: unknown,
+  forbiddenIdentityFragments: readonly string[]
+): value is string {
+  return typeof value === "string" && value.length > 0 && value.trim() === value &&
+    codePoints(value) <= KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaimCodePoints &&
+    !controlCharacterPattern.test(value) &&
+    !citationMarkerPattern.test(value) &&
+    !rawHtmlPattern.test(value) &&
+    !markdownLinkPattern.test(value) &&
+    !markdownFencePattern.test(value) &&
+    !containsKnowledgeClaimMarkdownEmphasisV1(value) &&
+    !/~~[^~\n]+~~/u.test(value) &&
+    !markdownLinePrefixPattern.test(value) &&
+    !containsForbiddenIdentity(value, forbiddenIdentityFragments);
+}
+
 function freezeDraft(draft: KnowledgeAnswerDraftV5): KnowledgeAnswerDraftV5 {
   return Object.freeze({
     blocks: Object.freeze(draft.blocks.map((block) => Object.freeze({
@@ -2081,12 +2099,16 @@ function rejectedDraftV6(
 
 /** Validates the semantic candidate payload and assigns all prompt-local
  * identity and presentation metadata on the trusted server boundary. */
-export function validateKnowledgeAnswerDraftV6(
+function validateKnowledgeAnswerDraftWithTextV1(
   value: unknown,
   input: Readonly<{
     availableHandles: ReadonlySet<string> | readonly string[];
     forbiddenIdentityFragments?: readonly string[];
-  }>
+  }>,
+  validText: (
+    value: unknown,
+    forbiddenIdentityFragments: readonly string[]
+  ) => value is string
 ): KnowledgeAnswerDraftValidationV6 {
   if (!record(value) || !exactKeys(value, ["version", "claims"]) ||
     value.version !== KNOWLEDGE_ANSWER_DRAFT_PAYLOAD_VERSION ||
@@ -2103,7 +2125,7 @@ export function validateKnowledgeAnswerDraftV6(
     if (!record(candidate) || !exactKeys(candidate, ["text", "citationHints"])) {
       return rejectedDraftV6("draft_claim_shape_invalid");
     }
-    if (!validPlainClaimText(candidate.text, forbidden)) {
+    if (!validText(candidate.text, forbidden)) {
       return rejectedDraftV6("draft_claim_text_invalid");
     }
     if (claimTexts.has(candidate.text)) {
@@ -2142,6 +2164,31 @@ export function validateKnowledgeAnswerDraftV6(
   });
 }
 
+/** Historical plain-text validation. V6 intentionally retains its original
+ * conservative regex semantics for replay and recovery compatibility. */
+export function validateKnowledgeAnswerDraftV6(
+  value: unknown,
+  input: Readonly<{
+    availableHandles: ReadonlySet<string> | readonly string[];
+    forbiddenIdentityFragments?: readonly string[];
+  }>
+): KnowledgeAnswerDraftValidationV6 {
+  return validateKnowledgeAnswerDraftWithTextV1(value, input, validPlainClaimText);
+}
+
+/** Current plain-text validation applies CommonMark flanking rules so literal
+ * mathematical/identifier underscores cannot be mistaken for emphasis. */
+export function validateKnowledgeAnswerDraftV7(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
+): KnowledgeAnswerDraftValidationV6 {
+  return validateKnowledgeAnswerDraftWithTextV1(
+    value,
+    input,
+    validPlainClaimTextCommonMarkV1
+  );
+}
+
 export function decodeKnowledgeAnswerDraftV6(
   value: unknown,
   input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
@@ -2164,6 +2211,19 @@ export function validateKnowledgeAnswerDraftSupplementV1(
   return validateKnowledgeAnswerDraftV6(value, input);
 }
 
+/** Current corrective Draft validation shares the primary Draft's CommonMark
+ * delimiter semantics while retaining the independent supplement bound. */
+export function validateKnowledgeAnswerDraftSupplementV2(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeAnswerDraftV7>[1]
+): KnowledgeAnswerDraftValidationV6 {
+  if (!record(value) || !Array.isArray(value.claims) ||
+    value.claims.length > KNOWLEDGE_ANSWER_DRAFT_MAX_SUPPLEMENT_CLAIMS) {
+    return rejectedDraftV6("draft_shape_invalid");
+  }
+  return validateKnowledgeAnswerDraftV7(value, input);
+}
+
 export function decodeKnowledgeAnswerDraftSupplementV1(
   value: unknown,
   input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
@@ -2176,7 +2236,8 @@ export function decodeKnowledgeAnswerDraftSupplementAcceptedResultV1(
   value: unknown,
   input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
 ): KnowledgeAnswerDraftSelectorInput | null {
-  return decodeDraftMalformed(value) ?? decodeKnowledgeAnswerDraftSupplementV1(value, input);
+  return decodeKnowledgeAnswerDraftMalformed(value) ??
+    decodeKnowledgeAnswerDraftSupplementV1(value, input);
 }
 
 /** Deterministically combines already validated candidate sets. This routine
@@ -2225,7 +2286,9 @@ export function mergeKnowledgeAnswerDraftsV1(input: Readonly<{
   });
 }
 
-function decodeDraftMalformed(value: unknown): KnowledgeAnswerDraftMalformed | null {
+export function decodeKnowledgeAnswerDraftMalformed(
+  value: unknown
+): KnowledgeAnswerDraftMalformed | null {
   if (!record(value) || value.kind !== "draft_malformed") return null;
   if (exactKeys(value, ["kind"])) return KNOWLEDGE_DRAFT_MALFORMED;
   if (!exactKeys(value, ["kind", "reason"]) ||
@@ -2242,7 +2305,7 @@ export function decodeKnowledgeAnswerDraftAcceptedResultV6(
   value: unknown,
   input: Parameters<typeof validateKnowledgeAnswerDraftV6>[1]
 ): KnowledgeAnswerDraftSelectorInput | null {
-  return decodeDraftMalformed(value) ?? decodeKnowledgeAnswerDraftV6(value, input);
+  return decodeKnowledgeAnswerDraftMalformed(value) ?? decodeKnowledgeAnswerDraftV6(value, input);
 }
 
 export function decodeKnowledgeAnswerDraftAcceptedResultForPair(

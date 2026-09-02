@@ -163,11 +163,30 @@ export type KnowledgeParentExpansion = Readonly<{
 }>;
 
 /**
+ * Content-free source-order coordinates for the rendered parent expansion.
+ * Offsets address the already persisted `expandedContext` string and never
+ * duplicate source text. They let downstream coverage projection restore the
+ * retrieval layer's explicit previous/next order without parsing untrusted
+ * provider-visible labels back out of the evidence text.
+ */
+export type KnowledgeExpandedContextOrderV1 = Readonly<{
+  offsetEncoding: "utf16_code_units";
+  segments: readonly Readonly<{
+    end: number;
+    position: "next" | "previous";
+    sourceOrdinal: number;
+    start: number;
+  }>[];
+  version: 1;
+}>;
+
+/**
  * Content-free structural facts persisted with each receipt result: how many
  * expanded passages and model tokens shipped, and why expansion degraded.
  * Never contains text.
  */
 export type KnowledgeParentExpansionEvidence = Readonly<{
+  contextOrder?: KnowledgeExpandedContextOrderV1;
   passageCount: number;
   reason?: string;
   state: KnowledgeParentExpansion["state"];

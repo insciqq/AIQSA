@@ -31,6 +31,16 @@ export type SearchRunParamValidationResult =
       ok: false;
     };
 
+export type AcceptedRunReasoningEffortResult =
+  | {
+      ok: true;
+      reasoningEffort: string | null;
+    }
+  | {
+      code: typeof invalidRunParamsError;
+      ok: false;
+    };
+
 const openAiReasoningSummaries = new Set(["auto", "concise", "detailed", "none"]);
 const anthropicThinkingTypes = new Set(["adaptive", "enabled"]);
 const openRouterDataCollectionValues = new Set(["allow", "deny"]);
@@ -110,7 +120,10 @@ const allowedTopLevelKeys: Record<string, Set<string>> = {
   ])
 };
 
-function invalid(): RunParamValidationResult {
+function invalid(): Readonly<{
+  code: typeof invalidRunParamsError;
+  ok: false;
+}> {
   return {
     code: invalidRunParamsError,
     ok: false
@@ -538,4 +551,62 @@ export function validateRunParams(input: {
     ok: true,
     params
   };
+}
+
+/**
+ * Resolves the provider-neutral reasoning control from already validated,
+ * fully merged provider-dialect params. Admission freezes this value beside
+ * the dialect payload so execution and recovery never have to reverse-map a
+ * mutable provider shape.
+ */
+export function resolveAcceptedRunReasoningEffort(input: Readonly<{
+  controls: ModelParameterControls;
+  params: Readonly<Record<string, unknown>>;
+  provider: string;
+}>): AcceptedRunReasoningEffortResult {
+  const control = input.controls.reasoningEffort;
+  if (!control.supported) {
+    return { ok: true, reasoningEffort: null };
+  }
+
+  let candidate: unknown;
+  if (input.provider === "anthropic") {
+    const outputConfig = isRecord(input.params.outputConfig)
+      ? input.params.outputConfig
+      : null;
+    const outputConfigAlias = isRecord(input.params.output_config)
+      ? input.params.output_config
+      : null;
+    const primary = outputConfig?.effort;
+    const alias = outputConfigAlias?.effort;
+    if (typeof primary === "string" && typeof alias === "string" &&
+      primary !== alias) {
+      return invalid();
+    }
+    candidate = primary ?? alias;
+  } else if (input.provider === "openrouter") {
+    const reasoning = isRecord(input.params.reasoning)
+      ? input.params.reasoning
+      : null;
+    if (typeof input.params.verbosity === "string") {
+      // OpenRouter serializes verbosity instead of reasoning.effort for these
+      // model profiles, so it is the authoritative accepted control.
+      candidate = input.params.verbosity;
+    } else if (reasoning?.enabled === false) {
+      candidate = control.options.includes("none") ? "none" : null;
+    } else {
+      candidate = reasoning?.effort;
+    }
+  } else {
+    const reasoning = isRecord(input.params.reasoning)
+      ? input.params.reasoning
+      : null;
+    candidate = reasoning?.effort;
+  }
+
+  if (candidate === undefined) candidate = control.defaultValue;
+  if (candidate === null) return { ok: true, reasoningEffort: null };
+  return typeof candidate === "string" && control.options.includes(candidate)
+    ? { ok: true, reasoningEffort: candidate }
+    : invalid();
 }

@@ -32,7 +32,7 @@ function policy(suffix = "a"): ResolvedMemoryUtilityPolicy {
   return {
     destinations,
     fingerprint: "f".repeat(64),
-    policyVersion: "memory-utility-egress-v3",
+    policyVersion: "memory-utility-egress-v5",
     targets: new Map(destinations.map((entry) => [entry.role, entry.target]))
   };
 }
@@ -128,6 +128,9 @@ describe("administrator Memory egress service", () => {
     expect(after.version).toBe(2);
     expect(onAcknowledged).toHaveBeenCalledOnce();
     expect(row.acceptedDestinations).toHaveLength(3);
+    expect(row.acceptedDestinations).not.toContainEqual(expect.objectContaining({
+      role: "MEMORY_QUERY_RESOLVE"
+    }));
     expect(JSON.stringify(row.acceptedDestinations)).not.toMatch(/System|Embedding|Reranker|owner/u);
   });
 

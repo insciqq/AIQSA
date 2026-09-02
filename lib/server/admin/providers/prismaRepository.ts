@@ -29,6 +29,8 @@ import type {
   StoredProviderDraftCheck
 } from "./repositoryContract";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodeForcedToolCallVerificationEvidence } from
+  "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
@@ -72,6 +74,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     return null;
   }
   const structuredOutput = decodeStructuredOutputVerificationEvidence(value.structuredOutput);
+  const forcedToolCall = decodeForcedToolCallVerificationEvidence(value.forcedToolCall);
   const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
   const compatibility = decodeAdminProviderCompatibilityEvidence(value.compatibility);
   return {
@@ -80,6 +83,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     method: value.method,
     selectedProviders: value.selectedProviders as string[],
     ...(pdfInput ? { pdfInput } : {}),
+    ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: value.upstreamModelId
   };

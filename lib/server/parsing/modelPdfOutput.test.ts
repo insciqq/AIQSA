@@ -4,7 +4,9 @@ import {
   modelPdfPageEndMarker,
   modelPdfPageStartMarker,
   modelPdfPagesToDocument,
+  MODEL_PDF_PROMPT_VERSION,
   MODEL_PDF_ROW_CONTINUATION_CELL,
+  MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION,
   modelPdfTranscriptionPrompt
 } from "./modelPdfOutput";
 
@@ -33,6 +35,11 @@ describe("model PDF transcription contract", () => {
     expect(prompt).toContain(modelPdfPageStartMarker(2));
     expect(prompt).toContain("every non-empty table cell");
     expect(prompt).toContain(MODEL_PDF_ROW_CONTINUATION_CELL);
+    expect(MODEL_PDF_PROMPT_VERSION).toBe(6);
+    expect(MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION).toBe(14);
+    expect(prompt).toContain("Start the record with exactly `Visual data:`");
+    expect(prompt).toContain("cover every visible series");
+    expect(prompt).toContain("plateaus, crossings, and stability");
     expect(modelPdfTranscriptionPrompt({
       mode: "system_model_direct_pdf",
       pageEnd: 2,
@@ -53,6 +60,16 @@ describe("model PDF transcription contract", () => {
       pageStart: 1,
       promptVersion: 4
     })).toContain("visibly merged cell spans multiple rows or columns");
+    const historicalPrompt = modelPdfTranscriptionPrompt({
+      mode: "system_model_vision",
+      pageEnd: 2,
+      pageStart: 1,
+      promptVersion: 5
+    });
+    expect(historicalPrompt).toContain(
+      "Do not summarize, interpret, correct, calculate, or omit content."
+    );
+    expect(historicalPrompt).not.toContain("Visual data:");
     const pages = decodeModelPdfBatchOutput({
       mode: "system_model_direct_pdf",
       pageEnd: 2,

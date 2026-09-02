@@ -274,6 +274,38 @@ describe("provider runtime factory", () => {
     }
   });
 
+  it("bounded-retries transient initial dispatch for stateless compatible Responses", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      let attempts = 0;
+      const fetchFn = vi.fn<typeof fetch>(async () =>
+        ++attempts === 1
+          ? new Response("gateway unavailable", { status: 502 })
+          : new Response(JSON.stringify({
+              id: "response-retried",
+              model: "upstream/model",
+              output_text: "ok",
+              status: "completed",
+              usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+            }))
+      );
+      const runtime = createProviderRuntimeBinding({
+        options: { allowFake: false, fetchFn },
+        secret: "secret",
+        snapshot: snapshot("openai_responses_compatible")
+      });
+      const pending = collect(runtime.adapter.stream(compatibleRequest()));
+
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toMatchObject({ finalText: "ok" });
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
   it("never falls back to global fetch", () => {
     expect(() => createProviderRuntimeBinding({
       options: { allowFake: false },

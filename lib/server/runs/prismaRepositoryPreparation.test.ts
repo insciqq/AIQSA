@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  completePreparingRunAttemptWithClient,
+  finalizePreparingRunWithClient,
   finalizeUnavailablePreparingRunAdmission,
   finalizeTemporaryPreparingRunAdmission,
+  memorySpeculativeQueryResolverInventoryDeclared,
   sameMemoryReadOnlyControlRetryScope,
   validMemoryRerankRetrySettlement,
   validMemoryRetrievalExecutionSequence
@@ -27,6 +30,56 @@ const settingsSnapshot = Object.freeze({
   schemaVersion: 2 as const,
   settingsRevision: 0,
   useMemoryFacts: false
+});
+
+function ownerFirstTransactionClient() {
+  const statements: string[] = [];
+  const tx = {
+    $queryRaw: vi.fn(async (query: Readonly<{ strings: readonly string[] }>) => {
+      const statement = query.strings.join("");
+      statements.push(statement);
+      return statement.includes('FROM "User"') ? [{ id: "user-1" }] : [];
+    })
+  };
+  const client = {
+    $transaction: vi.fn(async (
+      operation: (transaction: typeof tx) => Promise<unknown>
+    ) => operation(tx))
+  };
+  return { client, statements };
+}
+
+describe("Memory preparing transaction lock order", () => {
+  it("locks the owner before the run during retrieval completion", async () => {
+    const { client, statements } = ownerFirstTransactionClient();
+
+    await expect(completePreparingRunAttemptWithClient(client as never, {
+      attemptId: "attempt-1",
+      result: { budgetSnapshot: {}, outcome: "DISABLED" },
+      runId: "run-1",
+      userId: "user-1"
+    })).resolves.toBe(false);
+
+    expect(statements[0]).toContain('FROM "User"');
+    expect(statements[0]).toContain("FOR UPDATE");
+    expect(statements[1]).toContain('FROM "ModelRun"');
+  });
+
+  it("locks the owner before the run during finalization", async () => {
+    const { client, statements } = ownerFirstTransactionClient();
+
+    await expect(finalizePreparingRunWithClient(client as never, {
+      attemptId: "attempt-1",
+      normalizedRequest: {} as never,
+      providerRequestPreview: {},
+      runId: "run-1",
+      userId: "user-1"
+    }, {})).resolves.toBe(false);
+
+    expect(statements[0]).toContain('FROM "User"');
+    expect(statements[0]).toContain("FOR UPDATE");
+    expect(statements[1]).toContain('FROM "ModelRun"');
+  });
 });
 
 describe("Memory preparing settings compatibility", () => {
@@ -176,10 +229,34 @@ describe("initial Memory admission deadline fallback", () => {
 });
 
 describe("Memory retrieval execution sequence", () => {
+  it("declares a cancelled resolver that missed the attachment boundary", () => {
+    const budget = {
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "NOT_READY_AT_ATTACH"
+    };
+    const declared = memorySpeculativeQueryResolverInventoryDeclared(budget);
+
+    expect(declared).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], false, false, declared)).toBe(true);
+    expect(memorySpeculativeQueryResolverInventoryDeclared({
+      ...budget,
+      queryResolverProviderCalls: 0
+    })).toBe(false);
+    expect(memorySpeculativeQueryResolverInventoryDeclared({
+      ...budget,
+      queryResolverState: "UNKNOWN_STATE"
+    })).toBe(false);
+  });
+
   it("allows only one fresh reranker retry after the primary attempt", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
@@ -217,6 +294,37 @@ describe("Memory retrieval execution sequence", () => {
     ], false, true)).toBe(true);
   });
 
+  it("accounts for one declared speculative resolver in the aggregation bound", () => {
+    const maximumAggregationSequence = [
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
+      ...Array.from(
+        { length: 4 },
+        (_, index) => ({ logicalRole: "MEMORY_QUERY_EMBED", ordinal: index + 1 })
+      ),
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
+      ...Array.from(
+        {
+          length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES *
+            MEMORY_RERANK_MAX_ATTEMPTS
+        },
+        (_, index) => ({ logicalRole: "MEMORY_RERANK", ordinal: index + 2 })
+      )
+    ];
+
+    expect(validMemoryRetrievalExecutionSequence(
+      maximumAggregationSequence,
+      false,
+      true,
+      true
+    )).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence(
+      maximumAggregationSequence,
+      false,
+      true
+    )).toBe(false);
+  });
+
   it("allows earlier-utility degradation while constraining a broad profile inventory", () => {
     const profileSequence = [
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
@@ -243,6 +351,7 @@ describe("Memory retrieval execution sequence", () => {
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
@@ -252,6 +361,25 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 }
     ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 1 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], false, true)).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], false, true, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
+    ], true, false, true)).toBe(true);
   });
 
   it.each([

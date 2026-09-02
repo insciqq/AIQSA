@@ -106,7 +106,179 @@ function streamedChatResponse() {
   });
 }
 
+function strictToolChatResponse(
+  name: string,
+  args: Record<string, unknown>
+) {
+  return new Response(JSON.stringify({
+    choices: [{
+      finish_reason: "tool_calls",
+      message: {
+        content: null,
+        role: "assistant",
+        tool_calls: [{
+          function: { arguments: JSON.stringify(args), name },
+          id: "call-strict",
+          type: "function"
+        }]
+      }
+    }],
+    usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
+  }), { headers: { "content-type": "application/json" }, status: 200 });
+}
+
 describe("admin provider draft tester", () => {
+  it("verifies forced strict calls independently from an auto structured-output route", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      if (body.stream === true) return streamedChatResponse();
+      const tools = body.tools as Array<{
+        function?: { name?: string };
+      }> | undefined;
+      const name = tools?.[0]?.function?.name;
+      if (name === "aiqsa_structured_output_probe") {
+        return strictToolChatResponse(name, {
+          count: 2,
+          label: "AIQSA",
+          ready: true,
+          tool_ids: ["alpha", "beta"]
+        });
+      }
+      if (name === "aiqsa_forced_tool_call_probe") {
+        return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
+      }
+      return structuredChatResponse();
+    });
+    const configured = input({
+      mode: "tiny_generation",
+      model: {
+        ...input().model,
+        capabilities: { ...input().model.capabilities, toolCalling: true },
+        defaultParams: {
+          provider: { structuredOutputToolChoice: "auto" }
+        }
+      }
+    });
+    const providerTester = createAdminProviderDraftTester({
+      createFetch: () => fetchFn
+    });
+
+    await expect(providerTester.test(configured)).resolves.toMatchObject({
+      evidence: {
+        compatibility: {
+          forcedToolCall: "verified",
+          structuredOutput: "verified"
+        },
+        forcedToolCall: {
+          adapterKind: "openrouter_chat_completions",
+          probeVersion: 1,
+          upstreamModelId: "vendor/model",
+          verified: true
+        }
+      },
+      status: "available"
+    });
+    const structured = bodies.find((body) => {
+      const tools = body.tools as Array<{ function?: { name?: string } }> | undefined;
+      return tools?.[0]?.function?.name === "aiqsa_structured_output_probe";
+    });
+    const forced = bodies.find((body) => {
+      const tools = body.tools as Array<{ function?: { name?: string } }> | undefined;
+      return tools?.[0]?.function?.name === "aiqsa_forced_tool_call_probe";
+    });
+    expect(structured).toMatchObject({ tool_choice: "auto" });
+    expect(forced).toMatchObject({
+      provider: { require_parameters: true },
+      tool_choice: "required",
+      tools: [{ function: { strict: true }, type: "function" }]
+    });
+    expect(forced).not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("does not mint forced-call evidence when the selected route ignores it", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+      if (body.stream === true) return streamedChatResponse();
+      const tools = body.tools as Array<{ function?: { name?: string } }> | undefined;
+      const name = tools?.[0]?.function?.name;
+      return name === "aiqsa_structured_output_probe"
+        ? strictToolChatResponse(name, {
+            count: 2,
+            label: "AIQSA",
+            ready: true,
+            tool_ids: ["alpha", "beta"]
+          })
+        : structuredChatResponse();
+    });
+    const configured = input({
+      mode: "tiny_generation",
+      model: {
+        ...input().model,
+        capabilities: { ...input().model.capabilities, toolCalling: true }
+      }
+    });
+
+    const outcome = await createAdminProviderDraftTester({
+      createFetch: () => fetchFn
+    }).test(configured);
+
+    expect(outcome.evidence.compatibility).toMatchObject({
+      forcedToolCall: "not_supported",
+      structuredOutput: "verified"
+    });
+    expect(outcome.evidence).not.toHaveProperty("forcedToolCall");
+  });
+
+  it("records a route-level forced-call 404 as unsupported after access succeeds", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+      if (body.stream === true) return streamedChatResponse();
+      const tools = body.tools as Array<{
+        function?: { name?: string };
+      }> | undefined;
+      const name = tools?.[0]?.function?.name;
+      if (name === "aiqsa_structured_output_probe") {
+        return strictToolChatResponse(name, {
+          count: 2,
+          label: "AIQSA",
+          ready: true,
+          tool_ids: ["alpha", "beta"]
+        });
+      }
+      if (name === "aiqsa_forced_tool_call_probe") {
+        return new Response(JSON.stringify({
+          error: { code: 404, message: "No endpoint supports these parameters." }
+        }), { headers: { "content-type": "application/json" }, status: 404 });
+      }
+      return structuredChatResponse();
+    });
+    const configured = input({
+      mode: "tiny_generation",
+      model: {
+        ...input().model,
+        capabilities: { ...input().model.capabilities, toolCalling: true }
+      }
+    });
+
+    const outcome = await createAdminProviderDraftTester({
+      createFetch: () => fetchFn
+    }).test(configured);
+
+    expect(outcome).toMatchObject({
+      evidence: {
+        compatibility: {
+          forcedToolCall: "not_supported",
+          modelAccess: "verified",
+          streaming: "verified"
+        }
+      },
+      status: "available"
+    });
+    expect(outcome.evidence).not.toHaveProperty("forcedToolCall");
+  });
+
   it("verifies all five answer-model compatibility contracts", async () => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
       const body = JSON.parse(String(request?.body)) as Record<string, unknown>;

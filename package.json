@@ -67,6 +67,7 @@
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
     "test:backup-restore": "AIQSA_RUN_BACKUP_RESTORE_TEST=1 bash scripts/test-backup-restore-reconciliation.sh",
+    "test:benchmark:longmemeval": "vitest run --config benchmarks/longmemeval/vitest.config.ts",
     "test:full:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE vitest run --config vitest.full.config.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test --project=chromium",

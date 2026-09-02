@@ -14,6 +14,7 @@ import {
   MemorySemanticSmokePreflightError,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
+  memorySemanticSmokeRerankerReady,
   preflightPrismaMemorySemanticSmoke,
   readCgroupResourceLimits,
   validateMemorySemanticSmokeConsumerPreparation,
@@ -124,6 +125,7 @@ function strictExecutionSnapshot(role: "MEMORY_CONTROL" | "MEMORY_RERANK") {
         adapterKind: "openai_responses_compatible",
         answerSelectable: true,
         capabilities: {
+          forcedToolCalling: true,
           nativePdfInput: false,
           nativeSearch: false,
           pdf: false,
@@ -207,6 +209,19 @@ describe("Memory semantic smoke support", () => {
       "MEMORY_DOCUMENT_EMBED",
       "MEMORY_QUERY_EMBED"
     ]);
+  });
+
+  it("accepts an independently bound resolved reranker target", () => {
+    const reranker = {
+      authority: {
+        connectionId: "reranker-connection",
+        credentialId: "reranker-credential",
+        credentialVersionId: "reranker-credential-version",
+        providerModelId: "reranker-model"
+      }
+    } as ResolvedMemoryExecutionTarget;
+    expect(memorySemanticSmokeRerankerReady(reranker)).toBe(true);
+    expect(memorySemanticSmokeRerankerReady(undefined)).toBe(false);
   });
 
   it("fails missing embedding and strict-output setup before returning a target", () => {
@@ -656,6 +671,11 @@ describe("Memory semantic smoke support", () => {
     expect(source).toContain('secretAction.status !== "REJECTED"');
     expect(source).toContain("memory_smoke_expected_fact_missing");
     expect(source).toContain('mcp: { mode: "off" }');
+    expect(source).toContain('process.argv.includes("--actions-only")');
+    expect(source).toContain('requiredManagementAction(list, "LIST", "COMPLETE")');
+    expect(source).toContain(
+      'requiredManagementAction(reset, "RESET", "CONFIRMATION_REQUIRED")'
+    );
     expect(source).toContain("`Меня зовут Алина-${marker}");
     expect(source).toContain("identityAnswer.toLocaleLowerCase().includes(marker)");
     expect(source).toContain(
@@ -708,7 +728,7 @@ describe("Memory semantic smoke support", () => {
     }
     const implicitPromptLines = source.split("\n").filter((line) =>
       line.includes("Please carry this preference into future conversations"));
-    expect(implicitPromptLines).toHaveLength(3);
+    expect(implicitPromptLines).toHaveLength(4);
     expect(implicitPromptLines.join("\n")).not.toMatch(/\b(?:remember|save|store)\b/iu);
   });
 });

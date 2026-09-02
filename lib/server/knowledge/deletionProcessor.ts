@@ -720,7 +720,25 @@ async function purgeProviderAttempts(
             state: "ambiguous" as const
           }
         : {};
-    const structuredAnswer = attempt.purpose === "knowledge_coverage_planner_v20" ||
+    const structuredAnswer = attempt.purpose === "knowledge_answer_draft_v21" ||
+      attempt.purpose === "knowledge_answer_draft_supplement_v21" ||
+      attempt.purpose === "knowledge_grounded_selector_v17" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v17" ||
+      attempt.purpose === "knowledge_grounded_selector_v18" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v18" ||
+      attempt.purpose === "knowledge_grounded_selector_v19" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v19" ||
+      attempt.purpose === "knowledge_grounded_selector_v20" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v20" ||
+      attempt.purpose === "knowledge_grounded_selector_v21" ||
+      attempt.purpose === "knowledge_grounded_selector_final_v21" ||
+      attempt.purpose === "knowledge_coverage_auditor_v2" ||
+      attempt.purpose === "knowledge_coverage_auditor_v1" ||
+      attempt.purpose === "knowledge_coverage_scope_v3" ||
+      attempt.purpose === "knowledge_coverage_scope_v4" ||
+      attempt.purpose === "knowledge_coverage_scope_v5" ||
+      attempt.purpose === "knowledge_coverage_scope_v6" ||
+      attempt.purpose === "knowledge_coverage_planner_v20" ||
       attempt.purpose === "knowledge_answer_draft_v20" ||
       attempt.purpose === "knowledge_answer_draft_supplement_v20" ||
       attempt.purpose === "knowledge_answer_draft_v19" ||

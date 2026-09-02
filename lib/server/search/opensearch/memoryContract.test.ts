@@ -24,6 +24,12 @@ function configuration(overrides: Readonly<Record<string, string | undefined>> =
 }
 
 describe("Memory OpenSearch projection contract", () => {
+  it("keeps projection compatibility independent from answer-time retrieval revisions", () => {
+    expect(MEMORY_OPENSEARCH_RETRIEVAL_PIPELINE_VERSION).toBe(
+      "memory-personal-retrieval-v64"
+    );
+  });
+
   it("accepts only bounded code-owned index, alias, routing and budget settings", () => {
     expect(configuration()).toMatchObject({
       bulkMaxBytes: 2 * 1024 * 1024,

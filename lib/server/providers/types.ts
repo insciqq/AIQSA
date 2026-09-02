@@ -58,6 +58,10 @@ export type ProviderModelCapabilities = {
   /** Verified strict JSON Schema output for the exact active model/credential
    * tuple. Configuration normalization never trusts this field directly. */
   structuredOutput?: boolean;
+  /** Verified support for one forced strict function call on the exact active
+   * model/credential/route tuple. Configuration normalization never trusts
+   * this field directly. */
+  forcedToolCalling?: boolean;
   /** Opts a compatible Chat endpoint into `stream_options.include_usage`. */
   streamUsage?: boolean;
   toolCalling?: boolean;
@@ -134,6 +138,9 @@ export type NormalizedRunRequest = {
     skillId: string;
   }>>;
   params: Record<string, unknown>;
+  /** Provider-neutral reasoning control frozen at admission. Historical
+   * accepted requests may omit it and are decoded from their exact params. */
+  reasoningEffort?: string | null;
   prompt: {
     /**
      * Exact standard-chat baseline evidence for ordinary runs: the resolved

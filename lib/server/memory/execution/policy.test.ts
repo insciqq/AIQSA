@@ -257,6 +257,9 @@ describe("Memory dedicated reranker policy", () => {
 
     expect(policy.targets.get("MEMORY_RERANK")?.snapshot.model)
       .toMatchObject({ modelClass: "reranker" });
+    expect(policy.targets.has("MEMORY_QUERY_RESOLVE")).toBe(false);
+    expect(policy.destinations.some(({ role }) => role === "MEMORY_QUERY_RESOLVE"))
+      .toBe(false);
     expect(policy.targets.has("MEMORY_AGGREGATE")).toBe(false);
     expect(policy.destinations.some(({ role }) => role === "MEMORY_AGGREGATE"))
       .toBe(false);

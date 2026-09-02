@@ -131,6 +131,7 @@ import {
   KNOWLEDGE_PARTIAL_COVERAGE_NOTE,
   settleKnowledgeAnswerV5,
   validateKnowledgeAnswerDraftV6,
+  validateKnowledgeAnswerDraftV7,
   validateKnowledgeAnswerDraftSupplementV1,
   validateKnowledgeGroundedSelectorV3,
   validateKnowledgeGroundedSelectorV4,
@@ -649,6 +650,26 @@ describe("Knowledge Answer Draft V19 and Grounded Selector V15 contracts", () =>
     ]), { availableHandles: ["K1"] })).toEqual({
       kind: "rejected",
       reason: "draft_unknown_handle"
+    });
+  });
+
+  it("keeps historical underscore validation stable and accepts literal math currently", () => {
+    const candidate = rawCandidateDraft([{
+      hints: ["K1"],
+      text: "The maps X̃×_X Y and X̃×_X Z form two cartesian squares."
+    }]);
+    expect(validateKnowledgeAnswerDraftV6(candidate, {
+      availableHandles: ["K1"]
+    })).toEqual({ kind: "rejected", reason: "draft_claim_text_invalid" });
+    expect(validateKnowledgeAnswerDraftV7(candidate, {
+      availableHandles: ["K1"]
+    })).toMatchObject({ kind: "accepted" });
+    expect(validateKnowledgeAnswerDraftV7(rawCandidateDraft([{
+      hints: ["K1"],
+      text: "The result is _emphasized_."
+    }]), { availableHandles: ["K1"] })).toEqual({
+      kind: "rejected",
+      reason: "draft_claim_text_invalid"
     });
   });
 

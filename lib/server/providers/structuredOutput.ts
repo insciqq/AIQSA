@@ -434,7 +434,7 @@ export function buildOpenRouterStructuredOutputRequest(
     provider: openRouterProviderRouting(model),
     ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
     stream: false,
-    tool_choice: "required",
+    tool_choice: params.provider.structuredOutputToolChoice ?? "required",
     tools: [{
       function: {
         description: "Return the structured result required by the system instruction.",

@@ -6,6 +6,7 @@ import {
 } from "../runs/toolLoopPersistence";
 import {
   groundKnowledgeRunAnswer,
+  groundKnowledgeRunAnswerV21,
   knowledgeEvidencePackageForGroundingDispatch,
   loadKnowledgeFullContextDispatchRecovery,
   loadKnowledgeEvidencePackage,
@@ -15,7 +16,81 @@ import { knowledgeEvidenceReceiptHash } from "./evidencePackage";
 import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchRepository";
 import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
-import { knowledgeSelectorEvidenceFromManifest } from "./answerGroundingV5";
+import {
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  knowledgeAnswerHash,
+  knowledgeSelectorEvidenceFromManifest
+} from "./answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
+  KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
+  buildKnowledgeSupportedAnswerViewV1,
+  createKnowledgeAnswerOperationRequestSnapshotV21,
+  decodeKnowledgeAnswerDraftSupplementV21,
+  decodeKnowledgeAnswerDraftV21,
+  mergeKnowledgeAnswerDraftsV21,
+  type KnowledgeAnswerOperationRequestSnapshotV21,
+  type KnowledgeAnswerOperationV21
+} from "./answerGroundingV21";
+import {
+  knowledgeAnswerTargetedSupplementSchemaV3,
+  decodeKnowledgeTargetedSupplementV4,
+  decodeKnowledgeTargetedSupplementV5,
+  mergeKnowledgeTargetedSupplementV2,
+  mergeKnowledgeTargetedSupplementV3
+} from "./answerGroundingCorrectionV21";
+import {
+  knowledgeGroundedDeltaSelectorPromptV7
+} from "./answerGroundingAccumulativeReduceV1";
+import {
+  knowledgeAnswerDraftPromptV21GlobalReducerV1,
+  knowledgeAnswerTargetedSupplementPromptV8,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV2
+} from "./answerGroundingGlobalReducerV1";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+  decodeKnowledgeCoverageScopeV6,
+  knowledgeCoverageEvidenceFromManifestV6
+} from "./coverageScopeV6";
+import { KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 } from "./coverageScopeV4";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1
+} from "./coverageScopeCompletenessV1";
+import {
+  knowledgeCoverageScopeCompletenessPromptV5
+} from "./coverageScopeSetReductionV1";
+import {
+  knowledgeCoverageScopePromptV6RecallMapV1
+} from "./coverageScopeRecallMapV1";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
+  knowledgeCoverageScopeClosurePromptV2
+} from "./coverageScopeClosureV2";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
+  KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
+  decodeKnowledgeGroundedSelectorV21,
+  knowledgeCoverageMissingDimensionsV6
+} from "./answerGroundingSelectorV21";
 import { knowledgeFullContextDispatchPresentation } from "./fullContext";
 import {
   groundKnowledgeAnswer,
@@ -23,7 +98,9 @@ import {
   groundSettledKnowledgeAnswerV11,
   groundSettledKnowledgeAnswerV14,
   groundSettledKnowledgeAnswerV15,
-  groundSettledKnowledgeAnswerV16
+  groundSettledKnowledgeAnswerV16,
+  groundSettledKnowledgeAnswerV17,
+  groundSettledKnowledgeAnswerV19
 } from "./grounding";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
@@ -120,11 +197,35 @@ function client(value: unknown, input: Readonly<{
   currentOperation?: unknown;
   modelRun?: unknown;
   normalizedRequest?: unknown;
+  providerExecutionSnapshot?: unknown;
   toolLoopRun?: unknown;
 }> = {}) {
   return {
     knowledgeProviderAttempt: {
-      findMany: vi.fn(async () => input.attempts ?? [])
+      findMany: vi.fn(async (args?: Readonly<{
+        orderBy?: Readonly<{ ordinal?: "asc" | "desc" }>;
+        take?: number;
+        where?: Readonly<{ purpose?: Readonly<{ in?: readonly string[] }> }>;
+      }>) => {
+        const purposes = args?.where?.purpose?.in
+          ? new Set(args.where.purpose.in)
+          : null;
+        const attempts = [...(input.attempts ?? [])].filter((attempt) =>
+          !purposes || typeof attempt === "object" && attempt !== null &&
+            "purpose" in attempt && purposes.has(String(attempt.purpose)));
+        if (args?.orderBy?.ordinal) {
+          attempts.sort((left, right) => {
+            const leftOrdinal = typeof left === "object" && left !== null &&
+              "ordinal" in left ? Number(left.ordinal) : 0;
+            const rightOrdinal = typeof right === "object" && right !== null &&
+              "ordinal" in right ? Number(right.ordinal) : 0;
+            return args.orderBy?.ordinal === "asc"
+              ? leftOrdinal - rightOrdinal
+              : rightOrdinal - leftOrdinal;
+          });
+        }
+        return args?.take === undefined ? attempts : attempts.slice(0, args.take);
+      })
     },
     knowledgeRetrievalSession: {
       findFirst: vi.fn(async () => value)
@@ -138,6 +239,11 @@ function client(value: unknown, input: Readonly<{
           ? null
           : { normalizedRequest: input.normalizedRequest }
       ))
+    },
+    providerRunBinding: {
+      findUnique: vi.fn(async () => input.providerExecutionSnapshot === undefined
+        ? null
+        : { executionSnapshot: input.providerExecutionSnapshot })
     }
   } as never;
 }
@@ -396,6 +502,178 @@ function settledDispatch(input: Readonly<{
     })),
     profileRevisionIds: ["profile-revision-1"],
     retrievalSessionId: "session-1"
+  };
+}
+
+function v21AttemptRow(input: Readonly<{
+  acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21;
+  acceptedResult: Readonly<Record<string, unknown>>;
+  draft: ReturnType<typeof packKnowledgeEvidenceDispatchManifest>;
+  ordinal: number;
+  purpose: KnowledgeAnswerOperationV21;
+}>) {
+  const createdAt = new Date("2026-08-31T00:00:00.000Z");
+  const dispatchedAt = new Date("2026-08-31T00:00:01.000Z");
+  const settledAt = new Date("2026-08-31T00:00:02.000Z");
+  const usage = {
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    estimatedCostMicros: null,
+    inputTokens: 10,
+    outputTokens: 5,
+    reasoningTokens: 0,
+    totalTokens: 15
+  };
+  const manifestId = `manifest-v21-${input.ordinal}`;
+  const attemptId = `attempt-v21-${input.ordinal}`;
+  const items = input.draft.items.map((item, index) => {
+    if ("kind" in item) throw new Error("v21_test_manifest_must_be_atomic");
+    return {
+      contextBoundaries: {
+        expandedContext: item.expandedContext,
+        expandedContextOriginalBytes: item.expandedContextOriginalBytes,
+        expandedContextOriginalHash: item.expandedContextOriginalHash,
+        expandedContextState: item.expandedContextState
+      },
+      createdAt,
+      evidenceItemId: "evidence-private-id",
+      exactExcerpt: item.exactExcerpt,
+      excerptBytes: item.exactExcerptBytes,
+      excerptHash: item.exactExcerptHash,
+      handle: item.handle,
+      id: `manifest-v21-${input.ordinal}-item-${index + 1}`,
+      manifestId,
+      ordinal: item.dispatchOrdinal,
+      renderedBlock: item.text,
+      renderedBlockHash: item.itemHash,
+      renderedBytes: item.itemBytes,
+      renderedTokens: item.itemTokens,
+      representation: item.representation === "full" ? "full" : "shortened",
+      safeMetadata: {
+        ambiguity: item.ambiguity,
+        fileName: item.fileName,
+        locator: item.locator,
+        sourceLabel: item.sourceLabel,
+        sourceTruncated: item.sourceTruncated,
+        sourceVersionNumber: item.sourceVersionNumber
+      },
+      sourceAlias: item.sourceAlias,
+      sourceArtifactId: "artifact-private-id",
+      sourceVersionId: "source-version-private-id"
+    };
+  });
+  const coverage = {
+    exclusions: input.draft.exclusions.map((exclusion) => ({
+      duplicateOfEvidenceId: exclusion.duplicateOfEvidenceId,
+      evidenceId: exclusion.evidenceId,
+      operationOrdinal: exclusion.operationOrdinal,
+      resultOrdinal: exclusion.resultOrdinal
+    })),
+    items: input.draft.items.map((item) => ({
+      dispatchOrdinal: item.dispatchOrdinal,
+      evidenceId: item.evidenceId,
+      operationOrdinal: item.operationOrdinal,
+      resultOrdinal: item.resultOrdinal
+    })),
+    root: {
+      coverageStatement: input.draft.coverageStatement,
+      footer: input.draft.footer,
+      header: input.draft.header,
+      limits: input.draft.limits,
+      manifestHash: input.draft.manifestHash,
+      profileId: input.draft.profileId,
+      ...("runtimeVersion" in input.draft
+        ? { runtimeVersion: input.draft.runtimeVersion }
+        : {}),
+      shorteningPolicy: input.draft.shorteningPolicy
+    },
+    version: 2
+  };
+  return {
+    acceptedRequest: input.acceptedRequest,
+    acceptedResult: input.acceptedResult,
+    actualUsage: usage,
+    ambiguousAt: null,
+    checkpointHash: String(input.ordinal).repeat(64),
+    contractVersion: input.acceptedRequest.contractVersion,
+    createdAt,
+    dispatchedAt,
+    evidenceReceiptHash: input.draft.manifestHash,
+    estimatedUsage: usage,
+    failureCode: null,
+    id: attemptId,
+    idempotencyKey: `knowledge-v21-attempt-${input.ordinal}`,
+    leaseExpiresAt: null,
+    leaseToken: null,
+    manifest: {
+      coverage,
+      createdAt,
+      excludedCount: input.draft.exclusions.length,
+      exclusions: [],
+      id: manifestId,
+      itemCount: items.length,
+      items,
+      messageHash: input.draft.messageHash,
+      messageText: input.draft.message,
+      modelRunId: "run-1",
+      packingVersion: input.draft.packingVersion,
+      profileRevisionIds: ["profile-revision-1"],
+      promptFragmentVersion: String(input.draft.promptFragmentVersion),
+      providerAttemptId: attemptId,
+      purgedAt: null,
+      retrievalSessionId: "session-1",
+      sealedAt: createdAt,
+      shortenedCount: input.draft.items.filter(
+        ({ representation }) => representation !== "full"
+      ).length,
+      totalBytes: input.draft.messageBytes,
+      totalTokens: input.draft.messageTokens,
+      version: input.draft.version
+    },
+    modelRunId: "run-1",
+    ordinal: input.ordinal,
+    providerBindingKey: "answer",
+    providerResponseId: `provider-response-v21-${input.ordinal}`,
+    purpose: input.purpose,
+    releasedAt: null,
+    requestHash: knowledgeAnswerHash(input.acceptedRequest),
+    resultAcceptedAt: settledAt,
+    resultHash: knowledgeAnswerHash(input.acceptedResult),
+    roundIndex: 0,
+    settledAt,
+    state: "settled",
+    updatedAt: settledAt
+  };
+}
+
+function fakeProviderExecutionSnapshot() {
+  return {
+    connection: {
+      allowPrivateNetwork: true,
+      apiRoot: "http://127.0.0.1",
+      authenticationMode: "none",
+      responseTimeoutMs: 300_000
+    },
+    connectionDisplayName: "Fake",
+    connectionId: "fake-connection",
+    credentialId: null,
+    credentialVersionId: null,
+    model: {
+      adapterKind: "fake",
+      capabilities: {
+        nativePdfInput: false,
+        nativeSearch: false,
+        pdf: false,
+        reasoning: false,
+        vision: false
+      },
+      defaultParams: {},
+      upstreamModelId: "fake-qsa"
+    },
+    modelDisplayName: "Fake QSA",
+    providerFamily: "fake",
+    providerModelId: "fake-model",
+    version: 1
   };
 }
 
@@ -887,6 +1165,477 @@ describe("Knowledge Evidence v2 repository projection", () => {
       "Atlas retains completed exports for 30 days [K1]."
     );
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it.each([{
+    evidenceVersion: 53 as const,
+    name: "historical V37",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+    targetLocalSupplement: false
+  }, {
+    evidenceVersion: 54 as const,
+    name: "historical V38",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
+    targetLocalSupplement: true
+  }, {
+    evidenceVersion: 55 as const,
+    name: "current V39",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
+    targetLocalSupplement: true
+  }])("reconstructs $name closure into its isolated evidence version", async ({
+    evidenceVersion,
+    protocol,
+    targetLocalSupplement
+  }) => {
+    const evidenceRow = row().evidenceItems[0]!;
+    const request =
+      "How long are completed Atlas exports retained, and when does retention start?";
+    const dispatchDraft = packKnowledgeEvidenceDispatchManifest({
+      candidates: [{
+        ambiguity: "none",
+        evidenceId: "provider-call-1:result:1",
+        exactExcerpt: evidenceRow.excerpt,
+        fileName: evidenceRow.fileName,
+        handle: "K1",
+        locator: "page=2; heading=Retention",
+        operationOrdinal: 1,
+        resultOrdinal: 1,
+        sourceAlias: "S1",
+        sourceLabel: evidenceRow.sourceName,
+        sourceTruncated: false,
+        sourceVersionNumber: 3,
+        state: "available"
+      }],
+      coverageStatement: "Coverage is limited to the supplied SOURCE blocks.",
+      footer: "</private_knowledge_evidence>",
+      header: '<private_knowledge_evidence version="4">',
+      maximumBytes: 16_384,
+      maximumTokens: 4_096,
+      profileId: "fake:fake-qsa",
+      promptFragmentVersion: 1,
+      runtimeVersion: 1
+    });
+    const rawDraft = {
+      claims: [{
+        citationHints: ["K1"],
+        text: "Completed Atlas exports are retained for 30 days."
+      }],
+      version: 1
+    };
+    const acceptedDraft = decodeKnowledgeAnswerDraftV21(rawDraft, {
+      availableHandles: ["K1"]
+    });
+    expect(acceptedDraft).not.toBeNull();
+    const selectorEvidence = knowledgeCoverageEvidenceFromManifestV6(dispatchDraft);
+    const rawScope = {
+      evidenceUnits: [{
+        findings: [{
+          description: "State the retention duration for completed Atlas exports.",
+          evidenceAtomIds: ["A1"],
+          requestAnchor: "How long"
+        }, {
+          description: "State when the retention period starts.",
+          evidenceAtomIds: ["A1"],
+          requestAnchor: "when does retention start"
+        }],
+        handle: "K1"
+      }],
+      jointFindings: [],
+      unsupportedDimensions: [],
+      version: 6
+    } as const;
+    const acceptedScope = decodeKnowledgeCoverageScopeV6(rawScope, {
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      evidence: selectorEvidence,
+      request
+    });
+    expect(acceptedScope).not.toBeNull();
+    const rawSelector = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "missing",
+        supportIds: []
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    const acceptedSelector = decodeKnowledgeGroundedSelectorV21(rawSelector, {
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      draft: acceptedDraft!,
+      evidence: selectorEvidence,
+      request,
+      scope: acceptedScope!,
+      scopeProtocol: "append_only_completeness_reduce_v2"
+    });
+    expect(acceptedSelector).not.toBeNull();
+    const executionPolicy = {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const;
+    const draftPrompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
+      draftPass: "primary",
+      evidenceManifest: dispatchDraft.message,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    });
+    const initialScopePrompt = knowledgeCoverageScopePromptV6RecallMapV1({
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      repairBaseHash: null,
+      request,
+      scopePass: "initial"
+    });
+    const completenessPrompt = knowledgeCoverageScopeCompletenessPromptV5({
+      acceptedScope: acceptedScope!,
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      completenessPass: "initial",
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      request
+    });
+    const selectorPrompt = (evidenceVersion === 55
+      ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
+      : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      draft: acceptedDraft!,
+      evidence: selectorEvidence,
+      evidenceManifest: dispatchDraft.message,
+      request,
+      scope: acceptedScope!,
+      scopeProtocol: "append_only_completeness_reduce_v2",
+      selectorPass: "initial"
+    });
+    const commonRequest = {
+      evidenceReceiptHash: dispatchDraft.manifestHash,
+      executionPolicy,
+      protocol,
+      transport: "native_strict" as const
+    };
+    const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: 21,
+      maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+      systemPrompt: draftPrompt.systemPrompt,
+      userPrompt: draftPrompt.userPrompt
+    });
+    const initialScopeRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_V6_CONTRACT_VERSION,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
+      systemPrompt: initialScopePrompt.systemPrompt,
+      userPrompt: initialScopePrompt.userPrompt
+    });
+    const coverageScopePayloadHash = knowledgeAnswerHash(acceptedScope);
+    const completenessRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V1,
+      systemPrompt: completenessPrompt.systemPrompt,
+      userPrompt: completenessPrompt.userPrompt
+    });
+    const selectorRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
+      systemPrompt: selectorPrompt.systemPrompt,
+      userPrompt: selectorPrompt.userPrompt
+    });
+    const supportedView = buildKnowledgeSupportedAnswerViewV1({
+      draft: acceptedDraft!,
+      evidence: selectorEvidence,
+      selector: {
+        claims: acceptedSelector!.claims,
+        extractIds: acceptedSelector!.extractIds,
+        insufficientReason: acceptedSelector!.insufficientReason,
+        version: acceptedSelector!.version
+      }
+    });
+    const closurePrompt = knowledgeCoverageScopeClosurePromptV2({
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      closurePass: "initial",
+      evidence: selectorEvidence,
+      request,
+      scope: acceptedScope!,
+      selector: acceptedSelector!,
+      supportedView
+    });
+    const closureRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION,
+      schema: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_SCHEMA_V2,
+      systemPrompt: closurePrompt.systemPrompt,
+      userPrompt: closurePrompt.userPrompt
+    });
+    const rawClosure = {
+      decisions: [{ id: "D1", status: "closed" }, {
+        id: "D2", status: "missing"
+      }],
+      version: 2
+    } as const;
+    const missingDimensions = knowledgeCoverageMissingDimensionsV6(acceptedSelector!);
+    const rawSupplement = {
+      targets: {
+        D2: ["The retention period starts after completion."]
+      },
+      version: 2
+    };
+    const acceptedSupplement = (targetLocalSupplement
+      ? decodeKnowledgeTargetedSupplementV5
+      : decodeKnowledgeTargetedSupplementV4)(rawSupplement, {
+      availableHandles: ["K1"],
+      missingDimensions,
+      primaryDraft: acceptedDraft!
+    });
+    expect(acceptedSupplement).not.toBeNull();
+    const merged = (targetLocalSupplement
+      ? mergeKnowledgeTargetedSupplementV3
+      : mergeKnowledgeTargetedSupplementV2)({
+      primaryDraft: acceptedDraft!,
+      supplement: acceptedSupplement!
+    });
+    const mergedDraft = merged.draft;
+    const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV8({
+      auditDimensions: missingDimensions,
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      evidence: selectorEvidence,
+      primaryClaimCount: acceptedDraft!.claims.length,
+      request,
+      routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
+    });
+    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV7({
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      bindings: merged.bindings,
+      draft: mergedDraft,
+      evidence: selectorEvidence,
+      initialSelector: acceptedSelector!,
+      request,
+      scope: acceptedScope!
+    });
+    const finalRepairPrompt = knowledgeGroundedDeltaSelectorPromptV7({
+      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      bindings: merged.bindings,
+      draft: mergedDraft,
+      evidence: selectorEvidence,
+      initialSelector: acceptedSelector!,
+      repairReason: "selector_coverage_invalid",
+      request,
+      scope: acceptedScope!
+    });
+    const supplementRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: 21,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+      schema: knowledgeAnswerTargetedSupplementSchemaV3({
+        primaryClaimCount: acceptedDraft!.claims.length,
+        targetDimensions: missingDimensions
+      }),
+      systemPrompt: supplementPrompt.systemPrompt,
+      userPrompt: supplementPrompt.userPrompt
+    });
+    const finalRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
+      systemPrompt: finalPrompt.systemPrompt,
+      userPrompt: finalPrompt.userPrompt
+    });
+    const finalRepairRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      ...commonRequest,
+      contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,
+      coverageScopePayloadHash,
+      maxOutputTokens: KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V21,
+      systemPrompt: finalRepairPrompt.systemPrompt,
+      userPrompt: finalRepairPrompt.userPrompt
+    });
+    const rawFinalSelector = {
+      claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }, {
+        id: "C2",
+        supportHandles: ["K1"],
+        verdict: "supported"
+      }],
+      coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }, {
+        id: "D2",
+        status: "covered",
+        supportIds: ["C2"]
+      }],
+      extractIds: [],
+      insufficientReason: "not_applicable",
+      version: 1
+    };
+    const attempts = [
+      v21AttemptRow({
+        acceptedRequest: draftRequest,
+        acceptedResult: rawDraft,
+        draft: dispatchDraft,
+        ordinal: 1,
+        purpose: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+      }),
+      v21AttemptRow({
+        acceptedRequest: initialScopeRequest,
+        acceptedResult: rawScope,
+        draft: dispatchDraft,
+        ordinal: 2,
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+      }),
+      v21AttemptRow({
+        acceptedRequest: completenessRequest,
+        acceptedResult: { additions: [], version: 1 },
+        draft: dispatchDraft,
+        ordinal: 3,
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+      }),
+      v21AttemptRow({
+        acceptedRequest: selectorRequest,
+        acceptedResult: rawSelector,
+        draft: dispatchDraft,
+        ordinal: 4,
+        purpose: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+      }),
+      v21AttemptRow({
+        acceptedRequest: closureRequest,
+        acceptedResult: rawClosure,
+        draft: dispatchDraft,
+        ordinal: 5,
+        purpose: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+      }),
+      v21AttemptRow({
+        acceptedRequest: supplementRequest,
+        acceptedResult: rawSupplement,
+        draft: dispatchDraft,
+        ordinal: 6,
+        purpose: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+      }),
+      v21AttemptRow({
+        acceptedRequest: finalRequest,
+        acceptedResult: {
+          kind: "selector_failed",
+          reason: "selector_coverage_invalid"
+        },
+        draft: dispatchDraft,
+        ordinal: 7,
+        purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+      }),
+      v21AttemptRow({
+        acceptedRequest: finalRepairRequest,
+        acceptedResult: rawFinalSelector,
+        draft: dispatchDraft,
+        ordinal: 8,
+        purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+      })
+    ];
+
+    const result = await groundKnowledgeRunAnswerV21(client(row(), {
+      attempts,
+      providerExecutionSnapshot: fakeProviderExecutionSnapshot()
+    }), { runId: "run-1", userId: "user-1" });
+
+    expect(result.grounding).toMatchObject({
+      coverage: {
+        coveredDimensionCount: 1,
+        excludedDimensionCount: 0,
+        missingDimensionCount: 1,
+        status: "accepted"
+      },
+      coverageScope: {
+        dimensionCount: 2,
+        status: "accepted"
+      },
+      contracts: {
+        coverageAuditorContractVersion: 6,
+        draftContractVersion: 21,
+        selectorContractVersion: 21,
+        settlementVersion: 6
+      },
+      correctionAttempted: true,
+      correctionSucceeded: true,
+      ...(targetLocalSupplement ? { crossTargetExactRepeatCount: 0 } : {}),
+      closure: {
+        initialCoveredDimensionCount: 1,
+        initialExcludedDimensionCount: 0,
+        payloadHash: knowledgeAnswerHash(rawClosure),
+        reopenedCoveredDimensionCount: 0,
+        reopenedDimensionCount: 0,
+        reopenedExcludedDimensionCount: 0
+      },
+      closureRepairAttempted: false,
+      closureRepairSucceeded: false,
+      completeness: {
+        addedDimensionCount: 0,
+        initialDimensionCount: 2,
+        status: "accepted"
+      },
+      finalText: [
+        "- Completed Atlas exports are retained for 30 days. [K1]",
+        "- The retention period starts after completion. [K1]"
+      ].join("\n"),
+      requestCoverage: "complete",
+      scopeRepairAttempted: false,
+      scopeRepairSucceeded: false,
+      supportedClaimCount: 2,
+      version: evidenceVersion
+    });
+    expect(result.grounding).toMatchObject({
+      answerBindingFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      draftClaimCount: 2,
+      executionPolicy,
+      executionPolicyFingerprint: knowledgeAnswerHash(executionPolicy)
+    });
+    expect("operations" in result.grounding &&
+      result.grounding.operations.map(({ role }) => role)).toEqual([
+      "primary",
+      "scope",
+      "scope_completeness",
+      "initial",
+      "scope_closure",
+      "supplement",
+      "final",
+      "final"
+    ]);
+    const conflictingCompletenessRequest = {
+      ...completenessRequest,
+      userPrompt: "{}"
+    };
+    await expect(groundKnowledgeRunAnswerV21(client(row(), {
+      attempts: attempts.map((attempt, index) => index === 2
+        ? {
+            ...attempt,
+            acceptedRequest: conflictingCompletenessRequest,
+            requestHash: knowledgeAnswerHash(conflictingCompletenessRequest)
+          }
+        : attempt),
+      providerExecutionSnapshot: fakeProviderExecutionSnapshot()
+    }), { runId: "run-1", userId: "user-1" })).rejects.toThrow(
+      "knowledge_answer_operation_snapshot_conflict"
+    );
   });
 
   it("rejects focused Knowledge finalization when its evidence receipt is missing", async () => {
@@ -1475,6 +2224,196 @@ describe("Knowledge Evidence v2 repository projection", () => {
       selectorValidationRepairApplied: false,
       version: 16
     });
+
+    existing = null;
+    create.mockClear();
+    const auditPayloadHash = "b".repeat(64);
+    const groundingV17 = groundSettledKnowledgeAnswerV17({
+      audit: {
+        coveredDimensionCount: 1,
+        dimensionCount: 1,
+        missingDimensionCount: 0,
+        payloadHash: auditPayloadHash
+      },
+      contracts: {
+        coverageAuditorContractVersion: 2,
+        draftContractVersion: 21,
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      },
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "c".repeat(64),
+      modelPinFingerprint: "d".repeat(64),
+      operations: [{
+        acceptedRequestHash: "e".repeat(64),
+        acceptedResultHash: "f".repeat(64),
+        contractVersion: 21,
+        durationMs: 12,
+        operationId: "draft-operation-v21",
+        ordinal: 1,
+        providerRequestId: "draft-response-v21",
+        purpose: "knowledge_answer_draft_v21",
+        role: "primary",
+        usage
+      }, {
+        acceptedRequestHash: "1".repeat(64),
+        acceptedResultHash: "2".repeat(64),
+        contractVersion: 17,
+        durationMs: 8,
+        operationId: "selector-operation-v17",
+        ordinal: 2,
+        providerRequestId: "selector-response-v17",
+        purpose: "knowledge_grounded_selector_v17",
+        role: "initial",
+        usage
+      }, {
+        acceptedRequestHash: "3".repeat(64),
+        acceptedResultHash: auditPayloadHash,
+        contractVersion: 2,
+        durationMs: 6,
+        operationId: "auditor-operation-v2",
+        ordinal: 3,
+        providerRequestId: "auditor-response-v2",
+        purpose: "knowledge_coverage_auditor_v2",
+        role: "auditor",
+        usage
+      }],
+      providerPinFingerprint: "4".repeat(64),
+      selectorRepairSucceeded: false,
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Private V21 final answer must not be persisted. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV17
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    const storedV17 = (existing as { evidence?: unknown } | null)?.evidence;
+    expect(storedV17).toMatchObject({
+      audit: { payloadHash: auditPayloadHash, status: "accepted" },
+      contracts: {
+        coverageAuditorContractVersion: 2,
+        draftContractVersion: 21,
+        selectorContractVersion: 17,
+        settlementVersion: 6
+      },
+      operations: [{ role: "primary" }, { role: "initial" }, { role: "auditor" }],
+      version: 17
+    });
+    expect(JSON.stringify(storedV17)).not.toContain("finalText");
+    expect(JSON.stringify(storedV17)).not.toContain("Private V21 final answer");
+    expect(JSON.stringify(storedV17)).not.toContain("Completed Atlas exports");
+
+    existing = null;
+    create.mockClear();
+    const scopePayloadHash = "5".repeat(64);
+    const selectorPayloadHash = "6".repeat(64);
+    const currentPolicy = {
+      auditorReasoningEffort: "high",
+      draftReasoningEffort: "low",
+      egressDestination: "answer_provider",
+      overriddenRoles: ["auditor"],
+      providerBindingKey: "answer",
+      selectorReasoningEffort: "low",
+      supplementReasoningEffort: "low",
+      version: 1
+    } as const;
+    const groundingV19 = groundSettledKnowledgeAnswerV19({
+      answerBindingFingerprint: "7".repeat(64),
+      contracts: {
+        coverageAuditorContractVersion: 3,
+        draftContractVersion: 21,
+        selectorContractVersion: 18,
+        settlementVersion: 6
+      },
+      coverage: {
+        coveredDimensionCount: 1,
+        missingDimensionCount: 0,
+        selectorPayloadHash
+      },
+      coverageScope: { dimensionCount: 1, payloadHash: scopePayloadHash },
+      draftClaimCount: 1,
+      evidence: acceptedEvidence!,
+      evidenceReceiptHash: "8".repeat(64),
+      executionPolicy: currentPolicy,
+      executionPolicyFingerprint: knowledgeAnswerHash(currentPolicy),
+      modelPinFingerprint: "9".repeat(64),
+      operations: [{
+        acceptedRequestHash: "a".repeat(64),
+        acceptedResultHash: "b".repeat(64),
+        contractVersion: 21,
+        durationMs: 12,
+        operationId: "draft-operation-v21-scope-v3",
+        ordinal: 1,
+        providerRequestId: "draft-response-v21-scope-v3",
+        purpose: "knowledge_answer_draft_v21",
+        role: "primary",
+        usage
+      }, {
+        acceptedRequestHash: "c".repeat(64),
+        acceptedResultHash: scopePayloadHash,
+        contractVersion: 3,
+        durationMs: 6,
+        operationId: "scope-operation-v3",
+        ordinal: 2,
+        providerRequestId: "scope-response-v3",
+        purpose: "knowledge_coverage_scope_v3",
+        role: "scope",
+        usage
+      }, {
+        acceptedRequestHash: "d".repeat(64),
+        acceptedResultHash: selectorPayloadHash,
+        contractVersion: 18,
+        durationMs: 8,
+        operationId: "selector-operation-v18",
+        ordinal: 3,
+        providerRequestId: "selector-response-v18",
+        purpose: "knowledge_grounded_selector_v18",
+        role: "initial",
+        usage
+      }],
+      providerPinFingerprint: "e".repeat(64),
+      scopeRepairSucceeded: false,
+      selectorRepairSucceeded: false,
+      settlement: {
+        contradictedClaimCount: 0,
+        fallbackReason: null,
+        finalText: "Private V19 final answer must not be persisted. [K1]",
+        finalizationMode: "selected_claims",
+        groundingStatus: "verified",
+        outcome: "answered",
+        requestCoverage: "complete",
+        supportedClaimCount: 1,
+        unsupportedClaimCount: 0
+      }
+    });
+    await expect(settleKnowledgeGrounding(transaction as never, {
+      grounding: groundingV19
+    })).resolves.toBeUndefined();
+    expect(create).toHaveBeenCalledOnce();
+    const storedV19 = (existing as { evidence?: unknown } | null)?.evidence;
+    expect(storedV19).toMatchObject({
+      contracts: {
+        coverageAuditorContractVersion: 3,
+        draftContractVersion: 21,
+        selectorContractVersion: 18,
+        settlementVersion: 6
+      },
+      coverage: { selectorPayloadHash, status: "accepted" },
+      coverageScope: { payloadHash: scopePayloadHash, status: "accepted" },
+      operations: [{ role: "primary" }, { role: "scope" }, { role: "initial" }],
+      version: 19
+    });
+    expect(JSON.stringify(storedV19)).not.toContain("finalText");
+    expect(JSON.stringify(storedV19)).not.toContain("Private V19 final answer");
   });
 
 });

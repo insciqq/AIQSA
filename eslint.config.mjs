@@ -11,9 +11,11 @@ const eslintConfig = [
       ".aiqsa/**",
       ".next/**",
       "**/*.d.mts",
+      "benchmarks/**",
       "coverage/**",
       "node_modules/**",
       "playwright-report/**",
+      "scripts/longmemeval-qualification.test.ts",
       "test-results/**"
     ]
   },

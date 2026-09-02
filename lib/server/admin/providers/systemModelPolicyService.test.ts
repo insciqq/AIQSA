@@ -17,6 +17,7 @@ const activeConfiguration = {
     defaultReasoningEffort: "medium",
     reasoning: true,
     reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    toolCalling: true,
     vision: false
   },
   defaultParams: {},
@@ -189,6 +190,7 @@ describe("administrator system model policy service", () => {
         connectionId: "connection-1",
         defaultReasoningEffort: "medium",
         displayName: "Answer model",
+        forcedToolCall: "not_verified",
         id: "model-1",
         reasoningEfforts: ["low", "medium", "high", "xhigh"],
         structuredOutput: "not_verified"
@@ -206,6 +208,7 @@ describe("administrator system model policy service", () => {
           connectionId: "connection-1",
           defaultReasoningEffort: "medium",
           displayName: "Answer model",
+          forcedToolCall: "not_verified",
           id: "model-old",
           reasoningEfforts: ["low", "medium", "high", "xhigh"],
           structuredOutput: "not_verified"
@@ -257,6 +260,12 @@ describe("administrator system model policy service", () => {
         credentialId: "credential-1",
         credentialVersionId: "credential-version-1",
         evidence: {
+          forcedToolCall: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 1,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          },
           structuredOutput: {
             adapterKind: "openai_responses_compatible",
             probeVersion: 2,
@@ -300,7 +309,11 @@ describe("administrator system model policy service", () => {
       resolveRole: vi.fn().mockResolvedValue({ code: "system_model_not_configured", ok: false })
     }).list()).resolves.toMatchObject({
       candidates: [
-        { id: "model-1", structuredOutput: "verified" },
+        {
+          forcedToolCall: "verified",
+          id: "model-1",
+          structuredOutput: "verified"
+        },
         { id: "model-anthropic", structuredOutput: "unsupported" }
       ]
     });
@@ -310,6 +323,12 @@ describe("administrator system model policy service", () => {
     const target = verifiableModel();
     const refreshActive = vi.fn().mockResolvedValue({
       evidence: {
+        forcedToolCall: {
+          adapterKind: "openai_responses_compatible",
+          probeVersion: 1,
+          upstreamModelId: "vendor/answer",
+          verified: true
+        },
         structuredOutput: {
           adapterKind: "openai_responses_compatible",
           probeVersion: 2,
@@ -349,6 +368,12 @@ describe("administrator system model policy service", () => {
         credentialId: "credential-1",
         credentialVersionId: "credential-version-1",
         evidence: {
+          forcedToolCall: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 1,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          },
           structuredOutput: {
             adapterKind: "openai_responses_compatible",
             probeVersion: 2,

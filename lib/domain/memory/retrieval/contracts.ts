@@ -310,7 +310,15 @@ export type MemoryPackedStatus = "current" | "historical" | "superseded";
 
 export type MemoryContextBudgetProfile = "COMPLEX" | "PAST_CHAT" | "SIMPLE";
 
+export type MemoryPackedQueryScopeConstraint = Readonly<{
+  evidenceHandle: "current_query" | string;
+  kind: "AVOID" | "PREFER" | "PRESERVE";
+  targetQuote: string;
+}>;
+
 export type MemoryExpandedCandidate = Readonly<{
+  /** Exact direct-user fragments proven by authoritative source-role joins. */
+  directUserTexts?: readonly string[];
   itemId: string;
   itemType: MemoryRetrievalItemType;
   occurredFrom: Date | null;
