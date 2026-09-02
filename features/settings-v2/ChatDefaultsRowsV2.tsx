@@ -10,6 +10,7 @@ import {
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { SearchPlan } from "@/lib/domain/search";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { SettingsSelectV2 } from "./SettingsSelectV2";
 import { SettingsRowV2 } from "./SettingsV2";
 
 export type ChatDefaultMcpMode = McpRunSelection["mode"];
@@ -137,11 +138,16 @@ export function ChatDefaultsRowsV2({
         />
       </SettingsRowV2>
       <SettingsRowV2 description="Base attached to new chats by default." testId="settings-default-knowledge" title="Knowledge">
-        <select
-          aria-label="Knowledge default"
+        <SettingsSelectV2
+          label="Knowledge default"
+          options={[
+            { label: "None", value: NO_KNOWLEDGE },
+            { label: "All my knowledge", value: ALL_MY_KNOWLEDGE },
+            ...activeBases.map((base) => ({ label: base.name, value: base.id })),
+            ...(orphanBaseId ? [{ label: "Unavailable base", value: orphanBaseId }] : [])
+          ]}
           value={currentKnowledge}
-          onChange={(event) => {
-            const next = event.target.value;
+          onChange={(next) => {
             onKnowledgePlan(
               next === NO_KNOWLEDGE
                 ? null
@@ -150,14 +156,7 @@ export function ChatDefaultsRowsV2({
                   : explicitKnowledgeSelection({ baseIds: [next] })
             );
           }}
-        >
-          <option value={NO_KNOWLEDGE}>None</option>
-          <option value={ALL_MY_KNOWLEDGE}>All my knowledge</option>
-          {activeBases.map((base) => (
-            <option key={base.id} value={base.id}>{base.name}</option>
-          ))}
-          {orphanBaseId ? <option value={orphanBaseId}>Unavailable base</option> : null}
-        </select>
+        />
       </SettingsRowV2>
     </>
   );

@@ -322,9 +322,9 @@ describe("Workspace header v2", () => {
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent)
     ).toEqual([
-      "Share",
       "Rename",
       "Move to…",
+      "Share",
       "Branches",
       "Export",
       "Export as JSON",

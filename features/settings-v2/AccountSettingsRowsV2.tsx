@@ -15,6 +15,17 @@ import {
 import { useEffect, useState, type FormEvent } from "react";
 import { SettingsRowV2 } from "./SettingsV2";
 
+/** "operator@aiqsa.local" → "Operator": a readable stand-in for a missing Display name. */
+export function accountNameFromEmailV2(email: string | null | undefined): string {
+  const local = (email ?? "").split("@")[0]?.replace(/[._-]+/g, " ").trim() ?? "";
+  if (!local) return "Account";
+  return local
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toLocaleUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 type PasswordFormState =
   | Readonly<{ kind: "closed" }>
   | Readonly<{ kind: "editing"; error: string | null; saving: boolean }>
@@ -33,6 +44,7 @@ export function AccountSettingsRowsV2({
   const [profileError, setProfileError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [nameSaving, setNameSaving] = useState(false);
+  const [nameSaved, setNameSaved] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [password, setPassword] = useState<PasswordFormState>({ kind: "closed" });
 
@@ -65,6 +77,7 @@ export function AccountSettingsRowsV2({
         setProfile(updated);
         setNameDraft(updated.displayName);
         setNameSaving(false);
+        setNameSaved(true);
       },
       (error) => {
         setNameError(errorMessage(error));
@@ -95,10 +108,12 @@ export function AccountSettingsRowsV2({
     <>
       <div className="v2-settings-identity" data-testid="settings-account-identity">
         <span className="v2-navigation-account-avatar" aria-hidden="true">
-          {accountInitialsV2(profile?.displayName ?? email)}
+          {accountInitialsV2(profile?.displayName || email)}
         </span>
         <div>
-          <strong>{profile?.displayName ?? email ?? "Account"}</strong>
+          {/* A human name first; without a Display name the e-mail's local
+              part stands in so the address is never printed twice. */}
+          <strong>{profile?.displayName?.trim() || accountNameFromEmailV2(email)}</strong>
           <small>
             {[email, adminEntryVisible ? "Administrator" : "Member"].filter(Boolean).join(" · ")}
           </small>
@@ -110,22 +125,32 @@ export function AccountSettingsRowsV2({
         testId="settings-display-name"
         title="Display name"
       >
-        <input
-          aria-label="Display name"
-          className="v2-settings-input"
-          disabled={!profile || nameSaving}
-          maxLength={ACCOUNT_DISPLAY_NAME_MAX_LENGTH}
-          type="text"
-          value={nameDraft}
-          onBlur={saveName}
-          onChange={(event) => setNameDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              saveName();
-            }
-          }}
-        />
+        <span className="v2-settings-inline-actions">
+          <input
+            aria-label="Display name"
+            className="v2-settings-input"
+            disabled={!profile || nameSaving}
+            maxLength={ACCOUNT_DISPLAY_NAME_MAX_LENGTH}
+            placeholder={accountNameFromEmailV2(email)}
+            type="text"
+            value={nameDraft}
+            onChange={(event) => {
+              setNameSaved(false);
+              setNameDraft(event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                saveName();
+              }
+            }}
+          />
+          {nameDirty ? (
+            <UiV2Button busy={nameSaving} tone="primary" onClick={saveName}>Save</UiV2Button>
+          ) : nameSaved ? (
+            <span className="v2-settings-saved" role="status">Saved</span>
+          ) : null}
+        </span>
         {nameError ? <span className="v2-live-menu-error" role="alert">{nameError}</span> : null}
       </SettingsRowV2>
       {profile?.hasPassword ? (

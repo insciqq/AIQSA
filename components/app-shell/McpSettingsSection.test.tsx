@@ -90,16 +90,16 @@ describe("McpSettingsSection", () => {
     });
     const enable = initial.getByRole("button", { name: "Enable Todoist" });
     expect(disabledStatus.closest("button")).toBeNull();
-    expect(disabledStatus).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
-    expect(enable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+    expect(disabledStatus).toHaveAttribute("data-resource-availability", "disabled");
+    expect(enable).toHaveAttribute("data-tone", "primary");
 
     fireEvent.click(enable);
     await waitFor(() => expect(todoist.enabled).toBe(true));
     expect(within(card!).getByText("Enabled", {
       selector: "[data-resource-availability]"
-    })).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-ink");
+    })).toHaveAttribute("data-resource-availability", "enabled");
     const disable = within(card!).getByRole("button", { name: "Disable Todoist" });
-    expect(disable).toHaveClass("bg-control-surface", "text-ink-secondary");
+    expect(disable).toHaveAttribute("data-tone", "ghost");
 
     fireEvent.click(disable);
     await waitFor(() => expect(todoist.enabled).toBe(false));
@@ -187,7 +187,7 @@ describe("McpSettingsSection", () => {
     await screen.findByRole("heading", { name: "Notion" });
     const connectToEnable = screen.getByRole("link", { name: "Connect Notion to enable" });
     expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
-    expect(connectToEnable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+    expect(connectToEnable).toHaveAttribute("data-tone", "primary");
     expect(connectToEnable).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
     connectToEnable.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(connectToEnable);
@@ -267,11 +267,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
     expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveClass(
-      "border-proof/25",
-      "bg-proof/[0.08]",
-      "text-proof"
-    );
+    expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveAttribute("data-tone", "primary");
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
     expect(screen.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
@@ -377,10 +373,11 @@ describe("McpSettingsSection", () => {
     const authorizingReadiness = screen.getByText("Authorizing").closest("p");
     const queuedReadiness = screen.getByText("Activating").closest("p");
     const idleReadiness = screen.getByText("Available on demand").closest("p");
-    expect(authorizingReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(queuedReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).not.toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-circle-check");
+    // Progress states show the spinner; ready states the check with the "ok" tone.
+    expect(authorizingReadiness?.querySelector(".v2-spinner")).not.toBeNull();
+    expect(queuedReadiness?.querySelector(".v2-spinner")).not.toBeNull();
+    expect(idleReadiness?.querySelector(".v2-spinner")).toBeNull();
+    expect(idleReadiness).toHaveAttribute("data-tone", "ok");
     expect(screen.queryByText("Queued")).not.toBeInTheDocument();
     expect(screen.queryByText("Needs setup")).not.toBeInTheDocument();
   });
@@ -402,7 +399,7 @@ describe("McpSettingsSection", () => {
     expect(within(card!).getByText("Enabled", {
       selector: "[data-resource-availability]"
     })).toBeVisible();
-    expect(within(card!).getByText("Needs authorization")).toHaveClass("text-caution");
+    expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     expect(within(card!).getByRole("link", { name: "Connect" })).toBeVisible();
   });
 });

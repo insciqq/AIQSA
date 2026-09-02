@@ -4,6 +4,7 @@ import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createGetChatMessagesPageHandler } from "@/lib/server/chats/handlers";
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
+import { createPrismaChatTitleGenerator } from "@/lib/server/chats/titleGeneration";
 import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
 import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
@@ -30,6 +31,7 @@ export const GET = createGetChatMessagesPageHandler({
 export const POST = createSendMessageHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
   assistants: defaultAssistantRepository,
+  chatTitleGenerator: createPrismaChatTitleGenerator(),
   getConfig: () => getAuthConfig(),
   knowledgeAdmission: knowledgeRunAdmissionService,
   knowledgeExecutor: knowledgeToolExecutor,

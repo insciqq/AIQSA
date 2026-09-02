@@ -63,7 +63,8 @@ export function AccountMenuV2({
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label="Account menu"
-        title={variant === "avatar" ? accountLabel || "Account" : undefined}
+        data-tooltip={variant === "avatar" ? accountLabel || "Account" : undefined}
+        data-tooltip-side={variant === "avatar" ? "right" : undefined}
         ref={triggerRef}
         onClick={() => setOpen((value) => !value)}
       >
@@ -83,6 +84,16 @@ export function AccountMenuV2({
           label="Account"
           ref={menuRef}
         >
+          {/* Who is signed in, as ChatGPT/Claude show above their account
+              actions; it is a caption, not a menu item. */}
+          {accountLabel ? (
+            <div className="v2-navigation-account-identity" data-testid="account-menu-identity">
+              <span className="v2-navigation-account-avatar" aria-hidden="true">
+                {accountInitialsV2(accountLabel)}
+              </span>
+              <span>{accountLabel}</span>
+            </div>
+          ) : null}
           {onSettings ? (
             <UiV2MenuItem onClick={() => { setOpen(false); onSettings(); }}>
               Settings

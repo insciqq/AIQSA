@@ -4,22 +4,7 @@ import {
   type UserMcpConfigurationField,
   type UserMcpServer
 } from "@/lib/contracts/mcp";
-import {
-  AvailabilityStatus,
-  availabilityRowClass,
-  enableActionTone
-} from "@/components/resource-lifecycle/AvailabilityStatus";
-import {
-  CircleAlert,
-  CircleCheck,
-  KeyRound,
-  LoaderCircle,
-  Plug,
-  RefreshCw,
-  Save,
-  Unplug,
-  Wrench
-} from "lucide-react";
+import { UiV2Button, UiV2Icon, UiV2Monogram } from "@/components/ui-v2";
 import { useEffect, useState } from "react";
 import {
   disconnectUserMcpServer,
@@ -38,12 +23,14 @@ import {
   type McpReadinessPresentation
 } from "./mcpReadiness";
 
-const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
-const touchTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
-const actionButtonBase = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control ${touchTarget} ${focusRing}`;
-const neutralButton = `${actionButtonBase} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`;
-const enableButton = `${actionButtonBase} ${enableActionTone}`;
+/*
+ * Settings › MCP & tools in the Signal row anatomy (PRD §4.9, UX audit
+ * 2026-09-02 #12): one summary row, an optional "How tools use data"
+ * disclosure, then one row per server — monogram · name + status ·
+ * description · the lifecycle action on the right — with the external
+ * account, personal configuration and tool list folded underneath. The
+ * behaviour (enable/disable, OAuth, personal values, readiness) is unchanged.
+ */
 
 function readableCode(code: string): string {
   const label = code.replace(/^mcp_/u, "").replaceAll("_", " ");
@@ -74,11 +61,11 @@ function errorText(error: unknown, server: UserMcpServer): string {
   return "The MCP server could not be updated. Try again.";
 }
 
-function readinessTone(kind: McpReadinessPresentation["kind"]): string {
-  if (kind === "ready") return "text-positive";
-  if (kind === "failed") return "text-critical";
-  if (kind === "attention") return "text-caution";
-  return "text-ink-secondary";
+function readinessTone(kind: McpReadinessPresentation["kind"]): "danger" | "neutral" | "ok" | "warn" {
+  if (kind === "ready") return "ok";
+  if (kind === "failed") return "danger";
+  if (kind === "attention") return "warn";
+  return "neutral";
 }
 
 type ServerEdits = Record<string, Record<string, McpSlotValue | null>>;
@@ -90,6 +77,10 @@ function fieldValue(
   if (Object.hasOwn(edits, field.slotKey)) return edits[field.slotKey] ?? "";
   if (!field.sensitive && field.value !== undefined) return field.value;
   return field.valueType === "boolean" ? false : "";
+}
+
+function Spinner() {
+  return <span className="v2-spinner" aria-hidden="true" />;
 }
 
 function FieldEditor({
@@ -111,35 +102,32 @@ function FieldEditor({
     : field.source === "shared"
       ? "Using the administrator’s shared value"
       : "No value configured";
-  const inputClass = `min-h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:min-h-control ${touchTarget} ${focusRing}`;
 
   return (
-    <div className="min-w-0 border-l border-trace-subtle pl-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <label className="min-w-0 flex-1 text-sm font-medium text-ink" htmlFor={inputId}>
-          {field.label}
-        </label>
-        <span className="text-xs text-ink-muted">{status}</span>
+    <div className="v2-settings-field">
+      <div className="v2-settings-field-head">
+        <label htmlFor={inputId}>{field.label}</label>
+        <span className="v2-settings-field-status">{status}</span>
       </div>
-      {field.description ? <p className="mt-1 text-xs leading-5 text-ink-muted">{field.description}</p> : null}
-      <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+      {field.description ? <p className="v2-settings-field-note">{field.description}</p> : null}
+      <div className="v2-settings-field-controls">
         {field.valueType === "boolean" ? (
           <button
             aria-pressed={value === true}
-            className={`${neutralButton} justify-between sm:min-w-36`}
+            className="v2-settings-select-trigger v2-focusable"
             disabled={disabled}
             id={inputId}
             onClick={() => onChange(value !== true)}
             type="button"
           >
             Personal override
-            <span className={value === true ? "text-proof" : "text-ink-muted"}>
+            <span className="v2-settings-field-toggle" data-on={value === true || undefined}>
               {value === true ? "On" : "Off"}
             </span>
           </button>
         ) : field.valueType === "enum" && field.enumValues?.length ? (
           <select
-            className={inputClass}
+            className="v2-settings-input"
             disabled={disabled}
             id={inputId}
             onChange={(event) => onChange(event.target.value)}
@@ -151,7 +139,7 @@ function FieldEditor({
         ) : (
           <input
             autoComplete="off"
-            className={inputClass}
+            className="v2-settings-input"
             disabled={disabled}
             id={inputId}
             inputMode={field.valueType === "number" ? "decimal" : undefined}
@@ -167,18 +155,16 @@ function FieldEditor({
             value={typeof value === "boolean" ? String(value) : value}
           />
         )}
-        <button
-          className={`${neutralButton} shrink-0`}
+        <UiV2Button
           disabled={disabled || (!field.configured && !Object.hasOwn(edits, field.slotKey))}
           onClick={() => onChange(null)}
-          type="button"
         >
           Clear personal value
-        </button>
+        </UiV2Button>
       </div>
       {field.sensitive ? (
-        <p className="mt-2 flex items-start gap-1.5 text-xs leading-5 text-ink-muted">
-          <KeyRound className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        <p className="v2-settings-field-note">
+          <UiV2Icon name="lock" />
           Stored values are write-only and are never shown again.
         </p>
       ) : null}
@@ -186,7 +172,45 @@ function FieldEditor({
   );
 }
 
-function ServerCard({
+function OAuthLink({
+  authorizing,
+  href,
+  label,
+  onStart,
+  tone = "ghost",
+  ...props
+}: Readonly<{
+  "aria-label"?: string;
+  authorizing: boolean;
+  href: string;
+  label: string;
+  onStart(): void;
+  tone?: "ghost" | "primary";
+}>) {
+  return (
+    <a
+      aria-busy={authorizing || undefined}
+      aria-disabled={authorizing || undefined}
+      aria-label={props["aria-label"]}
+      className="v2-button v2-focusable"
+      data-tone={tone}
+      href={href}
+      tabIndex={authorizing ? -1 : undefined}
+      onClick={(event) => {
+        if (authorizing) {
+          event.preventDefault();
+          return;
+        }
+        onStart();
+      }}
+    >
+      {authorizing ? <Spinner /> : <UiV2Icon name="lock" />}
+      <span>{authorizing ? "Authorizing" : label}</span>
+    </a>
+  );
+}
+
+function ServerRow({
   edits,
   enableIssue,
   onBusyChange,
@@ -228,151 +252,132 @@ function ServerCard({
     }
   }
 
+  const startAuthorization = () => {
+    markMcpOAuthAuthorizing(server.id);
+    setAuthorizing(true);
+    setError(null);
+  };
+
   return (
     <article
       aria-labelledby={`mcp-server-${server.id}`}
-      className={`border-t border-trace-subtle px-3 py-5 first:border-t-0 ${availabilityRowClass(server.enabled)}`}
+      className="v2-settings-server"
+      data-enabled={server.enabled || undefined}
       data-resource-availability-row={server.enabled ? "enabled" : "disabled"}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h4 className="break-words text-sm font-semibold text-ink" id={`mcp-server-${server.id}`}>
-              {server.name}
-            </h4>
-            <AvailabilityStatus enabled={server.enabled} />
+      <div className="v2-settings-server-head">
+        <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
+        <div className="v2-settings-server-copy">
+          <div className="v2-settings-server-title">
+            <h4 id={`mcp-server-${server.id}`}>{server.name}</h4>
+            <span
+              className="v2-settings-server-availability"
+              data-resource-availability={server.enabled ? "enabled" : "disabled"}
+            >
+              {server.enabled ? "Enabled" : "Disabled"}
+            </span>
           </div>
-          {server.description ? <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">{server.description}</p> : null}
+          {server.description ? <p className="v2-settings-server-description">{server.description}</p> : null}
           {server.enabled ? (
             <p
               aria-live="polite"
-              className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${readinessTone(readiness.kind)}`}
+              className="v2-settings-server-readiness"
+              data-tone={readinessTone(readiness.kind)}
               role="status"
             >
               {readiness.kind === "ready"
-                ? <CircleCheck className="size-3.5" aria-hidden="true" />
+                ? <UiV2Icon name="check" />
                 : readiness.kind === "progress"
-                  ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                  : <CircleAlert className="size-3.5" aria-hidden="true" />}
+                  ? <Spinner />
+                  : <UiV2Icon name="alert" />}
               {readiness.label}
               {server.errorCode ? ` · ${readableCode(server.errorCode)}` : ""}
             </p>
           ) : null}
         </div>
-        {!server.enabled && needsOAuth && !missingPersonalField ? (
-          <a
-            aria-disabled={authorizing || undefined}
-            aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
-            aria-busy={authorizing || undefined}
-            className={`${enableButton} shrink-0 ${authorizing ? "pointer-events-none opacity-60" : ""}`}
-            href={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
-            onClick={(event) => {
-              if (authorizing) {
-                event.preventDefault();
-                return;
-              }
-              markMcpOAuthAuthorizing(server.id);
-              setAuthorizing(true);
-              setError(null);
-            }}
-            tabIndex={authorizing ? -1 : undefined}
-          >
-            {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
-            {authorizing
-              ? "Authorizing"
-              : server.oauthState === "reauthorization_required" ? "Reconnect to enable" : "Connect to enable"}
-          </a>
-        ) : (
-          <button
-            aria-busy={busy === "toggle" || undefined}
-            aria-label={`${server.enabled ? "Disable" : missingPersonalField ? "Complete setup for" : "Enable"} ${server.name}`}
-            className={`${server.enabled ? neutralButton : enableButton} shrink-0`}
-            disabled={busy !== null}
-            onClick={() => {
-              if (!server.enabled && missingPersonalField) {
-                setError("Add and save the required personal values before enabling this server.");
-                document.getElementById(`mcp-field-${server.id}-${missingPersonalField.slotKey}`)?.focus();
-                return;
-              }
-              if (!server.enabled && enableIssue) {
-                setError(enableIssue);
-                return;
-              }
-              void run("toggle", async () => {
-                replaceServer(await updateUserMcpServer(server.id, { enabled: !server.enabled }));
-              });
-            }}
-            type="button"
-          >
-            {busy === "toggle"
-              ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-              : server.enabled
-                ? <Unplug className="size-4" aria-hidden="true" />
-                : <Plug className="size-4" aria-hidden="true" />}
-            {lifecycleActionLabel}
-          </button>
-        )}
+        <div className="v2-settings-server-action">
+          {!server.enabled && needsOAuth && !missingPersonalField ? (
+            <OAuthLink
+              aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
+              authorizing={authorizing}
+              href={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
+              label={server.oauthState === "reauthorization_required" ? "Reconnect to enable" : "Connect to enable"}
+              tone="primary"
+              onStart={startAuthorization}
+            />
+          ) : (
+            <UiV2Button
+              aria-label={`${server.enabled ? "Disable" : missingPersonalField ? "Complete setup for" : "Enable"} ${server.name}`}
+              busy={busy === "toggle"}
+              disabled={busy !== null}
+              tone={server.enabled ? "ghost" : "primary"}
+              onClick={() => {
+                if (!server.enabled && missingPersonalField) {
+                  setError("Add and save the required personal values before enabling this server.");
+                  document.getElementById(`mcp-field-${server.id}-${missingPersonalField.slotKey}`)?.focus();
+                  return;
+                }
+                if (!server.enabled && enableIssue) {
+                  setError(enableIssue);
+                  return;
+                }
+                void run("toggle", async () => {
+                  replaceServer(await updateUserMcpServer(server.id, { enabled: !server.enabled }));
+                });
+              }}
+            >
+              {lifecycleActionLabel}
+            </UiV2Button>
+          )}
+        </div>
       </div>
 
       {server.oauthAvailable ? (
-        <section className="mt-4 border-t border-trace-subtle pt-4" aria-label={`${server.name} authorization`}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-ink">External account</p>
-              <p className="mt-1 break-words text-xs text-ink-muted">
-                {authorizing ? "Authorizing in your browser…" : server.accountLabel ?? "No external account connected"}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {!server.enabled && needsOAuth ? null : (
-                <a
-                  aria-disabled={authorizing || undefined}
-                  aria-busy={authorizing || undefined}
-                  className={`${neutralButton} ${authorizing ? "pointer-events-none opacity-60" : ""}`}
-                  href={userMcpOAuthAction(server.id, connected)}
-                  onClick={(event) => {
-                    if (authorizing) {
-                      event.preventDefault();
-                      return;
-                    }
-                    markMcpOAuthAuthorizing(server.id);
-                    setAuthorizing(true);
-                  }}
-                  tabIndex={authorizing ? -1 : undefined}
-                >
-                  {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
-                  {authorizing ? "Authorizing" : connected ? "Reconnect" : "Connect"}
-                </a>
-              )}
-              {connected ? (
-                <button
-                  className={neutralButton}
-                  disabled={busy !== null || authorizing}
-                  onClick={() => void run("disconnect", async () => {
-                    await disconnectUserMcpServer(server.id);
-                    await refreshMcpSettings(true);
-                  })}
-                  type="button"
-                >
-                  {busy === "disconnect" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Unplug className="size-4" aria-hidden="true" />}
-                  Disconnect
-                </button>
-              ) : null}
-            </div>
+        <section className="v2-settings-server-section" aria-label={`${server.name} authorization`}>
+          <div className="v2-settings-server-section-copy">
+            <span className="v2-settings-server-section-title">External account</span>
+            <span className="v2-settings-server-section-note">
+              {authorizing ? "Authorizing in your browser…" : server.accountLabel ?? "No external account connected"}
+            </span>
+          </div>
+          <div className="v2-settings-server-section-actions">
+            {!server.enabled && needsOAuth ? null : (
+              <OAuthLink
+                authorizing={authorizing}
+                href={userMcpOAuthAction(server.id, connected)}
+                label={connected ? "Reconnect" : "Connect"}
+                onStart={() => {
+                  markMcpOAuthAuthorizing(server.id);
+                  setAuthorizing(true);
+                }}
+              />
+            )}
+            {connected ? (
+              <UiV2Button
+                busy={busy === "disconnect"}
+                disabled={busy !== null || authorizing}
+                onClick={() => void run("disconnect", async () => {
+                  await disconnectUserMcpServer(server.id);
+                  await refreshMcpSettings(true);
+                })}
+              >
+                Disconnect
+              </UiV2Button>
+            ) : null}
           </div>
         </section>
       ) : null}
 
       {server.fields.length ? (
-        <section className="mt-4 border-t border-trace-subtle pt-4" aria-label={`${server.name} personal configuration`}>
-          <div className="mb-3">
-            <h5 className="text-sm font-medium text-ink">Personal configuration</h5>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">
+        <section className="v2-settings-server-section v2-settings-server-fields" aria-label={`${server.name} personal configuration`}>
+          <div className="v2-settings-server-section-copy">
+            <span className="v2-settings-server-section-title">Personal configuration</span>
+            <span className="v2-settings-server-section-note">
               You can change only the fields your administrator made personal. Server endpoints and launch settings remain installation-owned.
-            </p>
-            {hasEdits ? <p className="mt-1 text-xs font-medium text-caution">Unsaved personal values</p> : null}
+            </span>
+            {hasEdits ? <span className="v2-settings-server-section-note" data-tone="warn">Unsaved personal values</span> : null}
           </div>
-          <div className="space-y-2">
+          <div className="v2-settings-field-list">
             {server.fields.map((field) => (
               <FieldEditor
                 disabled={busy !== null}
@@ -384,39 +389,40 @@ function ServerCard({
               />
             ))}
           </div>
-          <button
-            className={`${neutralButton} mt-3 bg-proof text-proof-contrast hover:bg-proof-hover hover:text-proof-contrast`}
-            disabled={!hasEdits || busy !== null}
-            onClick={() => void run("save", async () => {
-              replaceServer(await updateUserMcpServer(server.id, { values: edits }));
-              for (const slotKey of Object.keys(edits)) onEdit(slotKey, undefined);
-            })}
-            type="button"
-          >
-            {busy === "save" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Save className="size-4" aria-hidden="true" />}
-            Save personal values
-          </button>
+          <div className="v2-settings-server-section-actions">
+            <UiV2Button
+              busy={busy === "save"}
+              disabled={!hasEdits || busy !== null}
+              tone="primary"
+              onClick={() => void run("save", async () => {
+                replaceServer(await updateUserMcpServer(server.id, { values: edits }));
+                for (const slotKey of Object.keys(edits)) onEdit(slotKey, undefined);
+              })}
+            >
+              Save personal values
+            </UiV2Button>
+          </div>
         </section>
       ) : null}
 
-      <details className="mt-4 border-t border-trace-subtle pt-4">
-        <summary className={`flex min-h-touch cursor-pointer list-none items-center gap-2 rounded-control px-2 text-sm font-medium text-ink-secondary hover:bg-control-hover hover:text-ink sm:min-h-control ${touchTarget} ${focusRing}`}>
-          <Wrench className="size-4" aria-hidden="true" />
+      <details className="v2-settings-disclosure">
+        <summary className="v2-focusable">
+          <UiV2Icon name="chevron-right" />
           {server.tools.length} available tool{server.tools.length === 1 ? "" : "s"}
         </summary>
         {server.tools.length ? (
-          <ul className="mt-2 space-y-1 pl-2" aria-label={`${server.name} tools`}>
+          <ul className="v2-settings-tool-list" aria-label={`${server.name} tools`}>
             {server.tools.map((tool) => (
-              <li className="px-2 py-2 text-sm text-ink-secondary" key={tool.name}>
-                <span className="break-words font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</span>
-                {tool.description ? <span className="mt-1 block break-words text-xs leading-5 text-ink-muted">{tool.description}</span> : null}
+              <li key={tool.name}>
+                <span className="v2-settings-tool-name">{tool.name}</span>
+                {tool.description ? <span className="v2-settings-tool-note">{tool.description}</span> : null}
               </li>
             ))}
           </ul>
-        ) : <p className="mt-2 px-2 text-xs text-ink-muted">Tools appear after this server is ready.</p>}
+        ) : <p className="v2-settings-field-note">Tools appear after this server is ready.</p>}
       </details>
 
-      {error ? <p className="mt-3 break-words text-sm text-critical" role="alert">{error}</p> : null}
+      {error ? <p className="v2-settings-error" role="alert">{error}</p> : null}
     </article>
   );
 }
@@ -436,7 +442,6 @@ export function McpSettingsSection({
   const [edits, setEdits] = useState<ServerEdits>({});
   const [busyServerIds, setBusyServerIds] = useState<ReadonlySet<string>>(() => new Set());
   const enabledCount = servers.filter((server) => server.enabled).length;
-  const disabledCount = servers.length - enabledCount;
   const enabledToolCount = servers
     .filter((server) => server.enabled)
     .reduce((total, server) => total + server.knownToolCount, 0);
@@ -473,85 +478,97 @@ export function McpSettingsSection({
   }
 
   return (
-    <section className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6" aria-labelledby="mcp-settings-heading">
-      <div className="mx-auto max-w-3xl">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold text-ink" id="mcp-settings-heading">MCP &amp; tools</h3>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">
-              Enable any combination of servers your administrator granted.
-            </p>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">
-              {enabledCount} enabled · {disabledCount} disabled · {enabledToolCount} known tool{enabledToolCount === 1 ? "" : "s"}
-            </p>
-            <p className="mt-3 flex max-w-3xl items-start gap-2 border-l-2 border-caution/45 bg-caution/[0.05] px-3 py-2 text-xs leading-5 text-ink-secondary">
-              <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-caution" aria-hidden="true" />
-              <span>
-                Enabled servers join your private tool catalog. A chat uses them only in Auto or Selected tool mode.
-              </span>
-            </p>
-            <details className="mt-2 max-w-3xl border-y border-trace-subtle">
-              <summary className={`flex min-h-touch cursor-pointer list-none items-center gap-2 rounded-control px-3 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink sm:min-h-control ${touchTarget} ${focusRing}`}>
-                <Wrench className="size-3.5 shrink-0" aria-hidden="true" />
-                How tools use data
-              </summary>
-              <div className="space-y-2 border-t border-trace-subtle px-3 py-3 text-xs leading-5 text-ink-muted">
-                <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
-                <p>Selected eagerly loads the servers you choose for that chat; Off loads none.</p>
-                <p>
-                  You can enable up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers. Enabled runtimes stay asleep
-                  until a run actually needs them.
-                </p>
-              </div>
-            </details>
-          </div>
-          <button className={neutralButton} disabled={loadState === "loading"} onClick={() => void refreshMcpSettings(true).catch(() => undefined)} type="button">
-            <RefreshCw className={`size-4 ${loadState === "loading" ? "animate-spin" : ""}`} aria-hidden="true" />
-            Refresh status
-          </button>
+    <section className="v2-settings-mcp" aria-labelledby="mcp-settings-heading">
+      <div className="v2-settings-mcp-summary">
+        <div className="v2-settings-row-copy">
+          {/* The modal header already reads "MCP & tools": the heading stays
+              for the landmark name only. */}
+          <h3 className="v2-sr-only" id="mcp-settings-heading">MCP &amp; tools</h3>
+          <span className="v2-settings-row-title">
+            {enabledCount} of {servers.length} server{servers.length === 1 ? "" : "s"} enabled
+            {enabledCount ? ` · ${enabledToolCount} known tool${enabledToolCount === 1 ? "" : "s"}` : ""}
+          </span>
+          <span className="v2-settings-row-description">
+            Enable any combination of servers your administrator granted. Enabled servers join your private tool catalog. A chat uses them only in Auto or Selected tool mode.
+          </span>
         </div>
-
-        {oauthOutcome ? (
-          <div className={`mt-4 border-l-2 px-3 py-2 text-sm ${oauthOutcome.kind === "connected" ? "border-positive/45 bg-positive/[0.05] text-positive" : oauthOutcome.kind === "cancelled" ? "border-caution/45 bg-caution/[0.05] text-caution" : "border-critical/45 bg-critical/[0.05] text-critical"}`} role={oauthOutcome.kind === "failed" ? "alert" : "status"}>
-            <div className="flex items-start justify-between gap-3">
-              <span>{oauthOutcome.kind === "connected" ? "External account connected and MCP enabled." : oauthOutcome.kind === "cancelled" ? "Authorization was cancelled." : "Authorization or automatic MCP enablement failed. Try connecting again."}</span>
-              <button className={`shrink-0 rounded-control px-2 text-xs ${focusRing}`} onClick={() => setOAuthOutcome(null)} type="button">Dismiss</button>
-            </div>
-          </div>
-        ) : null}
-
-        {loadState === "loading" && servers.length === 0 ? (
-          <div className="grid min-h-48 place-items-center" role="status">
-            <p className="flex items-center gap-2 text-sm text-ink-secondary"><LoaderCircle className="size-4 animate-spin text-proof" aria-hidden="true" />Loading MCP servers…</p>
-          </div>
-        ) : loadState === "error" && servers.length === 0 ? (
-          <div className="mt-6 border-y border-critical/35 px-4 py-5 text-center">
-            <p className="text-sm font-medium text-critical" role="alert">MCP settings could not be loaded.</p>
-            <p className="mt-1 text-xs text-ink-muted">{error ? readableCode(error) : "Try again."}</p>
-            <button className={`${neutralButton} mt-3`} onClick={() => void refreshMcpSettings(true).catch(() => undefined)} type="button">Retry</button>
-          </div>
-        ) : servers.length === 0 ? (
-          <div className="mt-6 border-y border-trace-subtle px-4 py-6 text-center">
-            <p className="text-sm font-medium text-ink">No MCP servers available</p>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">Ask an administrator to grant your account or group access to an installation MCP server.</p>
-          </div>
-        ) : (
-          <div className="mt-5 border-b border-trace-subtle">
-            {servers.map((server) => (
-              <ServerCard
-                edits={edits[server.id] ?? {}}
-                enableIssue={!server.enabled && enabledCount >= MCP_RUN_PLAN_LIMITS.maxEnabledServers
-                  ? `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers.`
-                  : null}
-                key={server.id}
-                onBusyChange={(busy) => setServerBusy(server.id, busy)}
-                onEdit={(slotKey, value) => setServerEdit(server.id, slotKey, value)}
-                server={server}
-              />
-            ))}
-          </div>
-        )}
+        <div className="v2-settings-row-control">
+          <UiV2Button
+            busy={loadState === "loading"}
+            disabled={loadState === "loading"}
+            icon="regenerate"
+            onClick={() => void refreshMcpSettings(true).catch(() => undefined)}
+          >
+            Refresh status
+          </UiV2Button>
+        </div>
       </div>
+      <details className="v2-settings-disclosure">
+        <summary className="v2-focusable">
+          <UiV2Icon name="chevron-right" />
+          How tools use data
+        </summary>
+        <div className="v2-settings-disclosure-body">
+          <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
+          <p>Selected eagerly loads the servers you choose for that chat; Off loads none.</p>
+          <p>
+            You can enable up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers. Enabled runtimes stay asleep
+            until a run actually needs them.
+          </p>
+        </div>
+      </details>
+
+      {oauthOutcome ? (
+        <div
+          className="v2-settings-banner"
+          data-tone={oauthOutcome.kind === "connected" ? "ok" : oauthOutcome.kind === "cancelled" ? "warn" : "danger"}
+          role={oauthOutcome.kind === "failed" ? "alert" : "status"}
+        >
+          <span>
+            {oauthOutcome.kind === "connected"
+              ? "External account connected and MCP enabled."
+              : oauthOutcome.kind === "cancelled"
+                ? "Authorization was cancelled."
+                : "Authorization or automatic MCP enablement failed. Try connecting again."}
+          </span>
+          <UiV2Button onClick={() => setOAuthOutcome(null)}>Dismiss</UiV2Button>
+        </div>
+      ) : null}
+
+      {loadState === "loading" && servers.length === 0 ? (
+        <p className="v2-settings-mcp-state" role="status">
+          <Spinner />
+          Loading MCP servers…
+        </p>
+      ) : loadState === "error" && servers.length === 0 ? (
+        <div className="v2-settings-mcp-state" data-tone="danger">
+          <p role="alert">MCP settings could not be loaded.</p>
+          <span className="v2-settings-field-note">{error ? readableCode(error) : "Try again."}</span>
+          <UiV2Button onClick={() => void refreshMcpSettings(true).catch(() => undefined)}>Retry</UiV2Button>
+        </div>
+      ) : servers.length === 0 ? (
+        <div className="v2-settings-mcp-state">
+          <p>No MCP servers available</p>
+          <span className="v2-settings-field-note">
+            Ask an administrator to grant your account or group access to an installation MCP server.
+          </span>
+        </div>
+      ) : (
+        <div className="v2-settings-server-list">
+          {servers.map((server) => (
+            <ServerRow
+              edits={edits[server.id] ?? {}}
+              enableIssue={!server.enabled && enabledCount >= MCP_RUN_PLAN_LIMITS.maxEnabledServers
+                ? `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers.`
+                : null}
+              key={server.id}
+              onBusyChange={(busy) => setServerBusy(server.id, busy)}
+              onEdit={(slotKey, value) => setServerEdit(server.id, slotKey, value)}
+              server={server}
+            />
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -440,9 +440,14 @@ describe("Navigation v2", () => {
     expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
     const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
-    for (const name of ["Projects", "Library", "Archived chats", "Settings", "Account menu"]) {
+    for (const name of ["Projects", "Library", "Archived chats", "Account menu"]) {
       expect(within(navigation).getByRole("button", { name })).toBeInTheDocument();
     }
+    // Settings and Control Center live in the account menu, as on the rail.
+    expect(within(navigation).queryByRole("button", { name: "Settings" })).toBeNull();
+    fireEvent.click(within(navigation).getByRole("button", { name: "Account menu" }));
+    expect(within(navigation).getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
+    expect(within(navigation).getByTestId("account-menu-identity")).toHaveTextContent("operator@aiqsa.local");
     expect(within(navigation).getByText("AIQSA")).toBeInTheDocument();
   });
 

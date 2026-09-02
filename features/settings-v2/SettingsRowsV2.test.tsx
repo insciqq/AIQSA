@@ -53,17 +53,23 @@ describe("ChatDefaultsRowsV2", () => {
     fireEvent.keyDown(screen.getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
     expect(onMcpMode).toHaveBeenCalledWith("load_all");
 
-    const knowledge = screen.getByRole("combobox", { name: "Knowledge default" });
-    expect(Array.from(knowledge.querySelectorAll("option")).map((option) => option.textContent)).toEqual([
+    // The Knowledge default is a Signal select: a menu trigger showing the
+    // current choice, options as menu items.
+    const knowledge = screen.getByRole("button", { name: "Knowledge default" });
+    expect(knowledge).toHaveTextContent("None");
+    fireEvent.click(knowledge);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
       "None",
       "All my knowledge",
       "Handbook"
     ]);
-    fireEvent.change(knowledge, { target: { value: "kb-1" } });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Handbook" }));
     expect(onKnowledgePlan).toHaveBeenCalledWith(explicitKnowledgeSelection({ baseIds: ["kb-1"] }));
-    fireEvent.change(knowledge, { target: { value: "all_my_knowledge" } });
+    fireEvent.click(knowledge);
+    fireEvent.click(screen.getByRole("menuitem", { name: "All my knowledge" }));
     expect(onKnowledgePlan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "all_my_knowledge" }));
-    fireEvent.change(knowledge, { target: { value: "" } });
+    fireEvent.click(knowledge);
+    fireEvent.click(screen.getByRole("menuitem", { name: "None" }));
     expect(onKnowledgePlan).toHaveBeenLastCalledWith(null);
   });
 
@@ -80,8 +86,11 @@ describe("ChatDefaultsRowsV2", () => {
         onSearchPlan={vi.fn()}
       />
     );
-    expect(screen.getByRole("combobox", { name: "Knowledge default" })).toHaveValue("kb-gone");
-    expect(screen.getByRole("option", { name: "Unavailable base" })).toBeInTheDocument();
+    const knowledge = screen.getByRole("button", { name: "Knowledge default" });
+    expect(knowledge).toHaveTextContent("Unavailable base");
+    fireEvent.click(knowledge);
+    expect(screen.getByRole("menuitem", { name: "Unavailable base" })).toHaveAttribute("aria-current", "true");
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge default" }), { key: "Escape" });
     expect(
       within(screen.getByRole("radiogroup", { name: "Web search default" })).getByRole("radio", { name: "Off" })
     ).toHaveAttribute("aria-checked", "true");

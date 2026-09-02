@@ -181,9 +181,10 @@ export function UiV2IconSprite() {
           <circle cx="9" cy="12" r="2" />
           <circle cx="16" cy="18" r="2" />
         </symbol>
+        {/* A gear, not rays: the rays read as a theme/brightness toggle in the rail. */}
         <symbol id="v2-icon-settings" viewBox="0 0 24 24">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
           <circle cx="12" cy="12" r="3" />
-          <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1" />
         </symbol>
         <symbol id="v2-icon-share" viewBox="0 0 24 24">
           <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
@@ -279,11 +280,17 @@ type UiV2IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   icon: UiV2IconName;
   label: string;
   round?: boolean;
+  /**
+   * Styled instant tooltip (see `[data-tooltip]` in primitives.css) instead
+   * of the browser's delayed `title`; the accessible name stays `label`.
+   */
+  tooltip?: string;
+  tooltipSide?: "left" | "right";
 };
 
 export const UiV2IconButton = forwardRef<HTMLButtonElement, UiV2IconButtonProps>(
   function UiV2IconButton(
-    { className = "", icon, label, round = false, title = label, type = "button", ...props },
+    { className = "", icon, label, round = false, title = label, tooltip, tooltipSide, type = "button", ...props },
     ref
   ) {
     return (
@@ -293,8 +300,10 @@ export const UiV2IconButton = forwardRef<HTMLButtonElement, UiV2IconButtonProps>
         ref={ref}
         className={`v2-icon-button v2-focusable ${className}`.trim()}
         data-round={round || undefined}
+        data-tooltip={tooltip}
+        data-tooltip-side={tooltip ? tooltipSide : undefined}
         aria-label={label}
-        title={title}
+        title={tooltip ? undefined : title}
       >
         <UiV2Icon name={icon} />
       </button>

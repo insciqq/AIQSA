@@ -10,6 +10,7 @@ import {
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { flattenFolderTree } from "@/features/navigation-v2/NavigationV2";
+import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { Fragment, useRef, useState, type ReactNode } from "react";
 
 export type TemporaryChatHeaderMemoryV2 = Readonly<{
@@ -101,6 +102,8 @@ export type HeaderOverflowActionV2 = Readonly<{
   /** Rendered only below 900px via CSS; e.g. Share joins the menu there. */
   mobileOnly?: boolean;
   onSelect?(): void;
+  /** Checked state for toggles such as Favorite. */
+  selected?: boolean;
   /** Starts a new visual group (UX audit F17). */
   separatorBefore?: boolean;
   /** Inline disclosure list (folder picker); scrolls locally when long. */
@@ -138,6 +141,7 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
         data-testid="header-more-trigger"
         icon="more"
         label={label}
+        tooltip={label}
         onClick={() => (open ? close() : setOpen(true))}
       />
       {open ? (
@@ -153,6 +157,7 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
               <UiV2MenuItem
                 data-mobile-only={action.mobileOnly ? "" : undefined}
                 disabled={action.disabled}
+                selected={action.selected}
                 tone={action.tone}
                 {...(action.submenu ? { "aria-expanded": openSubmenu === action.label } : {})}
                 onClick={() => {
@@ -202,8 +207,10 @@ export function WorkspaceHeaderV2({
   crumb = null,
   deleteDisabled = false,
   editingTitle = null,
+  favorite = false,
   folders = [],
   leadingSlot = null,
+  memoryUsed = null,
   moveDisabled = false,
   onArchive,
   onBranches,
@@ -211,6 +218,8 @@ export function WorkspaceHeaderV2({
   onCopyThread,
   onDelete = null,
   onExport,
+  onFavorite = null,
+  onMemoryMode = null,
   onMove,
   renameDisabled = false,
   onRenameCancel,
@@ -232,7 +241,11 @@ export function WorkspaceHeaderV2({
   deleteDisabled?: boolean;
   /** Non-null while the header title is being renamed inline. */
   editingTitle?: string | null;
+  /** Current Favorite state; shown as a checked menu item when `onFavorite` exists. */
+  favorite?: boolean;
   folders?: readonly WorkspaceHeaderFolderV2[];
+  /** Whether Memory reads this chat; null hides the Memory item. */
+  memoryUsed?: boolean | null;
   /**
    * Context rendered before the title inside the same island (the shared
    * Project chip). The island also shows while no chat is active when this
@@ -247,6 +260,8 @@ export function WorkspaceHeaderV2({
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
   onExport(format: "json" | "markdown"): void;
+  onFavorite?: (() => void) | null;
+  onMemoryMode?: ((mode: "EXCLUDED" | "NORMAL") => void) | null;
   onMove(folderId: string | null): void;
   renameDisabled?: boolean;
   onRenameCancel(): void;
@@ -260,10 +275,10 @@ export function WorkspaceHeaderV2({
 }>) {
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
-  // 900px, where the Share text button collapses. The menu reads in three
-  // groups (UX audit F17): the chat itself · its content · destructive last.
+  // 900px, where the Share text button collapses. The menu reads in the same
+  // three groups as the chat row menu (UX audit F17, 2026-09-02 #7): the
+  // chat itself · its content · destructive last.
   const overflowActions: HeaderOverflowActionV2[] = [
-    { disabled: shareDisabled, label: "Share", mobileOnly: true, onSelect: onShare },
     { disabled: renameDisabled, label: "Rename", onSelect: onRenameStart },
     {
       disabled: moveDisabled,
@@ -277,7 +292,15 @@ export function WorkspaceHeaderV2({
         }))
       ]
     },
-    { label: "Branches", onSelect: onBranches, separatorBefore: true },
+    ...(onFavorite ? [{ label: "Favorite", onSelect: onFavorite, selected: favorite }] : []),
+    ...(onMemoryMode && memoryUsed !== null
+      ? [{
+          label: resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action"),
+          onSelect: () => onMemoryMode(memoryUsed ? "EXCLUDED" : "NORMAL")
+        }]
+      : []),
+    { disabled: shareDisabled, label: "Share", mobileOnly: true, onSelect: onShare, separatorBefore: true },
+    { label: "Branches", onSelect: onBranches },
     { label: "Export", onSelect: () => onExport("markdown") },
     { label: "Export as JSON", onSelect: () => onExport("json") },
     { label: "Copy entire thread", onSelect: onCopyThread },

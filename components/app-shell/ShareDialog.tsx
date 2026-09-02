@@ -440,7 +440,7 @@ export function ShareDialog({
             </div>
           ) : null}
           <section aria-labelledby="share-dialog-links-heading" className="mt-5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-muted" id="share-dialog-links-heading">
+            <h3 className="text-xs font-semibold text-ink-muted" id="share-dialog-links-heading">
               Live links for this chat
             </h3>
             {listPending ? (

@@ -290,7 +290,7 @@ export function ConversationTurnV2({
               disabled={actions.regenerateDisabled}
               icon="regenerate"
               label={`Regenerate ${label.toLowerCase()}`}
-              title={actions.regenerateDisabled ? actions.disabledReason ?? undefined : undefined}
+              tooltip={actions.regenerateDisabled ? actions.disabledReason ?? "Regenerate" : "Regenerate"}
               onClick={actions.onRegenerate}
             />
           ) : null}
@@ -299,7 +299,7 @@ export function ConversationTurnV2({
               disabled={actions.editDisabled}
               icon="edit"
               label={`Edit ${label.toLowerCase()}`}
-              title={actions.editDisabled ? actions.disabledReason ?? undefined : undefined}
+              tooltip={actions.editDisabled ? actions.disabledReason ?? "Edit" : "Edit"}
               onClick={actions.onEdit}
             />
           ) : null}
@@ -307,6 +307,7 @@ export function ConversationTurnV2({
             <UiV2IconButton
               icon="copy"
               label={`Copy ${label.toLowerCase()}`}
+              tooltip="Copy"
               onClick={actions.onCopy}
             />
           ) : null}
@@ -320,7 +321,7 @@ export function ConversationTurnV2({
                 disabled={actions.moreDisabled}
                 icon="more"
                 label={`More ${label.toLowerCase()} actions`}
-                title={actions.moreDisabled ? actions.disabledReason ?? undefined : undefined}
+                tooltip={actions.moreDisabled ? actions.disabledReason ?? "More" : "More"}
                 onClick={() => {
                   if (hasMoreMenu) {
                     setMoreOpen((open) => {
