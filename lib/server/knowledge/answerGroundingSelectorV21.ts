@@ -189,12 +189,13 @@ export function validateKnowledgeGroundedSelectorV21(
   if (!record(value) || !Array.isArray(value.coverage)) {
     return rejected("selector_malformed");
   }
-  if (value.coverage.length !== input.scope.scope.length) {
+  const coverage = value.coverage;
+  if (coverage.length !== input.scope.scope.length) {
     return rejected("selector_dimension_invalid");
   }
   const statuses: KnowledgeCoverageDecisionV21["status"][] = [];
   const legacyCoverage: Record<string, unknown>[] = [];
-  for (const [index, candidate] of value.coverage.entries()) {
+  for (const [index, candidate] of coverage.entries()) {
     const scoped = input.scope.scope[index];
     const unsupportedSuperseded = input.scopeProtocol ===
         "append_only_completeness_reduce_v2" &&
@@ -203,7 +204,7 @@ export function validateKnowledgeGroundedSelectorV21(
         if (representativeIndex === index ||
           possibleRepresentative.evidenceAtomIds.length === 0 ||
           possibleRepresentative.requestAnchor !== scoped.requestAnchor) return false;
-        const decision = value.coverage[representativeIndex];
+        const decision = coverage[representativeIndex];
         return record(decision) && decision.id === possibleRepresentative.id &&
           (decision.status === "covered" || decision.status === "missing");
       });
@@ -430,10 +431,15 @@ export function knowledgeSelectorScopeEvidenceAtomIndexV21(input: Readonly<{
     input.evidence,
     input.atomIndexVersion ?? 1
   );
-  return Object.freeze({
-    items: Object.freeze(atomIndex.items.filter(({ id }) => assignedIds.has(id))),
-    version: atomIndex.version
-  });
+  return atomIndex.version === 2
+    ? Object.freeze({
+        items: Object.freeze(atomIndex.items.filter(({ id }) => assignedIds.has(id))),
+        version: 2
+      })
+    : Object.freeze({
+        items: Object.freeze(atomIndex.items.filter(({ id }) => assignedIds.has(id))),
+        version: 1
+      });
 }
 
 export function knowledgeCoverageMissingDimensionsV6(

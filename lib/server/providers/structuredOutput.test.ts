@@ -64,6 +64,16 @@ function responsesModel(
   };
 }
 
+const openRouterProviderDefaults = {
+  allowFallbacks: false,
+  dataCollection: "deny",
+  only: ["ignored-default"],
+  order: ["Anthropic"],
+  requireParameters: false,
+  sort: "latency",
+  zdr: true
+};
+
 const openRouterModel: ProviderModelConfiguration = {
   adapterKind: "openrouter_chat_completions",
   answerSelectable: true,
@@ -75,15 +85,7 @@ const openRouterModel: ProviderModelConfiguration = {
     vision: false
   },
   defaultParams: {
-    provider: {
-      allowFallbacks: false,
-      dataCollection: "deny",
-      only: ["ignored-default"],
-      order: ["Anthropic"],
-      requireParameters: false,
-      sort: "latency",
-      zdr: true
-    }
+    provider: openRouterProviderDefaults
   },
   modelClass: "answer",
   openRouterRouting: { mode: "only_selected", providers: ["OpenAI"] },
@@ -412,7 +414,7 @@ describe("provider structured output", () => {
       defaultParams: {
         ...openRouterModel.defaultParams,
         provider: {
-          ...openRouterModel.defaultParams.provider,
+          ...openRouterProviderDefaults,
           structuredOutputToolChoice: "auto"
         }
       }

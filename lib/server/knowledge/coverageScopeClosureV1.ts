@@ -210,8 +210,8 @@ export function knowledgeCoverageScopeClosureAuthorityV1(
       [id, new Set([handle])] as const)
   ]);
   const mappedIds = new Set<string>();
-  const coveredDimensions: KnowledgeCoverageScopeClosureAuthorityV1["coveredDimensions"] =
-    [];
+  const coveredDimensions:
+    KnowledgeCoverageScopeClosureAuthorityV1["coveredDimensions"][number][] = [];
   for (const [index, dimension] of input.selector.coverage.entries()) {
     const scoped = input.scope.scope[index];
     if (!scoped || dimension.id !== scoped.id ||

@@ -389,10 +389,10 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     });
   if (!primaryDraft) throw new Error("knowledge_answer_draft_result_invalid");
 
-  let transientScopeRepairBase:
-    KnowledgeCoverageScopeTransientRepairBaseV1 | null = null;
-  let transientScopeRepairDiagnostics:
-    readonly KnowledgeCoverageScopeRepairDiagnosticV1[] | null = null;
+  const transientScopeRepair: {
+    base: KnowledgeCoverageScopeTransientRepairBaseV1 | null;
+    diagnostics: readonly KnowledgeCoverageScopeRepairDiagnosticV1[] | null;
+  } = { base: null, diagnostics: null };
   const runScope = async (
     ordinal: OperationOrdinalScopeV6,
     scopePass: "initial" | "repair",
@@ -466,8 +466,8 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           }
         );
         if (scopePass === "initial" && validation.kind === "rejected") {
-          transientScopeRepairBase = validation.repairBase;
-          transientScopeRepairDiagnostics =
+          transientScopeRepair.base = validation.repairBase;
+          transientScopeRepair.diagnostics =
             collectKnowledgeCoverageScopeRepairDiagnosticsV1({
               atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
               base: validation.repairBase,
@@ -508,13 +508,13 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (initialScopeFailure?.diagnostic &&
     isKnowledgeCoverageScopeValidationFailureReasonV6(initialScopeFailure.reason)) {
     const transientScopeRepairBaseHash = knowledgeCoverageScopeRepairBaseHashV1(
-      transientScopeRepairBase
+      transientScopeRepair.base
     );
     if (transientScopeRepairBaseHash !== initialScopeFailure.repairBaseHash) {
       throw new Error("knowledge_coverage_scope_repair_base_unavailable");
     }
-    if (!transientScopeRepairDiagnostics ||
-      transientScopeRepairDiagnostics.length < 1) {
+    if (!transientScopeRepair.diagnostics ||
+      transientScopeRepair.diagnostics.length < 1) {
       throw new Error("knowledge_coverage_scope_repair_diagnostics_unavailable");
     }
     scopeOrdinal = 3;
@@ -523,9 +523,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       "repair",
       {
         diagnostic: initialScopeFailure.diagnostic,
-        diagnostics: transientScopeRepairDiagnostics,
+        diagnostics: transientScopeRepair.diagnostics,
         reason: initialScopeFailure.reason,
-        repairBase: transientScopeRepairBase,
+        repairBase: transientScopeRepair.base,
         repairBaseHash: initialScopeFailure.repairBaseHash
       }
     );
@@ -698,7 +698,9 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           request: input.request,
           scope,
           scopeProtocol: "append_only_completeness_reduce_v2",
-          selectorPass: selectorInput.selectorPass
+          selectorPass: selectorInput.selectorPass === "final_repair"
+            ? "repair"
+            : selectorInput.selectorPass
         });
     const request = createKnowledgeAnswerOperationRequestSnapshotV21({
       contractVersion: KNOWLEDGE_GROUNDED_SELECTOR_V21_CONTRACT_VERSION,

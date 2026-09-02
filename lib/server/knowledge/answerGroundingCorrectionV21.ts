@@ -1083,6 +1083,7 @@ export function knowledgeTargetPrimaryClaimsV1(input: Readonly<{
       claim.id !== input.initialSelector.claims[index]?.id)) {
     throw new Error("knowledge_target_primary_claims_invalid");
   }
+  const draft = input.draft;
   const targets = input.initialSelector.coverage.filter((dimension) =>
     dimension.status === "missing" && dimension.evidenceHandles.length > 0);
   return Object.freeze(input.initialSelector.claims.flatMap((claim, index) => {
@@ -1096,7 +1097,7 @@ export function knowledgeTargetPrimaryClaimsV1(input: Readonly<{
       id: claim.id,
       supportHandles: Object.freeze([...claim.supportHandles]),
       targetDimensionIds: Object.freeze(targetDimensionIds),
-      text: input.draft.claims[index]!.text
+      text: draft.claims[index]!.text
     })];
   }));
 }

@@ -207,7 +207,7 @@ export function knowledgeCoverageScopeClosureAuthorityV2(
       [id, new Set([handle])] as const)
   ]);
   const mappedIds = new Set<string>();
-  const dimensions: KnowledgeCoverageScopeClosureAuthorityV2["dimensions"] = [];
+  const dimensions: KnowledgeCoverageScopeClosureAuthorityV2["dimensions"][number][] = [];
   for (const [index, dimension] of input.selector.coverage.entries()) {
     const scoped = input.scope.scope[index];
     if (!scoped || dimension.id !== scoped.id ||
