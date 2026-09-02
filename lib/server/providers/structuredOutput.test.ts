@@ -64,6 +64,16 @@ function responsesModel(
   };
 }
 
+const openRouterProviderDefaults = {
+  allowFallbacks: false,
+  dataCollection: "deny",
+  only: ["ignored-default"],
+  order: ["Anthropic"],
+  requireParameters: false,
+  sort: "latency",
+  zdr: true
+};
+
 const openRouterModel: ProviderModelConfiguration = {
   adapterKind: "openrouter_chat_completions",
   answerSelectable: true,
@@ -75,15 +85,7 @@ const openRouterModel: ProviderModelConfiguration = {
     vision: false
   },
   defaultParams: {
-    provider: {
-      allowFallbacks: false,
-      dataCollection: "deny",
-      only: ["ignored-default"],
-      order: ["Anthropic"],
-      requireParameters: false,
-      sort: "latency",
-      zdr: true
-    }
+    provider: openRouterProviderDefaults
   },
   modelClass: "answer",
   openRouterRouting: { mode: "only_selected", providers: ["OpenAI"] },
@@ -404,6 +406,21 @@ describe("provider structured output", () => {
     });
     expect(buildOpenRouterStructuredOutputRequest(openRouterModel, request))
       .not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("uses an endpoint-declared automatic tool choice when required is unsupported", () => {
+    const body = buildOpenRouterStructuredOutputRequest({
+      ...openRouterModel,
+      defaultParams: {
+        ...openRouterModel.defaultParams,
+        provider: {
+          ...openRouterProviderDefaults,
+          structuredOutputToolChoice: "auto"
+        }
+      }
+    }, request);
+    expect(body.tool_choice).toBe("auto");
+    expect(body.tools).toHaveLength(1);
   });
 
   it("reserves enough OpenRouter completion budget for reasoning before a strict tool call", () => {

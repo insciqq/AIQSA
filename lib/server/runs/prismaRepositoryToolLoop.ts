@@ -445,6 +445,7 @@ const normalizedRequestKeys = new Set([
   "personalContext",
   "prompt",
   "provider",
+  "reasoningEffort",
   "searchPlan",
   "skills",
   "toolBudgets",
@@ -734,6 +735,8 @@ function decodeProviderDispatchRecoveryRequest(
       value.knowledgeEvidencePackingVersion !== 2 ||
     !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
+    value.reasoningEffort !== undefined && value.reasoningEffort !== null &&
+      !nonBlank(value.reasoningEffort, 32) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
       "baseline", "developer", "knowledgeAnswerContract", "knowledgeAnswerDraftContract",
       "knowledgeGroundedSelectorContract", "memoryActionAnswerResult", "system"

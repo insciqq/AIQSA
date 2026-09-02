@@ -220,6 +220,15 @@ function targetsShareBinding(
   });
 }
 
+/** A dedicated reranker is an independent utility destination. Resolution and
+ * the credential-integrity preflight validate its own binding; it must not be
+ * rejected merely because it differs from the System Model binding. */
+export function memorySemanticSmokeRerankerReady(
+  target: ResolvedMemoryExecutionTarget | undefined
+): boolean {
+  return identity(target) !== null;
+}
+
 export const MEMORY_SEMANTIC_SMOKE_REQUIRED_ROLES = Object.freeze([
   "MEMORY_CONTROL",
   "MEMORY_STATEMENT_CLASSIFY",
@@ -365,8 +374,7 @@ export async function preflightPrismaMemorySemanticSmoke(
       answer,
       consentAccepted,
       embeddingReady: targetsShareBinding(embeddingTargets),
-      rerankerReady: Boolean(reranker) && systemTarget !== undefined &&
-        targetsShareBinding([systemTarget, reranker]),
+      rerankerReady: memorySemanticSmokeRerankerReady(reranker),
       system: systemIdentity && systemTarget
         ? {
             ...systemIdentity,

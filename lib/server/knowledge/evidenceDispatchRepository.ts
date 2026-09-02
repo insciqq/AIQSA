@@ -16,11 +16,33 @@ import {
   type LegacyKnowledgeSummaryDispatchCandidate,
   type LegacyKnowledgeSummarySupportBinding
 } from "./legacySummaryReceipt";
+import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion";
+import type { KnowledgeExpandedContextOrderV1 } from "./retrievalTypes";
 import {
   decodeKnowledgeAnswerOperationRequestSnapshotV1,
   KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES,
   type KnowledgeAnswerContractPair
 } from "./answerGroundingV5";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
+  KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
+  decodeKnowledgeAnswerOperationRequestSnapshotV21,
+  isRecoverableKnowledgeAnswerOperationSnapshotV21,
+  knowledgeAnswerScopeV6CorrectionFitsV2,
+  type KnowledgeAnswerOperationV21
+} from "./answerGroundingV21";
+import { KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION } from "./coverageScopeV6";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+} from "./coverageScopeCompletenessV1";
+import {
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+} from "./coverageScopeClosureV2";
+import {
+  KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+} from "./answerGroundingSelectorV21";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
@@ -60,6 +82,26 @@ export type KnowledgeProviderAttemptUsage = Readonly<{
 
 export type KnowledgeProviderAttemptPurpose =
   | "answer"
+  | "knowledge_answer_draft_v21"
+  | "knowledge_answer_draft_supplement_v21"
+  | "knowledge_grounded_selector_v17"
+  | "knowledge_grounded_selector_final_v17"
+  | "knowledge_coverage_auditor_v2"
+  | "knowledge_coverage_scope_v3"
+  | "knowledge_grounded_selector_v18"
+  | "knowledge_grounded_selector_final_v18"
+  | "knowledge_coverage_scope_v4"
+  | "knowledge_grounded_selector_v19"
+  | "knowledge_grounded_selector_final_v19"
+  | "knowledge_coverage_scope_v5"
+  | "knowledge_grounded_selector_v20"
+  | "knowledge_grounded_selector_final_v20"
+  | "knowledge_coverage_scope_v6"
+  | "knowledge_coverage_scope_completeness_v1"
+  | "knowledge_coverage_scope_closure_v1"
+  | "knowledge_coverage_scope_closure_v2"
+  | "knowledge_grounded_selector_v21"
+  | "knowledge_grounded_selector_final_v21"
   | "knowledge_coverage_planner_v20"
   | "knowledge_answer_draft_v20"
   | "knowledge_answer_draft_supplement_v20"
@@ -109,6 +151,7 @@ export type KnowledgeProviderAttemptPurpose =
 /** Accepted-record decoder includes retired purposes for historical recovery. */
 type LegacyKnowledgeProviderAttemptPurpose =
   | KnowledgeProviderAttemptPurpose
+  | "knowledge_coverage_auditor_v1"
   | "answer_citation_retry"
   | "citation_repair"
   | "knowledge_answer_draft_v5"
@@ -190,6 +233,25 @@ export type StoredKnowledgeAnswerGroundingOperations = Readonly<{
   finalSelector: StoredKnowledgeEvidenceDispatch | null;
   initialSelector: StoredKnowledgeEvidenceDispatch;
   selector: StoredKnowledgeEvidenceDispatch;
+  supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
+}>;
+
+export type StoredKnowledgeAnswerGroundingOperationsV21 = Readonly<{
+  closure: StoredKnowledgeEvidenceDispatch | null;
+  closureRepair: StoredKnowledgeEvidenceDispatch | null;
+  completeness: StoredKnowledgeEvidenceDispatch;
+  completenessRepair: StoredKnowledgeEvidenceDispatch | null;
+  draft: StoredKnowledgeEvidenceDispatch;
+  finalSelector: StoredKnowledgeEvidenceDispatch | null;
+  finalSelectorRepair: StoredKnowledgeEvidenceDispatch | null;
+  initialCompleteness: StoredKnowledgeEvidenceDispatch;
+  initialClosure: StoredKnowledgeEvidenceDispatch | null;
+  initialFinalSelector: StoredKnowledgeEvidenceDispatch | null;
+  initialScope: StoredKnowledgeEvidenceDispatch;
+  initialSelector: StoredKnowledgeEvidenceDispatch;
+  scope: StoredKnowledgeEvidenceDispatch;
+  scopeRepair: StoredKnowledgeEvidenceDispatch | null;
+  selectorRepair: StoredKnowledgeEvidenceDispatch | null;
   supplementalDraft: StoredKnowledgeEvidenceDispatch | null;
 }>;
 
@@ -370,6 +432,7 @@ type StoredSummarySafeMetadata = StoredSafeMetadata & Readonly<{
 
 type StoredContextBoundaries = Readonly<{
   expandedContext: string | null;
+  expandedContextOrder?: KnowledgeExpandedContextOrderV1;
   expandedContextOriginalBytes: number | null;
   expandedContextOriginalHash: string | null;
   expandedContextState: "included" | "none" | "omitted";
@@ -439,6 +502,27 @@ function canonicalJsonHash(value: unknown): string {
 function answerOperationContractVersion(
   purpose: LegacyKnowledgeProviderAttemptPurpose
 ): number | null {
+  if (purpose === "knowledge_answer_draft_v21" ||
+    purpose === "knowledge_answer_draft_supplement_v21") return 21;
+  if (purpose === "knowledge_grounded_selector_v17" ||
+    purpose === "knowledge_grounded_selector_final_v17") return 17;
+  if (purpose === "knowledge_grounded_selector_v18" ||
+    purpose === "knowledge_grounded_selector_final_v18") return 18;
+  if (purpose === "knowledge_grounded_selector_v19" ||
+    purpose === "knowledge_grounded_selector_final_v19") return 19;
+  if (purpose === "knowledge_grounded_selector_v20" ||
+    purpose === "knowledge_grounded_selector_final_v20") return 20;
+  if (purpose === "knowledge_grounded_selector_v21" ||
+    purpose === "knowledge_grounded_selector_final_v21") return 21;
+  if (purpose === "knowledge_coverage_scope_v3") return 3;
+  if (purpose === "knowledge_coverage_scope_v4") return 4;
+  if (purpose === "knowledge_coverage_scope_v5") return 5;
+  if (purpose === "knowledge_coverage_scope_v6") return 6;
+  if (purpose === "knowledge_coverage_scope_completeness_v1") return 1;
+  if (purpose === "knowledge_coverage_scope_closure_v1") return 1;
+  if (purpose === "knowledge_coverage_scope_closure_v2") return 2;
+  if (purpose === "knowledge_coverage_auditor_v2") return 2;
+  if (purpose === "knowledge_coverage_auditor_v1") return 1;
   if (purpose === "knowledge_coverage_planner_v20" ||
     purpose === "knowledge_answer_draft_v20" ||
     purpose === "knowledge_answer_draft_supplement_v20") return 20;
@@ -535,6 +619,27 @@ function repositoryError(code: KnowledgeEvidenceDispatchRepositoryErrorCode): ne
 function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPurpose {
   return value === "answer" || value === "answer_citation_retry" ||
     value === "citation_repair" || value === "tool_follow_up" ||
+    value === "knowledge_answer_draft_v21" ||
+    value === "knowledge_answer_draft_supplement_v21" ||
+    value === "knowledge_grounded_selector_v17" ||
+    value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_grounded_selector_v18" ||
+    value === "knowledge_grounded_selector_final_v18" ||
+    value === "knowledge_grounded_selector_v19" ||
+    value === "knowledge_grounded_selector_final_v19" ||
+    value === "knowledge_grounded_selector_v20" ||
+    value === "knowledge_grounded_selector_final_v20" ||
+    value === "knowledge_grounded_selector_v21" ||
+    value === "knowledge_grounded_selector_final_v21" ||
+    value === "knowledge_coverage_auditor_v2" ||
+    value === "knowledge_coverage_scope_v3" ||
+    value === "knowledge_coverage_scope_v4" ||
+    value === "knowledge_coverage_scope_v5" ||
+    value === "knowledge_coverage_scope_v6" ||
+    value === "knowledge_coverage_scope_completeness_v1" ||
+    value === "knowledge_coverage_scope_closure_v1" ||
+    value === "knowledge_coverage_scope_closure_v2" ||
+    value === "knowledge_coverage_auditor_v1" ||
     value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
@@ -588,7 +693,27 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
 }
 
 function validReservationPurpose(value: unknown): value is KnowledgeProviderAttemptPurpose {
-  return value === "answer" || value === "knowledge_coverage_planner_v20" ||
+  return value === "answer" || value === "knowledge_answer_draft_v21" ||
+    value === "knowledge_answer_draft_supplement_v21" ||
+    value === "knowledge_grounded_selector_v17" ||
+    value === "knowledge_grounded_selector_final_v17" ||
+    value === "knowledge_grounded_selector_v18" ||
+    value === "knowledge_grounded_selector_final_v18" ||
+    value === "knowledge_grounded_selector_v19" ||
+    value === "knowledge_grounded_selector_final_v19" ||
+    value === "knowledge_grounded_selector_v20" ||
+    value === "knowledge_grounded_selector_final_v20" ||
+    value === "knowledge_grounded_selector_v21" ||
+    value === "knowledge_grounded_selector_final_v21" ||
+    value === "knowledge_coverage_auditor_v2" ||
+    value === "knowledge_coverage_scope_v3" ||
+    value === "knowledge_coverage_scope_v4" ||
+    value === "knowledge_coverage_scope_v5" ||
+    value === "knowledge_coverage_scope_v6" ||
+    value === "knowledge_coverage_scope_completeness_v1" ||
+    value === "knowledge_coverage_scope_closure_v1" ||
+    value === "knowledge_coverage_scope_closure_v2" ||
+    value === "knowledge_coverage_planner_v20" ||
     value === "knowledge_answer_draft_v20" ||
     value === "knowledge_answer_draft_supplement_v20" ||
     value === "knowledge_answer_draft_v19" ||
@@ -812,19 +937,39 @@ function decodeContextBoundaries(
   if (!summary && (Object.hasOwn(value, "kind") || Object.hasOwn(value, "supportBindings"))) {
     return null;
   }
-  if (!exactKeys(baseValue, [
+  const legacyKeys = [
     "expandedContext",
     "expandedContextOriginalBytes",
     "expandedContextOriginalHash",
     "expandedContextState"
-  ]) || baseValue.expandedContext !== null && typeof baseValue.expandedContext !== "string" ||
+  ] as const;
+  const currentKeys = [...legacyKeys, "expandedContextOrder"] as const;
+  if (!exactKeys(baseValue, legacyKeys) && !exactKeys(baseValue, currentKeys) ||
+    baseValue.expandedContext !== null && typeof baseValue.expandedContext !== "string" ||
     baseValue.expandedContextOriginalBytes !== null &&
       !integer(baseValue.expandedContextOriginalBytes, 1) ||
     baseValue.expandedContextOriginalHash !== null &&
       !SHA256.test(String(baseValue.expandedContextOriginalHash)) ||
     baseValue.expandedContextState !== "included" && baseValue.expandedContextState !== "none" &&
       baseValue.expandedContextState !== "omitted") return null;
-  const base = baseValue as unknown as StoredContextBoundaries;
+  const expandedContextOrder = baseValue.expandedContextOrder === undefined
+    ? undefined
+    : decodeKnowledgeExpandedContextOrderV1(
+        baseValue.expandedContextOrder,
+        typeof baseValue.expandedContext === "string"
+          ? baseValue.expandedContext
+          : undefined
+      );
+  if (baseValue.expandedContextOrder !== undefined && (!expandedContextOrder ||
+    baseValue.expandedContextState !== "included")) return null;
+  const base: StoredContextBoundaries = {
+    expandedContext: baseValue.expandedContext as string | null,
+    ...(expandedContextOrder ? { expandedContextOrder } : {}),
+    expandedContextOriginalBytes: baseValue.expandedContextOriginalBytes as number | null,
+    expandedContextOriginalHash: baseValue.expandedContextOriginalHash as string | null,
+    expandedContextState: baseValue.expandedContextState as
+      StoredContextBoundaries["expandedContextState"]
+  };
   return summary
     ? {
         ...base,
@@ -1033,6 +1178,9 @@ function storedDispatch(row: AttemptRow): StoredKnowledgeEvidenceDispatch {
       exactExcerptBytes: item.excerptBytes,
       exactExcerptHash: item.excerptHash,
       expandedContext: boundaries.expandedContext,
+      ...(boundaries.expandedContextOrder
+        ? { expandedContextOrder: boundaries.expandedContextOrder }
+        : {}),
       expandedContextOriginalBytes: boundaries.expandedContextOriginalBytes,
       expandedContextOriginalHash: boundaries.expandedContextOriginalHash,
       expandedContextState: boundaries.expandedContextState,
@@ -1307,6 +1455,191 @@ export async function loadSettledKnowledgeAnswerGroundingOperations(
     initialSelector,
     selector: finalSelector ?? initialSelector,
     supplementalDraft
+  });
+}
+
+/** Loads the exact current V36 positive-finding, query-granularity,
+ * epistemic-fidelity, answer-level-compression, and model-owned Scope set
+ * reduction pipeline with a recall-first Scope map, deterministic whole-item
+ * invalid-provenance rejection, global no-data reduction, exact Supplement
+ * duplicate reduction, co-equal primary-Draft facet atomization, target-local
+ * accumulative reduce over revalidated primary and supplemental map points,
+ * plus post-Selector closure.
+ * Scope, completeness, initial Selector, and
+ * closure may each occur twice only as their single adjacent structural repair.
+ * The final Selector may likewise occur twice only as one bounded validation
+ * repair. Every later operation pins the merged accepted Scope hash. */
+export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
+  client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
+  input: Readonly<{ modelRunId: string }>
+): Promise<StoredKnowledgeAnswerGroundingOperationsV21> {
+  if (!safeString(input.modelRunId)) repositoryError("invalid_input");
+  const rows = await client.knowledgeProviderAttempt.findMany({
+    include: attemptInclude,
+    orderBy: { ordinal: "asc" },
+    where: { modelRunId: input.modelRunId }
+  });
+  const operationRows = rows.filter((row) => validPurpose(row.purpose) &&
+    answerOperationContractVersion(row.purpose) !== null);
+  const dispatches = operationRows.map(storedDispatch);
+  const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
+  const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
+  const scope = KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION;
+  const completeness = KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION;
+  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21;
+  const closure = KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION;
+  const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
+  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
+  const allowedSequences: KnowledgeAnswerOperationV21[][] = [];
+  for (const scopeCount of [1, 2] as const) {
+    for (const completenessCount of [1, 2] as const) {
+      for (const selectorCount of [1, 2] as const) {
+        const base: KnowledgeAnswerOperationV21[] = [
+          draft,
+          ...Array.from({ length: scopeCount }, () => scope),
+          ...Array.from({ length: completenessCount }, () => completeness),
+          ...Array.from({ length: selectorCount }, () => selector)
+        ];
+        for (const closureCount of [0, 1, 2] as const) {
+          const closureGated = [
+            ...base,
+            ...Array.from({ length: closureCount }, () => closure)
+          ];
+          if (closureGated.length <=
+            KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+            allowedSequences.push(closureGated);
+          }
+          if (knowledgeAnswerScopeV6CorrectionFitsV2(closureGated.length)) {
+            allowedSequences.push(
+              [...closureGated, supplement],
+              [...closureGated, supplement, finalSelector]
+            );
+            if (closureGated.length + 3 <=
+              KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
+              allowedSequences.push([
+                ...closureGated,
+                supplement,
+                finalSelector,
+                finalSelector
+              ]);
+            }
+          }
+        }
+      }
+    }
+  }
+  if (!allowedSequences.some((sequence) =>
+    canonicalJson(sequence) === canonicalJson(purposeSequence))) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const requests = dispatches.map((dispatch) =>
+    decodeKnowledgeAnswerOperationRequestSnapshotV21(
+      dispatch.attempt.acceptedRequest
+    ));
+  const firstRequest = requests[0];
+  const snapshotVersion = firstRequest &&
+    isRecoverableKnowledgeAnswerOperationSnapshotV21(firstRequest)
+    ? firstRequest.version
+    : null;
+  const terminal = (dispatch: StoredKnowledgeEvidenceDispatch) =>
+    dispatch.attempt.state === "settled" && dispatch.attempt.actualUsage !== null &&
+    dispatch.attempt.acceptedResult !== null && dispatch.attempt.dispatchedAt !== null &&
+    dispatch.attempt.settledAt !== null && dispatch.attempt.resultAcceptedAt !== null &&
+    dispatch.attempt.resultHash !== null;
+  const canonicalManifest = canonicalJson(dispatches[0]!.draft);
+  if (dispatches.some((dispatch, index) =>
+    dispatch.attempt.ordinal !== index + 1 ||
+    dispatch.attempt.providerBindingKey !== "answer" || !terminal(dispatch) ||
+    !requests[index] ||
+    !isRecoverableKnowledgeAnswerOperationSnapshotV21(requests[index]!) ||
+    requests[index]!.version !== snapshotVersion ||
+    requests[index]!.operation !== purposeSequence[index] ||
+    requests[index]!.evidenceReceiptHash !== dispatch.draft.manifestHash ||
+    canonicalJson(dispatch.draft) !== canonicalManifest)) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const scopeIndexes = purposeSequence.flatMap((purpose, index) =>
+    purpose === scope ? [index] : []);
+  const initialScopeIndex = scopeIndexes[0];
+  const scopeRepairIndex = scopeIndexes[1] ?? null;
+  const initialScopeDispatch = initialScopeIndex === undefined
+    ? undefined
+    : dispatches[initialScopeIndex];
+  const scopeRepairDispatch = scopeRepairIndex === null
+    ? null
+    : dispatches[scopeRepairIndex] ?? null;
+  if (!initialScopeDispatch || initialScopeIndex !== 1 ||
+    scopeIndexes.length < 1 || scopeIndexes.length > 2 ||
+    scopeRepairIndex !== null && scopeRepairIndex !== initialScopeIndex + 1) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const scopeDispatch = scopeRepairDispatch ?? initialScopeDispatch;
+  const finalScopeIndex = scopeRepairIndex ?? initialScopeIndex;
+  const completenessIndexes = purposeSequence.flatMap((purpose, index) =>
+    purpose === completeness ? [index] : []);
+  const initialCompletenessIndex = completenessIndexes[0];
+  const completenessRepairIndex = completenessIndexes[1] ?? null;
+  const initialCompletenessDispatch = initialCompletenessIndex === undefined
+    ? undefined
+    : dispatches[initialCompletenessIndex];
+  const completenessRepairDispatch = completenessRepairIndex === null
+    ? null
+    : dispatches[completenessRepairIndex] ?? null;
+  if (!initialCompletenessDispatch || initialCompletenessIndex !== finalScopeIndex + 1 ||
+    completenessIndexes.length < 1 || completenessIndexes.length > 2 ||
+    completenessRepairIndex !== null &&
+      completenessRepairIndex !== initialCompletenessIndex + 1) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const completenessDispatch = completenessRepairDispatch ?? initialCompletenessDispatch;
+  const finalCompletenessIndex = completenessRepairIndex ?? initialCompletenessIndex;
+  const initialSelectorIndex = finalCompletenessIndex + 1;
+  const completenessRequest = requests[initialCompletenessIndex];
+  const selectorRequest = requests[initialSelectorIndex];
+  if (!completenessRequest ||
+    !isRecoverableKnowledgeAnswerOperationSnapshotV21(completenessRequest) ||
+    !selectorRequest || !isRecoverableKnowledgeAnswerOperationSnapshotV21(selectorRequest)) {
+    repositoryError("stored_manifest_invalid");
+  }
+  const initialScopePayloadHash = completenessRequest.coverageScopePayloadHash;
+  const mergedScopePayloadHash = selectorRequest.coverageScopePayloadHash;
+  if (!initialScopePayloadHash || !mergedScopePayloadHash ||
+    dispatches.some((_dispatch, index) => {
+      const request = requests[index]!;
+      if (!isRecoverableKnowledgeAnswerOperationSnapshotV21(request)) return true;
+      if (index <= finalScopeIndex) return request.coverageScopePayloadHash !== null;
+      if (index <= finalCompletenessIndex) {
+        return request.coverageScopePayloadHash !== initialScopePayloadHash;
+      }
+      return request.coverageScopePayloadHash !== mergedScopePayloadHash;
+    })) repositoryError("stored_manifest_invalid");
+  const selectorDispatches = dispatches.filter(({ attempt }) =>
+    attempt.purpose === selector);
+  const closureDispatches = dispatches.filter(({ attempt }) =>
+    attempt.purpose === closure);
+  const supplementDispatch = dispatches.find(({ attempt }) =>
+    attempt.purpose === supplement) ?? null;
+  const finalSelectorDispatches = dispatches.filter(({ attempt }) =>
+    attempt.purpose === finalSelector);
+  const initialFinalSelectorDispatch = finalSelectorDispatches[0] ?? null;
+  const finalSelectorRepairDispatch = finalSelectorDispatches[1] ?? null;
+  return deepFreeze({
+    closure: closureDispatches.at(-1) ?? null,
+    closureRepair: closureDispatches[1] ?? null,
+    completeness: completenessDispatch,
+    completenessRepair: completenessRepairDispatch,
+    draft: dispatches[0]!,
+    finalSelector: finalSelectorDispatches.at(-1) ?? null,
+    finalSelectorRepair: finalSelectorRepairDispatch,
+    initialCompleteness: initialCompletenessDispatch,
+    initialClosure: closureDispatches[0] ?? null,
+    initialFinalSelector: initialFinalSelectorDispatch,
+    initialScope: initialScopeDispatch,
+    initialSelector: selectorDispatches[0]!,
+    scope: scopeDispatch,
+    scopeRepair: scopeRepairDispatch,
+    selectorRepair: selectorDispatches[1] ?? null,
+    supplementalDraft: supplementDispatch
   });
 }
 
@@ -1623,6 +1956,9 @@ async function materializeManifestRows(
     return {
       contextBoundaries: json({
         expandedContext: item.expandedContext,
+        ...(item.expandedContextOrder
+          ? { expandedContextOrder: item.expandedContextOrder }
+          : {}),
         expandedContextOriginalBytes: item.expandedContextOriginalBytes,
         expandedContextOriginalHash: item.expandedContextOriginalHash,
         expandedContextState: item.expandedContextState

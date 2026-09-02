@@ -498,6 +498,10 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }> & KnowledgeAnswerContractVersions): Promise<KnowledgeRunFinalizationEnvelope>;
+  groundKnowledgeAnswerV21?(input: Readonly<{
+    runId: string;
+    userId: string;
+  }>): Promise<KnowledgeRunFinalizationEnvelope>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {

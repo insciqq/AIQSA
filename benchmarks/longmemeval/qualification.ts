@@ -20,11 +20,45 @@ export const LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS = [
   "fu2-reader-first-blind-50-v4",
   "fu2-reader-first-blind-50-v5",
   "fu2-reader-first-blind-50-v6",
-  "fu2-reader-first-blind-50-v7"
+  "fu2-reader-first-blind-50-v7",
+  "fu2-reader-first-blind-50-v8",
+  "fu2-reader-first-blind-50-v9",
+  "fu2-reader-first-blind-50-v10",
+  "fu2-reader-first-blind-50-v11",
+  "fu2-reader-first-blind-50-v12",
+  "fu2-reader-first-blind-50-v13",
+  "fu2-reader-first-blind-50-v14",
+  "fu2-reader-first-blind-50-v15",
+  "fu2-reader-first-blind-50-v16",
+  "fu2-reader-first-luna-25-v17",
+  "fu2-reader-first-luna-25-v18",
+  "fu2-reader-first-luna-25-v19"
 ] as const;
 
 export type LongMemEvalQualificationManifestId =
   (typeof LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS)[number];
+
+export const LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS = [
+  "fu2-reader-first-luna-25-v19"
+] as const satisfies readonly LongMemEvalQualificationManifestId[];
+
+/** Compatibility alias for callers that display one active manifest. */
+export const LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_ID =
+  LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS[0];
+
+export function isLongMemEvalActiveQualificationManifest(
+  id: string
+): boolean {
+  return (LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS as readonly string[])
+    .includes(id);
+}
+
+export function longMemEvalEvaluationRequiresStop(
+  failFast: boolean,
+  label: boolean
+): boolean {
+  return failFast && !label;
+}
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const categoryCountsSchema = z.object({
@@ -36,12 +70,14 @@ const categoryCountsSchema = z.object({
   "temporal-reasoning": z.number().int().nonnegative()
 }).strict();
 
+const selectionCaseSchema = z.object({
+  questionId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/u),
+  questionType: z.enum(LONGMEMEVAL_QUESTION_TYPES)
+}).strict();
+
 const selectionSchema = z.object({
   algorithm: z.literal("sha256(seed\\0questionType\\0questionId)"),
-  cases: z.array(z.object({
-    questionId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/u),
-    questionType: z.enum(LONGMEMEVAL_QUESTION_TYPES)
-  }).strict()).length(50),
+  cases: z.array(selectionCaseSchema).length(50),
   categoryPopulation: categoryCountsSchema,
   priorRunExclusion: z.object({
     count: z.literal(11),
@@ -51,6 +87,28 @@ const selectionSchema = z.object({
   quotas: categoryCountsSchema,
   seed: z.literal("aiqsa-memory-followup-fu09-blind-50-v1")
 }).strict();
+
+const selection25Schema = selectionSchema.extend({
+  cases: z.array(selectionCaseSchema).length(25)
+}).strict();
+
+const measuredMemoryAdmissionSchema = z.object({
+  controlMaximumMs: z.literal(20_000),
+  hardDeadlineMs: z.literal(26_000),
+  queryResolverMaximumMs: z.literal(20_000),
+  queryResolverSettlementReserveMs: z.literal(2_000),
+  softDeadlineMs: z.literal(20_000),
+  version: z.literal("memory-run-retrieval-admission-v54")
+}).strict();
+
+const deterministicReadMemoryAdmissionSchema = measuredMemoryAdmissionSchema.extend({
+  readUtilityPolicy: z.literal("DETERMINISTIC_READ_V1")
+}).strict();
+
+const productionReadMemoryAdmissionSchema =
+  deterministicReadMemoryAdmissionSchema.extend({
+    version: z.literal("memory-run-retrieval-admission-v55")
+  }).strict();
 
 const legacyManifestSchema = z.object({
   id: z.literal("fu09-blind-50-v1"),
@@ -233,6 +291,207 @@ const readerFirstManifestV7Schema = readerFirstManifestV1Schema.extend({
   }).strict()
 }).strict();
 
+const readerFirstManifestV8Schema = readerFirstManifestV7Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v8"),
+  source: z.object({
+    appCommit: z.literal("29c4c39b58f212570ef119dcfafa801df19f9969"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV9Schema = readerFirstManifestV8Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v9"),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV10Schema = readerFirstManifestV9Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v10"),
+  runtime: readerFirstManifestV9Schema.shape.runtime.extend({
+    systemModel: z.object({
+      dataCollection: z.literal("allow"),
+      provider: z.literal("OpenRouter"),
+      providerOrder: z.tuple([z.literal("deepseek")]),
+      reasoningEffort: z.literal("medium"),
+      structuredOutputToolChoice: z.literal("auto"),
+      upstreamModelId: z.literal("deepseek/deepseek-v4-flash-0731")
+    }).strict()
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV11Schema = readerFirstManifestV9Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v11"),
+  runtime: readerFirstManifestV9Schema.shape.runtime.extend({
+    systemModel: z.object({
+      dataCollection: z.literal("deny"),
+      provider: z.literal("OpenRouter"),
+      providerOrder: z.tuple([z.literal("z-ai/fp8")]),
+      reasoningEffort: z.literal("medium"),
+      structuredOutputToolChoice: z.literal("auto"),
+      upstreamModelId: z.literal("z-ai/glm-5.3-flash")
+    }).strict()
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV12Schema = readerFirstManifestV9Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v12"),
+  runtime: readerFirstManifestV9Schema.shape.runtime.extend({
+    systemModel: z.object({
+      dataCollection: z.literal("deny"),
+      provider: z.literal("OpenRouter"),
+      providerOrder: z.tuple([z.literal("google-vertex/global")]),
+      reasoningEffort: z.literal("medium"),
+      structuredOutputToolChoice: z.literal("required"),
+      upstreamModelId: z.literal("google/gemini-3.7-flash")
+    }).strict(),
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const measuredEvaluationSchema =
+  readerFirstManifestV9Schema.shape.runtime.shape.evaluation.extend({
+    failFast: z.literal(false)
+  }).strict();
+
+const readerFirstManifestV13Schema = readerFirstManifestV10Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v13"),
+  runtime: readerFirstManifestV10Schema.shape.runtime.extend({
+    evaluation: measuredEvaluationSchema,
+    memoryAdmission: measuredMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV14Schema = readerFirstManifestV11Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v14"),
+  runtime: readerFirstManifestV11Schema.shape.runtime.extend({
+    evaluation: measuredEvaluationSchema,
+    memoryAdmission: measuredMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV15Schema = readerFirstManifestV12Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v15"),
+  runtime: readerFirstManifestV12Schema.shape.runtime.extend({
+    evaluation: measuredEvaluationSchema,
+    memoryAdmission: measuredMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("3e4c098975130e2829c67973632d8eb51d4ca732"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV16Schema = readerFirstManifestV15Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v16"),
+  runtime: readerFirstManifestV15Schema.shape.runtime.extend({
+    caseConcurrency: z.literal(1),
+    memoryAdmission: deterministicReadMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV17Schema = readerFirstManifestV16Schema.extend({
+  id: z.literal("fu2-reader-first-luna-25-v17"),
+  runtime: readerFirstManifestV16Schema.shape.runtime.extend({
+    systemModel: z.object({
+      dataCollection: z.null(),
+      provider: z.literal("codex-lb"),
+      providerOrder: z.tuple([]),
+      reasoningEffort: z.literal("medium"),
+      structuredOutputToolChoice: z.literal("required"),
+      upstreamModelId: z.literal("gpt-5.6-luna")
+    }).strict()
+  }).strict(),
+  selection: selection25Schema,
+  source: z.object({
+    appCommit: z.literal("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV18Schema = readerFirstManifestV17Schema.extend({
+  id: z.literal("fu2-reader-first-luna-25-v18"),
+  runtime: readerFirstManifestV17Schema.shape.runtime.extend({
+    memoryAdmission: productionReadMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV19Schema = readerFirstManifestV18Schema.extend({
+  id: z.literal("fu2-reader-first-luna-25-v19")
+}).strict();
+
 const manifestSchema = z.discriminatedUnion("id", [
   legacyManifestSchema,
   readerFirstManifestV1Schema,
@@ -241,7 +500,19 @@ const manifestSchema = z.discriminatedUnion("id", [
   readerFirstManifestV4Schema,
   readerFirstManifestV5Schema,
   readerFirstManifestV6Schema,
-  readerFirstManifestV7Schema
+  readerFirstManifestV7Schema,
+  readerFirstManifestV8Schema,
+  readerFirstManifestV9Schema,
+  readerFirstManifestV10Schema,
+  readerFirstManifestV11Schema,
+  readerFirstManifestV12Schema,
+  readerFirstManifestV13Schema,
+  readerFirstManifestV14Schema,
+  readerFirstManifestV15Schema,
+  readerFirstManifestV16Schema,
+  readerFirstManifestV17Schema,
+  readerFirstManifestV18Schema,
+  readerFirstManifestV19Schema
 ]);
 
 export type LongMemEvalQualificationManifest = Readonly<

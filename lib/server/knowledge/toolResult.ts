@@ -57,7 +57,10 @@ import {
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
   type KnowledgeRerankerBindingEvidenceV2
 } from "./rerankEvidence";
-import { decodeKnowledgeParentExpansionEvidence } from "./parentContextExpansion";
+import {
+  decodeKnowledgeExpandedContextOrderV1,
+  decodeKnowledgeParentExpansionEvidence
+} from "./parentContextExpansion";
 import {
   AIQSA_OPENSEARCH_VERSION,
   KNOWLEDGE_SEARCH_ANALYZER_PROFILE,
@@ -419,6 +422,13 @@ function decodePassage(
     documentContext === null && value.documentContext !== null ||
     (documentVersionNumber === null || documentVersionNumber < 1) || !fileName ||
     expandedContext === null || expansion === null ||
+    expansion?.contextOrder !== undefined && (
+      expandedContext === undefined ||
+      decodeKnowledgeExpandedContextOrderV1(
+        expansion.contextOrder,
+        expandedContext
+      ) === null
+    ) ||
     ftsRank === undefined || ftsScore === undefined || fusedScore === null || fusedScore < 0 ||
     !handle || !decodeKnowledgeCitationHandle(handle) ||
     includedText === null ||

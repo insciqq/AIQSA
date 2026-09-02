@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import type { ProviderAdmissionRole } from "./admission";
 import {
+  assertAcceptedStructuredOutputSnapshotExecutable,
   createAcceptedStructuredOutputExecutor,
   createAcceptedStructuredOutputSnapshotExecutor
 } from "./structuredOutputExecutor";
@@ -74,6 +75,46 @@ const request = {
 } as const;
 
 describe("accepted structured-output executor", () => {
+  it("attests exact credential decryptability without provider network work", async () => {
+    const envelope = encryptProviderCredentialSecret({
+      credentialId: "credential-1",
+      key: KEY,
+      secret: "runtime-secret",
+      valueId: "credential-version-1"
+    });
+    const queryRaw = vi.fn(async () => [{
+      credentialId: "credential-1",
+      id: "credential-version-1",
+      revokedAt: null,
+      secretEnvelope: envelope,
+      testEvidence: { authenticationMode: "bearer" }
+    }]);
+    const client = {
+      $transaction: vi.fn(async (consume: (tx: { $queryRaw: typeof queryRaw }) => unknown) =>
+        consume({ $queryRaw: queryRaw }))
+    } as unknown as PrismaClient;
+    const fetchFn = vi.fn<typeof fetch>();
+
+    await expect(assertAcceptedStructuredOutputSnapshotExecutable(
+      client,
+      role().snapshot,
+      { createFetch: () => fetchFn, encryptionKey: () => KEY }
+    )).resolves.toBeUndefined();
+    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    await expect(assertAcceptedStructuredOutputSnapshotExecutable(
+      client,
+      role().snapshot,
+      { createFetch: () => fetchFn, encryptionKey: () => Buffer.alloc(32, 20) }
+    )).rejects.toMatchObject({
+      message: "secret_encryption_invalid_envelope",
+      name: "SecretEnvelopeError"
+    });
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("locks and decrypts the admitted credential at each strict-schema request", async () => {
     const envelope = encryptProviderCredentialSecret({
       credentialId: "credential-1",

@@ -108,6 +108,19 @@ import { createMemoryRebuildService } from
   "../../lib/server/memory/rebuild/service";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
   "../../lib/server/memory/retrieval/vector";
+import {
+  MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+  MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
+  MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
+  MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+  MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
+  MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
+} from "../../lib/server/memory/retrieval/runAdmission";
+import {
+  DEFAULT_MEMORY_READ_UTILITY_POLICY,
+  LEGACY_MEMORY_READ_UTILITY_POLICY,
+  type MemoryReadUtilityPolicy
+} from "../../lib/server/memory/retrieval/readUtilityPolicy";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from
   "../../lib/server/memory/safetyLite";
 import { defaultMemorySourceMutationHooks } from
@@ -139,6 +152,7 @@ import {
   LONGMEMEVAL_ORACLE_SHA256,
   LONGMEMEVAL_REPOSITORY_COMMIT,
   LONGMEMEVAL_S_SHA256,
+  LONGMEMEVAL_SYSTEM_MODEL_RUNTIME,
   assertBenchmarkBaseUrl,
   assertBenchmarkDatabaseUrl,
   buildLongMemEvalBaselineManifest,
@@ -188,7 +202,9 @@ import {
 import {
   assertLongMemEvalQualificationDataset,
   decodeLongMemEvalQualificationManifestId,
+  isLongMemEvalActiveQualificationManifest,
   loadLongMemEvalQualificationManifest,
+  longMemEvalEvaluationRequiresStop,
   type LongMemEvalQualificationManifest,
   type LongMemEvalQualificationManifestId
 } from "./qualification";
@@ -216,7 +232,6 @@ const evaluatorPath = resolve(upstreamRoot, "src/evaluation/evaluate_qa.py");
 const benchmarkEmailSuffix = "@longmemeval.benchmark.invalid";
 const defaultQualificationSystemModelId = "gpt-5.6-luna" satisfies
   LongMemEvalSystemModelId;
-const qualificationSystemReasoningEffort = "medium";
 const qualificationEmbeddingModelId = "qwen/qwen3-embedding-8b";
 const qualificationEmbeddingProviderOrder = Object.freeze([
   "nebius",
@@ -231,6 +246,82 @@ const qualificationPrimaryRerankerDeployment = (() => {
 const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
 const qualificationMemoryJobParallelism = 8;
 const qualificationMemoryJobPerUserParallelism = 4;
+
+const openRouterQualificationSystemModelIds = new Set([
+  "deepseek/deepseek-v4-flash-0731",
+  "z-ai/glm-5.3-flash",
+  "google/gemini-3.7-flash"
+] satisfies readonly LongMemEvalSystemModelId[]);
+
+function qualificationSystemModelRuntime(
+  modelId: LongMemEvalSystemModelId
+): (typeof LONGMEMEVAL_SYSTEM_MODEL_RUNTIME)[LongMemEvalSystemModelId] {
+  return LONGMEMEVAL_SYSTEM_MODEL_RUNTIME[modelId];
+}
+
+function qualificationSystemModelFamily(
+  modelId: LongMemEvalSystemModelId
+): "openai_compatible" | "openrouter" {
+  return openRouterQualificationSystemModelIds.has(modelId)
+    ? "openrouter"
+    : "openai_compatible";
+}
+
+function qualificationSystemModelReasoningEffort(
+  modelId: LongMemEvalSystemModelId
+): string {
+  return qualificationSystemModelRuntime(modelId).reasoningEffort;
+}
+
+function qualificationSystemModelProviderOrder(
+  modelId: LongMemEvalSystemModelId
+): readonly string[] {
+  return qualificationSystemModelRuntime(modelId).providerOrder;
+}
+
+type QualificationSystemModelDataCollection = "allow" | "deny" | null;
+type QualificationStructuredOutputToolChoice = "auto" | "required";
+
+function qualificationSystemModelDataCollection(
+  modelId: LongMemEvalSystemModelId
+): QualificationSystemModelDataCollection {
+  return qualificationSystemModelRuntime(modelId).dataCollection;
+}
+
+function qualificationSystemModelStructuredOutputToolChoice(
+  modelId: LongMemEvalSystemModelId
+): QualificationStructuredOutputToolChoice {
+  return qualificationSystemModelRuntime(modelId).structuredOutputToolChoice;
+}
+
+function configuredDataCollection(
+  configuration: Readonly<Record<string, unknown>> | null | undefined
+): QualificationSystemModelDataCollection {
+  const defaultParams = configuration?.defaultParams;
+  const provider = isRecord(defaultParams) && isRecord(defaultParams.provider)
+    ? defaultParams.provider
+    : null;
+  const value = provider?.dataCollection ?? provider?.data_collection;
+  return value === "allow" || value === "deny" ? value : null;
+}
+
+function configuredStructuredOutputToolChoice(
+  configuration: Readonly<Record<string, unknown>> | null | undefined
+): QualificationStructuredOutputToolChoice {
+  const defaultParams = configuration?.defaultParams;
+  const provider = isRecord(defaultParams) && isRecord(defaultParams.provider)
+    ? defaultParams.provider
+    : null;
+  return provider?.structuredOutputToolChoice === "auto"
+    ? "auto"
+    : "required";
+}
+
+function qualificationSystemModelProvider(
+  modelId: LongMemEvalSystemModelId
+): string {
+  return qualificationSystemModelRuntime(modelId).provider;
+}
 const activeMemoryRetrievalConfigurationBase = Object.freeze({
   aggregationContextHardCapTokens: MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
   aggregationContextTargetTokens: MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS,
@@ -283,6 +374,7 @@ type CliOptions = Readonly<{
   indexTimeoutMs: number;
   onlineEvaluation: boolean;
   outputDirectory: string;
+  memoryReadUtilityPolicy: MemoryReadUtilityPolicy;
   profile: LongMemEvalProfile;
   qualificationManifestId: LongMemEvalQualificationManifestId | null;
   questionIds: readonly string[];
@@ -314,7 +406,10 @@ type ProviderRoles = Readonly<{
   system: Readonly<{
     connectionId: string;
     credentialId: string;
+    dataCollection: QualificationSystemModelDataCollection;
     id: string;
+    providerOrder: readonly string[];
+    structuredOutputToolChoice: QualificationStructuredOutputToolChoice;
     upstreamModelId: LongMemEvalSystemModelId;
   }>;
   qwen: Readonly<{
@@ -340,6 +435,7 @@ type ImportedHistory = Readonly<{
 
 type PreparedCaseCacheEvidence = Readonly<{
   cacheVersion: string;
+  historyProjectionAuthority: "CACHED_PRIOR_SYSTEM_MODEL" | "CURRENT_SYSTEM_MODEL";
   hybridCacheHit: boolean;
   sourceBuildRecovered: boolean;
   sourceCacheHit: boolean;
@@ -429,6 +525,34 @@ type CaseFailureDiagnostics = Readonly<{
     state: MemoryJobState;
   }>[];
 }>;
+
+const deterministicReadUtilityRoles = new Set([
+  "MEMORY_CONTROL",
+  "MEMORY_QUERY_RESOLVE"
+]);
+
+function assertMemoryReadUtilityAudit(
+  policy: MemoryReadUtilityPolicy,
+  audit: LongMemEvalRetrievalAudit
+): void {
+  if (audit.memoryReadUtilityPolicy !== policy) {
+    throw new Error("longmemeval_memory_read_policy_mismatch");
+  }
+  if (policy === "DETERMINISTIC_READ_V1" &&
+    (audit.controlProviderCalls !== 0 || audit.queryResolverProviderCalls !== 0)) {
+    throw new Error("longmemeval_memory_read_utility_call_detected");
+  }
+}
+
+function assertMemoryReadUtilityExecutions(
+  policy: MemoryReadUtilityPolicy,
+  aggregates: readonly ExecutionAggregate[]
+): void {
+  if (policy === "DETERMINISTIC_READ_V1" && aggregates.some(({ role }) =>
+    deterministicReadUtilityRoles.has(role))) {
+    throw new Error("longmemeval_memory_read_utility_execution_detected");
+  }
+}
 
 class LongMemEvalCaseFailure extends Error {
   constructor(readonly diagnostics: CaseFailureDiagnostics) {
@@ -605,6 +729,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     indexTimeoutMs: indexTimeoutMinutes * 60_000,
     onlineEvaluation,
     outputDirectory: resolveBenchmarkOutputDirectory(benchmarkRoot, output),
+    memoryReadUtilityPolicy: DEFAULT_MEMORY_READ_UTILITY_POLICY,
     profile,
     qualificationManifestId,
     questionIds: Object.freeze(questionIds),
@@ -624,14 +749,32 @@ function applyQualificationManifest(
   options: CliOptions,
   manifest: LongMemEvalQualificationManifest
 ): CliOptions {
-  if (manifest.id !== "fu2-reader-first-blind-50-v7") {
+  if (!isLongMemEvalActiveQualificationManifest(manifest.id)) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
+  const systemRuntime = qualificationSystemModelRuntime(
+    manifest.runtime.systemModel.upstreamModelId
+  );
   const manifestRoute = qualificationManifestRerankerRoute(manifest);
   const activeRoute = approvedRerankerDeployments.map(({ preset }) => ({
     relevanceScoreFloor: preset.relevanceScoreFloor,
     upstreamModelId: preset.upstreamModelId
   }));
+  const manifestSystemDataCollection = "dataCollection" in manifest.runtime.systemModel
+    ? manifest.runtime.systemModel.dataCollection
+    : null;
+  const manifestStructuredOutputToolChoice =
+    "structuredOutputToolChoice" in manifest.runtime.systemModel
+      ? manifest.runtime.systemModel.structuredOutputToolChoice
+      : "required";
+  const manifestMemoryAdmission = "memoryAdmission" in manifest.runtime
+    ? manifest.runtime.memoryAdmission
+    : null;
+  const manifestReadUtilityPolicy: MemoryReadUtilityPolicy =
+    manifestMemoryAdmission !== null &&
+      "readUtilityPolicy" in manifestMemoryAdmission
+      ? manifestMemoryAdmission.readUtilityPolicy
+      : LEGACY_MEMORY_READ_UTILITY_POLICY;
   if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
     manifest.runtime.embedding.providerOrder.length !==
       qualificationEmbeddingProviderOrder.length ||
@@ -639,16 +782,38 @@ function applyQualificationManifest(
       provider !== qualificationEmbeddingProviderOrder[index]) ||
     manifest.runtime.reranker.policyVersion !== RERANKER_ROUTE_POLICY_VERSION ||
     !qualificationRerankerRoutesMatch(manifestRoute, activeRoute) ||
+    manifest.runtime.systemModel.provider !== systemRuntime.provider ||
+    !("providerOrder" in manifest.runtime.systemModel) ||
+    manifest.runtime.systemModel.providerOrder.length !==
+      systemRuntime.providerOrder.length ||
+    manifest.runtime.systemModel.providerOrder.some((provider, index) =>
+      provider !== systemRuntime.providerOrder[index]) ||
     manifest.runtime.systemModel.reasoningEffort !==
-      qualificationSystemReasoningEffort ||
+      systemRuntime.reasoningEffort ||
+    manifestSystemDataCollection !== systemRuntime.dataCollection ||
+    manifestStructuredOutputToolChoice !==
+      systemRuntime.structuredOutputToolChoice ||
     manifest.runtime.workerConcurrency.global !== qualificationMemoryJobParallelism ||
     manifest.runtime.workerConcurrency.perUser !==
       qualificationMemoryJobPerUserParallelism ||
     manifest.runtime.evaluation.mode !== "per_case" ||
-    !manifest.runtime.evaluation.failFast ||
+    manifest.runtime.evaluation.failFast !== false ||
     manifest.runtime.evaluation.model !== "gpt-4o-2024-08-06" ||
     manifest.runtime.evaluation.scriptSha256 !== LONGMEMEVAL_EVALUATOR_SHA256 ||
     manifest.runtime.evaluation.oracleSha256 !== LONGMEMEVAL_ORACLE_SHA256 ||
+    manifestMemoryAdmission === null ||
+    manifestMemoryAdmission.controlMaximumMs !==
+      MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS ||
+    manifestMemoryAdmission.hardDeadlineMs !==
+      MEMORY_INTERACTIVE_HARD_DEADLINE_MS ||
+    manifestMemoryAdmission.queryResolverMaximumMs !==
+      MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS ||
+    manifestMemoryAdmission.queryResolverSettlementReserveMs !==
+      MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS ||
+    manifestMemoryAdmission.softDeadlineMs !==
+      MEMORY_INTERACTIVE_SOFT_DEADLINE_MS ||
+    manifestMemoryAdmission.version !== MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION ||
+    options.memoryReadUtilityPolicy !== manifestReadUtilityPolicy ||
     manifest.runtime.lexical.backend !== "OPENSEARCH" ||
     process.env.AIQSA_MEMORY_LEXICAL_BACKEND !== manifest.runtime.lexical.backend ||
     process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID !==
@@ -662,6 +827,7 @@ function applyQualificationManifest(
     forceDreamDiagnostic: manifest.runtime.forceDreamDiagnostic,
     indexTimeoutMs: manifest.runtime.indexTimeoutMinutes * 60_000,
     onlineEvaluation: true,
+    memoryReadUtilityPolicy: manifestReadUtilityPolicy,
     profile: manifest.profile,
     questionIds: Object.freeze(
       manifest.selection.cases.map(({ questionId }) => questionId)
@@ -707,11 +873,30 @@ function assertQualificationResolvedRerankerRoute(
   )) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
-  if (manifest.id === "fu2-reader-first-blind-50-v7" &&
+  if (isLongMemEvalActiveQualificationManifest(manifest.id) &&
     (roles.qwen.providerOrder.length !== manifest.runtime.embedding.providerOrder.length ||
       roles.qwen.providerOrder.some((provider, index) =>
         provider !== manifest.runtime.embedding.providerOrder[index]))) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+  }
+  if (isLongMemEvalActiveQualificationManifest(manifest.id)) {
+    const systemRuntime = qualificationSystemModelRuntime(roles.system.upstreamModelId);
+    if (roles.system.providerOrder.length !== systemRuntime.providerOrder.length ||
+      roles.system.providerOrder.some((provider, index) =>
+        provider !== systemRuntime.providerOrder[index]) ||
+      roles.system.dataCollection !== systemRuntime.dataCollection ||
+      roles.system.structuredOutputToolChoice !==
+        systemRuntime.structuredOutputToolChoice ||
+      manifest.runtime.systemModel.provider !== systemRuntime.provider ||
+      manifest.runtime.systemModel.reasoningEffort !== systemRuntime.reasoningEffort ||
+      ("dataCollection" in manifest.runtime.systemModel
+        ? manifest.runtime.systemModel.dataCollection
+        : null) !== systemRuntime.dataCollection ||
+      ("structuredOutputToolChoice" in manifest.runtime.systemModel
+        ? manifest.runtime.systemModel.structuredOutputToolChoice
+        : "required") !== systemRuntime.structuredOutputToolChoice) {
+      throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+    }
   }
 }
 
@@ -978,6 +1163,8 @@ async function resolveProviderRoles(
     await Promise.all([
     prisma.providerModel.findMany({
       select: {
+        activeConfig: true,
+        activeVersion: true,
         connection: {
           select: {
             defaultCredential: {
@@ -992,7 +1179,10 @@ async function resolveProviderRoles(
       where: {
         activeConfig: { not: Prisma.DbNull },
         activeVersion: { gt: 0 },
-        connection: { enabled: true, family: "openai_compatible" },
+        connection: {
+          enabled: true,
+          family: qualificationSystemModelFamily(systemModelId)
+        },
         enabled: true,
         modelClass: "answer",
         modelId: systemModelId
@@ -1041,8 +1231,42 @@ async function resolveProviderRoles(
     : [];
   const system = systemModels[0];
   const systemCredential = system?.connection.defaultCredential;
+  let systemConfiguration: ReturnType<typeof normalizeProviderModelConfiguration> | null = null;
+  try {
+    systemConfiguration = system?.activeConfig
+      ? normalizeProviderModelConfiguration(system.activeConfig)
+      : null;
+  } catch {
+    systemConfiguration = null;
+  }
+  const expectedSystemProviderOrder = qualificationSystemModelProviderOrder(systemModelId);
+  const systemProviderOrder = systemConfiguration?.openRouterRouting?.mode ===
+    "only_selected"
+    ? systemConfiguration.openRouterRouting.providers
+    : [];
+  const expectedSystemReasoningEffort =
+    qualificationSystemModelReasoningEffort(systemModelId);
+  const expectedSystemDataCollection =
+    qualificationSystemModelDataCollection(systemModelId);
+  const systemDataCollection = configuredDataCollection(systemConfiguration);
+  const expectedStructuredOutputToolChoice =
+    qualificationSystemModelStructuredOutputToolChoice(systemModelId);
+  const systemStructuredOutputToolChoice =
+    configuredStructuredOutputToolChoice(systemConfiguration);
   if (systemModels.length !== 1 || !system || !systemCredential?.enabled ||
-    !systemCredential.activeVersionId || !qwen?.activeConfig ||
+    !systemCredential.activeVersionId || !system.activeConfig ||
+    system.activeVersion < 1 ||
+    systemConfiguration?.modelClass !== "answer" ||
+    (openRouterQualificationSystemModelIds.has(systemModelId)
+      ? systemConfiguration.adapterKind !== "openrouter_chat_completions" ||
+        systemConfiguration.openRouterRouting?.mode !== "only_selected"
+      : systemConfiguration.adapterKind === "openrouter_chat_completions") ||
+    systemProviderOrder.length !== expectedSystemProviderOrder.length ||
+    systemProviderOrder.some((provider, index) =>
+      provider !== expectedSystemProviderOrder[index]) ||
+    systemDataCollection !== expectedSystemDataCollection ||
+    systemStructuredOutputToolChoice !== expectedStructuredOutputToolChoice ||
+    !qwen?.activeConfig ||
     qwen.activeVersion < 1 || !qwen.enabled || !qwen.connection.enabled ||
     qwen.connection.family !== "openrouter" || qwen.modelClass !== "embedding" ||
     qwen.modelId !== qualificationEmbeddingModelId ||
@@ -1051,7 +1275,7 @@ async function resolveProviderRoles(
     qwenProviderOrder.some((provider, index) =>
       provider !== qualificationEmbeddingProviderOrder[index]) ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
-    systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort ||
+    systemPolicy.reasoningEffort !== expectedSystemReasoningEffort ||
     systemPolicy.rerankerProviderModelId !==
       qualificationPrimaryRerankerDeployment.providerModelId ||
     !rerankerResolution.ok ||
@@ -1099,7 +1323,10 @@ async function resolveProviderRoles(
     system: Object.freeze({
       connectionId: system.connectionId,
       credentialId: systemCredential.id,
+      dataCollection: systemDataCollection,
       id: system.id,
+      providerOrder: Object.freeze([...systemProviderOrder]),
+      structuredOutputToolChoice: systemStructuredOutputToolChoice,
       upstreamModelId: decodeLongMemEvalSystemModelId(system.modelId)
     }),
     qwen: Object.freeze({
@@ -1589,11 +1816,13 @@ async function alignPreparedCaseIdentity(
   input: Readonly<{
     displayName: string;
     email: string;
+    allowSystemModelSwap?: boolean;
     roles: ProviderRoles;
     userId: string;
   }>
 ): Promise<void> {
-  const [user, userSettings, memorySettings, credentialAssignments] =
+  const allowSystemModelSwap = input.allowSystemModelSwap === true;
+  const [user, userSettings, memorySettings, credentialAssignment] =
     await Promise.all([
       prisma.user.findUnique({
         select: { displayName: true, email: true, status: true },
@@ -1614,22 +1843,49 @@ async function alignPreparedCaseIdentity(
         },
         where: { userId: input.userId }
       }),
-      prisma.providerUserCredentialAssignment.count({
+      prisma.providerUserCredentialAssignment.findUnique({
+        select: { credentialId: true },
         where: {
-          connectionId: input.roles.system.connectionId,
-          credentialId: input.roles.system.credentialId,
-          userId: input.userId
+          connectionId_userId: {
+            connectionId: input.roles.system.connectionId,
+            userId: input.userId
+          }
         }
       })
     ]);
+  const systemModelAligned = userSettings?.defaultProviderModelId === input.roles.system.id;
+  const credentialAligned = credentialAssignment?.credentialId ===
+    input.roles.system.credentialId;
   if (user?.email !== input.email || user.displayName !== input.displayName ||
     user.status !== "active" ||
-    userSettings?.defaultProviderModelId !== input.roles.system.id ||
-    credentialAssignments !== 1 || !memorySettings ||
+    !allowSystemModelSwap && (!systemModelAligned || !credentialAligned) ||
+    !memorySettings ||
     memorySettings.decayEnabled || memorySettings.learnAutomatically ||
     !memorySettings.referenceChatHistory || memorySettings.synthesisEnabled ||
     !memorySettings.useMemoryFacts) {
     throw new Error("longmemeval_prepared_case_identity_invalid");
+  }
+  if (allowSystemModelSwap && (!systemModelAligned || !credentialAligned)) {
+    await prisma.$transaction(async (tx) => {
+      await tx.userSettings.updateMany({
+        data: { defaultProviderModelId: input.roles.system.id },
+        where: { userId: input.userId }
+      });
+      await tx.providerUserCredentialAssignment.upsert({
+        create: {
+          connectionId: input.roles.system.connectionId,
+          credentialId: input.roles.system.credentialId,
+          userId: input.userId
+        },
+        update: { credentialId: input.roles.system.credentialId },
+        where: {
+          connectionId_userId: {
+            connectionId: input.roles.system.connectionId,
+            userId: input.userId
+          }
+        }
+      });
+    });
   }
   if (memorySettings.embeddingProviderModelId === input.roles.qwen.id) return;
   const repository = createPrismaMemorySettingsRepository(prisma);
@@ -1920,6 +2176,36 @@ async function assertPreparedHistoryContractCompatibility(
     incompatibleSegment || incompatibleToolEvent || incompatibleDigest ||
     incompatibleBinding) {
     throw new Error("longmemeval_prepared_case_history_contract_incompatible");
+  }
+}
+
+/** A compatible model swap may reuse only a completely settled projection.
+ * This prevents a provider change from attaching to a half-built history and
+ * accidentally mixing old and new execution authority in one prepared user. */
+async function assertPreparedHistorySettled(
+  prisma: PrismaClient,
+  userId: string,
+  expectedChats: number
+): Promise<void> {
+  const [jobs, checkpoints] = await Promise.all([
+    prisma.memoryJob.findMany({
+      select: { kind: true, state: true },
+      where: { userId }
+    }),
+    prisma.chatMemoryCheckpoint.findMany({
+      select: { status: true },
+      where: { userId }
+    })
+  ]);
+  const historyJobs = jobs.filter(({ kind }) => kind === "INDEX_HISTORY");
+  const unsettledJobs = jobs.some(({ state }) => activeJobStates.has(state));
+  const failedHistory = historyJobs.some(({ state }) =>
+    unsuccessfulJobStates.has(state));
+  if (unsettledJobs || failedHistory || historyJobs.length !== expectedChats ||
+    checkpoints.length !== expectedChats ||
+    checkpoints.some(({ status }) => status !== "READY") ||
+    historyJobs.some(({ state }) => state !== "SUCCEEDED")) {
+    throw new Error("longmemeval_prepared_case_history_not_settled");
   }
 }
 
@@ -2587,12 +2873,35 @@ function requestHeaders(baseUrl: URL, cookie: string, json = false): HeadersInit
   };
 }
 
+function boundedCatalogModelParams(
+  defaults: Readonly<Record<string, unknown>>,
+  maxOutputTokens: number
+): Record<string, unknown> {
+  // Catalog projections may use a provider-native alias such as `maxTokens`.
+  // Send one canonical bounded value so run-param validation never sees two
+  // conflicting aliases (the server canonicalizes it for the adapter).
+  const params = { ...defaults };
+  for (const key of [
+    "maxOutputTokens",
+    "maxTokens",
+    "max_output_tokens",
+    "max_tokens",
+    "max_completion_tokens"
+  ]) {
+    delete params[key];
+  }
+  params.maxOutputTokens = maxOutputTokens;
+  return params;
+}
+
 async function catalogSystemModel(
   baseUrl: URL,
   cookie: string,
   expectedModelId: string,
-  expectedUpstreamModelId: LongMemEvalSystemModelId
+  expectedUpstreamModelId: LongMemEvalSystemModelId,
+  expectedProviderId: string
 ): Promise<Readonly<{
+  backgroundSupported: boolean;
   defaultParams: Readonly<Record<string, unknown>>;
   maxOutputTokens: number;
   modelId: string;
@@ -2632,6 +2941,10 @@ async function catalogSystemModel(
     controls.reasoningEffort !== null
     ? controls.reasoningEffort as Record<string, unknown>
     : {};
+  const background = typeof controls.background === "object" &&
+    controls.background !== null
+    ? controls.background as Record<string, unknown>
+    : {};
   const maximum = typeof maxTokens.maxValue === "number" ? maxTokens.maxValue : 1024;
   const options = Array.isArray(reasoning.options)
     ? reasoning.options.filter((value): value is string => typeof value === "string")
@@ -2641,15 +2954,27 @@ async function catalogSystemModel(
     : typeof reasoning.defaultValue === "string"
       ? reasoning.defaultValue
       : "medium";
-  if (typeof model.provider !== "string" || typeof model.modelId !== "string") {
+  if (typeof model.provider !== "string" || typeof model.modelId !== "string" ||
+    model.provider !== expectedProviderId) {
     throw new Error("longmemeval_system_catalog_invalid");
   }
+  // The user catalog deliberately projects only UI-safe controls and omits
+  // server-owned provider routing, privacy policy, and transport capability
+  // markers. `resolveProviderRoles` has already decoded the active model
+  // configuration and fail-closed on all three exact values; the persisted
+  // execution bindings below prove which route actually handled the run.
   return Object.freeze({
+    backgroundSupported: background.supported === true,
     defaultParams: typeof model.defaultParams === "object" && model.defaultParams !== null &&
       !Array.isArray(model.defaultParams)
       ? model.defaultParams as Readonly<Record<string, unknown>>
       : {},
-    maxOutputTokens: Math.min(1024, maximum),
+    // The historical Luna qualification used a 1024-token cap. OpenRouter
+    // reasoning models count hidden reasoning against that same completion
+    // budget, which can leave a valid run with no answer text. Keep a bounded
+    // transport cap, but allow the approved fast-model lane enough room to
+    // finish its reasoning; this does not alter Memory retrieval or prompts.
+    maxOutputTokens: Math.min(4096, maximum),
     modelId: model.modelId,
     provider: model.provider,
     reasoningEffort: effort
@@ -2685,7 +3010,8 @@ async function runQuestion(
     baseUrl,
     identity.cookie,
     roles.system.id,
-    roles.system.upstreamModelId
+    roles.system.upstreamModelId,
+    roles.system.connectionId
   );
   const chat = await prisma.chat.create({
     data: {
@@ -2714,8 +3040,8 @@ async function runQuestion(
         mcp: { mode: "off" },
         modelId: model.modelId,
         params: {
-          ...model.defaultParams,
-          background: false,
+          ...boundedCatalogModelParams(model.defaultParams, model.maxOutputTokens),
+          ...(model.backgroundSupported ? { background: false } : {}),
           maxOutputTokens: model.maxOutputTokens,
           reasoning: {
             ...(typeof model.defaultParams.reasoning === "object" &&
@@ -3409,6 +3735,13 @@ async function runCase(
 ): Promise<Readonly<{ hypothesis: string; summary: CaseSummary }>> {
   const cacheEnabled = options.profile === "official" &&
     !options.forceDreamDiagnostic;
+  // The active fast-model matrix is an answer-time A/B over the already
+  // prepared Luna projection.  It must fail closed if promotion cannot find
+  // a settled compatible cache; silently falling through to buildFresh would
+  // turn a no-reindex run into an expensive and incomparable reindex.
+  const preparedCacheRequired = cacheEnabled &&
+    options.qualificationManifestId !== null &&
+    isLongMemEvalActiveQualificationManifest(options.qualificationManifestId);
   const sourceFingerprint = cacheEnabled
     ? preparedCaseSourceFingerprint({
         entry,
@@ -3438,6 +3771,9 @@ async function runCase(
       let sourceBuildRecovered = false;
       let sourceCompatibilityPromoted = false;
       let hybridCacheHit = false;
+      let historyProjectionAuthority:
+        PreparedCaseCacheEvidence["historyProjectionAuthority"] =
+        "CURRENT_SYSTEM_MODEL";
       const buildFresh = async (persistent: Readonly<{
         buildingEmail: string;
         displayName: string;
@@ -3467,7 +3803,8 @@ async function runCase(
             baseUrl,
             identity!.cookie,
             roles.system.id,
-            roles.system.upstreamModelId
+            roles.system.upstreamModelId,
+            roles.system.connectionId
           )
         );
         indexStartedAt = Date.now();
@@ -3589,6 +3926,11 @@ async function runCase(
               cachedUser.id,
               entry.questionId
             );
+            await assertPreparedHistorySettled(
+              prisma,
+              cachedUser.id,
+              entry.haystackSessions.length
+            );
             await alignPreparedCaseIdentity(prisma, {
               displayName,
               email: readyEmail,
@@ -3611,6 +3953,9 @@ async function runCase(
               questionId: entry.questionId,
               sourceFingerprint
             });
+            if (preparedCacheRequired) {
+              throw new Error("longmemeval_prepared_case_cache_invalid");
+            }
             await prisma.user.delete({ where: { id: cachedUser.id } });
             cachedUser = null;
           }
@@ -3635,6 +3980,11 @@ async function runCase(
                 buildingUser.id,
                 entry.questionId
               );
+              await assertPreparedHistorySettled(
+                prisma,
+                buildingUser.id,
+                entry.haystackSessions.length
+              );
               await assertPreparedHistoryContractCompatibility(
                 prisma,
                 buildingUser.id
@@ -3642,6 +3992,7 @@ async function runCase(
               await alignPreparedCaseIdentity(prisma, {
                 displayName: buildingUser.displayName,
                 email: buildingUser.email,
+                allowSystemModelSwap: true,
                 roles,
                 userId: buildingUser.id
               });
@@ -3700,6 +4051,11 @@ async function runCase(
                 compatibleUser.id,
                 entry.questionId
               );
+              await assertPreparedHistorySettled(
+                prisma,
+                compatibleUser.id,
+                entry.haystackSessions.length
+              );
               await assertPreparedHistoryContractCompatibility(
                 prisma,
                 compatibleUser.id
@@ -3707,6 +4063,7 @@ async function runCase(
               await alignPreparedCaseIdentity(prisma, {
                 displayName: compatibleUser.displayName,
                 email: compatibleUser.email,
+                allowSystemModelSwap: true,
                 roles,
                 userId: compatibleUser.id
               });
@@ -3729,6 +4086,7 @@ async function runCase(
               });
               cachedUser = { id: compatibleUser.id };
               sourceCompatibilityPromoted = true;
+              historyProjectionAuthority = "CACHED_PRIOR_SYSTEM_MODEL";
               emit("prepared_case_source_compatibility_promoted", {
                 questionId: entry.questionId,
                 sourceFingerprint
@@ -3752,7 +4110,8 @@ async function runCase(
               baseUrl,
               identity!.cookie,
               roles.system.id,
-              roles.system.upstreamModelId
+              roles.system.upstreamModelId,
+              roles.system.connectionId
             )
           );
           const preparedAt = Date.now();
@@ -3764,6 +4123,9 @@ async function runCase(
             hybrid = readyHybrid;
             hybridCacheHit = true;
           } else {
+            if (preparedCacheRequired) {
+              throw new Error("longmemeval_prepared_case_hybrid_cache_missing");
+            }
             const rebuildJobId = await withFailureCode(
               "longmemeval_hybrid_rebuild_start_failed",
               () => startHybridRebuild(prisma, cachedUser!.id, roles.qwen.id)
@@ -3782,6 +4144,9 @@ async function runCase(
           }
           hybridIndexCompletedAt = Date.now();
         } else {
+          if (preparedCacheRequired) {
+            throw new Error("longmemeval_prepared_case_cache_missing");
+          }
           const stale = await prisma.user.findMany({
             select: { id: true },
             where: {
@@ -3803,6 +4168,7 @@ async function runCase(
         }
         preparedCase = Object.freeze({
           cacheVersion: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
+          historyProjectionAuthority,
           hybridCacheHit,
           sourceBuildRecovered,
           sourceCacheHit,
@@ -3811,6 +4177,7 @@ async function runCase(
         });
         emit(sourceCacheHit ? "prepared_case_cache_hit" : "prepared_case_cache_miss", {
           hybridCacheHit,
+          historyProjectionAuthority,
           questionId: entry.questionId,
           sourceBuildRecovered,
           sourceCompatibilityPromoted,
@@ -3820,7 +4187,8 @@ async function runCase(
         await buildFresh(null);
       }
       if (!identity) throw new Error("longmemeval_identity_setup_failed");
-      if (options.qualificationManifestId === "fu2-reader-first-blind-50-v7") {
+      if (options.qualificationManifestId !== null &&
+        isLongMemEvalActiveQualificationManifest(options.qualificationManifestId)) {
         await withFailureCode(
           "longmemeval_lexical_projection_failed",
           () => waitForOpenSearchProjection(
@@ -3841,6 +4209,10 @@ async function runCase(
           entry,
           options.runTimeoutMs
         )
+      );
+      assertMemoryReadUtilityAudit(
+        options.memoryReadUtilityPolicy,
+        answer.retrieval
       );
       const componentEvaluation = await withFailureCode(
         "longmemeval_component_evaluation_failed",
@@ -3876,6 +4248,10 @@ async function runCase(
             executionStartedAt
           )
         ])
+      );
+      assertMemoryReadUtilityExecutions(
+        options.memoryReadUtilityPolicy,
+        executionEvidence.aggregates
       );
       return Object.freeze({
         hypothesis: answer.hypothesis,
@@ -3966,6 +4342,7 @@ async function runCase(
 
 function buildCheckpointIdentity(input: Readonly<{
   cacheRuntime: PreparedCaseCacheRuntime;
+  evaluationFailFast: boolean;
   options: CliOptions;
   roles: ProviderRoles;
   selection: ReturnType<typeof selectLongMemEvalCases>;
@@ -3987,6 +4364,17 @@ function buildCheckpointIdentity(input: Readonly<{
       lexicalBackend: process.env.AIQSA_MEMORY_LEXICAL_BACKEND ?? "POSTGRES",
       lexicalIndexBuildId: process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID ?? null,
       onlineEvaluation: input.options.onlineEvaluation,
+      evaluationFailFast: input.evaluationFailFast,
+      memoryAdmission: Object.freeze({
+        controlMaximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+        hardDeadlineMs: MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
+        queryResolverMaximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+        queryResolverSettlementReserveMs:
+          MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
+        readUtilityPolicy: input.options.memoryReadUtilityPolicy,
+        softDeadlineMs: MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
+        version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
+      }),
       preparedCaseCache: Object.freeze({
         enabled: input.options.profile === "official" &&
           !input.options.forceDreamDiagnostic,
@@ -4001,6 +4389,16 @@ function buildCheckpointIdentity(input: Readonly<{
         }))),
       rerankerRoutePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
       runTimeoutMs: input.options.runTimeoutMs,
+      systemModelProvider: qualificationSystemModelProvider(
+        input.roles.system.upstreamModelId
+      ),
+      systemModelProviderOrder: input.roles.system.providerOrder,
+      systemModelDataCollection: input.roles.system.dataCollection,
+      systemModelStructuredOutputToolChoice:
+        input.roles.system.structuredOutputToolChoice,
+      systemModelReasoningEffort: qualificationSystemModelReasoningEffort(
+        input.roles.system.upstreamModelId
+      ),
       systemModel: input.roles.system.upstreamModelId
     }),
     selection: Object.freeze({
@@ -4009,7 +4407,7 @@ function buildCheckpointIdentity(input: Readonly<{
       mode: input.selection.mode,
       seed: input.selection.seed
     }),
-    version: 4
+    version: 7
   });
 }
 
@@ -4040,7 +4438,7 @@ async function main(): Promise<void> {
     ? await loadLongMemEvalQualificationManifest(options.qualificationManifestId)
     : null;
   if (qualificationManifest) {
-    if (qualificationManifest.id !== "fu2-reader-first-blind-50-v7") {
+    if (!isLongMemEvalActiveQualificationManifest(qualificationManifest.id)) {
       throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
     }
     options = applyQualificationManifest(options, qualificationManifest);
@@ -4049,6 +4447,10 @@ async function main(): Promise<void> {
       worktreeSha256: qualificationManifest.source.appWorktreeSha256
     });
   }
+  const evaluationFailFast = qualificationManifest !== null &&
+    "evaluation" in qualificationManifest.runtime
+    ? qualificationManifest.runtime.evaluation.failFast
+    : true;
   const allCases = await loadDataset();
   await assertReferenceMetadata(allCases);
   if (qualificationManifest) {
@@ -4076,6 +4478,7 @@ async function main(): Promise<void> {
     });
     const checkpointIdentity = buildCheckpointIdentity({
       cacheRuntime,
+      evaluationFailFast,
       options,
       roles,
       selection
@@ -4116,13 +4519,21 @@ async function main(): Promise<void> {
     }
     const checkpoints = new Map(loadedCheckpoints);
     const caseEvaluations = new Map<string, LongMemEvalCaseEvaluation>();
-    const lexicalCutoverRequired = qualificationManifest?.id ===
-      "fu2-reader-first-blind-50-v7";
+    const lexicalCutoverRequired = qualificationManifest !== null &&
+      isLongMemEvalActiveQualificationManifest(qualificationManifest.id);
     if (options.onlineEvaluation) {
       for (const entry of selection.cases) {
         const checkpoint = checkpoints.get(entry.questionId);
         const latest = checkpoint?.attempts.at(-1);
         if (!latest || latest.outcome.status !== "COMPLETE") continue;
+        assertMemoryReadUtilityAudit(
+          options.memoryReadUtilityPolicy,
+          latest.outcome.summary.retrieval
+        );
+        assertMemoryReadUtilityExecutions(
+          options.memoryReadUtilityPolicy,
+          latest.outcome.summary.utilityExecutions
+        );
         if (latest.outcome.summary.answer.memoryOutcome !== "USED") {
           if (options.retryUnhealthy) continue;
           emit("case_memory_unhealthy", {
@@ -4162,7 +4573,10 @@ async function main(): Promise<void> {
           questionId: entry.questionId,
           recovered: true
         });
-        if (!settled.label) {
+        if (longMemEvalEvaluationRequiresStop(
+          evaluationFailFast,
+          settled.label
+        )) {
           throw new Error("longmemeval_case_incorrect");
         }
       }
@@ -4183,6 +4597,7 @@ async function main(): Promise<void> {
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
       forceDreamDiagnostic: options.forceDreamDiagnostic,
+      memoryReadUtilityPolicy: options.memoryReadUtilityPolicy,
       onlineEvaluation: options.onlineEvaluation,
       preparedCaseCache: options.profile === "official" &&
         !options.forceDreamDiagnostic,
@@ -4300,7 +4715,10 @@ async function main(): Promise<void> {
               questionId: entry.questionId,
               recovered: false
             });
-            if (!evaluation.label) {
+            if (longMemEvalEvaluationRequiresStop(
+              evaluationFailFast,
+              evaluation.label
+            )) {
               throw new Error("longmemeval_case_incorrect");
             }
           }
@@ -4336,6 +4754,14 @@ async function main(): Promise<void> {
       if (outcome.status === "FAILED") {
         failures.push(outcome.failure);
       } else {
+        assertMemoryReadUtilityAudit(
+          options.memoryReadUtilityPolicy,
+          outcome.summary.retrieval
+        );
+        assertMemoryReadUtilityExecutions(
+          options.memoryReadUtilityPolicy,
+          outcome.summary.utilityExecutions
+        );
         summaries.push(outcome.summary);
         answers.push({ hypothesis: outcome.hypothesis, questionId: entry.questionId });
         if (options.onlineEvaluation) {
@@ -4380,8 +4806,13 @@ async function main(): Promise<void> {
         }))
       },
       answerModel: {
-        provider: "codex-lb",
-        reasoningEffort: qualificationSystemReasoningEffort,
+        dataCollection: roles.system.dataCollection,
+        provider: qualificationSystemModelProvider(roles.system.upstreamModelId),
+        providerOrder: roles.system.providerOrder,
+        reasoningEffort: qualificationSystemModelReasoningEffort(
+          roles.system.upstreamModelId
+        ),
+        structuredOutputToolChoice: roles.system.structuredOutputToolChoice,
         upstreamModelId: roles.system.upstreamModelId
       },
       baseline: buildLongMemEvalBaselineManifest(selection),
@@ -4421,6 +4852,16 @@ async function main(): Promise<void> {
         providerOrder: roles.qwen.providerOrder,
         upstreamModelId: qualificationEmbeddingModelId
       },
+      memoryAdmission: {
+        controlMaximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+        hardDeadlineMs: MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
+        queryResolverMaximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+        queryResolverSettlementReserveMs:
+          MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
+        readUtilityPolicy: options.memoryReadUtilityPolicy,
+        softDeadlineMs: MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
+        version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
+      },
       memoryRerankerModel: {
         mode: "dedicated_ordered_fallback",
         provider: "OpenRouter",
@@ -4437,7 +4878,7 @@ async function main(): Promise<void> {
             correctCases: [...caseEvaluations.values()].filter(({ label }) => label)
               .length,
             evaluatedCases: caseEvaluations.size,
-            failFast: true,
+            failFast: evaluationFailFast,
             incorrectCases: [...caseEvaluations.values()].filter(({ label }) => !label)
               .map(({ questionId }) => questionId),
             model: "gpt-4o-2024-08-06",
@@ -4450,6 +4891,9 @@ async function main(): Promise<void> {
       preparedCaseCache: {
         buildRecoveries: summaries.filter(({ preparedCase }) =>
           preparedCase?.sourceBuildRecovered).length,
+        cachedPriorSystemModel: summaries.filter(({ preparedCase }) =>
+          preparedCase?.historyProjectionAuthority ===
+          "CACHED_PRIOR_SYSTEM_MODEL").length,
         compatibilityPromotions: summaries.filter(({ preparedCase }) =>
           preparedCase?.sourceCompatibilityPromoted).length,
         enabled: options.profile === "official" && !options.forceDreamDiagnostic,
@@ -4460,8 +4904,8 @@ async function main(): Promise<void> {
           preparedCase?.sourceCacheHit).length,
         version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
       },
-      qualificationManifest: qualificationManifest?.id ===
-          "fu2-reader-first-blind-50-v7"
+      qualificationManifest: qualificationManifest !== null &&
+          isLongMemEvalActiveQualificationManifest(qualificationManifest.id)
         ? {
             appCommit: qualificationManifest.source.appCommit,
             appWorktreeSha256: qualificationManifest.source.appWorktreeSha256,
@@ -4483,7 +4927,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 16,
+      version: 17,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: qualificationMemoryJobParallelism,

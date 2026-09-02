@@ -33,6 +33,12 @@ npm run check:hermetic
 
 This generates Prisma, checks docs, lints, type-checks, and runs deterministic Vitest/Testing Library tests without a database, Docker, provider keys, or external services. `*.prisma.test.*` and `*.integration.test.*` belong only to the full stateful project.
 
+Benchmark sources and suites are opt-in verification and are excluded from the
+ordinary product ESLint, TypeScript, and Vitest lanes. LongMemEval contracts,
+including the frozen revision guard, run only through
+`npm run test:benchmark:longmemeval`; a historical qualification revision must
+not block unrelated product development.
+
 Use disposable container parity for PostgreSQL, migrations, concurrency, service/process topology, or another real integration boundary:
 
 ```bash

@@ -119,6 +119,7 @@ function capabilityRows(
       ? "verified"
       : null;
   const structuredOutput = evidence?.structuredOutput;
+  const forcedToolCall = evidence?.forcedToolCall;
   const pdfInput = evidence?.pdfInput;
   const rows: Array<Readonly<{
     description: string;
@@ -134,6 +135,18 @@ function capabilityRows(
     key: "model-access",
     label: "Model access",
     status: compatibility?.modelAccess ?? legacyModelStatus
+  }, {
+    description: "The route returned exactly one forced strict function call, matching Memory control execution.",
+    key: "forced-tool-call",
+    label: "Forced strict tool call",
+    status: configuration.capabilities.toolCalling !== true
+      ? "not_supported"
+      : compatibility?.forcedToolCall ?? (
+      forcedToolCall?.verified === true &&
+      forcedToolCall.adapterKind === configuration.adapterKind &&
+      forcedToolCall.upstreamModelId === configuration.upstreamModelId
+        ? "verified"
+        : null)
   }, {
     description: "The response passed AIQSA's strict JSON Schema probe.",
     key: "structured-output",
@@ -241,8 +254,8 @@ export function AdminProviderCapabilities({
         : isReranker
           ? "AIQSA will check the OpenRouter account catalog and send one small two-document ranking request. It may consume provider quota; returned scores are discarded."
         : connection.family === "openrouter"
-          ? "AIQSA will check the account catalog and configured route, then send up to four small requests for model access, Structured Output, Direct PDF, streaming, and usage reporting. Requests may consume provider quota."
-          : "AIQSA will send up to four small requests for model access, Structured Output, Direct PDF, streaming, and usage reporting. Requests may consume provider quota.",
+          ? "AIQSA will check the account catalog and configured route, then send up to five small requests for model access, Structured Output, forced strict tool calls, Direct PDF, streaming, and usage reporting. Requests may consume provider quota."
+          : "AIQSA will send up to five small requests for model access, Structured Output, forced strict tool calls, Direct PDF, streaming, and usage reporting. Requests may consume provider quota.",
       confirmLabel: "Run checks",
       dialogLabel: `Run ${model.displayName} compatibility checks`,
       onConfirm: runCompatibilityChecks,
@@ -263,7 +276,7 @@ export function AdminProviderCapabilities({
           <h4 className="text-sm font-semibold text-ink" id={headingId}>Compatibility checks</h4>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
             {configuration.modelClass === "answer"
-              ? "Five runtime contracts are checked for this exact model and credential."
+              ? "Six runtime contracts are checked for this exact model and credential."
               : "Model access and usage reporting are checked for this exact specialized deployment and credential."} Transient provider failures do not overwrite earlier evidence.
           </p>
         </div>

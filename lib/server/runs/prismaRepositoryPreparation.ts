@@ -293,6 +293,23 @@ export async function lockPreparingRun(
   return run ?? null;
 }
 
+async function lockPreparingMemoryOwner(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<boolean> {
+  // Item revalidation takes shared locks on UserMemorySettings, while item
+  // persistence acquires an implicit FK lock on User. Take the owner first so
+  // preparation follows the same User -> UserMemorySettings order as every
+  // canonical Memory settings transaction.
+  const owners = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "User"
+    WHERE "id" = ${userId}
+    FOR UPDATE
+  `);
+  return owners.length === 1;
+}
+
 async function lockPreparingAttempt(
   tx: Prisma.TransactionClient,
   input: Readonly<{ attemptId?: string; runId: string; userId: string }>
@@ -1407,6 +1424,7 @@ async function lockMemoryAttemptTargets(
 const retrievalExecutionRoles = new Set([
   "MEMORY_CONTROL",
   "MEMORY_QUERY_EMBED",
+  "MEMORY_QUERY_RESOLVE",
   "MEMORY_RERANK"
 ]);
 
@@ -1416,7 +1434,7 @@ const rerankBatchPrimaryOrdinals = Array.from(
 );
 const rerankExecutionOrdinalCount =
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES * MEMORY_RERANK_MAX_ATTEMPTS;
-const maximumTargetedRetrievalBindings = 2 + 4 + MEMORY_RERANK_MAX_ATTEMPTS;
+const maximumTargetedRetrievalBindings = 2 + 4 + 1 + MEMORY_RERANK_MAX_ATTEMPTS;
 const maximumAggregationRetrievalBindings = 2 + 4 +
   rerankExecutionOrdinalCount;
 const profileRetrievalExecutionPositions = new Set([
@@ -1430,6 +1448,7 @@ const profileRetrievalExecutionPositions = new Set([
 const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ["MEMORY_CONTROL", new Set([0, 1])],
   ["MEMORY_QUERY_EMBED", new Set([1, 2, 3, 4])],
+  ["MEMORY_QUERY_RESOLVE", new Set([0])],
   ["MEMORY_RERANK", new Set(Array.from(
     { length: rerankExecutionOrdinalCount },
     (_, index) => index + 2
@@ -1439,11 +1458,12 @@ const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
 export function validMemoryRetrievalExecutionSequence(
   bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[],
   profileRequested = false,
-  aggregationRequested = false
+  aggregationRequested = false,
+  speculativeQueryResolverDeclared = false
 ): boolean {
   if (profileRequested && aggregationRequested) return false;
   if (bindings.length > (aggregationRequested
-    ? maximumAggregationRetrievalBindings
+    ? maximumAggregationRetrievalBindings + (speculativeQueryResolverDeclared ? 1 : 0)
     : maximumTargetedRetrievalBindings)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
@@ -1455,14 +1475,22 @@ export function validMemoryRetrievalExecutionSequence(
   if (!aggregationRequested && bindings.some((binding) =>
     binding.logicalRole === "MEMORY_RERANK" &&
       binding.ordinal >= 2 + MEMORY_RERANK_MAX_ATTEMPTS)) return false;
+  if (aggregationRequested && !speculativeQueryResolverDeclared &&
+    bindings.some((binding) =>
+      binding.logicalRole === "MEMORY_QUERY_RESOLVE")) return false;
   if (profileRequested && positions.some((position) =>
-    !profileRetrievalExecutionPositions.has(position))) return false;
+    !profileRetrievalExecutionPositions.has(position) &&
+    !(speculativeQueryResolverDeclared && position === "MEMORY_QUERY_RESOLVE:0"))) {
+    return false;
+  }
   return (
     (!present.has("MEMORY_CONTROL:1") || present.has("MEMORY_CONTROL:0")) &&
     (!present.has("MEMORY_QUERY_EMBED:2") ||
       present.has("MEMORY_QUERY_EMBED:1")) &&
     (!present.has("MEMORY_QUERY_EMBED:4") ||
-      present.has("MEMORY_QUERY_EMBED:3"))
+      present.has("MEMORY_QUERY_EMBED:3")) &&
+    (!present.has("MEMORY_QUERY_RESOLVE:0") ||
+      present.has("MEMORY_CONTROL:0"))
   );
 }
 
@@ -1474,6 +1502,33 @@ function profileInventoryDeclared(value: unknown): boolean {
 function aggregationInventoryDeclared(value: unknown): boolean {
   if (!isRecord(value) || !isRecord(value.plan)) return false;
   return value.plan.aggregationRequested === true;
+}
+
+const nonAttachedSpeculativeQueryResolverStates = new Set([
+  "BUDGET_FALLBACK",
+  "NOT_READY_AT_ATTACH",
+  "READY_NONE",
+  "REJECTED_FINAL",
+  "SKIPPED",
+  "UNAVAILABLE"
+]);
+
+export function memorySpeculativeQueryResolverInventoryDeclared(
+  value: unknown
+): boolean {
+  if (!isRecord(value) ||
+    value.queryResolverExecutionStrategy !== "SPECULATIVE" ||
+    !Number.isSafeInteger(value.queryResolverProviderCalls) ||
+    Number(value.queryResolverProviderCalls) < 1) return false;
+  if (typeof value.queryResolverState !== "string") return false;
+  if (nonAttachedSpeculativeQueryResolverStates.has(value.queryResolverState)) {
+    return true;
+  }
+  if (value.queryResolverState !== "READY_ATTACHED") return false;
+  return value.queryResolverBroadFallbackAttachment === true &&
+    isRecord(value.plan) && value.plan.aggregationRequested === true &&
+    isRecord(value.componentMetrics) &&
+    value.componentMetrics.plannerFallbackUsed === true;
 }
 
 export function validMemoryRerankRetrySettlement(
@@ -1736,7 +1791,8 @@ async function loadPreparingAttemptExecutionEvidence(
       !validMemoryRetrievalExecutionSequence(
         bindings,
         profileInventoryDeclared(budgetSnapshot),
-        aggregationInventoryDeclared(budgetSnapshot)
+        aggregationInventoryDeclared(budgetSnapshot),
+        memorySpeculativeQueryResolverInventoryDeclared(budgetSnapshot)
       ) ||
       !validMemoryRerankRetrySettlement(bindings)
     ) {
@@ -1890,6 +1946,7 @@ export async function completePreparingRunAttemptWithClient(
   validateMemoryPreparingAttemptResult(input.result);
   const now = new Date();
   return repeatableReadTransaction(prismaClient, async (tx) => {
+    if (!(await lockPreparingMemoryOwner(tx, input.userId))) return false;
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     const attempt = await lockPreparingAttempt(tx, input);
     if (!run || run.status !== "preparing" || !attempt ||
@@ -2526,6 +2583,9 @@ export async function finalizePreparingRunWithClient(
 ): Promise<boolean> {
   const now = new Date();
   const finalized = await repeatableReadTransaction(prismaClient, async (tx) => {
+    if (!(await lockPreparingMemoryOwner(tx, input.userId))) {
+      return { decayTouch: false, finalized: false };
+    }
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     let attempt = await lockPreparingAttempt(tx, {
       attemptId: input.attemptId,

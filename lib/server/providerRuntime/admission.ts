@@ -27,6 +27,7 @@ import {
 } from "../search/configuration";
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
+import { hasVerifiedForcedToolCall } from "../providers/forcedToolCallEvidence";
 import { hasVerifiedPdfInput } from "../providers/pdfInputEvidence";
 
 export type ProviderAdmissionErrorCode =
@@ -442,6 +443,8 @@ async function loadRole(
   if (!check) throw new ProviderAdmissionError("model_not_available");
   const structuredOutput = input.modelClass === "answer" &&
     hasVerifiedStructuredOutput(check.evidence, modelConfig);
+  const forcedToolCalling = input.modelClass === "answer" &&
+    hasVerifiedForcedToolCall(check.evidence, modelConfig);
   const nativePdfInput = input.modelClass === "answer" &&
     modelConfig.capabilities.nativePdfInput &&
     hasVerifiedPdfInput(check.evidence, modelConfig);
@@ -461,14 +464,16 @@ async function loadRole(
   const resolvedSnapshot = input.modelClass === "answer"
     ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput })
     : normalizedSnapshot;
-  const snapshot = structuredOutput && resolvedSnapshot.model.adapterKind !== "fake"
+  const snapshot = (structuredOutput || forcedToolCalling) &&
+    resolvedSnapshot.model.adapterKind !== "fake"
     ? {
         ...resolvedSnapshot,
         model: {
           ...resolvedSnapshot.model,
           capabilities: {
             ...resolvedSnapshot.model.capabilities,
-            structuredOutput: true
+            ...(forcedToolCalling ? { forcedToolCalling: true } : {}),
+            ...(structuredOutput ? { structuredOutput: true } : {})
           }
         }
       }

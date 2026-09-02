@@ -15,10 +15,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Offsets are UTF-16 indices emitted by the TypeScript history projector, so
  * slicing remains in JavaScript instead of PostgreSQL's code-point indexing.
  */
-export function memoryUserTestimonyText(
+export function memoryUserTestimonyFragments(
   rawSafeText: string,
   value: unknown
-): string | null {
+): readonly string[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > 32 ||
     typeof rawSafeText !== "string") return null;
   const spans = value.flatMap((candidate) => {
@@ -43,6 +43,15 @@ export function memoryUserTestimonyText(
     ))) return null;
   const fragments = spans.map(({ end, start }) => rawSafeText.slice(start, end).trim());
   if (fragments.some((fragment) => !fragment)) return null;
+  return Object.freeze(fragments);
+}
+
+export function memoryUserTestimonyText(
+  rawSafeText: string,
+  value: unknown
+): string | null {
+  const fragments = memoryUserTestimonyFragments(rawSafeText, value);
+  if (!fragments) return null;
   return boundedMemoryRecallRoundEvidenceText(
     fragments.map((fragment) => `User: ${fragment}`).join("\n\n")
   );

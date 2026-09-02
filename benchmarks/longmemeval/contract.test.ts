@@ -204,9 +204,15 @@ describe("LongMemEval adapter contract", () => {
     })).toThrow("longmemeval_profile_manifest_invalid");
   });
 
-  it("allows only the reviewed codex-lb qualification System Models", () => {
+  it("allows only the reviewed qualification System Models", () => {
     expect(decodeLongMemEvalSystemModelId("gpt-5.6-sol")).toBe("gpt-5.6-sol");
     expect(decodeLongMemEvalSystemModelId("gpt-5.6-luna")).toBe("gpt-5.6-luna");
+    expect(decodeLongMemEvalSystemModelId("deepseek/deepseek-v4-flash-0731"))
+      .toBe("deepseek/deepseek-v4-flash-0731");
+    expect(decodeLongMemEvalSystemModelId("z-ai/glm-5.3-flash"))
+      .toBe("z-ai/glm-5.3-flash");
+    expect(decodeLongMemEvalSystemModelId("google/gemini-3.7-flash"))
+      .toBe("google/gemini-3.7-flash");
     expect(() => decodeLongMemEvalSystemModelId("openai/gpt-5.6-luna"))
       .toThrow("longmemeval_system_model_invalid");
     expect(() => decodeLongMemEvalSystemModelId("gpt-5.6-sol-benchmark-tuned"))
@@ -625,7 +631,7 @@ describe("LongMemEval adapter contract", () => {
         embeddingBatchSizeDistribution: { "1": 7 },
         packedEvidenceItems: 5,
         packedEvidenceTokens: 2_300,
-        plannerFallbackUsed: false,
+        plannerFallbackUsed: true,
         queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
         rawChunkExpansions: 8,
         rawRoundExpansions: 0,
@@ -688,6 +694,7 @@ describe("LongMemEval adapter contract", () => {
       localRetrievalMs: 31,
       memoryPrepareLatencyBucket: "GT_12S",
       memoryPrepareMs: 80_500,
+      memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
       omissionCounts: { history_limit: 2, unsafe: "secret text" },
       packedTokens: 2_300,
       packerMs: 3,
@@ -699,6 +706,15 @@ describe("LongMemEval adapter contract", () => {
       providerTokenLimit: 48_000,
       queryEmbeddingMs: 800,
       queryEmbeddingProviderCalls: 1,
+      queryResolverBroadFallbackAttachment: true,
+      queryResolverMs: 420,
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverSourceCharacterCount: 3_800,
+      queryResolverSourceCount: 8,
+      queryResolverState: "READY_ATTACHED",
+      queryScopeAttachedConstraintKindCounts: { AVOID: 1, PREFER: 1 },
+      queryScopeProposedConstraintCount: 2,
       reason: "no_relevant_memory",
       relevanceAcceptedCount: 5,
       relevanceCandidateCount: 10,
@@ -758,14 +774,24 @@ describe("LongMemEval adapter contract", () => {
       localRetrievalMs: 31,
       memoryPrepareLatencyBucket: "GT_12S",
       memoryPrepareMs: 80_500,
+      memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
       mode: "PAST_CHAT_SEARCH",
       omissionCounts: { history_limit: 2 },
       packedTokens: 2_300,
       packerMs: 3,
-      plannerFallbackUsed: false,
+      plannerFallbackUsed: true,
       providerTokenLimit: 48_000,
       queryEmbeddingMs: 800,
       queryEmbeddingProviderCalls: 1,
+      queryResolverBroadFallbackAttachment: true,
+      queryResolverMs: 420,
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverSourceCharacterCount: 3_800,
+      queryResolverSourceCount: 8,
+      queryResolverState: "READY_ATTACHED",
+      queryScopeAttachedConstraintKindCounts: { AVOID: 1, PREFER: 1 },
+      queryScopeProposedConstraintCount: 2,
       queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
       rawChunkExpansions: 8,
       rawRoundExpansions: 0,
@@ -804,6 +830,26 @@ describe("LongMemEval adapter contract", () => {
       utilityCallCounts: { MEMORY_CONTROL: 1, MEMORY_RERANK: 1 },
       utilityFailureReasonCounts: { memory_relevance_unavailable: 1 }
     });
+  });
+
+  it("retains the content-free resolver not-ready attachment state", () => {
+    const audit = sanitizeLongMemEvalRetrievalAudit({
+      privateResolverTarget: "must not leave the application",
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "NOT_READY_AT_ATTACH",
+      queryScopeAttachedConstraintKindCounts: {},
+      queryScopeProposedConstraintCount: 0
+    });
+
+    expect(audit).toMatchObject({
+      queryResolverExecutionStrategy: "SPECULATIVE",
+      queryResolverProviderCalls: 1,
+      queryResolverState: "NOT_READY_AT_ATTACH",
+      queryScopeAttachedConstraintKindCounts: {},
+      queryScopeProposedConstraintCount: 0
+    });
+    expect(JSON.stringify(audit)).not.toContain("must not leave the application");
   });
 
   it("accepts only the acknowledged loopback ports and disposable database identity", () => {

@@ -26,6 +26,10 @@ import {
 } from "../../providers/structuredOutput";
 import { structuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import {
+  forcedToolCallVerificationEvidence,
+  supportsForcedToolCallProbe
+} from "../../providers/forcedToolCallEvidence";
+import {
   createProviderPdfInputProbe,
   type ProviderPdfInputProbe
 } from "../../providers/pdfInputProbe";
@@ -148,6 +152,16 @@ const structuredOutputProbeSchema = Object.freeze({
   type: "object"
 });
 
+const forcedToolCallProbeName = "aiqsa_forced_tool_call_probe";
+const forcedToolCallProbeSchema = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    nonce: { enum: ["aiqsa-control-ready"], type: "string" }
+  },
+  required: ["nonce"],
+  type: "object"
+});
+
 function validStructuredOutputProbe(value: Record<string, unknown>): boolean {
   const keys = Object.keys(value).sort();
   return keys.length === 4 && keys[0] === "count" && keys[1] === "label" &&
@@ -198,6 +212,71 @@ async function runStructuredOutputProbe(
   return evidence;
 }
 
+async function runForcedToolCallProbe(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions
+) {
+  const runtime = providerRuntime(input, options);
+  if (
+    input.model.modelClass !== "answer" ||
+    input.model.capabilities.toolCalling !== true ||
+    !supportsForcedToolCallProbe(input.model.adapterKind) ||
+    !runtime.toolBridge
+  ) throw new Error("forced_tool_call_adapter_unsupported");
+  const request = generationRequest(input, false);
+  const stream = runtime.adapter.stream({
+    ...request,
+    content: {
+      blocks: [{
+        text: "Call the supplied function exactly once with nonce aiqsa-control-ready.",
+        type: "text"
+      }]
+    },
+    modelCapabilities: {
+      ...request.modelCapabilities,
+      toolCalling: true
+    },
+    parallelToolCalls: false,
+    params: {
+      ...request.params,
+      ...(input.model.adapterKind === "openrouter_chat_completions"
+        ? { reasoning: { enabled: false, exclude: true } }
+        : {}),
+      maxOutputTokens: 128,
+      max_output_tokens: 128
+    },
+    prompt: {
+      developer: null,
+      system: "This is a bounded capability probe. Call the single strict function; do not answer with text."
+    },
+    toolChoice: "required",
+    toolMode: "auto",
+    tools: [{
+      capability: "memory",
+      description: "Confirm support for one forced strict Memory utility call.",
+      inputSchema: forcedToolCallProbeSchema,
+      name: forcedToolCallProbeName,
+      strict: true
+    }]
+  }, { signal: input.signal });
+  let next = await stream.next();
+  while (!next.done) next = await stream.next();
+  const calls = next.value.toolCalls;
+  const call = calls?.[0];
+  if (
+    calls?.length !== 1 ||
+    call?.name !== forcedToolCallProbeName ||
+    Object.keys(call.arguments).length !== 1 ||
+    call.arguments.nonce !== "aiqsa-control-ready"
+  ) throw new Error("forced_tool_call_probe_invalid");
+  const evidence = forcedToolCallVerificationEvidence(
+    input.model.adapterKind,
+    input.model.upstreamModelId
+  );
+  if (!evidence) throw new Error("forced_tool_call_adapter_unsupported");
+  return evidence;
+}
+
 type CapabilityProbeResult<Evidence> = Readonly<{
   evidence: Evidence | null;
   status: AdminProviderCompatibilityStatus;
@@ -208,7 +287,12 @@ type GenerationProbeResult = Readonly<{
   usageSeen: boolean;
 }>;
 
-const deterministicCapabilityHttpStatuses = new Set([400, 405, 415, 422]);
+// Capability probes run only after the same exact route has completed the
+// ordinary access request. A capability-only 404 therefore means that the
+// pinned route could not satisfy the requested wire contract (OpenRouter uses
+// this for "no endpoint supports these parameters"), not that access to the
+// model is unknown. The later streaming request still guards route liveness.
+const deterministicCapabilityHttpStatuses = new Set([400, 404, 405, 415, 422]);
 const testWideErrorCodes = new Set([
   "provider_request_timed_out",
   "provider_response_too_large",
@@ -268,6 +352,26 @@ async function testStructuredOutput(
   try {
     return {
       evidence: await runStructuredOutputProbe(input, options),
+      status: "verified"
+    };
+  } catch (error) {
+    preserveTestWideFailure(input, error);
+    return { evidence: null, status: "not_supported" };
+  }
+}
+
+async function testForcedToolCall(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions
+): Promise<CapabilityProbeResult<NonNullable<AdminProviderTestEvidence["forcedToolCall"]>>> {
+  if (
+    input.model.modelClass !== "answer" ||
+    input.model.capabilities.toolCalling !== true ||
+    !supportsForcedToolCallProbe(input.model.adapterKind)
+  ) return { evidence: null, status: "not_supported" };
+  try {
+    return {
+      evidence: await runForcedToolCallProbe(input, options),
       status: "verified"
     };
   } catch (error) {
@@ -436,6 +540,7 @@ async function testAnswerModel(
 ): Promise<AdminProviderDraftTestOutcome> {
   const access = await runGenerationProbe(input, options, false);
   const structuredOutput = await testStructuredOutput(input, options);
+  const forcedToolCall = await testForcedToolCall(input, options);
   const pdfInput = await testPdfInput(input, options);
   const streaming = await runGenerationProbe(input, options, true);
 
@@ -443,6 +548,10 @@ async function testAnswerModel(
     evidence: {
       compatibility: {
         directPdf: pdfInput.status,
+        ...(input.model.capabilities.toolCalling === true &&
+          supportsForcedToolCallProbe(input.model.adapterKind)
+          ? { forcedToolCall: forcedToolCall.status }
+          : {}),
         modelAccess: access.status,
         probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
         streaming: streaming.status,
@@ -453,6 +562,9 @@ async function testAnswerModel(
       method,
       selectedProviders,
       ...(pdfInput.evidence ? { pdfInput: pdfInput.evidence } : {}),
+      ...(forcedToolCall.evidence
+        ? { forcedToolCall: forcedToolCall.evidence }
+        : {}),
       ...(structuredOutput.evidence
         ? { structuredOutput: structuredOutput.evidence }
         : {}),

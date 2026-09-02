@@ -61,6 +61,16 @@ import {
   KnowledgeAnswerContractError,
   type KnowledgeGroundingResult
 } from "../knowledge/grounding";
+import { KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } from
+  "../knowledge/answerGroundingV21";
+import { KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 } from
+  "../knowledge/answerGroundingSelectorV21";
+import { KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION } from
+  "../knowledge/coverageScopeV6";
+import { KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION } from
+  "../knowledge/coverageScopeCompletenessV1";
+import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION } from
+  "../knowledge/coverageScopeClosureV2";
 import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
 import type {
   KnowledgeProviderDispatchLifecycle,
@@ -164,6 +174,46 @@ function plannedSelectorOutput() {
     version: 1
   } as const;
 }
+
+function plannedScopeV6Output() {
+  return {
+    evidenceUnits: [{
+      findings: [{
+        description: "The requested answer.",
+        evidenceAtomIds: ["A1"],
+        requestAnchor: "Q1"
+      }],
+      handle: "K1"
+    }],
+    jointFindings: [],
+    unsupportedDimensions: [],
+    version: 6
+  } as const;
+}
+
+function plannedScopeClosureOutput() {
+  return {
+    decisions: [{ id: "D1", status: "closed" }],
+    version: 2
+  } as const;
+}
+
+function plannedCurrentKnowledgeOutput(call: number, text: string) {
+  if (call === 1) return plannedDraftOutput(text);
+  if (call === 2) return plannedScopeV6Output();
+  if (call === 3) return { additions: [], version: 1 } as const;
+  if (call === 4) return plannedSelectorOutput();
+  if (call === 5) return plannedScopeClosureOutput();
+  throw new Error("current_knowledge_operation_fixture_invalid");
+}
+
+const CURRENT_KNOWLEDGE_OPERATION_NAMES = [
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+  KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+] as const;
 
 function projectAdmission(): ProjectRunAdmission {
   return {
@@ -945,6 +995,13 @@ function createRepository(options: RepositoryOptions = {}) {
         : null;
     },
     async groundKnowledgeAnswerV5() {
+      if (options.groundingError) throw options.groundingError;
+      if (!options.groundingResult) {
+        throw new Error("knowledge_grounding_fixture_missing");
+      }
+      return knowledgeFinalizationEnvelope(options.groundingResult);
+    },
+    async groundKnowledgeAnswerV21() {
       if (options.groundingError) throw options.groundingError;
       if (!options.groundingResult) {
         throw new Error("knowledge_grounding_fixture_missing");
@@ -2466,7 +2523,7 @@ describe("run execution", () => {
     })]);
   });
 
-  it("runs one focused retrieval followed by exactly one hidden draft and one hidden selector", async () => {
+  it("runs one focused retrieval followed by the current hidden grounding pipeline", async () => {
     const finalText = "Supported answer [K1]";
     const repository = createRepository({
       groundingResult: structuralGroundingResult(finalText)
@@ -2478,11 +2535,10 @@ describe("run execution", () => {
     const adapter = createAdapter(async function* (request) {
       providerCallCount += 1;
       providerRequests.push(request);
-      const providerText = JSON.stringify(providerCallCount === 1
-        ? plannedCoverageOutput()
-        : providerCallCount === 2
-          ? plannedDraftOutput("Supported answer")
-          : plannedSelectorOutput());
+      const providerText = JSON.stringify(plannedCurrentKnowledgeOutput(
+        providerCallCount,
+        "Supported answer"
+      ));
       yield { data: { delta: providerText }, type: "token" };
       return providerResult({ finalText: providerText });
     });
@@ -2502,18 +2558,18 @@ describe("run execution", () => {
       name: KNOWLEDGE_FOCUSED_OPERATION_NAME
     });
     expect(repository.failedRuns).toEqual([]);
-    expect(providerCallCount).toBe(3);
-    expect(providerRequests).toHaveLength(3);
+    expect(providerCallCount).toBe(5);
+    expect(providerRequests).toHaveLength(5);
     expect(providerRequests.every((request) => request.tools === undefined &&
       request.toolChoice === "none" && request.context === undefined)).toBe(true);
     expect(providerRequests[0]?.prompt.system).toContain(
-      '<aiqsa_knowledge_coverage_planner_contract version="20">'
+      '<aiqsa_knowledge_answer_draft_contract version="21">'
     );
     expect(providerRequests[1]?.prompt.system).toContain(
-      '<aiqsa_knowledge_answer_draft_contract version="20">'
+      '<aiqsa_knowledge_coverage_scope_contract version="6">'
     );
-    expect(providerRequests[2]?.prompt.system).toContain(
-      '<aiqsa_knowledge_grounded_selector_contract version="16">'
+    expect(providerRequests[3]?.prompt.system).toContain(
+      '<aiqsa_knowledge_grounded_selector_contract version="21">'
     );
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
@@ -2529,16 +2585,10 @@ describe("run execution", () => {
       type: "token"
     }]);
     expect(body).not.toContain("\"decision\":\"select_claims\"");
-    expect(dispatch.prepare.mock.calls.map(([call]) => call.purpose)).toEqual([
-      "knowledge_coverage_planner_v20",
-      "knowledge_answer_draft_v20",
-      "knowledge_grounded_selector_v16"
-    ]);
-    expect(dispatch.order).toEqual([
-      "prepare", "dispatch", "settle",
-      "prepare", "dispatch", "settle",
-      "prepare", "dispatch", "settle"
-    ]);
+    expect(dispatch.prepare.mock.calls.map(([call]) => call.purpose))
+      .toEqual(CURRENT_KNOWLEDGE_OPERATION_NAMES);
+    expect(dispatch.order).toEqual(CURRENT_KNOWLEDGE_OPERATION_NAMES.flatMap(() =>
+      ["prepare", "dispatch", "settle"]));
   });
 
   it("answers from a complete small corpus with zero Knowledge searches", async () => {
@@ -2550,11 +2600,10 @@ describe("run execution", () => {
     const requests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
       requests.push(request);
-      const providerText = JSON.stringify(requests.length === 1
-        ? plannedCoverageOutput()
-        : requests.length === 2
-          ? plannedDraftOutput("Total cholesterol is 5.3 mmol/L")
-          : plannedSelectorOutput());
+      const providerText = JSON.stringify(plannedCurrentKnowledgeOutput(
+        requests.length,
+        "Total cholesterol is 5.3 mmol/L"
+      ));
       yield { data: { delta: providerText }, type: "token" };
       return providerResult({ finalText: providerText });
     });
@@ -2567,7 +2616,7 @@ describe("run execution", () => {
     })).text();
     const events = parseSse(body);
 
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(5);
     expect(requests.every((request) => request.tools === undefined &&
       request.toolChoice === "none" && request.context === undefined)).toBe(true);
     expect(dispatch.prepare).toHaveBeenCalledWith(expect.objectContaining({
@@ -2583,11 +2632,8 @@ describe("run execution", () => {
       type: "token"
     }]);
     expect(body).not.toContain("\"decision\":\"select_claims\"");
-    expect(dispatch.order).toEqual([
-      "prepare", "dispatch", "settle",
-      "prepare", "dispatch", "settle",
-      "prepare", "dispatch", "settle"
-    ]);
+    expect(dispatch.order).toEqual(CURRENT_KNOWLEDGE_OPERATION_NAMES.flatMap(() =>
+      ["prepare", "dispatch", "settle"]));
   });
 
   it.each([
@@ -2715,16 +2761,16 @@ describe("run execution", () => {
     expect(dispatch.prepare).not.toHaveBeenCalled();
   });
 
-  it("settles draft and selector provider failures without retrying either stage", async () => {
+  it("settles a scope provider failure without retrying the failed stage", async () => {
     const repository = createRepository();
     const { execute, executor } = focusedKnowledgeExecutor();
     const dispatch = createKnowledgeProviderDispatchRecorder();
     let providerCallCount = 0;
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
-      if (providerCallCount === 1) {
-        return providerResult({ finalText: JSON.stringify(plannedCoverageOutput()) });
-      }
+      if (providerCallCount === 1) return providerResult({
+        finalText: JSON.stringify(plannedDraftOutput("Supported answer"))
+      });
       throw new Error("private_provider_failure");
     });
 
@@ -2737,7 +2783,7 @@ describe("run execution", () => {
     })).text();
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(providerCallCount).toBe(3);
+    expect(providerCallCount).toBe(2);
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
@@ -2750,7 +2796,6 @@ describe("run execution", () => {
     ]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain("private_provider_failure");
     expect(dispatch.order).toEqual([
-      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2798,16 +2843,16 @@ describe("run execution", () => {
     ]);
   });
 
-  it("settles focused draft and selector deadlines as bounded failure markers", async () => {
+  it("settles a focused scope deadline as a bounded failure marker", async () => {
     const repository = createRepository();
     const { executor } = focusedKnowledgeExecutor();
     const dispatch = createKnowledgeProviderDispatchRecorder();
     let providerCallCount = 0;
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
-      if (providerCallCount === 1) {
-        return providerResult({ finalText: JSON.stringify(plannedCoverageOutput()) });
-      }
+      if (providerCallCount === 1) return providerResult({
+        finalText: JSON.stringify(plannedDraftOutput("Supported answer"))
+      });
       const timeout = new Error("local_answer_deadline");
       timeout.name = "AbortError";
       throw timeout;
@@ -2821,7 +2866,7 @@ describe("run execution", () => {
       repository: repository.repository
     })).text();
 
-    expect(providerCallCount).toBe(3);
+    expect(providerCallCount).toBe(2);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
       expect.objectContaining({
@@ -2832,7 +2877,6 @@ describe("run execution", () => {
       })
     ]);
     expect(dispatch.order).toEqual([
-      "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
@@ -2847,7 +2891,7 @@ describe("run execution", () => {
       code: "knowledge_citation_contract_failed" as const,
       providerText: "AIQSA_KB_STATUS=ANSWERED\nUnknown citation [K99]"
     }
-  ])("fails deterministic V5 finalization with $code and does not repair or retry", async ({
+  ])("fails current deterministic finalization with $code and does not repair or retry", async ({
     code,
     providerText
   }) => {
@@ -2860,11 +2904,10 @@ describe("run execution", () => {
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
       return providerResult({
-        finalText: JSON.stringify(providerCallCount === 1
-          ? plannedCoverageOutput()
-          : providerCallCount === 2
-            ? plannedDraftOutput(providerText)
-            : plannedSelectorOutput())
+        finalText: JSON.stringify(plannedCurrentKnowledgeOutput(
+          providerCallCount,
+          providerText
+        ))
       });
     });
 
@@ -2877,7 +2920,7 @@ describe("run execution", () => {
     })).text();
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(providerCallCount).toBe(3);
+    expect(providerCallCount).toBe(5);
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
@@ -2885,11 +2928,8 @@ describe("run execution", () => {
         error: expect.objectContaining({ code })
       })
     ]);
-    expect(dispatch.order).toEqual([
-      "prepare", "dispatch", "settle",
-      "prepare", "dispatch", "settle",
-      "prepare", "dispatch", "settle"
-    ]);
+    expect(dispatch.order).toEqual(CURRENT_KNOWLEDGE_OPERATION_NAMES.flatMap(() =>
+      ["prepare", "dispatch", "settle"]));
   });
 
   it("settles parallel Knowledge and Search calls before one continuation", async () => {
@@ -2923,11 +2963,10 @@ describe("run execution", () => {
         return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
       }
       return providerResult({
-        finalText: JSON.stringify(providerRequests.length === 3
-          ? plannedCoverageOutput()
-          : providerRequests.length === 4
-            ? plannedDraftOutput("Combined answer")
-            : plannedSelectorOutput())
+        finalText: JSON.stringify(plannedCurrentKnowledgeOutput(
+          providerRequests.length - 2,
+          "Combined answer"
+        ))
       });
     });
     const searchAdapter: ProviderSearchAdapter = {
@@ -2963,7 +3002,7 @@ describe("run execution", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(repository.searchRuns).toHaveLength(1);
-    expect(providerRequests).toHaveLength(5);
+    expect(providerRequests).toHaveLength(7);
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(4);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain(
       "Bounded private passage"
@@ -3007,11 +3046,10 @@ describe("run execution", () => {
         return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
       }
       return providerResult({
-        finalText: JSON.stringify(providerRequests.length === 4
-          ? plannedCoverageOutput()
-          : providerRequests.length === 5
-            ? plannedDraftOutput("Sequential answer")
-            : plannedSelectorOutput())
+        finalText: JSON.stringify(plannedCurrentKnowledgeOutput(
+          providerRequests.length - 3,
+          "Sequential answer"
+        ))
       });
     });
     const searchAdapter: ProviderSearchAdapter = {
@@ -3043,7 +3081,7 @@ describe("run execution", () => {
       searchAdapter
     })).text();
 
-    expect(providerRequests).toHaveLength(6);
+    expect(providerRequests).toHaveLength(8);
     expect(repository.searchRuns).toHaveLength(1);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toEqual([]);

@@ -6,6 +6,7 @@ import {
   type ResolvedMemoryUtilityPolicy
 } from "../execution/policy";
 import type { MemoryExecutionRole } from "../execution/roles";
+import { memoryRoleRequiresForcedToolCall } from "../execution/roles";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_ANALYSIS_PROFILE,
@@ -50,7 +51,9 @@ function strictSystemTargetAvailable(
     "modelClass" in model &&
     model.modelClass === "answer" &&
     model.capabilities.toolCalling === true &&
-    model.capabilities.structuredOutput === true
+    (memoryRoleRequiresForcedToolCall(role)
+      ? model.capabilities.forcedToolCalling === true
+      : model.capabilities.structuredOutput === true)
   );
 }
 

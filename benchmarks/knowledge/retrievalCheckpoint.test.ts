@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregateKnowledgeRerankAdmissionDiagnostics,
   decodeKnowledgeRetrievalCheckpointFile,
   decodeKnowledgeRetrievalCheckpointHeader,
   decodeKnowledgeRetrievalCheckpointOutcome,
@@ -25,6 +26,8 @@ function outcomeFixture(): Record<string, unknown> {
     rerankFallback: false,
     rerankerDiagnostic: {
       fallbackReason: null,
+      omittedCandidateCount: 0,
+      omittedRejectedCandidateCount: 0,
       status: "complete",
       timedOut: false
     },
@@ -70,6 +73,34 @@ describe("retrieval checkpoint contract", () => {
     }, fingerprint, query)).toEqual(decoded);
   });
 
+  it("aggregates content-free omitted-candidate admission diagnostics", () => {
+    const first = decodeKnowledgeRetrievalCheckpointOutcome({
+      ...outcomeFixture(),
+      rerankerDiagnostic: {
+        fallbackReason: null,
+        omittedCandidateCount: 3,
+        omittedRejectedCandidateCount: 2,
+        status: "partial",
+        timedOut: false
+      }
+    }, query);
+    const second = {
+      ...first,
+      queryId: "convfinqa_18",
+      rerankerDiagnostic: {
+        ...first.rerankerDiagnostic,
+        omittedCandidateCount: 1,
+        omittedRejectedCandidateCount: 0
+      }
+    };
+    expect(aggregateKnowledgeRerankAdmissionDiagnostics([first, second])).toEqual({
+      omittedCandidateCount: 4,
+      omittedRejectedCandidateCount: 2,
+      queriesWithOmittedCandidates: 2,
+      queriesWithOmittedRejections: 1
+    });
+  });
+
   it("refuses mismatched provenance, relevance, diagnostics, and extra keys", () => {
     expect(() => decodeKnowledgeRetrievalCheckpointFile({
       manifestFingerprint: "b".repeat(64),
@@ -85,6 +116,16 @@ describe("retrieval checkpoint contract", () => {
     expect(() => decodeKnowledgeRetrievalCheckpointOutcome({
       ...outcomeFixture(),
       rerankFallback: true
+    }, query)).toThrow("knowledge_benchmark_retrieval_checkpoint_outcome_invalid");
+    expect(() => decodeKnowledgeRetrievalCheckpointOutcome({
+      ...outcomeFixture(),
+      rerankerDiagnostic: {
+        fallbackReason: null,
+        omittedCandidateCount: 1,
+        omittedRejectedCandidateCount: 2,
+        status: "partial",
+        timedOut: false
+      }
     }, query)).toThrow("knowledge_benchmark_retrieval_checkpoint_outcome_invalid");
     expect(() => decodeKnowledgeRetrievalCheckpointOutcome({
       ...outcomeFixture(),
