@@ -1042,6 +1042,9 @@ function createRepository(options: RepositoryOptions = {}) {
     async resetToolLoopAssistantDraft() {
       return true;
     },
+    async markRunAnswerStarted() {
+      return undefined;
+    },
     async settleToolLoopCall({ callId, result, state }) {
       const call = toolCalls.get(callId);
       if (!call) return "not_found";

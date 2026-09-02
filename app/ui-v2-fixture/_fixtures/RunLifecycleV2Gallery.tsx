@@ -251,6 +251,43 @@ export function RunLifecycleV2Gallery() {
                   }))}
                 />
               </StateSpec>
+
+              <StateSpec label="Complete · process fold above the text">
+                <RunAnswerV2
+                  actions={{ onCopy: () => undefined, onRegenerate: () => undefined }}
+                  artifact={{
+                    citations: [],
+                    memorySources: [{
+                      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+                      date: "2026-09-02T09:00:00.000Z",
+                      memoryRef: "mr1.run-gallery-source",
+                      sourceAvailable: true,
+                      sourceType: "SAVED_MEMORY",
+                      text: "The capacity plan is revised every March."
+                    }],
+                    reasoningText: ["The question has two parts: the drivers and whether the plan covers them."],
+                    sources: [{
+                      rank: 1,
+                      snippet: "Renewable capacity additions rose 15% year on year.",
+                      title: "IEA — Renewables 2025 Analysis",
+                      url: "https://example.com/iea"
+                    }],
+                    workDurationMs: 8_300
+                  }}
+                  content="Складка над текстом читается как фраза, а не как счётчик вызовов; источники живут в ряду действий."
+                  presentation={presentRunLifecycleV2(runState({
+                    content: "Готовый ответ",
+                    events: [{ data: { status: "complete" }, type: "done" }]
+                  }))}
+                  toolActivity={{
+                    calls: [
+                      { durationMs: 1_400, round: 1, status: "complete", toolName: "web_search" },
+                      { durationMs: 800, round: 2, serverName: "Handbook", status: "complete", toolName: "search_documents" }
+                    ]
+                  }}
+                  workDurationMs={8_300}
+                />
+              </StateSpec>
             </section>
 
             <section className="v2-run-gallery-group" aria-labelledby="run-controls-heading">

@@ -296,6 +296,15 @@
   justify-content: flex-end;
   gap: 0.125rem;
   color: var(--v2-color-text2);
+}
+
+/* State first, verbs last: the pager and the Sources chip stay visible on
+   every answer; only the verbs (regenerate, copy, more) hover-reveal, so
+   nothing shifts when they appear. */
+.v2-message-actions-verbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
   opacity: 0;
   /* Invisible, not hidden: the dock stays a keyboard target and reveals on
      focus-within (A15); pointer-events keep it from catching stray clicks. */
@@ -334,9 +343,9 @@
   justify-content: flex-start;
 }
 
-.v2-conversation-turn[data-controls-open="true"] .v2-message-actions,
-.v2-conversation-turn:focus-within .v2-message-actions,
-.v2-conversation-thread > li:last-child > .v2-conversation-turn[data-role="assistant"] .v2-message-actions {
+.v2-conversation-turn[data-controls-open="true"] .v2-message-actions-verbs,
+.v2-conversation-turn:focus-within .v2-message-actions-verbs,
+.v2-conversation-thread > li:last-child > .v2-conversation-turn[data-role="assistant"] .v2-message-actions-verbs {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
@@ -346,7 +355,7 @@
    so the reading flow stays quiet; the newest settled answer keeps its dock
    visible because Regenerate/Copy are its most likely next actions (F5). */
 @media (hover: hover) and (pointer: fine) {
-  .v2-conversation-turn:hover .v2-message-actions {
+  .v2-conversation-turn:hover .v2-message-actions-verbs {
     opacity: 1;
     pointer-events: auto;
     transform: translateY(0);
@@ -355,7 +364,7 @@
 
 /* Touch has no hover: every settled turn keeps its actions visible. */
 @media (hover: none), (pointer: coarse) {
-  .v2-message-actions {
+  .v2-message-actions-verbs {
     opacity: 1;
     pointer-events: auto;
     transform: translateY(0);
@@ -591,7 +600,7 @@ html[data-motion="off"] .v2-skeleton {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .v2-message-actions,
+  .v2-message-actions-verbs,
   .v2-skeleton {
     animation: none;
     transition: none;

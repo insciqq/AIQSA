@@ -699,6 +699,11 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<boolean>;
+  /**
+   * Records when the current round's answer text began. A tool-loop round
+   * reset clears the mark, so the settled value is the final answer's start.
+   */
+  markRunAnswerStarted(input: { at: Date; runId: string }): Promise<void>;
   updateRunProviderResponseId(
     runId: string,
     providerResponseId: string

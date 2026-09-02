@@ -3,6 +3,7 @@ import type {
   RunEventView
 } from "@/lib/contracts/runs";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -153,6 +154,7 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
 const webSearchToolNames = new Set([
   "search",
   "search_web",
+  "search_selected_engines",
   "web_search",
   "websearch",
   "google_search",
@@ -186,6 +188,59 @@ export function describeToolCallV2(
   }
   if (human) return `${running ? "Running" : "Ran"} ${human}`;
   return running ? "Running tools" : "Used tools";
+}
+
+export type AnswerProcessFactsV2 = Readonly<{
+  hasReasoning: boolean;
+  memoryCount: number;
+  stepCount: number;
+  workDurationMs: number | null;
+}>;
+
+/** "a few seconds" under 5 s, then 12s · 1m 4s · 1h 2m. */
+export function formatWorkDurationV2(durationMs: number): string {
+  const seconds = Math.max(0, Math.floor(durationMs / 1000));
+  if (seconds < 5) return "a few seconds";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    const rest = seconds % 60;
+    return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
+}
+
+/** Sum of the settled step durations: the fallback work time when the run recorded none. */
+export function stepDurationSumV2(activity: ThreadToolActivity | null | undefined): number | null {
+  const durations = (activity?.calls ?? [])
+    .map((call) => call.durationMs)
+    .filter((duration): duration is number => typeof duration === "number" && duration >= 0);
+  return durations.length > 0 ? durations.reduce((total, duration) => total + duration, 0) : null;
+}
+
+/**
+ * The settled process line reads the way a person would say it — "Thought
+ * for 12s", "Worked for 1m 4s", "Used 2 memories" — never as a count of tool
+ * calls or sources. Only facts that exist appear; none at all means no line.
+ */
+export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null {
+  const segments: string[] = [];
+  if (facts.stepCount > 0 || facts.hasReasoning) {
+    if (facts.workDurationMs === null) {
+      segments.push(facts.stepCount > 0 ? "Steps" : "Thought process");
+    } else {
+      const verb = facts.stepCount > 0 ? "Worked" : "Thought";
+      segments.push(`${verb} for ${formatWorkDurationV2(facts.workDurationMs)}`);
+    }
+  }
+  if (facts.memoryCount > 0) {
+    segments.push(facts.memoryCount === 1
+      ? memoryUiCopy("source.usedOne")
+      : formatMemoryUiCopy("source.usedMany", { count: facts.memoryCount }));
+  }
+  return segments.length > 0 ? segments.join(" · ") : null;
 }
 
 function activityLabel(signal: Omit<ActivitySignal, "index">): string {

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
 import {
+  answerProcessLabelV2,
+  describeToolCallV2,
+  formatWorkDurationV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
+  stepDurationSumV2,
   type RunLifecycleStateV2,
   type RunLifecycleStatusV2
 } from "./runPresentation";
@@ -219,5 +223,53 @@ describe("run lifecycle v2 presentation", () => {
       },
       kind: "terminal_error"
     });
+  });
+});
+
+describe("answer process label", () => {
+  it("formats work time the way a person says it", () => {
+    expect(formatWorkDurationV2(0)).toBe("a few seconds");
+    expect(formatWorkDurationV2(4_900)).toBe("a few seconds");
+    expect(formatWorkDurationV2(12_400)).toBe("12s");
+    expect(formatWorkDurationV2(60_000)).toBe("1m");
+    expect(formatWorkDurationV2(64_000)).toBe("1m 4s");
+    expect(formatWorkDurationV2(3_720_000)).toBe("1h 2m");
+  });
+
+  it("names only the facts that exist and never counts tool calls", () => {
+    expect(answerProcessLabelV2({
+      hasReasoning: false, memoryCount: 0, stepCount: 0, workDurationMs: 8_000
+    })).toBeNull();
+    expect(answerProcessLabelV2({
+      hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: 12_000
+    })).toBe("Thought for 12s");
+    expect(answerProcessLabelV2({
+      hasReasoning: true, memoryCount: 2, stepCount: 3, workDurationMs: 8_000
+    })).toBe("Worked for 8s · Used 2 memories");
+    expect(answerProcessLabelV2({
+      hasReasoning: false, memoryCount: 1, stepCount: 0, workDurationMs: null
+    })).toBe("Used 1 memory");
+    expect(answerProcessLabelV2({
+      hasReasoning: false, memoryCount: 0, stepCount: 2, workDurationMs: null
+    })).toBe("Steps");
+    expect(answerProcessLabelV2({
+      hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: null
+    })).toBe("Thought process");
+  });
+
+  it("names the built-in engine search as a web search", () => {
+    expect(describeToolCallV2({ toolName: "search_selected_engines" }, "settled")).toBe("Searched the web");
+    expect(describeToolCallV2({ toolName: "search_selected_engines" }, "running")).toBe("Searching the web");
+  });
+
+  it("falls back to the settled step durations", () => {
+    expect(stepDurationSumV2(null)).toBeNull();
+    expect(stepDurationSumV2({ calls: [{ round: 1, status: "running", toolName: "web_search" }] })).toBeNull();
+    expect(stepDurationSumV2({
+      calls: [
+        { durationMs: 1_400, round: 1, status: "complete", toolName: "web_search" },
+        { durationMs: 800, round: 2, status: "complete", toolName: "search_knowledge" }
+      ]
+    })).toBe(2_200);
   });
 });

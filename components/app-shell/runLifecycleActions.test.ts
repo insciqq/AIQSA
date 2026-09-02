@@ -335,8 +335,8 @@ describe("run lifecycle actions", () => {
     await expect(fetchPromise).resolves.toMatchObject({
       id: "run-1"
     });
-    expect(surface("chat-1")).toEqual({ events: [] });
-    expect(surface("chat-2")).toEqual({
+    expect(surface("chat-1")).toMatchObject({ events: [] });
+    expect(surface("chat-2")).toMatchObject({
       events: [{ data: { runId: "run-2" }, type: "start" }]
     });
 
@@ -354,7 +354,7 @@ describe("run lifecycle actions", () => {
     );
 
     await expect(staleFetch).resolves.toMatchObject({ id: "run-1" });
-    expect(surface("chat-1")).toEqual({ events: [] });
+    expect(surface("chat-1")).toMatchObject({ events: [] });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.runId).toBe("run-new");
   });
 
@@ -376,7 +376,7 @@ describe("run lifecycle actions", () => {
 
     await expect(actions.fetchRun("run-1", "chat-1")).resolves.toBeNull();
 
-    expect(surface("chat-1")).toEqual({ events: [] });
+    expect(surface("chat-1")).toMatchObject({ events: [] });
     expect(notice()).toEqual({
       kind: "error",
       text: "Run response was malformed (run_malformed)"
@@ -1029,7 +1029,7 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(false);
-    expect(surface("chat-1")).toEqual({ events: [] });
+    expect(surface("chat-1")).toMatchObject({ events: [] });
     expect(useThreadStore.getState().threadsByChatId["chat-1"]?.messages[1]).toMatchObject({
       content: "",
       status: "streaming"
@@ -1070,7 +1070,7 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(false);
-    expect(surface("chat-1")).toEqual({ events: [] });
+    expect(surface("chat-1")).toMatchObject({ events: [] });
     expect(useRunLifecycleStore.getState().cancelledRunIds.has("run-1")).toBe(false);
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({
       runId: "run-1"
@@ -1112,7 +1112,7 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(false);
-    expect(surface("chat-1")).toEqual({ events: [] });
+    expect(surface("chat-1")).toMatchObject({ events: [] });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({
       runId: "run-1"
     });

@@ -88,6 +88,8 @@ export type ThreadArtifactSummary = {
   memorySources?: MemoryAnswerSource[];
   reasoningText: string[];
   sources: ThreadSearchSource[];
+  /** Admission → first answer token, in ms; present only when reasoning or tool steps ran. */
+  workDurationMs?: number;
 };
 
 export type ThreadKnowledgeAnswerState = Readonly<{
@@ -724,6 +726,14 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     memoryStatus = value.memoryStatus;
   }
 
+  let workDurationMs: number | undefined;
+  if (value.workDurationMs !== undefined) {
+    if (!Number.isSafeInteger(value.workDurationMs) || (value.workDurationMs as number) < 0) {
+      return null;
+    }
+    workDurationMs = value.workDurationMs as number;
+  }
+
   return {
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
@@ -737,7 +747,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     reasoningText: value.reasoningText as string[],
     sources: sources.filter(
       (source): source is ThreadSearchSource => source !== null
-    )
+    ),
+    ...(workDurationMs !== undefined ? { workDurationMs } : {})
   };
 }
 

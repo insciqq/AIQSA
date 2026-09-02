@@ -77,6 +77,7 @@ import {
 } from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
+  answerStartedAt: true,
   assistantId: true,
   assistantMessageId: true,
   assistantRevision: {
@@ -97,6 +98,7 @@ const assistantRunDetailSelect = {
       eventType: "artifact"
     }
   },
+  createdAt: true,
   errorPayload: true,
   id: true,
   knowledgeRuns: {
@@ -136,7 +138,8 @@ const assistantRunDetailSelect = {
       state: true,
       toolName: true
     }
-  }
+  },
+  updatedAt: true
 } satisfies Prisma.ModelRunSelect;
 
 const hydratedMessageSelect = {
@@ -226,6 +229,8 @@ type HydratedMessagePath = Readonly<{
 }>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
+  answerStartedAt?: Date | null;
+  createdAt?: Date;
   events: { payload: unknown }[];
   knowledgeRetrievalSession?: {
     degradedFlags?: string[];
@@ -239,7 +244,25 @@ type ArtifactSummaryRun = {
   searchRuns: {
     artifacts?: unknown;
   }[];
+  status?: string;
+  toolCalls?: readonly object[];
+  updatedAt?: Date;
 };
+
+/**
+ * The one user-facing timing fact of a run: admission to the first answer
+ * token, or to the terminal state when no answer text arrived. It is never
+ * derived from event timelines or elapsed wall time on the client.
+ */
+function runWorkDurationMs(run: ArtifactSummaryRun): number | null {
+  if (!run.createdAt) return null;
+  const terminal = run.status === "complete" || run.status === "cancelled" ||
+    run.status === "error";
+  const end = run.answerStartedAt ?? (terminal ? run.updatedAt ?? null : null);
+  if (!end) return null;
+  const duration = end.getTime() - run.createdAt.getTime();
+  return Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null;
+}
 
 type ToolActivityRun = {
   errorPayload: unknown;
@@ -1087,6 +1110,10 @@ export function summarizeMessageRunArtifacts(
     .filter((citation, index, all) =>
       all.findIndex((candidate) => candidate.handle === citation.handle) === index)
     .slice(0, 24);
+  // Only work the reader can open (reasoning or tool steps) earns a duration.
+  const workDurationMs = reasoningTexts.length > 0 || (run.toolCalls?.length ?? 0) > 0
+    ? runWorkDurationMs(run)
+    : null;
   const groundingOutcome = run.knowledgeRetrievalSession?.groundingResult?.outcome;
   const knowledgeState = groundingOutcome === "answered" ||
     groundingOutcome === "insufficient_evidence" ||
@@ -1109,7 +1136,8 @@ export function summarizeMessageRunArtifacts(
     !knowledgeState &&
     !memoryAction &&
     !memoryStatus &&
-    memorySources.length === 0
+    memorySources.length === 0 &&
+    workDurationMs === null
   ) {
     return null;
   }
@@ -1122,7 +1150,8 @@ export function summarizeMessageRunArtifacts(
     ...(memoryStatus ? { memoryStatus } : {}),
     ...(memorySources.length > 0 ? { memorySources: [...memorySources] } : {}),
     reasoningText: reasoningTexts,
-    sources
+    sources,
+    ...(workDurationMs !== null ? { workDurationMs } : {})
   };
 }
 

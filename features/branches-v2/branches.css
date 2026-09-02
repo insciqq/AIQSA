@@ -112,6 +112,13 @@
   margin-top: 0.5rem;
 }
 
+/* Inside an answer's actions row the pager leads the row (like ChatGPT and
+   Claude) instead of sitting on its own line. */
+.v2-message-actions .v2-branch-pager-wrap {
+  margin: 0 0.25rem 0 0;
+  justify-content: flex-start;
+}
+
 .v2-branch-pager {
   display: inline-flex;
   min-height: 1.625rem;

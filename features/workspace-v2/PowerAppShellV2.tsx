@@ -74,6 +74,7 @@ import {
 } from "@/components/app-shell/runLifecycleActions";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import {
+  liveWorkDurationMs,
   selectRunSurface,
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
@@ -1382,6 +1383,7 @@ export function PowerAppShellV2({
     jumpToLatest,
     hasOlderMessages: activeThreadHistory.hasOlder,
     liveArtifactSummary,
+    liveWorkDurationMs: liveWorkDurationMs(activeRunSurface),
     loadEarlierMessages,
     loadingOlderMessages: activeThreadHistory.loading,
     olderMessagesError: activeThreadHistory.error,

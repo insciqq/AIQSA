@@ -11,7 +11,8 @@ import {
   UiV2MenuItem,
   UiV2MenuSeparator,
   UiV2MenuSurface,
-  UiV2Skeleton
+  UiV2Skeleton,
+  moveMenuFocusV2
 } from "@/components/ui-v2";
 import {
   useEffect,
@@ -52,13 +53,18 @@ export type ConversationMessageActionsV2 = Readonly<{
 }>;
 
 export type ConversationMessagePresentationV2 = Readonly<{
+  /** Rendered under the actions row (the expanded Sources list). */
+  afterActions?: ReactNode;
   afterContent?: ReactNode;
   beforeContent?: ReactNode;
   renderCitation?: MarkdownCitationRenderer;
+  /** Always-visible controls at the start of the actions row (pager, Sources chip). */
+  toolbarLeading?: ReactNode;
 }>;
 
 type ConversationTurnV2Props = Readonly<{
   actions?: ConversationMessageActionsV2;
+  afterActions?: ReactNode;
   afterContent?: ReactNode;
   anchorId?: string;
   ariaLabel?: string;
@@ -71,6 +77,7 @@ type ConversationTurnV2Props = Readonly<{
   role: "assistant" | "user";
   renderCitation?: MarkdownCitationRenderer;
   streaming?: boolean;
+  toolbarLeading?: ReactNode;
 }>;
 
 function interactiveTarget(target: EventTarget | null): boolean {
@@ -99,6 +106,7 @@ export function shouldClampUserBubbleV2(content: string): boolean {
 
 export function ConversationTurnV2({
   actions,
+  afterActions,
   afterContent,
   anchorId,
   ariaLabel,
@@ -110,7 +118,8 @@ export function ConversationTurnV2({
   hideEmptyContent = false,
   role,
   renderCitation,
-  streaming = false
+  streaming = false,
+  toolbarLeading = null
 }: ConversationTurnV2Props) {
   const [controlsOpen, setControlsOpen] = useState(false);
   const [bubbleExpansion, setBubbleExpansion] = useState<
@@ -195,26 +204,7 @@ export function ConversationTurnV2({
   }
 
   function handleMoreMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeMoreMenu({ restoreFocus: true });
-      return;
-    }
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-    const items = [...(moreMenuRef.current?.querySelectorAll<HTMLElement>(
-      "[role='menuitem']:not(:disabled)"
-    ) ?? [])];
-    if (items.length === 0) return;
-    const current = items.indexOf(document.activeElement as HTMLElement);
-    const next = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? items.length - 1
-        : event.key === "ArrowDown"
-          ? (current + 1 + items.length) % items.length
-          : (current - 1 + items.length) % items.length;
-    event.preventDefault();
-    items[next]?.focus();
+    moveMenuFocusV2(event, moreMenuRef.current, () => closeMoreMenu({ restoreFocus: true }));
   }
 
   function toggleControlsOnSurface(event: MouseEvent<HTMLElement>) {
@@ -274,13 +264,15 @@ export function ConversationTurnV2({
         {afterContent}
       </div>
 
-      {actions && hasActions ? (
+      {(actions && hasActions) || toolbarLeading ? (
         <div
           className="v2-message-actions"
           data-testid="conversation-message-actions"
           role="toolbar"
           aria-label={`${label} actions`}
         >
+          {toolbarLeading}
+          {actions && hasActions ? <span className="v2-message-actions-verbs">
           {actions?.onRegenerate ? (
             <UiV2IconButton
               disabled={actions.regenerateDisabled}
@@ -383,8 +375,10 @@ export function ConversationTurnV2({
           ) ? (
             <span className="v2-sr-only">{actions.disabledReason}</span>
           ) : null}
+          </span> : null}
         </div>
       ) : null}
+      {afterActions}
     </article>
   );
 }
@@ -599,11 +593,13 @@ export function ConversationV2({
                   {renderMessage?.(message) ?? (
                     <ConversationTurnV2
                       actions={getMessageActions?.(message)}
+                      afterActions={getMessagePresentation?.(message)?.afterActions}
                       afterContent={getMessagePresentation?.(message)?.afterContent}
                       anchorId={message.id}
                       beforeContent={getMessagePresentation?.(message)?.beforeContent}
                       content={message.content}
                       renderCitation={getMessagePresentation?.(message)?.renderCitation}
+                      toolbarLeading={getMessagePresentation?.(message)?.toolbarLeading}
                       role={message.role}
                       streaming={message.streaming}
                     />

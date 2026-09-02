@@ -142,6 +142,8 @@ export type ShellThreadView = {
   loadingOlderMessages: boolean;
   jumpToLatest(): void;
   liveArtifactSummary: ThreadArtifactSummary | null;
+  /** Send → first answer token of the run in flight (client clock); null until the answer starts. */
+  liveWorkDurationMs: number | null;
   olderMessagesError: string | null;
   /**
    * Existing headless force-refresh owner for an ambiguous transport failure:

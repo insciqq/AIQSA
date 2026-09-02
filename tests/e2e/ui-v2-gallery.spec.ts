@@ -409,9 +409,16 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   });
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=complete");
 
-  const outputs = page.getByTestId("answer-outputs");
-  await expect(outputs).toContainText("Research assistant");
-  await outputs.getByText("Sources", { exact: true }).click();
+  const answer = page.locator('article[data-role="assistant"]').first();
+  await expect(answer).toContainText("Research assistant");
+  // Sources live in the actions row: a chip that expands the list in place.
+  await expect(page.getByTestId("answer-sources")).toHaveCount(0);
+  const toggle = answer.getByRole("toolbar", { name: "Answer actions" })
+    .getByTestId("answer-sources-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const outputs = answer.getByTestId("answer-sources");
   await expect(outputs.getByRole("link", { name: "Cross-language retrieval evaluation" }))
     .toBeVisible();
   await expect(outputs).toContainText("Knowledge source");
@@ -542,9 +549,37 @@ test("v2 answer outputs reserve no placeholder and keep Reasoning optional", asy
   expect(await page.locator("body").innerText()).not.toMatch(/Run details|Answer evidence/iu);
 
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=reasoning");
-  await expect(page.getByTestId("answer-reasoning")).toContainText("Reasoning");
+  // One human line above the text; Thinking waits inside the fold.
+  const process = page.getByTestId("tool-activity-disclosure");
+  await expect(process.locator("summary")).toHaveText("Thought for 12s");
+  await process.locator("summary").click();
+  await expect(page.getByTestId("answer-reasoning")).toContainText("Thinking");
   await expect(page.getByTestId("answer-reasoning")).not.toContainText("**");
+  await expect(page.getByTestId("answer-sources-toggle")).toHaveCount(0);
   await expect(page.getByTestId("answer-sources")).toHaveCount(0);
+});
+
+test("v2 memory recall and the saved-memory notice keep their verbs behind menus", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1280 });
+  await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=memory");
+  const answer = page.locator('article[data-role="assistant"]').first();
+  const process = answer.getByTestId("tool-activity-disclosure");
+  await expect(process.locator("summary")).toHaveText("Worked for 8s · Used 2 memories");
+  await expect(answer.getByTestId("memory-action-confirmation")).toContainText("Memory saved.");
+  await expect(answer.getByRole("button", { name: "Edit" })).toHaveCount(0);
+  await process.locator("summary").click();
+  await expect(answer.getByRole("heading", { name: "Steps" })).toBeVisible();
+  await expect(answer.getByRole("heading", { name: "Memory" })).toBeVisible();
+  const rows = answer.getByTestId("memory-source-card");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("My dog is called Bruno and he is a beagle.");
+  await rows.first().getByTestId("memory-source-actions").click();
+  const menu = answer.getByRole("menu", { name: "Memory actions" });
+  await expect(menu.getByRole("menuitem")).toHaveText(["Correct", "Not relevant", "Forget"]);
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(rows.first().getByTestId("memory-source-actions")).toBeFocused();
+  await expectNoHorizontalOverflow(page);
 });
 
 test("v2 MCP approval uses explicit bounded controls", async ({ page }) => {

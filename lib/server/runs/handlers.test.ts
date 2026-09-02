@@ -790,6 +790,7 @@ function createMemoryRepository(
       return "settled";
     },
     resetToolLoopAssistantDraft: async () => true,
+    markRunAnswerStarted: async () => undefined,
     retryPreparingRunAttempt: async () => null,
     settlePreparingRunFailure: async () => false,
     updateRunProviderResponseId: async (_runId, providerResponseId) => {

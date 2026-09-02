@@ -223,6 +223,7 @@ export type RunExecutionRepository = Pick<
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadModelPricing"
   | "markAssistantMessageGroundedLiveOnly"
+  | "markRunAnswerStarted"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
   | "recordRunUsageEvents"
@@ -642,6 +643,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         runId
       });
       let persistedProviderResponseId: string | null = null;
+      let answerStartMarked = false;
       let groundedLiveOnly = false;
       let projectAccessCheck: Promise<boolean> | null = null;
       let projectAccessRevoked = false;
@@ -770,6 +772,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         if (effectiveEvent.type === "token") {
+          if (includeTokenEvents && !answerStartMarked) {
+            answerStartMarked = true;
+            await input.repository.markRunAnswerStarted({ at: new Date(), runId });
+          }
           if (!includeTokenEvents || knowledgeCitationAnswer) {
             return;
           }
@@ -2096,6 +2102,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             });
             if (!reset) throw new RunPipelineError("tool_loop_reset_conflict", "Assistant draft could not reset");
             tokenBuffer.resetLocal();
+            answerStartMarked = false;
             emitTransient(controller, encoder, {
               data: { round: toolSignal.round },
               type: "message_reset"
