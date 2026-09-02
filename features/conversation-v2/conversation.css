@@ -10,7 +10,7 @@
 
 .v2-conversation-jump-latest {
   position: absolute;
-  right: max(1rem, calc((100% - var(--v2-measure)) / 2));
+  right: max(0.75rem, calc((100% - var(--v2-measure)) / 2 - 3rem));
   bottom: 1rem;
   z-index: 12;
   border: 1px solid var(--v2-color-border2);
@@ -297,12 +297,13 @@
   gap: 0.125rem;
   color: var(--v2-color-text2);
   opacity: 0;
-  visibility: hidden;
+  /* Invisible, not hidden: the dock stays a keyboard target and reveals on
+     focus-within (A15); pointer-events keep it from catching stray clicks. */
+  pointer-events: none;
   transform: translateY(-0.25rem);
   transition:
     opacity var(--v2-motion-fast),
-    transform var(--v2-motion-fast),
-    visibility var(--v2-motion-fast);
+    transform var(--v2-motion-fast);
 }
 
 .v2-conversation-turn[data-role="user"] .v2-message-actions {
@@ -317,15 +318,6 @@
 .v2-message-more-menu {
   position: fixed;
   z-index: 65;
-}
-
-/* The disabled reason carries meaning, so it keeps the text2 floor. */
-.v2-message-action-guidance {
-  max-width: 17rem;
-  padding: 0 0.375rem;
-  color: var(--v2-color-text2);
-  font-size: 0.75rem;
-  line-height: 1.35;
 }
 
 .v2-message-actions .v2-icon-button {
@@ -346,7 +338,7 @@
 .v2-conversation-turn:focus-within .v2-message-actions,
 .v2-conversation-thread > li:last-child > .v2-conversation-turn[data-role="assistant"] .v2-message-actions {
   opacity: 1;
-  visibility: visible;
+  pointer-events: auto;
   transform: translateY(0);
 }
 
@@ -356,7 +348,7 @@
 @media (hover: hover) and (pointer: fine) {
   .v2-conversation-turn:hover .v2-message-actions {
     opacity: 1;
-    visibility: visible;
+    pointer-events: auto;
     transform: translateY(0);
   }
 }
@@ -365,7 +357,7 @@
 @media (hover: none), (pointer: coarse) {
   .v2-message-actions {
     opacity: 1;
-    visibility: visible;
+    pointer-events: auto;
     transform: translateY(0);
   }
 }

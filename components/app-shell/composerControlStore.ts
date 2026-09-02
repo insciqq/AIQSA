@@ -17,6 +17,11 @@ export type ComposerModelSelection = {
   controlDefaults: ControlDefaults;
   modelId: string;
   provider: string;
+  /**
+   * Search options the new model can run; selected options outside it are
+   * dropped so an unavailable engine is never kept silently (A6).
+   */
+  searchStrategyIds?: readonly string[];
 };
 
 /**
@@ -257,7 +262,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       temperature: defaults.temperature
     });
   },
-  applyModelSelection({ controlDefaults, modelId, provider }, origin = "user") {
+  applyModelSelection({ controlDefaults, modelId, provider, searchStrategyIds }, origin = "user") {
     set((state) => ({
       ...droppedAssistantIdentity(state, origin),
       backgroundMode: controlDefaults.backgroundMode,
@@ -266,6 +271,14 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       reasoningMode: controlDefaults.reasoningMode,
       selectedModelId: modelId,
       selectedProvider: provider,
+      ...(searchStrategyIds &&
+        state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
+        ? {
+            selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
+              searchStrategyIds.includes(id)
+            )
+          }
+        : {}),
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
     }));

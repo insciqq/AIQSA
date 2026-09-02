@@ -190,11 +190,6 @@
   flex: 0 0 auto;
 }
 
-.v2-composer-controls > .v2-composer-model-trigger {
-  flex: 0 1 auto;
-  min-width: 4.5rem;
-}
-
 .v2-composer-controls > .v2-composer-indicators {
   flex: 0 1 auto;
   min-width: 0;
@@ -220,7 +215,6 @@
  * accent when active: accent-dim wash, accent ink, and a glowing 6px dot.
  * Violet never appears here (PRD §3.2).
  */
-.v2-composer-model-trigger,
 .v2-composer-indicator {
   display: inline-flex;
   min-width: 0;
@@ -245,33 +239,10 @@
     border-color var(--v2-motion-fast);
 }
 
-.v2-composer-model-trigger {
-  max-width: 16rem;
-  padding-left: 0.5rem;
-}
-
-.v2-composer-model-trigger:hover:not(:disabled),
 .v2-composer-indicator[data-quiet]:hover:not(:disabled) {
   border-color: var(--v2-color-border2);
   color: var(--v2-color-text);
   background: var(--v2-color-hover);
-}
-
-.v2-composer-model-trigger > strong {
-  overflow: hidden;
-  color: var(--v2-color-text);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v2-composer-model-trigger > .v2-monogram {
-  --v2-monogram-size: 0.875rem;
-}
-
-.v2-composer-model-trigger:disabled {
-  color: var(--v2-color-text3);
-  cursor: not-allowed;
 }
 
 .v2-composer-indicators {
@@ -582,6 +553,31 @@
   width: min(21.25rem, calc(100vw - 2rem));
 }
 
+/* A layer opened from outside the composer (the header model selector) is
+   fixed below its anchor and opens downward, as tall as the viewport allows;
+   the ≤899px sheet rules keep their own geometry. */
+@media (min-width: 900px) and (min-height: 32.01rem) {
+  .v2-composer-layer[data-anchor="external"] {
+    position: fixed;
+    top: var(--v2-composer-layer-top, 0px);
+    right: auto;
+    bottom: auto;
+    left: var(--v2-composer-layer-left, 0px);
+    max-height: calc(100dvh - var(--v2-composer-layer-top, 0px) - 1rem);
+  }
+}
+
+/* Anchored popovers flip below the composer when the space above is short
+   and the space below is larger (blank chat with a centred composer, UX
+   audit 2026-09-02 A11); the flipped layer is capped to that space. */
+@media (min-width: 900px) and (min-height: 32.01rem) {
+  .v2-composer .v2-composer-layer[data-placement="below"] {
+    top: calc(100% + 0.5rem);
+    bottom: auto;
+    max-height: min(34rem, calc(var(--v2-composer-layer-space-below, 100dvh) - 1rem));
+  }
+}
+
 /* Desktop popover title (the sheet header carries it on mobile). */
 .v2-composer-layer-title {
   margin: 0;
@@ -618,10 +614,11 @@
     font-size: 1rem;
   }
 
-  /* The blank chat sits under the in-flow header: keep the upward layer
-     clear of the header band and inside the reading column's box. */
+  /* The blank chat's composer is centred: an upward layer is capped to the
+     measured room above it (below the header) rather than a fixed share of
+     the viewport (UX audit 2026-09-02 A11). */
   .v2-conversation-empty-composer .v2-composer-layer {
-    max-height: min(34rem, calc(50dvh - 6rem));
+    max-height: min(34rem, calc(var(--v2-composer-layer-space-above, 50dvh) - 1rem));
   }
 }
 
@@ -883,7 +880,8 @@
 }
 
 .v2-composer-model-search-wrap input::placeholder {
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
+  opacity: 0.8;
 }
 
 /* Model count sits inside the search field's right edge. */
@@ -920,6 +918,11 @@
   font-size: 0.75rem;
   font-weight: 500;
   line-height: 1.2;
+}
+
+.v2-composer-model-group h3 > .v2-provider-mark {
+  --v2-provider-mark-size: 0.9375rem;
+  color: var(--v2-color-text2);
 }
 
 .v2-composer-model-group h3 > .v2-monogram {
@@ -1333,16 +1336,11 @@
 }
 
 /*
- * Compact composer row (PRD §4.5): the model chip truncates at 170px and the
- * Search, Knowledge, and MCP chips become 28px icon pills in their state
- * color. MCP stays visible in every mode (FRONTEND: the ordinary MCP choice
- * is always visible).
+ * Compact composer row (PRD §4.5): the Search, Knowledge, and MCP chips
+ * become 28px icon pills in their state color. MCP stays visible in every
+ * mode (FRONTEND: the ordinary MCP choice is always visible).
  */
 @media (max-width: 899px) {
-  .v2-composer-model-trigger {
-    max-width: 10.625rem;
-  }
-
   .v2-composer-indicator[data-glyph] {
     width: 1.75rem;
     justify-content: center;
@@ -1484,7 +1482,6 @@
 
   /* Touch targets stay ≥44px (interaction contract) even though the chips
      read as 28px pills on fine pointers. */
-  .v2-composer-model-trigger,
   .v2-composer-indicator,
   .v2-composer-indicator-clear {
     height: auto;
@@ -1510,8 +1507,7 @@
   }
 }
 
-/* Phones keep one control row (UX audit F9; 2026-09-02 #1): the model chip
-   yields first (a very large shrink weight down to 4rem) so the icon pills —
+/* Phones keep one control row (UX audit F9; 2026-09-02 #1): the icon pills —
    MCP included — stay in reach without scrolling; only when even that is not
    enough does the strip scroll. */
 @media (max-width: 26rem) {
@@ -1522,12 +1518,6 @@
 
   .v2-composer-controls {
     gap: 0.125rem;
-  }
-
-  .v2-composer-controls > .v2-composer-model-trigger {
-    flex: 0 1000 auto;
-    min-width: 4rem;
-    max-width: 10.625rem;
   }
 
   .v2-composer-controls > .v2-composer-indicators {
@@ -1561,7 +1551,7 @@
 }
 
 /* Very narrow phones (≤352px): slightly tighter controls so the full row —
-   Add, model, Search, Knowledge, MCP, Send — still fits without scrolling. */
+   Add, Search, Knowledge, MCP, Send — still fits without scrolling. */
 @media (max-width: 22rem) {
   .v2-composer {
     padding-right: 0.5rem;
@@ -1577,10 +1567,6 @@
   .v2-composer-run-action .v2-icon-button {
     width: 2.5rem;
     min-width: 2.5rem;
-  }
-
-  .v2-composer-controls > .v2-composer-model-trigger {
-    min-width: 3.5rem;
   }
 }
 
@@ -1612,5 +1598,23 @@
   .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator-clear {
     height: auto;
     min-height: 2.75rem;
+  }
+}
+
+/* Touch: the star alone marks "Set as default" (the label stays its
+   accessible name); the sheet regains the capability glyphs the label had
+   displaced. */
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-model-default-label {
+    display: none;
+  }
+
+  .v2-composer-model-default {
+    min-width: 2.75rem;
+    justify-content: center;
+  }
+
+  .v2-composer-model-glyphs {
+    visibility: visible;
   }
 }

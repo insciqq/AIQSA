@@ -717,7 +717,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
       </div>
       {highlightedHtml ? (
         <div
-          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [overflow-wrap:normal] [&_code]:font-mono [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0"
+          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [overflow-wrap:normal] [&_code]:font-mono [&_pre]:!m-0 [&_pre]:!overflow-visible [&_pre]:!bg-transparent [&_pre]:!p-0"
           data-testid="markdown-code-scroll"
           role="region"
           aria-label="Scrollable code block"

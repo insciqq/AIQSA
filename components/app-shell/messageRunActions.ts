@@ -593,6 +593,29 @@ export function useMessageRunActions({
     if (!modelForSend) {
       return;
     }
+    // A Search engine the model cannot run is never kept silently (UX audit
+    // 2026-09-02 A6): the message goes out without it, the composer choice
+    // becomes Off, and a short notice says so.
+    const unavailableSearchOptionId = runControlSnapshot.searchPreferencePlan.optionIds.find(
+      (optionId) => optionId !== "search-disabled" && !modelForSend.searchStrategyIds.includes(optionId)
+    );
+    if (unavailableSearchOptionId) {
+      const optionName = runControlSnapshot.searchOptions.find(
+        (option) => option.strategyId === unavailableSearchOptionId
+      )?.displayName ?? "The selected search engine";
+      useComposerControlStore.getState().setSelectedSearchPlan(
+        runControlSnapshot.searchPreferencePlan.optionIds.filter((optionId) =>
+          modelForSend.searchStrategyIds.includes(optionId)
+        ),
+        runControlSnapshot.searchPreferencePlan.mode,
+        "system"
+      );
+      setNotice({
+        autoDismiss: true,
+        kind: "error",
+        text: `Sent without web search: ${optionName} is not available for ${modelForSend.displayName}.`
+      });
+    }
     const blockingAttachment = sourceSession.attachments.find(
       (attachment) => attachmentBlocksSend(attachment, modelForSend)
     );
@@ -680,6 +703,8 @@ export function useMessageRunActions({
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
+    let sendFailedBeforeRun = false;
+    let sendRejectionMessage: string | null = null;
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
@@ -873,6 +898,10 @@ export function useMessageRunActions({
       }
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendFailureMessage = result.failureMessage ?? null;
+      // The Memory-target prompt already carries its own persistent action.
+      sendFailedBeforeRun = result.failed && result.runId === null &&
+        result.failureCode !== "memory_intent_confirmation_required";
+      sendRejectionMessage = result.rejectionMessage ?? null;
     } catch (error) {
       setNotice({
         kind: "error",
@@ -887,6 +916,18 @@ export function useMessageRunActions({
           : null,
         sendFailureLive
       );
+    }
+    // A send that never started a run leaves nothing in the thread, so the
+    // persistent notice carries the server's reason and a Retry that resends
+    // the preserved draft (UX audit 2026-09-02 A8); failures after run_start
+    // keep the in-thread error card.
+    if (sendOutcome === "failed" && sendFailedBeforeRun) {
+      setNotice({
+        action: { label: "Retry", onClick: () => void sendMessage() },
+        kind: "error",
+        persistent: true,
+        text: sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
+      });
     }
   }
 

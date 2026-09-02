@@ -72,6 +72,8 @@ export type MessageRunLifecycleResult = {
   failureCode?: string;
   failureMessage?: string;
   receivedChatUpdate: boolean;
+  /** User-facing reason of a server-rejected request (no run was started). */
+  rejectionMessage?: string;
   runId: string | null;
 };
 
@@ -175,6 +177,7 @@ export async function executeMessageRunLifecycle({
   let failureMessage: string | null = null;
   let failureCode: string | null = null;
   let receivedChatUpdate = false;
+  let rejectionMessage: string | null = null;
   let runId: string | null = null;
   let serverRejectedRequest = false;
   let userFacingFailureMessage: string | null = null;
@@ -202,6 +205,7 @@ export async function executeMessageRunLifecycle({
         `${failurePrefix}_${response.status}`
       );
       failureCode = details.code ?? null;
+      rejectionMessage = details.message;
       userFacingFailureMessage = details.preserveForComposer ? details.message : null;
       throw new Error(details.message);
     }
@@ -315,6 +319,7 @@ export async function executeMessageRunLifecycle({
     ...(failureCode ? { failureCode } : {}),
     ...(failureMessage ? { failureMessage } : {}),
     receivedChatUpdate,
+    ...(rejectionMessage && !cancelled ? { rejectionMessage } : {}),
     runId
   };
 }

@@ -95,14 +95,14 @@ export function AccountMenuV2({
             </div>
           ) : null}
           {onSettings ? (
-            <UiV2MenuItem onClick={() => { setOpen(false); onSettings(); }}>
+            <UiV2MenuItem icon="settings" onClick={() => { setOpen(false); onSettings(); }}>
               Settings
             </UiV2MenuItem>
           ) : null}
           {adminEntryVisible ? (
-            <UiV2MenuLink href="/admin">Control Center</UiV2MenuLink>
+            <UiV2MenuLink href="/admin" icon="monitor">Control Center</UiV2MenuLink>
           ) : null}
-          <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
+          <UiV2MenuItem disabled={signingOut} icon="logout" onClick={() => void signOut()}>
             {signingOut ? "Signing out…" : "Sign out"}
           </UiV2MenuItem>
           {signOutError ? (

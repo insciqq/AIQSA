@@ -93,18 +93,21 @@ export function createThreadActions({
   resetThreadToLatest,
   setNotice
 }: ThreadActionsInput) {
-  async function copyVisibleThread() {
+  // Defaults to the active chat; the sidebar row menu passes another chat.
+  async function copyVisibleThread(chat?: Readonly<{ id: string; title: string }>) {
+    const chatId = chat?.id ?? activeChatId;
+    const title = chat?.title ?? activeChatTitle;
     try {
-      if (!activeChatId) throw new Error("Nothing to copy yet.");
+      if (!chatId) throw new Error("Nothing to copy yet.");
       setNotice({ kind: "success", text: "Preparing the complete thread…" });
-      const thread = (await loadCompleteActiveBranch(activeChatId))
+      const thread = (await loadCompleteActiveBranch(chatId))
         .map(
           (message) =>
             `${message.role === "assistant" ? "Assistant" : "User"}:\n${textFromThreadContent(message.content).trim()}`
         )
         .join("\n\n");
       if (!thread.trim()) throw new Error("Nothing to copy yet.");
-      await writeClipboardText(`# ${activeChatTitle}\n\n${thread}`);
+      await writeClipboardText(`# ${title}\n\n${thread}`);
       setNotice({
         kind: "success",
         text: "Thread copied"

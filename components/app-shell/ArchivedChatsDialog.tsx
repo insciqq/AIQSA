@@ -259,8 +259,8 @@ export function ArchivedChatsDialog({
                       <span className="mt-1 block text-xs text-ink-muted">
                         {formatDate(chat.updatedAt)} · {chat.messageCount} {chat.messageCount === 1 ? "message" : "messages"}
                         {chat.memoryMode === "EXCLUDED"
-                          ? " · Excluded from Memory sources"
-                          : ""}
+                          ? <span title="Excluded from Memory sources"> · Memory off</span>
+                          : null}
                       </span>
                     </button>
                     <button

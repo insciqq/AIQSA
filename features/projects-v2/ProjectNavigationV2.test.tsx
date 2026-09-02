@@ -85,6 +85,42 @@ describe("Project navigation v2", () => {
     expect(onNavigate).toHaveBeenCalledOnce();
   });
 
+  it("renders the Projects landing with an explanation, a text New project button and an empty state", () => {
+    const { controller } = projectController();
+    const empty = {
+      ...controller,
+      detail: null,
+      projects: [],
+      selectedProjectId: null
+    } as unknown as ProjectWorkspaceController;
+    render(
+      <ProjectNavigationV2 activeChatId={null} controller={empty} landing onNavigate={vi.fn()} />
+    );
+
+    expect(screen.getByRole("heading", { level: 2, name: "Projects" })).toBeVisible();
+    expect(screen.getByText(/A Project is a shared workspace/u)).toBeVisible();
+    expect(screen.getByText("No projects yet. Your first Project appears here.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Create project" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    expect(empty.actions.openCreate).toHaveBeenCalledOnce();
+  });
+
+  it("offers one New project row when the sidebar section is empty", () => {
+    const { controller } = projectController();
+    const empty = {
+      ...controller,
+      detail: null,
+      projects: [],
+      selectedProjectId: null
+    } as unknown as ProjectWorkspaceController;
+    render(<ProjectNavigationV2 activeChatId={null} controller={empty} onNavigate={vi.fn()} />);
+
+    expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
+    expect(screen.getByRole("button", { name: "Create project" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    expect(empty.actions.openCreate).toHaveBeenCalledOnce();
+  });
+
   it("does not expose folder mutations to a read-only Project member", () => {
     const { controller } = projectController({ manageProject: false, mutateChats: false });
     render(

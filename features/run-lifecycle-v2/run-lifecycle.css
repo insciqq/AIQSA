@@ -492,3 +492,10 @@ html[data-motion="off"] .v2-run-shimmer {
     text-align: left;
   }
 }
+
+/* Touch (C2): disclosures keep a 44px row. */
+@media (hover: none), (pointer: coarse) {
+  .v2-tool-activity summary {
+    min-height: 2.75rem;
+  }
+}

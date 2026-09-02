@@ -4,14 +4,15 @@ import {
   UiV2Icon,
   UiV2IconButton,
   UiV2IconSprite,
+  UiV2MenuActions,
   UiV2MenuItem,
   UiV2MenuLink,
-  UiV2MenuSeparator,
   UiV2MenuSurface,
   UiV2Skeleton
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { AccountMenuV2 } from "./AccountMenuV2";
+import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./chatMenuActions";
 import { RailV2, type RailSectionV2 } from "./RailV2";
 import {
   clearChatNavigationSearch,
@@ -25,7 +26,6 @@ import {
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import {
   useEffect,
   useLayoutEffect,
@@ -86,7 +86,11 @@ export type NavigationSidebarProps = Readonly<{
    */
   onDelete?(chat: ChatNavigationSummaryWire): void;
   onDeleteFolder?(folder: ChatNavigationFolderWire): void;
-  onExport?(chat: ChatNavigationSummaryWire): void;
+  /** Row menu "Branches": the shell selects the chat and opens the Branches view. */
+  onBranches?(chat: ChatNavigationSummaryWire): void;
+  /** Row menu "Copy entire thread" for that chat. */
+  onCopyThread?(chat: ChatNavigationSummaryWire): void;
+  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onFolderProjectSettings?(folder: ChatNavigationFolderWire): void;
   /**
@@ -121,7 +125,9 @@ export type NavigationSidebarProps = Readonly<{
   /** A selected Project owns the sidebar list region; personal chats stay hidden until it is left. */
   projectContextActive?: boolean;
   /** Shared-workspace navigation rendered before the personal chat tree. */
-  projectsSlot?: ReactNode | ((onNavigate: () => void) => ReactNode);
+  projectsSlot?:
+    | ReactNode
+    | ((onNavigate: () => void, options: Readonly<{ landing: boolean }>) => ReactNode);
   /**
    * "projects" turns the column into the Projects landing (rail/drawer
    * destination): only the Projects block, no chat list or filter.
@@ -159,35 +165,15 @@ function dateGroup(updatedAt: string, now = new Date()): DateGroup {
   return "earlier";
 }
 
-export type FlattenedFolder<Folder> = Readonly<{ depth: number; folder: Folder }>;
-
 /**
- * Depth-first flattening of the folder tree for move pickers: every folder —
- * nested ones included — appears once with its depth for indentation. Passing
- * `excludeId` removes that folder and its entire subtree (a folder can never
- * be moved into itself or a descendant). Folders whose parent is not part of
- * the projection are treated as roots so no destination silently disappears.
+ * Depth-first flattening of the folder tree for move pickers (shared with the
+ * header menu through `chatMenuActions`): every folder — nested ones included
+ * — appears once with its depth for indentation. Passing `excludeId` removes
+ * that folder and its entire subtree (a folder can never be moved into itself
+ * or a descendant). Folders whose parent is not part of the projection are
+ * treated as roots so no destination silently disappears.
  */
-export function flattenFolderTree<
-  Folder extends Readonly<{ id: string; name: string; parentId: string | null }>
->(
-  folders: readonly Folder[],
-  excludeId?: string | null
-): readonly FlattenedFolder<Folder>[] {
-  const ids = new Set(folders.map((folder) => folder.id));
-  const result: FlattenedFolder<Folder>[] = [];
-  const visit = (parentId: string | null, depth: number) => {
-    for (const folder of folders) {
-      const effectiveParent =
-        folder.parentId !== null && ids.has(folder.parentId) ? folder.parentId : null;
-      if (effectiveParent !== parentId || folder.id === excludeId) continue;
-      result.push({ depth, folder });
-      visit(folder.id, depth + 1);
-    }
-  };
-  visit(null, 0);
-  return result;
-}
+export { flattenFolderTree, type FlattenedFolder };
 
 function ChatRow({
   active,
@@ -197,8 +183,10 @@ function ChatRow({
   editingTitle,
   folders,
   onArchive,
+  onBranches,
   onCancelRename,
   onChangeRename,
+  onCopyThread,
   onDelete,
   onExport,
   onFavorite,
@@ -216,10 +204,12 @@ function ChatRow({
   editingTitle?: string;
   folders: readonly ChatNavigationFolderWire[];
   onArchive?(chat: ChatNavigationSummaryWire): void;
+  onBranches?(chat: ChatNavigationSummaryWire): void;
   onCancelRename?(): void;
   onChangeRename?(value: string): void;
+  onCopyThread?(chat: ChatNavigationSummaryWire): void;
   onDelete?(chat: ChatNavigationSummaryWire): void;
-  onExport?(chat: ChatNavigationSummaryWire): void;
+  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
@@ -229,11 +219,7 @@ function ChatRow({
   onSelect(chat: ChatNavigationSummaryWire): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [moveOpen, setMoveOpen] = useState(false);
-  const closeMenu = () => {
-    setMenuOpen(false);
-    setMoveOpen(false);
-  };
+  const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const rowState = chatStateFor?.(chat) ?? null;
   const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
@@ -293,68 +279,34 @@ function ChatRow({
           label={`Chat actions: ${chat.title}`}
           ref={menuRef}
         >
-          <UiV2MenuItem onClick={() => { closeMenu(); onRename?.(chat); }}>Rename</UiV2MenuItem>
-          <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((open) => !open)}>
-            Move to…
-          </UiV2MenuItem>
-          {moveOpen ? (
-            <div className="v2-chat-move-options" aria-label="Choose a folder">
-              <UiV2MenuItem onClick={() => { closeMenu(); onMove?.(chat, null); }}>No folder</UiV2MenuItem>
-              {flattenFolderTree(folders).map(({ depth: folderDepth, folder }) => (
-                <UiV2MenuItem
-                  key={folder.id}
-                  style={{ paddingLeft: `${0.5 + folderDepth * 0.75}rem` }}
-                  onClick={() => { closeMenu(); onMove?.(chat, folder.id); }}
-                >
-                  {folder.name}
-                </UiV2MenuItem>
-              ))}
-            </div>
-          ) : null}
-          <UiV2MenuItem
-            selected={rowState?.favorite ?? false}
-            onClick={() => { closeMenu(); onFavorite?.(chat); }}
-          >
-            Favorite
-          </UiV2MenuItem>
-          {onMemoryMode ? (
-            <UiV2MenuItem
-              onClick={() => {
-                closeMenu();
-                triggerRef.current?.focus();
-                onMemoryMode(chat, memoryUsed ? "EXCLUDED" : "NORMAL");
-              }}
-            >
-              {resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action")}
-            </UiV2MenuItem>
-          ) : null}
-          {/* Same three groups as the header "⋯" menu: the chat itself ·
-              its content · destructive last (UX audit 2026-09-02 #7). */}
-          <UiV2MenuSeparator />
-          <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Share</UiV2MenuItem>
-          <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Export</UiV2MenuItem>
-          <UiV2MenuSeparator />
-          <UiV2MenuItem
-            disabled={chat.activeRun}
-            onClick={() => {
+          {/* The chat's one shared action list (also the header "⋯" menu):
+              the chat itself · its content · destructive last. */}
+          <UiV2MenuActions
+            actions={chatMenuActionsV2({
+              archiveDisabled: chat.activeRun,
+              deleteDisabled: chat.activeRun,
+              favorite: rowState?.favorite ?? false,
+              folders,
+              memoryUsed: onMemoryMode ? memoryUsed : null,
+              onArchive: () => onArchive?.(chat),
+              onBranches: onBranches ? () => onBranches(chat) : undefined,
+              onCopyThread: onCopyThread ? () => onCopyThread(chat) : undefined,
+              onDelete: onDelete ? () => onDelete(chat) : undefined,
+              onExport: (format) => onExport?.(chat, format),
+              onFavorite: () => onFavorite?.(chat),
+              onMemoryMode: onMemoryMode ? (mode) => onMemoryMode(chat, mode) : undefined,
+              onMove: (folderId) => onMove?.(chat, folderId),
+              onRename: () => onRename?.(chat),
+              onShare: () => onShare?.(chat),
+              sharePlacement: "menu"
+            })}
+            onClose={() => {
+              // Activating an item returns focus to the menu button; a
+              // surface the action opens (rename field, dialog) takes it next.
               closeMenu();
-              onArchive?.(chat);
+              triggerRef.current?.focus();
             }}
-          >
-            Archive
-          </UiV2MenuItem>
-          {onDelete ? (
-            <UiV2MenuItem
-              disabled={chat.activeRun}
-              tone="destructive"
-              onClick={() => {
-                closeMenu();
-                onDelete(chat);
-              }}
-            >
-              Delete…
-            </UiV2MenuItem>
-          ) : null}
+          />
         </UiV2MenuSurface>
       ) : null}
     </div>
@@ -380,13 +332,9 @@ function FolderGroup({
   // scannable (UX audit F10).
   const [open, setOpen] = useState(depth === 0);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [moveOpen, setMoveOpen] = useState(false);
   const [subfolderOpen, setSubfolderOpen] = useState(false);
   const [subfolderName, setSubfolderName] = useState("");
-  const closeMenu = () => {
-    setMenuOpen(false);
-    setMoveOpen(false);
-  };
+  const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const directChats = chats.filter((chat) => chat.folderId === folder.id);
   const children = folders.filter((candidate) => candidate.parentId === folder.id);
@@ -425,7 +373,6 @@ function FolderGroup({
               onClick={() => setOpen((value) => !value)}
             >
               <UiV2Icon name={open ? "chevron-down" : "chevron-right"} />
-              <UiV2Icon name="folder" />
               <span className="v2-chat-title">{folder.name}</span>
             </button>
             <UiV2IconButton
@@ -442,35 +389,40 @@ function FolderGroup({
                 label={`Folder actions: ${folder.name}`}
                 ref={menuRef}
               >
-                <UiV2MenuItem onClick={() => { closeMenu(); props.onRenameFolder?.(folder); }}>
-                  Rename
-                </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => { closeMenu(); setSubfolderOpen(true); setOpen(true); }}>
-                  New subfolder
-                </UiV2MenuItem>
-                <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((value) => !value)}>
-                  Move to…
-                </UiV2MenuItem>
-                {moveOpen ? (
-                  <div className="v2-chat-move-options" aria-label="Move folder">
-                    <UiV2MenuItem onClick={() => { closeMenu(); props.onMoveFolder?.(folder, null); }}>Top level</UiV2MenuItem>
-                    {flattenFolderTree(folders, folder.id).map(({ depth: folderDepth, folder: candidate }) => (
-                      <UiV2MenuItem
-                        key={candidate.id}
-                        style={{ paddingLeft: `${0.5 + folderDepth * 0.75}rem` }}
-                        onClick={() => { closeMenu(); props.onMoveFolder?.(folder, candidate.id); }}
-                      >
-                        {candidate.name}
-                      </UiV2MenuItem>
-                    ))}
-                  </div>
-                ) : null}
-                <UiV2MenuItem onClick={() => { closeMenu(); props.onFolderProjectSettings?.(folder); }}>
-                  Project settings
-                </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => { closeMenu(); props.onDeleteFolder?.(folder); }}>
-                  Delete folder
-                </UiV2MenuItem>
+                <UiV2MenuActions
+                  actions={[
+                    { icon: "edit", label: "Rename", onSelect: () => props.onRenameFolder?.(folder) },
+                    {
+                      icon: "folder-plus",
+                      label: "New subfolder",
+                      onSelect: () => {
+                        setSubfolderOpen(true);
+                        setOpen(true);
+                      }
+                    },
+                    {
+                      icon: "folder",
+                      label: "Move to…",
+                      submenu: [
+                        { label: "Top level", onSelect: () => props.onMoveFolder?.(folder, null) },
+                        ...flattenFolderTree(folders, folder.id).map(({ depth: folderDepth, folder: candidate }) => ({
+                          depth: folderDepth,
+                          label: candidate.name,
+                          onSelect: () => props.onMoveFolder?.(folder, candidate.id)
+                        }))
+                      ]
+                    },
+                    { icon: "settings", label: "Project settings", onSelect: () => props.onFolderProjectSettings?.(folder) },
+                    {
+                      icon: "trash",
+                      label: "Delete folder",
+                      onSelect: () => props.onDeleteFolder?.(folder),
+                      separatorBefore: true,
+                      tone: "destructive"
+                    }
+                  ]}
+                  onClose={closeMenu}
+                />
               </UiV2MenuSurface>
             ) : null}
           </>
@@ -512,6 +464,8 @@ function FolderGroup({
               onCancelRename={props.onCancelChatRename}
               onChangeRename={props.onChangeChatRename}
               onDelete={props.onDelete}
+              onBranches={props.onBranches}
+              onCopyThread={props.onCopyThread}
               onExport={props.onExport}
               onFavorite={props.onFavorite}
               onMemoryMode={props.onMemoryMode}
@@ -776,9 +730,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 setFilterValue(event.target.value);
               }}
               onKeyDown={(event) => {
-                if (event.key !== "Escape" || !filterValue) return;
+                if (event.key !== "Escape") return;
                 event.preventDefault();
-                clearFilter();
+                // Escape clears a query first, then leaves the field (A15).
+                if (filterValue) clearFilter();
+                else event.currentTarget.blur();
               }}
             />
             {filterValue ? (
@@ -795,7 +751,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
 
       <div className="v2-navigation-scroll" aria-live="polite" ref={scrollRef}>
         {typeof props.projectsSlot === "function"
-          ? props.projectsSlot(props.onClose)
+          ? props.projectsSlot(props.onClose, { landing: projectsView })
           : props.projectsSlot}
         {!props.projectContextActive && !projectsView ? <>
         {!props.ready && props.loading ? (
@@ -838,6 +794,8 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 onCancelRename={props.onCancelChatRename}
                 onChangeRename={props.onChangeChatRename}
                 onDelete={props.onDelete}
+                onBranches={props.onBranches}
+                onCopyThread={props.onCopyThread}
                 onExport={props.onExport}
                 onFavorite={props.onFavorite}
                 onMemoryMode={props.onMemoryMode}
@@ -871,6 +829,8 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                     onCancelRename={props.onCancelChatRename}
                     onChangeRename={props.onChangeChatRename}
                     onDelete={props.onDelete}
+                    onBranches={props.onBranches}
+                    onCopyThread={props.onCopyThread}
                     onExport={props.onExport}
                     onFavorite={props.onFavorite}
                     onMemoryMode={props.onMemoryMode}
@@ -983,6 +943,15 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 onClick={props.onArchivedChats}
               >
                 <UiV2Icon name="archive" /><span>Archived</span>
+              </button>
+            ) : null}
+            {props.onSettings ? (
+              <button
+                className="v2-navigation-destination v2-focusable"
+                type="button"
+                onClick={props.onSettings}
+              >
+                <UiV2Icon name="settings" /><span>Settings</span>
               </button>
             ) : null}
           </div>
@@ -1319,9 +1288,9 @@ export function ReadingRoomShellV2({
   };
   const projectSlot = navigationOwnerProps.projectsSlot;
   const navigationProjectsSlot = typeof projectSlot === "function"
-    ? () => projectSlot(() => {
+    ? (_onNavigate: () => void, options: Readonly<{ landing: boolean }>) => projectSlot(() => {
         if (composition !== "desktop") closeSidebar();
-      })
+      }, options)
     : projectSlot;
   const createPersonalChat = (mode: NewChatMode) => {
     onNewChat(mode);
@@ -1333,12 +1302,17 @@ export function ReadingRoomShellV2({
     else if (composition === "compact") setCompactExpanded(true);
     else setDesktopCollapsed(false);
   };
-  // Keyboard shortcuts as in ChatGPT: Ctrl/⌘+Shift+O starts a chat and
-  // Ctrl/⌘+K jumps to the chat filter (revealing the list first). They are
-  // ignored while a modal layer owns the keyboard (UX audit 2026-09-02 #16).
-  const shortcutsRef = useRef({ createPersonalChat, revealList });
+  const sidebarShown = composition === "mobile"
+    ? mobileOpen
+    : composition === "compact" ? compactExpanded : !desktopCollapsed;
+  const toggleSidebar = () => (sidebarShown ? closeSidebar() : revealList());
+  // Keyboard shortcuts as in ChatGPT: Ctrl/⌘+Shift+O starts a chat,
+  // Ctrl/⌘+Shift+S toggles the sidebar and Ctrl/⌘+K jumps to the chat filter
+  // (revealing the list first). They are ignored while a modal layer owns
+  // the keyboard (UX audit 2026-09-02 #16).
+  const shortcutsRef = useRef({ createPersonalChat, revealList, toggleSidebar });
   useEffect(() => {
-    shortcutsRef.current = { createPersonalChat, revealList };
+    shortcutsRef.current = { createPersonalChat, revealList, toggleSidebar };
   });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1349,6 +1323,9 @@ export function ReadingRoomShellV2({
       if (event.shiftKey && key === "o") {
         event.preventDefault();
         shortcutsRef.current.createPersonalChat("NORMAL");
+      } else if (event.shiftKey && key === "s") {
+        event.preventDefault();
+        shortcutsRef.current.toggleSidebar();
       } else if (!event.shiftKey && key === "k") {
         event.preventDefault();
         shortcutsRef.current.revealList();

@@ -2,7 +2,6 @@
 
 import {
   refreshMemorySettings,
-  updateMemoryGate,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
@@ -47,7 +46,6 @@ function LibrarySurfaceV2({
 }>) {
   const { session, settings } = props;
   const memoryData = useMemorySettingsStore((state) => state.data);
-  const memoryBusy = useMemorySettingsStore((state) => state.busy);
   const memoryLoadState = useMemorySettingsStore((state) => state.loadState);
   const fileData = useFileLibraryStore((state) => state.data);
   const fileLoadState = useFileLibraryStore((state) => state.loadState);
@@ -122,10 +120,6 @@ function LibrarySurfaceV2({
     status: null,
     useMemoryFacts: false
   };
-  const mutateMemory = (key: "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts", value: boolean) => {
-    if (memoryBusy) return;
-    void updateMemoryGate(key, value).catch(() => undefined);
-  };
   const tabs: LibraryTabV2[] = [
     {
       content: (
@@ -184,10 +178,8 @@ function LibrarySurfaceV2({
       content: (
         <MemoryPanelV2
           memory={memory}
-          onChangeAutomaticLearning={(value) => mutateMemory("learnAutomatically", value)}
-          onChangeReferenceHistory={(value) => mutateMemory("referenceChatHistory", value)}
-          onChangeUseFacts={(value) => mutateMemory("useMemoryFacts", value)}
           onManage={onOpenMemoryOwner}
+          onOpenSettings={settings.openMemory}
           onRetry={() => void refreshMemorySettings(true).catch(() => undefined)}
         />
       ),

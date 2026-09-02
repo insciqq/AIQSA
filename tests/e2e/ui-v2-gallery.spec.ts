@@ -602,8 +602,10 @@ test("v2 branch pager and portalled More menu stay bounded and target exact vers
   await answer.click();
   await answer.getByRole("button", { name: "More answer actions" }).click();
   const menu = page.getByRole("menu", { name: "Answer menu" });
-  await expect(menu.getByRole("menuitem").first()).toHaveText("Delete");
-  await expect(menu.getByRole("menuitem").last()).toHaveText("Branch from here");
+  // Branch first; Delete last and destructive (UX audit 2026-09-02 B4).
+  await expect(menu.getByRole("menuitem").first()).toHaveText("Branch from here");
+  await expect(menu.getByRole("menuitem").last()).toHaveText("Delete");
+  await expect(menu.getByRole("menuitem").last()).toHaveAttribute("data-tone", "destructive");
   const bounds = await menu.boundingBox();
   expect(bounds).not.toBeNull();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);

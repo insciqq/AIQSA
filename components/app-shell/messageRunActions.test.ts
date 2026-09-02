@@ -1441,6 +1441,34 @@ describe("message run actions", () => {
     });
   });
 
+  it("reports a rejected send with the server reason and a Retry that resends the draft", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "provider_unavailable" }, { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: chat(),
+      attachments: [],
+      draft: "Question that the server rejects"
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Question that the server rejects",
+      operationError: "Send failed. Your draft was preserved."
+    });
+    const notice = actions.setNotice.mock.calls.at(-1)?.[0];
+    expect(notice).toMatchObject({
+      action: expect.objectContaining({ label: "Retry" }),
+      kind: "error",
+      persistent: true,
+      text: expect.stringMatching(/provider unavailable/iu)
+    });
+
+    notice?.action?.onClick();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
   it("restores the draft and skips run creation when pending checkout fails", async () => {
     const fetchMock = vi.fn();
     const persistActiveLeaf = vi.fn(async () => {

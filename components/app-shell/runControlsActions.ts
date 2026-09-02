@@ -453,7 +453,8 @@ export function useRunControlsActions({
     useComposerControlStore.getState().applyModelSelection({
       controlDefaults,
       modelId: model.modelId,
-      provider: model.provider
+      provider: model.provider,
+      searchStrategyIds: model.searchStrategyIds
     });
   }
 

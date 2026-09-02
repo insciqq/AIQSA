@@ -1,35 +1,26 @@
 import type { Notice, NoticeAction } from "@/components/app-shell/types";
-import { X } from "lucide-react";
+import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { useEffect, useRef } from "react";
 
-function NoticeActionButton({
-  action,
-  noticeKind
-}: {
-  action: NoticeAction;
-  noticeKind: Notice["kind"];
-}) {
+function NoticeActionButton({ action }: { action: NoticeAction }) {
   return (
-    <button
-      className={[
-        "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
-        action.tone === "destructive"
-          ? "border-critical/30 text-critical"
-          : action.tone === "neutral"
-            ? "border-trace-subtle text-ink"
-            : noticeKind === "success"
-              ? "border-positive/30"
-              : "border-critical/30"
-      ].join(" ")}
+    <UiV2Button
+      className="v2-notice-action"
       disabled={action.disabled}
-      type="button"
+      tone={action.tone === "destructive" ? "destructive" : "ghost"}
       onClick={action.onClick}
     >
       {action.label}
-    </button>
+    </UiV2Button>
   );
 }
 
+/**
+ * The shell's one transient notice (UX audit 2026-09-02 C5): a Signal
+ * surface with a kind icon, the text, an optional link and actions, and a
+ * close control. Success notices and opted-in errors leave after five
+ * seconds; other errors and persistent notices wait for the user.
+ */
 export function ShellNotice({
   interactive = true,
   notice,
@@ -55,46 +46,42 @@ export function ShellNotice({
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  const actions = interactive ? [notice.secondaryAction, notice.action].filter(
+    (action): action is NoticeAction => Boolean(action)
+  ) : [];
+
   return (
     <div
-      className={[
-        "flex max-h-[min(14rem,40dvh)] w-full max-w-2xl items-start justify-between gap-3 overflow-y-auto rounded-control border-l-2 bg-overlay-surface px-3 py-2 text-sm text-ink-secondary shadow-float",
-        "pointer-events-auto",
-        notice.kind === "success"
-          ? "border-positive/45"
-          : "border-critical/45"
-      ].join(" ")}
+      className="v2-notice"
+      data-kind={notice.kind}
       role={notice.kind === "error" ? "alert" : "status"}
       aria-live={notice.kind === "error" ? "assertive" : "polite"}
       aria-busy={notice.action?.disabled || notice.secondaryAction?.disabled || undefined}
       data-testid={notice.href ? "share-link" : "shell-notice"}
     >
-      <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
-        <span className="min-w-0 break-words">{notice.text}</span>
+      <UiV2Icon className="v2-notice-icon" name={notice.kind === "error" ? "alert" : "check"} />
+      <div className="v2-notice-body">
+        <span className="v2-notice-text">{notice.text}</span>
         {notice.href && interactive ? (
-          <a className="inline-flex min-h-touch min-w-0 items-center break-all text-proof underline-offset-2 hover:text-proof-hover hover:underline sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch" href={notice.href}>
+          <a className="v2-notice-link v2-focusable" href={notice.href}>
             {notice.href}
           </a>
         ) : notice.href ? (
-          <span className="min-w-0 break-all">{notice.href}</span>
+          <span className="v2-notice-link">{notice.href}</span>
         ) : null}
-        {notice.secondaryAction && interactive ? (
-          <NoticeActionButton action={notice.secondaryAction} noticeKind={notice.kind} />
+        {actions.length > 0 ? (
+          <span className="v2-notice-actions">
+            {actions.map((action) => <NoticeActionButton action={action} key={action.label} />)}
+          </span>
         ) : null}
-        {notice.action && interactive ? (
-          <NoticeActionButton action={notice.action} noticeKind={notice.kind} />
-        ) : null}
-      </span>
+      </div>
       {interactive ? (
-        <button
-          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-          type="button"
-          aria-label="Dismiss notice"
-          title="Dismiss notice"
+        <UiV2IconButton
+          className="v2-notice-close"
+          icon="close"
+          label="Dismiss notice"
           onClick={onDismiss}
-        >
-          <X className="size-3.5" aria-hidden="true" />
-        </button>
+        />
       ) : null}
     </div>
   );

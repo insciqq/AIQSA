@@ -6,6 +6,8 @@ import {
   UiV2IconButton,
   UiV2IconSprite,
   UiV2MenuItem,
+  UiV2MenuLink,
+  UiV2ProviderMark,
   UiV2Toast
 } from ".";
 
@@ -77,6 +79,46 @@ describe("UI v2 primitives", () => {
         name: "Hidden modelNot available to this account"
       })
     ).toBeDisabled();
+  });
+
+  it("renders decorative menu icons without changing the accessible name", () => {
+    render(
+      <>
+        <UiV2MenuItem icon="edit">Rename</UiV2MenuItem>
+        <UiV2MenuItem icon="trash" tone="destructive">Delete…</UiV2MenuItem>
+        <UiV2MenuLink href="/admin" icon="monitor">Control Center</UiV2MenuLink>
+      </>
+    );
+
+    const rename = screen.getByRole("menuitem", { name: "Rename" });
+    expect(rename).toHaveAttribute("data-icon");
+    expect(rename.querySelector(".v2-menu-item-icon use")).toHaveAttribute("href", "#v2-icon-edit");
+    expect(rename.querySelector(".v2-menu-item-icon svg")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("menuitem", { name: "Delete…" })).toHaveAttribute("data-tone", "destructive");
+    expect(screen.getByRole("link", { name: "Control Center" }).querySelector("use"))
+      .toHaveAttribute("href", "#v2-icon-monitor");
+  });
+
+  it("shows a monochrome provider mark for known families and a monogram otherwise", () => {
+    const { container } = render(
+      <>
+        <UiV2ProviderMark family="openai" label="OpenAI" />
+        <UiV2ProviderMark family="openai_compatible" label="Custom OpenAI · codex-lb" />
+        <UiV2ProviderMark family="fake" label="Fake QSA" />
+        <UiV2ProviderMark family="mistral" label="Mistral" />
+        <UiV2ProviderMark family={null} label="www.example.com" />
+      </>
+    );
+
+    const hrefs = [...container.querySelectorAll(".v2-provider-mark use")].map(
+      (use) => use.getAttribute("href")
+    );
+    expect(hrefs).toEqual(["#v2-icon-provider-openai", "#v2-icon-plug", "#v2-icon-flask"]);
+    for (const mark of container.querySelectorAll(".v2-provider-mark")) {
+      expect(mark).toHaveAttribute("aria-hidden", "true");
+    }
+    const monograms = [...container.querySelectorAll(".v2-monogram")].map((node) => node.textContent);
+    expect(monograms).toEqual(["M", "E"]);
   });
 
   it("keeps status tone and toast action semantic", () => {

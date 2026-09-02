@@ -440,6 +440,9 @@ function AssistantCardV2({
               aria-label={`Use ${assistant.name}`}
               className="v2-assistant-use"
               disabled={!assistant.available}
+              title={assistant.available
+                ? undefined
+                : assistant.unavailableReason ?? "Not available: a saved model, Search, Knowledge or MCP dependency is missing from your catalog."}
               onClick={() => onUse?.(assistant.id)}
             >
               Use
@@ -586,53 +589,22 @@ export function FilesPanelV2({
   );
 }
 
-function MemorySwitch({
-  disabled,
-  label,
-  onChange,
-  value
-}: Readonly<{
-  disabled: boolean;
-  label: string;
-  onChange?(value: boolean): void;
-  value: boolean;
-}>) {
-  return (
-    <div className="v2-memory-setting">
-      <span>{label}</span>
-      <button
-        aria-label={`${label}: ${value ? mt("common.on") : mt("common.off")}`}
-        aria-checked={value}
-        className="v2-memory-switch v2-focusable"
-        data-on={value || undefined}
-        disabled={disabled}
-        role="switch"
-        type="button"
-        onClick={() => onChange?.(!value)}
-      >
-        {value ? mt("common.on") : mt("common.off")}
-      </button>
-    </div>
-  );
-}
-
+/**
+ * Library › Memory: status, the saved-memories entry (Manage) and a route
+ * to Settings › Memory. The Memory switches live only in Settings (UX audit
+ * 2026-09-02 B2/B10): one control per setting.
+ */
 export function MemoryPanelV2({
   memory,
-  onChangeAutomaticLearning,
-  onChangeReferenceHistory,
-  onChangeUseFacts,
   onManage,
+  onOpenSettings,
   onRetry
 }: Readonly<{
   memory: MemoryOverviewV2;
-  onChangeAutomaticLearning?(value: boolean): void;
-  onChangeReferenceHistory?(value: boolean): void;
-  onChangeUseFacts?(value: boolean): void;
   onManage?(): void;
+  onOpenSettings?(): void;
   onRetry?(): void;
 }>) {
-  const loadUnavailable = memory.loadState !== "ready";
-  const subordinateDisabled = memory.administratorDisabled || loadUnavailable;
   const statusLabel = memory.loadState === "error"
     ? mt("library.statusLoadError")
     : memory.loadState !== "ready"
@@ -693,15 +665,6 @@ export function MemoryPanelV2({
         </div>
       </section>
 
-      <section className="v2-memory-section" aria-labelledby="v2-memory-controls">
-        <h3 id="v2-memory-controls">{mt("library.controlsHeading")}</h3>
-        <div className="v2-memory-settings">
-          <MemorySwitch disabled={subordinateDisabled} label={mt("settings.memoryLabel")} value={memory.useMemoryFacts} onChange={onChangeUseFacts} />
-          <MemorySwitch disabled={subordinateDisabled} label={mt("settings.searchPastChatsLabel")} value={memory.referenceChatHistory} onChange={onChangeReferenceHistory} />
-          <MemorySwitch disabled={subordinateDisabled} label={mt("settings.learnAutomaticallyLabel")} value={memory.automaticLearning} onChange={onChangeAutomaticLearning} />
-        </div>
-      </section>
-
       <section className="v2-memory-section" aria-labelledby="v2-memory-manage">
         <h3 id="v2-memory-manage">{mt("library.savedHeading")}</h3>
         <p>{mt("library.savedDescription")}</p>
@@ -709,6 +672,9 @@ export function MemoryPanelV2({
           <UiV2Button disabled={!memory.explicitCrudAvailable} onClick={onManage}>
             {mt("settings.manageLabel")}
           </UiV2Button>
+          {onOpenSettings ? (
+            <UiV2Button icon="settings" onClick={onOpenSettings}>Memory settings</UiV2Button>
+          ) : null}
         </div>
       </section>
 

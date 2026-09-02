@@ -125,10 +125,19 @@
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 1.875rem;
-  overflow: hidden;
   border: 1px solid var(--v2-color-border2);
   border-radius: var(--v2-radius-s);
   background: var(--v2-color-surface);
+}
+
+/* No overflow clipping on the wrap (it would swallow the mode menu, UX audit
+   v2 A1): the two halves round their own outer corners instead. */
+.v2-new-chat-main {
+  border-radius: calc(var(--v2-radius-s) - 1px) 0 0 calc(var(--v2-radius-s) - 1px);
+}
+
+.v2-new-chat-menu-trigger {
+  border-radius: 0 calc(var(--v2-radius-s) - 1px) calc(var(--v2-radius-s) - 1px) 0;
 }
 
 .v2-new-chat-main,
@@ -213,7 +222,8 @@
 }
 
 .v2-navigation-filter input::placeholder {
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
+  opacity: 0.8;
 }
 
 .v2-navigation-filter input:focus-visible {
@@ -335,11 +345,23 @@
   padding: 0 0.375rem;
 }
 
-/* Nested rows step in by 14px without a guide line (PRD §4.2). */
+/* Folder rows keep the chat-row pitch: a folder group adds no section gap
+   of its own (UX audit 2026-09-02 B5). */
+.v2-navigation-group[data-folder-id] {
+  margin-top: 0.125rem;
+}
+
+.v2-folder-children .v2-navigation-group[data-folder-id] {
+  margin-top: 0;
+}
+
+/* One nesting step (24px) without a guide line: a folder's chats and
+   subfolders start where the folder's own name starts, so nested chat
+   titles and nested folder names share one edge (PRD §4.2, B5). */
 .v2-folder-children {
   display: grid;
   gap: 0.125rem;
-  margin-left: 0.875rem;
+  margin-left: 1.5rem;
 }
 
 .v2-folder-menu-trigger {
@@ -362,13 +384,6 @@
   width: 14rem;
 }
 
-.v2-chat-move-options {
-  max-height: 11rem;
-  margin: 0.25rem 0;
-  padding: 0.25rem 0 0.25rem 0.5rem;
-  border-left: 1px solid var(--v2-color-border2);
-  overflow-y: auto;
-}
 
 .v2-chat-rename,
 .v2-folder-rename,
@@ -1121,4 +1136,20 @@ html[data-motion="off"] .v2-chat-pulse {
    create control. */
 .v2-navigation[data-view="projects"] .v2-project-navigation-heading > span {
   display: none;
+}
+
+/* Touch (C2): list rows and the mobile islands keep 44px targets. */
+@media (hover: none), (pointer: coarse) {
+  .v2-chat-row,
+  .v2-folder-row,
+  .v2-folder-toggle {
+    min-height: 2.75rem;
+  }
+}
+
+@media (max-width: 899px) and ((hover: none) or (pointer: coarse)) {
+  .v2-sidebar-floats > .v2-icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
 }

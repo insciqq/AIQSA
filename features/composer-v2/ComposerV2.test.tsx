@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
-import { ComposerV2 } from "./ComposerV2";
+import { ComposerV2, type ComposerV2Layer, type ComposerV2LayerController } from "./ComposerV2";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 
 function props(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
@@ -19,6 +20,29 @@ function props(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
     selectedSearchOptionIds: ["web-primary"],
     ...overrides
   } satisfies Parameters<typeof ComposerV2>[0];
+}
+
+/**
+ * The model picker is opened from outside the composer (the header model
+ * selector in the shell): this harness stands in for that opener through the
+ * layer controller and mirrors the open layer as `aria-expanded`.
+ */
+function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
+  const controller = useRef<ComposerV2LayerController | null>(null);
+  const [layer, setLayer] = useState<ComposerV2Layer>(null);
+  return (
+    <>
+      <button
+        aria-expanded={layer === "model"}
+        aria-haspopup="dialog"
+        type="button"
+        onClick={(event) => controller.current?.toggle("model", event.currentTarget)}
+      >
+        GPT-5.2
+      </button>
+      <ComposerV2 {...props(overrides)} layerController={controller} onLayerChange={setLayer} />
+    </>
+  );
 }
 
 describe("Composer v2", () => {
@@ -137,9 +161,15 @@ describe("Composer v2", () => {
 
   it("searches grouped models, wraps keyboard navigation, and restores trigger focus", async () => {
     const onSelectModel = vi.fn();
-    render(<ComposerV2 {...props({ onSelectModel })} />);
+    render(<ComposerWithModelOpener onSelectModel={onSelectModel} />);
     const trigger = screen.getByRole("button", { name: "GPT-5.2" });
+    expect(screen.getByTestId("composer-v2").querySelector("[aria-haspopup='dialog']")).toBeNull();
     fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    // The picker is portalled beside the external opener, not inside the composer.
+    const layer = screen.getByRole("dialog", { name: "Choose model" });
+    expect(layer).toHaveAttribute("data-anchor", "external");
+    expect(screen.getByTestId("composer-v2").contains(layer)).toBe(false);
     const search = screen.getByRole("searchbox", { name: "Search models" });
     await waitFor(() => expect(search).toHaveFocus());
 
@@ -163,11 +193,12 @@ describe("Composer v2", () => {
     await waitFor(() => expect(screen.getByRole("searchbox", { name: "Search models" })).toHaveFocus());
     fireEvent.keyDown(screen.getByRole("searchbox", { name: "Search models" }), { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it("closes each layer from the sheet scrim, the sticky close control, and Escape", async () => {
-    render(<ComposerV2 {...props()} />);
+    render(<ComposerWithModelOpener />);
     const plus = screen.getByRole("button", { name: "Add" });
 
     // Scrim tap: the backdrop button is the touch exit of the bottom sheet.
@@ -375,7 +406,6 @@ describe("Composer v2", () => {
     expect(screen.getByTestId("composer-v2-assistant-lock")).toHaveTextContent(
       "Assistant: Research editor"
     );
-    expect(screen.getByRole("button", { name: "GPT-5.2" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Choose web search" })).toBeDisabled();
     const searchRows = screen.getAllByRole("menuitemradio", { name: /Web Search/ });
     expect(searchRows[0]).toBeDisabled();
@@ -497,7 +527,7 @@ describe("Composer v2", () => {
     expect(text).not.toContain("mcp-office");
   });
 
-  it("keeps the model trigger to the display name without provider labels or hosts", () => {
+  it("keeps the picker to display names and provider marks without hosts", () => {
     const leakyConfig: ComposerConfig = {
       ...composerGalleryConfig,
       catalog: {
@@ -515,17 +545,24 @@ describe("Composer v2", () => {
         }]
       }
     };
-    render(<ComposerV2 {...props({ config: leakyConfig })} />);
+    render(<ComposerWithModelOpener config={leakyConfig} />);
 
-    const trigger = screen.getByRole("button", { name: "GPT-5.2" });
-    expect(trigger.querySelector("strong")?.textContent).toBe("GPT-5.2");
-    // The provider glyph is a decorative one-letter family monogram.
-    expect(trigger.querySelector(".v2-monogram")).toHaveAttribute("aria-hidden", "true");
-    expect(trigger.querySelector(".v2-monogram")?.textContent).toBe("O");
+    // The composer row carries no model trigger: the model lives in the header.
+    expect(screen.getByTestId("composer-v2").querySelector("[aria-haspopup='dialog']")).toBeNull();
     const surface = screen.getByTestId("composer-v2").textContent ?? "";
     expect(surface).not.toContain("codex-lb.psaux.info");
     expect(surface).not.toContain("ref 0N0FNN");
     expect(surface).not.toContain("Custom OpenAI");
+    // Group headers carry the monochrome family mark (or a monogram for an
+    // unknown family), always decorative.
+    fireEvent.click(screen.getByRole("button", { name: "GPT-5.2" }));
+    const layer = screen.getByRole("dialog", { name: "Choose model" });
+    const marks = layer.querySelectorAll(".v2-composer-model-group h3 > .v2-provider-mark, .v2-composer-model-group h3 > .v2-monogram");
+    expect(marks).toHaveLength(2);
+    expect(marks[0]?.querySelector("use")).toHaveAttribute("href", "#v2-icon-provider-openai");
+    expect(marks[0]).toHaveAttribute("aria-hidden", "true");
+    expect(marks[1]?.textContent).toBe("G");
+    expect(screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ })).toBeVisible();
   });
 
   it("shows model capabilities as glyphs and keeps the Parameters footer", () => {
@@ -542,10 +579,14 @@ describe("Composer v2", () => {
       "Reasoning · PDF and documents · Images · Web search · Tools · Streaming"
     );
     expect(glyphs.querySelectorAll("svg")).toHaveLength(5);
-    expect(within(option).queryByText("Web search")).toBeNull();
-    // The group heading carries the provider family monogram, not a raw id.
-    expect(screen.getByRole("heading", { level: 3, name: /OpenAI/ }).querySelector(".v2-monogram"))
-      .toHaveTextContent("O");
+    // Each glyph names itself on hover (C9); the text stays out of the row.
+    expect([...glyphs.querySelectorAll("svg title")].map((title) => title.textContent))
+      .toEqual(["Reasoning", "PDF and documents", "Images", "Web search", "Tools"]);
+    expect(within(option).queryByText("Web search", { ignore: "title" })).toBeNull();
+    // The group heading carries the provider family mark, not a raw id.
+    expect(
+      screen.getByRole("heading", { level: 3, name: /OpenAI/ }).querySelector(".v2-provider-mark use")
+    ).toHaveAttribute("href", "#v2-icon-provider-openai");
 
     expect(screen.getByText("Applies to your next message.")).toBeVisible();
     expect(screen.queryByText(/Каталог отфильтрован/)).toBeNull();

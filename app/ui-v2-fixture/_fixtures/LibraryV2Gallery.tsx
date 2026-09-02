@@ -106,7 +106,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
     proceed(): void;
   }> | null>(null);
   const [closed, setClosed] = useState(false);
-  const [memoryGates, setMemoryGates] = useState({ automatic: true, facts: true, history: true });
+  const [memoryGates] = useState({ automatic: true, facts: true, history: true });
   const disabled = state === "memory-disabled";
 
   if (closed) {
@@ -157,9 +157,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                   status: disabled ? "NEEDS_ADMIN_SETUP" : "ON",
                   useMemoryFacts: memoryGates.facts
                 }}
-                onChangeAutomaticLearning={(automatic) => setMemoryGates((value) => ({ ...value, automatic }))}
-                onChangeReferenceHistory={(history) => setMemoryGates((value) => ({ ...value, history }))}
-                onChangeUseFacts={(facts) => setMemoryGates((value) => ({ ...value, facts }))}
+                onOpenSettings={() => undefined}
               />
             ),
             id: "memory",

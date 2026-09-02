@@ -43,6 +43,8 @@ export type ShellSessionView = {
 
 export type ShellWorkspacePaneState = {
   editingChatId: string | null;
+  /** Which surface opened the rename; only it renders the field. */
+  editingChatOrigin: "header" | "row" | null;
   editingChatTitle: string;
   editingFolderId: string | null;
   editingFolderName: string;
@@ -79,7 +81,7 @@ export type ShellWorkspacePaneActions = {
   saveChatTitle(chat: WorkspaceChatSummary): Promise<void> | void;
   saveFolder(folder: FolderSummary): Promise<void> | void;
   shareChat(chat: WorkspaceChatSummary): Promise<void> | void;
-  startChatEdit(chat: WorkspaceChatSummary): void;
+  startChatEdit(chat: WorkspaceChatSummary, origin?: "header" | "row"): void;
   startFolderEdit(folder: FolderSummary): void;
   toggleChatMemorySource(
     chat: WorkspaceChatSummary,
@@ -117,7 +119,8 @@ export type ShellThreadView = {
   activeChatDetailError: string | null;
   activeChatDetailLoading: boolean;
   activeChatStreaming: boolean;
-  copyVisibleThread(): Promise<void> | void;
+  /** Copies the complete visible branch of the active chat, or of `chat` when given. */
+  copyVisibleThread(chat?: Readonly<{ id: string; title: string }>): Promise<void> | void;
   currentRunId: string | null;
   editingMessageId: string | null;
   editingMessagePending: boolean;

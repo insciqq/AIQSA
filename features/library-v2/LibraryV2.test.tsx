@@ -191,11 +191,8 @@ describe("Library resource panels", () => {
     );
 
     expect(screen.getByText("Memory needs administrator setup")).toBeInTheDocument();
-    expect(screen.getAllByRole("switch")).toEqual([
-      expect.objectContaining({ disabled: true }),
-      expect.objectContaining({ disabled: true }),
-      expect.objectContaining({ disabled: true })
-    ]);
+    // The switches live only in Settings › Memory (B2): no duplicates here.
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Manage memory" }));
     expect(onManage).toHaveBeenCalledOnce();
     expect(screen.queryByText("Search chat history")).not.toBeInTheDocument();
@@ -223,22 +220,13 @@ describe("Library resource panels", () => {
     expect(screen.getByRole("heading", { name: label })).toBeVisible();
   });
 
-  it("gives every Library Memory switch a setting-and-state accessible name", () => {
-    const onChangeAutomaticLearning = vi.fn();
-    render(
-      <MemoryPanelV2
-        memory={memoryOverview()}
-        onChangeAutomaticLearning={onChangeAutomaticLearning}
-      />
-    );
+  it("routes the Memory switches to Settings instead of duplicating them", () => {
+    const onOpenSettings = vi.fn();
+    render(<MemoryPanelV2 memory={memoryOverview()} onOpenSettings={onOpenSettings} />);
 
-    expect(screen.getByRole("switch", { name: "Memory: On" })).toBeEnabled();
-    expect(screen.getByRole("switch", { name: "Search past chats: On" })).toBeEnabled();
-    const automaticLearning = screen.getByRole("switch", {
-      name: "Learn automatically: Off"
-    });
-    fireEvent.click(automaticLearning);
-    expect(onChangeAutomaticLearning).toHaveBeenCalledWith(true);
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Memory settings" }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
   it("shows an honest loading state and disables settings until status is ready", () => {
@@ -250,9 +238,7 @@ describe("Library resource panels", () => {
 
     expect(screen.getByRole("heading", { name: "Loading Memory settings…" })).toBeVisible();
     expect(screen.queryByText("Memory is paused")).not.toBeInTheDocument();
-    for (const control of screen.getAllByRole("switch")) {
-      expect(control).toBeDisabled();
-    }
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
   });
 
   it("shows a bounded load error and delegates Retry", () => {

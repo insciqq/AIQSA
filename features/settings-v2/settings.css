@@ -101,14 +101,6 @@
   margin-top: 1.25rem;
 }
 
-@media (hover: none), (pointer: coarse) {
-  .v2-settings-nav-button,
-  .v2-theme-segment-option,
-  .v2-settings-switch {
-    min-height: 2.5rem;
-  }
-}
-
 .v2-settings-fixture {
   min-height: 100dvh;
   padding: 4rem 1rem;
@@ -372,33 +364,6 @@
 }
 
 /* Theme: segmented control + three preview cards with captions. */
-.v2-theme-segment {
-  display: inline-flex;
-  padding: 0.1875rem;
-  border: 1px solid var(--v2-color-border);
-  border-radius: var(--v2-radius-s);
-  background: var(--v2-color-surface2);
-}
-
-.v2-theme-segment-option {
-  min-height: 1.75rem;
-  padding: 0 0.75rem;
-  border: 0;
-  border-radius: 0.375rem;
-  color: var(--v2-color-text2);
-  background: transparent;
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.v2-theme-segment-option[data-selected="true"] {
-  color: var(--v2-color-text);
-  background: var(--v2-color-surface);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
-}
-
 .v2-theme-previews {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -411,13 +376,18 @@
   position: relative;
   display: grid;
   gap: 0.5rem;
-  padding: 0;
+  padding: 0.25rem;
   border: 0;
+  border-radius: var(--v2-radius-s);
   color: inherit;
   background: transparent;
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.v2-theme-preview-card:hover .v2-theme-preview {
+  border-color: var(--v2-color-border2);
 }
 
 .v2-theme-preview {
@@ -656,6 +626,23 @@
     flex-direction: column;
     align-items: stretch;
     gap: 0.5rem;
+  }
+
+  /* In the stacked layout the copy's 16rem basis would become a 16rem height
+     (UX audit v2 A4): both halves size to content, control under the copy. */
+  .v2-settings-row-copy,
+  .v2-settings-row-control {
+    flex: 0 0 auto;
+  }
+
+  .v2-settings-row-control {
+    justify-content: flex-start;
+  }
+
+  /* The horizontal tab strip fades at its clipped edge so the hidden tabs are
+     discoverable (C7). */
+  .v2-settings-nav {
+    mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
   }
 
   .v2-settings-row-control {
@@ -1215,5 +1202,15 @@
   .v2-settings-server-section,
   .v2-settings-server > .v2-settings-disclosure {
     margin-left: 0;
+  }
+}
+
+/* Touch: tabs, switches and the theme cards keep 44px targets (C2). Declared
+   last so it outranks the base rows at equal specificity. */
+@media (hover: none), (pointer: coarse) {
+  .v2-settings-nav-button,
+  .v2-settings-switch,
+  .v2-theme-preview-card {
+    min-height: 2.75rem;
   }
 }

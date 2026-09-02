@@ -55,10 +55,10 @@
   min-height: 2rem;
 }
 
-/* The blank chat has no header at all (PRD §4.7): when neither island has
-   content the bar collapses to zero height (it stays in the grid so the
-   reading column keeps its own row). */
-.v2-live-header:not(:has(.v2-live-title > *, .v2-live-header-actions > *)) {
+/* A header without any content (no model selector, title, or actions)
+   collapses to zero height; it stays in the grid so the reading column keeps
+   its own row. With the model selector the blank chat keeps the bar. */
+.v2-live-header:not(:has(.v2-live-model, .v2-live-title > *, .v2-live-header-actions > *)) {
   min-height: 0;
   height: 0;
   padding: 0;
@@ -78,6 +78,74 @@
 /* The blank chat has no title: the left island disappears entirely. */
 .v2-live-title:empty {
   display: none;
+}
+
+/*
+ * Header model selector (operator decision 2026-09-02): 34px, radius 10,
+ * border2 on surface; hover fills; open/focus takes the accent border and
+ * ring like the composer field. The name ellipsizes after 220px. Locked by an
+ * Assistant it reads in text2 with a lock instead of the chevron.
+ */
+.v2-live-model {
+  display: inline-flex;
+  min-width: 0;
+  height: 2.125rem;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.625rem 0 0.5625rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: 0.625rem;
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--v2-motion-fast),
+    border-color var(--v2-motion-fast),
+    box-shadow var(--v2-motion-fast);
+}
+
+.v2-live-model:hover:not(:disabled) {
+  background: var(--v2-color-hover);
+}
+
+.v2-live-model[aria-expanded="true"] {
+  border-color: var(--v2-color-accent);
+  box-shadow: 0 0 0 3px var(--v2-color-accent-dim);
+}
+
+.v2-live-model:disabled {
+  cursor: default;
+}
+
+.v2-live-model:disabled:not([data-locked]) {
+  color: var(--v2-color-text3);
+}
+
+.v2-live-model[data-locked] {
+  color: var(--v2-color-text2);
+}
+
+.v2-live-model-name {
+  min-width: 0;
+  max-width: 13.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v2-live-model > .v2-icon:last-child {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--v2-color-text2);
+}
+
+.v2-live-model > .v2-monogram {
+  --v2-monogram-size: 1rem;
 }
 
 /* No kicker: the header carries the plain title only (S1 §4.3), preceded by
@@ -154,8 +222,14 @@
   cursor: default;
 }
 
+/* Inline rename takes the whole title width (UX audit 2026-09-02 C10). */
+.v2-live-title:has(> .v2-live-title-rename) {
+  flex: 1 1 auto;
+}
+
 .v2-live-title-rename {
   display: grid;
+  width: 100%;
   min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
@@ -215,14 +289,6 @@
   }
 }
 
-/* Inline folder picker inside the header "⋯"; scrolls locally when long. */
-.v2-live-more-submenu {
-  max-height: 11rem;
-  margin: 0.25rem 0;
-  padding: 0.25rem 0 0.25rem 0.5rem;
-  border-left: 1px solid var(--v2-color-border2);
-  overflow-y: auto;
-}
 
 .v2-live-temporary {
   position: relative;
@@ -695,14 +761,38 @@
     height: auto;
     justify-content: center;
     gap: 0.5rem;
-    padding: 0;
+    /* The centre island sits between the menu island (left) and the "+"
+       island (right); an open chat adds the "⋯" island on the right. */
+    padding: 0 3rem;
     border-bottom: 0;
     background: transparent;
     pointer-events: none;
   }
 
-  .v2-live-header:not(:has(.v2-live-title > *, .v2-live-header-actions > *)) {
+  .v2-workspace-shell[data-chat-active="true"] .v2-live-header {
+    padding-right: 6rem;
+  }
+
+  .v2-live-header:not(:has(.v2-live-model, .v2-live-title > *, .v2-live-header-actions > *)) {
     display: none;
+  }
+
+  /* Islands: menu · model · "+" · "⋯" (PRD §4.8, 2026-09-02). The model
+     selector is the centre pill, sized to its content. */
+  .v2-live-model {
+    max-width: 100%;
+    height: 2.5rem;
+    margin: 0 auto;
+    padding: 0 0.75rem 0 0.625rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: var(--v2-shadow-float);
+    font-size: 0.84375rem;
+    pointer-events: auto;
+  }
+
+  .v2-live-model-name {
+    max-width: none;
   }
 
   .v2-live-title,
@@ -906,5 +996,25 @@
   .v2-run-setup-switch-track,
   .v2-run-setup-switch-track::after {
     transition: none;
+  }
+}
+
+/* Touch (C2): the "⋯" island and the model pill keep 44px targets. */
+@media (max-width: 899px) and ((hover: none) or (pointer: coarse)) {
+  .v2-live-header-actions .v2-icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .v2-live-model {
+    height: 2.75rem;
+  }
+
+  .v2-workspace-shell[data-chat-active="true"] .v2-live-header {
+    padding-right: 6.5rem;
+  }
+
+  .v2-live-header {
+    padding-left: 3.25rem;
   }
 }
