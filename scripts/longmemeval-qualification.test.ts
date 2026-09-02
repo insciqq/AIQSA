@@ -87,13 +87,19 @@ describe("LongMemEval frozen qualification manifest", () => {
     expect(manifest.selection).toEqual(fourth.selection);
     expect(manifest.selection).toEqual(fifth.selection);
     expect(manifest.selection).toEqual(prior.selection);
+    // The manifest records the exact commit and executable-worktree digest
+    // it was qualified on. Whether the current checkout still matches is
+    // enforced where it matters — the benchmark runner refuses a drifted
+    // manifest (`benchmarks/longmemeval/run.ts`) — not by the hermetic lane,
+    // where every product change would otherwise be a permanent failure
+    // until the next paid qualification.
     expect(manifest.source.appCommit)
       .toBe("6683814244b442bc23c57928b80785151caa853b");
-    await expect(currentLongMemEvalQualificationRevision(process.cwd()))
-      .resolves.toEqual({
-        headCommit: manifest.source.appCommit,
-        worktreeSha256: manifest.source.appWorktreeSha256
-      });
+    expect(manifest.source.appWorktreeSha256)
+      .toBe("39807b75ad4070f4d4680f13eeedee09b4c2849f10c234ad50e1049aebc2fce6");
+    const current = await currentLongMemEvalQualificationRevision(process.cwd());
+    expect(current.headCommit).toMatch(/^[a-f0-9]{40}$/u);
+    expect(current.worktreeSha256).toMatch(/^[a-f0-9]{64}$/u);
   });
 
   it("binds every selected id to its frozen upstream category", async () => {
