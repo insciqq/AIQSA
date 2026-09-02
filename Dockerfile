@@ -37,8 +37,10 @@ FROM runtime-deps AS runtime-build
 
 ENV NODE_ENV=production
 
+ARG AIQSA_BUILD_NODE_OPTIONS=""
+
 COPY . .
-RUN npm run build
+RUN NODE_OPTIONS="$AIQSA_BUILD_NODE_OPTIONS" npm run build
 
 # Retain the direct installation-tool and isolated PDF-worker roots and let npm
 # preserve their complete locked transitive closure. Deriving versions from the

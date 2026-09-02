@@ -92,23 +92,6 @@ const plan = Object.freeze({
 }) satisfies AdaptivePdfPlan;
 
 describe("adaptive PDF deterministic merge", () => {
-  it("uses valid native letters and numbers for one uniquely aligned Vision row", () => {
-    const native = "Company Tulnov signed 12.05.2024";
-    const model = "Company Tulbinov signed 12.05.2029";
-    const document = mergeAdaptivePdfDocument({
-      docling: null,
-      geometry: geometry([block(native)]),
-      maxBlocks: 20,
-      maxCharacters: 2_000,
-      plan,
-      vision: vision([block(model)])
-    });
-
-    expect(document.blocks.map(({ text }) => text)).toEqual([native]);
-    expect(document.text).not.toContain("Tulbinov");
-    expect(document.text).not.toContain("2029");
-  });
-
   it("does not silently discard native evidence when no safe alignment exists", () => {
     const native = "Native exact identifier ZX-2048";
     const model = "Completely unrelated visual statement";

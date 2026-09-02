@@ -449,7 +449,7 @@ describe("Composer v2", () => {
           family: "openai",
           id: "openai-work",
           models: ["gpt-5.2", "gpt-5.2-mini"],
-          name: "Custom OpenAI · codex-lb.psaux.info · ref 0N0FNN"
+          name: "Custom OpenAI · provider.invalid · ref 0N0FNN"
         }, {
           family: "google",
           id: "google-work",
@@ -463,7 +463,7 @@ describe("Composer v2", () => {
     const trigger = screen.getByRole("button", { name: "GPT-5.2" });
     expect(trigger.textContent).toBe("GPT-5.2");
     const surface = screen.getByTestId("composer-v2").textContent ?? "";
-    expect(surface).not.toContain("codex-lb.psaux.info");
+    expect(surface).not.toContain("provider.invalid");
     expect(surface).not.toContain("ref 0N0FNN");
     expect(surface).not.toContain("Custom OpenAI");
   });
