@@ -322,7 +322,7 @@ test("requires explicit removal before a governed Assistant control changes", as
     await expect(page.getByTestId("composer-assistant-removed-notice")).toHaveCount(0);
 
     // Model parameters live behind the model chip, which the Assistant locks.
-    const modelTrigger = page.locator(".v2-composer-model-trigger");
+    const modelTrigger = page.getByTestId("header-model-trigger");
     await expect(modelTrigger).toBeDisabled();
     await expect(modelTrigger).toHaveAttribute("title", "Managed by the Assistant");
 

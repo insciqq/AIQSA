@@ -246,52 +246,38 @@ export function SettingsV2({
               <SettingsRowV2
                 title="Theme"
                 description="Applies immediately and is saved only in this browser."
-              >
-                <div className="v2-theme-segment" role="radiogroup" aria-label="Theme">
-                  {AIQSA_THEMES.map((theme, index) => {
-                    const selected = theme.id === themeId;
-                    return (
-                      <button
-                        ref={(node) => { themeRefs.current[index] = node; }}
-                        aria-checked={selected}
-                        aria-label={`Use ${theme.name} theme, ${theme.description}`}
-                        className="v2-theme-segment-option v2-focusable"
-                        data-selected={selected || undefined}
-                        key={theme.id}
-                        role="radio"
-                        tabIndex={selected ? 0 : -1}
-                        type="button"
-                        onClick={() => onThemeChange(theme.id)}
-                        onKeyDown={(event) => handleThemeKeyDown(event, index)}
-                      >
-                        {theme.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </SettingsRowV2>
-              {/* Decorative previews: the radios above are the control. */}
-              <div className="v2-theme-previews" aria-hidden="true">
-                {AIQSA_THEMES.map((theme) => (
-                  <button
-                    className="v2-theme-preview-card"
-                    data-selected={theme.id === themeId || undefined}
-                    key={theme.id}
-                    tabIndex={-1}
-                    type="button"
-                    onClick={() => onThemeChange(theme.id)}
-                  >
-                    <span className="v2-theme-preview" data-preview-theme={theme.id}>
-                      <span className="v2-theme-preview-rail" />
-                      <span className="v2-theme-preview-composer"><span /></span>
-                    </span>
-                    <span className="v2-theme-preview-copy">
-                      <strong>{theme.name}</strong>
-                      <small>{THEME_CAPTIONS[theme.id]}</small>
-                    </span>
-                    {theme.id === themeId ? <UiV2Icon className="v2-theme-preview-check" name="check" /> : null}
-                  </button>
-                ))}
+              />
+              {/* The preview cards are the one theme control (a radiogroup;
+                  UX audit 2026-09-02 B2): no second segment above them. */}
+              <div className="v2-theme-previews" role="radiogroup" aria-label="Theme">
+                {AIQSA_THEMES.map((theme, index) => {
+                  const selected = theme.id === themeId;
+                  return (
+                    <button
+                      ref={(node) => { themeRefs.current[index] = node; }}
+                      aria-checked={selected}
+                      aria-label={`Use ${theme.name} theme, ${theme.description}`}
+                      className="v2-theme-preview-card v2-focusable"
+                      data-selected={selected || undefined}
+                      key={theme.id}
+                      role="radio"
+                      tabIndex={selected ? 0 : -1}
+                      type="button"
+                      onClick={() => onThemeChange(theme.id)}
+                      onKeyDown={(event) => handleThemeKeyDown(event, index)}
+                    >
+                      <span className="v2-theme-preview" data-preview-theme={theme.id}>
+                        <span className="v2-theme-preview-rail" />
+                        <span className="v2-theme-preview-composer"><span /></span>
+                      </span>
+                      <span className="v2-theme-preview-copy">
+                        <strong>{theme.name}</strong>
+                        <small>{THEME_CAPTIONS[theme.id]}</small>
+                      </span>
+                      {selected ? <UiV2Icon className="v2-theme-preview-check" name="check" /> : null}
+                    </button>
+                  );
+                })}
               </div>
               {generalSlot}
             </section>

@@ -927,7 +927,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     }]);
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
   await chooseSearchStrategy(page, "^Off");
-  await expect(page.locator(".v2-composer-model-trigger")).toContainText("GPT-5.6 Sol");
+  await expect(page.getByTestId("header-model-trigger")).toContainText("GPT-5.6 Sol");
   const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();
   const question = `First question after Quick setup ${randomUUID()}`;

@@ -75,7 +75,7 @@ async function prepareFakeBlankChat(page: Page) {
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
   await chooseSearchStrategy(page, "Off");
-  await expect(page.locator(".v2-composer-model-trigger")).toContainText("Fake QSA");
+  await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
 }
 
 async function waitForActiveChatId(page: Page): Promise<string> {

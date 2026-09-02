@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  UiV2Button,
   UiV2Icon,
   UiV2IconButton,
   UiV2MenuItem,
@@ -74,10 +75,17 @@ function ProjectFolderActions({
 export function ProjectNavigationV2({
   activeChatId,
   controller,
+  landing = false,
   onNavigate
 }: Readonly<{
   activeChatId: string | null;
   controller: ProjectWorkspaceController;
+  /**
+   * The rail/drawer Projects landing: a title, one paragraph on what a
+   * Project is, a text "New project" button and the list with an empty
+   * state (UX audit 2026-09-02 A5). Off, the block is the sidebar section.
+   */
+  landing?: boolean;
   onNavigate(): void;
 }>) {
   const selected = controller.detail;
@@ -125,15 +133,30 @@ export function ProjectNavigationV2({
   );
 
   return (
-    <section className="v2-project-navigation" aria-label="Shared projects">
-      <div className="v2-project-navigation-heading">
-        <span>Projects</span>
-        <UiV2IconButton
-          icon="plus"
-          label="Create project"
-          onClick={controller.actions.openCreate}
-        />
-      </div>
+    <section
+      className="v2-project-navigation"
+      aria-label="Shared projects"
+      data-landing={landing || undefined}
+    >
+      {landing ? (
+        <div className="v2-project-landing-intro">
+          <h2>Projects</h2>
+          <p>
+            A Project is a shared workspace: its chats, folders, models, Knowledge and
+            tools are visible to every member. Start one to work on a topic together.
+          </p>
+          <UiV2Button icon="plus" onClick={controller.actions.openCreate}>New project</UiV2Button>
+        </div>
+      ) : (
+        <div className="v2-project-navigation-heading">
+          <span>Projects</span>
+          <UiV2IconButton
+            icon="plus"
+            label="Create project"
+            onClick={controller.actions.openCreate}
+          />
+        </div>
+      )}
 
       {controller.listLoading && controller.projects.length === 0 ? (
         <p className="v2-project-navigation-note">Loading shared workspaces…</p>
@@ -143,9 +166,20 @@ export function ProjectNavigationV2({
           <button type="button" onClick={() => void controller.actions.refreshList()}>Retry</button>
         </div>
       ) : controller.projects.length === 0 ? (
-        // No helper paragraph: the heading's "+" is the create entry, and the
-        // empty block should not cost sidebar height (UX audit F10).
-        null
+        landing ? (
+          <p className="v2-project-landing-empty">No projects yet. Your first Project appears here.</p>
+        ) : (
+          // The empty sidebar section is one "New project" row (UX audit
+          // 2026-09-02 B5) rather than a bare heading with a "+".
+          <button
+            className="v2-project-row v2-project-row-cta v2-focusable"
+            type="button"
+            onClick={controller.actions.openCreate}
+          >
+            <UiV2Icon name="plus" />
+            <span>New project</span>
+          </button>
+        )
       ) : (
         <div className="v2-project-list">
           {[...controller.projects.filter((project) => project.status === "ACTIVE"), ...controller.projects.filter((project) => project.status !== "ACTIVE")].map((project) => (

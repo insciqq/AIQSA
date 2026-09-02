@@ -235,10 +235,10 @@ export function SkillLibraryDialog({
         ref={dialogRef}
         aria-label="Skills"
         aria-modal="true"
-        className="flex h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-t-2xl border border-line bg-canvas shadow-2xl sm:h-[min(780px,90dvh)] sm:rounded-2xl"
+        className="flex h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-t-2xl border border-trace-subtle bg-app-canvas shadow-2xl sm:h-[min(780px,90dvh)] sm:rounded-2xl"
         role="dialog"
       >
-        <header className="flex items-center gap-3 border-b border-line px-4 py-3 sm:px-6">
+        <header className="flex items-center gap-3 border-b border-trace-subtle px-4 py-3 sm:px-6">
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold text-ink">Skills</h2>
             <p className="mt-0.5 text-xs text-ink-muted">Reusable text instructions for a conversation.</p>
@@ -260,15 +260,15 @@ export function SkillLibraryDialog({
         </header>
 
         <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] md:grid-cols-[minmax(0,1fr)_minmax(340px,0.82fr)] md:grid-rows-1">
-          <section className="flex min-h-0 flex-col border-line md:border-r" aria-label="Skill library">
-            <div className="border-b border-line p-4">
+          <section className="flex min-h-0 flex-col border-trace-subtle md:border-r" aria-label="Skill library">
+            <div className="border-b border-trace-subtle p-4">
               <label className="relative block">
                 <span className="sr-only">Search Skills</span>
                 <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted">
                   <UiV2Icon name="search" />
                 </span>
                 <input
-                  className="v2-focusable w-full rounded-xl border border-line bg-surface py-2.5 pl-9 pr-3 text-sm text-ink"
+                  className="v2-focusable w-full rounded-xl border border-trace-subtle bg-surface py-2.5 pl-9 pr-3 text-sm text-ink"
                   placeholder="Search name, description, or author"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
@@ -318,7 +318,7 @@ export function SkillLibraryDialog({
                           <button
                             aria-label={`${selected ? "Remove" : "Use"} ${skill.name}`}
                             aria-pressed={selected}
-                            className="v2-focusable min-w-16 shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs font-medium text-proof disabled:opacity-40"
+                            className="v2-focusable min-w-16 shrink-0 rounded-lg border border-trace-subtle px-2 py-1.5 text-xs font-medium text-proof disabled:opacity-40"
                             disabled={skill.archived || atLimit || busy}
                             type="button"
                             onClick={() => toggle(skill)}
@@ -350,7 +350,7 @@ export function SkillLibraryDialog({
                   {data?.nextCursor ? (
                     <div className="px-3 py-4 text-center">
                       <button
-                        className="v2-focusable rounded-lg border border-line px-4 py-2 text-xs font-medium text-ink-secondary disabled:opacity-50"
+                        className="v2-focusable rounded-lg border border-trace-subtle px-4 py-2 text-xs font-medium text-ink-secondary disabled:opacity-50"
                         disabled={loadingMore}
                         type="button"
                         onClick={() => void loadMoreSkillLibrary().catch(() => undefined)}
@@ -391,7 +391,7 @@ export function SkillLibraryDialog({
                   Name
                   <input
                     autoFocus
-                    className="v2-focusable mt-1.5 w-full rounded-xl border border-line bg-canvas px-3 py-2.5 text-sm text-ink"
+                    className="v2-focusable mt-1.5 w-full rounded-xl border border-trace-subtle bg-app-canvas px-3 py-2.5 text-sm text-ink"
                     maxLength={SKILL_NAME_MAX_LENGTH}
                     value={editor.draft.name}
                     onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, name: event.target.value } })}
@@ -400,7 +400,7 @@ export function SkillLibraryDialog({
                 <label className="mt-4 block text-xs font-medium text-ink-secondary">
                   Description
                   <textarea
-                    className="v2-focusable mt-1.5 min-h-20 w-full resize-y rounded-xl border border-line bg-canvas px-3 py-2.5 text-sm leading-5 text-ink"
+                    className="v2-focusable mt-1.5 min-h-20 w-full resize-y rounded-xl border border-trace-subtle bg-app-canvas px-3 py-2.5 text-sm leading-5 text-ink"
                     maxLength={SKILL_DESCRIPTION_MAX_LENGTH}
                     value={editor.draft.description}
                     onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, description: event.target.value } })}
@@ -409,7 +409,7 @@ export function SkillLibraryDialog({
                 <label className="mt-4 block text-xs font-medium text-ink-secondary">
                   Instructions
                   <textarea
-                    className="v2-focusable mt-1.5 min-h-64 w-full resize-y rounded-xl border border-line bg-canvas px-3 py-3 font-mono text-[13px] leading-6 text-ink"
+                    className="v2-focusable mt-1.5 min-h-64 w-full resize-y rounded-xl border border-trace-subtle bg-app-canvas px-3 py-3 font-mono text-[13px] leading-6 text-ink"
                     maxLength={SKILL_INSTRUCTIONS_MAX_LENGTH}
                     placeholder="Describe the workflow, decision points, and expected result."
                     value={editor.draft.instructions}
@@ -457,12 +457,12 @@ export function SkillLibraryDialog({
                 {detail.description ? (
                   <p className="mt-5 text-sm leading-6 text-ink-secondary">{detail.description}</p>
                 ) : null}
-                <div className="mt-6 border-t border-line pt-5">
+                <div className="mt-6 border-t border-trace-subtle pt-5">
                   <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Instructions</h4>
                   <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-ink">{detail.instructions}</pre>
                 </div>
 
-                <div className="mt-7 border-t border-line pt-5">
+                <div className="mt-7 border-t border-trace-subtle pt-5">
                   <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Current audiences</h4>
                   {detail.audiences.length === 0 ? (
                     <p className="mt-3 text-xs text-ink-muted">
@@ -494,10 +494,10 @@ export function SkillLibraryDialog({
 
                 {detail.owned ? (
                   <>
-                    <div className="mt-7 flex flex-wrap gap-2 border-t border-line pt-5">
+                    <div className="mt-7 flex flex-wrap gap-2 border-t border-trace-subtle pt-5">
                       {detail.canEdit ? (
                         <button
-                          className="v2-focusable rounded-lg border border-line bg-canvas px-3 py-2 text-xs font-medium text-ink-secondary"
+                          className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs font-medium text-ink-secondary"
                           type="button"
                           onClick={() => setEditor(editorFor(detail))}
                         >
@@ -506,7 +506,7 @@ export function SkillLibraryDialog({
                       ) : null}
                       {detail.archived ? (
                         <button
-                          className="v2-focusable rounded-lg border border-line bg-canvas px-3 py-2 text-xs font-medium text-ink-secondary disabled:opacity-50"
+                          className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs font-medium text-ink-secondary disabled:opacity-50"
                           disabled={busy}
                           type="button"
                           onClick={() => void restoreArchived(detail)}
@@ -517,7 +517,7 @@ export function SkillLibraryDialog({
                     </div>
 
                     {detail.canPublish && !detail.archived && data ? (
-                      <div className="mt-7 border-t border-line pt-5">
+                      <div className="mt-7 border-t border-trace-subtle pt-5">
                         <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Add audience</h4>
                         <div className="mt-3 flex flex-wrap gap-2">
                           {data.publishableWorkspaces
@@ -527,7 +527,7 @@ export function SkillLibraryDialog({
                             .map((workspace) => (
                               <button
                                 key={workspace.id}
-                                className="v2-focusable rounded-lg border border-line bg-canvas px-3 py-2 text-xs text-ink-secondary disabled:opacity-50"
+                                className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs text-ink-secondary disabled:opacity-50"
                                 disabled={busy}
                                 type="button"
                                 onClick={() => void share(detail, {
@@ -541,7 +541,7 @@ export function SkillLibraryDialog({
                           {data.viewer.canPublishInstallation &&
                           !detail.audiences.some((audience) => audience.kind === "everyone") ? (
                             <button
-                              className="v2-focusable rounded-lg border border-line bg-canvas px-3 py-2 text-xs text-ink-secondary disabled:opacity-50"
+                              className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs text-ink-secondary disabled:opacity-50"
                               disabled={busy}
                               type="button"
                               onClick={() => void share(detail, { scope: "installation" }, "Shared with everyone.")}
@@ -554,7 +554,7 @@ export function SkillLibraryDialog({
                     ) : null}
 
                     {detail.canDelete ? (
-                      <div className="mt-8 border-t border-line pt-5">
+                      <div className="mt-8 border-t border-trace-subtle pt-5">
                         <h4 className="text-xs font-semibold uppercase tracking-wide text-critical">Delete Skill</h4>
                         {!confirmDelete ? (
                           <button

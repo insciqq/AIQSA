@@ -50,7 +50,11 @@ import {
   EditBranchStripV2
 } from "@/features/branches-v2/BranchesV2";
 import { AssistantPickerV2 } from "@/features/composer-v2/AssistantPickerV2";
-import { ComposerV2 } from "@/features/composer-v2/ComposerV2";
+import {
+  ComposerV2,
+  type ComposerV2Layer,
+  type ComposerV2LayerController
+} from "@/features/composer-v2/ComposerV2";
 import {
   ConversationTurnV2,
   ConversationV2,
@@ -113,7 +117,7 @@ import type {
   ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import { RunSetupV2 } from "./RunSetupV2";
-import { WorkspaceHeaderV2 } from "./WorkspaceHeaderV2";
+import { WorkspaceHeaderV2, type WorkspaceHeaderModelSelectorV2 } from "./WorkspaceHeaderV2";
 import { LibrarySurfaceV2 } from "./WorkspaceWelcomeV2";
 import {
   useEffect,
@@ -238,6 +242,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [mcpKey, setMcpKey] = useState(0);
   const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
+  const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
@@ -249,6 +254,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
   );
   const composerDockRef = useRef<HTMLDivElement>(null);
+  const composerLayerController = useRef<ComposerV2LayerController | null>(null);
   const personalMemoryOpen = settings.memory.open;
   const closePersonalMemory = settings.closeMemory;
   const libraryOpen = Boolean(settings.library || settings.knowledge || personalMemoryOpen);
@@ -435,6 +441,34 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (controls.temperature.supported) parts.push(`Temp ${composer.temperature}`);
     return parts.length > 0 ? parts.join(" · ") : null;
   }, [composer.currentParameterControls, composer.reasoningEffort, composer.temperature]);
+  // Header model selector (operator decision 2026-09-02): the trigger lives
+  // in the header on every width and anchors the composer-owned picker; the
+  // selected Assistant locks it, an absent catalog or a live answer disables it.
+  const headerModelSelector = useMemo<WorkspaceHeaderModelSelectorV2>(() => {
+    const catalog = composer.catalog;
+    const model = composer.currentModel;
+    const provider = catalog?.providers.find((candidate) => candidate.id === model?.provider);
+    const assistant = composer.assistant.selected;
+    const noModels = Boolean(catalog && catalog.models.length === 0);
+    const modelName = model?.displayName ?? (noModels ? "No models available" : "Choose model");
+    return {
+      disabled: !catalog || Boolean(composer.catalogError) || noModels || thread.activeChatStreaming,
+      expanded: composerLayer === "model",
+      family: provider?.family ?? null,
+      label: provider?.name ?? model?.provider ?? "",
+      locked: Boolean(assistant),
+      lockedReason: "Managed by the Assistant",
+      name: assistant ? `${assistant.name} · ${modelName}` : modelName,
+      onToggle: (anchor) => composerLayerController.current?.toggle("model", anchor)
+    };
+  }, [
+    composer.assistant.selected,
+    composer.catalog,
+    composer.catalogError,
+    composer.currentModel,
+    composerLayer,
+    thread.activeChatStreaming
+  ]);
   const composerSurface = (
     <ComposerV2
       activeRun={thread.activeChatStreaming}
@@ -455,10 +489,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       hasReadyAttachments={attachmentItems.some((item) => !item.blocksSend)}
+      layerController={composerLayerController}
       modelParametersSummary={modelParametersSummary}
       onAttachmentCountLimitExceeded={composer.composerActions.rejectAttachmentCount}
       onDismissAssistantRemovedNotice={composer.assistant.clearRemovedNotice}
       onDraftChange={composer.composerActions.changeDraft}
+      onLayerChange={setComposerLayer}
       onMakeModelDefault={composer.makeModelDefault}
       onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
       onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
@@ -796,7 +832,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           }}
           chatStateFor={navigationChatState}
           currentNewChatMode={currentNewChatMode}
-          editingChatId={workspace.pane.state.editingChatId}
+          editingChatId={workspace.pane.state.editingChatOrigin === "row" ? workspace.pane.state.editingChatId : null}
           editingChatTitle={workspace.pane.state.editingChatTitle}
           editingFolderId={workspace.pane.state.editingFolderId}
           editingFolderName={workspace.pane.state.editingFolderName}
@@ -812,6 +848,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onCancelFolderRename={workspace.pane.actions.cancelFolderEdit}
           onChangeChatRename={workspace.pane.actions.changeEditingChatTitle}
           onChangeFolderRename={workspace.pane.actions.changeEditingFolderName}
+          onBranches={(chat) => {
+            selectNavigationChat(chat);
+            branches.show();
+          }}
+          onCopyThread={(chat) => {
+            const full = currentWorkspaceChat(chat.id);
+            if (full) void thread.copyVisibleThread(full);
+          }}
           onCreateFolder={(parentId, name) => workspace.pane.actions.createFolder(parentId, name)}
           onDelete={permanentChatDeletionAvailable ? (chat) => {
             const full = currentWorkspaceChat(chat.id);
@@ -823,9 +867,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) void workspace.pane.actions.deleteFolder(full);
             else void workspace.pane.actions.retry();
           }}
-          onExport={(chat) => {
+          onExport={(chat, format) => {
             const full = currentWorkspaceChat(chat.id);
-            if (full) workspace.pane.actions.exportChat(full);
+            if (full) workspace.pane.actions.exportChat(full, format);
           }}
           onFavorite={(chat) => {
             const full = currentWorkspaceChat(chat.id);
@@ -849,7 +893,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onNewChat={createNavigationChat}
           onRenameChat={(chat) => {
             const full = currentWorkspaceChat(chat.id);
-            if (full) workspace.pane.actions.startChatEdit(full);
+            if (full) workspace.pane.actions.startChatEdit(full, "row");
           }}
           onRenameFolder={(folder) => {
             const full = currentWorkspaceFolder(folder.id);
@@ -872,10 +916,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ? () => workspace.projects.actions.openSettings("general")
             : settings.open}
           projectContextActive={Boolean(workspace.projects.selectedProjectId)}
-          projectsSlot={(onNavigate) => (
+          projectsSlot={(onNavigate, { landing }) => (
             <ProjectNavigationV2
               activeChatId={session.activeChatId}
               controller={workspace.projects}
+              landing={landing}
               onNavigate={onNavigate}
             />
           )}
@@ -900,7 +945,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               deleteDisabled={thread.activeChatStreaming || temporarySession || projectContext}
               editingTitle={
                 session.activeChatId &&
-                workspace.pane.state.editingChatId === session.activeChatId
+                workspace.pane.state.editingChatId === session.activeChatId &&
+                workspace.pane.state.editingChatOrigin === "header"
                   ? workspace.pane.state.editingChatTitle
                   : null
               }
@@ -911,6 +957,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   controller={workspace.projects}
                 />
               )}
+              modelSelector={headerModelSelector}
               moveDisabled={projectContext}
               onArchive={withActiveChat((full) => {
                 if (projectContext) {
@@ -949,7 +996,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onRenameCancel={workspace.pane.actions.cancelChatEdit}
               onRenameChange={workspace.pane.actions.changeEditingChatTitle}
               onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
-              onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full))}
+              onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full, "header"))}
               renameDisabled={!canRenameActiveProjectChat || Boolean(projectMutationReason)}
               onShare={() => void session.shareActiveBranch()}
               shareDisabled={temporarySession || Boolean(projectMutationReason) || Boolean(projectContext && (
@@ -992,7 +1039,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               unavailable={Boolean(thread.activeChatDetailError && session.activeChatId && !thread.activeChatDetailLoading)}
             />
             {conversationMessages.length > 0 ? (
-              <div className="v2-live-composer-dock" ref={composerDockRef}>
+              <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={composerDockRef}>
                 {composer.operationError ? (
                   <p className="v2-live-composer-error" role={composer.operationErrorLive ? "alert" : "status"}>
                     {composer.operationError}
@@ -1079,6 +1126,26 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   checked={composer.notificationSoundEnabled}
                   label="Answer sound"
                   onChange={() => composer.toggleNotificationSound()}
+                />
+              </SettingsRowV2>
+              <SettingsRowV2
+                description="Show numbered source citations inside answers."
+                title="Citations"
+              >
+                <SettingsSwitchV2
+                  checked={composer.showCitations}
+                  label="Citations"
+                  onChange={() => composer.toggleCitationsVisibility()}
+                />
+              </SettingsRowV2>
+              <SettingsRowV2
+                description="Show the model's reasoning as a disclosure above the answer."
+                title="Reasoning blocks"
+              >
+                <SettingsSwitchV2
+                  checked={composer.showReasoningBlocks}
+                  label="Reasoning blocks"
+                  onChange={() => composer.toggleReasoningBlockVisibility()}
                 />
               </SettingsRowV2>
               <SettingsRowV2

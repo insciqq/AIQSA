@@ -375,18 +375,30 @@ function MemorySourceCard({ source }: Readonly<{ source: MemoryAnswerSource }>) 
   );
 }
 
+/**
+ * Memory recall folds under one quiet line ("Used N memories ›"), collapsed
+ * by default (UX audit 2026-09-02 B1): the transcript excerpts and the
+ * Correct / Forget / Not relevant feedback live inside the fold, Forget
+ * keeping its destructive tone there.
+ */
 function MemorySourcesV2({ sources }: Readonly<{ sources: readonly MemoryAnswerSource[] }>) {
   const headingId = `answer-memory-sources-heading-${useId()}`;
   if (sources.length === 0) return null;
   return (
-    <section
+    <details
       aria-labelledby={headingId}
       className="v2-memory-sources"
       data-testid="answer-memory-sources"
     >
-      <h3 id={headingId}>
-        {formatMemoryUiCopy("source.heading", { count: sources.length })}
-      </h3>
+      <summary className="v2-focusable">
+        <UiV2Icon name="memory" />
+        <h3 id={headingId}>
+          {sources.length === 1
+            ? memoryUiCopy("source.usedOne")
+            : formatMemoryUiCopy("source.usedMany", { count: sources.length })}
+        </h3>
+        <UiV2Icon className="v2-memory-sources-chevron" name="chevron-right" />
+      </summary>
       <div className="v2-memory-source-list">
         {sources.map((source, index) => (
           <MemorySourceCard
@@ -397,7 +409,7 @@ function MemorySourcesV2({ sources }: Readonly<{ sources: readonly MemoryAnswerS
           />
         ))}
       </div>
-    </section>
+    </details>
   );
 }
 

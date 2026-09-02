@@ -10,7 +10,12 @@ import {
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
 import { useRef, useState } from "react";
-import { ComposerV2, type ComposerV2Layer } from "@/features/composer-v2/ComposerV2";
+import {
+  ComposerV2,
+  type ComposerV2Layer,
+  type ComposerV2LayerController
+} from "@/features/composer-v2/ComposerV2";
+import { HeaderModelSelectorV2 } from "@/features/workspace-v2/WorkspaceHeaderV2";
 import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachmentPresentation";
 
 export type ComposerGalleryState =
@@ -336,6 +341,16 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   );
   const attachmentSequenceRef = useRef(0);
   const assistant = state === "assistant" ? config.assistants[0] ?? null : null;
+  // The model is chosen from the header selector, which anchors the
+  // composer-owned picker through its layer controller.
+  const layerController = useRef<ComposerV2LayerController | null>(null);
+  const [openLayer, setOpenLayer] = useState<ComposerV2Layer>(initialLayer(state));
+  const currentModel = config.catalog.models.find((model) =>
+    model.modelId === selectedModel.modelId && model.provider === selectedModel.provider
+  );
+  const currentProvider = config.catalog.providers.find((provider) => provider.id === currentModel?.provider);
+  const noModels = config.catalog.models.length === 0;
+  const modelName = currentModel?.displayName ?? (noModels ? "No models available" : "Choose model");
 
   const sidebar = (onClose: () => void) => (
     <NavigationSidebar
@@ -367,6 +382,19 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
         sidebar={sidebar}
       >
         <main className="v2-composer-gallery-main" data-composer-state={state}>
+          <header className="v2-live-header">
+            <HeaderModelSelectorV2
+              selector={{
+                disabled: state === "error" || noModels,
+                expanded: openLayer === "model",
+                family: currentProvider?.family ?? null,
+                label: currentProvider?.name ?? "",
+                locked: Boolean(assistant),
+                name: assistant ? `${assistant.name} · ${modelName}` : modelName,
+                onToggle: (anchor) => layerController.current?.toggle("model", anchor)
+              }}
+            />
+          </header>
           <ConversationV2
             messages={[{
               content: "Собери квартальный отчёт и отметь источники.",
@@ -386,10 +414,12 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               configError={state === "error"}
               draft={draft}
               initialLayer={initialLayer(state)}
+              layerController={layerController}
               mcpSelection={mcpSelection}
               modelParametersSummary="Reasoning medium · Temp 1.0"
               onAttachmentCountLimitExceeded={() => undefined}
               onDraftChange={setDraft}
+              onLayerChange={setOpenLayer}
               onMakeModelDefault={() => undefined}
               onOpenAssistantPicker={() => undefined}
               onOpenKnowledgeLibrary={() => undefined}

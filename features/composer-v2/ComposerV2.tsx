@@ -21,7 +21,7 @@ import {
   type UiV2IconName,
   UiV2Icon,
   UiV2IconButton,
-  UiV2Monogram
+  UiV2ProviderMark
 } from "@/components/ui-v2";
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
@@ -47,13 +47,16 @@ import {
   KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH,
   type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
+import { createPortal } from "react-dom";
 import {
   useEffect,
   useId,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type Ref,
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -63,6 +66,16 @@ import {
 } from "react";
 
 export type ComposerV2Layer = "add" | "knowledge" | "model" | "search" | "tools" | null;
+
+/**
+ * Imperative handle for openers outside the composer (the header model
+ * selector): the composer keeps owning the layer, its dismissal, keyboard
+ * contract, and focus return while the anchor lives anywhere in the document.
+ */
+export type ComposerV2LayerController = Readonly<{
+  close(): void;
+  toggle(layer: Exclude<ComposerV2Layer, null>, anchor: HTMLButtonElement): void;
+}>;
 
 const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
@@ -101,6 +114,27 @@ function layerAnchorLeft(
   return Math.round(Math.max(0, Math.min(openerBox.left - composerBox.left, max)));
 }
 
+/**
+ * Viewport position of a layer opened from outside the composer: directly
+ * below its anchor, kept inside the viewport horizontally.
+ */
+function externalLayerAnchor(
+  anchor: HTMLElement,
+  kind: Exclude<ComposerV2Layer, null>
+): Readonly<{ left: number; top: number }> {
+  const box = anchor.getBoundingClientRect();
+  const margin = 8;
+  const maxLeft = Math.max(margin, window.innerWidth - LAYER_WIDTH_PX[kind] - margin);
+  return {
+    left: Math.round(Math.min(Math.max(margin, box.left), maxLeft)),
+    top: Math.round(box.bottom + margin)
+  };
+}
+
+/* An anchored popover wants this much room; with less above the composer it
+   flips below when there is more room there (blank chat, UX audit A11). */
+const LAYER_PREFERRED_PX = 480;
+
 const EMPTY_MODELS: readonly CatalogModel[] = [];
 const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
 
@@ -118,6 +152,8 @@ export type ComposerV2Props = Readonly<{
   editStatusSlot?: ReactNode;
   hasReadyAttachments?: boolean;
   initialLayer?: ComposerV2Layer;
+  /** Lets an opener outside the composer (the header model selector) toggle a layer. */
+  layerController?: Ref<ComposerV2LayerController | null>;
   /** "Reasoning medium · Temp 1.0" for the picker's Parameters row. */
   modelParametersSummary?: string | null;
   onAttachmentCountLimitExceeded?(input: {
@@ -127,6 +163,8 @@ export type ComposerV2Props = Readonly<{
   }): void;
   onDraftChange(value: string): void;
   onDismissAssistantRemovedNotice?(): void;
+  /** Observes which layer is open (the header selector mirrors it as aria-expanded). */
+  onLayerChange?(layer: ComposerV2Layer): void;
   onMakeModelDefault?(model: CatalogModel): void;
   onOpenAssistantPicker?(): void;
   /** Opens the Library's Knowledge section ("Manage in Library ›"). */
@@ -356,10 +394,12 @@ export function ComposerV2({
   editStatusSlot,
   hasReadyAttachments = false,
   initialLayer = null,
+  layerController,
   modelParametersSummary = null,
   onAttachmentCountLimitExceeded,
   onDraftChange,
   onDismissAssistantRemovedNotice,
+  onLayerChange,
   onMakeModelDefault,
   onOpenAssistantPicker,
   onOpenKnowledgeLibrary,
@@ -400,6 +440,12 @@ export function ComposerV2({
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
   const [layerLeft, setLayerLeft] = useState(0);
+  const [externalAnchor, setExternalAnchor] = useState<Readonly<{ left: number; top: number }> | null>(null);
+  const [layerPlacement, setLayerPlacement] = useState<Readonly<{
+    below: boolean;
+    spaceAbove: number;
+    spaceBelow: number;
+  }>>({ below: false, spaceAbove: 0, spaceBelow: 0 });
   const [modelQuery, setModelQuery] = useState("");
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeSourceSearch, setKnowledgeSourceSearch] = useState<Readonly<{
@@ -411,7 +457,6 @@ export function ComposerV2({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
-  const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const knowledgeTriggerRef = useRef<HTMLButtonElement>(null);
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
@@ -425,14 +470,6 @@ export function ComposerV2({
   const currentModel = models.find(
     (model) => model.modelId === selectedModelId && model.provider === selectedProvider
   );
-  // The chip monogram comes from the provider family (a known vendor glyph),
-  // never from the operator-authored provider name, which may carry hosts.
-  const currentProviderGlyph = currentModel
-    ? (() => {
-        const provider = providers.find((candidate) => candidate.id === currentModel.provider);
-        return provider?.family || provider?.name || currentModel.provider;
-      })()
-    : "";
   // The context gauge is not a permanent control (PRD §4.5): it appears only
   // once the estimate reaches 70% of the safe input budget.
   const contextGaugeVisible = contextStats
@@ -593,7 +630,6 @@ export function ComposerV2({
       if (
         layerRef.current?.contains(target) ||
         plusTriggerRef.current?.contains(target) ||
-        modelTriggerRef.current?.contains(target) ||
         openerRef.current?.contains(target)
       ) {
         return;
@@ -615,15 +651,59 @@ export function ComposerV2({
     openerRef.current = opener;
     if (next === "model") setModelQuery("");
     if (next === "knowledge") setKnowledgeQuery("");
-    setLayerLeft(layerAnchorLeft(opener, composerRef.current, next));
+    const external = !composerRef.current?.contains(opener);
+    setExternalAnchor(external ? externalLayerAnchor(opener, next) : null);
+    setLayerLeft(external ? 0 : layerAnchorLeft(opener, composerRef.current, next));
+    // Free room above and below the composer inside its scroll owner (the
+    // reading column; the viewport when there is none).
+    const composerBox = composerRef.current?.getBoundingClientRect();
+    const ownerBox = composerRef.current?.closest(".v2-conversation-scroll")?.getBoundingClientRect();
+    const spaceAbove = composerBox ? Math.max(0, composerBox.top - (ownerBox?.top ?? 0)) : 0;
+    const spaceBelow = composerBox
+      ? Math.max(0, (ownerBox?.bottom ?? window.innerHeight) - composerBox.bottom)
+      : 0;
+    setLayerPlacement({
+      below: !external && spaceAbove < LAYER_PREFERRED_PX && spaceBelow > spaceAbove,
+      spaceAbove: Math.round(spaceAbove),
+      spaceBelow: Math.round(spaceBelow)
+    });
     setLayer(next);
   }
 
   function closeLayer() {
     const opener = openerRef.current;
     setLayer(null);
+    setExternalAnchor(null);
     queueMicrotask(() => opener?.focus());
   }
+
+  // External openers reach the same open/close path through a stable handle;
+  // the latest closures are read at call time.
+  const layerApiRef = useRef({ close: closeLayer, toggle: openLayer });
+  layerApiRef.current = { close: closeLayer, toggle: openLayer };
+  useImperativeHandle(layerController, () => ({
+    close: () => layerApiRef.current.close(),
+    toggle: (next, anchor) => layerApiRef.current.toggle(next, anchor)
+  }), []);
+  const onLayerChangeRef = useRef(onLayerChange);
+  onLayerChangeRef.current = onLayerChange;
+  useEffect(() => {
+    onLayerChangeRef.current?.(layer);
+  }, [layer]);
+  // An externally anchored layer follows its anchor across viewport resizes.
+  const externallyAnchored = externalAnchor !== null;
+  useEffect(() => {
+    if (!layer || !externallyAnchored) return;
+    const kind = layer;
+    const reposition = () => {
+      const opener = openerRef.current;
+      if (opener) setExternalAnchor(externalLayerAnchor(opener, kind));
+    };
+    window.addEventListener("resize", reposition);
+    return () => window.removeEventListener("resize", reposition);
+  }, [externallyAnchored, layer]);
+  const portalLayer = (node: ReactNode) =>
+    externalAnchor && typeof document !== "undefined" ? createPortal(node, document.body) : node;
 
   function handleLayerKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (isImeCompositionEvent(event)) return;
@@ -810,7 +890,10 @@ export function ComposerV2({
   const knowledgeChipVisible = Boolean(config) && (
     knowledgeSelection.mode !== "none" || (knowledgeAvailable && !controlsLocked)
   );
-  const searchActive = selectedSearchOptionIds.length > 0;
+  // An engine the current model cannot run leaves the chip inactive and the
+  // menu on Off (UX audit 2026-09-02 A6); the plan itself is dropped by the
+  // model change and rejected at send.
+  const searchActive = selectedSearchOptionIds.some((id) => compatibleSearchOptionIds.has(id));
   const searchChipVisible = Boolean(config) && (
     searchActive || (concreteSearchOptions.length > 0 && !controlsLocked)
   );
@@ -972,22 +1055,8 @@ export function ComposerV2({
             onClick={(event) => openLayer("add", event.currentTarget)}
           />
 
-          <button
-            ref={modelTriggerRef}
-            className="v2-composer-model-trigger v2-focusable"
-            type="button"
-            aria-controls={`${layerId}-model`}
-            aria-expanded={layer === "model"}
-            aria-haspopup="dialog"
-            disabled={!config || configError || noModels || activeRun || controlsLocked}
-            title={controlsLocked ? "Managed by the Assistant" : "Choose model"}
-            onClick={(event) => openLayer("model", event.currentTarget)}
-          >
-            {currentModel ? <UiV2Monogram label={currentProviderGlyph} /> : null}
-            <strong>{currentModel?.displayName ?? (noModels ? "No models available" : "Choose model")}</strong>
-            {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
-          </button>
-
+          {/* The model is chosen in the header (operator, 2026-09-02); the
+              composer row holds only this message's tools. */}
           <div className="v2-composer-indicators" aria-label="Active capabilities">
             {searchChipVisible ? (
               <span className="v2-composer-indicator-group">
@@ -1046,7 +1115,7 @@ export function ComposerV2({
                       <>
                         <span className="v2-composer-indicator-prefix">Knowledge: </span>
                         {knowledgeSelection.mode === "all_my_knowledge"
-                          ? "All mine"
+                          ? "All"
                           : selectedKnowledgeNames.length === 1
                             ? selectedKnowledgeNames[0]
                             : selectedKnowledgeNames.length}
@@ -1124,7 +1193,7 @@ export function ComposerV2({
           </span>
         </div>
 
-        {layer ? (
+        {layer ? portalLayer(
           <>
             <button
               className="v2-composer-layer-backdrop"
@@ -1135,11 +1204,18 @@ export function ComposerV2({
             <div
               ref={layerRef}
               className="v2-composer-layer"
+              data-anchor={externalAnchor ? "external" : undefined}
               data-kind={layer}
+              data-placement={!externalAnchor && layerPlacement.below ? "below" : undefined}
               id={`${layerId}-${layer}`}
               role={layer === "model" ? "dialog" : "menu"}
               aria-label={LAYER_LABELS[layer]}
-              style={{ "--v2-composer-layer-left": `${layerLeft}px` } as CSSProperties}
+              style={{
+                "--v2-composer-layer-left": `${externalAnchor?.left ?? layerLeft}px`,
+                "--v2-composer-layer-space-above": `${layerPlacement.spaceAbove}px`,
+                "--v2-composer-layer-space-below": `${layerPlacement.spaceBelow}px`,
+                "--v2-composer-layer-top": `${externalAnchor?.top ?? 0}px`
+              } as CSSProperties}
               onKeyDown={handleLayerKeyDown}
             >
               {/* The header is the mobile sheet's title and close control; the
@@ -1191,8 +1267,8 @@ export function ComposerV2({
                       Search
                     </CapabilityRow>
                   ) : concreteSearchOptions.map((option) => {
-                    const selected = selectedSearchSet.has(option.strategyId);
                     const compatible = compatibleSearchOptionIds.has(option.strategyId);
+                    const selected = compatible && selectedSearchSet.has(option.strategyId);
                     const reason = controlsLocked
                       ? "Managed by the Assistant"
                       : !compatible
@@ -1202,7 +1278,7 @@ export function ComposerV2({
                       <CapabilityRow
                         key={option.strategyId}
                         selected={selected}
-                        disabled={controlsLocked || activeRun || !onSelectSearchOptionIds || (!compatible && !selected)}
+                        disabled={controlsLocked || activeRun || !onSelectSearchOptionIds || !compatible}
                         reason={reason}
                         selectionRole="radio"
                         onClick={() => {
@@ -1606,7 +1682,7 @@ function ModelLayer({
         ) : groups.map((group) => (
           <section className="v2-composer-model-group" key={group.provider.id || group.provider.name}>
             <h3>
-              <UiV2Monogram label={group.provider.family || group.provider.name} />
+              <UiV2ProviderMark family={group.provider.family ?? null} label={group.provider.name} />
               <span>{group.provider.name}</span>
             </h3>
             {group.models.map((model) => {
@@ -1640,7 +1716,7 @@ function ModelLayer({
                     <span className="v2-sr-only">{capabilityTags.join(" · ")}</span>
                     {isOrganizationDefault ? <em className="v2-composer-model-fact">Org default</em> : null}
                     <span className="v2-composer-model-glyphs" title={capabilityTags.join(" · ")} aria-hidden="true">
-                      {glyphs.map((glyph) => <UiV2Icon key={glyph.icon} name={glyph.icon} />)}
+                      {glyphs.map((glyph) => <UiV2Icon key={glyph.icon} name={glyph.icon} title={glyph.label} />)}
                     </span>
                     <span className="v2-composer-model-mark" aria-hidden="true">
                       {isPersonalDefault ? <UiV2Icon className="v2-composer-model-star" name="star-fill" /> : null}
@@ -1654,7 +1730,7 @@ function ModelLayer({
                       aria-label={`Make ${model.displayName} your default model`}
                       onClick={() => onMakeDefault(model)}
                     >
-                      Set as default
+                      <span className="v2-composer-model-default-label">Set as default</span>
                       <UiV2Icon name="star" />
                     </button>
                   ) : null}

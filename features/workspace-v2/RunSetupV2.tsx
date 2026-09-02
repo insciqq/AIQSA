@@ -18,19 +18,13 @@ export type RunSetupComposerV2 = Pick<
   | "currentModel"
   | "currentParameterControls"
   | "maxOutputTokens"
-  | "notificationSoundEnabled"
   | "reasoningEffort"
   | "reasoningMode"
   | "searchPlanMode"
   | "selectSearchPlan"
   | "selectedSearchOptionIds"
-  | "showCitations"
-  | "showReasoningBlocks"
   | "streamMode"
   | "temperature"
-  | "toggleCitationsVisibility"
-  | "toggleNotificationSound"
-  | "toggleReasoningBlockVisibility"
   | "useOrganizationModelDefault"
   | "useOrganizationSearchDefault"
 >;
@@ -179,23 +173,6 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
                 onToggle={() => composer.changeBackgroundMode(!composer.backgroundMode)}
               />
             ) : null}
-            <RunSetupSwitchV2
-              checked={composer.showCitations}
-              label="Citations"
-              stateLabels={["Shown", "Hidden"]}
-              onToggle={composer.toggleCitationsVisibility}
-            />
-            <RunSetupSwitchV2
-              checked={composer.showReasoningBlocks}
-              label="Reasoning blocks"
-              stateLabels={["Shown", "Hidden"]}
-              onToggle={composer.toggleReasoningBlockVisibility}
-            />
-            <RunSetupSwitchV2
-              checked={composer.notificationSoundEnabled}
-              label="Completion sound"
-              onToggle={composer.toggleNotificationSound}
-            />
           </div>
           <div className="v2-run-setup-defaults">
             {composer.useOrganizationModelDefault ? (

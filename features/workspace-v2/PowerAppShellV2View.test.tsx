@@ -76,19 +76,13 @@ function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetup
     currentModel: galleryModels[0],
     currentParameterControls: galleryModels[0]!.parameterControls,
     maxOutputTokens: "8192",
-    notificationSoundEnabled: false,
     reasoningEffort: "medium",
     reasoningMode: "",
     searchPlanMode: "all_selected",
     selectSearchPlan: vi.fn(),
     selectedSearchOptionIds: [],
-    showCitations: true,
-    showReasoningBlocks: false,
     streamMode: true,
     temperature: "0.7",
-    toggleCitationsVisibility: vi.fn(),
-    toggleNotificationSound: vi.fn(),
-    toggleReasoningBlockVisibility: vi.fn(),
     useOrganizationModelDefault: vi.fn(),
     useOrganizationSearchDefault: vi.fn(),
     ...overrides
@@ -145,19 +139,15 @@ describe("Run setup v2", () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 
-  it("renders display toggles as real switches with visible on/off state", () => {
+  it("keeps only model parameters as switches; display settings live in Settings", () => {
     const composer = runSetupComposer();
     render(<RunSetupV2 composer={composer} onClose={vi.fn()} />);
 
-    const citations = screen.getByRole("switch", { name: /Citations/ });
-    expect(citations).toHaveAttribute("aria-checked", "true");
-    expect(citations).toHaveTextContent("Shown");
-    fireEvent.click(citations);
-    expect(composer.toggleCitationsVisibility).toHaveBeenCalledOnce();
-
-    const reasoning = screen.getByRole("switch", { name: /Reasoning blocks/ });
-    expect(reasoning).toHaveAttribute("aria-checked", "false");
-    expect(reasoning).toHaveTextContent("Hidden");
+    // Citations, Reasoning blocks and the answer sound moved to Settings ›
+    // General (UX audit 2026-09-02 B2): no duplicate toggles here.
+    expect(screen.queryByRole("switch", { name: /Citations/ })).toBeNull();
+    expect(screen.queryByRole("switch", { name: /Reasoning blocks/ })).toBeNull();
+    expect(screen.queryByRole("switch", { name: /sound/i })).toBeNull();
 
     const streaming = screen.getByRole("switch", { name: /Streaming/ });
     expect(streaming).toHaveAttribute("aria-checked", "true");
@@ -361,6 +351,54 @@ describe("Workspace header v2", () => {
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(props.onArchive).toHaveBeenCalledTimes(1);
+  });
+
+  it("chooses the model from the header selector and locks it under an Assistant", () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(
+      <WorkspaceHeaderV2
+        {...headerProps({ active: false })}
+        modelSelector={{
+          expanded: false,
+          family: "anthropic",
+          label: "Anthropic",
+          name: "Claude Opus 5",
+          onToggle
+        }}
+      />
+    );
+
+    // The blank chat keeps the header for the selector alone: no title, no actions.
+    const trigger = screen.getByTestId("header-model-trigger");
+    expect(trigger).toHaveAccessibleName("Claude Opus 5");
+    expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger.querySelector("use")).toHaveAttribute("href", "#v2-icon-provider-anthropic");
+    expect(screen.queryByTestId("header-title")).toBeNull();
+    expect(screen.queryByTestId("header-more-trigger")).toBeNull();
+    fireEvent.click(trigger);
+    expect(onToggle).toHaveBeenCalledWith(trigger);
+
+    rerender(
+      <WorkspaceHeaderV2
+        {...headerProps()}
+        modelSelector={{
+          expanded: true,
+          family: "openai_compatible",
+          label: "Custom OpenAI",
+          locked: true,
+          name: "Decision Writer · gpt-5.6-terra",
+          onToggle
+        }}
+      />
+    );
+    const locked = screen.getByTestId("header-model-trigger");
+    expect(locked).toBeDisabled();
+    expect(locked).toHaveAttribute("title", "Managed by the Assistant");
+    expect(locked).toHaveAttribute("aria-expanded", "true");
+    expect([...locked.querySelectorAll("use")].map((use) => use.getAttribute("href")))
+      .toEqual(["#v2-icon-plug", "#v2-icon-lock"]);
+    expect(screen.getByTestId("header-title")).toBeVisible();
   });
 
   it("gates Delete… on the capability and lists nested move destinations", () => {

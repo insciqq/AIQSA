@@ -60,6 +60,27 @@ describe("usePinnedScroll", () => {
     expect(hasUnseenLatestMessageContent(element)).toBe(true);
   });
 
+  it("measures unseen content against the visible edge above a docked composer", () => {
+    const element = scrollElement({ clientHeight: 300, scrollHeight: 1000, scrollTop: 500 });
+    element.getBoundingClientRect = () => ({ bottom: 300 } as DOMRect);
+    const latestMessage = document.createElement("article");
+    latestMessage.dataset.messageId = "assistant-latest";
+    latestMessage.getBoundingClientRect = () => ({ bottom: 320 } as DOMRect);
+    element.append(latestMessage);
+    const dock = document.createElement("div");
+    dock.dataset.threadComposerDock = "";
+    dock.getBoundingClientRect = () => ({ top: 200 } as DOMRect);
+    document.body.append(dock);
+    try {
+      // 120px of the answer sit under the composer, not 20px under the edge.
+      expect(hasUnseenLatestMessageContent(element)).toBe(true);
+      dock.getBoundingClientRect = () => ({ top: 300 } as DOMRect);
+      expect(hasUnseenLatestMessageContent(element)).toBe(false);
+    } finally {
+      dock.remove();
+    }
+  });
+
   it("does not show Latest only because a receipt or action footer continues below visible answer content", () => {
     const element = scrollElement({ clientHeight: 300, scrollHeight: 1000, scrollTop: 500 });
     element.getBoundingClientRect = () => ({ bottom: 300 } as DOMRect);

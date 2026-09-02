@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 export function composerRunSummary(page: Page): Locator {
-  return page.locator(".v2-composer-model-trigger");
+  return page.getByTestId("header-model-trigger");
 }
 
 export async function openModelPicker(page: Page): Promise<Locator> {

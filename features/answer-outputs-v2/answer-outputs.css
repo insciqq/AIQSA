@@ -234,15 +234,55 @@
 
 .v2-memory-sources {
   min-width: 0;
-  border-top: 1px solid var(--v2-color-border);
-  padding: 0.75rem 0.25rem 0.25rem;
+  padding: 0.25rem 0;
+}
+
+/* One quiet disclosure row (B1): glyph · "Used N memories" · chevron. */
+.v2-memory-sources > summary {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.25rem;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  list-style: none;
+  cursor: pointer;
+}
+
+.v2-memory-sources > summary::-webkit-details-marker {
+  display: none;
+}
+
+.v2-memory-sources > summary:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
+.v2-memory-sources > summary > .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--v2-color-text3);
+}
+
+.v2-memory-sources-chevron {
+  transition: transform var(--v2-motion-fast);
+}
+
+.v2-memory-sources[open] > summary > .v2-memory-sources-chevron {
+  transform: rotate(90deg);
 }
 
 .v2-memory-sources h3 {
-  margin: 0 0 0.5rem;
-  color: var(--v2-color-text2);
+  margin: 0;
+  color: inherit;
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+.v2-memory-sources[open] > .v2-memory-source-list {
+  margin-top: 0.25rem;
+  padding: 0 0.25rem;
 }
 
 .v2-memory-source-list {
@@ -515,5 +555,13 @@
 
   .v2-tool-approval-actions .v2-button {
     width: 100%;
+  }
+}
+
+/* Touch (C2): disclosures keep a 44px row. */
+@media (hover: none), (pointer: coarse) {
+  .v2-answer-sources > summary,
+  .v2-memory-sources > summary {
+    min-height: 2.75rem;
   }
 }

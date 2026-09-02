@@ -188,10 +188,31 @@ describe("Navigation v2", () => {
       vi.advanceTimersByTime(250);
       view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "note" })} />);
       view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "" })} />);
-      expect(screen.getByRole("searchbox", { name: "Filter chats" })).toHaveValue("");
+      const empty = screen.getByRole("searchbox", { name: "Filter chats" });
+      expect(empty).toHaveValue("");
+
+      // Escape in an empty field leaves it (UX audit 2026-09-02 A15).
+      empty.focus();
+      expect(empty).toHaveFocus();
+      fireEvent.keyDown(empty, { key: "Escape" });
+      expect(empty).not.toHaveFocus();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("toggles the sidebar with Ctrl/⌘+Shift+S", () => {
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    fireEvent.keyDown(window, { ctrlKey: true, key: "S", shiftKey: true });
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
   });
 
   it("keeps the filter out of a selected Project's sidebar", () => {
@@ -318,7 +339,7 @@ describe("Navigation v2", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
-    const options = screen.getByLabelText("Choose a folder");
+    const options = screen.getByLabelText("Move to…");
     const labels = [...options.querySelectorAll("[role='menuitem']")]
       .map((item) => item.textContent);
     expect(labels).toEqual(["No folder", "Research", "Recall", "Evidence", "Ops"]);
@@ -440,11 +461,11 @@ describe("Navigation v2", () => {
     expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
     const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
-    for (const name of ["Projects", "Library", "Archived chats", "Account menu"]) {
+    // Settings is a footer destination too (one tap, UX audit 2026-09-02 B8);
+    // Control Center stays in the account menu, as on the rail.
+    for (const name of ["Projects", "Library", "Archived chats", "Settings", "Account menu"]) {
       expect(within(navigation).getByRole("button", { name })).toBeInTheDocument();
     }
-    // Settings and Control Center live in the account menu, as on the rail.
-    expect(within(navigation).queryByRole("button", { name: "Settings" })).toBeNull();
     fireEvent.click(within(navigation).getByRole("button", { name: "Account menu" }));
     expect(within(navigation).getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
     expect(within(navigation).getByTestId("account-menu-identity")).toHaveTextContent("operator@aiqsa.local");

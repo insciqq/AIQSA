@@ -320,7 +320,7 @@
 .v2-resource-row small,
 .v2-memory-fact-list small {
   margin: 0.125rem 0 0;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   font-size: 0.75rem;
   line-height: 1.4;
 }
@@ -512,46 +512,6 @@
   margin-top: 1.75rem;
 }
 
-.v2-memory-settings {
-  margin-top: 0.75rem;
-  border-top: 1px solid var(--v2-color-border);
-}
-
-.v2-memory-setting {
-  display: flex;
-  min-height: 3rem;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  border-bottom: 1px solid var(--v2-color-border);
-  color: var(--v2-color-text2);
-  font-size: 0.8125rem;
-}
-
-.v2-memory-switch {
-  min-width: 3.25rem;
-  min-height: 2.125rem;
-  padding: 0.25rem 0.625rem;
-  border: 1px solid var(--v2-color-border2);
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-text2);
-  background: transparent;
-  font: inherit;
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.v2-memory-switch[data-on="true"] {
-  border-color: transparent;
-  color: var(--v2-color-text);
-  background: var(--v2-color-active);
-}
-
-.v2-memory-switch:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
 .v2-memory-section-heading {
   display: flex;
   align-items: flex-start;
@@ -705,11 +665,11 @@
 }
 
 @media (hover: none), (pointer: coarse) {
-  .v2-library-tab,
-  .v2-memory-switch {
-    min-height: 2.5rem;
+  .v2-library-tab {
+    min-height: 2.75rem;
   }
 }
+
 /* ===== Library cards, filters, search (PRD §4.10) ===== */
 .v2-resource-search {
   position: relative;
@@ -743,7 +703,8 @@
 }
 
 .v2-resource-search input::placeholder {
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
+  opacity: 0.8;
 }
 
 .v2-resource-search input:focus-visible {
@@ -779,12 +740,13 @@
 
 .v2-resource-filter[data-selected="true"] {
   border-color: color-mix(in srgb, var(--v2-color-accent) 25%, transparent);
-  color: var(--v2-color-accent);
+  color: var(--v2-color-accent-text);
   background: var(--v2-color-accent-dim);
 }
 
+/* Counters read in the pill's own text color (C1: no faded accent on wash). */
 .v2-resource-filter > span {
-  opacity: 0.75;
+  color: inherit;
 }
 
 .v2-assistant-grid {
@@ -805,8 +767,11 @@
   background: var(--v2-color-surface2);
 }
 
-.v2-assistant-card[data-archived="true"] {
-  opacity: 0.7;
+/* Archived cards dim only the avatar and description; name, meta and
+   Restore keep readable contrast (UX audit 2026-09-02 C1). */
+.v2-assistant-card[data-archived="true"] .v2-assistant-avatar,
+.v2-assistant-card[data-archived="true"] .v2-assistant-description {
+  opacity: 0.55;
 }
 
 .v2-assistant-card-top {

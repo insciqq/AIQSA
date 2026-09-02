@@ -24,7 +24,13 @@ function RailButton({
       aria-label={label}
       data-tooltip={label}
       data-tooltip-side="right"
-      onClick={onClick}
+      onClick={(event) => {
+        // Hide the tooltip once the destination is chosen; it returns after
+        // the pointer leaves and comes back (UX audit v2 A10).
+        event.currentTarget.setAttribute("data-tooltip-suppressed", "");
+        onClick?.();
+      }}
+      onPointerLeave={(event) => event.currentTarget.removeAttribute("data-tooltip-suppressed")}
     >
       <UiV2Icon name={icon} />
     </button>

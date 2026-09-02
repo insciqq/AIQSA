@@ -43,6 +43,13 @@ function memorySourceArtifact(): ThreadArtifactSummary {
   };
 }
 
+/** The Memory fold is collapsed by default (B1); tests open it first. */
+function openMemorySources() {
+  for (const fold of screen.getAllByTestId("answer-memory-sources")) {
+    (fold as HTMLDetailsElement).open = true;
+  }
+}
+
 describe("answer outputs v2", () => {
   it("shows only safe Sources, reauthorized Project evidence, Reasoning, and identity", async () => {
     shellFetch.mockResolvedValue(new Response(JSON.stringify({
@@ -152,8 +159,9 @@ describe("answer outputs v2", () => {
   it("renders a quiet Memory source trace without refs, scores, or technical metadata", () => {
     shellFetch.mockReset();
     render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
+    openMemorySources();
 
-    expect(screen.getByRole("heading", { name: "Memory · 1" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Used 1 memory" })).toBeVisible();
     expect(screen.getByText("Saved memory")).toBeVisible();
     expect(screen.getByText("I prefer concise answers.")).toBeVisible();
     expect(screen.getByText("Saved by you")).toBeVisible();
@@ -197,6 +205,7 @@ describe("answer outputs v2", () => {
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
     render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
+    openMemorySources();
 
     fireEvent.click(screen.getByRole("button", { name: "Correct" }));
     const textbox = screen.getByRole("textbox", { name: "Correct this statement" });
@@ -226,6 +235,7 @@ describe("answer outputs v2", () => {
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
     render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
+    openMemorySources();
 
     fireEvent.click(screen.getByRole("button", { name: "Not relevant" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("not relevant"));
@@ -242,6 +252,7 @@ describe("answer outputs v2", () => {
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
     render(<AnswerOutputsV2 artifact={memorySourceArtifact()} showReasoning={false} />);
+    openMemorySources();
 
     fireEvent.click(screen.getByRole("button", { name: "Forget" }));
 
@@ -272,6 +283,7 @@ describe("answer outputs v2", () => {
       text: "The earlier discussion chose concise answers."
     }];
     render(<AnswerOutputsV2 artifact={pastChatArtifact} showReasoning={false} />);
+    openMemorySources();
 
     fireEvent.click(screen.getByRole("button", { name: "Open source" }));
     await waitFor(() => expect(screen.getByRole("link", { name: "Open source" })).toHaveAttribute(
@@ -291,6 +303,7 @@ describe("answer outputs v2", () => {
       sourceType: source.sourceType
     }));
     render(<AnswerOutputsV2 artifact={unavailable} showReasoning={false} />);
+    openMemorySources();
 
     expect(screen.getByText("Source unavailable")).toBeVisible();
     expect(screen.getByText("This Memory source is unavailable.")).toBeVisible();

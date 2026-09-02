@@ -126,6 +126,13 @@
   text-transform: uppercase;
 }
 
+/* Provider mark: a filled monochrome glyph in the current text color; size
+   via --v2-provider-mark-size (default 1rem). */
+.v2-provider-mark {
+  width: var(--v2-provider-mark-size, 1rem);
+  height: var(--v2-provider-mark-size, 1rem);
+}
+
 .v2-spinner {
   width: 0.875rem;
   height: 0.875rem;
@@ -185,9 +192,34 @@
   color: var(--v2-color-accent);
 }
 
+/* Items with a leading glyph (16px, text3; danger on destructive items). */
+.v2-menu-item[data-icon] {
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  gap: 0.625rem;
+}
+
+.v2-menu-item-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--v2-color-text3);
+}
+
+.v2-menu-item[data-tone="destructive"]:not(:disabled) .v2-menu-item-icon {
+  color: inherit;
+}
+
 .v2-menu-separator {
   margin: 0.25rem 0.125rem;
   border-top: 1px solid var(--v2-color-border);
+}
+
+/* Inline disclosure list inside a menu (folder picker); scrolls locally. */
+.v2-menu-submenu {
+  max-height: 11rem;
+  margin: 0.25rem 0;
+  padding: 0.25rem 0 0.25rem 0.5rem;
+  border-left: 1px solid var(--v2-color-border2);
+  overflow-y: auto;
 }
 
 .v2-menu-item-sub {
@@ -427,4 +459,99 @@ html[data-motion="off"] .v2-menu-item {
 
 html[data-motion="off"] [data-tooltip]::after {
   transition: none;
+}
+
+/* A just-clicked control keeps its tooltip down until the pointer leaves, so
+   the label never sits over the surface the click revealed (UX audit v2 A10). */
+[data-tooltip][data-tooltip-suppressed]:hover::after,
+[data-tooltip][data-tooltip-suppressed]:focus-visible::after {
+  opacity: 0;
+  transition-delay: 0s;
+}
+
+/*
+ * Shell notice (UX audit 2026-09-02 C5): one surface for success and error
+ * with a kind icon, the text, an optional link and actions, and a close
+ * control; the surface, border and shadow are the overlay tokens.
+ */
+.v2-notice {
+  display: flex;
+  width: 100%;
+  max-width: 42rem;
+  max-height: min(14rem, 40dvh);
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.625rem 0.5rem 0.625rem 0.75rem;
+  overflow-y: auto;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-overlay);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  pointer-events: auto;
+}
+
+.v2-notice-icon {
+  flex: 0 0 auto;
+  margin-top: 0.1875rem;
+  color: var(--v2-color-ok);
+}
+
+.v2-notice[data-kind="error"] .v2-notice-icon {
+  color: var(--v2-color-danger);
+}
+
+.v2-notice-body {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+  padding-top: 0.125rem;
+}
+
+.v2-notice-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.v2-notice-link {
+  min-width: 0;
+  color: var(--v2-color-accent);
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.v2-notice-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.v2-notice-actions .v2-button {
+  min-height: 1.875rem;
+  padding-inline: 0.625rem;
+  font-size: 0.8125rem;
+}
+
+.v2-notice-close {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  margin: -0.125rem -0.125rem -0.125rem 0;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-notice-close {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .v2-notice-actions .v2-button {
+    min-height: 2.75rem;
+  }
 }

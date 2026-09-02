@@ -16,6 +16,8 @@
   --v2-dark-color-accent: #38dfd0;
   --v2-dark-color-accent-ink: #05201d;
   --v2-dark-color-accent-dim: rgb(56 223 208 / 0.12);
+  /* Accent-coloured text on the accent-dim wash (active filter counters). */
+  --v2-dark-color-accent-text: #38dfd0;
   --v2-dark-color-accent2: #b08cff;
   --v2-dark-color-accent2-dim: rgb(176 140 255 / 0.14);
   --v2-dark-color-danger: #ff8a80;
@@ -42,7 +44,10 @@
   --v2-light-color-accent: #0a6c65;
   --v2-light-color-accent-ink: #ffffff;
   --v2-light-color-accent-dim: rgb(10 108 101 / 0.1);
-  --v2-light-color-accent2: #7c5cd6;
+  --v2-light-color-accent-text: #0a6f68;
+  /* Slightly deeper than the dark theme's violet so code keywords keep 4.5:1
+     on the light code background. */
+  --v2-light-color-accent2: #6f4fcf;
   --v2-light-color-accent2-dim: rgb(124 92 214 / 0.12);
   --v2-light-color-danger: #c2413a;
   --v2-light-color-warn: #8a6a1f;
@@ -108,6 +113,7 @@
   --v2-color-accent: var(--v2-light-color-accent);
   --v2-color-accent-ink: var(--v2-light-color-accent-ink);
   --v2-color-accent-dim: var(--v2-light-color-accent-dim);
+  --v2-color-accent-text: var(--v2-light-color-accent-text);
   --v2-color-accent2: var(--v2-light-color-accent2);
   --v2-color-accent2-dim: var(--v2-light-color-accent2-dim);
   --v2-color-danger: var(--v2-light-color-danger);
@@ -137,6 +143,7 @@
   --v2-color-accent: var(--v2-dark-color-accent);
   --v2-color-accent-ink: var(--v2-dark-color-accent-ink);
   --v2-color-accent-dim: var(--v2-dark-color-accent-dim);
+  --v2-color-accent-text: var(--v2-dark-color-accent-text);
   --v2-color-accent2: var(--v2-dark-color-accent2);
   --v2-color-accent2-dim: var(--v2-dark-color-accent2-dim);
   --v2-color-danger: var(--v2-dark-color-danger);
@@ -167,6 +174,7 @@
     --v2-color-accent: var(--v2-dark-color-accent);
     --v2-color-accent-ink: var(--v2-dark-color-accent-ink);
     --v2-color-accent-dim: var(--v2-dark-color-accent-dim);
+    --v2-color-accent-text: var(--v2-dark-color-accent-text);
     --v2-color-accent2: var(--v2-dark-color-accent2);
     --v2-color-accent2-dim: var(--v2-dark-color-accent2-dim);
     --v2-color-danger: var(--v2-dark-color-danger);

@@ -79,7 +79,10 @@ describe("Conversation v2", () => {
     );
     expect(screen.queryByText(/assistant|user/i)).toBeNull();
 
-    fireEvent.keyDown(assistant, { key: "Enter" });
+    // Turns are not tab stops (A15): the dock reveals on tap/hover/focus-within.
+    expect(assistant).not.toHaveAttribute("tabindex");
+    expect(question).not.toHaveAttribute("tabindex");
+    fireEvent.click(assistant);
     expect(assistant).toHaveAttribute("data-controls-open", "true");
     fireEvent.click(screen.getByRole("button", { name: "Regenerate answer" }));
     expect(onRegenerate).toHaveBeenCalledOnce();
@@ -184,13 +187,16 @@ describe("Conversation v2", () => {
     const more = screen.getByRole("button", { name: "More answer actions" });
     fireEvent.click(more);
     const menu = screen.getByRole("menu", { name: "Answer menu" });
-    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Delete" })).toHaveFocus());
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus());
+    // Branch first; Delete last, destructive, and behind a separator (B4).
     expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Delete",
-      "Branch from here"
+      "Branch from here",
+      "Delete"
     ]);
+    expect(within(menu).getByRole("menuitem", { name: "Delete" })).toHaveAttribute("data-tone", "destructive");
+    expect(within(menu).getByRole("separator")).toBeInTheDocument();
     fireEvent.keyDown(menu, { key: "ArrowUp" });
-    expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus();
+    expect(within(menu).getByRole("menuitem", { name: "Delete" })).toHaveFocus();
     fireEvent.keyDown(menu, { key: "Escape" });
     await waitFor(() => expect(more).toHaveFocus());
     expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
@@ -216,9 +222,12 @@ describe("Conversation v2", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Regenerate answer" })).toBeDisabled();
+    const regenerate = screen.getByRole("button", { name: "Regenerate answer" });
+    expect(regenerate).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit answer" })).toBeDisabled();
-    expect(screen.getByText("Wait for the answer to finish or stop it.")).toBeVisible();
+    // The reason is the disabled controls' tooltip, not a permanent line (B6).
+    expect(regenerate).toHaveAttribute("data-tooltip", "Wait for the answer to finish or stop it.");
+    expect(screen.getByText("Wait for the answer to finish or stop it.")).toHaveClass("v2-sr-only");
     fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeDisabled();

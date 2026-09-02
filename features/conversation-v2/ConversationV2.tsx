@@ -9,6 +9,7 @@ import {
   UiV2Icon,
   UiV2IconButton,
   UiV2MenuItem,
+  UiV2MenuSeparator,
   UiV2MenuSurface,
   UiV2Skeleton
 } from "@/components/ui-v2";
@@ -221,16 +222,12 @@ export function ConversationTurnV2({
     setControlsOpen((open) => !open);
   }
 
+  // The turn itself is not a tab stop (UX audit 2026-09-02 A15): keyboard
+  // users reach the action dock directly, and Escape from inside it folds
+  // the dock and its menu again.
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
-    if (!hasActions || event.target !== event.currentTarget) return;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      setControlsOpen((open) => !open);
-    } else if (event.key === "Escape") {
-      setMoreOpen(false);
-      setMorePosition(null);
-      setControlsOpen(false);
-    }
+    if (!hasActions || event.key !== "Escape" || moreOpen) return;
+    setControlsOpen(false);
   }
 
   return (
@@ -241,7 +238,6 @@ export function ConversationTurnV2({
       data-message-id={anchorId}
       data-role={role}
       aria-label={ariaLabel ?? label}
-      tabIndex={hasActions ? 0 : undefined}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setControlsOpen(false);
       }}
@@ -346,20 +342,12 @@ export function ConversationTurnV2({
                     visibility: morePosition ? "visible" : "hidden"
                   }}
                 >
-                  {actions.onDelete ? (
-                    <UiV2MenuItem
-                      disabled={actions.deleteDisabled}
-                      onClick={() => {
-                        closeMoreMenu();
-                        actions.onDelete?.();
-                      }}
-                    >
-                      Delete
-                    </UiV2MenuItem>
-                  ) : null}
+                  {/* Branch first; Delete last and destructive (UX audit
+                      2026-09-02 B4). */}
                   {actions.onBranchFromHere ? (
                     <UiV2MenuItem
                       disabled={actions.branchDisabled}
+                      icon="branch"
                       onClick={() => {
                         closeMoreMenu();
                         actions.onBranchFromHere?.();
@@ -368,16 +356,32 @@ export function ConversationTurnV2({
                       Branch from here
                     </UiV2MenuItem>
                   ) : null}
+                  {actions.onBranchFromHere && actions.onDelete ? <UiV2MenuSeparator /> : null}
+                  {actions.onDelete ? (
+                    <UiV2MenuItem
+                      disabled={actions.deleteDisabled}
+                      icon="trash"
+                      tone="destructive"
+                      onClick={() => {
+                        closeMoreMenu();
+                        actions.onDelete?.();
+                      }}
+                    >
+                      Delete
+                    </UiV2MenuItem>
+                  ) : null}
                 </UiV2MenuSurface>,
                 document.body
               ) : null}
             </span>
           ) : null}
+          {/* The reason reaches pointer users as the disabled controls'
+              tooltips (B6) and screen readers through this hidden text. */}
           {actions?.disabledReason && (
             actions.branchDisabled || actions.deleteDisabled || actions.editDisabled ||
             actions.moreDisabled || actions.regenerateDisabled
           ) ? (
-            <span className="v2-message-action-guidance">{actions.disabledReason}</span>
+            <span className="v2-sr-only">{actions.disabledReason}</span>
           ) : null}
         </div>
       ) : null}
