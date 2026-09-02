@@ -30,9 +30,15 @@ export function decodeAdminProviderCompatibilityEvidence(
     !status(value.streaming) ||
     !status(value.usage)
   ) return null;
+  if (value.forcedToolCall !== undefined && !status(value.forcedToolCall)) {
+    return null;
+  }
 
   return {
     directPdf: value.directPdf,
+    ...(value.forcedToolCall === undefined
+      ? {}
+      : { forcedToolCall: value.forcedToolCall }),
     modelAccess: value.modelAccess,
     probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
     streaming: value.streaming,

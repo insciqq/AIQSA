@@ -57,6 +57,7 @@ function target(
           nativePdfInput: false,
           nativeSearch: false,
           pdf: false,
+          forcedToolCalling: toolCalling,
           reasoning: false,
           structuredOutput,
           toolCalling,
@@ -81,6 +82,7 @@ describe("Memory execution compatibility", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_QUERY_RESOLVE");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_AGGREGATE");
     expect(MEMORY_EXECUTABLE_ROLES).not.toContain("MEMORY_AGGREGATE");
+    expect(MEMORY_EXECUTABLE_ROLES).not.toContain("MEMORY_QUERY_RESOLVE");
     expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_FACT_EXTRACT");
     expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_QUERY_RESOLVE");
     expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_AGGREGATE");

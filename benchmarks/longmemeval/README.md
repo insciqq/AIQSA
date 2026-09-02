@@ -160,27 +160,38 @@ FU-09's original content-free selection remains frozen as the provenance-only
 `qualifications/fu09-blind-50-v1.json`. Reader-first `v1` through `v12` preserve
 the earlier diagnostic, pre-resolver, interrupted, Luna, and 9-second fast-model
 comparison waves.
-The current matrix reuses the exact 50 case IDs across all six upstream
-categories and freezes the official profile, OpenSearch-primary lexical
-retrieval, the ordered three-model reranker route and per-model floors, case
-concurrency two, session concurrency sixteen, and all other runtime bounds.
-Each manifest binds the same Git `HEAD` and deterministic executable-worktree
-digest; only the answer-time model/provider differs:
+The historical fast-model matrix reused the exact 50 case IDs across all six
+upstream categories and froze the official profile, OpenSearch-primary lexical
+retrieval, the ordered three-model reranker route and per-model floors, and all
+other runtime bounds:
 
 - `fu2-reader-first-blind-50-v13`: DeepSeek V4 Flash 0731 via `deepseek`.
 - `fu2-reader-first-blind-50-v14`: GLM 5.3 Flash via `z-ai/fp8`.
 - `fu2-reader-first-blind-50-v15`: Gemini 3.7 Flash via `google-vertex/global`.
 
-The active matrix gives both System Model utilities a 20-second provider
-window inside a 26-second Memory envelope. The resolver remains speculative
-and is never awaited at the final pack boundary. Incorrect official-evaluator
-labels are journaled and counted without stopping the next two-case wave;
-runtime failures, non-`USED` Memory, and unhealthy lexical cutover still stop
-admission.
+`fu2-reader-first-blind-50-v16` and `fu2-reader-first-luna-25-v17` preserve the
+causal ablation evidence that qualified `DETERMINISTIC_READ_V1`; `v18` records
+the first productionized read-path run. The active
+`fu2-reader-first-luna-25-v19` manifest reuses the exact `v17` Luna selection to
+verify the final production policy and explicit-action split. Ordinary reads do
+not invoke or bind `MEMORY_CONTROL` or `MEMORY_QUERY_RESOLVE`; explicit and
+automatic Memory writes retain strict control. The manifest uses case
+concurrency one. Incorrect official-evaluator labels are journaled and counted
+without stopping the next case; runtime failures, non-`USED` Memory, an observed
+read-utility call, and unhealthy lexical cutover still stop admission.
 
 These are frozen dated model IDs (not the mutable Gemini `latest` alias).
 Selection or runtime override flags are rejected when a manifest is present.
-Run each manifest with the exact lexical environment below:
+Recreate the app after a code change (the prepared case cache and its persisted
+vectors are retained):
+
+```bash
+docker compose -p aiqsa-memory-benchmark-second \
+  -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml \
+  up -d --force-recreate app memory-search-worker
+```
+
+Run the active manifest with the exact lexical environment below:
 
 ```bash
 AIQSA_MEMORY_LEXICAL_BACKEND=OPENSEARCH \
@@ -189,15 +200,16 @@ AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
 AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE \
-  --qualification-manifest fu2-reader-first-blind-50-v13 \
-  --output results/fu2-reader-first-blind-50-v13
+  --qualification-manifest fu2-reader-first-luna-25-v19 \
+  --output results/fu2-reader-first-luna-25-v19-r1-final
 ```
 
-Repeat the same command with `v14`/`v15` and matching output directories for
-GLM and Gemini. The manifests select only the named native provider and do not
-authorize cross-provider fallback. The old single-Qwen manifest and reader-first
-`v1` through `v9` fail closed for new runs. Paid/disposable guards remain
-mandatory and no manifest authorizes provider traffic by itself.
+The manifest selects only the named native provider and does not authorize
+cross-provider fallback. Older manifests fail closed for new runs.
+Paid/disposable guards remain mandatory and no manifest authorizes provider
+traffic by itself. The benchmark observes the same deterministic read policy as
+an ordinary installation; it no longer enables product behavior through an
+environment override.
 
 Use repeated `--question-id ID` arguments for an explicit ad hoc set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.

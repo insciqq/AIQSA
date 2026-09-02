@@ -66,6 +66,10 @@ import {
   type MemoryControlService,
   type MemoryReadOnlyControlReuseProof
 } from "../actions/controlRuntime";
+import {
+  admitMemoryAction,
+  type MemoryActionAdmission
+} from "../actions/actionAdmission";
 import { defaultMemoryIntentActionExecutor } from "../actions/defaultAction";
 import type { MemoryIntentActionExecutor } from "../actions/intentExecutor";
 import { loadMemoryRunSources } from "../sources/runProjection";
@@ -98,17 +102,20 @@ import {
   type MemorySanitizedUtilityText
 } from "./querySafety";
 import {
-  createPrismaMemoryQueryResolverService,
   MEMORY_QUERY_RESOLVER_MAX_SOURCES,
   type MemoryQueryResolverResult,
   type MemoryQueryResolverService,
   type MemoryQueryResolverSource
 } from "./queryResolver";
+import {
+  DEFAULT_MEMORY_READ_UTILITY_POLICY,
+  type MemoryReadUtilityPolicy
+} from "./readUtilityPolicy";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v54";
+  "memory-run-retrieval-admission-v55";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v18";
+  "memory-retrieval-component-metrics-v19";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -189,6 +196,7 @@ export type MemoryRunRetrievalOptions = Readonly<{
   controlRefs?: MemoryControlRefProvider;
   monotonicClock?: () => number;
   queryResolver?: MemoryQueryResolverService;
+  readUtilityPolicy?: MemoryReadUtilityPolicy;
   utilities?: MemoryRunUtilityService;
   vectorRepository?: Pick<MemoryVectorRepository, "resolveActiveProfile">;
 }>;
@@ -2483,6 +2491,9 @@ export function createMemoryRunRetrievalService(
 ): MemoryRunRetrievalService {
   return Object.freeze({
     async retrieve(input) {
+      const readUtilityPolicy = options.readUtilityPolicy ??
+        DEFAULT_MEMORY_READ_UTILITY_POLICY;
+      const deterministicRead = readUtilityPolicy === "DETERMINISTIC_READ_V1";
       const timings = createMemoryPreparationTimings(
         options.monotonicClock ?? (() => performance.now())
       );
@@ -2516,6 +2527,11 @@ export function createMemoryRunRetrievalService(
       }
       const currentUserText = exactCurrentUserText(input.normalizedRequest);
       const querySafety = sanitizeMemoryUtilityText(currentUserText);
+      const actionAdmission: MemoryActionAdmission = admitMemoryAction(
+        querySafety.safeText
+      );
+      const actionControlRequested = !deterministicRead ||
+        actionAdmission.state === "EXPLICIT_CANDIDATE";
       const provisionalPlan = planMemoryRetrieval({
         currentUserText: querySafety.safeText,
         now: input.now,
@@ -2524,6 +2540,11 @@ export function createMemoryRunRetrievalService(
       if (!provisionalPlan.queryPresent) {
         return emptyAttempt(input.expected, "FAILED_SAFE", "memory_plan_query_missing", null, {
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          memoryActionAdmissionReason: actionAdmission.reason,
+          memoryActionAdmissionState: actionAdmission.state,
+          memoryActionAdmissionVersion: actionAdmission.version,
+          memoryActionControlRequested: actionControlRequested,
+          memoryReadUtilityPolicy: readUtilityPolicy,
           plan: planEvidence(provisionalPlan),
           querySafetyVersion: querySafety.version,
           safetyFindingCounts: querySafety.findingCounts,
@@ -2534,8 +2555,10 @@ export function createMemoryRunRetrievalService(
         input,
         provisionalPlan.originalSanitizedQuery
       );
-      const cachedControl = controlCache.control;
-      const cachedActionResult = controlCache.actionResolved
+      const cachedControl = actionControlRequested
+        ? controlCache.control
+        : undefined;
+      const cachedActionResult = actionControlRequested && controlCache.actionResolved
         ? controlCache.actionResult ?? null
         : null;
       const cachedAnswerResult = cachedControl
@@ -2584,6 +2607,11 @@ export function createMemoryRunRetrievalService(
         ...(cachedActionResult ? { memoryActionResult: cachedActionResult } : {}),
         ...(readOnlyControlReuse ? { readOnlyControlReuse } : {}),
         ...(fallbackControlReuse ? { fallbackControlReuse } : {}),
+        memoryActionAdmissionReason: actionAdmission.reason,
+        memoryActionAdmissionState: actionAdmission.state,
+        memoryActionAdmissionVersion: actionAdmission.version,
+        memoryActionControlRequested: actionControlRequested,
+        memoryReadUtilityPolicy: readUtilityPolicy,
         utilityEgressMode:
           readOnlyControlReuse && cachedControl &&
           utilityUsedExternal(cachedControl)
@@ -2642,7 +2670,7 @@ export function createMemoryRunRetrievalService(
         sources: readonly MemoryQueryResolverSource[],
         cancellationSignal?: AbortSignal
       ): Promise<MemoryQueryResolverExecution | null> => {
-        if (sources.length === 0 || !options.queryResolver ||
+        if (deterministicRead || sources.length === 0 || !options.queryResolver ||
           cancellationSignal?.aborted) return null;
         let result: MemoryQueryResolverResult;
         if (controlCache.queryResolverConsumedAttemptId === input.attemptId) {
@@ -2694,7 +2722,8 @@ export function createMemoryRunRetrievalService(
             speculativeBaselineController.signal
           )).catch(() => null);
       }
-      const controlRefsPromise: Promise<readonly string[]> = options.controlRefs
+      const controlRefsPromise: Promise<readonly string[]> = actionControlRequested &&
+        options.controlRefs
         ? timings.measure("snapshotMs", () =>
             runBoundedMemoryRead(
               deadline,
@@ -2716,6 +2745,12 @@ export function createMemoryRunRetrievalService(
       });
       let settledControl: MemoryControlResult | null = null;
       const controlPromise = (async (): Promise<MemoryControlResult> => {
+        if (!actionControlRequested) {
+          return {
+            reason: "memory_action_control_not_admitted",
+            status: "UNAVAILABLE"
+          };
+        }
         const refs = await controlRefsPromise;
         if (controlCache.control) return controlCache.control;
         if (!options.control) {
@@ -2747,7 +2782,8 @@ export function createMemoryRunRetrievalService(
       });
       if (typeof repository.retrieveSpeculativeDense === "function") {
         speculativeDensePromise = queryEmbeddingPromise.then((embedding) => {
-          if (embedding?.status !== "READY" || settledControl?.status === "READY" ||
+          if (embedding?.status !== "READY" ||
+            !deterministicRead && settledControl?.status === "READY" ||
             !deadline.canStartOptional()) return null;
           return timings.measure("localRetrievalMs", () =>
             runBoundedMemoryRead(
@@ -2770,7 +2806,8 @@ export function createMemoryRunRetrievalService(
             ));
         }).catch(() => null);
       }
-      if (options.queryResolver && input.expected.settings.referenceChatHistory) {
+      if (!deterministicRead && options.queryResolver &&
+        input.expected.settings.referenceChatHistory) {
         speculativeQueryResolverEligible = true;
         speculativeQueryResolutionSettled = false;
         speculativeQueryResolutionPromise = (async () => {
@@ -2810,7 +2847,7 @@ export function createMemoryRunRetrievalService(
         provisionalPlan.originalSanitizedQuery,
         controlRefs
       );
-      if (controlCache.control === undefined) {
+      if (actionControlRequested && controlCache.control === undefined) {
         controlCache.control = control;
         controlCache.controlAttemptId = input.attemptId;
         controlCache.controlInputHash = memoryControlInputHash(controlContext);
@@ -2822,7 +2859,7 @@ export function createMemoryRunRetrievalService(
           role: "MEMORY_QUERY_EMBED"
         }]);
       }
-      if (controlCache.actionResolved !== true) {
+      if (actionControlRequested && controlCache.actionResolved !== true) {
         let resolvedAction: MemoryActionFeedback | null = null;
         if (control.status === "READY" && options.actionExecutor &&
           control.intent.action !== "NONE") {
@@ -2850,7 +2887,9 @@ export function createMemoryRunRetrievalService(
         controlCache.actionResult = resolvedAction;
         controlCache.actionAttemptId = input.attemptId;
       }
-      const actionResult = controlCache.actionResult ?? null;
+      const actionResult = actionControlRequested
+        ? controlCache.actionResult ?? null
+        : null;
       if (deadline.expired()) {
         return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
           result: queryEmbedding,
@@ -2859,13 +2898,20 @@ export function createMemoryRunRetrievalService(
       }
       const answerResult = memoryActionAnswerResult(control, actionResult);
       const controlEvidence = controlForAttemptEvidence(control, fallbackControlReuse)!;
-      const currentControlExternal = utilityUsedExternal(control) &&
+      const controlUtilityResult = actionControlRequested ? controlEvidence : null;
+      const currentControlExternal = actionControlRequested &&
+        utilityUsedExternal(control) &&
         (controlCache.controlAttemptId === input.attemptId || readOnlyControlReuse !== null);
       const actionEvidence = {
         ...(answerResult ? { memoryActionAnswerResult: answerResult } : {}),
         ...(actionResult ? { memoryActionResult: actionResult } : {}),
         ...(readOnlyControlReuse ? { readOnlyControlReuse } : {}),
         ...(fallbackControlReuse ? { fallbackControlReuse } : {}),
+        memoryActionAdmissionReason: actionAdmission.reason,
+        memoryActionAdmissionState: actionAdmission.state,
+        memoryActionAdmissionVersion: actionAdmission.version,
+        memoryActionControlRequested: actionControlRequested,
+        memoryReadUtilityPolicy: readUtilityPolicy,
         utilityEgressMode: currentControlExternal || utilityUsedExternal(queryEmbedding)
           ? "CONSENTED_EXTERNAL" as const
           : "LOCAL_ONLY" as const
@@ -2886,7 +2932,7 @@ export function createMemoryRunRetrievalService(
             "MUTATION_ONLY_READ_EXCLUDED"
           ] satisfies readonly MemorySourceFamilyHardExclusionReason[],
           utilityExecutions: [
-            utilityEvidence("MEMORY_CONTROL", controlEvidence),
+            utilityEvidence("MEMORY_CONTROL", controlUtilityResult),
             utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding)
           ]
         });
@@ -2896,7 +2942,15 @@ export function createMemoryRunRetrievalService(
       let plannerFallbackReason: string | null = null;
       let broadPlannerFallback = false;
       let broadFallbackBaselinePlan: MemoryRetrievalPlan | null = null;
-      if (control.status !== "READY") {
+      if (deterministicRead) {
+        const deterministic = deterministicBroadFallbackReadPlans(
+          input,
+          provisionalPlan.originalSanitizedQuery
+        );
+        plan = deterministic.enriched;
+        broadFallbackBaselinePlan = deterministic.baseline;
+        broadPlannerFallback = true;
+      } else if (control.status !== "READY") {
         plannerFallbackReason = control.reason;
         const fallback = deterministicBroadFallbackReadPlans(
           input,
@@ -3101,7 +3155,7 @@ export function createMemoryRunRetrievalService(
               ? "CONSENTED_EXTERNAL"
               : "LOCAL_ONLY",
             utilityExecutions: [
-              utilityEvidence("MEMORY_CONTROL", controlEvidence),
+              utilityEvidence("MEMORY_CONTROL", controlUtilityResult),
               utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding)
             ]
           });
@@ -3562,7 +3616,7 @@ export function createMemoryRunRetrievalService(
               ? "CONSENTED_EXTERNAL"
               : "LOCAL_ONLY",
             utilityExecutions: [
-              utilityEvidence("MEMORY_CONTROL", controlEvidence),
+              utilityEvidence("MEMORY_CONTROL", controlUtilityResult),
               utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
               utilityEvidence(
                 "MEMORY_QUERY_RESOLVE",
@@ -3644,7 +3698,7 @@ export function createMemoryRunRetrievalService(
       const preparedText = pack.text;
       const preparedTokens = pack.approxTokens;
       const utilityExecutions = [
-        utilityEvidence("MEMORY_CONTROL", controlEvidence),
+        utilityEvidence("MEMORY_CONTROL", controlUtilityResult),
         utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
         utilityEvidence("MEMORY_QUERY_RESOLVE", queryResolutionEvidence),
         utilityEvidence("MEMORY_RERANK", relevance)
@@ -3811,7 +3865,7 @@ export function createPrismaMemoryRunRetrievalService(
       actionExecutor: defaultMemoryIntentActionExecutor,
       control: createPrismaMemoryControlService(authority, client),
       controlRefs: createPrismaMemoryControlRefProvider(client),
-      queryResolver: createPrismaMemoryQueryResolverService(authority, client),
+      readUtilityPolicy: DEFAULT_MEMORY_READ_UTILITY_POLICY,
       utilities: createPrismaMemoryRunUtilityService(authority, client),
       vectorRepository: createPrismaMemoryVectorRepository(client)
     }

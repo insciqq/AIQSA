@@ -58,6 +58,10 @@ export type ProviderModelCapabilities = {
   /** Verified strict JSON Schema output for the exact active model/credential
    * tuple. Configuration normalization never trusts this field directly. */
   structuredOutput?: boolean;
+  /** Verified support for one forced strict function call on the exact active
+   * model/credential/route tuple. Configuration normalization never trusts
+   * this field directly. */
+  forcedToolCalling?: boolean;
   /** Opts a compatible Chat endpoint into `stream_options.include_usage`. */
   streamUsage?: boolean;
   toolCalling?: boolean;

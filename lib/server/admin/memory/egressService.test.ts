@@ -26,14 +26,13 @@ function policy(suffix = "a"): ResolvedMemoryUtilityPolicy {
   const reranker = target("c".repeat(64), "Reranker connection", "Reranker model");
   const destinations = [
     { kind: "AVAILABLE" as const, role: "MEMORY_FACT_EXTRACT" as const, target: system },
-    { kind: "AVAILABLE" as const, role: "MEMORY_QUERY_RESOLVE" as const, target: system },
     { kind: "AVAILABLE" as const, role: "MEMORY_DOCUMENT_EMBED" as const, target: embedding },
     { kind: "AVAILABLE" as const, role: "MEMORY_RERANK" as const, target: reranker }
   ];
   return {
     destinations,
     fingerprint: "f".repeat(64),
-    policyVersion: "memory-utility-egress-v4",
+    policyVersion: "memory-utility-egress-v5",
     targets: new Map(destinations.map((entry) => [entry.role, entry.target]))
   };
 }
@@ -128,8 +127,8 @@ describe("administrator Memory egress service", () => {
     expect(after.acceptedBy).toEqual({ displayName: "Admin", id: "admin-1" });
     expect(after.version).toBe(2);
     expect(onAcknowledged).toHaveBeenCalledOnce();
-    expect(row.acceptedDestinations).toHaveLength(4);
-    expect(row.acceptedDestinations).toContainEqual(expect.objectContaining({
+    expect(row.acceptedDestinations).toHaveLength(3);
+    expect(row.acceptedDestinations).not.toContainEqual(expect.objectContaining({
       role: "MEMORY_QUERY_RESOLVE"
     }));
     expect(JSON.stringify(row.acceptedDestinations)).not.toMatch(/System|Embedding|Reranker|owner/u);

@@ -116,6 +116,11 @@ import {
   MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
   MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
 } from "../../lib/server/memory/retrieval/runAdmission";
+import {
+  DEFAULT_MEMORY_READ_UTILITY_POLICY,
+  LEGACY_MEMORY_READ_UTILITY_POLICY,
+  type MemoryReadUtilityPolicy
+} from "../../lib/server/memory/retrieval/readUtilityPolicy";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from
   "../../lib/server/memory/safetyLite";
 import { defaultMemorySourceMutationHooks } from
@@ -369,6 +374,7 @@ type CliOptions = Readonly<{
   indexTimeoutMs: number;
   onlineEvaluation: boolean;
   outputDirectory: string;
+  memoryReadUtilityPolicy: MemoryReadUtilityPolicy;
   profile: LongMemEvalProfile;
   qualificationManifestId: LongMemEvalQualificationManifestId | null;
   questionIds: readonly string[];
@@ -519,6 +525,34 @@ type CaseFailureDiagnostics = Readonly<{
     state: MemoryJobState;
   }>[];
 }>;
+
+const deterministicReadUtilityRoles = new Set([
+  "MEMORY_CONTROL",
+  "MEMORY_QUERY_RESOLVE"
+]);
+
+function assertMemoryReadUtilityAudit(
+  policy: MemoryReadUtilityPolicy,
+  audit: LongMemEvalRetrievalAudit
+): void {
+  if (audit.memoryReadUtilityPolicy !== policy) {
+    throw new Error("longmemeval_memory_read_policy_mismatch");
+  }
+  if (policy === "DETERMINISTIC_READ_V1" &&
+    (audit.controlProviderCalls !== 0 || audit.queryResolverProviderCalls !== 0)) {
+    throw new Error("longmemeval_memory_read_utility_call_detected");
+  }
+}
+
+function assertMemoryReadUtilityExecutions(
+  policy: MemoryReadUtilityPolicy,
+  aggregates: readonly ExecutionAggregate[]
+): void {
+  if (policy === "DETERMINISTIC_READ_V1" && aggregates.some(({ role }) =>
+    deterministicReadUtilityRoles.has(role))) {
+    throw new Error("longmemeval_memory_read_utility_execution_detected");
+  }
+}
 
 class LongMemEvalCaseFailure extends Error {
   constructor(readonly diagnostics: CaseFailureDiagnostics) {
@@ -695,6 +729,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     indexTimeoutMs: indexTimeoutMinutes * 60_000,
     onlineEvaluation,
     outputDirectory: resolveBenchmarkOutputDirectory(benchmarkRoot, output),
+    memoryReadUtilityPolicy: DEFAULT_MEMORY_READ_UTILITY_POLICY,
     profile,
     qualificationManifestId,
     questionIds: Object.freeze(questionIds),
@@ -735,6 +770,11 @@ function applyQualificationManifest(
   const manifestMemoryAdmission = "memoryAdmission" in manifest.runtime
     ? manifest.runtime.memoryAdmission
     : null;
+  const manifestReadUtilityPolicy: MemoryReadUtilityPolicy =
+    manifestMemoryAdmission !== null &&
+      "readUtilityPolicy" in manifestMemoryAdmission
+      ? manifestMemoryAdmission.readUtilityPolicy
+      : LEGACY_MEMORY_READ_UTILITY_POLICY;
   if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
     manifest.runtime.embedding.providerOrder.length !==
       qualificationEmbeddingProviderOrder.length ||
@@ -773,6 +813,7 @@ function applyQualificationManifest(
     manifestMemoryAdmission.softDeadlineMs !==
       MEMORY_INTERACTIVE_SOFT_DEADLINE_MS ||
     manifestMemoryAdmission.version !== MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION ||
+    options.memoryReadUtilityPolicy !== manifestReadUtilityPolicy ||
     manifest.runtime.lexical.backend !== "OPENSEARCH" ||
     process.env.AIQSA_MEMORY_LEXICAL_BACKEND !== manifest.runtime.lexical.backend ||
     process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID !==
@@ -786,6 +827,7 @@ function applyQualificationManifest(
     forceDreamDiagnostic: manifest.runtime.forceDreamDiagnostic,
     indexTimeoutMs: manifest.runtime.indexTimeoutMinutes * 60_000,
     onlineEvaluation: true,
+    memoryReadUtilityPolicy: manifestReadUtilityPolicy,
     profile: manifest.profile,
     questionIds: Object.freeze(
       manifest.selection.cases.map(({ questionId }) => questionId)
@@ -4168,6 +4210,10 @@ async function runCase(
           options.runTimeoutMs
         )
       );
+      assertMemoryReadUtilityAudit(
+        options.memoryReadUtilityPolicy,
+        answer.retrieval
+      );
       const componentEvaluation = await withFailureCode(
         "longmemeval_component_evaluation_failed",
         () => loadPackedComponentEvaluation(prisma, {
@@ -4202,6 +4248,10 @@ async function runCase(
             executionStartedAt
           )
         ])
+      );
+      assertMemoryReadUtilityExecutions(
+        options.memoryReadUtilityPolicy,
+        executionEvidence.aggregates
       );
       return Object.freeze({
         hypothesis: answer.hypothesis,
@@ -4321,6 +4371,7 @@ function buildCheckpointIdentity(input: Readonly<{
         queryResolverMaximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
         queryResolverSettlementReserveMs:
           MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
+        readUtilityPolicy: input.options.memoryReadUtilityPolicy,
         softDeadlineMs: MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
         version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
       }),
@@ -4356,7 +4407,7 @@ function buildCheckpointIdentity(input: Readonly<{
       mode: input.selection.mode,
       seed: input.selection.seed
     }),
-    version: 6
+    version: 7
   });
 }
 
@@ -4475,6 +4526,14 @@ async function main(): Promise<void> {
         const checkpoint = checkpoints.get(entry.questionId);
         const latest = checkpoint?.attempts.at(-1);
         if (!latest || latest.outcome.status !== "COMPLETE") continue;
+        assertMemoryReadUtilityAudit(
+          options.memoryReadUtilityPolicy,
+          latest.outcome.summary.retrieval
+        );
+        assertMemoryReadUtilityExecutions(
+          options.memoryReadUtilityPolicy,
+          latest.outcome.summary.utilityExecutions
+        );
         if (latest.outcome.summary.answer.memoryOutcome !== "USED") {
           if (options.retryUnhealthy) continue;
           emit("case_memory_unhealthy", {
@@ -4538,6 +4597,7 @@ async function main(): Promise<void> {
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
       forceDreamDiagnostic: options.forceDreamDiagnostic,
+      memoryReadUtilityPolicy: options.memoryReadUtilityPolicy,
       onlineEvaluation: options.onlineEvaluation,
       preparedCaseCache: options.profile === "official" &&
         !options.forceDreamDiagnostic,
@@ -4694,6 +4754,14 @@ async function main(): Promise<void> {
       if (outcome.status === "FAILED") {
         failures.push(outcome.failure);
       } else {
+        assertMemoryReadUtilityAudit(
+          options.memoryReadUtilityPolicy,
+          outcome.summary.retrieval
+        );
+        assertMemoryReadUtilityExecutions(
+          options.memoryReadUtilityPolicy,
+          outcome.summary.utilityExecutions
+        );
         summaries.push(outcome.summary);
         answers.push({ hypothesis: outcome.hypothesis, questionId: entry.questionId });
         if (options.onlineEvaluation) {
@@ -4790,6 +4858,7 @@ async function main(): Promise<void> {
         queryResolverMaximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
         queryResolverSettlementReserveMs:
           MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
+        readUtilityPolicy: options.memoryReadUtilityPolicy,
         softDeadlineMs: MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
         version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
       },

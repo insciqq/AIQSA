@@ -7,6 +7,7 @@ const candidate = {
   connectionId: "connection-a",
   defaultReasoningEffort: "medium",
   displayName: "Model A",
+  forcedToolCall: "not_verified" as const,
   id: "model-a",
   reasoningEfforts: ["low", "medium", "high", "xhigh"],
   structuredOutput: "not_verified" as const
@@ -448,7 +449,8 @@ describe("administrator provider system model task", () => {
 
     render(<AdminProviderSystemModelTask active />);
     expect(await screen.findByText(/Status: Unavailable/)).toBeVisible();
-    expect(screen.getByText(/MCP Auto: Verification required/)).toBeVisible();
+    expect(screen.getByText(/Structured output: Verification required/)).toBeVisible();
+    expect(screen.getByText(/Memory control: Verification required/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Run verification" })).toBeEnabled();
     const save = screen.getByRole("button", { name: "Save system models" });
     expect(save).toBeEnabled();
@@ -467,13 +469,18 @@ describe("administrator provider system model task", () => {
       }
     };
     const verified = {
-      candidates: [{ ...candidate, structuredOutput: "verified" as const }],
+      candidates: [{
+        ...candidate,
+        forcedToolCall: "verified" as const,
+        structuredOutput: "verified" as const
+      }],
       rerankerCandidates: [],
       policy: {
         ...current.policy,
         systemModel: {
           ...candidate,
           available: true,
+          forcedToolCall: "verified" as const,
           structuredOutput: "verified" as const
         }
       }
@@ -491,12 +498,13 @@ describe("administrator provider system model task", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<AdminProviderSystemModelTask active onMutationCommitted={onMutationCommitted} />);
-    expect(await screen.findByText(/MCP Auto: Verification required/)).toBeVisible();
-    expect(screen.getByText(/one small model request.*provider charges/)).toBeVisible();
+    expect(await screen.findByText(/Structured output: Verification required/)).toBeVisible();
+    expect(screen.getByText(/bounded capability requests.*provider charges/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Run verification" }));
 
-    await screen.findByText("Structured output verified. MCP Auto is ready.");
-    expect(screen.getByText(/MCP Auto: Ready/)).toBeVisible();
+    await screen.findByText("System Model strict utilities verified.");
+    expect(screen.getByText(/Structured output: Ready/)).toBeVisible();
+    expect(screen.getByText(/Memory control: Ready/)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Run verification" })).not.toBeInTheDocument();
     const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(url).toBe("/api/admin/providers/system-model-policy");
@@ -507,13 +515,18 @@ describe("administrator provider system model task", () => {
 
   it("reports verified structured output without another paid action", async () => {
     const verified = {
-      candidates: [{ ...candidate, structuredOutput: "verified" as const }],
+      candidates: [{
+        ...candidate,
+        forcedToolCall: "verified" as const,
+        structuredOutput: "verified" as const
+      }],
       rerankerCandidates: [],
       policy: {
         ...catalog.policy,
         systemModel: {
           ...candidate,
           available: true,
+          forcedToolCall: "verified" as const,
           structuredOutput: "verified" as const
         }
       }
@@ -523,7 +536,8 @@ describe("administrator provider system model task", () => {
     ));
 
     render(<AdminProviderSystemModelTask active />);
-    expect(await screen.findByText(/MCP Auto: Ready/)).toBeVisible();
+    expect(await screen.findByText(/Structured output: Ready/)).toBeVisible();
+    expect(screen.getByText(/Memory control: Ready/)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Run verification" })).not.toBeInTheDocument();
   });
 
@@ -567,7 +581,7 @@ describe("administrator provider system model task", () => {
     ));
 
     render(<AdminProviderSystemModelTask active />);
-    expect(await screen.findByText(/MCP Auto: Not supported by this adapter/)).toBeVisible();
+    expect(await screen.findByText(/Structured output: Not supported by this adapter/)).toBeVisible();
     expect(screen.getByText(/Supported paths are OpenAI Responses/)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Run verification" })).not.toBeInTheDocument();
   });

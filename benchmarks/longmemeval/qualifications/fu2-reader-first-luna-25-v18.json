@@ -1,0 +1,207 @@
+{
+  "id": "fu2-reader-first-luna-25-v18",
+  "profile": "official",
+  "runtime": {
+    "caseConcurrency": 1,
+    "debugMemory": false,
+    "embedding": {
+      "provider": "OpenRouter",
+      "providerOrder": [
+        "nebius",
+        "deepinfra"
+      ],
+      "upstreamModelId": "qwen/qwen3-embedding-8b"
+    },
+    "evaluation": {
+      "failFast": false,
+      "mode": "per_case",
+      "model": "gpt-4o-2024-08-06",
+      "oracleSha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+      "provider": "OpenAI",
+      "scriptSha256": "ecce9c4c79dc89d99534ac17b383a5cbb5b9f0c69ee98adaf0684742e3d95251"
+    },
+    "forceDreamDiagnostic": false,
+    "indexTimeoutMinutes": 45,
+    "lexical": {
+      "backend": "OPENSEARCH",
+      "indexBuildId": "20260831-lme-v7-r2"
+    },
+    "memoryAdmission": {
+      "controlMaximumMs": 20000,
+      "hardDeadlineMs": 26000,
+      "queryResolverMaximumMs": 20000,
+      "queryResolverSettlementReserveMs": 2000,
+      "softDeadlineMs": 20000,
+      "version": "memory-run-retrieval-admission-v55",
+      "readUtilityPolicy": "DETERMINISTIC_READ_V1"
+    },
+    "reranker": {
+      "policyVersion": "openrouter-reranker-route-v1",
+      "provider": "OpenRouter",
+      "route": [
+        {
+          "relevanceScoreFloor": null,
+          "upstreamModelId": "voyageai/rerank-2.5"
+        },
+        {
+          "relevanceScoreFloor": null,
+          "upstreamModelId": "cohere/rerank-4-pro"
+        },
+        {
+          "relevanceScoreFloor": 0.01,
+          "upstreamModelId": "qwen/qwen3-reranker-8b"
+        }
+      ]
+    },
+    "runTimeoutMinutes": 15,
+    "sessionConcurrency": 16,
+    "systemModel": {
+      "dataCollection": null,
+      "provider": "codex-lb",
+      "providerOrder": [],
+      "reasoningEffort": "medium",
+      "structuredOutputToolChoice": "required",
+      "upstreamModelId": "gpt-5.6-luna"
+    },
+    "workerConcurrency": {
+      "global": 8,
+      "perUser": 4
+    }
+  },
+  "selection": {
+    "algorithm": "sha256(seed\\0questionType\\0questionId)",
+    "cases": [
+      {
+        "questionId": "71315a70",
+        "questionType": "knowledge-update"
+      },
+      {
+        "questionId": "945e3d21",
+        "questionType": "knowledge-update"
+      },
+      {
+        "questionId": "f685340e",
+        "questionType": "knowledge-update"
+      },
+      {
+        "questionId": "0977f2af",
+        "questionType": "knowledge-update"
+      },
+      {
+        "questionId": "60472f9c",
+        "questionType": "multi-session"
+      },
+      {
+        "questionId": "67e0d0f2",
+        "questionType": "multi-session"
+      },
+      {
+        "questionId": "80ec1f4f_abs",
+        "questionType": "multi-session"
+      },
+      {
+        "questionId": "2e6d26dc",
+        "questionType": "multi-session"
+      },
+      {
+        "questionId": "7405e8b1",
+        "questionType": "multi-session"
+      },
+      {
+        "questionId": "4c36ccef",
+        "questionType": "single-session-assistant"
+      },
+      {
+        "questionId": "3249768e",
+        "questionType": "single-session-assistant"
+      },
+      {
+        "questionId": "71a3fd6b",
+        "questionType": "single-session-assistant"
+      },
+      {
+        "questionId": "8aef76bc",
+        "questionType": "single-session-assistant"
+      },
+      {
+        "questionId": "fca70973",
+        "questionType": "single-session-preference"
+      },
+      {
+        "questionId": "caf03d32",
+        "questionType": "single-session-preference"
+      },
+      {
+        "questionId": "06f04340",
+        "questionType": "single-session-preference"
+      },
+      {
+        "questionId": "195a1a1b",
+        "questionType": "single-session-preference"
+      },
+      {
+        "questionId": "d52b4f67",
+        "questionType": "single-session-user"
+      },
+      {
+        "questionId": "0862e8bf",
+        "questionType": "single-session-user"
+      },
+      {
+        "questionId": "caf9ead2",
+        "questionType": "single-session-user"
+      },
+      {
+        "questionId": "c5e8278d",
+        "questionType": "single-session-user"
+      },
+      {
+        "questionId": "0bc8ad92",
+        "questionType": "temporal-reasoning"
+      },
+      {
+        "questionId": "gpt4_f49edff3",
+        "questionType": "temporal-reasoning"
+      },
+      {
+        "questionId": "bcbe585f",
+        "questionType": "temporal-reasoning"
+      },
+      {
+        "questionId": "gpt4_2312f94c",
+        "questionType": "temporal-reasoning"
+      }
+    ],
+    "categoryPopulation": {
+      "knowledge-update": 78,
+      "multi-session": 133,
+      "single-session-assistant": 56,
+      "single-session-preference": 30,
+      "single-session-user": 70,
+      "temporal-reasoning": 133
+    },
+    "priorRunExclusion": {
+      "count": 11,
+      "questionIdDigest": "25927c6d7bf185295098a126879e594bb8b4b6fe2c34545d6348ba43623935a3"
+    },
+    "questionIdDigest": "d0b22f25248f6892fe87487b6ded7b555bb3d6bc842b18ad448eb2f9f0317b11",
+    "quotas": {
+      "knowledge-update": 4,
+      "multi-session": 5,
+      "single-session-assistant": 4,
+      "single-session-preference": 4,
+      "single-session-user": 4,
+      "temporal-reasoning": 4
+    },
+    "seed": "aiqsa-memory-followup-fu09-blind-50-v1"
+  },
+  "source": {
+    "appCommit": "6e1715d31e8710c53dd13f3d2c808b4c0d8d091c",
+    "appWorktreeSha256": "5719d097a87e58c6ba890f1ec9ca47c1a635cdf62a0653aba09d6e8a83c4a501",
+    "datasetSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+    "evaluatorSha256": "ecce9c4c79dc89d99534ac17b383a5cbb5b9f0c69ee98adaf0684742e3d95251",
+    "oracleSha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+    "upstreamCommit": "9e0b455f4ef0e2ab8f2e582289761153549043fc"
+  },
+  "version": 1
+}

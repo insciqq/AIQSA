@@ -41,7 +41,8 @@ describe("LongMemEval frozen qualification manifest", () => {
   it("freezes the reader-first reranker route and fast-model matrix", async () => {
     const [legacy, first, second, third, fourth, fifth, sixth, prior, previous,
       luna, historicalDeepSeek, historicalGlm, historicalGemini,
-      deepSeek, glm, gemini] =
+      deepSeek, glm, gemini, deterministicGemini, deterministicLuna,
+      productionLuna, finalProductionLuna] =
       await Promise.all([
       loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1"),
@@ -58,15 +59,17 @@ describe("LongMemEval frozen qualification manifest", () => {
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v12"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v13"),
       loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v14"),
-      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v15")
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v15"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v16"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-luna-25-v17"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-luna-25-v18"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-luna-25-v19")
     ]);
     if (luna.id !== "fu2-reader-first-blind-50-v9") {
       throw new Error("reader_first_manifest_expected");
     }
     expect(LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS).toEqual([
-      "fu2-reader-first-blind-50-v13",
-      "fu2-reader-first-blind-50-v14",
-      "fu2-reader-first-blind-50-v15"
+      "fu2-reader-first-luna-25-v19"
     ]);
 
     expect(luna.runtime.caseConcurrency).toBe(2);
@@ -115,12 +118,13 @@ describe("LongMemEval frozen qualification manifest", () => {
     expect(luna.selection).toEqual(historicalDeepSeek.selection);
     expect(luna.selection).toEqual(historicalGlm.selection);
     expect(luna.selection).toEqual(historicalGemini.selection);
+    expect(luna.selection).toEqual(deterministicGemini.selection);
     expect(luna.source.appCommit)
       .toBe("3e4c098975130e2829c67973632d8eb51d4ca732");
     await expect(currentLongMemEvalQualificationRevision(process.cwd()))
       .resolves.toEqual({
-        headCommit: deepSeek.source.appCommit,
-        worktreeSha256: deepSeek.source.appWorktreeSha256
+        headCommit: finalProductionLuna.source.appCommit,
+        worktreeSha256: finalProductionLuna.source.appWorktreeSha256
       });
     for (const manifest of [deepSeek, glm, gemini]) {
       expect(manifest.runtime.evaluation).toMatchObject({
@@ -137,6 +141,49 @@ describe("LongMemEval frozen qualification manifest", () => {
         version: "memory-run-retrieval-admission-v54"
       });
     }
+    expect(deterministicGemini.runtime.memoryAdmission).toEqual({
+      controlMaximumMs: 20_000,
+      hardDeadlineMs: 26_000,
+      queryResolverMaximumMs: 20_000,
+      queryResolverSettlementReserveMs: 2_000,
+      readUtilityPolicy: "DETERMINISTIC_READ_V1",
+      softDeadlineMs: 20_000,
+      version: "memory-run-retrieval-admission-v54"
+    });
+    expect(deterministicGemini.runtime.caseConcurrency).toBe(1);
+    expect(deterministicGemini.runtime.systemModel).toEqual(
+      gemini.runtime.systemModel
+    );
+    expect(deterministicLuna.runtime.memoryAdmission).toEqual(
+      deterministicGemini.runtime.memoryAdmission
+    );
+    expect(deterministicLuna.runtime.systemModel).toEqual({
+      dataCollection: null,
+      provider: "codex-lb",
+      providerOrder: [],
+      reasoningEffort: "medium",
+      structuredOutputToolChoice: "required",
+      upstreamModelId: "gpt-5.6-luna"
+    });
+    expect(productionLuna.runtime.memoryAdmission).toEqual({
+      ...deterministicLuna.runtime.memoryAdmission,
+      version: "memory-run-retrieval-admission-v55"
+    });
+    expect(productionLuna.runtime.systemModel).toEqual(
+      deterministicLuna.runtime.systemModel
+    );
+    expect(productionLuna.selection).toEqual(deterministicLuna.selection);
+    expect(finalProductionLuna.runtime).toEqual(productionLuna.runtime);
+    expect(finalProductionLuna.selection).toEqual(productionLuna.selection);
+    expect(deterministicLuna.selection.cases).toHaveLength(25);
+    expect(deterministicLuna.selection.quotas).toEqual({
+      "knowledge-update": 4,
+      "multi-session": 5,
+      "single-session-assistant": 4,
+      "single-session-preference": 4,
+      "single-session-user": 4,
+      "temporal-reasoning": 4
+    });
     expect([deepSeek, glm, gemini].map(({ runtime, selection }) => ({
       model: runtime.systemModel,
       selection

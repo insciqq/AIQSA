@@ -28,21 +28,21 @@ export const LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS = [
   "fu2-reader-first-blind-50-v12",
   "fu2-reader-first-blind-50-v13",
   "fu2-reader-first-blind-50-v14",
-  "fu2-reader-first-blind-50-v15"
+  "fu2-reader-first-blind-50-v15",
+  "fu2-reader-first-blind-50-v16",
+  "fu2-reader-first-luna-25-v17",
+  "fu2-reader-first-luna-25-v18",
+  "fu2-reader-first-luna-25-v19"
 ] as const;
 
 export type LongMemEvalQualificationManifestId =
   (typeof LONGMEMEVAL_QUALIFICATION_MANIFEST_IDS)[number];
 
 export const LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS = [
-  "fu2-reader-first-blind-50-v13",
-  "fu2-reader-first-blind-50-v14",
-  "fu2-reader-first-blind-50-v15"
+  "fu2-reader-first-luna-25-v19"
 ] as const satisfies readonly LongMemEvalQualificationManifestId[];
 
-/** Compatibility alias for callers that display one active manifest. New
- * qualification admission uses the set below so the three model runs share
- * one checked-out code fingerprint without changing it between runs. */
+/** Compatibility alias for callers that display one active manifest. */
 export const LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_ID =
   LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS[0];
 
@@ -70,12 +70,14 @@ const categoryCountsSchema = z.object({
   "temporal-reasoning": z.number().int().nonnegative()
 }).strict();
 
+const selectionCaseSchema = z.object({
+  questionId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/u),
+  questionType: z.enum(LONGMEMEVAL_QUESTION_TYPES)
+}).strict();
+
 const selectionSchema = z.object({
   algorithm: z.literal("sha256(seed\\0questionType\\0questionId)"),
-  cases: z.array(z.object({
-    questionId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/u),
-    questionType: z.enum(LONGMEMEVAL_QUESTION_TYPES)
-  }).strict()).length(50),
+  cases: z.array(selectionCaseSchema).length(50),
   categoryPopulation: categoryCountsSchema,
   priorRunExclusion: z.object({
     count: z.literal(11),
@@ -86,6 +88,10 @@ const selectionSchema = z.object({
   seed: z.literal("aiqsa-memory-followup-fu09-blind-50-v1")
 }).strict();
 
+const selection25Schema = selectionSchema.extend({
+  cases: z.array(selectionCaseSchema).length(25)
+}).strict();
+
 const measuredMemoryAdmissionSchema = z.object({
   controlMaximumMs: z.literal(20_000),
   hardDeadlineMs: z.literal(26_000),
@@ -94,6 +100,15 @@ const measuredMemoryAdmissionSchema = z.object({
   softDeadlineMs: z.literal(20_000),
   version: z.literal("memory-run-retrieval-admission-v54")
 }).strict();
+
+const deterministicReadMemoryAdmissionSchema = measuredMemoryAdmissionSchema.extend({
+  readUtilityPolicy: z.literal("DETERMINISTIC_READ_V1")
+}).strict();
+
+const productionReadMemoryAdmissionSchema =
+  deterministicReadMemoryAdmissionSchema.extend({
+    version: z.literal("memory-run-retrieval-admission-v55")
+  }).strict();
 
 const legacyManifestSchema = z.object({
   id: z.literal("fu09-blind-50-v1"),
@@ -419,6 +434,64 @@ const readerFirstManifestV15Schema = readerFirstManifestV12Schema.extend({
   }).strict()
 }).strict();
 
+const readerFirstManifestV16Schema = readerFirstManifestV15Schema.extend({
+  id: z.literal("fu2-reader-first-blind-50-v16"),
+  runtime: readerFirstManifestV15Schema.shape.runtime.extend({
+    caseConcurrency: z.literal(1),
+    memoryAdmission: deterministicReadMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV17Schema = readerFirstManifestV16Schema.extend({
+  id: z.literal("fu2-reader-first-luna-25-v17"),
+  runtime: readerFirstManifestV16Schema.shape.runtime.extend({
+    systemModel: z.object({
+      dataCollection: z.null(),
+      provider: z.literal("codex-lb"),
+      providerOrder: z.tuple([]),
+      reasoningEffort: z.literal("medium"),
+      structuredOutputToolChoice: z.literal("required"),
+      upstreamModelId: z.literal("gpt-5.6-luna")
+    }).strict()
+  }).strict(),
+  selection: selection25Schema,
+  source: z.object({
+    appCommit: z.literal("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV18Schema = readerFirstManifestV17Schema.extend({
+  id: z.literal("fu2-reader-first-luna-25-v18"),
+  runtime: readerFirstManifestV17Schema.shape.runtime.extend({
+    memoryAdmission: productionReadMemoryAdmissionSchema
+  }).strict(),
+  source: z.object({
+    appCommit: z.literal("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c"),
+    appWorktreeSha256: sha256Schema,
+    datasetSha256: z.literal(LONGMEMEVAL_S_SHA256),
+    evaluatorSha256: z.literal(LONGMEMEVAL_EVALUATOR_SHA256),
+    oracleSha256: z.literal(LONGMEMEVAL_ORACLE_SHA256),
+    upstreamCommit: z.literal(LONGMEMEVAL_REPOSITORY_COMMIT)
+  }).strict()
+}).strict();
+
+const readerFirstManifestV19Schema = readerFirstManifestV18Schema.extend({
+  id: z.literal("fu2-reader-first-luna-25-v19")
+}).strict();
+
 const manifestSchema = z.discriminatedUnion("id", [
   legacyManifestSchema,
   readerFirstManifestV1Schema,
@@ -435,7 +508,11 @@ const manifestSchema = z.discriminatedUnion("id", [
   readerFirstManifestV12Schema,
   readerFirstManifestV13Schema,
   readerFirstManifestV14Schema,
-  readerFirstManifestV15Schema
+  readerFirstManifestV15Schema,
+  readerFirstManifestV16Schema,
+  readerFirstManifestV17Schema,
+  readerFirstManifestV18Schema,
+  readerFirstManifestV19Schema
 ]);
 
 export type LongMemEvalQualificationManifest = Readonly<

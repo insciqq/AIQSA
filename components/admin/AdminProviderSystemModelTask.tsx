@@ -20,10 +20,29 @@ import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnect
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-function mcpAutoStatus(status: AdminSystemModelCandidate["structuredOutput"]): string {
-  if (status === "verified") return "MCP Auto: Ready.";
-  if (status === "not_verified") return "MCP Auto: Verification required.";
-  return "MCP Auto: Not supported by this adapter.";
+function structuredOutputStatus(
+  status: AdminSystemModelCandidate["structuredOutput"]
+): string {
+  if (status === "verified") return "Structured output: Ready.";
+  if (status === "not_verified") return "Structured output: Verification required.";
+  return "Structured output: Not supported by this adapter.";
+}
+
+function forcedToolCallStatus(
+  status: AdminSystemModelCandidate["forcedToolCall"]
+): string {
+  if (status === "verified") return "Memory control: Ready.";
+  if (status === "not_verified") return "Memory control: Verification required.";
+  return "Memory control: Forced strict tool calls are not supported by this route.";
+}
+
+function strictUtilitiesNeedVerification(
+  model: AdminSystemModelCandidate
+): boolean {
+  return model.structuredOutput !== "unsupported" &&
+    model.forcedToolCall !== "unsupported" &&
+    (model.structuredOutput === "not_verified" ||
+      model.forcedToolCall === "not_verified");
 }
 
 export function AdminProviderSystemModelTask({
@@ -147,7 +166,7 @@ export function AdminProviderSystemModelTask({
 
   const verifyStructuredOutput = async () => {
     const systemModel = catalog?.policy.systemModel;
-    if (!systemModel || systemModel.structuredOutput !== "not_verified" ||
+    if (!systemModel || !strictUtilitiesNeedVerification(systemModel) ||
       busy || draftDirty) return;
     setVerifying(true);
     setError(null);
@@ -159,7 +178,7 @@ export function AdminProviderSystemModelTask({
       return;
     }
     apply(result.data);
-    setNotice("Structured output verified. MCP Auto is ready.");
+    setNotice("System Model strict utilities verified.");
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
@@ -245,12 +264,17 @@ export function AdminProviderSystemModelTask({
                   <p className={catalog.policy.systemModel.structuredOutput === "verified"
                     ? "text-ink-secondary"
                     : "text-caution"}>
-                    {mcpAutoStatus(catalog.policy.systemModel.structuredOutput)}
+                    {structuredOutputStatus(catalog.policy.systemModel.structuredOutput)}
                   </p>
-                  {catalog.policy.systemModel.structuredOutput === "not_verified" ? (
+                  <p className={catalog.policy.systemModel.forcedToolCall === "verified"
+                    ? "text-ink-secondary"
+                    : "text-caution"}>
+                    {forcedToolCallStatus(catalog.policy.systemModel.forcedToolCall)}
+                  </p>
+                  {strictUtilitiesNeedVerification(catalog.policy.systemModel) ? (
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <p className="max-w-xl text-ink-muted">
-                        Verification sends one small model request and may incur provider charges.
+                        Verification sends bounded capability requests to this exact deployment route and may incur provider charges.
                       </p>
                       <button
                         className={quietButton}
@@ -264,6 +288,10 @@ export function AdminProviderSystemModelTask({
                   ) : catalog.policy.systemModel.structuredOutput === "unsupported" ? (
                     <p className="text-ink-muted">
                       Supported paths are OpenAI Responses, Responses-compatible deployments, and OpenRouter Chat Completions.
+                    </p>
+                  ) : catalog.policy.systemModel.forcedToolCall === "unsupported" ? (
+                    <p className="text-ink-muted">
+                      Choose a route that accepts one forced strict function call for Memory actions.
                     </p>
                   ) : null}
                 </>

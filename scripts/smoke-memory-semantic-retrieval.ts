@@ -48,6 +48,7 @@ const POLL_INTERVAL_MS = 2_000;
 const MAX_REBUILD_ACTIONS = 1;
 const MAX_CHAT_RUNS = 13;
 const RECOVER_LATEST = process.argv.includes("--recover-latest");
+const ACTIONS_ONLY = process.argv.includes("--actions-only");
 const DEFECT_REGRESSIONS = process.argv.includes("--defect-regressions");
 const RERANKER_ROUTE_REGRESSION = process.argv.includes(
   "--reranker-route-regression"
@@ -735,6 +736,18 @@ function requiredMemoryAction(
   return action;
 }
 
+function requiredManagementAction(
+  source: SourceRun,
+  operation: "LIST" | "RESET" | "SEARCH",
+  status: "COMPLETE" | "CONFIRMATION_REQUIRED"
+): MemoryActionFeedback {
+  const action = memoryAction(source);
+  if (action.operation !== operation || action.status !== status) {
+    fail("answer_recall", "memory_smoke_action_result_invalid");
+  }
+  return action;
+}
+
 async function assertStrictControlSucceeded(source: SourceRun): Promise<void> {
   const count = await verifier.successfulRetrievalExecutionCount({
     modelRunId: source.modelRunId,
@@ -1075,6 +1088,82 @@ async function runLiveRerankerRouteRegression(
   }, null, 2));
 }
 
+async function runLiveActionSmoke(answer: MemorySemanticSmokeTarget): Promise<void> {
+  const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
+    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
+    .join("");
+  const explicitStatements = new Set<string>();
+  let primaryError: unknown = null;
+  let cleanupError: unknown = null;
+  let verifiedActions = 0;
+
+  try {
+    const save = await sourceRun(
+      `Memory action smoke save ${marker}`,
+      `Please carry this preference into future conversations: my ${marker} reporting format is concise.`,
+      answer
+    );
+    const saveAction = requiredMemoryAction(save, "SAVE", "COMMITTED");
+    await assertStrictControlSucceeded(save);
+    if (!saveAction.statement?.includes(marker)) {
+      fail("answer_recall", "memory_smoke_implicit_intent_failed");
+    }
+    explicitStatements.add(saveAction.statement);
+    await poll("automatic_learning", async () =>
+      (await allConsumerMemories()).some((item) =>
+        item.provenance === "SAVED" && item.statement.includes(marker))
+        ? true
+        : null);
+    verifiedActions += 1;
+
+    const list = await sourceRun(
+      `Memory action smoke list ${marker}`,
+      "List my saved memories.",
+      answer
+    );
+    const listAction = requiredManagementAction(list, "LIST", "COMPLETE");
+    await assertStrictControlSucceeded(list);
+    if (!(listAction.items ?? []).some((item) =>
+      item.provenance === "SAVED" && item.statement.includes(marker))) {
+      fail("answer_recall", "memory_smoke_action_result_invalid");
+    }
+    verifiedActions += 1;
+
+    const reset = await sourceRun(
+      `Memory action smoke reset ${marker}`,
+      "Reset my memory.",
+      answer
+    );
+    requiredManagementAction(reset, "RESET", "CONFIRMATION_REQUIRED");
+    await assertStrictControlSucceeded(reset);
+    verifiedActions += 1;
+  } catch (error) {
+    primaryError = error;
+  }
+
+  let cleanedMemoryItems = 0;
+  try {
+    await authenticate();
+    cleanedMemoryItems = await cleanupSmokeState(
+      marker,
+      explicitStatements,
+      []
+    );
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (cleanupError) fail("automatic_learning", "memory_smoke_cleanup_failed");
+  if (primaryError) throw primaryError;
+  console.log(JSON.stringify({
+    cleanedMemoryItems,
+    excludedSmokeChats: createdSmokeChats.length,
+    sanitizedAggregatesOnly: true,
+    status: "complete",
+    strictControlCalls: verifiedActions,
+    verifiedActions
+  }, null, 2));
+}
+
 async function defectRegressionTarget(): Promise<MemorySemanticSmokeTarget> {
   const settings = await prisma.userMemorySettings.findUnique({
     select: {
@@ -1230,6 +1319,10 @@ async function main(): Promise<void> {
 
   const rebuildActions = await ensureAdminMemoryReady(initialStatus, settings);
   assertConsumerSettingsReady(await consumerSettings());
+  if (ACTIONS_ONLY) {
+    await runLiveActionSmoke(answer);
+    return;
+  }
   if (DEFECT_REGRESSIONS) {
     await runLiveDefectRegressions(answer);
     return;

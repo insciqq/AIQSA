@@ -50,6 +50,8 @@ import type {
   AdminProviderDraftTestOutcome
 } from "./tester";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodeForcedToolCallVerificationEvidence } from
+  "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import { isApprovedRerankerProviderModelId } from "./approvedRerankers";
@@ -211,6 +213,9 @@ function validateEvidence(
   const structuredOutput = decodeStructuredOutputVerificationEvidence(
     evidence.structuredOutput
   );
+  const forcedToolCall = decodeForcedToolCallVerificationEvidence(
+    evidence.forcedToolCall
+  );
   const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(evidence.compatibility);
@@ -227,12 +232,14 @@ function validateEvidence(
         ? "verified"
         : "not_supported") ||
       (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
+      (compatibility.forcedToolCall === "verified") !== Boolean(forcedToolCall) ||
       (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput) ||
       (outcome.status === "unavailable" && (
         compatibility.streaming === "verified" || compatibility.usage === "verified"
       )) ||
       (model.modelClass !== "answer" && (
         compatibility.directPdf === "verified" ||
+        compatibility.forcedToolCall === "verified" ||
         compatibility.streaming === "verified" ||
         compatibility.structuredOutput === "verified"
       ))
@@ -240,6 +247,10 @@ function validateEvidence(
     (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
+    (forcedToolCall !== null && (
+      forcedToolCall.adapterKind !== model.adapterKind ||
+      forcedToolCall.upstreamModelId !== model.upstreamModelId
+    )) ||
     (structuredOutput !== null && (
       structuredOutput.adapterKind !== model.adapterKind ||
       structuredOutput.upstreamModelId !== model.upstreamModelId
@@ -253,6 +264,7 @@ function validateEvidence(
     method: evidence.method,
     selectedProviders: [...evidence.selectedProviders],
     ...(pdfInput ? { pdfInput } : {}),
+    ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: evidence.upstreamModelId
   };

@@ -594,12 +594,18 @@ describe("provider admission", () => {
     expect(plan.answer.credentialSource).toBe("user");
   });
 
-  it("grants structured output only from exact current-tuple probe evidence", async () => {
+  it("grants strict capabilities only from exact current-tuple probe evidence", async () => {
     const verified = admissionDb({
       answer: officialOpenAiModel,
       options: [off],
       credentialCheckEvidenceByModel: {
         [officialOpenAiModel.id]: {
+          forcedToolCall: {
+            adapterKind: officialOpenAiModel.adapterKind,
+            probeVersion: 1,
+            upstreamModelId: officialOpenAiModel.upstreamModelId,
+            verified: true
+          },
           structuredOutput: {
             adapterKind: officialOpenAiModel.adapterKind,
             probeVersion: 2,
@@ -631,8 +637,12 @@ describe("provider admission", () => {
 
     expect(verifiedPlan.answer.modelConfiguration.capabilities.structuredOutput).toBe(true);
     expect(verifiedPlan.answer.snapshot.model.capabilities.structuredOutput).toBe(true);
+    expect(verifiedPlan.answer.modelConfiguration.capabilities.forcedToolCalling).toBe(true);
+    expect(verifiedPlan.answer.snapshot.model.capabilities.forcedToolCalling).toBe(true);
     expect(unverifiedPlan.answer.modelConfiguration.capabilities.structuredOutput).not.toBe(true);
     expect(unverifiedPlan.answer.snapshot.model.capabilities.structuredOutput).not.toBe(true);
+    expect(unverifiedPlan.answer.modelConfiguration.capabilities.forcedToolCalling).not.toBe(true);
+    expect(unverifiedPlan.answer.snapshot.model.capabilities.forcedToolCalling).not.toBe(true);
   });
 
   it.each([
