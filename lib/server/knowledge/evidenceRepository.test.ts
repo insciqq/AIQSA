@@ -28,6 +28,7 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_SCHEMA_V21,
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
@@ -50,7 +51,8 @@ import {
 import {
   knowledgeAnswerDraftPromptV21GlobalReducerV1,
   knowledgeAnswerTargetedSupplementPromptV8,
-  knowledgeGroundedSelectorPromptV21GlobalReducerV1
+  knowledgeGroundedSelectorPromptV21GlobalReducerV1,
+  knowledgeGroundedSelectorPromptV21GlobalReducerV2
 } from "./answerGroundingGlobalReducerV1";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V6,
@@ -1172,8 +1174,13 @@ describe("Knowledge Evidence v2 repository projection", () => {
     targetLocalSupplement: false
   }, {
     evidenceVersion: 54 as const,
-    name: "current V38",
+    name: "historical V38",
     protocol: KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
+    targetLocalSupplement: true
+  }, {
+    evidenceVersion: 55 as const,
+    name: "current V39",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
     targetLocalSupplement: true
   }])("reconstructs $name closure into its isolated evidence version", async ({
     evidenceVersion,
@@ -1295,7 +1302,9 @@ describe("Knowledge Evidence v2 repository projection", () => {
       evidenceManifest: dispatchDraft.message,
       request
     });
-    const selectorPrompt = knowledgeGroundedSelectorPromptV21GlobalReducerV1({
+    const selectorPrompt = (evidenceVersion === 55
+      ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
+      : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       draft: acceptedDraft!,
       evidence: selectorEvidence,

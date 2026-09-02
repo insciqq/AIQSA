@@ -24,6 +24,7 @@ import {
   groundSettledKnowledgeAnswerV52,
   groundSettledKnowledgeAnswerV53,
   groundSettledKnowledgeAnswerV54,
+  groundSettledKnowledgeAnswerV55,
   KnowledgeAnswerContractError
 } from "./grounding";
 
@@ -347,5 +348,20 @@ describe("Grounding Evidence V54", () => {
       crossTargetExactRepeatCount: 1,
       operations: withoutSupplement.operations.filter(({ role }) => role !== "supplement")
     })).toThrow(KnowledgeAnswerContractError);
+  });
+});
+
+describe("Grounding Evidence V55", () => {
+  it("versions the quality-ranked prompt without widening the receipt", () => {
+    const grounded = groundSettledKnowledgeAnswerV55({
+      ...input(),
+      crossTargetExactRepeatCount: 1
+    });
+    expect(grounded).toMatchObject({
+      crossTargetExactRepeatCount: 1,
+      version: 55
+    });
+    expect(JSON.stringify(grounded)).not.toContain("Question");
+    expect(JSON.stringify(grounded)).not.toContain("Evidence");
   });
 });
