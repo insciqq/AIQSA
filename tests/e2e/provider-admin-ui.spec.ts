@@ -1137,8 +1137,9 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Run profiles" })).toHaveCount(0);
+    // Five native providers plus the Custom (OpenAI-compatible) entry.
     await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
-      .toHaveCount(5);
+      .toHaveCount(6);
     await section.getByRole("button", { name: /Custom 1 configured/ }).click();
     await expect(section.getByRole("heading", { name: "Connect a custom endpoint" })).toBeVisible();
     await expect(section.getByLabel("API root")).toBeVisible();
