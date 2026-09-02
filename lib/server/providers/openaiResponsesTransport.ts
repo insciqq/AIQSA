@@ -4,6 +4,12 @@ import {
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
+import {
+  executeWithProviderRetry,
+  isRetryableProviderNetworkError,
+  type ProviderRetryOptions
+} from "./providerRetry";
+import { parseRetryAfterMs } from "../retryAfter";
 
 export type OpenAIResponseObject = Record<string, unknown>;
 
@@ -28,12 +34,14 @@ export type OpenAIRetryableErrorPayload = {
 const retryableHttpStatuses = new Set([408, 409, 429, 500, 502, 503, 504]);
 
 class OpenAIHttpError extends Error {
+  readonly retryAfterMs: number | null;
   readonly retryable: boolean;
   readonly status: number;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, retryAfterMs: number | null) {
     super(message);
     this.name = "OpenAIHttpError";
+    this.retryAfterMs = retryAfterMs;
     this.retryable = retryableHttpStatuses.has(status);
     this.status = status;
   }
@@ -59,6 +67,7 @@ async function parseOpenAIJsonResponse(
 }
 
 async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Promise<never> {
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   try {
     await readBoundedResponseText(response, { signal });
   } catch (error) {
@@ -69,8 +78,20 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
 
   throw new OpenAIHttpError(
     providerHttpErrorMessage("OpenAI", response.status),
-    response.status
+    response.status,
+    retryAfterMs
   );
+}
+
+function initialRequestRetryDecision(
+  error: unknown,
+  signal: AbortSignal
+): Readonly<{ retryAfterMs: number | null }> | null {
+  if (signal.aborted) return null;
+  if (error instanceof OpenAIHttpError && error.retryable) {
+    return { retryAfterMs: error.retryAfterMs };
+  }
+  return isRetryableProviderNetworkError(error) ? { retryAfterMs: null } : null;
 }
 
 export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErrorPayload | null {
@@ -90,6 +111,12 @@ export function createFetchOpenAIResponsesClient(input: {
   baseUrl?: string;
   defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
+  /**
+   * Opt-in only for stateless/replayable Responses requests. Native
+   * background Responses deliberately leave this unset because a failed
+   * create can have crash-ambiguous provider state without a response id.
+   */
+  initialRequestRetry?: ProviderRetryOptions;
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
@@ -109,12 +136,27 @@ export function createFetchOpenAIResponsesClient(input: {
       options?.timeoutMs ?? input.defaultTimeoutMs
     );
     try {
-      const response = await fetchFn(`${baseUrl}/responses`, {
-        body: JSON.stringify(body),
-        headers,
-        method: "POST",
-        signal: timeout.signal
-      });
+      const serializedBody = JSON.stringify(body);
+      const operation = async () => {
+        const response = await fetchFn(`${baseUrl}/responses`, {
+          body: serializedBody,
+          headers,
+          method: "POST",
+          signal: timeout.signal
+        });
+        if (!response.ok) {
+          return await throwOpenAIHttpError(response, timeout.signal);
+        }
+        return response;
+      };
+      const response = input.initialRequestRetry
+        ? await executeWithProviderRetry({
+            operation,
+            options: input.initialRequestRetry,
+            shouldRetry: (error) => initialRequestRetryDecision(error, timeout.signal),
+            signal: timeout.signal
+          })
+        : await operation();
       return { response, timeout };
     } catch (error) {
       timeout.clear();
@@ -146,10 +188,6 @@ export function createFetchOpenAIResponsesClient(input: {
       const exchange = await postResponse(body, options);
 
       try {
-        if (!exchange.response.ok) {
-          return await throwOpenAIHttpError(exchange.response, exchange.timeout.signal);
-        }
-
         return await parseOpenAIJsonResponse(exchange.response, exchange.timeout.signal);
       } finally {
         exchange.timeout.clear();
@@ -180,10 +218,6 @@ export function createFetchOpenAIResponsesClient(input: {
       const exchange = await postResponse(body, options);
 
       try {
-        if (!exchange.response.ok) {
-          return await throwOpenAIHttpError(exchange.response, exchange.timeout.signal);
-        }
-
         if (!exchange.response.body) {
           throw new Error("openai_stream_body_missing");
         }

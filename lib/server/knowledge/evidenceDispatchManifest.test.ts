@@ -7,6 +7,10 @@ import {
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate
 } from "./evidenceDispatchManifest";
+import {
+  knowledgeCoverageEvidenceAtomIndexV2,
+  knowledgeCoverageEvidenceFromManifestV4
+} from "./coverageScopeV4";
 
 type AvailableCandidate = Extract<CurrentKnowledgeEvidenceDispatchCandidate, { state: "available" }>;
 
@@ -204,6 +208,29 @@ describe("Knowledge evidence dispatch manifest", () => {
     expect(item.expandedContextOriginalBytes).toBe(Buffer.byteLength(expandedContext, "utf8"));
     expect(item.text).toContain("shortened; expanded context omitted");
     expect(manifest.message).not.toContain("EXPANDED_START");
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(manifest)).not.toBeNull();
+  });
+
+  it("fits the downstream atom budget before any answer-model request", () => {
+    const expandedContext = Array.from(
+      { length: 1_024 },
+      (_, index) => `table-row-${index + 1}`
+    ).join("\n");
+    const manifest = pack({
+      candidates: [candidate({ expandedContext })],
+      maximumBytes: 128 * 1_024,
+      maximumTokens: 128 * 1_024
+    });
+    const item = manifest.items[0]!;
+
+    expect(item.exactExcerpt).toBe("Verified excerpt");
+    expect(item.expandedContext).toBeNull();
+    expect(item.expandedContextState).toBe("omitted");
+    expect(item.representation).toBe(KNOWLEDGE_EVIDENCE_SHORTENING_VERSION);
+    expect(manifest.message).not.toContain("table-row-1024");
+    expect(knowledgeCoverageEvidenceAtomIndexV2(
+      knowledgeCoverageEvidenceFromManifestV4(manifest)
+    ).items).toHaveLength(1);
     expect(decodeKnowledgeEvidenceDispatchManifestDraft(manifest)).not.toBeNull();
   });
 

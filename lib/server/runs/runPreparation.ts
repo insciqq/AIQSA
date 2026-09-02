@@ -22,6 +22,7 @@ import {
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   invalidRunParamsError,
+  resolveAcceptedRunReasoningEffort,
   validateRunParams
 } from "../../domain/runParams";
 import {
@@ -1444,6 +1445,14 @@ export async function prepareRun(
     return failure(invalidRunParamsError, 400);
   }
   const runParams = mergeModelParams(parameterProvider, defaultParams, paramValidation.params);
+  const acceptedReasoning = resolveAcceptedRunReasoningEffort({
+    controls: parameterControls,
+    params: runParams,
+    provider: parameterProvider
+  });
+  if (!acceptedReasoning.ok) {
+    return failure(acceptedReasoning.code, 400);
+  }
 
   if (assistantMcpUnavailable) {
     return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
@@ -1539,6 +1548,7 @@ export async function prepareRun(
     params: runParams,
     prompt,
     provider: executionProvider,
+    reasoningEffort: acceptedReasoning.reasoningEffort,
     searchPlan: {
       mode: requestedSearchPlan.mode,
       options: admissionPlan.searches.map((candidate) => ({

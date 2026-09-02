@@ -4,6 +4,7 @@ import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { sumTokenUsage } from "../../domain/usage";
 import {
   decodeModelPdfBatchOutput,
+  MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION,
   modelPdfPagesToDocument,
   modelPdfTranscriptionPrompt
 } from "../parsing/modelPdfOutput";
@@ -499,7 +500,10 @@ export function createKnowledgeModelPdfParser(
           mode: input.mode,
           pageEnd,
           pageStart,
-          promptVersion: input.parserProfileVersion >= 7
+          promptVersion: input.parserProfileVersion >=
+            MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION
+            ? 6
+            : input.parserProfileVersion >= 7
             ? 5
             : input.parserProfileVersion >= 6 ? 4
             : input.parserProfileVersion >= 5 ? 3

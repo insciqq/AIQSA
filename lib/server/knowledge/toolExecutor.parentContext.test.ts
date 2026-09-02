@@ -305,7 +305,26 @@ describe("executor delivery of child-to-parent expansion", () => {
           ].join("\n\n"),
           // Tokens cover the exact rendered expansion, including the two
           // provider-visible labels and their separators.
-          expansion: { passageCount: 2, state: "expanded", tokens: 16 },
+          expansion: {
+            contextOrder: {
+              offsetEncoding: "utf16_code_units",
+              segments: [{
+                end: 37,
+                position: "previous",
+                sourceOrdinal: 9,
+                start: 30
+              }, {
+                end: 71,
+                position: "next",
+                sourceOrdinal: 11,
+                start: 65
+              }],
+              version: 1
+            },
+            passageCount: 2,
+            state: "expanded",
+            tokens: 16
+          },
           handle: "K1",
           includedText: "Atomic answer text."
         })]

@@ -191,4 +191,28 @@ describe("materializeAssistantRunParams", () => {
       expect(result.params.temperature).toBeUndefined();
     }
   });
+
+  it("removes an OpenRouter verbosity default when reasoning is disabled", () => {
+    const result = materializeAssistantRunParams({
+      baseParams: {
+        reasoning: { effort: "medium" },
+        verbosity: "medium"
+      },
+      controls: controls({
+        reasoningEffort: {
+          defaultValue: "medium",
+          options: ["none", "low", "medium", "high"],
+          supported: true
+        }
+      }),
+      parameterProvider: "openrouter",
+      runControls: { reasoningEffort: "none" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.params.verbosity).toBeUndefined();
+      expect(result.params.reasoning).toMatchObject({ enabled: false });
+    }
+  });
 });

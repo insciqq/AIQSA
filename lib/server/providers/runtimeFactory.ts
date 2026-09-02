@@ -275,7 +275,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         apiKey: null,
         baseUrl: snapshot.connection.apiRoot,
         defaultTimeoutMs: responseTimeoutMs,
-        fetchFn
+        fetchFn,
+        initialRequestRetry: { maxAttempts: 3 }
       });
       return {
         adapter: createCompatibleResponsesAdapter({
@@ -395,7 +396,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         apiKey: clientSecret,
         baseUrl,
         defaultTimeoutMs: responseTimeoutMs,
-        fetchFn
+        fetchFn,
+        initialRequestRetry: { maxAttempts: 3 }
       });
       return {
         adapter: createCompatibleResponsesAdapter({

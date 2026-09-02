@@ -157,6 +157,10 @@ export function materializeAssistantRunParams(input: {
     }
     if (usesVerbosityEffort && effort !== "none") {
       params.verbosity = effort;
+    } else if (usesVerbosityEffort) {
+      // A saved `none` control must also remove the model-default verbosity
+      // value; OpenRouter otherwise still serializes that stale effort.
+      delete params.verbosity;
     }
     if (controls.temperature.supported) {
       params.temperature = temperature;
