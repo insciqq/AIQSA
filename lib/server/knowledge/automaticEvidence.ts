@@ -115,6 +115,9 @@ export function knowledgeEvidenceDispatchCandidatesFromToolResult(
       evidenceId: `${toolResult.callId}:result:${resultOrdinal}`,
       exactExcerpt: result.includedText,
       ...(result.expandedContext ? { expandedContext: result.expandedContext } : {}),
+      ...(result.expandedContext && result.expansion?.contextOrder
+        ? { expandedContextOrder: result.expansion.contextOrder }
+        : {}),
       fileName,
       handle: result.handle,
       locator: `page=${result.page}; heading=${heading}`,

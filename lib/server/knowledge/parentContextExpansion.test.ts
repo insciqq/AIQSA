@@ -3,6 +3,8 @@ import {
   assembleKnowledgeParentExpansions,
   decodeKnowledgeParentExpansionEvidence,
   fitKnowledgeParentExpansionsToByteBudget,
+  knowledgeParentExpansionEvidence,
+  renderKnowledgeParentExpansionProjectionV1,
   renderKnowledgeParentExpansionUnits,
   usableKnowledgeParentContextWindow,
   type KnowledgeParentContextRow,
@@ -584,6 +586,44 @@ describe("parent context expansion byte-budget fitting", () => {
 });
 
 describe("parent expansion evidence decoding", () => {
+  it("persists injection-safe source positions over the rendered context", () => {
+    const units = [
+      unit({
+        chunkId: "chunk-11",
+        chunkIndex: 11,
+        label: "Next same-Source context",
+        position: "next",
+        text: "After the focal passage."
+      }),
+      unit({
+        chunkId: "chunk-9",
+        chunkIndex: 9,
+        position: "previous",
+        text: "Before the focal passage."
+      })
+    ];
+    const rendered = renderKnowledgeParentExpansionProjectionV1(units);
+    const evidence = knowledgeParentExpansionEvidence({
+      state: "expanded",
+      units
+    }, units);
+
+    expect(evidence.contextOrder?.segments.map((segment) => ({
+      position: segment.position,
+      sourceOrdinal: segment.sourceOrdinal,
+      text: rendered.text.slice(segment.start, segment.end)
+    }))).toEqual([{
+      position: "previous",
+      sourceOrdinal: 9,
+      text: "Before the focal passage."
+    }, {
+      position: "next",
+      sourceOrdinal: 11,
+      text: "After the focal passage."
+    }]);
+    expect(decodeKnowledgeParentExpansionEvidence(evidence)).toEqual(evidence);
+  });
+
   it("round-trips content-free facts and rejects malformed values", () => {
     expect(decodeKnowledgeParentExpansionEvidence({
       passageCount: 3,

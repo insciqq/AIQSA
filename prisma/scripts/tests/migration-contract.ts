@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "8c36ec9138b663af54259ba4dc3dbe5b9741a0b2038e6dc14839e74730252aab";
+  "c929e15cc20cb176b9dc31970c3c82801951a9267e873cf386bc95ea005d16b9";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -48,6 +48,76 @@ const KNOWLEDGE_RANKING_PROFILE_V2_MIGRATION =
   "20260828090000_knowledge_ranking_profile_v2";
 const KNOWLEDGE_RERANKER_RECEIPT_V2_MIGRATION =
   "20260828093000_knowledge_reranker_receipt_v2";
+const KNOWLEDGE_ANSWER_AUDIT_V21_MIGRATION =
+  "20260831030000_knowledge_answer_audit_v21";
+const KNOWLEDGE_COVERAGE_SCOPE_V3_MIGRATION =
+  "20260831043000_knowledge_coverage_scope_v3";
+const KNOWLEDGE_COVERAGE_ATOMS_V4_MIGRATION =
+  "20260831060000_knowledge_coverage_atoms_v4";
+const KNOWLEDGE_COVERAGE_SPARSE_UNITS_V5_MIGRATION =
+  "20260831070000_knowledge_coverage_sparse_units_v5";
+const KNOWLEDGE_SCOPE_COMPLETENESS_V1_MIGRATION =
+  "20260831123000_knowledge_scope_completeness_v1";
+const KNOWLEDGE_REPAIR_RESERVED_BUDGET_V1_MIGRATION =
+  "20260831130000_knowledge_repair_reserved_budget_v1";
+const KNOWLEDGE_CLAIM_SURFACE_V1_MIGRATION =
+  "20260831143000_knowledge_claim_surface_v1";
+const KNOWLEDGE_TARGET_GROUPS_V1_MIGRATION =
+  "20260831160000_knowledge_target_groups_v1";
+const KNOWLEDGE_CLAIM_MARKUP_BOUNDARIES_V1_MIGRATION =
+  "20260831162000_knowledge_claim_markup_boundaries_v1";
+const KNOWLEDGE_SELECTOR_SUPPORT_EDGES_V1_MIGRATION =
+  "20260831174000_knowledge_selector_support_edges_v1";
+const KNOWLEDGE_COLLECTIVE_TARGET_SUPPORT_V1_MIGRATION =
+  "20260831180000_knowledge_collective_target_support_v1";
+const KNOWLEDGE_SCOPE_REPAIR_FEEDBACK_V1_MIGRATION =
+  "20260831190000_knowledge_scope_repair_feedback_v1";
+const KNOWLEDGE_TARGET_CLOSURE_V1_MIGRATION =
+  "20260831200000_knowledge_target_closure_v1";
+const KNOWLEDGE_SCOPE_VERIFIED_PATCH_V1_MIGRATION =
+  "20260831210000_knowledge_scope_verified_patch_v1";
+const KNOWLEDGE_SCOPE_CLOSURE_V1_MIGRATION =
+  "20260831220000_knowledge_scope_closure_v1";
+const KNOWLEDGE_REPAIR_RESERVED_CORRECTION_V2_MIGRATION =
+  "20260831230000_knowledge_repair_reserved_correction_v2";
+const KNOWLEDGE_SOURCE_ORDERED_CONTEXT_V1_MIGRATION =
+  "20260831240000_knowledge_source_ordered_context_v1";
+const KNOWLEDGE_LEAST_AUTHORITY_DELTA_V1_MIGRATION =
+  "20260831250000_knowledge_least_authority_delta_v1";
+const KNOWLEDGE_FAIL_CLOSED_LOCAL_PROVENANCE_V1_MIGRATION =
+  "20260901000000_knowledge_fail_closed_local_provenance_v1";
+const KNOWLEDGE_SCOPE_CLOSURE_ATTEMPT_CONTRACT_V1_MIGRATION =
+  "20260901010000_knowledge_scope_closure_attempt_contract_v1";
+const KNOWLEDGE_FINAL_DELTA_REPAIR_V1_MIGRATION =
+  "20260901020000_knowledge_final_delta_repair_v1";
+const KNOWLEDGE_SUPPLEMENT_ATOMIZATION_V1_MIGRATION =
+  "20260901030000_knowledge_supplement_atomization_v1";
+const KNOWLEDGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_V1_MIGRATION =
+  "20260901040000_knowledge_scope_multi_diagnostic_repair_v1";
+const KNOWLEDGE_SELECTOR_REPAIR_DIAGNOSTIC_V1_MIGRATION =
+  "20260901050000_knowledge_selector_repair_diagnostic_v1";
+const KNOWLEDGE_FAIL_CLOSED_SELECTOR_EDGES_V2_MIGRATION =
+  "20260901060000_knowledge_fail_closed_selector_edges_v2";
+const KNOWLEDGE_ADAPTIVE_ATOMIC_SUPPLEMENT_BUDGET_V1_MIGRATION =
+  "20260901070000_knowledge_adaptive_atomic_supplement_budget_v1";
+const KNOWLEDGE_QUERY_INTENT_COMPLETENESS_V1_MIGRATION =
+  "20260901080000_knowledge_query_intent_completeness_v1";
+const KNOWLEDGE_QUERY_GRANULARITY_EPISTEMIC_FIDELITY_V1_MIGRATION =
+  "20260901090000_knowledge_query_granularity_epistemic_fidelity_v1";
+const KNOWLEDGE_ANSWER_LEVEL_COMPRESSION_V1_MIGRATION =
+  "20260901100000_knowledge_answer_level_compression_v1";
+const KNOWLEDGE_SCOPE_SET_REDUCTION_V1_MIGRATION =
+  "20260901110000_knowledge_scope_set_reduction_v1";
+const KNOWLEDGE_SCOPE_RECALL_MAP_V1_MIGRATION =
+  "20260901120000_knowledge_scope_recall_map_v1";
+const KNOWLEDGE_INVALID_PROVENANCE_REJECTION_V2_MIGRATION =
+  "20260901130000_knowledge_invalid_provenance_rejection_v2";
+const KNOWLEDGE_GLOBAL_REDUCER_V1_MIGRATION =
+  "20260901140000_knowledge_global_reducer_v1";
+const KNOWLEDGE_GLOBAL_SCOPE_CLOSURE_V2_MIGRATION =
+  "20260901150000_knowledge_global_scope_closure_v2";
+const KNOWLEDGE_NON_MISSING_CLOSURE_ADMISSION_V1_MIGRATION =
+  "20260901160000_knowledge_non_missing_closure_admission_v1";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
@@ -1072,6 +1142,241 @@ function runKnowledgeH2DurableDispatchMigrationProof(
   assert.ok(h2Index > 0, "Knowledge H2 durable dispatch migration is missing");
   const h3Index = committed.indexOf(KNOWLEDGE_H3_OPERATION_SEMANTICS_MIGRATION);
   assert.ok(h3Index > h2Index, "Knowledge H3 operation semantics migration is missing");
+  const answerAuditV21Index = committed.indexOf(KNOWLEDGE_ANSWER_AUDIT_V21_MIGRATION);
+  assert.ok(
+    answerAuditV21Index > h3Index,
+    "Knowledge answer Audit V21 migration is missing",
+  );
+  const coverageScopeV3Index = committed.indexOf(KNOWLEDGE_COVERAGE_SCOPE_V3_MIGRATION);
+  assert.ok(
+    coverageScopeV3Index > answerAuditV21Index,
+    "Knowledge Coverage Scope V3 migration is missing",
+  );
+  const coverageAtomsV4Index = committed.indexOf(KNOWLEDGE_COVERAGE_ATOMS_V4_MIGRATION);
+  assert.ok(
+    coverageAtomsV4Index > coverageScopeV3Index,
+    "Knowledge Coverage atom review V4 migration is missing",
+  );
+  const coverageSparseUnitsV5Index = committed.indexOf(
+    KNOWLEDGE_COVERAGE_SPARSE_UNITS_V5_MIGRATION,
+  );
+  assert.ok(
+    coverageSparseUnitsV5Index > coverageAtomsV4Index,
+    "Knowledge Coverage sparse unit map V5 migration is missing",
+  );
+  const scopeCompletenessV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_COMPLETENESS_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeCompletenessV1Index > coverageSparseUnitsV5Index,
+    "Knowledge Scope completeness V1 migration is missing",
+  );
+  const repairReservedBudgetV1Index = committed.indexOf(
+    KNOWLEDGE_REPAIR_RESERVED_BUDGET_V1_MIGRATION,
+  );
+  assert.ok(
+    repairReservedBudgetV1Index > scopeCompletenessV1Index,
+    "Knowledge repair-reserved budget V1 migration is missing",
+  );
+  const claimSurfaceV1Index = committed.indexOf(KNOWLEDGE_CLAIM_SURFACE_V1_MIGRATION);
+  assert.ok(
+    claimSurfaceV1Index > repairReservedBudgetV1Index,
+    "Knowledge claim surface V1 migration is missing",
+  );
+  const targetGroupsV1Index = committed.indexOf(KNOWLEDGE_TARGET_GROUPS_V1_MIGRATION);
+  assert.ok(
+    targetGroupsV1Index > claimSurfaceV1Index,
+    "Knowledge target groups V1 migration is missing",
+  );
+  const claimMarkupBoundariesV1Index = committed.indexOf(
+    KNOWLEDGE_CLAIM_MARKUP_BOUNDARIES_V1_MIGRATION,
+  );
+  assert.ok(
+    claimMarkupBoundariesV1Index > targetGroupsV1Index,
+    "Knowledge claim markup boundaries V1 migration is missing",
+  );
+  const selectorSupportEdgesV1Index = committed.indexOf(
+    KNOWLEDGE_SELECTOR_SUPPORT_EDGES_V1_MIGRATION,
+  );
+  assert.ok(
+    selectorSupportEdgesV1Index > claimMarkupBoundariesV1Index,
+    "Knowledge Selector support edges V1 migration is missing",
+  );
+  const collectiveTargetSupportV1Index = committed.indexOf(
+    KNOWLEDGE_COLLECTIVE_TARGET_SUPPORT_V1_MIGRATION,
+  );
+  assert.ok(
+    collectiveTargetSupportV1Index > selectorSupportEdgesV1Index,
+    "Knowledge collective target support V1 migration is missing",
+  );
+  const scopeRepairFeedbackV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_REPAIR_FEEDBACK_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeRepairFeedbackV1Index > collectiveTargetSupportV1Index,
+    "Knowledge Scope repair feedback V1 migration is missing",
+  );
+  const targetClosureV1Index = committed.indexOf(
+    KNOWLEDGE_TARGET_CLOSURE_V1_MIGRATION,
+  );
+  assert.ok(
+    targetClosureV1Index > scopeRepairFeedbackV1Index,
+    "Knowledge target closure V1 migration is missing",
+  );
+  const scopeVerifiedPatchV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_VERIFIED_PATCH_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeVerifiedPatchV1Index > targetClosureV1Index,
+    "Knowledge Scope verified patch V1 migration is missing",
+  );
+  const scopeClosureV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_CLOSURE_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeClosureV1Index > scopeVerifiedPatchV1Index,
+    "Knowledge Scope closure V1 migration is missing",
+  );
+  const repairReservedCorrectionV2Index = committed.indexOf(
+    KNOWLEDGE_REPAIR_RESERVED_CORRECTION_V2_MIGRATION,
+  );
+  assert.ok(
+    repairReservedCorrectionV2Index > scopeClosureV1Index,
+    "Knowledge repair-reserved correction V2 migration is missing",
+  );
+  const sourceOrderedContextV1Index = committed.indexOf(
+    KNOWLEDGE_SOURCE_ORDERED_CONTEXT_V1_MIGRATION,
+  );
+  assert.ok(
+    sourceOrderedContextV1Index > repairReservedCorrectionV2Index,
+    "Knowledge source-ordered context V1 migration is missing",
+  );
+  const leastAuthorityDeltaV1Index = committed.indexOf(
+    KNOWLEDGE_LEAST_AUTHORITY_DELTA_V1_MIGRATION,
+  );
+  assert.ok(
+    leastAuthorityDeltaV1Index > sourceOrderedContextV1Index,
+    "Knowledge least-authority delta V1 migration is missing",
+  );
+  const failClosedLocalProvenanceV1Index = committed.indexOf(
+    KNOWLEDGE_FAIL_CLOSED_LOCAL_PROVENANCE_V1_MIGRATION,
+  );
+  assert.ok(
+    failClosedLocalProvenanceV1Index > leastAuthorityDeltaV1Index,
+    "Knowledge fail-closed local provenance V1 migration is missing",
+  );
+  const scopeClosureAttemptContractV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_CLOSURE_ATTEMPT_CONTRACT_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeClosureAttemptContractV1Index > failClosedLocalProvenanceV1Index,
+    "Knowledge Scope Closure attempt contract V1 migration is missing",
+  );
+  const finalDeltaRepairV1Index = committed.indexOf(
+    KNOWLEDGE_FINAL_DELTA_REPAIR_V1_MIGRATION,
+  );
+  assert.ok(
+    finalDeltaRepairV1Index > scopeClosureAttemptContractV1Index,
+    "Knowledge final-delta repair V1 migration is missing",
+  );
+  const supplementAtomizationV1Index = committed.indexOf(
+    KNOWLEDGE_SUPPLEMENT_ATOMIZATION_V1_MIGRATION,
+  );
+  assert.ok(
+    supplementAtomizationV1Index > finalDeltaRepairV1Index,
+    "Knowledge supplement atomization V1 migration is missing",
+  );
+  const scopeMultiDiagnosticRepairV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeMultiDiagnosticRepairV1Index > supplementAtomizationV1Index,
+    "Knowledge Scope multi-diagnostic repair V1 migration is missing",
+  );
+  const selectorRepairDiagnosticV1Index = committed.indexOf(
+    KNOWLEDGE_SELECTOR_REPAIR_DIAGNOSTIC_V1_MIGRATION,
+  );
+  assert.ok(
+    selectorRepairDiagnosticV1Index > scopeMultiDiagnosticRepairV1Index,
+    "Knowledge Selector repair diagnostic V1 migration is missing",
+  );
+  const failClosedSelectorEdgesV2Index = committed.indexOf(
+    KNOWLEDGE_FAIL_CLOSED_SELECTOR_EDGES_V2_MIGRATION,
+  );
+  assert.ok(
+    failClosedSelectorEdgesV2Index > selectorRepairDiagnosticV1Index,
+    "Knowledge fail-closed Selector edges V2 migration is missing",
+  );
+  const adaptiveAtomicSupplementBudgetV1Index = committed.indexOf(
+    KNOWLEDGE_ADAPTIVE_ATOMIC_SUPPLEMENT_BUDGET_V1_MIGRATION,
+  );
+  assert.ok(
+    adaptiveAtomicSupplementBudgetV1Index > failClosedSelectorEdgesV2Index,
+    "Knowledge adaptive atomic Supplement budget V1 migration is missing",
+  );
+  const queryIntentCompletenessV1Index = committed.indexOf(
+    KNOWLEDGE_QUERY_INTENT_COMPLETENESS_V1_MIGRATION,
+  );
+  assert.ok(
+    queryIntentCompletenessV1Index > adaptiveAtomicSupplementBudgetV1Index,
+    "Knowledge query-intent completeness V1 migration is missing",
+  );
+  const queryGranularityEpistemicFidelityV1Index = committed.indexOf(
+    KNOWLEDGE_QUERY_GRANULARITY_EPISTEMIC_FIDELITY_V1_MIGRATION,
+  );
+  assert.ok(
+    queryGranularityEpistemicFidelityV1Index > queryIntentCompletenessV1Index,
+    "Knowledge query-granularity epistemic-fidelity V1 migration is missing",
+  );
+  const answerLevelCompressionV1Index = committed.indexOf(
+    KNOWLEDGE_ANSWER_LEVEL_COMPRESSION_V1_MIGRATION,
+  );
+  assert.ok(
+    answerLevelCompressionV1Index > queryGranularityEpistemicFidelityV1Index,
+    "Knowledge answer-level compression V1 migration is missing",
+  );
+  const scopeSetReductionV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_SET_REDUCTION_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeSetReductionV1Index > answerLevelCompressionV1Index,
+    "Knowledge Scope set reduction V1 migration is missing",
+  );
+  const scopeRecallMapV1Index = committed.indexOf(
+    KNOWLEDGE_SCOPE_RECALL_MAP_V1_MIGRATION,
+  );
+  assert.ok(
+    scopeRecallMapV1Index > scopeSetReductionV1Index,
+    "Knowledge Scope recall map V1 migration is missing",
+  );
+  const invalidProvenanceRejectionV2Index = committed.indexOf(
+    KNOWLEDGE_INVALID_PROVENANCE_REJECTION_V2_MIGRATION,
+  );
+  assert.ok(
+    invalidProvenanceRejectionV2Index > scopeRecallMapV1Index,
+    "Knowledge invalid provenance rejection V2 migration is missing",
+  );
+  const globalReducerV1Index = committed.indexOf(
+    KNOWLEDGE_GLOBAL_REDUCER_V1_MIGRATION,
+  );
+  assert.ok(
+    globalReducerV1Index > invalidProvenanceRejectionV2Index,
+    "Knowledge global reducer V1 migration is missing",
+  );
+  const globalScopeClosureV2Index = committed.indexOf(
+    KNOWLEDGE_GLOBAL_SCOPE_CLOSURE_V2_MIGRATION,
+  );
+  assert.ok(
+    globalScopeClosureV2Index > globalReducerV1Index,
+    "Knowledge global Scope closure V2 migration is missing",
+  );
+  const nonMissingClosureAdmissionV1Index = committed.indexOf(
+    KNOWLEDGE_NON_MISSING_CLOSURE_ADMISSION_V1_MIGRATION,
+  );
+  assert.ok(
+    nonMissingClosureAdmissionV1Index > globalScopeClosureV2Index,
+    "Knowledge non-missing Closure admission V1 migration is missing",
+  );
   const probeParent = join(repositoryRoot, ".aiqsa");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
@@ -1231,6 +1536,560 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       `),
       "1",
       "Grounding Evidence V16 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeProviderAttempt"'::regclass
+          AND conname IN (
+            'KnowledgeProviderAttempt_contract_check',
+            'KnowledgeProviderAttempt_answer_result_state_check'
+          )
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_auditor_v[12]%';
+      `),
+      "2",
+      "Audited V21 operations are missing from durable provider-attempt constraints",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_v21_auditor_request_key'
+          AND indexdef LIKE '%knowledge_coverage_auditor_v[12]%';
+      `),
+      "1",
+      "Audited V21 request uniqueness is missing",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_v21_selector_request_key'
+          AND indexdef LIKE '%knowledge_grounded_selector_v17%';
+      `),
+      "1",
+      "V21 Selector repair request uniqueness is missing",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%17%';
+      `),
+      "1",
+      "Grounding Evidence V17 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%18%';
+      `),
+      "1",
+      "Grounding Evidence V18 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeProviderAttempt"'::regclass
+          AND conname IN (
+            'KnowledgeProviderAttempt_contract_check',
+            'KnowledgeProviderAttempt_answer_result_state_check'
+          )
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_v[3-6]%'
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_grounded_selector%2[01]%';
+      `),
+      "2",
+      "Positive-finding Scope V6 and Selector V21 are missing from durable constraints",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN (
+            'KnowledgeProviderAttempt_v21_scope_request_key',
+            'KnowledgeProviderAttempt_v21_selector_v18_request_key',
+            'KnowledgeProviderAttempt_v21_scope_v4_request_key',
+            'KnowledgeProviderAttempt_v21_selector_v19_request_key',
+            'KnowledgeProviderAttempt_v21_scope_v5_request_key',
+            'KnowledgeProviderAttempt_v21_selector_v20_request_key',
+            'KnowledgeProviderAttempt_v21_scope_v6_request_key',
+            'KnowledgeProviderAttempt_v21_selector_v21_request_key'
+          );
+      `),
+      "8",
+      "Scope V3/V4/V5/V6 structural-repair request uniqueness is missing",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeProviderAttempt"'::regclass
+          AND conname IN (
+            'KnowledgeProviderAttempt_contract_check',
+            'KnowledgeProviderAttempt_answer_result_state_check'
+          )
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_completeness_v1%';
+      `),
+      "2",
+      "Scope Completeness V1 is missing from durable provider-attempt constraints",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_v21_scope_completeness_v1_request_key'
+          AND indexdef LIKE '%knowledge_coverage_scope_completeness_v1%';
+      `),
+      "1",
+      "Scope Completeness V1 request uniqueness is missing",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeProviderAttempt"'::regclass
+          AND conname IN (
+            'KnowledgeProviderAttempt_contract_check',
+            'KnowledgeProviderAttempt_answer_result_state_check'
+          )
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_closure_v[12]%';
+      `),
+      "2",
+      "Scope Closure V1/V2 is missing from durable provider-attempt constraints",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_v21_scope_closure_v1_request_key'
+          AND indexdef LIKE '%knowledge_coverage_scope_closure_v1%';
+      `),
+      "1",
+      "Scope Closure V1 request uniqueness is missing",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'KnowledgeProviderAttempt_v21_scope_closure_v2_request_key'
+          AND indexdef LIKE '%knowledge_coverage_scope_closure_v2%';
+      `),
+      "1",
+      "Scope Closure V2 request uniqueness is missing",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%19%';
+      `),
+      "1",
+      "Grounding Evidence V19 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%20%';
+      `),
+      "1",
+      "Grounding Evidence V20 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%21%';
+      `),
+      "1",
+      "Grounding Evidence V21 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%22%';
+      `),
+      "1",
+      "Grounding Evidence V22 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%23%';
+      `),
+      "1",
+      "Grounding Evidence V23 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%24%';
+      `),
+      "1",
+      "Grounding Evidence V24 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%25%';
+      `),
+      "1",
+      "Grounding Evidence V25 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%26%';
+      `),
+      "1",
+      "Grounding Evidence V26 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%27%';
+      `),
+      "1",
+      "Grounding Evidence V27 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%28%';
+      `),
+      "1",
+      "Grounding Evidence V28 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%29%';
+      `),
+      "1",
+      "Grounding Evidence V29 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%30%';
+      `),
+      "1",
+      "Grounding Evidence V30 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%31%';
+      `),
+      "1",
+      "Grounding Evidence V31 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%32%';
+      `),
+      "1",
+      "Grounding Evidence V32 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%33%';
+      `),
+      "1",
+      "Grounding Evidence V33 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%34%';
+      `),
+      "1",
+      "Grounding Evidence V34 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%35%';
+      `),
+      "1",
+      "Grounding Evidence V35 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%36%';
+      `),
+      "1",
+      "Grounding Evidence V36 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%37%';
+      `),
+      "1",
+      "Grounding Evidence V37 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%38%';
+      `),
+      "1",
+      "Grounding Evidence V38 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%39%';
+      `),
+      "1",
+      "Grounding Evidence V39 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%40%';
+      `),
+      "1",
+      "Grounding Evidence V40 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%41%';
+      `),
+      "1",
+      "Grounding Evidence V41 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%42%';
+      `),
+      "1",
+      "Grounding Evidence V42 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%43%';
+      `),
+      "1",
+      "Grounding Evidence V43 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%44%';
+      `),
+      "1",
+      "Grounding Evidence V44 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%45%';
+      `),
+      "1",
+      "Grounding Evidence V45 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%46%';
+      `),
+      "1",
+      "Grounding Evidence V46 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%47%';
+      `),
+      "1",
+      "Grounding Evidence V47 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%48%';
+      `),
+      "1",
+      "Grounding Evidence V48 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%49%';
+      `),
+      "1",
+      "Grounding Evidence V49 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%50%';
+      `),
+      "1",
+      "Grounding Evidence V50 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%51%';
+      `),
+      "1",
+      "Grounding Evidence V51 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%52%';
+      `),
+      "1",
+      "Grounding Evidence V52 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%53%';
+      `),
+      "1",
+      "Grounding Evidence V53 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%54%';
+      `),
+      "1",
+      "Grounding Evidence V54 is missing from the durable evidence constraint",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+          AND conname = 'KnowledgeGroundingResult_evidence_version_check'
+          AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%55%';
+      `),
+      "1",
+      "Grounding Evidence V55 is missing from the durable evidence constraint",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1657,10 +2516,15 @@ function runKnowledgeH2DurableDispatchMigrationProof(
     psqlScalar(database, `
       INSERT INTO "ProviderRunBinding" (
         id, "modelRunId", "bindingKey", role, "credentialSource", "executionSnapshot"
-      ) VALUES (
-        'knowledge-h2-provider-binding', 'knowledge-h2-run-1', 'answer',
-        'answer', 'default', '{}'::jsonb
-      );
+      ) VALUES
+        (
+          'knowledge-h2-provider-binding', 'knowledge-h2-run-1', 'answer',
+          'answer', 'default', '{}'::jsonb
+        ),
+        (
+          'knowledge-v21-provider-binding', 'knowledge-h2-run-2', 'answer',
+          'answer', 'default', '{}'::jsonb
+        );
       INSERT INTO "KnowledgeRetrievalSession" (
         id, "modelRunId", version, "originalIntent", "scopeSnapshot",
         "readinessSummary", "citationContract", "updatedAt"
@@ -1679,8 +2543,1542 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         '{}'::jsonb, 'knowledge-h2-provider-lease', CURRENT_TIMESTAMP + interval '5 minutes',
         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       );
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v21-draft', 'knowledge-h2-run-2', 'answer', 1, 0,
+          'knowledge_answer_draft_v21', 21, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_answer_draft_v21"}'::jsonb,
+          'knowledge-v21-draft-key', repeat('1', 64), repeat('1', 64), 'reserved',
+          '{}'::jsonb, 'knowledge-v21-draft-lease', CURRENT_TIMESTAMP + interval '5 minutes',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-initial', 'knowledge-h2-run-2', 'answer', 2, 0,
+          'knowledge_grounded_selector_v17', 17, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_grounded_selector_v17","pass":"initial"}'::jsonb,
+          'knowledge-v21-selector-initial-key', repeat('2', 64), repeat('2', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-repair', 'knowledge-h2-run-2', 'answer', 3, 0,
+          'knowledge_grounded_selector_v17', 17, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_grounded_selector_v17","pass":"repair"}'::jsonb,
+          'knowledge-v21-selector-repair-key', repeat('3', 64), repeat('3', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-auditor', 'knowledge-h2-run-2', 'answer', 4, 0,
+          'knowledge_coverage_auditor_v2', 2, repeat('a', 64),
+          '{"version":2,"operation":"knowledge_coverage_auditor_v2","pass":"initial"}'::jsonb,
+          'knowledge-v21-auditor-key', repeat('4', 64), repeat('4', 64), 'reserved',
+          '{}'::jsonb, 'knowledge-v21-auditor-lease', CURRENT_TIMESTAMP + interval '5 minutes',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-supplement', 'knowledge-h2-run-2', 'answer', 5, 0,
+          'knowledge_answer_draft_supplement_v21', 21, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_answer_draft_supplement_v21"}'::jsonb,
+          'knowledge-v21-supplement-key', repeat('5', 64), repeat('5', 64), 'reserved',
+          '{}'::jsonb, 'knowledge-v21-supplement-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-final', 'knowledge-h2-run-2', 'answer', 6, 0,
+          'knowledge_grounded_selector_final_v17', 17, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_grounded_selector_final_v17"}'::jsonb,
+          'knowledge-v21-selector-final-key', repeat('6', 64), repeat('6', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-final-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
       SELECT 'knowledge-h2-provider-attempt-ready';
     `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose IN (
+            'knowledge_answer_draft_v21',
+            'knowledge_grounded_selector_v17',
+            'knowledge_coverage_auditor_v2',
+            'knowledge_answer_draft_supplement_v21',
+            'knowledge_grounded_selector_final_v17'
+          );
+      `),
+      "6",
+      "V21 bounded operation and one-repair sequence was not accepted",
+    );
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES (
+        'knowledge-v21-auditor-repair', 'knowledge-h2-run-2', 'answer', 7, 0,
+        'knowledge_coverage_auditor_v2', 2, repeat('a', 64),
+        '{"version":2,"operation":"knowledge_coverage_auditor_v2","pass":"repair"}'::jsonb,
+        'knowledge-v21-auditor-repair-key', repeat('7', 64), repeat('7', 64),
+        'reserved', '{}'::jsonb, 'knowledge-v21-auditor-repair-lease',
+        CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+      SELECT 'knowledge-v21-auditor-repair-ready';
+    `);
+    const duplicateSelectorRequest = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeProviderAttempt" (
+          id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+          "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+          "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+          "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+        ) VALUES (
+          'knowledge-v21-selector-duplicate', 'knowledge-h2-run-2', 'answer', 8, 0,
+          'knowledge_grounded_selector_v17', 17, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_grounded_selector_v17","pass":"duplicate"}'::jsonb,
+          'knowledge-v21-selector-duplicate-key', repeat('7', 64), repeat('2', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-duplicate-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
+    assert.notEqual(
+      duplicateSelectorRequest.status,
+      0,
+      "V21 accepted a duplicate Selector request instead of one distinct repair",
+    );
+    assert.match(
+      `${duplicateSelectorRequest.stdout}\n${duplicateSelectorRequest.stderr}`,
+      /KnowledgeProviderAttempt_v21_selector_request_key/u,
+      "Duplicate V21 Selector request failed without the stable uniqueness index",
+    );
+    const duplicateAuditorRequest = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeProviderAttempt" (
+          id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+          "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+          "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+          "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+        ) VALUES (
+          'knowledge-v21-auditor-duplicate', 'knowledge-h2-run-2', 'answer', 9, 0,
+          'knowledge_coverage_auditor_v2', 2, repeat('a', 64),
+          '{"version":2,"operation":"knowledge_coverage_auditor_v2","pass":"duplicate"}'::jsonb,
+          'knowledge-v21-auditor-duplicate-key', repeat('8', 64), repeat('4', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-auditor-duplicate-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
+    assert.notEqual(
+      duplicateAuditorRequest.status,
+      0,
+      "V21 accepted a duplicate Auditor request instead of one distinct repair",
+    );
+    assert.match(
+      `${duplicateAuditorRequest.stdout}\n${duplicateAuditorRequest.stderr}`,
+      /KnowledgeProviderAttempt_v21_auditor_request_key/u,
+      "Duplicate V21 Auditor request failed without the stable uniqueness index",
+    );
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v21-scope-initial', 'knowledge-h2-run-2', 'answer', 10, 0,
+          'knowledge_coverage_scope_v4', 4, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_coverage_scope_v4","pass":"initial"}'::jsonb,
+          'knowledge-v21-scope-initial-key', repeat('a', 64), repeat('a', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-scope-repair', 'knowledge-h2-run-2', 'answer', 11, 0,
+          'knowledge_coverage_scope_v4', 4, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_coverage_scope_v4","pass":"repair"}'::jsonb,
+          'knowledge-v21-scope-repair-key', repeat('b', 64), repeat('b', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v18-initial', 'knowledge-h2-run-2', 'answer', 12, 0,
+          'knowledge_grounded_selector_v19', 19, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_grounded_selector_v19","pass":"initial"}'::jsonb,
+          'knowledge-v21-selector-v18-initial-key', repeat('c', 64), repeat('c', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v18-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v18-repair', 'knowledge-h2-run-2', 'answer', 13, 0,
+          'knowledge_grounded_selector_v19', 19, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_grounded_selector_v19","pass":"repair"}'::jsonb,
+          'knowledge-v21-selector-v18-repair-key', repeat('d', 64), repeat('d', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v18-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v18-final', 'knowledge-h2-run-2', 'answer', 14, 0,
+          'knowledge_grounded_selector_final_v19', 19, repeat('a', 64),
+          '{"version":4,"operation":"knowledge_grounded_selector_final_v19"}'::jsonb,
+          'knowledge-v21-selector-v18-final-key', repeat('e', 64), repeat('e', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v18-final-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      SELECT 'knowledge-v21-scope-v4-sequence-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose IN (
+            'knowledge_coverage_scope_v4',
+            'knowledge_grounded_selector_v19',
+            'knowledge_grounded_selector_final_v19'
+          );
+      `),
+      "5",
+      "V21 atom-review Scope, one repair, and Selector V19 sequence was not accepted",
+    );
+    for (const duplicate of [{
+      id: "knowledge-v21-scope-duplicate",
+      index: "KnowledgeProviderAttempt_v21_scope_v4_request_key",
+      purpose: "knowledge_coverage_scope_v4",
+      requestHash: "a",
+      version: 4,
+    }, {
+      id: "knowledge-v21-selector-v18-duplicate",
+      index: "KnowledgeProviderAttempt_v21_selector_v19_request_key",
+      purpose: "knowledge_grounded_selector_v19",
+      requestHash: "c",
+      version: 19,
+    }] as const) {
+      const duplicateCurrentRequest = compose([
+        "exec", "-T", POSTGRES_SERVICE,
+        "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+        "--dbname", database,
+        "--command", `
+          INSERT INTO "KnowledgeProviderAttempt" (
+            id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+            "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+            "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+            "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+          ) VALUES (
+            '${duplicate.id}', 'knowledge-h2-run-2', 'answer', 15, 0,
+            '${duplicate.purpose}', ${duplicate.version}, repeat('a', 64),
+            '{}'::jsonb, '${duplicate.id}-key', repeat('f', 64),
+            repeat('${duplicate.requestHash}', 64), 'reserved', '{}'::jsonb,
+            '${duplicate.id}-lease', CURRENT_TIMESTAMP + interval '5 minutes',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          );
+        `,
+      ]);
+      assert.notEqual(
+        duplicateCurrentRequest.status,
+        0,
+        `V21 accepted a duplicate ${duplicate.purpose} request`,
+      );
+      assert.match(
+        `${duplicateCurrentRequest.stdout}\n${duplicateCurrentRequest.stderr}`,
+        new RegExp(duplicate.index, "u"),
+        `Duplicate ${duplicate.purpose} failed without its stable uniqueness index`,
+      );
+    }
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v21-scope-v6-initial', 'knowledge-h2-run-2', 'answer', 22, 0,
+          'knowledge_coverage_scope_v6', 6, repeat('a', 64),
+          '{"version":6,"operation":"knowledge_coverage_scope_v6","pass":"initial"}'::jsonb,
+          'knowledge-v21-scope-v6-initial-key', repeat('7', 64), repeat('7', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-v6-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-scope-v6-repair', 'knowledge-h2-run-2', 'answer', 23, 0,
+          'knowledge_coverage_scope_v6', 6, repeat('a', 64),
+          '{"version":6,"operation":"knowledge_coverage_scope_v6","pass":"repair"}'::jsonb,
+          'knowledge-v21-scope-v6-repair-key', repeat('8', 64), repeat('8', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-v6-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v21-initial', 'knowledge-h2-run-2', 'answer', 24, 0,
+          'knowledge_grounded_selector_v21', 21, repeat('a', 64),
+          '{"version":6,"operation":"knowledge_grounded_selector_v21","pass":"initial"}'::jsonb,
+          'knowledge-v21-selector-v21-initial-key', repeat('9', 64), repeat('9', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v21-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v21-repair', 'knowledge-h2-run-2', 'answer', 25, 0,
+          'knowledge_grounded_selector_v21', 21, repeat('a', 64),
+          '{"version":6,"operation":"knowledge_grounded_selector_v21","pass":"repair"}'::jsonb,
+          'knowledge-v21-selector-v21-repair-key', repeat('a', 64), repeat('a', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v21-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v21-final', 'knowledge-h2-run-2', 'answer', 26, 0,
+          'knowledge_grounded_selector_final_v21', 21, repeat('a', 64),
+          '{"version":6,"operation":"knowledge_grounded_selector_final_v21"}'::jsonb,
+          'knowledge-v21-selector-v21-final-key', repeat('b', 64), repeat('b', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v21-final-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v21-final-repair', 'knowledge-h2-run-2', 'answer', 27, 0,
+          'knowledge_grounded_selector_final_v21', 21, repeat('a', 64),
+          '{"version":6,"operation":"knowledge_grounded_selector_final_v21","repairReason":"selector_coverage_invalid"}'::jsonb,
+          'knowledge-v21-selector-v21-final-repair-key', repeat('c', 64), repeat('c', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v21-final-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      SELECT 'knowledge-v21-scope-v6-sequence-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose IN (
+            'knowledge_coverage_scope_v6',
+            'knowledge_grounded_selector_v21',
+            'knowledge_grounded_selector_final_v21'
+          );
+      `),
+      "6",
+      "V21 Scope, repair, Selector, and bounded final-selector retry were not accepted",
+    );
+    for (const duplicate of [{
+      id: "knowledge-v21-scope-v6-duplicate",
+      index: "KnowledgeProviderAttempt_v21_scope_v6_request_key",
+      purpose: "knowledge_coverage_scope_v6",
+      requestHash: "7",
+      version: 6,
+    }, {
+      id: "knowledge-v21-selector-v21-duplicate",
+      index: "KnowledgeProviderAttempt_v21_selector_v21_request_key",
+      purpose: "knowledge_grounded_selector_v21",
+      requestHash: "9",
+      version: 21,
+    }, {
+      id: "knowledge-v21-final-selector-duplicate",
+      index: "KnowledgeProviderAttempt_v21_final_selector_request_key",
+      purpose: "knowledge_grounded_selector_final_v21",
+      requestHash: "b",
+      version: 21,
+    }] as const) {
+      const duplicateCurrentRequest = compose([
+        "exec", "-T", POSTGRES_SERVICE,
+        "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+        "--dbname", database,
+        "--command", `
+          INSERT INTO "KnowledgeProviderAttempt" (
+            id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+            "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+            "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+            "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+          ) VALUES (
+            '${duplicate.id}', 'knowledge-h2-run-2', 'answer', 28, 0,
+            '${duplicate.purpose}', ${duplicate.version}, repeat('a', 64),
+            '{}'::jsonb, '${duplicate.id}-key', repeat('c', 64),
+            repeat('${duplicate.requestHash}', 64), 'reserved', '{}'::jsonb,
+            '${duplicate.id}-lease', CURRENT_TIMESTAMP + interval '5 minutes',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          );
+        `,
+      ]);
+      assert.notEqual(
+        duplicateCurrentRequest.status,
+        0,
+        `V21 accepted a duplicate ${duplicate.purpose} request`,
+      );
+      assert.match(
+        `${duplicateCurrentRequest.stdout}\n${duplicateCurrentRequest.stderr}`,
+        new RegExp(duplicate.index, "u"),
+        `Duplicate ${duplicate.purpose} failed without its stable uniqueness index`,
+      );
+    }
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v21-scope-completeness-initial', 'knowledge-h2-run-2', 'answer', 28, 0,
+          'knowledge_coverage_scope_completeness_v1', 1, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_coverage_scope_completeness_v1","pass":"initial"}'::jsonb,
+          'knowledge-v21-scope-completeness-initial-key', repeat('d', 64), repeat('d', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-completeness-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-scope-completeness-repair', 'knowledge-h2-run-2', 'answer', 29, 0,
+          'knowledge_coverage_scope_completeness_v1', 1, repeat('a', 64),
+          '{"version":1,"operation":"knowledge_coverage_scope_completeness_v1","pass":"repair"}'::jsonb,
+          'knowledge-v21-scope-completeness-repair-key', repeat('e', 64), repeat('e', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-completeness-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      SELECT 'knowledge-v21-scope-completeness-sequence-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose = 'knowledge_coverage_scope_completeness_v1';
+      `),
+      "2",
+      "V21 Scope Completeness initial and repair attempts were not accepted",
+    );
+    const duplicateScopeCompletenessRequest = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeProviderAttempt" (
+          id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+          "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+          "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+          "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+        ) VALUES (
+          'knowledge-v21-scope-completeness-duplicate', 'knowledge-h2-run-2', 'answer', 30, 0,
+          'knowledge_coverage_scope_completeness_v1', 1, repeat('a', 64), '{}'::jsonb,
+          'knowledge-v21-scope-completeness-duplicate-key', repeat('f', 64), repeat('d', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-completeness-duplicate-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
+    assert.notEqual(
+      duplicateScopeCompletenessRequest.status,
+      0,
+      "V21 accepted a duplicate Scope Completeness request",
+    );
+    assert.match(
+      `${duplicateScopeCompletenessRequest.stdout}\n${duplicateScopeCompletenessRequest.stderr}`,
+      /KnowledgeProviderAttempt_v21_scope_completeness_v1_request_key/u,
+      "Duplicate Scope Completeness request failed without its stable uniqueness index",
+    );
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v22-scope-closure-initial', 'knowledge-h2-run-2', 'answer', 30, 0,
+          'knowledge_coverage_scope_closure_v1', 1, repeat('a', 64),
+          '{"version":22,"operation":"knowledge_coverage_scope_closure_v1","pass":"initial"}'::jsonb,
+          'knowledge-v22-scope-closure-initial-key', repeat('a', 64), repeat('a', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v22-scope-closure-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v22-scope-closure-repair', 'knowledge-h2-run-2', 'answer', 31, 0,
+          'knowledge_coverage_scope_closure_v1', 1, repeat('a', 64),
+          '{"version":22,"operation":"knowledge_coverage_scope_closure_v1","pass":"repair"}'::jsonb,
+          'knowledge-v22-scope-closure-repair-key', repeat('b', 64), repeat('b', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v22-scope-closure-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      SELECT 'knowledge-v22-scope-closure-sequence-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose = 'knowledge_coverage_scope_closure_v1';
+      `),
+      "2",
+      "V22 Scope Closure initial and repair attempts were not accepted",
+    );
+    const duplicateScopeClosureRequest = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeProviderAttempt" (
+          id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+          "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+          "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+          "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+        ) VALUES (
+          'knowledge-v22-scope-closure-duplicate', 'knowledge-h2-run-2', 'answer', 32, 0,
+          'knowledge_coverage_scope_closure_v1', 1, repeat('a', 64), '{}'::jsonb,
+          'knowledge-v22-scope-closure-duplicate-key', repeat('c', 64), repeat('a', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v22-scope-closure-duplicate-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
+    assert.notEqual(
+      duplicateScopeClosureRequest.status,
+      0,
+      "V22 accepted a duplicate Scope Closure request",
+    );
+    assert.match(
+      `${duplicateScopeClosureRequest.stdout}\n${duplicateScopeClosureRequest.stderr}`,
+      /KnowledgeProviderAttempt_v21_scope_closure_v1_request_key/u,
+      "Duplicate Scope Closure request failed without its stable uniqueness index",
+    );
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v36-scope-closure-initial', 'knowledge-h2-run-2', 'answer', 32, 0,
+          'knowledge_coverage_scope_closure_v2', 2, repeat('a', 64),
+          '{"version":36,"operation":"knowledge_coverage_scope_closure_v2","pass":"initial"}'::jsonb,
+          'knowledge-v36-scope-closure-initial-key', repeat('d', 64), repeat('d', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v36-scope-closure-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v36-scope-closure-repair', 'knowledge-h2-run-2', 'answer', 33, 0,
+          'knowledge_coverage_scope_closure_v2', 2, repeat('a', 64),
+          '{"version":36,"operation":"knowledge_coverage_scope_closure_v2","pass":"repair"}'::jsonb,
+          'knowledge-v36-scope-closure-repair-key', repeat('e', 64), repeat('e', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v36-scope-closure-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      SELECT 'knowledge-v36-scope-closure-sequence-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose = 'knowledge_coverage_scope_closure_v2';
+      `),
+      "2",
+      "V36 Scope Closure initial and repair attempts were not accepted",
+    );
+    const duplicateScopeClosureV2Request = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeProviderAttempt" (
+          id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+          "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+          "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+          "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+        ) VALUES (
+          'knowledge-v36-scope-closure-duplicate', 'knowledge-h2-run-2', 'answer', 34, 0,
+          'knowledge_coverage_scope_closure_v2', 2, repeat('a', 64), '{}'::jsonb,
+          'knowledge-v36-scope-closure-duplicate-key', repeat('f', 64), repeat('d', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v36-scope-closure-duplicate-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      `,
+    ]);
+    assert.notEqual(
+      duplicateScopeClosureV2Request.status,
+      0,
+      "V36 accepted a duplicate Scope Closure V2 request",
+    );
+    assert.match(
+      `${duplicateScopeClosureV2Request.stdout}\n${duplicateScopeClosureV2Request.stderr}`,
+      /KnowledgeProviderAttempt_v21_scope_closure_v2_request_key/u,
+      "Duplicate Scope Closure V2 request failed without its stable uniqueness index",
+    );
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeProviderAttempt" (
+        id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+        "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+        "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+        "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+      ) VALUES
+        (
+          'knowledge-v21-scope-v5-initial', 'knowledge-h2-run-2', 'answer', 16, 0,
+          'knowledge_coverage_scope_v5', 5, repeat('a', 64),
+          '{"version":5,"operation":"knowledge_coverage_scope_v5","pass":"initial"}'::jsonb,
+          'knowledge-v21-scope-v5-initial-key', repeat('1', 64), repeat('1', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-v5-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-scope-v5-repair', 'knowledge-h2-run-2', 'answer', 17, 0,
+          'knowledge_coverage_scope_v5', 5, repeat('a', 64),
+          '{"version":5,"operation":"knowledge_coverage_scope_v5","pass":"repair"}'::jsonb,
+          'knowledge-v21-scope-v5-repair-key', repeat('2', 64), repeat('2', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-scope-v5-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v20-initial', 'knowledge-h2-run-2', 'answer', 18, 0,
+          'knowledge_grounded_selector_v20', 20, repeat('a', 64),
+          '{"version":5,"operation":"knowledge_grounded_selector_v20","pass":"initial"}'::jsonb,
+          'knowledge-v21-selector-v20-initial-key', repeat('3', 64), repeat('3', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v20-initial-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v20-repair', 'knowledge-h2-run-2', 'answer', 19, 0,
+          'knowledge_grounded_selector_v20', 20, repeat('a', 64),
+          '{"version":5,"operation":"knowledge_grounded_selector_v20","pass":"repair"}'::jsonb,
+          'knowledge-v21-selector-v20-repair-key', repeat('4', 64), repeat('4', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v20-repair-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        ),
+        (
+          'knowledge-v21-selector-v20-final', 'knowledge-h2-run-2', 'answer', 20, 0,
+          'knowledge_grounded_selector_final_v20', 20, repeat('a', 64),
+          '{"version":5,"operation":"knowledge_grounded_selector_final_v20"}'::jsonb,
+          'knowledge-v21-selector-v20-final-key', repeat('5', 64), repeat('5', 64),
+          'reserved', '{}'::jsonb, 'knowledge-v21-selector-v20-final-lease',
+          CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+      SELECT 'knowledge-v21-scope-v5-sequence-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeProviderAttempt"
+        WHERE "modelRunId" = 'knowledge-h2-run-2'
+          AND purpose IN (
+            'knowledge_coverage_scope_v5',
+            'knowledge_grounded_selector_v20',
+            'knowledge_grounded_selector_final_v20'
+          );
+      `),
+      "5",
+      "V21 sparse-unit Scope, one repair, and Selector V20 sequence was not accepted",
+    );
+    for (const duplicate of [{
+      id: "knowledge-v21-scope-v5-duplicate",
+      index: "KnowledgeProviderAttempt_v21_scope_v5_request_key",
+      purpose: "knowledge_coverage_scope_v5",
+      requestHash: "1",
+      version: 5,
+    }, {
+      id: "knowledge-v21-selector-v20-duplicate",
+      index: "KnowledgeProviderAttempt_v21_selector_v20_request_key",
+      purpose: "knowledge_grounded_selector_v20",
+      requestHash: "3",
+      version: 20,
+    }] as const) {
+      const duplicateCurrentRequest = compose([
+        "exec", "-T", POSTGRES_SERVICE,
+        "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+        "--dbname", database,
+        "--command", `
+          INSERT INTO "KnowledgeProviderAttempt" (
+            id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
+            "contractVersion", "evidenceReceiptHash", "acceptedRequest",
+            "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
+            "leaseToken", "leaseExpiresAt", "createdAt", "updatedAt"
+          ) VALUES (
+            '${duplicate.id}', 'knowledge-h2-run-2', 'answer', 21, 0,
+            '${duplicate.purpose}', ${duplicate.version}, repeat('a', 64),
+            '{}'::jsonb, '${duplicate.id}-key', repeat('6', 64),
+            repeat('${duplicate.requestHash}', 64), 'reserved', '{}'::jsonb,
+            '${duplicate.id}-lease', CURRENT_TIMESTAMP + interval '5 minutes',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          );
+        `,
+      ]);
+      assert.notEqual(
+        duplicateCurrentRequest.status,
+        0,
+        `V21 accepted a duplicate ${duplicate.purpose} request`,
+      );
+      assert.match(
+        `${duplicateCurrentRequest.stdout}\n${duplicateCurrentRequest.stderr}`,
+        new RegExp(duplicate.index, "u"),
+        `Duplicate ${duplicate.purpose} failed without its stable uniqueness index`,
+      );
+    }
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 20, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":20,"contracts":{"draftContractVersion":21,"selectorContractVersion":19,"coverageAuditorContractVersion":4,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v20-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 20;
+      `),
+      "1",
+      "Grounding Evidence V20 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 20;
+      SELECT 'knowledge-v21-grounding-evidence-v20-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 21, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":21,"contracts":{"draftContractVersion":21,"selectorContractVersion":20,"coverageAuditorContractVersion":5,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v21-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 21;
+      `),
+      "1",
+      "Grounding Evidence V21 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 21;
+      SELECT 'knowledge-v21-grounding-evidence-v21-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 22, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":22,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v22-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 22;
+      `),
+      "1",
+      "Grounding Evidence V22 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 22;
+      SELECT 'knowledge-v21-grounding-evidence-v22-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 23, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":23,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v23-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 23;
+      `),
+      "1",
+      "Grounding Evidence V23 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 23;
+      SELECT 'knowledge-v21-grounding-evidence-v23-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 24, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":24,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v24-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 24;
+      `),
+      "1",
+      "Grounding Evidence V24 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 24;
+      SELECT 'knowledge-v21-grounding-evidence-v24-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 25, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":25,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v25-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 25;
+      `),
+      "1",
+      "Grounding Evidence V25 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 25;
+      SELECT 'knowledge-v21-grounding-evidence-v25-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 26, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":26,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v26-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 26;
+      `),
+      "1",
+      "Grounding Evidence V26 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 26;
+      SELECT 'knowledge-v21-grounding-evidence-v26-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 27, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":27,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v27-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 27;
+      `),
+      "1",
+      "Grounding Evidence V27 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 27;
+      SELECT 'knowledge-v21-grounding-evidence-v27-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 28, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":28,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v28-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 28;
+      `),
+      "1",
+      "Grounding Evidence V28 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 28;
+      SELECT 'knowledge-v21-grounding-evidence-v28-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 29, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":29,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v29-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 29;
+      `),
+      "1",
+      "Grounding Evidence V29 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 29;
+      SELECT 'knowledge-v21-grounding-evidence-v29-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 30, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":30,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v30-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 30;
+      `),
+      "1",
+      "Grounding Evidence V30 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 30;
+      SELECT 'knowledge-v21-grounding-evidence-v30-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 31, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":31,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v31-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 31;
+      `),
+      "1",
+      "Grounding Evidence V31 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 31;
+      SELECT 'knowledge-v21-grounding-evidence-v31-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 32, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":32,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v32-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 32;
+      `),
+      "1",
+      "Grounding Evidence V32 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 32;
+      SELECT 'knowledge-v21-grounding-evidence-v32-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 33, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":33,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v33-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 33;
+      `),
+      "1",
+      "Grounding Evidence V33 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 33;
+      SELECT 'knowledge-v21-grounding-evidence-v33-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 34, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":34,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v34-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 34;
+      `),
+      "1",
+      "Grounding Evidence V34 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 34;
+      SELECT 'knowledge-v21-grounding-evidence-v34-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 35, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":35,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v35-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 35;
+      `),
+      "1",
+      "Grounding Evidence V35 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 35;
+      SELECT 'knowledge-v21-grounding-evidence-v35-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 36, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":36,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v36-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 36;
+      `),
+      "1",
+      "Grounding Evidence V36 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 36;
+      SELECT 'knowledge-v21-grounding-evidence-v36-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 37, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":37,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-v37-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 37;
+      `),
+      "1",
+      "Grounding Evidence V37 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 37;
+      SELECT 'knowledge-v21-grounding-evidence-v37-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 38, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":38,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v22-grounding-evidence-v38-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 38;
+      `),
+      "1",
+      "Grounding Evidence V38 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 38;
+      SELECT 'knowledge-v22-grounding-evidence-v38-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 39, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":39,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v23-grounding-evidence-v39-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 39;
+      `),
+      "1",
+      "Grounding Evidence V39 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 39;
+      SELECT 'knowledge-v23-grounding-evidence-v39-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 40, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":40,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v24-grounding-evidence-v40-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 40;
+      `),
+      "1",
+      "Grounding Evidence V40 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 40;
+      SELECT 'knowledge-v24-grounding-evidence-v40-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 41, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":41,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v25-grounding-evidence-v41-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 41;
+      `),
+      "1",
+      "Grounding Evidence V41 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 41;
+      SELECT 'knowledge-v25-grounding-evidence-v41-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 42, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":42,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v26-grounding-evidence-v42-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 42;
+      `),
+      "1",
+      "Grounding Evidence V42 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 42;
+      SELECT 'knowledge-v26-grounding-evidence-v42-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 43, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":43,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v27-grounding-evidence-v43-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 43;
+      `),
+      "1",
+      "Grounding Evidence V43 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 43;
+      SELECT 'knowledge-v27-grounding-evidence-v43-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 44, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":44,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v28-grounding-evidence-v44-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 44;
+      `),
+      "1",
+      "Grounding Evidence V44 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 44;
+      SELECT 'knowledge-v28-grounding-evidence-v44-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 45, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":45,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v29-grounding-evidence-v45-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 45;
+      `),
+      "1",
+      "Grounding Evidence V45 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 45;
+      SELECT 'knowledge-v29-grounding-evidence-v45-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 46, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":46,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v30-grounding-evidence-v46-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 46;
+      `),
+      "1",
+      "Grounding Evidence V46 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 46;
+      SELECT 'knowledge-v30-grounding-evidence-v46-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 47, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":47,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v31-grounding-evidence-v47-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 47;
+      `),
+      "1",
+      "Grounding Evidence V47 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 47;
+      SELECT 'knowledge-v31-grounding-evidence-v47-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 48, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":48,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v32-grounding-evidence-v48-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 48;
+      `),
+      "1",
+      "Grounding Evidence V48 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 48;
+      SELECT 'knowledge-v32-grounding-evidence-v48-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 49, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":49,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v33-grounding-evidence-v49-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 49;
+      `),
+      "1",
+      "Grounding Evidence V49 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 49;
+      SELECT 'knowledge-v33-grounding-evidence-v49-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 50, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":50,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v34-grounding-evidence-v50-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 50;
+      `),
+      "1",
+      "Grounding Evidence V50 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 50;
+      SELECT 'knowledge-v34-grounding-evidence-v50-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 51, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":51,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v35-grounding-evidence-v51-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 51;
+      `),
+      "1",
+      "Grounding Evidence V51 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 51;
+      SELECT 'knowledge-v35-grounding-evidence-v51-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 52, 'answered', repeat('6', 64), repeat('7', 64),
+        '{"version":52,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v36-grounding-evidence-v52-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 52;
+      `),
+      "1",
+      "Grounding Evidence V52 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 52;
+      SELECT 'knowledge-v36-grounding-evidence-v52-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 53, 'answered', repeat('8', 64), repeat('9', 64),
+        '{"version":53,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v37-grounding-evidence-v53-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 53;
+      `),
+      "1",
+      "Grounding Evidence V53 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 53;
+      SELECT 'knowledge-v37-grounding-evidence-v53-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 54, 'answered', repeat('a', 64), repeat('b', 64),
+        '{"version":54,"crossTargetExactRepeatCount":1,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v38-grounding-evidence-v54-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 54;
+      `),
+      "1",
+      "Grounding Evidence V54 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 54;
+      SELECT 'knowledge-v38-grounding-evidence-v54-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-2', 55, 'answered', repeat('a', 64), repeat('b', 64),
+        '{"version":55,"crossTargetExactRepeatCount":1,"contracts":{"draftContractVersion":21,"selectorContractVersion":21,"coverageAuditorContractVersion":6,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v39-grounding-evidence-v55-ready';
+    `);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*) FROM "KnowledgeGroundingResult"
+        WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 55;
+      `),
+      "1",
+      "Grounding Evidence V55 was not durably accepted",
+    );
+    psqlScalar(database, `
+      DELETE FROM "KnowledgeGroundingResult"
+      WHERE "retrievalSessionId" = 'knowledge-h2-session-2' AND version = 55;
+      SELECT 'knowledge-v39-grounding-evidence-v55-cleaned';
+    `);
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeGroundingResult" (
+        "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+        evidence
+      ) VALUES (
+        'knowledge-h2-session-1', 17, 'answered', repeat('8', 64), repeat('9', 64),
+        '{"version":17,"contracts":{"draftContractVersion":21,"selectorContractVersion":17,"coverageAuditorContractVersion":1,"settlementVersion":6}}'::jsonb
+      );
+      SELECT 'knowledge-v21-grounding-evidence-ready';
+    `);
+    const oversizedEvidenceV17 = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        INSERT INTO "KnowledgeGroundingResult" (
+          "retrievalSessionId", version, outcome, "originalAnswerHash", "finalAnswerHash",
+          evidence
+        ) VALUES (
+          'knowledge-h2-session-2', 17, 'answered', repeat('a', 64), repeat('b', 64),
+          jsonb_build_object(
+            'version', 17,
+            'oversized', (
+              SELECT string_agg(md5(value::text), '')
+              FROM generate_series(1, 3000) AS value
+            )
+          )
+        );
+      `,
+    ]);
+    assert.notEqual(
+      oversizedEvidenceV17.status,
+      0,
+      "Grounding Evidence V17 exceeded its durable content-free size bound",
+    );
+    assert.match(
+      `${oversizedEvidenceV17.stdout}\n${oversizedEvidenceV17.stderr}`,
+      /KnowledgeGroundingResult_evidence_version_check/u,
+      "Oversized Grounding Evidence V17 failed without the stable constraint",
+    );
     const crossRunManifest = compose([
       "exec", "-T", POSTGRES_SERVICE,
       "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,

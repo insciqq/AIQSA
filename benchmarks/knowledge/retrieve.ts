@@ -65,6 +65,7 @@ import {
   type KnowledgeSuiteManifest
 } from "./contract";
 import {
+  aggregateKnowledgeRerankAdmissionDiagnostics,
   decodeKnowledgeRetrievalCheckpointFile,
   decodeKnowledgeRetrievalCheckpointHeader,
   KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION,
@@ -93,7 +94,7 @@ const datasetsRoot = resolve(benchmarkRoot, ".data/datasets");
 const stateRoot = resolve(benchmarkRoot, ".data/state");
 const cacheRoot = resolve(benchmarkRoot, ".data/cache/query-embeddings");
 const INGEST_STATE_SCHEMA_VERSION = 1;
-const RANKINGS_SCHEMA_VERSION = 3;
+const RANKINGS_SCHEMA_VERSION = 4;
 const RETRIEVAL_CHECKPOINT_FILE = "retrieval-checkpoint.json";
 const RETRIEVAL_CHECKPOINT_OUTCOMES_DIRECTORY = "retrieval-checkpoint-outcomes";
 let failureStage = "startup";
@@ -1001,20 +1002,37 @@ async function main(): Promise<void> {
         if (reranker.kind === "ready" && !rerankerEvidence) {
           throw new Error("knowledge_benchmark_reranker_evidence_missing");
         }
+        const omittedAdmission = result.rankingEvidence?.rerankOmittedAdmission;
+        const providerOmittedCandidateCount = rerankerEvidence?.status === "partial"
+          ? rerankerEvidence.relevanceScores.filter((score) => score === null).length
+          : 0;
+        if ((rerankerEvidence?.status === "partial" && (
+          !omittedAdmission ||
+          omittedAdmission.omittedCandidateCount !== providerOmittedCandidateCount
+        )) || (rerankerEvidence?.status !== "partial" && omittedAdmission)) {
+          throw new Error("knowledge_benchmark_rerank_admission_evidence_invalid");
+        }
         const rerankerDiagnostic = Object.freeze(reranker.kind === "absent"
           ? {
               fallbackReason: null,
+              omittedCandidateCount: 0,
+              omittedRejectedCandidateCount: 0,
               status: "disabled" as const,
               timedOut: false
             }
           : reranker.kind === "unavailable"
             ? {
                 fallbackReason: "reranker_model_unavailable",
+                omittedCandidateCount: 0,
+                omittedRejectedCandidateCount: 0,
                 status: "degraded" as const,
                 timedOut: false
               }
             : {
                 fallbackReason: rerankerEvidence!.fallbackReason,
+                omittedCandidateCount: omittedAdmission?.omittedCandidateCount ?? 0,
+                omittedRejectedCandidateCount:
+                  omittedAdmission?.omittedRejectedCandidateCount ?? 0,
                 status: rerankerEvidence!.status,
                 timedOut: rerankerEvidence!.timedOut
               });
@@ -1079,6 +1097,7 @@ async function main(): Promise<void> {
       }
     );
     const metrics = aggregateKnowledgeSuiteMetrics(outcomes);
+    const rerankAdmission = aggregateKnowledgeRerankAdmissionDiagnostics(outcomes);
     const embedCacheMisses = metrics.usage.embedding.requests;
     const embedCacheHits = queries.length - embedCacheMisses;
     failureStage = "results";
@@ -1093,6 +1112,7 @@ async function main(): Promise<void> {
           embedCacheMisses,
           queryStartIntervalMs: options.queryStartIntervalMs,
           rateLimitCooldownMs: options.rateLimitCooldownMs,
+          rerankAdmission,
           rerankerFallbackReasons: Object.fromEntries(
             [...rerankerFallbackReasons].sort(([left], [right]) =>
               left < right ? -1 : left > right ? 1 : 0)
@@ -1132,6 +1152,7 @@ async function main(): Promise<void> {
       recall10: metrics.recall10,
       recall50: metrics.recall50,
       rerankFallbackRate: metrics.rerankFallbackRate,
+      rerankAdmission,
       rerankerFallbackReasons: Object.fromEntries(
         [...rerankerFallbackReasons].sort(([left], [right]) =>
           left < right ? -1 : left > right ? 1 : 0)

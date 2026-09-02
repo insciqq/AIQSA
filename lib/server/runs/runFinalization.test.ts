@@ -249,4 +249,96 @@ describe("run finalization", () => {
       knowledgeGrounding: { grounding }
     }));
   });
+
+  it("routes the exact V21 Scope contract snapshot only to its finalizer", async () => {
+    const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
+    const grounding = {
+      answerBindingFingerprint: "0".repeat(64),
+      contracts: {
+        coverageAuditorContractVersion: 3 as const,
+        draftContractVersion: 21 as const,
+        selectorContractVersion: 18 as const,
+        settlementVersion: 6 as const
+      },
+      coverage: {
+        coveredDimensionCount: 1,
+        missingDimensionCount: 0,
+        selectorPayloadHash: "a".repeat(64),
+        status: "accepted" as const
+      },
+      coverageScope: {
+        dimensionCount: 1,
+        payloadHash: "2".repeat(64),
+        status: "accepted" as const
+      },
+      correctionAttempted: false,
+      correctionSucceeded: false,
+      contradictedClaimCount: 0,
+      draftClaimCount: 1,
+      evidenceReceiptHash: "b".repeat(64),
+      executionPolicy: {
+        auditorReasoningEffort: "high",
+        draftReasoningEffort: "low",
+        egressDestination: "answer_provider" as const,
+        overriddenRoles: ["auditor"] as const,
+        providerBindingKey: "answer" as const,
+        selectorReasoningEffort: "low",
+        supplementReasoningEffort: "low",
+        version: 1 as const
+      },
+      executionPolicyFingerprint: "3".repeat(64),
+      fallbackReason: null,
+      finalAnswerHash: "c".repeat(64),
+      finalText: "Audited supported claim. [K1]",
+      finalizationMode: "selected_claims" as const,
+      groundingStatus: "verified" as const,
+      modelPinFingerprint: "d".repeat(64),
+      operations: [],
+      originalAnswerHash: "e".repeat(64),
+      outcome: "answered" as const,
+      providerPinFingerprint: "f".repeat(64),
+      receiptHash: "1".repeat(64),
+      requestCoverage: "complete" as const,
+      scopeRepairAttempted: false,
+      scopeRepairSucceeded: false,
+      selectorRepairAttempted: false,
+      selectorRepairSucceeded: false,
+      sessionId: "evidence-session-1",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0,
+      version: 19 as const
+    };
+    const groundKnowledgeAnswerV5 = vi.fn<NonNullable<
+      RunRepository["groundKnowledgeAnswerV5"]
+    >>();
+    const groundKnowledgeAnswerV21 = vi.fn(async () => ({ grounding }));
+    const repository = {
+      completeRun,
+      groundKnowledgeAnswerV5,
+      groundKnowledgeAnswerV21,
+      loadModelPricing: async () => null
+    };
+
+    const result = await finalizeRunCompletion({
+      ...completionInput(repository),
+      knowledgeAnswerContracts: {
+        coverageAuditorContractVersion: 6,
+        draftContractVersion: 21,
+        selectorContractVersion: 21,
+        settlementVersion: 6
+      },
+      result: { ...completionInput(repository).result, finalText: "hidden operation output" }
+    });
+
+    expect(result).toMatchObject({ finalText: grounding.finalText, status: "completed" });
+    expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
+    expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({
+      runId: "run-1",
+      userId: "user-1"
+    });
+    expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({
+      finalText: grounding.finalText,
+      knowledgeGrounding: { grounding }
+    }));
+  });
 });

@@ -5,6 +5,11 @@ import {
   decodeLegacyKnowledgeSummaryDispatchCandidate,
   type LegacyKnowledgeSummaryDispatchCandidate
 } from "./legacySummaryReceipt";
+import {
+  knowledgeCoverageEvidenceFitsAtomLimitV2
+} from "./coverageScopeV4";
+import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion";
+import type { KnowledgeExpandedContextOrderV1 } from "./retrievalTypes";
 
 export const KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 2 as const;
 export const LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 1 as const;
@@ -31,6 +36,7 @@ export type KnowledgeEvidenceDispatchCandidate =
       evidenceId: string;
       exactExcerpt: string;
       expandedContext?: string | null;
+      expandedContextOrder?: KnowledgeExpandedContextOrderV1;
       fileName: string;
       handle: string;
       locator: string;
@@ -86,6 +92,7 @@ type KnowledgeEvidenceDispatchManifestPassageItem = Readonly<{
   exactExcerptBytes: number;
   exactExcerptHash: string;
   expandedContext: string | null;
+  expandedContextOrder?: KnowledgeExpandedContextOrderV1;
   expandedContextOriginalBytes: number | null;
   expandedContextOriginalHash: string | null;
   expandedContextState: "included" | "none" | "omitted";
@@ -231,6 +238,8 @@ const itemKeys = [
   "text"
 ] as const;
 const summaryItemKeys = [...itemKeys, "kind", "summary"] as const;
+const orderedItemKeys = [...itemKeys, "expandedContextOrder"] as const;
+const orderedSummaryItemKeys = [...orderedItemKeys, "kind", "summary"] as const;
 
 const exclusionKeys = [
   "duplicateOfEvidenceId",
@@ -361,6 +370,12 @@ function validateCandidate(candidate: KnowledgeEvidenceDispatchCandidate): void 
     return;
   }
   const passageCandidate = candidate as AvailablePassageCandidate;
+  const expandedContextOrder = passageCandidate.expandedContextOrder === undefined
+    ? undefined
+    : decodeKnowledgeExpandedContextOrderV1(
+        passageCandidate.expandedContextOrder,
+        passageCandidate.expandedContext ?? undefined
+      );
   if (
     !validHandle(passageCandidate.handle) ||
     !validSourceAlias(passageCandidate.sourceAlias) ||
@@ -375,7 +390,9 @@ function validateCandidate(candidate: KnowledgeEvidenceDispatchCandidate): void 
       passageCandidate.ambiguity !== "table_cell_associations_ambiguous" ||
     passageCandidate.expandedContext !== undefined &&
       passageCandidate.expandedContext !== null &&
-      typeof passageCandidate.expandedContext !== "string"
+      typeof passageCandidate.expandedContext !== "string" ||
+    passageCandidate.expandedContextOrder !== undefined &&
+      (!expandedContextOrder || !passageCandidate.expandedContext)
   ) throw new Error("knowledge_evidence_dispatch_candidate_invalid");
 }
 
@@ -465,6 +482,9 @@ function materializeItem(
     exactExcerptBytes: utf8Bytes(passageCandidate.exactExcerpt),
     exactExcerptHash: sha256Utf8(passageCandidate.exactExcerpt),
     expandedContext: block.expandedContext,
+    ...(block.expandedContext && passageCandidate.expandedContextOrder
+      ? { expandedContextOrder: passageCandidate.expandedContextOrder }
+      : {}),
     expandedContextOriginalBytes: expandedContext === null ? null : utf8Bytes(expandedContext),
     expandedContextOriginalHash: expandedContext === null ? null : sha256Utf8(expandedContext),
     expandedContextState: block.expandedContextState,
@@ -499,10 +519,19 @@ function renderMessage(
 
 function fitsLimits(
   message: string,
+  items: readonly KnowledgeEvidenceDispatchManifestItem[],
   limits: Readonly<{ maximumBytes: number; maximumTokens: number }>
 ): boolean {
   return utf8Bytes(message) <= limits.maximumBytes &&
-    estimateApproxTokens(message) <= limits.maximumTokens;
+    estimateApproxTokens(message) <= limits.maximumTokens &&
+    knowledgeCoverageEvidenceFitsAtomLimitV2(items.map((item) => ({
+      exactExcerpt: item.exactExcerpt,
+      expandedContext: item.expandedContext,
+      ...(item.expandedContextOrder
+        ? { expandedContextOrder: item.expandedContextOrder }
+        : {}),
+      handle: item.handle
+    })));
 }
 
 function deepFreeze<T>(value: T): T {
@@ -536,7 +565,7 @@ export function packKnowledgeEvidenceDispatchManifest(
     throw new Error("knowledge_evidence_dispatch_config_invalid");
   }
   const emptyMessage = renderMessage(input.header, input.coverageStatement, [], input.footer);
-  if (!fitsLimits(emptyMessage, limits)) {
+  if (!fitsLimits(emptyMessage, [], limits)) {
     throw new Error("knowledge_evidence_dispatch_envelope_exceeds_budget");
   }
 
@@ -602,7 +631,8 @@ export function packKnowledgeEvidenceDispatchManifest(
       [...items.map(({ text }) => text), item.text],
       input.footer
     );
-    if (!fitsLimits(message, limits) && allowExpandedContextOmission &&
+    if (!fitsLimits(message, [...items, item], limits) &&
+      allowExpandedContextOmission &&
       !("kind" in candidate) && Boolean(candidate.expandedContext)) {
       item = materializeItem(candidate, items.length + 1, true);
       message = renderMessage(
@@ -612,7 +642,7 @@ export function packKnowledgeEvidenceDispatchManifest(
         input.footer
       );
     }
-    if (!fitsLimits(message, limits)) {
+    if (!fitsLimits(message, [...items, item], limits)) {
       exclusions.push({
         duplicateOfEvidenceId: null,
         evidenceId: candidate.evidenceId,
@@ -662,7 +692,9 @@ function validSummaryDispatchItem(
   value: Record<string, unknown>,
   expectedOrdinal: number
 ): boolean {
-  if (!hasExactKeys(value, summaryItemKeys) || value.kind !== "source_summary") return false;
+  if (!hasExactKeys(value, summaryItemKeys) &&
+    !hasExactKeys(value, orderedSummaryItemKeys) ||
+    value.kind !== "source_summary" || value.expandedContextOrder !== undefined) return false;
   const summary = decodeLegacyKnowledgeSummaryDispatchCandidate(value.summary);
   const primarySupport = summary?.supportBindings[0];
   return Boolean(summary && primarySupport && value.dispatchOrdinal === expectedOrdinal &&
@@ -688,7 +720,7 @@ function validDispatchItem(value: unknown, expectedOrdinal: number): value is Re
   if (Object.hasOwn(value, "kind") || Object.hasOwn(value, "summary")) {
     return validSummaryDispatchItem(value, expectedOrdinal);
   }
-  if (!hasExactKeys(value, itemKeys) ||
+  if (!hasExactKeys(value, itemKeys) && !hasExactKeys(value, orderedItemKeys) ||
     value.dispatchOrdinal !== expectedOrdinal || !nonEmptyString(value.evidenceId) ||
     !validHandle(value.handle) || !validSourceAlias(value.sourceAlias) ||
     !nonEmptyString(value.sourceLabel) || !nonEmptyString(value.fileName) ||
@@ -710,6 +742,14 @@ function validDispatchItem(value: unknown, expectedOrdinal: number): value is Re
     value.expandedContextOriginalHash !== null && !validHash(value.expandedContextOriginalHash)
   ) return false;
 
+  const expandedContextOrder = value.expandedContextOrder === undefined
+    ? undefined
+    : decodeKnowledgeExpandedContextOrderV1(
+        value.expandedContextOrder,
+        typeof value.expandedContext === "string" ? value.expandedContext : undefined
+      );
+  if (value.expandedContextOrder !== undefined && !expandedContextOrder) return false;
+
   const expandedStateValid = value.expandedContextState === "none"
     ? value.expandedContext === null && value.expandedContextOriginalBytes === null &&
       value.expandedContextOriginalHash === null && value.representation === "full"
@@ -722,7 +762,9 @@ function validDispatchItem(value: unknown, expectedOrdinal: number): value is Re
       : value.expandedContext === null && positiveInteger(value.expandedContextOriginalBytes) &&
         validHash(value.expandedContextOriginalHash) &&
         value.representation === KNOWLEDGE_EVIDENCE_SHORTENING_VERSION;
-  if (!expandedStateValid || utf8Bytes(value.exactExcerpt) !== value.exactExcerptBytes ||
+  if (!expandedStateValid || expandedContextOrder !== undefined &&
+      value.expandedContextState !== "included" ||
+    utf8Bytes(value.exactExcerpt) !== value.exactExcerptBytes ||
     sha256Utf8(value.exactExcerpt) !== value.exactExcerptHash) return false;
 
   const block: DispatchBlock = {

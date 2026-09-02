@@ -62,28 +62,28 @@ function coEqualResultManifest() {
     candidates: [{
       ambiguity: "none",
       evidenceId: "knowledge-call-1:result:1",
-      exactExcerpt: "The commutative square factors the modification and proves it is finite.",
-      fileName: "modification.txt",
+      exactExcerpt: "The routing graph caps the controller queue depth.",
+      fileName: "controller.txt",
       handle: "K1",
       locator: "page=1; heading=Construction",
       operationOrdinal: 1,
       resultOrdinal: 1,
       sourceAlias: "S1",
-      sourceLabel: "Modification theorem",
+      sourceLabel: "Controller guarantees",
       sourceTruncated: false,
       sourceVersionNumber: 1,
       state: "available"
     }, {
       ambiguity: "none",
       evidenceId: "knowledge-call-1:result:2",
-      exactExcerpt: "Finally, pulling back O(1) along the closed immersion preserves relative ampleness.",
-      fileName: "modification.txt",
+      exactExcerpt: "Finally, stable sequencing preserves the controller's arrival order.",
+      fileName: "controller.txt",
       handle: "K2",
       locator: "page=2; heading=Construction",
       operationOrdinal: 1,
       resultOrdinal: 2,
       sourceAlias: "S1",
-      sourceLabel: "Modification theorem",
+      sourceLabel: "Controller guarantees",
       sourceTruncated: false,
       sourceVersionNumber: 1,
       state: "available"
@@ -691,7 +691,7 @@ describe("Knowledge answer grounding V5 execution", () => {
             output: {
               claims: [{
                 citationHints: ["K1"],
-                text: "The commutative square factors the modification and proves it is finite."
+                text: "The routing graph caps the controller queue depth."
               }],
               version: 1
             },
@@ -711,7 +711,7 @@ describe("Knowledge answer grounding V5 execution", () => {
                   supportIds: ["C1"]
                 },
                 {
-                  description: "How the diagram preserves the modification's relative ampleness.",
+                  description: "How stable sequencing preserves the controller's arrival order.",
                   id: "D2",
                   status: "missing",
                   supportIds: []
@@ -730,7 +730,7 @@ describe("Knowledge answer grounding V5 execution", () => {
             output: {
               claims: [{
                 citationHints: ["K2"],
-                text: "Pulling back O(1) along the closed immersion preserves relative ampleness."
+                text: "Stable sequencing preserves the controller's arrival order."
               }],
               version: 1
             },
@@ -752,7 +752,7 @@ describe("Knowledge answer grounding V5 execution", () => {
                 supportIds: ["C1"]
               },
               {
-                description: "How the diagram preserves the modification's relative ampleness.",
+                description: "How stable sequencing preserves the controller's arrival order.",
                 id: "D2",
                 status: "covered",
                 supportIds: ["C2"]
@@ -771,7 +771,7 @@ describe("Knowledge answer grounding V5 execution", () => {
     const first = await executeKnowledgeAnswerGroundingV8(
       pipelineInput(recorder.lifecycle, execute, {
         draft: coEqualResultManifest(),
-        request: "How do commutative diagrams assist in proving properties of scheme modifications?"
+        request: "How does the routing graph enforce the controller's delivery guarantees?"
       })
     );
 
@@ -787,7 +787,7 @@ describe("Knowledge answer grounding V5 execution", () => {
     expect(supplementPayload).toMatchObject({
       draftPass: "supplement",
       missingInformation: [
-        "How the diagram preserves the modification's relative ampleness."
+        "How stable sequencing preserves the controller's arrival order."
       ]
     });
     const finalPayload = JSON.parse(
@@ -798,11 +798,11 @@ describe("Knowledge answer grounding V5 execution", () => {
         claims: [
           {
             id: "C1",
-            text: "The commutative square factors the modification and proves it is finite."
+            text: "The routing graph caps the controller queue depth."
           },
           {
             id: "C2",
-            text: "Pulling back O(1) along the closed immersion preserves relative ampleness."
+            text: "Stable sequencing preserves the controller's arrival order."
           }
         ]
       },
@@ -813,7 +813,7 @@ describe("Knowledge answer grounding V5 execution", () => {
     const recovered = await executeKnowledgeAnswerGroundingV8(
       pipelineInput(recorder.lifecycle, execute, {
         draft: coEqualResultManifest(),
-        request: "How do commutative diagrams assist in proving properties of scheme modifications?"
+        request: "How does the routing graph enforce the controller's delivery guarantees?"
       })
     );
     expect(execute).not.toHaveBeenCalled();

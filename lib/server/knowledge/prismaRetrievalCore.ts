@@ -25,6 +25,7 @@ import {
   KNOWLEDGE_LANE_CANDIDATE_LIMIT,
   KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR,
   KNOWLEDGE_METADATA_RELEVANCE_FLOOR,
+  KNOWLEDGE_RERANK_OMITTED_ADMISSION_VERSION,
   KNOWLEDGE_RETRIEVAL_FUSION,
   KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS,
   KNOWLEDGE_SCOPED_RERANK_INPUT_MAX,
@@ -1890,10 +1891,22 @@ export async function executeKnowledgeRetrievalCore(
         query: input.query,
         rerankScores: stage.scores
       }));
+      const omittedCandidateCount = pool.filter((candidate) =>
+        !stage.scores.has(candidate.chunkId)).length;
+      const omittedRejectedCandidateCount = pool.length - ordered.length;
       candidates = ordered;
       rankingEvidence = Object.freeze({
         candidateOrder: Object.freeze(ordered.map((candidate) => candidate.chunkId)),
-        fusion: KNOWLEDGE_RETRIEVAL_FUSION
+        fusion: KNOWLEDGE_RETRIEVAL_FUSION,
+        ...(stage.status === "partial"
+          ? {
+              rerankOmittedAdmission: Object.freeze({
+                omittedCandidateCount,
+                omittedRejectedCandidateCount,
+                version: KNOWLEDGE_RERANK_OMITTED_ADMISSION_VERSION
+              })
+            }
+          : {})
       });
       selected = Object.freeze(selectRerankedKnowledgeCandidates({
         candidates: ordered,

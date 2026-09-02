@@ -8,6 +8,7 @@ import type {
   KnowledgeParentExpansion,
   KnowledgeParentExpansionEvidence,
   KnowledgeParentExpansionUnit,
+  KnowledgeExpandedContextOrderV1,
   KnowledgePassageLayoutKind
 } from "./retrievalTypes";
 
@@ -518,9 +519,12 @@ function windowRows(
  * The rendered text is clearly separated from the primary excerpt by the
  * existing "Related same-Source context" wrapper in the evidence block.
  */
-export function renderKnowledgeParentExpansionUnits(
+export function renderKnowledgeParentExpansionProjectionV1(
   units: readonly KnowledgeParentExpansionUnit[]
-): string {
+): Readonly<{
+  contextOrder: KnowledgeExpandedContextOrderV1;
+  text: string;
+}> {
   const ordered = [...units].sort((left, right) =>
     left.chunkIndex - right.chunkIndex || left.chunkId.localeCompare(right.chunkId));
   const previousSection = ordered.filter((unit) =>
@@ -528,16 +532,49 @@ export function renderKnowledgeParentExpansionUnits(
   const nextSection = ordered.filter((unit) =>
     unit.origin === "section" && unit.position === "next");
   const other = ordered.filter((unit) => unit.origin !== "section");
-  const segments = [
+  const groups: Readonly<{
+    label: string;
+    units: readonly KnowledgeParentExpansionUnit[];
+  }>[] = [
     ...(previousSection.length > 0 ? [
-      `${PREVIOUS_SECTION_LABEL}:\n${previousSection.map((unit) => unit.text).join("\n")}`
+      { label: PREVIOUS_SECTION_LABEL, units: previousSection }
     ] : []),
-    ...other.map((unit) => `${unit.label}:\n${unit.text}`),
+    ...other.map((unit) => ({ label: unit.label, units: [unit] })),
     ...(nextSection.length > 0 ? [
-      `${NEXT_SECTION_LABEL}:\n${nextSection.map((unit) => unit.text).join("\n")}`
+      { label: NEXT_SECTION_LABEL, units: nextSection }
     ] : [])
   ];
-  return segments.join("\n\n");
+  let text = "";
+  const segments: KnowledgeExpandedContextOrderV1["segments"][number][] = [];
+  for (const [groupIndex, group] of groups.entries()) {
+    if (groupIndex > 0) text += "\n\n";
+    text += `${group.label}:\n`;
+    for (const [unitIndex, unit] of group.units.entries()) {
+      if (unitIndex > 0) text += "\n";
+      const start = text.length;
+      text += unit.text;
+      segments.push(Object.freeze({
+        end: text.length,
+        position: unit.position,
+        sourceOrdinal: unit.chunkIndex,
+        start
+      }));
+    }
+  }
+  return Object.freeze({
+    contextOrder: Object.freeze({
+      offsetEncoding: "utf16_code_units" as const,
+      segments: Object.freeze(segments),
+      version: 1 as const
+    }),
+    text
+  });
+}
+
+export function renderKnowledgeParentExpansionUnits(
+  units: readonly KnowledgeParentExpansionUnit[]
+): string {
+  return renderKnowledgeParentExpansionProjectionV1(units).text;
 }
 
 /** Content-free receipt summary for one primary's shipped expansion. */
@@ -545,12 +582,15 @@ export function knowledgeParentExpansionEvidence(
   expansion: KnowledgeParentExpansion,
   shippedUnits: readonly KnowledgeParentExpansionUnit[]
 ): KnowledgeParentExpansionEvidence {
-  const rendered = renderKnowledgeParentExpansionUnits(shippedUnits);
+  const rendered = renderKnowledgeParentExpansionProjectionV1(shippedUnits);
   return Object.freeze({
+    ...(rendered.contextOrder.segments.length > 0
+      ? { contextOrder: rendered.contextOrder }
+      : {}),
     passageCount: shippedUnits.length,
     ...(expansion.reason ? { reason: expansion.reason } : {}),
     state: expansion.state,
-    tokens: rendered ? knowledgeParentContextTokenCounter()(rendered) : 0
+    tokens: rendered.text ? knowledgeParentContextTokenCounter()(rendered.text) : 0
   });
 }
 
@@ -560,6 +600,45 @@ const EXPANSION_STATES = new Set<KnowledgeParentExpansion["state"]>([
   "legacy"
 ]);
 
+export function decodeKnowledgeExpandedContextOrderV1(
+  value: unknown,
+  expandedContext?: string
+): KnowledgeExpandedContextOrderV1 | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 3 || record.version !== 1 ||
+    record.offsetEncoding !== "utf16_code_units" || !Array.isArray(record.segments) ||
+    record.segments.length < 1 || record.segments.length > 10_000) return null;
+  const segments: KnowledgeExpandedContextOrderV1["segments"][number][] = [];
+  let previousEnd = -1;
+  for (const valueSegment of record.segments) {
+    if (typeof valueSegment !== "object" || valueSegment === null ||
+      Array.isArray(valueSegment)) return null;
+    const segment = valueSegment as Record<string, unknown>;
+    if (Object.keys(segment).length !== 4 || !Number.isSafeInteger(segment.start) ||
+      !Number.isSafeInteger(segment.end) || !Number.isSafeInteger(segment.sourceOrdinal) ||
+      Number(segment.start) < 0 || Number(segment.end) <= Number(segment.start) ||
+      Number(segment.sourceOrdinal) < 0 || Number(segment.start) <= previousEnd ||
+      segment.position !== "previous" && segment.position !== "next" ||
+      expandedContext !== undefined && (
+        Number(segment.end) > expandedContext.length ||
+        !expandedContext.slice(Number(segment.start), Number(segment.end)).trim()
+      )) return null;
+    previousEnd = Number(segment.end);
+    segments.push(Object.freeze({
+      end: Number(segment.end),
+      position: segment.position,
+      sourceOrdinal: Number(segment.sourceOrdinal),
+      start: Number(segment.start)
+    }));
+  }
+  return Object.freeze({
+    offsetEncoding: "utf16_code_units",
+    segments: Object.freeze(segments),
+    version: 1
+  });
+}
+
 /** Strict additive decoder for persisted content-free expansion facts. */
 export function decodeKnowledgeParentExpansionEvidence(
   value: unknown
@@ -568,18 +647,24 @@ export function decodeKnowledgeParentExpansionEvidence(
   const record = value as Record<string, unknown>;
   const passageCount = record.passageCount;
   const tokens = record.tokens;
+  const contextOrder = record.contextOrder === undefined
+    ? undefined
+    : decodeKnowledgeExpandedContextOrderV1(record.contextOrder);
   if (
     !Number.isSafeInteger(passageCount) || Number(passageCount) < 0 ||
     Number(passageCount) > 10_000 ||
     !Number.isSafeInteger(tokens) || Number(tokens) < 0 || Number(tokens) > 1_000_000 ||
     typeof record.state !== "string" ||
     !EXPANSION_STATES.has(record.state as KnowledgeParentExpansion["state"]) ||
+    contextOrder === null || contextOrder !== undefined &&
+      contextOrder.segments.length !== Number(passageCount) ||
     (record.reason !== undefined && (
       typeof record.reason !== "string" || record.reason.length < 1 ||
       record.reason.length > 128
     ))
   ) return null;
   return Object.freeze({
+    ...(contextOrder !== undefined ? { contextOrder } : {}),
     passageCount: Number(passageCount),
     ...(record.reason !== undefined ? { reason: record.reason as string } : {}),
     state: record.state as KnowledgeParentExpansion["state"],

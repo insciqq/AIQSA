@@ -3,11 +3,24 @@ import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from 
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
+import type { KnowledgeAnswerV21ContractVersions } from "../knowledge/answerGroundingV21";
 
 type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
-  Pick<RunRepository, "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5">;
+  Pick<
+    RunRepository,
+    "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5" | "groundKnowledgeAnswerV21"
+  >;
 
-export type KnowledgeAnswerFinalizationContracts = KnowledgeAnswerContractVersions;
+export type KnowledgeAnswerFinalizationContracts = KnowledgeAnswerContractVersions |
+  KnowledgeAnswerV21ContractVersions;
+
+function isKnowledgeAnswerV21Contracts(
+  value: KnowledgeAnswerFinalizationContracts
+): value is KnowledgeAnswerV21ContractVersions {
+  return "coverageAuditorContractVersion" in value &&
+    value.coverageAuditorContractVersion === 6 && value.draftContractVersion === 21 &&
+    value.selectorContractVersion === 21 && value.settlementVersion === 6;
+}
 
 export type RunCompletionFinalizationResult =
   | Readonly<{
@@ -88,14 +101,24 @@ export async function finalizeRunCompletion(input: Readonly<{
   if (input.knowledgeZeroEvidence) {
     knowledgeFinalization = null;
   } else if (input.knowledgeAnswerContracts) {
-    if (!input.repository.groundKnowledgeAnswerV5) {
-      throw new Error("knowledge_answer_v5_finalizer_unavailable");
+    if (isKnowledgeAnswerV21Contracts(input.knowledgeAnswerContracts)) {
+      if (!input.repository.groundKnowledgeAnswerV21) {
+        throw new Error("knowledge_answer_v21_finalizer_unavailable");
+      }
+      knowledgeFinalization = await input.repository.groundKnowledgeAnswerV21({
+        runId: input.run.runId,
+        userId: input.run.userId
+      });
+    } else {
+      if (!input.repository.groundKnowledgeAnswerV5) {
+        throw new Error("knowledge_answer_v5_finalizer_unavailable");
+      }
+      knowledgeFinalization = await input.repository.groundKnowledgeAnswerV5({
+        ...input.knowledgeAnswerContracts,
+        runId: input.run.runId,
+        userId: input.run.userId
+      });
     }
-    knowledgeFinalization = await input.repository.groundKnowledgeAnswerV5({
-      ...input.knowledgeAnswerContracts,
-      runId: input.run.runId,
-      userId: input.run.userId
-    });
   } else if (input.repository.groundKnowledgeAnswer) {
     knowledgeFinalization = await input.repository.groundKnowledgeAnswer({
       answer: input.result.finalText,

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultProviderModels } from "./catalog";
-import { invalidRunParamsError, validateRunParams } from "./runParams";
+import {
+  invalidRunParamsError,
+  resolveAcceptedRunReasoningEffort,
+  validateRunParams
+} from "./runParams";
 
 function openAiControls(modelId: string) {
   const model = defaultProviderModels.find(
@@ -186,5 +190,42 @@ describe("run parameter validation", () => {
         provider: "openai"
       })
     ).toEqual({ code: invalidRunParamsError, ok: false });
+  });
+
+  it("freezes the accepted reasoning control independently of provider dialect", () => {
+    const openAi = openAiControls("gpt-5.5");
+    expect(resolveAcceptedRunReasoningEffort({
+      controls: openAi,
+      params: { reasoning: { effort: "high" } },
+      provider: "openai"
+    })).toEqual({ ok: true, reasoningEffort: "high" });
+
+    const anthropic = modelControls("anthropic", "claude-opus-4-8");
+    expect(resolveAcceptedRunReasoningEffort({
+      controls: anthropic,
+      params: { outputConfig: { effort: "medium" } },
+      provider: "anthropic"
+    })).toEqual({ ok: true, reasoningEffort: "medium" });
+
+    const openRouter = modelControls("openrouter", "anthropic/claude-opus-4.8");
+    expect(resolveAcceptedRunReasoningEffort({
+      controls: openRouter,
+      params: {
+        reasoning: { effort: "low", enabled: true },
+        verbosity: "high"
+      },
+      provider: "openrouter"
+    })).toEqual({ ok: true, reasoningEffort: "high" });
+  });
+
+  it("rejects conflicting accepted Anthropic effort aliases", () => {
+    expect(resolveAcceptedRunReasoningEffort({
+      controls: modelControls("anthropic", "claude-opus-4-8"),
+      params: {
+        output_config: { effort: "low" },
+        outputConfig: { effort: "high" }
+      },
+      provider: "anthropic"
+    })).toEqual({ code: invalidRunParamsError, ok: false });
   });
 });
