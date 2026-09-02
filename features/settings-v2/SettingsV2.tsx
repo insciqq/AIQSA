@@ -5,7 +5,9 @@ import {
   UiV2Button,
   UiV2Icon,
   UiV2IconButton,
-  UiV2IconSprite
+  UiV2IconSprite,
+  UiV2Monogram,
+  UiV2Switch
 } from "@/components/ui-v2";
 import {
   AIQSA_THEMES,
@@ -73,7 +75,7 @@ export function SettingsGroupLabelV2({ children, tone }: Readonly<{ children: Re
   return <p className="v2-settings-group-label" data-tone={tone}>{children}</p>;
 }
 
-/** Accessible switch: a button with role="switch" and the accent track. */
+/** The Settings row switch: the shared `UiV2Switch` (role="switch"). */
 export function SettingsSwitchV2({
   checked,
   disabled = false,
@@ -85,21 +87,7 @@ export function SettingsSwitchV2({
   label: string;
   onChange(next: boolean): void;
 }>) {
-  return (
-    <button
-      aria-checked={checked}
-      aria-label={label}
-      className="v2-settings-switch v2-focusable"
-      disabled={disabled}
-      role="switch"
-      type="button"
-      onClick={() => onChange(!checked)}
-    >
-      <span className="v2-settings-switch-track" aria-hidden="true">
-        <span className="v2-settings-switch-thumb" />
-      </span>
-    </button>
-  );
+  return <UiV2Switch checked={checked} disabled={disabled} label={label} onChange={onChange} />;
 }
 
 export function SettingsV2({
@@ -283,9 +271,8 @@ export function SettingsV2({
             </section>
           ) : activeSection === "mcp" ? (
             <section className="v2-settings-section" aria-labelledby="v2-settings-mcp-heading">
-              <p className="v2-settings-intro">
-                Manage only the connections available to you. Policy, secrets, and the full inventory stay with the administrator.
-              </p>
+              {/* The owner renders the one status row and the server rows
+                  (UX audit 2026-09-02 A13): no second intro above them. */}
               <div className="v2-settings-owner-slot" data-testid="settings-mcp-owner">
                 {mcpContent}
               </div>
@@ -333,19 +320,55 @@ export function McpSettingsSummaryV2({
     tools: number;
   }>[];
 }>) {
+  const enabled = servers.filter((server) => server.enabled);
+  const tools = enabled.reduce((total, server) => total + server.tools, 0);
   return (
-    <ul className="v2-mcp-summary" aria-label="MCP servers">
-      {servers.map((server) => (
-        <li key={server.id}>
-          <span className="v2-mcp-status" data-ready={server.ready || undefined} aria-hidden="true" />
-          <div>
-            <strong>{server.name}</strong>
-            <p>{server.detail}</p>
-            <small>{server.enabled ? "Enabled" : "Disabled"} · {server.ready ? `${server.tools} tools ready` : "Needs setup"}</small>
-          </div>
-          <UiV2Button>{server.ready ? "Configure" : "Connect"}</UiV2Button>
-        </li>
-      ))}
-    </ul>
+    <div className="v2-settings-mcp">
+      <SettingsRowV2
+        description="Enabled servers join your private tool catalog; a chat uses them only in Auto or Load all mode."
+        title={`${enabled.length} of ${servers.length} servers enabled${tools ? ` · ${tools} tools` : ""}`}
+      >
+        <UiV2Button className="v2-settings-quiet-action">Refresh status</UiV2Button>
+      </SettingsRowV2>
+      <div className="v2-settings-server-list" aria-label="MCP servers" role="list">
+        {servers.map((server) => (
+          <article className="v2-settings-server" data-enabled={server.enabled || undefined} key={server.id} role="listitem">
+            <div className="v2-settings-server-head">
+              <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
+              <div className="v2-settings-server-copy">
+                <h4>{server.name}</h4>
+                <p className="v2-settings-server-description">{server.detail}</p>
+                <p className="v2-settings-server-status">
+                  <span className="v2-settings-server-availability" data-resource-availability={server.enabled ? "enabled" : "disabled"}>
+                    {server.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                  {server.enabled ? (
+                    <>
+                      <span aria-hidden="true"> · </span>
+                      <span className="v2-settings-server-readiness" data-tone={server.ready ? "ok" : "warn"}>
+                        <UiV2Icon name={server.ready ? "check" : "alert"} />
+                        {server.ready ? "Ready" : "Needs setup"}
+                      </span>
+                      {server.tools ? <><span aria-hidden="true"> · </span><span>{server.tools} tools</span></> : null}
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              <div className="v2-settings-server-action">
+                {server.ready || !server.enabled
+                  ? <UiV2Switch checked={server.enabled} label={server.name} onChange={() => undefined} />
+                  : <UiV2Button tone="primary">Complete setup</UiV2Button>}
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+      <details className="v2-settings-footnote">
+        <summary className="v2-focusable">How tools use data</summary>
+        <div className="v2-settings-disclosure-body">
+          <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
+        </div>
+      </details>
+    </div>
   );
 }

@@ -17,53 +17,6 @@
   margin-top: 1.5rem;
 }
 
-.v2-mcp-summary {
-  margin: 0;
-  padding: 0;
-  border-top: 1px solid var(--v2-color-border);
-  list-style: none;
-}
-
-.v2-mcp-summary li {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 0;
-  border-bottom: 1px solid var(--v2-color-border);
-}
-
-.v2-mcp-status {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: var(--v2-color-warn);
-}
-
-.v2-mcp-status[data-ready="true"] {
-  background: var(--v2-color-ok);
-}
-
-.v2-mcp-summary strong {
-  color: var(--v2-color-text);
-  font-size: 0.8125rem;
-  font-weight: 650;
-}
-
-.v2-mcp-summary p,
-.v2-mcp-summary small {
-  display: block;
-  margin: 0.125rem 0 0;
-  color: var(--v2-color-text2);
-  font-size: 0.75rem;
-  line-height: 1.45;
-}
-
-.v2-mcp-summary small {
-  color: var(--v2-color-text3);
-}
-
 .v2-settings-confirm {
   position: fixed;
   z-index: 92;
@@ -237,14 +190,6 @@
   margin: 0;
 }
 
-.v2-settings-intro {
-  max-width: 40rem;
-  margin: 0.75rem 0 0;
-  color: var(--v2-color-text2);
-  font-size: 0.8125rem;
-  line-height: 1.55;
-}
-
 /* Rows: title 500 · 12.5px subtitle · control on the right, hairline between. */
 .v2-settings-row {
   display: flex;
@@ -318,51 +263,6 @@
 }
 
 /* Switch */
-.v2-settings-switch {
-  display: inline-flex;
-  padding: 0.25rem;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.v2-settings-switch:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.v2-settings-switch-track {
-  position: relative;
-  display: block;
-  width: 2.25rem;
-  height: 1.25rem;
-  border-radius: 999px;
-  background: var(--v2-color-border2);
-  transition: background var(--v2-motion-fast);
-}
-
-.v2-settings-switch-thumb {
-  position: absolute;
-  top: 0.125rem;
-  left: 0.125rem;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 50%;
-  background: var(--v2-color-surface);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
-  transition: transform var(--v2-motion-fast);
-}
-
-.v2-settings-switch[aria-checked="true"] .v2-settings-switch-track {
-  background: var(--v2-color-accent);
-}
-
-.v2-settings-switch[aria-checked="true"] .v2-settings-switch-thumb {
-  background: var(--v2-color-accent-ink);
-  transform: translateX(1rem);
-}
-
 /* Theme: segmented control + three preview cards with captions. */
 .v2-theme-previews {
   display: grid;
@@ -831,14 +731,39 @@
   gap: 0;
 }
 
-.v2-settings-mcp-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem 1.5rem;
-  padding: 0.75rem 0;
-  border-bottom: 1px solid var(--v2-color-border);
+/* A11/A13: the status line is an ordinary row; Refresh is a quiet text
+   action (no border) and the footnote reads as one small link line. */
+.v2-settings-quiet-action[data-tone="ghost"] {
+  border-color: transparent;
+}
+
+.v2-settings-footnote {
+  margin-top: 0.75rem;
+}
+
+.v2-settings-footnote > summary {
+  display: inline-block;
+  padding: 0.25rem 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentcolor 45%, transparent);
+  text-underline-offset: 0.2em;
+  list-style: none;
+  cursor: pointer;
+}
+
+.v2-settings-footnote > summary::-webkit-details-marker {
+  display: none;
+}
+
+.v2-settings-footnote > summary:hover {
+  color: var(--v2-color-text);
+}
+
+.v2-settings-footnote > .v2-settings-disclosure-body {
+  padding: 0.25rem 0 0.5rem;
 }
 
 .v2-settings-disclosure {
@@ -944,10 +869,11 @@
 .v2-settings-server {
   display: grid;
   gap: 0.25rem;
-  padding: 0.875rem 0;
+  padding: 0.75rem 0;
   border-bottom: 1px solid var(--v2-color-border);
 }
 
+/* Row head: 24px monogram · copy · the control on the right (A13). */
 .v2-settings-server-head {
   display: flex;
   align-items: flex-start;
@@ -955,9 +881,9 @@
 }
 
 .v2-settings-server-mark {
-  --v2-monogram-size: 2rem;
+  --v2-monogram-size: 1.5rem;
   flex: 0 0 auto;
-  margin-top: 0.125rem;
+  margin-top: 0.0625rem;
 }
 
 .v2-settings-server:not([data-enabled]) .v2-settings-server-mark {
@@ -971,42 +897,13 @@
   gap: 0.125rem;
 }
 
-.v2-settings-server-title {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.v2-settings-server-title > h4 {
+.v2-settings-server-copy > h4 {
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--v2-color-text);
   font-size: 0.9375rem;
   font-weight: 500;
   line-height: 1.35;
-}
-
-.v2-settings-server-availability {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  color: var(--v2-color-text3);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.v2-settings-server-availability::before {
-  width: 0.375rem;
-  height: 0.375rem;
-  border-radius: 50%;
-  background: currentcolor;
-  content: "";
-}
-
-.v2-settings-server-availability[data-resource-availability="enabled"] {
-  color: var(--v2-color-ok);
 }
 
 .v2-settings-server-description {
@@ -1016,14 +913,31 @@
   line-height: 1.45;
 }
 
-.v2-settings-server-readiness {
+/* One status line: availability · readiness · tool count. */
+.v2-settings-server-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.375rem;
   margin: 0.125rem 0 0;
-  color: var(--v2-color-text2);
+  color: var(--v2-color-text3);
   font-size: 0.75rem;
   font-weight: 500;
+  line-height: 1.4;
+}
+
+.v2-settings-server-status > [aria-hidden="true"] {
+  margin: 0 0.375rem;
+}
+
+.v2-settings-server-availability[data-resource-availability="enabled"] {
+  color: var(--v2-color-text2);
+}
+
+.v2-settings-server-readiness {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  color: var(--v2-color-text2);
 }
 
 .v2-settings-server-readiness > .v2-icon {
@@ -1039,16 +953,22 @@
   color: var(--v2-color-warn);
 }
 
-.v2-settings-server-readiness[data-tone="danger"] {
+.v2-settings-server-readiness[data-tone="danger"],
+.v2-settings-server-error-code {
   color: var(--v2-color-danger);
 }
 
 .v2-settings-server-action {
   display: flex;
   flex: 0 0 auto;
+  min-height: 1.75rem;
   align-items: center;
   gap: 0.5rem;
   margin-left: auto;
+}
+
+.v2-settings-server-action > .v2-switch {
+  margin: -0.25rem 0;
 }
 
 /* Folded sections under the row head: external account, personal values. */
@@ -1058,7 +978,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem 1rem;
-  margin-left: 2.75rem;
+  margin-left: 2.25rem;
   padding: 0.5rem 0 0.25rem;
 }
 
@@ -1168,8 +1088,14 @@
 }
 
 .v2-settings-server > .v2-settings-disclosure {
-  margin-left: 2.75rem;
+  margin-left: 2.25rem;
   border-bottom: 0;
+}
+
+.v2-settings-server > .v2-settings-disclosure > summary {
+  min-height: 2rem;
+  padding: 0.25rem 0;
+  font-size: 0.75rem;
 }
 
 .v2-settings-tool-list {
@@ -1209,7 +1135,6 @@
    last so it outranks the base rows at equal specificity. */
 @media (hover: none), (pointer: coarse) {
   .v2-settings-nav-button,
-  .v2-settings-switch,
   .v2-theme-preview-card {
     min-height: 2.75rem;
   }

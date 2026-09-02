@@ -12,6 +12,7 @@ import {
 export type UiV2IconName =
   | "alert"
   | "archive"
+  | "arrow-left"
   | "arrow-up"
   | "assistant"
   | "attach"
@@ -78,6 +79,9 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-archive" viewBox="0 0 24 24">
           <path d="M4 8h16v12H4zM3 4h18v4H3zM9 12h6" />
+        </symbol>
+        <symbol id="v2-icon-arrow-left" viewBox="0 0 24 24">
+          <path d="M19 12H5M10.5 6.5 5 12l5.5 5.5" />
         </symbol>
         <symbol id="v2-icon-arrow-up" viewBox="0 0 24 24">
           <path d="M12 19V5M6.5 10.5 12 5l5.5 5.5" />
@@ -405,6 +409,41 @@ export const UiV2IconButton = forwardRef<HTMLButtonElement, UiV2IconButtonProps>
     );
   }
 );
+
+/**
+ * Accessible switch: a button with role="switch" and the accent track. The
+ * accessible name is the setting itself; aria-checked carries the state.
+ */
+export function UiV2Switch({
+  checked,
+  className = "",
+  disabled = false,
+  label,
+  onChange,
+  ...props
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onChange"> & {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange(next: boolean): void;
+}) {
+  return (
+    <button
+      {...props}
+      aria-checked={checked}
+      aria-label={label}
+      className={`v2-switch v2-focusable ${className}`.trim()}
+      disabled={disabled}
+      role="switch"
+      type="button"
+      onClick={() => onChange(!checked)}
+    >
+      <span className="v2-switch-track" aria-hidden="true">
+        <span className="v2-switch-thumb" />
+      </span>
+    </button>
+  );
+}
 
 export const UiV2MenuSurface = forwardRef<
   HTMLDivElement,

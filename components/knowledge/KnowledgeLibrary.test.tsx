@@ -13,7 +13,12 @@ import type {
   KnowledgeListView,
   KnowledgeSourceDetailView
 } from "./libraryViewContracts";
-import { KnowledgeLibrary } from "./KnowledgeLibrary";
+import {
+  isKnowledgeSubview,
+  KnowledgeLibrary,
+  knowledgeSubviewChrome,
+  useKnowledgeLibraryExit
+} from "./KnowledgeLibrary";
 
 function readiness(
   state: KnowledgeReadiness["state"] = "ready",
@@ -250,44 +255,14 @@ afterEach(() => {
 });
 
 describe("KnowledgeLibrary", () => {
-  it("shows simple Base readiness, Source count, access, and updated time", () => {
-    const affected = base({
-      sourceCount: 3,
-      readiness: {
-        attentionSources: 1,
-        processingSources: 1,
-        readySources: 1,
-        state: "needs_attention",
-        supportReference: "K-0123456789AB",
-        totalSources: 3
-      }
-    });
-    const { publications: _publications, ...summary } = affected;
-    render(<KnowledgeLibrary view={view({ list: list({ knowledgeBases: [summary] }) })} />);
-
-    const row = screen.getByTestId("knowledge-base-base-1");
-    expect(row).toHaveTextContent("1 ready · 1 processing · 1 needs attention");
-    expect(row).toHaveTextContent("3 Sources");
-    expect(row).toHaveTextContent("Yours");
-    expect(row).toHaveTextContent("Updated");
-    expect(row).not.toHaveTextContent(/embedding|generation|revision|fingerprint|chunk/iu);
-  });
-
-  it("keeps existing Bases available while creation is temporarily unavailable", () => {
-    const listView = list({ canCreate: false });
-    render(<KnowledgeLibrary view={view({ list: listView })} />);
-
-    expect(screen.getByText("Knowledge is temporarily unavailable")).toBeVisible();
-    expect(screen.getByRole("button", { name: "New knowledge base" })).toBeDisabled();
-    fireEvent.click(screen.getByText("Product docs"));
-    expect(listView.onOpenBase).toHaveBeenCalledWith("base-1");
-  });
-
   it("creates from identity and optional files without technical settings", async () => {
     const createView = creation();
     render(<KnowledgeLibrary view={view({ create: createView, task: "create" })} />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Back to Knowledge" })).toHaveFocus());
+    // The crumb and Back control belong to the Library (A14): the content
+    // starts with the sub-view heading.
+    expect(screen.getByRole("heading", { level: 2, name: "New Knowledge base" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Back to Knowledge" })).not.toBeInTheDocument();
     expect(screen.queryByText(/embedding|provider|dimension|fingerprint|revision|generation/iu))
       .not.toBeInTheDocument();
     expect(screen.getByText(/Up to 50 MB per file/)).toBeVisible();
@@ -615,6 +590,14 @@ describe("KnowledgeLibrary", () => {
     render(<KnowledgeLibrary view={view({ list: listView })} />);
 
     expect(screen.getByText(/Sources are reusable files/)).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Sources" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "Source filters" }).querySelector("[aria-pressed=\"true\"]"))
+      .toHaveTextContent("All");
+    expect(knowledgeSubviewChrome(view({ list: listView }))).toEqual({
+      backLabel: "Back to Knowledge",
+      key: "sources",
+      label: "Sources"
+    });
     expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("Product guide");
     expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("1 base");
     fireEvent.change(screen.getByRole("searchbox", { name: "Search Sources" }), {
@@ -716,6 +699,49 @@ describe("KnowledgeLibrary", () => {
     expect(screen.queryByRole("button", { name: "Add to selected" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Move Source" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove from base" })).not.toBeInTheDocument();
+  });
+
+  it("names the Library crumb for every sub-view and keeps the Bases list out of it", () => {
+    const detailView = detail();
+    expect(isKnowledgeSubview(view({ list: list() }))).toBe(false);
+    expect(isKnowledgeSubview(view({ list: list({ catalog: "sources" }) }))).toBe(true);
+    expect(knowledgeSubviewChrome(view({ detail: detailView, task: "detail" }))).toEqual({
+      backLabel: "Back to Knowledge",
+      key: "detail:base-1",
+      label: "Product docs"
+    });
+    expect(knowledgeSubviewChrome(view({ sourceDetail: sourceDetail(), task: "source-detail" }))).toEqual({
+      backLabel: "Back to Sources",
+      key: "source:source-1",
+      label: "Product guide"
+    });
+  });
+
+  it("asks for an explicit discard before a dirty sub-view leaves through the Library", () => {
+    const detailView = detail({ dirty: true });
+    const after = vi.fn();
+    function Harness() {
+      const exit = useKnowledgeLibraryExit(view({ detail: detailView, task: "detail" }));
+      return (
+        <>
+          <button onClick={() => exit.requestExit(after)} type="button">Back to Knowledge</button>
+          {exit.confirmation}
+        </>
+      );
+    }
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Knowledge" }));
+    const confirmation = screen.getByRole("dialog", { name: "Discard Knowledge base settings changes" });
+    expect(detailView.onBack).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(after).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Knowledge" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm discard changes" }));
+    expect(detailView.onBack).toHaveBeenCalledOnce();
+    expect(after).toHaveBeenCalledOnce();
   });
 
   it("polls only while observed processing work is transient", async () => {

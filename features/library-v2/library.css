@@ -48,6 +48,19 @@
   font-weight: 500;
 }
 
+.v2-library-crumb > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The sub-view's Back control never wraps; the crumb gives way instead. */
+.v2-library-heading-row > .v2-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .v2-library-crumb strong {
   overflow: hidden;
   color: var(--v2-color-text);
@@ -123,6 +136,11 @@
 @media (max-width: 899px) {
   .v2-library-heading-row {
     padding-left: 3.25rem;
+  }
+
+  /* Compact: a sub-view keeps only its own name in the crumb. */
+  .v2-library-crumb[data-subview] > span {
+    display: none;
   }
 }
 

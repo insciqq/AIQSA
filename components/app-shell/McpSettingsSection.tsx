@@ -4,7 +4,7 @@ import {
   type UserMcpConfigurationField,
   type UserMcpServer
 } from "@/lib/contracts/mcp";
-import { UiV2Button, UiV2Icon, UiV2Monogram } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
 import { useEffect, useState } from "react";
 import {
   disconnectUserMcpServer,
@@ -24,12 +24,16 @@ import {
 } from "./mcpReadiness";
 
 /*
- * Settings › MCP & tools in the Signal row anatomy (PRD §4.9, UX audit
- * 2026-09-02 #12): one summary row, an optional "How tools use data"
- * disclosure, then one row per server — monogram · name + status ·
- * description · the lifecycle action on the right — with the external
- * account, personal configuration and tool list folded underneath. The
- * behaviour (enable/disable, OAuth, personal values, readiness) is unchanged.
+ * Settings › MCP & tools as ordinary Settings rows (PRD §4.9, UX audit
+ * 2026-09-02 A13): one status line for the whole catalog with a quiet
+ * Refresh action, then one row per server — 24px monogram · name ·
+ * description · one status line (availability · readiness · tool count) ·
+ * the switch on the right. A server that still needs personal values shows
+ * "Complete setup" instead of the switch, an OAuth server that is not yet
+ * connected shows "Connect to enable". The external account, personal
+ * configuration and tool names fold underneath; "How tools use data" is a
+ * footnote at the end. The behaviour (enable/disable, OAuth, personal
+ * values, readiness) is unchanged.
  */
 
 function readableCode(code: string): string {
@@ -66,6 +70,10 @@ function readinessTone(kind: McpReadinessPresentation["kind"]): "danger" | "neut
   if (kind === "failed") return "danger";
   if (kind === "attention") return "warn";
   return "neutral";
+}
+
+function toolCountLabel(count: number): string {
+  return `${count} tool${count === 1 ? "" : "s"}`;
 }
 
 type ServerEdits = Record<string, Record<string, McpSlotValue | null>>;
@@ -232,11 +240,9 @@ function ServerRow({
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
   const readiness = mcpReadinessPresentation(server.readiness);
-  const lifecycleActionLabel = server.enabled
-    ? "Disable"
-    : missingPersonalField
-      ? "Complete setup"
-      : "Enable";
+  // The catalog count is informational: tool names appear once the runtime
+  // reported them, so the fold below lists the exact tools only then.
+  const toolCount = server.tools.length || server.knownToolCount;
 
   async function run(kind: typeof busy, operation: () => Promise<void>) {
     setBusy(kind);
@@ -258,6 +264,16 @@ function ServerRow({
     setError(null);
   };
 
+  const toggle = (enabled: boolean) => {
+    if (enabled && enableIssue) {
+      setError(enableIssue);
+      return;
+    }
+    void run("toggle", async () => {
+      replaceServer(await updateUserMcpServer(server.id, { enabled }));
+    });
+  };
+
   return (
     <article
       aria-labelledby={`mcp-server-${server.id}`}
@@ -268,35 +284,56 @@ function ServerRow({
       <div className="v2-settings-server-head">
         <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
         <div className="v2-settings-server-copy">
-          <div className="v2-settings-server-title">
-            <h4 id={`mcp-server-${server.id}`}>{server.name}</h4>
+          <h4 id={`mcp-server-${server.id}`}>{server.name}</h4>
+          {server.description ? <p className="v2-settings-server-description">{server.description}</p> : null}
+          <p aria-live="polite" className="v2-settings-server-status" role="status">
             <span
               className="v2-settings-server-availability"
               data-resource-availability={server.enabled ? "enabled" : "disabled"}
             >
               {server.enabled ? "Enabled" : "Disabled"}
             </span>
-          </div>
-          {server.description ? <p className="v2-settings-server-description">{server.description}</p> : null}
-          {server.enabled ? (
-            <p
-              aria-live="polite"
-              className="v2-settings-server-readiness"
-              data-tone={readinessTone(readiness.kind)}
-              role="status"
-            >
-              {readiness.kind === "ready"
-                ? <UiV2Icon name="check" />
-                : readiness.kind === "progress"
-                  ? <Spinner />
-                  : <UiV2Icon name="alert" />}
-              {readiness.label}
-              {server.errorCode ? ` · ${readableCode(server.errorCode)}` : ""}
-            </p>
-          ) : null}
+            {server.enabled ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span className="v2-settings-server-readiness" data-tone={readinessTone(readiness.kind)}>
+                  {readiness.kind === "ready"
+                    ? <UiV2Icon name="check" />
+                    : readiness.kind === "progress"
+                      ? <Spinner />
+                      : <UiV2Icon name="alert" />}
+                  {readiness.label}
+                </span>
+                {server.errorCode ? (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <span className="v2-settings-server-error-code">{readableCode(server.errorCode)}</span>
+                  </>
+                ) : null}
+                {toolCount > 0 ? (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <span>{toolCountLabel(toolCount)}</span>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+          </p>
         </div>
         <div className="v2-settings-server-action">
-          {!server.enabled && needsOAuth && !missingPersonalField ? (
+          {!server.enabled && missingPersonalField ? (
+            <UiV2Button
+              aria-label={`Complete setup for ${server.name}`}
+              disabled={busy !== null}
+              tone="primary"
+              onClick={() => {
+                setError("Add and save the required personal values before enabling this server.");
+                document.getElementById(`mcp-field-${server.id}-${missingPersonalField.slotKey}`)?.focus();
+              }}
+            >
+              Complete setup
+            </UiV2Button>
+          ) : !server.enabled && needsOAuth ? (
             <OAuthLink
               aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
               authorizing={authorizing}
@@ -306,28 +343,13 @@ function ServerRow({
               onStart={startAuthorization}
             />
           ) : (
-            <UiV2Button
-              aria-label={`${server.enabled ? "Disable" : missingPersonalField ? "Complete setup for" : "Enable"} ${server.name}`}
-              busy={busy === "toggle"}
+            <UiV2Switch
+              aria-busy={busy === "toggle" || undefined}
+              checked={server.enabled}
               disabled={busy !== null}
-              tone={server.enabled ? "ghost" : "primary"}
-              onClick={() => {
-                if (!server.enabled && missingPersonalField) {
-                  setError("Add and save the required personal values before enabling this server.");
-                  document.getElementById(`mcp-field-${server.id}-${missingPersonalField.slotKey}`)?.focus();
-                  return;
-                }
-                if (!server.enabled && enableIssue) {
-                  setError(enableIssue);
-                  return;
-                }
-                void run("toggle", async () => {
-                  replaceServer(await updateUserMcpServer(server.id, { enabled: !server.enabled }));
-                });
-              }}
-            >
-              {lifecycleActionLabel}
-            </UiV2Button>
+              label={server.name}
+              onChange={toggle}
+            />
           )}
         </div>
       </div>
@@ -405,12 +427,12 @@ function ServerRow({
         </section>
       ) : null}
 
-      <details className="v2-settings-disclosure">
-        <summary className="v2-focusable">
-          <UiV2Icon name="chevron-right" />
-          {server.tools.length} available tool{server.tools.length === 1 ? "" : "s"}
-        </summary>
-        {server.tools.length ? (
+      {server.tools.length ? (
+        <details className="v2-settings-disclosure">
+          <summary className="v2-focusable">
+            <UiV2Icon name="chevron-right" />
+            Tool names
+          </summary>
           <ul className="v2-settings-tool-list" aria-label={`${server.name} tools`}>
             {server.tools.map((tool) => (
               <li key={tool.name}>
@@ -419,8 +441,8 @@ function ServerRow({
               </li>
             ))}
           </ul>
-        ) : <p className="v2-settings-field-note">Tools appear after this server is ready.</p>}
-      </details>
+        </details>
+      ) : null}
 
       {error ? <p className="v2-settings-error" role="alert">{error}</p> : null}
     </article>
@@ -441,10 +463,12 @@ export function McpSettingsSection({
   const setOAuthOutcome = useMcpSettingsStore((state) => state.setOAuthOutcome);
   const [edits, setEdits] = useState<ServerEdits>({});
   const [busyServerIds, setBusyServerIds] = useState<ReadonlySet<string>>(() => new Set());
-  const enabledCount = servers.filter((server) => server.enabled).length;
-  const enabledToolCount = servers
-    .filter((server) => server.enabled)
-    .reduce((total, server) => total + server.knownToolCount, 0);
+  const enabledServers = servers.filter((server) => server.enabled);
+  const enabledCount = enabledServers.length;
+  // The same count the rows show: reported tool names when the runtime has
+  // them, the administrator's catalog size until then.
+  const enabledToolCount = enabledServers
+    .reduce((total, server) => total + (server.tools.length || server.knownToolCount), 0);
   const dirty = Object.values(edits).some((serverEdits) => Object.keys(serverEdits).length > 0);
 
   useEffect(() => {
@@ -479,44 +503,32 @@ export function McpSettingsSection({
 
   return (
     <section className="v2-settings-mcp" aria-labelledby="mcp-settings-heading">
-      <div className="v2-settings-mcp-summary">
+      <div className="v2-settings-row v2-settings-mcp-summary">
         <div className="v2-settings-row-copy">
           {/* The modal header already reads "MCP & tools": the heading stays
               for the landmark name only. */}
           <h3 className="v2-sr-only" id="mcp-settings-heading">MCP &amp; tools</h3>
           <span className="v2-settings-row-title">
-            {enabledCount} of {servers.length} server{servers.length === 1 ? "" : "s"} enabled
-            {enabledCount ? ` · ${enabledToolCount} known tool${enabledToolCount === 1 ? "" : "s"}` : ""}
+            {servers.length
+              ? `${enabledCount} of ${servers.length} server${servers.length === 1 ? "" : "s"} enabled`
+              : "MCP servers"}
+            {enabledCount && enabledToolCount ? ` · ${toolCountLabel(enabledToolCount)}` : ""}
           </span>
           <span className="v2-settings-row-description">
-            Enable any combination of servers your administrator granted. Enabled servers join your private tool catalog. A chat uses them only in Auto or Selected tool mode.
+            Enabled servers join your private tool catalog; a chat uses them only in Auto or Load all mode. Policy, secrets, and the full inventory stay with the administrator.
           </span>
         </div>
         <div className="v2-settings-row-control">
           <UiV2Button
             busy={loadState === "loading"}
+            className="v2-settings-quiet-action"
             disabled={loadState === "loading"}
-            icon="regenerate"
             onClick={() => void refreshMcpSettings(true).catch(() => undefined)}
           >
             Refresh status
           </UiV2Button>
         </div>
       </div>
-      <details className="v2-settings-disclosure">
-        <summary className="v2-focusable">
-          <UiV2Icon name="chevron-right" />
-          How tools use data
-        </summary>
-        <div className="v2-settings-disclosure-body">
-          <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
-          <p>Selected eagerly loads the servers you choose for that chat; Off loads none.</p>
-          <p>
-            You can enable up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers. Enabled runtimes stay asleep
-            until a run actually needs them.
-          </p>
-        </div>
-      </details>
 
       {oauthOutcome ? (
         <div
@@ -569,6 +581,19 @@ export function McpSettingsSection({
           ))}
         </div>
       )}
+
+      {/* Footnote: how a chat consumes the enabled catalog (A13). */}
+      <details className="v2-settings-footnote">
+        <summary className="v2-focusable">How tools use data</summary>
+        <div className="v2-settings-disclosure-body">
+          <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
+          <p>Load all eagerly loads every enabled server for that chat; Off loads none.</p>
+          <p>
+            You can enable up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers. Enabled runtimes stay asleep
+            until a run actually needs them.
+          </p>
+        </div>
+      </details>
     </section>
   );
 }

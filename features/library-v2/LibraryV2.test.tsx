@@ -76,7 +76,83 @@ describe("LibraryV2", () => {
   });
 });
 
+describe("Library sub-views", () => {
+  it("shows the sub-view in the crumb, swaps Back to chat for its Back control, and focuses it", () => {
+    const onBack = vi.fn();
+    const exit = vi.fn();
+    const tabs = [
+      { content: <p>Assistant owner</p>, id: "assistants" as const, label: "Assistants" },
+      { content: <p>Base detail</p>, id: "knowledge" as const, label: "Knowledge" }
+    ];
+    const { rerender } = render(
+      <LibraryV2
+        initialTab="knowledge"
+        onBack={onBack}
+        subview={{ backLabel: "Back to Knowledge", key: "detail:base-1", label: "Product docs", onBack: exit }}
+        tabs={tabs}
+      />
+    );
+
+    expect(screen.getByRole("navigation", { name: "Library location" })).toHaveTextContent("Library / Knowledge / Product docs");
+    const back = screen.getByRole("button", { name: "Back to Knowledge" });
+    expect(back).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Back to chat" })).not.toBeInTheDocument();
+    fireEvent.click(back);
+    expect(exit).toHaveBeenCalledOnce();
+    expect(onBack).not.toHaveBeenCalled();
+
+    rerender(<LibraryV2 initialTab="knowledge" onBack={onBack} subview={null} tabs={tabs} />);
+    expect(screen.getByRole("navigation", { name: "Library location" })).toHaveTextContent("Library / Knowledge");
+    expect(screen.getByRole("button", { name: "Back to chat" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Knowledge" })).toHaveFocus();
+  });
+});
+
 describe("Library resource panels", () => {
+  it("shows simple Base readiness, Source count, access, and updated time", () => {
+    const onOpen = vi.fn();
+    render(
+      <KnowledgePanelV2
+        bases={[{
+          description: "Product references",
+          id: "base-1",
+          name: "Product docs",
+          owned: true,
+          readinessLabel: "1 ready · 1 processing · 1 needs attention",
+          sourceCount: 3,
+          status: "needs_attention",
+          updatedLabel: "Aug 18, 2026"
+        }]}
+        onOpen={onOpen}
+      />
+    );
+
+    const row = screen.getByRole("heading", { name: "Product docs" }).closest("li")!;
+    expect(row).toHaveTextContent("1 ready · 1 processing · 1 needs attention");
+    expect(row).toHaveTextContent("3 Sources");
+    expect(row).toHaveTextContent("Your base");
+    expect(row).toHaveTextContent("Updated Aug 18, 2026");
+    expect(row).not.toHaveTextContent(/embedding|generation|revision|fingerprint|chunk/iu);
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(onOpen).toHaveBeenCalledWith("base-1");
+  });
+
+  it("keeps existing Bases available while creation is temporarily unavailable", () => {
+    const onOpen = vi.fn();
+    render(
+      <KnowledgePanelV2
+        bases={[{ description: "", id: "base-1", name: "Product docs", owned: true, sourceCount: 1, status: "ready" }]}
+        canCreate={false}
+        onOpen={onOpen}
+      />
+    );
+
+    expect(screen.getByText("Knowledge is temporarily unavailable")).toBeVisible();
+    expect(screen.getByRole("button", { name: "New base" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(onOpen).toHaveBeenCalledWith("base-1");
+  });
+
   it("opens the reusable Source catalog separately from Base creation", () => {
     const onBrowseSources = vi.fn();
     const onCreate = vi.fn();

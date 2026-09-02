@@ -23,6 +23,20 @@ export type LibraryTabV2 = Readonly<{
   label: string;
 }>;
 
+/**
+ * A resource sub-view open inside the selected section (a Knowledge base,
+ * the Sources catalog). The Library shows it in the crumb and replaces
+ * "Back to chat" with the sub-view's own Back control; a `key` change moves
+ * focus to that control.
+ */
+export type LibrarySubviewV2 = Readonly<{
+  backLabel: string;
+  busy?: boolean;
+  key: string;
+  label: string;
+  onBack(): void;
+}>;
+
 export type AssistantSummaryV2 = Readonly<{
   archived: boolean;
   available: boolean;
@@ -43,6 +57,10 @@ export type KnowledgeSummaryV2 = Readonly<{
   id: string;
   name: string;
   owned: boolean;
+  /** Exact readiness sentence ("1 ready · 1 processing"); the status label otherwise. */
+  readinessLabel?: string;
+  /** Formatted last-update time, when known. */
+  updatedLabel?: string;
   status:
     | "archived"
     | "empty"
