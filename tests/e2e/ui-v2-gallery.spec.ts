@@ -101,6 +101,10 @@ test("v2 conversation preserves the visible anchor after loading earlier message
   await page.goto("/ui-v2-fixture?fixture=conversation&state=earlier");
   const scroller = page.getByTestId("conversation-scroll");
   const anchor = page.locator('[data-conversation-message-id="earlier-current-4"]');
+  // The mounted thread rests at its latest message; wait for that client
+  // scroll before positioning, otherwise a pre-hydration scrollTop can leave
+  // the top sentinel within its auto-load margin and the page loads itself.
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await scroller.evaluate((element) => {
     element.scrollTop = 760;
   });

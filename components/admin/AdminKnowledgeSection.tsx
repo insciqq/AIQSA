@@ -537,7 +537,7 @@ export function AdminKnowledgeSection({
                   A selected corpus that fits within {settings.answerPolicy.fullContextThresholdPercent}% of the model context is sent in full. Larger selections may use this many bounded Knowledge searches per answer.
                 </p>
                 <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
-                  <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end">
+                  <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end" data-testid="knowledge-search-limit-row">
                     <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="maximum-knowledge-searches">
                       Maximum Knowledge searches per answer
                       <span className="font-normal leading-5 text-ink-muted">Applies only to new answers. Small full-context selections use no Knowledge searches.</span>

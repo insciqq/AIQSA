@@ -260,8 +260,12 @@ test.describe("system model policy", () => {
       where: { id: fixture.adminId }
     });
 
-    await expect(prisma.providerModel.delete({ where: { id: fixture.modelId } }))
-      .rejects.toMatchObject({ code: "P2003" });
+    // The pinned model row is protected by an ON DELETE RESTRICT foreign key;
+    // Prisma reports it as P2003 or as the raw PostgreSQL 23001 error.
+    const rejection = await prisma.providerModel.delete({ where: { id: fixture.modelId } })
+      .then(() => null, (error: unknown) => error as { code?: string; message?: string });
+    expect(rejection).not.toBeNull();
+    expect(rejection?.code === "P2003" || /23001|RESTRICT/u.test(rejection?.message ?? "")).toBe(true);
 
     const selected = await service.list();
     await service.update({

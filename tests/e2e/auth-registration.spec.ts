@@ -119,7 +119,9 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   const validationAlert = page.getByRole("alert").filter({ hasText: "credentials_required" });
   await expect(validationAlert).toContainText("credentials_required");
   await expectAssociatedValidation(email, validationAlert);
-  await expectAssociatedValidation(password, validationAlert, "password-help");
+  // The login password carries no help text since the Signal login pass
+  // (5c63549a); the validation alert is its only description.
+  await expectAssociatedValidation(password, validationAlert);
   await expect(validationAlert).toBeInViewport();
 
   await email.fill("keyboard.user@example.com");

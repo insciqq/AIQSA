@@ -6,7 +6,7 @@ import {
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   ConversationV2,
   type ConversationMessageV2
@@ -143,6 +143,14 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
           : baseMessages
   );
   const [hasOlder, setHasOlder] = useState(state === "earlier");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Like an opened chat, the "earlier" thread mounts at its latest message;
+  // the top sentinel then loads the previous page only on a real scroll up.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (state === "earlier" && scroller) scroller.scrollTop = scroller.scrollHeight;
+  }, [state]);
 
   const sidebar = (onClose: () => void) => (
     <NavigationSidebar
@@ -207,6 +215,7 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
             hasOlder={hasOlder}
             loading={state === "loading"}
             messages={messages}
+            scrollRef={scrollRef}
             onLoadEarlier={() => {
               setMessages((current) => [...earlierMessages, ...current]);
               setHasOlder(false);
