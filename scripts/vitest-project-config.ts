@@ -33,5 +33,6 @@ export const vitestSharedTestConfig = {
   css: true,
   environment: "jsdom",
   globals: true,
+  maxWorkers: 2,
   setupFiles: "./vitest.setup.ts"
 } as const;
