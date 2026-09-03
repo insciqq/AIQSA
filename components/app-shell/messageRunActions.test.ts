@@ -222,6 +222,7 @@ function useMessageRunActionsForTest(input: {
     folderId?: string | null,
     sourceSessionKey?: ComposerSessionKey
   ) => Promise<WorkspaceChatSummary | null>;
+  composerDraft?: string;
   draft?: string;
   editingMessageId?: string | null;
   fetchRun?: (runId: string, chatId: string) => Promise<unknown>;
@@ -261,9 +262,16 @@ function useMessageRunActionsForTest(input: {
   useComposerSessionStore.getState().activateSession(sourceSessionKey);
   useComposerSessionStore.getState().updateSession(sourceSessionKey, {
     attachments: input.attachments,
-    draft: input.draft ?? "Question with attachment",
-    editingMessageId: input.editingMessageId ?? null
+    draft: input.composerDraft ?? (
+      input.editingMessageId ? "" : input.draft ?? "Question with attachment"
+    )
   });
+  if (input.editingMessageId) {
+    useComposerSessionStore.getState().startEdit(
+      input.editingMessageId,
+      input.draft ?? "Edited question"
+    );
+  }
   useComposerControlStore.setState({
     selectedAssistant: null,
     selectedModelId: "gpt-5.5",
@@ -404,12 +412,15 @@ describe("message run actions", () => {
       persistent: true,
       text: "Choose the exact saved memory before AIQSA changes anything."
     }));
+    expect(actions.setNotice).toHaveBeenCalledTimes(1);
     const notice = actions.setNotice.mock.calls.at(-1)?.[0];
     expect(notice?.kind).toBe("error");
     notice?.action?.onClick();
     expect(openMemorySettings).toHaveBeenCalledOnce();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Forget the preference I mentioned.",
+      operationError: null,
+      operationErrorRetryable: false,
       pendingSend: null
     });
   });
@@ -1441,7 +1452,7 @@ describe("message run actions", () => {
     });
   });
 
-  it("reports a rejected send with the server reason and a Retry that resends the draft", async () => {
+  it("reports a rejected send once at the composer with its server reason", async () => {
     const fetchMock = vi.fn(async () => Response.json({ error: "provider_unavailable" }, { status: 502 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({
@@ -1455,18 +1466,41 @@ describe("message run actions", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Question that the server rejects",
-      operationError: "Send failed. Your draft was preserved."
+      operationError: expect.stringMatching(/provider is unavailable/iu),
+      operationErrorRetryable: true
     });
-    const notice = actions.setNotice.mock.calls.at(-1)?.[0];
-    expect(notice).toMatchObject({
-      action: expect.objectContaining({ label: "Retry" }),
-      kind: "error",
-      persistent: true,
-      text: expect.stringMatching(/provider unavailable/iu)
+    expect(actions.setNotice).not.toHaveBeenCalled();
+  });
+
+  it("leaves the composer empty when an accepted run fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream: async ({ onRunId }) => {
+        onRunId("run-failed-after-start");
+        return {
+          failed: true,
+          receivedChatUpdate: true,
+          runId: "run-failed-after-start",
+          terminalStatus: "error"
+        };
+      },
+      draft: "Question accepted by the server"
     });
 
-    notice?.action?.onClick();
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await actions.submitComposer();
+
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      attachments: [],
+      draft: "",
+      operationError: null,
+      operationErrorRetryable: false,
+      pendingSend: null
+    });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages.at(-1)).toMatchObject({
+      runId: "run-failed-after-start",
+      status: "error"
+    });
   });
 
   it("restores the draft and skips run creation when pending checkout fails", async () => {
@@ -1489,13 +1523,10 @@ describe("message run actions", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Question for selected branch",
-      operationError: "Send failed. Your draft was preserved.",
+      operationError: expect.stringMatching(/active branch changed/iu),
       operationErrorLive: true
     });
-    expect(actions.setNotice).toHaveBeenCalledWith({
-      kind: "error",
-      text: expect.stringContaining("active_leaf_changed")
-    });
+    expect(actions.setNotice).not.toHaveBeenCalled();
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
   });
 
@@ -1822,6 +1853,7 @@ describe("message run actions", () => {
           maxOutputTokens: Number(controls.maxOutputTokens)
         };
       },
+      composerDraft: "Unsent composer draft",
       draft: "Edited answer",
       editingMessageId: "message-1",
       model: {
@@ -1869,7 +1901,7 @@ describe("message run actions", () => {
       streamMode: true,
       temperature: "0.25"
     });
-    const edit = actions.submitComposer();
+    const edit = actions.submitMessageEdit();
     expect(actions.session(composerSessionKey("chat-a")).pendingEdit).toEqual(
       expect.objectContaining({ messageId: "message-1" })
     );
@@ -1894,7 +1926,8 @@ describe("message run actions", () => {
     await edit;
 
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
-      draft: "",
+      draft: "Unsent composer draft",
+      editingDraft: "",
       editingMessageId: null,
       pendingEdit: null
     });
@@ -1950,6 +1983,28 @@ describe("message run actions", () => {
     });
   });
 
+  it("keeps composer submission separate while an inline edit is open", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      composerDraft: "Unsent composer question",
+      draft: "Edited saved question",
+      editingMessageId: "message-1"
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Unsent composer question",
+      editingDraft: "Edited saved question",
+      editingMessageId: "message-1",
+      pendingEdit: null,
+      pendingSend: null
+    });
+  });
+
   it("keeps the source edit recoverable when the response is malformed", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ message: { id: "bad" } })));
     const actions = useMessageRunActionsForTest({
@@ -1958,12 +2013,13 @@ describe("message run actions", () => {
       editingMessageId: "message-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
-      draft: "Edited answer",
+      draft: "",
+      editingDraft: "Edited answer",
+      editingError: "Message edit response was malformed (edit_malformed)",
       editingMessageId: "message-1",
-      operationError: "Message edit response was malformed (edit_malformed)",
       pendingEdit: null
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
@@ -1981,7 +2037,7 @@ describe("message run actions", () => {
       editingMessageId: "message-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
       preserveControls: true
@@ -2002,8 +2058,9 @@ describe("message run actions", () => {
     );
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "",
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null,
-      operationError: null,
       pendingEdit: null
     });
   });
@@ -2042,8 +2099,8 @@ describe("message run actions", () => {
       refreshActiveChat
     });
 
-    const first = actions.submitComposer();
-    const duplicate = actions.submitComposer();
+    const first = actions.submitMessageEdit();
+    const duplicate = actions.submitMessageEdit();
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(actions.session(composerSessionKey("chat-a")).pendingEdit).toEqual(
       expect.objectContaining({ messageId: "message-1" })
@@ -2061,8 +2118,9 @@ describe("message run actions", () => {
     ]);
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "",
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null,
-      operationError: null,
       pendingEdit: null
     });
     expect(actions.refreshActiveChat).toHaveBeenCalledOnce();
@@ -2101,22 +2159,24 @@ describe("message run actions", () => {
       refreshActiveChat
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
-      draft: "Retry edit",
+      draft: "",
+      editingDraft: "Retry edit",
+      editingError: expect.stringContaining("edit_conflict"),
       editingMessageId: "message-1",
-      operationError: expect.stringContaining("edit_conflict"),
       pendingEdit: null
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/messages/message-edited/regenerate");
     expect(actions.refreshActiveChat).toHaveBeenCalledOnce();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "",
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null,
-      operationError: null,
       pendingEdit: null
     });
   });
@@ -2143,7 +2203,7 @@ describe("message run actions", () => {
       editingMessageId: "message-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/messages/message-edited/regenerate",
@@ -2202,7 +2262,7 @@ describe("message run actions", () => {
       editingMessageId: "message-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/me/chats/chat-a/memory-mode");
     expect(useWorkspaceStore.getState().chats[0]).toMatchObject({
@@ -2228,7 +2288,7 @@ describe("message run actions", () => {
       searchPlanMode: "all_selected",
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     const [, regenerateInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect(JSON.parse(String(regenerateInit.body))).toMatchObject({
@@ -2259,7 +2319,7 @@ describe("message run actions", () => {
       editingMessageId: "message-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(consumeRunStream).not.toHaveBeenCalled();
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
@@ -2295,7 +2355,7 @@ describe("message run actions", () => {
       editingMessageId: "assistant-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
@@ -2311,7 +2371,7 @@ describe("message run actions", () => {
       editingMessageId: "message-1"
     });
 
-    await actions.submitComposer();
+    await actions.submitMessageEdit();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -2345,7 +2405,8 @@ describe("message run actions", () => {
     );
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Retry this question",
-      operationError: "Send failed. Your draft was preserved."
+      operationError: expect.stringMatching(/provider is unavailable/iu),
+      operationErrorRetryable: true
     });
 
     await actions.submitComposer();
@@ -2819,8 +2880,9 @@ describe("message run actions", () => {
     });
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
       draft: "Question that should survive",
-      operationError: "Send failed. Your draft was preserved.",
+      operationError: expect.stringMatching(/model with tool calling/iu),
       operationErrorLive: true,
+      operationErrorRetryable: true,
       pendingSend: null
     });
   });

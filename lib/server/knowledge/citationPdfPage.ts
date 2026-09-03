@@ -69,21 +69,17 @@ function overlaySvg(
   );
 }
 
-export async function renderKnowledgeCitationPdfPage(input: Readonly<{
-  boxes: readonly KnowledgeViewerBoundingBox[];
+async function preparePageImage(input: Readonly<{
   bytes: Buffer;
   maxPages: number;
   page: number;
   signal?: AbortSignal;
-}>, options: Readonly<{
-  prepare?: typeof preparePdfModelBatch;
-}> = {}): Promise<Buffer> {
-  if (!Number.isSafeInteger(input.page) || input.page < 1 || input.boxes.length < 1 ||
-    input.boxes.length > MAX_HIGHLIGHT_BOXES ||
-    input.boxes.some((box) => box.page !== input.page)) {
+}>, prepare: typeof preparePdfModelBatch): Promise<PageImage> {
+  if (!Number.isSafeInteger(input.page) || input.page < 1 ||
+    !Number.isSafeInteger(input.maxPages) || input.maxPages < 1 || input.page > input.maxPages) {
     throw new Error("knowledge_citation_page_invalid");
   }
-  const batch = await (options.prepare ?? preparePdfModelBatch)({
+  const batch = await prepare({
     bytes: input.bytes,
     mode: "system_model_vision",
     pageEnd: input.page,
@@ -93,18 +89,57 @@ export async function renderKnowledgeCitationPdfPage(input: Readonly<{
   if (batch.kind !== "images" || batch.images.length !== 1) {
     throw new Error("knowledge_citation_page_invalid");
   }
-  const image = batch.images[0]!;
-  const rectangles = input.boxes.flatMap((box) => {
-    const rectangle = citationBoxPixelRectangle(box, image);
-    return rectangle ? [rectangle] : [];
-  });
-  if (rectangles.length < 1) throw new Error("knowledge_citation_page_invalid");
-  const rendered = await sharp(image.bytes, { limitInputPixels: image.width * image.height })
-    .composite([{ input: overlaySvg(image, rectangles) }])
+  return batch.images[0]!;
+}
+
+async function encodePagePng(
+  image: PageImage,
+  rectangles: readonly CitationPixelRectangle[] = []
+): Promise<Buffer> {
+  const pipeline = sharp(image.bytes, { limitInputPixels: image.width * image.height });
+  const rendered = await (rectangles.length > 0
+    ? pipeline.composite([{ input: overlaySvg(image, rectangles) }])
+    : pipeline)
     .png()
     .toBuffer();
   if (rendered.byteLength < 8 || rendered.byteLength > MAX_HIGHLIGHTED_PAGE_BYTES) {
     throw new Error("knowledge_citation_page_invalid");
   }
   return rendered;
+}
+
+/** Renders one bounded private PDF page without requiring citation coordinates. */
+export async function renderKnowledgeSourcePdfPage(input: Readonly<{
+  bytes: Buffer;
+  maxPages: number;
+  page: number;
+  signal?: AbortSignal;
+}>, options: Readonly<{
+  prepare?: typeof preparePdfModelBatch;
+}> = {}): Promise<Buffer> {
+  const image = await preparePageImage(input, options.prepare ?? preparePdfModelBatch);
+  return encodePagePng(image);
+}
+
+export async function renderKnowledgeCitationPdfPage(input: Readonly<{
+  boxes: readonly KnowledgeViewerBoundingBox[];
+  bytes: Buffer;
+  maxPages: number;
+  page: number;
+  signal?: AbortSignal;
+}>, options: Readonly<{
+  prepare?: typeof preparePdfModelBatch;
+}> = {}): Promise<Buffer> {
+  if (input.boxes.length < 1 ||
+    input.boxes.length > MAX_HIGHLIGHT_BOXES ||
+    input.boxes.some((box) => box.page !== input.page)) {
+    throw new Error("knowledge_citation_page_invalid");
+  }
+  const image = await preparePageImage(input, options.prepare ?? preparePdfModelBatch);
+  const rectangles = input.boxes.flatMap((box) => {
+    const rectangle = citationBoxPixelRectangle(box, image);
+    return rectangle ? [rectangle] : [];
+  });
+  if (rectangles.length < 1) throw new Error("knowledge_citation_page_invalid");
+  return encodePagePng(image, rectangles);
 }

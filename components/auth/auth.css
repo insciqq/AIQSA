@@ -172,6 +172,16 @@
   cursor: not-allowed;
 }
 
+/* Keep the quiet text-link treatment while giving coarse pointers a complete
+   measurable 44px hit area. */
+@media (hover: none), (pointer: coarse) {
+  .v2-auth-link {
+    display: inline-flex;
+    min-height: 2.75rem;
+    align-items: center;
+  }
+}
+
 /* Short landscape (phones on their side): the lockup alone carries the
    brand, the card and its copy tighten so the primary action and "Back to
    sign in" stay reachable without scrolling. */

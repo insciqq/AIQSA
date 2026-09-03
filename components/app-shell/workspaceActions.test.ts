@@ -225,6 +225,7 @@ function useWorkspaceActionsForTest(input: {
   activeChatId?: string | null;
   attachments: ComposerAttachment[];
   draft: string;
+  editingTitle?: string;
   includeConcurrentChat?: boolean;
   activeStreamChatIds?: string[];
   pendingThreadMutationChatIds?: string[];
@@ -276,7 +277,7 @@ function useWorkspaceActionsForTest(input: {
   const setSelectedSearchPlan = vi.fn();
   const setNotice = vi.fn();
   const chatMutation = {
-    editingTitle: "",
+    editingTitle: input.editingTitle ?? "",
     finishEditing: vi.fn()
   };
   const activeStreamChatIds = new Set(input.activeStreamChatIds ?? []);
@@ -315,6 +316,7 @@ function useWorkspaceActionsForTest(input: {
     chatA,
     chatB,
     chatC,
+    chatMutation,
     chatHasActiveStream,
     chatDetailRequestsRef,
     chats: () => useWorkspaceStore.getState().chats,
@@ -335,7 +337,9 @@ function useWorkspaceActionsForTest(input: {
     ) {
       useComposerSessionStore.getState().setDraft(nextDraft);
       useComposerSessionStore.getState().setAttachments(nextAttachments);
-      useComposerSessionStore.getState().setEditingMessageId(editingMessageId);
+      if (editingMessageId) {
+        useComposerSessionStore.getState().startEdit(editingMessageId, nextDraft);
+      }
     }
   };
 }
@@ -365,7 +369,7 @@ describe("workspace actions", () => {
       attachments: [attachmentA],
       draft: "Draft A"
     });
-    useComposerSessionStore.getState().setEditingMessageId("message-a");
+    useComposerSessionStore.getState().startEdit("message-a", "Editing A");
     const chatAKey = composerSessionKey("chat-a");
     const chatBKey = composerSessionKey("chat-b");
     const blankRootKey = composerSessionKey(null);
@@ -375,6 +379,7 @@ describe("workspace actions", () => {
     expect(state.session(chatAKey)).toMatchObject({
       attachments: [attachmentA],
       draft: "Draft A",
+      editingDraft: "Editing A",
       editingMessageId: "message-a"
     });
     expect(state.draft()).toBe("");
@@ -390,6 +395,7 @@ describe("workspace actions", () => {
     expect(state.activeComposer()).toMatchObject({
       attachments: [attachmentA],
       draft: "Draft A",
+      editingDraft: "Editing A",
       editingMessageId: "message-a"
     });
 
@@ -411,11 +417,71 @@ describe("workspace actions", () => {
     expect(state.session(chatBKey)).toMatchObject({
       attachments: [attachmentB],
       draft: "Draft B",
+      editingDraft: "Draft B",
       editingMessageId: "message-b"
     });
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(chatBKey);
     expect(state.session(blankRootKey).draft).toBe("Root draft");
     expect(state.session(blankFolderKey).draft).toBe("Folder draft");
+  });
+
+  it("finishes a successful inline rename without a redundant notice", async () => {
+    const state = useWorkspaceActionsForTest({
+      attachments: [],
+      draft: "",
+      editingTitle: "  Renamed chat  "
+    });
+    const updated = {
+      ...state.chatA,
+      title: "Renamed chat",
+      updatedAt: "2026-06-10T00:01:00.000Z"
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ chat: apiChatSummary(updated) })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await state.actions.renameChat(state.chatA);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({
+      body: JSON.stringify({ title: "Renamed chat" }),
+      method: "PATCH"
+    }));
+    expect(state.chats().find((candidate) => candidate.id === state.chatA.id)?.title)
+      .toBe("Renamed chat");
+    expect(state.chatMutation.finishEditing).toHaveBeenCalledOnce();
+    expect(state.setNotice).toHaveBeenCalledOnce();
+    expect(state.setNotice).toHaveBeenLastCalledWith(null);
+  });
+
+  it("keeps inline rename open after failure and clears that error after retry succeeds", async () => {
+    const state = useWorkspaceActionsForTest({
+      attachments: [],
+      draft: "",
+      editingTitle: "Renamed chat"
+    });
+    const updated = {
+      ...state.chatA,
+      title: "Renamed chat",
+      updatedAt: "2026-06-10T00:01:00.000Z"
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ chat: apiChatSummary(updated) })));
+
+    await state.actions.renameChat(state.chatA);
+
+    expect(state.chatMutation.finishEditing).not.toHaveBeenCalled();
+    expect(state.chats().find((candidate) => candidate.id === state.chatA.id)?.title)
+      .toBe("Chat A");
+    expect(state.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+
+    await state.actions.renameChat(state.chatA);
+
+    expect(state.chatMutation.finishEditing).toHaveBeenCalledOnce();
+    expect(state.chats().find((candidate) => candidate.id === state.chatA.id)?.title)
+      .toBe("Renamed chat");
+    expect(state.setNotice).toHaveBeenLastCalledWith(null);
   });
 
   it("archives chats with a functional list update so concurrent rows survive", async () => {

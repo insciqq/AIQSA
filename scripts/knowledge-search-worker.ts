@@ -4,6 +4,11 @@ import {
   rebuildKnowledgeSearchProjections,
   runKnowledgeSearchProjectionPass
 } from "../lib/server/knowledge/searchProjection";
+import {
+  createPrismaKnowledgeSearchWorkerHeartbeat,
+  runWithKnowledgeSearchWorkerHeartbeat
+} from
+  "../lib/server/knowledge/searchWorkerHeartbeat";
 import { createKnowledgeOpenSearchTransport } from "../lib/server/search/opensearch/transport";
 
 const prisma = new PrismaClient();
@@ -36,6 +41,7 @@ async function wait(milliseconds: number): Promise<void> {
 
 async function main(): Promise<void> {
   const search = createKnowledgeOpenSearchTransport();
+  const heartbeat = createPrismaKnowledgeSearchWorkerHeartbeat(prisma);
   if (rebuild) {
     const result = await rebuildKnowledgeSearchProjections({ client: prisma, search });
     console.info(JSON.stringify({ event: "knowledge_search_projection_rebuild", ...result }));
@@ -44,10 +50,17 @@ async function main(): Promise<void> {
     if (result.failed > 0 || !integrity.healthy) {
       throw new Error("knowledge_search_rebuild_integrity_failed");
     }
+    await heartbeat.beat();
     return;
   }
+  let heartbeatEstablished = false;
   do {
-    const result = await runKnowledgeSearchProjectionPass({ client: prisma, limit, search });
+    const pass = () => runKnowledgeSearchProjectionPass({ client: prisma, limit, search });
+    const result = heartbeatEstablished
+      ? await runWithKnowledgeSearchWorkerHeartbeat(heartbeat, pass)
+      : await pass();
+    await heartbeat.beat();
+    heartbeatEstablished = true;
     console.info(JSON.stringify({
       event: "knowledge_search_projection_pass",
       ...result

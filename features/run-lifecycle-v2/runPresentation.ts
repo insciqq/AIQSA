@@ -173,12 +173,15 @@ function humanizeToolName(toolName: string): string {
  */
 export function describeToolCallV2(
   call: Readonly<{ serverName?: string; toolName?: string }>,
-  phase: "running" | "settled"
+  phase: "failed" | "running" | "settled"
 ): string {
   const running = phase === "running";
   const toolName = call.toolName ?? "";
   if (toolName === "find_tools") return running ? "Finding relevant tools" : "Found relevant tools";
-  if (toolName === "search_knowledge") return running ? "Searching Knowledge" : "Searched Knowledge";
+  if (toolName === "search_knowledge" || toolName === "retrieve_knowledge") {
+    if (phase === "failed") return "Knowledge search unavailable";
+    return running ? "Searching Knowledge" : "Searched Knowledge";
+  }
   if (webSearchToolNames.has(toolName.toLowerCase())) {
     return running ? "Searching the web" : "Searched the web";
   }

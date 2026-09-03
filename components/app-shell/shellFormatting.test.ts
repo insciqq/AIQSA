@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogModel } from "./types";
-import { exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, responseErrorMessage } from "./shellFormatting";
+import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, responseErrorMessage } from "./shellFormatting";
 
 describe("shell error formatting", () => {
   it("turns known code families into readable messages while keeping the raw code", () => {
@@ -102,7 +102,7 @@ describe("shell error formatting", () => {
         ),
         "send_failed_503"
       )
-    ).resolves.toBe("provider unavailable (provider_unavailable)");
+    ).resolves.toBe("Provider is unavailable. Try again (provider_unavailable)");
   });
 });
 
@@ -136,6 +136,12 @@ describe("shell labels", () => {
     provider: "openai",
     searchStrategyIds: ["search-disabled", "openai-native-web-search"]
   };
+
+  it("presents persisted placeholder titles with current sentence casing", () => {
+    expect(chatTitleForDisplay("New Chat")).toBe("New chat");
+    expect(chatTitleForDisplay("Untitled QSA")).toBe("New chat");
+    expect(chatTitleForDisplay("  Release checklist  ")).toBe("Release checklist");
+  });
 
   it("preserves two decimal places when a million-token limit needs them", () => {
     expect(formatTokenCount(1_000_000)).toBe("1m");

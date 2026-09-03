@@ -605,7 +605,7 @@
   gap: 0.5rem;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   .v2-answer-sources {
     padding-left: 0;
   }

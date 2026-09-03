@@ -49,7 +49,7 @@ describe("composer session store", () => {
     store.setAttachments([attachment("folder")]);
     store.activateSession(chatA);
     store.setDraft("Draft A");
-    store.setEditingMessageId("message-a");
+    store.startEdit("message-a", "Edit A");
     store.activateSession(chatB);
     store.setDraft("Draft B");
 
@@ -60,6 +60,7 @@ describe("composer session store", () => {
     });
     expect(session(chatA)).toMatchObject({
       draft: "Draft A",
+      editingDraft: "Edit A",
       editingMessageId: "message-a"
     });
     expect(selectActiveComposerSession(useComposerSessionStore.getState())).toMatchObject({
@@ -166,7 +167,6 @@ describe("composer session store", () => {
     expect(session(source)).toMatchObject({
       attachments: [],
       draft: "",
-      draftBeforeEdit: null,
       pendingSend: expect.objectContaining({ generation: send.generation })
     });
     expect(store.beginUpload(source)).toBeNull();
@@ -180,6 +180,7 @@ describe("composer session store", () => {
       draft: "First question",
       operationError: "send failed",
       operationErrorLive: false,
+      operationErrorRetryable: true,
       pendingSend: null
     });
     expect(store.transferSession(source, target)).toBe(false);
@@ -193,6 +194,7 @@ describe("composer session store", () => {
       draft: "Newer question",
       operationError: "retry failed",
       operationErrorLive: true,
+      operationErrorRetryable: false,
       pendingSend: null
     });
 
@@ -206,7 +208,7 @@ describe("composer session store", () => {
     const store = useComposerSessionStore.getState();
     store.activateSession(chat);
     store.setDraft("Edit A");
-    store.setEditingMessageId("message-a");
+    store.startEdit("message-a", "Edit A");
     const uploadGeneration = store.beginUpload(chat);
     const editToken = store.beginEdit(chat, "message-a");
     expect(uploadGeneration).not.toBeNull();
@@ -221,17 +223,38 @@ describe("composer session store", () => {
     expect(session(chat)).toEqual({
       attachments: [],
       draft: "",
-      draftBeforeEdit: null,
       editGeneration: 0,
       editRevision: 0,
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null,
       latestUploadGeneration: 0,
       operationError: null,
       operationErrorLive: true,
+      operationErrorRetryable: false,
       pendingEdit: null,
       pendingSend: null,
       pendingUploadGenerations: [],
       revision: 0
+    });
+  });
+
+  it("does not restore a failed send once a durable run id exists", () => {
+    const chat = composerSessionKey("chat-a");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(chat);
+    store.setDraft("Question accepted by the server");
+    store.setAttachments([attachment("accepted")]);
+
+    const send = store.beginSend(chat)!;
+    expect(store.finishSend(send, "failed", "run failed", true, "run-accepted")).toBe(true);
+
+    expect(session(chat)).toMatchObject({
+      attachments: [],
+      draft: "",
+      operationError: null,
+      operationErrorRetryable: false,
+      pendingSend: null
     });
   });
 
@@ -300,8 +323,8 @@ describe("composer session store", () => {
     const chatB = composerSessionKey("chat-b");
     const store = useComposerSessionStore.getState();
     store.activateSession(chatA);
-    store.setDraft("Edit one");
-    store.setEditingMessageId("message-a");
+    store.setDraft("Composer A");
+    store.startEdit("message-a", "Edit one");
     expect(store.beginEdit(chatA, "other-message")).toBeNull();
 
     const editA = store.beginEdit(chatA, "message-a")!;
@@ -316,7 +339,8 @@ describe("composer session store", () => {
     store.startEdit("replacement-a", "Replacement edit");
     store.cancelEdit(chatA, "message-a");
     expect(session(chatA)).toMatchObject({
-      draft: "Edit one",
+      draft: "Composer A",
+      editingDraft: "Edit one",
       editingMessageId: "message-a",
       pendingEdit: expect.objectContaining({ generation: editA.generation })
     });
@@ -333,27 +357,31 @@ describe("composer session store", () => {
     expect(store.finishEdit(editA, null)).toBe(true);
     expect(session(chatA)).toMatchObject({
       draft: "Newer draft",
-      editingMessageId: "message-a",
+      editingDraft: "",
+      editingMessageId: null,
       pendingEdit: null
     });
     expect(store.finishEdit(editA, null)).toBe(false);
     expect(store.finishEdit(editB, null)).toBe(true);
     expect(session(chatB)).toMatchObject({
       draft: "",
+      editingDraft: "",
       editingMessageId: null,
       pendingEdit: null
     });
 
     store.activateSession(chatA);
     store.setAttachments([attachment("kept")]);
+    store.startEdit("message-a", "Re-edit A");
     const failedToken = store.beginEdit(chatA, "message-a")!;
     expect(store.finishEdit(failedToken, "edit failed")).toBe(true);
     expect(store.finishEdit(failedToken, null)).toBe(false);
     expect(session(chatA)).toMatchObject({
       attachments: [attachment("kept")],
       draft: "Newer draft",
+      editingDraft: "Re-edit A",
+      editingError: "edit failed",
       editingMessageId: "message-a",
-      operationError: "edit failed",
       pendingEdit: null
     });
 
@@ -361,25 +389,27 @@ describe("composer session store", () => {
     expect(store.finishEdit(retryToken, null)).toBe(true);
     expect(session(chatA)).toMatchObject({
       attachments: [attachment("kept")],
-      draft: "",
+      draft: "Newer draft",
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null,
-      operationError: null,
       pendingEdit: null
     });
 
     store.startEdit("message-cancel", "Cancel me");
     store.cancelEdit(chatA, "wrong-message");
-    expect(session(chatA).draft).toBe("Cancel me");
+    expect(session(chatA).editingDraft).toBe("Cancel me");
     store.cancelEdit(chatA, "message-cancel");
     expect(session(chatA)).toMatchObject({
       attachments: [attachment("kept")],
-      draft: "",
+      draft: "Newer draft",
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null,
-      operationError: null
     });
   });
 
-  it("restores the exact pre-edit draft on cancel without changing attachments", () => {
+  it("keeps the exact composer draft and attachments untouched throughout editing", () => {
     const chat = composerSessionKey("chat-a");
     const store = useComposerSessionStore.getState();
     store.activateSession(chat);
@@ -388,16 +418,18 @@ describe("composer session store", () => {
 
     store.startEdit("message-a", "Earlier message text");
     expect(session(chat)).toMatchObject({
-      draft: "Earlier message text",
-      draftBeforeEdit: "Unsent question\nwith a second line",
+      draft: "Unsent question\nwith a second line",
+      editingDraft: "Earlier message text",
       editingMessageId: "message-a"
     });
+    store.setEditingDraft("Rewritten earlier message");
     store.cancelEdit(chat, "message-a");
 
     expect(session(chat)).toMatchObject({
       attachments: [attachment("kept")],
       draft: "Unsent question\nwith a second line",
-      draftBeforeEdit: null,
+      editingDraft: "",
+      editingError: null,
       editingMessageId: null
     });
   });

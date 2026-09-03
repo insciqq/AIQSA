@@ -4,12 +4,18 @@ import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
+import {
+  EMPTY_KNOWLEDGE_SELECTION,
+  explicitKnowledgeSelection,
+  inheritedKnowledgeSelection,
+  type KnowledgeSelection
+} from "@/lib/contracts/knowledge";
 import { ConversationV2 } from "@/features/conversation-v2/ConversationV2";
 import {
   NavigationSidebar,
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ComposerV2,
   type ComposerV2Layer,
@@ -20,11 +26,14 @@ import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachm
 
 export type ComposerGalleryState =
   | "assistant"
+  | "assistant-knowledge"
   | "add"
   | "attachments"
   | "default"
   | "error"
   | "model"
+  | "knowledge"
+  | "project-knowledge"
   | "zero";
 
 const avatar = {
@@ -45,6 +54,8 @@ export const composerGalleryConfig: ComposerConfig = {
     category: "research",
     description: "Собирает и сравнивает проверяемые источники.",
     fingerprint: {
+      knowledgeLabel: "Knowledge · 2",
+      knowledgeResourceCount: 2,
       mcpServerCount: 1,
       modelLabel: "GPT-5.2",
       reasoningEffort: "high",
@@ -211,23 +222,46 @@ export const composerGalleryConfig: ComposerConfig = {
   },
   knowledgeBases: [{
     archived: false,
+    attentionDocumentCount: 0,
     description: "Финансовые планы и квартальные данные",
+    documentCount: 42,
     id: "kb-finance",
     name: "Финансы 2026",
-    owned: true
+    owned: true,
+    processingDocumentCount: 0,
+    readinessState: "ready",
+    readyDocumentCount: 42
   }, {
     archived: false,
+    attentionDocumentCount: 1,
     description: "Исследования продукта",
+    documentCount: 27,
     id: "kb-product",
     name: "Product research",
-    owned: false
+    owned: false,
+    processingDocumentCount: 3,
+    readinessState: "ready",
+    readyDocumentCount: 23
   }, {
     archived: true,
+    attentionDocumentCount: 0,
     description: "Архивная база",
+    documentCount: 8,
     id: "kb-archived",
     name: "Архив проекта",
-    owned: true
+    owned: true,
+    processingDocumentCount: 0,
+    readinessState: "archived",
+    readyDocumentCount: 8
   }],
+  knowledgeDocumentTotal: 89,
+  knowledgeSources: Array.from({ length: 7 }, (_, index) => ({
+    description: index === 1 ? "Still joining the active index" : `Reference document ${index + 1}`,
+    id: `source-${index + 1}`,
+    name: index === 6 ? "Governance appendix" : `Quarterly source ${index + 1}`,
+    owned: true,
+    readiness: index === 1 ? "processing" as const : "ready" as const
+  })),
   mcpServers: [{
     description: "Создание и проверка офисных документов",
     enabled: true,
@@ -269,7 +303,7 @@ const attachmentGalleryItems: ComposerAttachmentItemV2[] = [{
   rejection: "unsupported_format",
   status: "rejected"
 }, {
-  detail: "Over 50 MB",
+  detail: "Over 25 MB",
   fileName: "archive.pdf",
   id: "local-rejected-archive",
   rejection: "too_large",
@@ -307,6 +341,9 @@ const navigationChats: ChatNavigationSummaryWire[] = [{
 function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
   if (state === "model") return "model";
   if (state === "add" || state === "assistant") return "add";
+  if (state === "assistant-knowledge" || state === "knowledge" || state === "project-knowledge") {
+    return "knowledge";
+  }
   return null;
 }
 
@@ -334,23 +371,64 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме" : "");
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
   const [searchIds, setSearchIds] = useState<string[]>(state === "zero" ? [] : ["web-primary"]);
-  const [knowledgeIds, setKnowledgeIds] = useState<string[]>(state === "zero" ? [] : ["kb-finance"]);
+  const [knowledgeSelection, setKnowledgeSelection] = useState<KnowledgeSelection>(() => {
+    if (state === "zero") return EMPTY_KNOWLEDGE_SELECTION;
+    if (state === "assistant-knowledge") return inheritedKnowledgeSelection("assistant");
+    if (state === "project-knowledge") {
+      return explicitKnowledgeSelection({ baseIds: ["kb-product"], sourceIds: ["source-7"] });
+    }
+    return explicitKnowledgeSelection({ baseIds: ["kb-finance"] });
+  });
+  const [knowledgePlanSource, setKnowledgePlanSource] = useState<
+    "assistant" | "explicit" | "off" | "project"
+  >(() => state === "assistant-knowledge"
+    ? "assistant"
+    : state === "project-knowledge" ? "project" : state === "zero" ? "off" : "explicit");
   const [mcpSelection, setMcpSelection] = useState<McpRunSelection>({ mode: "auto" });
   const [attachmentItems, setAttachmentItems] = useState<ComposerAttachmentItemV2[]>(
     state === "attachments" ? attachmentGalleryItems : []
   );
   const attachmentSequenceRef = useRef(0);
-  const assistant = state === "assistant" ? config.assistants[0] ?? null : null;
+  const [assistant, setAssistant] = useState(() => {
+    const selected = state === "assistant" || state === "assistant-knowledge"
+      ? config.assistants[0] ?? null
+      : null;
+    return selected ? {
+      ...selected,
+      knowledgeLabel: selected.fingerprint.knowledgeLabel,
+      knowledgeResourceCount: selected.fingerprint.knowledgeResourceCount
+    } : null;
+  });
   // The model is chosen from the header selector, which anchors the
   // composer-owned picker through its layer controller.
+  const galleryRef = useRef<HTMLDivElement>(null);
   const layerController = useRef<ComposerV2LayerController | null>(null);
-  const [openLayer, setOpenLayer] = useState<ComposerV2Layer>(initialLayer(state));
+  const initiallyOpenedStateRef = useRef<ComposerGalleryState | null>(null);
+  const [openLayer, setOpenLayer] = useState<ComposerV2Layer>(null);
   const currentModel = config.catalog.models.find((model) =>
     model.modelId === selectedModel.modelId && model.provider === selectedModel.provider
   );
   const currentProvider = config.catalog.providers.find((provider) => provider.id === currentModel?.provider);
   const noModels = config.catalog.models.length === 0;
   const modelName = currentModel?.displayName ?? (noModels ? "No models available" : "Choose model");
+
+  // Gallery states open the same real trigger a user would. Supplying only
+  // `initialLayer` skips anchor measurement and can make a healthy popover
+  // appear detached from its chip or even clipped outside the viewport.
+  useEffect(() => {
+    const layer = initialLayer(state);
+    if (!layer || initiallyOpenedStateRef.current === state) return;
+    const selector = layer === "model"
+      ? '[data-testid="header-model-trigger"]'
+      : layer === "knowledge"
+        ? 'button[aria-label="Choose Knowledge"]'
+        : 'button[aria-label="Add"]';
+    const frame = window.requestAnimationFrame(() => {
+      initiallyOpenedStateRef.current = state;
+      galleryRef.current?.querySelector<HTMLButtonElement>(selector)?.click();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [state]);
 
   const sidebar = (onClose: () => void) => (
     <NavigationSidebar
@@ -375,7 +453,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   );
 
   return (
-    <div data-testid="ui-v2-composer-gallery">
+    <div ref={galleryRef} data-testid="ui-v2-composer-gallery">
       <ReadingRoomShellV2
         onNewChat={() => undefined}
         onSelectChat={() => undefined}
@@ -413,7 +491,6 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               config={state === "error" ? null : config}
               configError={state === "error"}
               draft={draft}
-              initialLayer={initialLayer(state)}
               layerController={layerController}
               mcpSelection={mcpSelection}
               modelParametersSummary="Reasoning medium · Temp 1.0"
@@ -426,7 +503,14 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               onOpenMcpSettings={() => undefined}
               onOpenModelParameters={() => undefined}
               onOpenSkillLibrary={() => undefined}
-              onRemoveAssistant={() => undefined}
+              onOverrideKnowledgePlan={() => {
+                setAssistant(null);
+                setKnowledgePlanSource("explicit");
+                if (knowledgeSelection.mode === "inherited") {
+                  setKnowledgeSelection(EMPTY_KNOWLEDGE_SELECTION);
+                }
+              }}
+              onRemoveAssistant={() => setAssistant(null)}
               onRemoveAttachment={(id) => setAttachmentItems((current) =>
                 current.filter((item) => item.id !== id)
               )}
@@ -449,7 +533,10 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                   ? { ...item, detail: null, status: "processing" as const }
                   : item)
               )}
-              onSelectKnowledgeBaseIds={(ids) => setKnowledgeIds([...ids])}
+              onSelectKnowledgeSelection={(selection) => {
+                setKnowledgeSelection(selection);
+                setKnowledgePlanSource(selection.mode === "none" ? "off" : "explicit");
+              }}
               onSelectMcp={setMcpSelection}
               onSelectModel={(model) => setSelectedModel({ modelId: model.modelId, provider: model.provider })}
               onSelectSearchOptionIds={(ids) => setSearchIds([...ids])}
@@ -474,10 +561,12 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 })
               ])}
               selectedAssistant={assistant}
-              selectedKnowledgeBaseIds={knowledgeIds}
+              knowledgePlanSource={knowledgePlanSource}
+              selectedKnowledgeSelection={knowledgeSelection}
               selectedModelId={selectedModel.modelId}
               selectedProvider={selectedModel.provider}
               selectedSearchOptionIds={searchIds}
+              sharedProject={state === "project-knowledge"}
             />
           </div>
         </main>

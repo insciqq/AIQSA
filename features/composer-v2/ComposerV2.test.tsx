@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
+import { explicitKnowledgeSelection, inheritedKnowledgeSelection } from "@/lib/contracts/knowledge";
 import { ComposerV2, type ComposerV2Layer, type ComposerV2LayerController } from "./ComposerV2";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 
@@ -46,20 +47,6 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
-  it("keeps the editable draft beside an explicit branch consequence", () => {
-    render(
-      <ComposerV2
-        {...props({
-          editStatusSlot: <div>Sending creates a new branch; history stays unchanged.</div>
-        })}
-      />
-    );
-
-    expect(screen.getByText("Sending creates a new branch; history stays unchanged."))
-      .toBeVisible();
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
-  });
-
   it("renders no memory disclaimer while keeping truthful context/provider usage", () => {
     const { container } = render(<ComposerV2 {...props({
       contextStats: {
@@ -283,14 +270,14 @@ describe("Composer v2", () => {
     menuClosed("Add");
 
     // Search: one engine at a time; a choice closes the menu.
-    fireEvent.click(screen.getByRole("button", { name: "Choose web search" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Choose web search/u }));
     menuOpen("Web search");
     expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "false");
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Research Search/ }));
     expect(onSearch).toHaveBeenCalledWith(["research-search"]);
     menuClosed("Web search");
 
-    // Knowledge: None / All my knowledge close; Base and Source toggles keep
+    // Knowledge: Off / All my Knowledge close; Base and document toggles keep
     // the picker open so several can be combined in one visit.
     fireEvent.click(screen.getByRole("button", { name: "Choose Knowledge" }));
     menuOpen("Knowledge");
@@ -301,7 +288,7 @@ describe("Composer v2", () => {
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Unavailable knowledge base/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
     menuOpen("Knowledge");
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /^None/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Off/ }));
     expect(onKnowledge).toHaveBeenLastCalledWith([]);
     menuClosed("Knowledge");
 
@@ -327,13 +314,20 @@ describe("Composer v2", () => {
   });
 
   it("keeps blank-chat actions in the single composer capability rail", () => {
-    render(<ComposerV2 {...props({ draft: "", onUploadFiles: vi.fn() })} />);
+    const initial = props({ draft: "", onUploadFiles: vi.fn() });
+    const { rerender } = render(<ComposerV2 {...initial} />);
 
     expect(screen.queryByRole("group", { name: "Ways to start" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Choose web search" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Choose web search: OpenAI" }))
+      .toHaveTextContent(/^Search: OpenAI$/);
     expect(screen.getByRole("button", { name: "Turn off Search" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Choose Knowledge" })).toBeVisible();
+
+    rerender(<ComposerV2 {...initial} selectedSearchOptionIds={[]} />);
+    expect(screen.getByRole("button", { name: "Choose web search" }))
+      .toHaveTextContent(/^Search$/);
+    expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
   });
 
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
@@ -406,11 +400,11 @@ describe("Composer v2", () => {
     expect(screen.getByTestId("composer-v2-assistant-lock")).toHaveTextContent(
       "Assistant: Research editor"
     );
-    expect(screen.getByRole("button", { name: "Choose web search" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Choose web search/u })).toBeDisabled();
     const searchRows = screen.getAllByRole("menuitemradio", { name: /Web Search/ });
     expect(searchRows[0]).toBeDisabled();
     expect(screen.getAllByText("Managed by the Assistant").length).toBeGreaterThan(1);
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove assistant" }));
     expect(onRemoveAssistant).toHaveBeenCalledOnce();
     expect(onSelectSearch).not.toHaveBeenCalled();
   });
@@ -517,6 +511,105 @@ describe("Composer v2", () => {
       sourceIds: ["source-deep"],
       version: 1
     });
+  });
+
+  it("groups bases and recent documents while keeping selected resources visible in search", async () => {
+    const sources = Array.from({ length: 7 }, (_, index) => ({
+      description: `Document ${index + 1}`,
+      id: `source-${index + 1}`,
+      name: index === 6 ? "Selected appendix" : `Recent document ${index + 1}`,
+      owned: true,
+      readiness: "ready" as const
+    }));
+    const onSelectKnowledgeSelection = vi.fn();
+    render(<ComposerV2 {...props({
+      config: {
+        ...composerGalleryConfig,
+        knowledgeDocumentTotal: 12,
+        knowledgeSources: sources
+      },
+      initialLayer: "knowledge",
+      onSelectKnowledgeBaseIds: undefined,
+      onSelectKnowledgeSelection,
+      selectedKnowledgeSelection: explicitKnowledgeSelection({
+        baseIds: ["kb-finance"],
+        sourceIds: ["source-7"]
+      })
+    })} />);
+
+    expect(screen.getByRole("button", { name: "Choose Knowledge" }))
+      .toHaveTextContent("Knowledge: 2");
+    expect(screen.getByText("Bases")).toBeVisible();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }))
+      .toHaveTextContent("42 documents · ready");
+    expect(screen.getByText("Single documents")).toBeVisible();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Selected appendix/ })).toBeVisible();
+    expect(screen.getByText("Type to find any of your other 6 documents.")).toBeVisible();
+    expect(screen.getByText("Applies to your next message.")).toBeVisible();
+    expect(screen.getByRole("menuitemradio", { name: /All my knowledge/i }))
+      .toHaveTextContent("12 files");
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search Knowledge resources" }), {
+      target: { value: "no matches" }
+    });
+    expect(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ })).toBeVisible();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Selected appendix/ })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Selected appendix/ }));
+    expect(onSelectKnowledgeSelection).toHaveBeenLastCalledWith(
+      explicitKnowledgeSelection({ baseIds: ["kb-finance"] })
+    );
+  });
+
+  it("shows privacy-safe inherited Assistant state and requires an explicit override", () => {
+    const overrideKnowledge = vi.fn();
+    render(<ComposerV2 {...props({
+      initialLayer: "knowledge",
+      knowledgePlanSource: "assistant",
+      onOverrideKnowledgePlan: overrideKnowledge,
+      onSelectKnowledgeBaseIds: undefined,
+      onSelectKnowledgeSelection: vi.fn(),
+      selectedAssistant: {
+        id: "assistant-private",
+        knowledgeLabel: "Knowledge · 2",
+        knowledgeResourceCount: 2,
+        name: "Shared analyst"
+      },
+      selectedKnowledgeSelection: inheritedKnowledgeSelection("assistant")
+    })} />);
+
+    expect(screen.getByRole("button", { name: "Choose Knowledge" }))
+      .toHaveTextContent("Knowledge: 2 from Assistant");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Shared analyst controls Knowledge"
+    );
+    expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toBeDisabled();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Selected Knowledge/ }))
+      .toHaveTextContent("Knowledge · 2");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Override for this chat" }));
+    expect(overrideKnowledge).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain("assistant-private");
+  });
+
+  it("keeps Project Knowledge locked until override without exposing personal all-scope", () => {
+    const overrideKnowledge = vi.fn();
+    render(<ComposerV2 {...props({
+      initialLayer: "knowledge",
+      knowledgePlanSource: "project",
+      onOverrideKnowledgePlan: overrideKnowledge,
+      onSelectKnowledgeBaseIds: undefined,
+      onSelectKnowledgeSelection: vi.fn(),
+      selectedKnowledgeSelection: explicitKnowledgeSelection({ baseIds: ["kb-finance"] }),
+      sharedProject: true
+    })} />);
+
+    expect(screen.getByRole("button", { name: "Choose Knowledge" }))
+      .toHaveTextContent("Knowledge: Финансы 2026 from Project");
+    expect(screen.queryByRole("menuitemradio", { name: /All my knowledge/i }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Override for this chat" }));
+    expect(overrideKnowledge).toHaveBeenCalledOnce();
   });
 
   it("never renders opaque provider, model, Knowledge, or MCP bindings", () => {

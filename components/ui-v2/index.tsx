@@ -530,7 +530,7 @@ export type UiV2MenuAction = Readonly<{
   disabled?: boolean;
   icon?: UiV2IconName;
   label: string;
-  /** Rendered only below 900px via CSS; e.g. Share joins the header menu there. */
+  /** Rendered only below 768px via CSS; e.g. Share joins the header menu there. */
   mobileOnly?: boolean;
   onSelect?(): void;
   /** Checked state for toggles such as Favorite. */
@@ -543,10 +543,9 @@ export type UiV2MenuAction = Readonly<{
 }>;
 
 /**
- * The items of an action menu from one declarative list, so surfaces that
- * act on the same object (a chat's row menu and its header "⋯") stay
- * identical in composition, order, grouping, and icons. Selecting an item
- * (or a submenu entry) closes the menu through `onClose` first.
+ * Renders one declarative action list with consistent grouping and submenu
+ * behavior. Selecting an item (or a submenu entry) closes the menu through
+ * `onClose` first.
  */
 export function UiV2MenuActions({
   actions,

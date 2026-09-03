@@ -5,8 +5,7 @@ import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 import {
   BranchDrawerV2,
   BranchPagerSlotV2,
-  BranchPagerV2,
-  EditBranchStripV2
+  BranchPagerV2
 } from "./BranchesV2";
 
 const graph: ChatBranchGraphWire = {
@@ -40,21 +39,6 @@ const graph: ChatBranchGraphWire = {
 describe("Branches v2", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it("states the immutable edit consequence and preserves cancellation while pending", () => {
-    const onCancel = vi.fn();
-    const { rerender } = render(<EditBranchStripV2 onCancel={onCancel} />);
-
-    expect(screen.getByTestId("edit-branch-strip-v2")).toHaveTextContent(
-      "Sending creates a new branch; history stays unchanged."
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Cancel editing" }));
-    expect(onCancel).toHaveBeenCalledOnce();
-
-    rerender(<EditBranchStripV2 error="Draft saved" onCancel={onCancel} pending />);
-    expect(screen.getByRole("button", { name: "Cancel editing" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Draft saved");
   });
 
   it("checks out exact pager targets and explains streaming disablement", () => {

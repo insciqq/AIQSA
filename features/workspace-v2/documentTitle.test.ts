@@ -25,6 +25,12 @@ describe("Document title v2", () => {
 
     expect(documentTitleV2({
       activeChatId: "chat-1",
+      activeChatTitle: "New Chat",
+      libraryOpen: false
+    })).toBe("New chat · AIQSA");
+
+    expect(documentTitleV2({
+      activeChatId: "chat-1",
       activeChatTitle: "   ",
       libraryOpen: false
     })).toBe("New chat · AIQSA");

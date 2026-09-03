@@ -218,6 +218,7 @@ export function AnswerOutputsV2Gallery({
 }: {
   state?: AnswerOutputsGalleryState;
 }) {
+  const [openedLibrarySource, setOpenedLibrarySource] = useState<string | null>(null);
   const surface = citationSurface(state);
   const artifact = artifactFor(state);
   const knowledgeReference = surface
@@ -246,9 +247,10 @@ export function AnswerOutputsV2Gallery({
   );
 
   return (
-    <KnowledgeCitationViewerProvider>
+    <KnowledgeCitationViewerProvider onOpenLibrarySource={setOpenedLibrarySource}>
       <div
         data-citation-surface={surface ?? undefined}
+        data-library-source={openedLibrarySource ?? undefined}
         data-testid="ui-v2-answer-outputs-gallery"
         data-state={state}
       >

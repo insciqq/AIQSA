@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsV2 } from "./SettingsV2";
 
@@ -21,6 +21,52 @@ describe("SettingsV2", () => {
     ]);
     fireEvent.keyDown(radios[0]!, { key: "ArrowRight" });
     expect(onThemeChange).toHaveBeenCalledWith("light");
+  });
+
+  it("reveals a newly selected destination when the mobile strip overflows", async () => {
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView"
+    );
+    const revealed: HTMLElement[] = [];
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value(this: HTMLElement) {
+        revealed.push(this);
+      }
+    });
+
+    try {
+      render(
+        <SettingsV2
+          mcpContent={<p>MCP owner</p>}
+          onClose={vi.fn()}
+          onThemeChange={vi.fn()}
+          panels={{ data: <p>Data owner</p> }}
+          themeId="dark"
+        />
+      );
+
+      const nav = screen.getByRole("navigation", { name: "Settings sections" });
+      Object.defineProperties(nav, {
+        clientWidth: { configurable: true, value: 200 },
+        scrollWidth: { configurable: true, value: 700 }
+      });
+      const data = screen.getByRole("button", { name: "Data" });
+      fireEvent.click(data);
+
+      await waitFor(() => expect(revealed).toContain(data));
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          originalScrollIntoView
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
   });
 
   it("lets the MCP owner block section replacement until discard is explicit", () => {
@@ -59,5 +105,31 @@ describe("SettingsV2", () => {
     expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Settings" }), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("owns a focus-safe section subview and settles it before another tab", async () => {
+    const onBack = vi.fn();
+    const onSectionChange = vi.fn();
+    render(
+      <SettingsV2
+        initialSection="data"
+        mcpContent={<p>MCP owner</p>}
+        onClose={vi.fn()}
+        onSectionChange={onSectionChange}
+        onThemeChange={vi.fn()}
+        panels={{ data: <p>Archived list</p> }}
+        subview={{ label: "Archived chats", onBack }}
+        themeId="dark"
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Data / Archived chats" })).toBeVisible();
+    const back = screen.getByRole("button", { name: "Back to Data" });
+    await waitFor(() => expect(back).toHaveFocus());
+    fireEvent.click(back);
+    expect(onBack).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    expect(onSectionChange).toHaveBeenCalledWith("general");
   });
 });

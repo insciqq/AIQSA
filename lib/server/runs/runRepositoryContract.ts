@@ -656,6 +656,7 @@ export type RunRepository = {
     answerRoundUsage?: PersistedAnswerRoundUsage;
     chatId: string;
     runId: string;
+    usageAccountedToolCallIds?: readonly string[];
     usageAttributions: RunUsageAttribution[];
     userId: string;
   }): Promise<boolean>;

@@ -97,6 +97,7 @@ export type KnowledgeViewerAvailable = Readonly<{
   excerpt: string;
   excerptTruncated: boolean;
   headingPath: readonly string[];
+  libraryAvailable: boolean;
   locator: Readonly<{
     boundingBoxes: readonly KnowledgeViewerBoundingBox[];
     pageEnd: number;
@@ -124,6 +125,10 @@ export type KnowledgeSourceViewer = KnowledgeViewerAvailable;
 
 export type KnowledgeCitationViewerResponse = Readonly<{
   citation: KnowledgeCitationViewer;
+}>;
+
+export type KnowledgeCitationLibraryTargetResponse = Readonly<{
+  sourceId: string;
 }>;
 
 export type KnowledgeSourceViewerResponse = Readonly<{
@@ -454,7 +459,8 @@ function decodeAvailable(value: unknown): KnowledgeViewerAvailable | null {
     ? value.source.statuses as KnowledgeViewerSourceStatus[]
     : null;
   if (blocks.some((block) => block === null) || excerpt === null ||
-    typeof value.excerptTruncated !== "boolean" || !headingPath || pageStart === null ||
+    typeof value.excerptTruncated !== "boolean" || typeof value.libraryAvailable !== "boolean" ||
+    !headingPath || pageStart === null ||
     pageEnd === null || pageEnd < pageStart || !boundingBoxes ||
     (value.source.baseName !== null && decodedBaseName === null) ||
     !fileName || !mimeType || !name || versionNumber === null || !statuses ||
@@ -464,6 +470,7 @@ function decodeAvailable(value: unknown): KnowledgeViewerAvailable | null {
     excerpt,
     excerptTruncated: value.excerptTruncated,
     headingPath,
+    libraryAvailable: value.libraryAvailable,
     locator: { boundingBoxes, pageEnd, pageStart },
     originalKind: value.originalKind,
     source: {
@@ -509,4 +516,12 @@ export function decodeKnowledgeSourceViewerResponse(
   if (!record(value) || Object.keys(value).length !== 1) return null;
   const source = decodeKnowledgeSourceViewer(value.source);
   return source ? { source } : null;
+}
+
+export function decodeKnowledgeCitationLibraryTargetResponse(
+  value: unknown
+): KnowledgeCitationLibraryTargetResponse | null {
+  if (!record(value) || Object.keys(value).length !== 1) return null;
+  const sourceId = boundedString(value.sourceId, 256);
+  return sourceId ? { sourceId } : null;
 }

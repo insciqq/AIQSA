@@ -512,6 +512,8 @@ export function useRunControlsActions({
       description: string;
       id: string;
       includedSkills?: { id: string; name: string }[];
+      knowledgeLabel?: string | null;
+      knowledgeResourceCount?: number;
       name: string;
       promptCharacterCount: number;
       starterPrompts: string[];

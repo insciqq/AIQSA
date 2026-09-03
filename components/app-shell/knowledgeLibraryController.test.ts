@@ -145,6 +145,7 @@ function source(overrides: Partial<KnowledgeSourceDetail> = {}): KnowledgeSource
     versionNumber: 2
   };
   return {
+    canReprocess: false,
     currentVersion,
     deletionPending: false,
     description: "Canonical product guidance",
@@ -974,7 +975,7 @@ describe("knowledgeLibraryController", () => {
       version: 4
     });
     expect(useKnowledgeLibraryStore.getState().notice?.text).toBe(
-      "Source processing restarted."
+      "Document processing restarted."
     );
   });
 
@@ -993,7 +994,7 @@ describe("knowledgeLibraryController", () => {
     expect(mocks.moveKnowledgeSource).not.toHaveBeenCalled();
     expect(mocks.removeKnowledgeSourceMembership).not.toHaveBeenCalled();
     expect(useKnowledgeLibraryStore.getState().notice?.text).toBe(
-      "Save or discard Source changes first."
+      "Save or discard document changes first."
     );
   });
 });

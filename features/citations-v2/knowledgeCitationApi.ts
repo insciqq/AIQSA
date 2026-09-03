@@ -1,5 +1,6 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
+  decodeKnowledgeCitationLibraryTargetResponse,
   decodeKnowledgeCitationViewerResponse,
   decodeKnowledgeSourceViewerResponse,
   type KnowledgeCitationViewer,
@@ -58,6 +59,19 @@ export async function loadKnowledgeCitationViewer(
   return decoded.citation;
 }
 
+export async function loadKnowledgeCitationLibraryTarget(
+  reference: KnowledgeCitationReference,
+  signal?: AbortSignal
+): Promise<string> {
+  const value = await responseValue(await shellFetch(`${citationPath(reference)}?asset=library`, {
+    method: "GET",
+    ...(signal ? { signal } : {})
+  }));
+  const decoded = decodeKnowledgeCitationLibraryTargetResponse(value);
+  if (!decoded) throw new KnowledgeViewerApiError(502);
+  return decoded.sourceId;
+}
+
 export async function loadKnowledgeSourceViewer(
   sourceId: string,
   signal?: AbortSignal
@@ -81,4 +95,8 @@ export function knowledgeCitationPageUrl(reference: KnowledgeCitationReference):
 
 export function knowledgeSourceOriginalUrl(sourceId: string): string {
   return `${sourcePath(sourceId)}?asset=original`;
+}
+
+export function knowledgeSourcePageUrl(sourceId: string, page: number): string {
+  return `${sourcePath(sourceId)}?asset=page&page=${page}`;
 }

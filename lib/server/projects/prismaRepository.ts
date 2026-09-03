@@ -12,6 +12,7 @@ import {
   type ProjectCandidatesResponseWire,
   type ProjectCandidateTypeWire,
   type ProjectCandidateWire,
+  type ProjectDefaultResourceKindWire,
   type ProjectDefaultsWire,
   type ProjectDetailWire,
   type ProjectGrantWire,
@@ -33,7 +34,7 @@ import {
 import {
   decodeKnowledgePlan,
   explicitKnowledgeSelection,
-  inheritedKnowledgeSelection
+  type KnowledgeSelection
 } from "../../contracts/knowledge";
 import { buildCatalogModel, toCatalogSearchStrategy } from "../../domain/catalogMatrix";
 import { decodeSearchPlan } from "../../domain/search";
@@ -381,6 +382,34 @@ type ProjectKnowledgeSourceWire = NonNullable<
   ProjectDetailWire["composer"]
 >["knowledgeSources"][number];
 
+type ProjectKnowledgeSourceArtifact = Readonly<{
+  hierarchicalIndexes: readonly Readonly<{ state: string }>[];
+  state: string;
+}>;
+
+function projectKnowledgeSourceReadiness(
+  artifact: ProjectKnowledgeSourceArtifact | null | undefined
+): ProjectKnowledgeSourceWire["readiness"] {
+  const hierarchyState = artifact?.hierarchicalIndexes[0]?.state;
+  if (artifact?.state === "ready" && hierarchyState === "ready") return "ready";
+  if (
+    artifact?.state === "pending" ||
+    artifact?.state === "processing" ||
+    artifact?.state === "ready" && hierarchyState === "building"
+  ) return "processing";
+  return "needs_attention";
+}
+
+function knowledgeFingerprintLabel(
+  selection: KnowledgeSelection
+): string | null {
+  if (selection.mode === "none") return null;
+  if (selection.mode === "all_my_knowledge") return "All Knowledge";
+  if (selection.mode === "inherited") return "Knowledge";
+  const count = selection.baseIds.length + selection.sourceIds.length;
+  return count > 0 ? `Knowledge · ${count}` : null;
+}
+
 function projectKnowledgeSources(
   row: ProjectDetailRow,
   visibleKnowledgeBaseIds: ReadonlySet<string>
@@ -397,14 +426,7 @@ function projectKnowledgeSources(
         ? source.currentVersion?.artifacts.find((candidate) =>
             candidate.profileRevisionId === profileRevisionId)
         : null;
-      const hierarchyState = artifact?.hierarchicalIndexes[0]?.state;
-      const readiness: ProjectKnowledgeSourceWire["readiness"] =
-        artifact?.state === "ready" && hierarchyState === "ready"
-          ? "ready"
-          : artifact?.state === "pending" || artifact?.state === "processing" ||
-              artifact?.state === "ready" && hierarchyState === "building"
-            ? "processing"
-            : "needs_attention";
+      const readiness = projectKnowledgeSourceReadiness(artifact);
       const next = {
         description: source.description,
         id: source.id,
@@ -422,14 +444,7 @@ function projectKnowledgeSources(
     const source = binding.source;
     if (source.deletionRequestedAt !== null || source.trashedAt !== null) continue;
     const artifact = source.currentVersion?.artifacts[0];
-    const hierarchyState = artifact?.hierarchicalIndexes[0]?.state;
-    const readiness: ProjectKnowledgeSourceWire["readiness"] =
-      artifact?.state === "ready" && hierarchyState === "ready"
-        ? "ready"
-        : artifact?.state === "pending" || artifact?.state === "processing" ||
-            artifact?.state === "ready" && hierarchyState === "building"
-          ? "processing"
-          : "needs_attention";
+    const readiness = projectKnowledgeSourceReadiness(artifact);
     const next = {
       description: source.description,
       id: source.id,
@@ -754,8 +769,11 @@ function projectComposer(
     if (!visible.has(binding.id)) return [];
     const avatar = decodeAssistantAvatarRecipe(binding.revision.avatar);
     const controls = decodeAssistantRunControls(binding.revision.runControls);
+    const knowledge = decodeKnowledgePlan(binding.revision.knowledgeSelection);
     const searchPlan = decodeSearchPlan(binding.revision.searchPlan);
-    if (!avatar || !controls || !searchPlan.ok) return [];
+    if (!avatar || !controls || !knowledge.ok ||
+      knowledge.plan.mode === "all_my_knowledge" || knowledge.plan.mode === "inherited" ||
+      !searchPlan.ok) return [];
     const category = binding.revision.category !== null &&
       ASSISTANT_CATEGORIES.includes(binding.revision.category as AssistantCategory)
       ? binding.revision.category as AssistantCategory
@@ -777,7 +795,7 @@ function projectComposer(
         // Prompts remain server-side; only the bounded size participates in
         // the composer context gauge.
         developerPrompt: null,
-        knowledgeSelection: inheritedKnowledgeSelection("assistant"),
+        knowledgeSelection: knowledge.plan,
         mcpServerIds: binding.revision.mcpServerIds,
         name: binding.revision.name,
         providerModelId: binding.revision.providerModelId,
@@ -795,6 +813,8 @@ function projectComposer(
         category,
         description: binding.revision.description,
         fingerprint: {
+          knowledgeLabel: knowledgeFingerprintLabel(knowledge.plan),
+          knowledgeResourceCount: knowledge.plan.baseIds.length + knowledge.plan.sourceIds.length,
           mcpServerCount: binding.revision.mcpServerIds.length,
           modelLabel,
           reasoningEffort: controls.reasoningEffort ?? null,
@@ -813,17 +833,42 @@ function projectComposer(
       }
     }];
   });
-  const knowledgeBases = row.knowledgeBaseBindings.flatMap((binding) =>
-    visible.has(binding.id)
-      ? [{
-          archived: false,
-          description: binding.knowledgeBase.description,
-          id: binding.knowledgeBaseId,
-          name: binding.knowledgeBase.name,
-          owned: false
-        }]
-      : []
-  );
+  const knowledgeBases = row.knowledgeBaseBindings.flatMap((binding) => {
+    if (!visible.has(binding.id)) return [];
+    const base = binding.knowledgeBase;
+    const profileRevisionId = base.activeIndexGeneration?.profileRevisionId;
+    const counts = { needs_attention: 0, processing: 0, ready: 0 };
+    for (const membership of base.sourceMemberships) {
+      const artifact = profileRevisionId
+        ? membership.source.currentVersion?.artifacts.find((candidate) =>
+            candidate.profileRevisionId === profileRevisionId)
+        : null;
+      counts[projectKnowledgeSourceReadiness(artifact)] += 1;
+    }
+    const documentCount = base.sourceMemberships.length;
+    const archived = base.archivedAt !== null;
+    const readinessState = archived
+      ? "archived" as const
+      : documentCount === 0
+        ? "empty" as const
+        : counts.ready > 0
+          ? "ready" as const
+          : counts.processing > 0
+            ? "processing" as const
+            : "needs_attention" as const;
+    return [{
+      archived,
+      attentionDocumentCount: counts.needs_attention,
+      description: base.description,
+      documentCount,
+      id: binding.knowledgeBaseId,
+      name: base.name,
+      owned: false,
+      processingDocumentCount: counts.processing,
+      readinessState,
+      readyDocumentCount: counts.ready
+    }];
+  });
   const knowledgeSources = projectKnowledgeSources(
     row,
     new Set(knowledgeBases.map((base) => base.id))
@@ -867,6 +912,7 @@ function projectComposer(
       searchStrategies: searchEntries.map(toCatalogSearchStrategy)
     },
     knowledgeBases,
+    knowledgeDocumentTotal: knowledgeSources.length,
     knowledgeSources,
     mcpServers
   };
@@ -886,6 +932,64 @@ function readiness(row: ProjectDetailRow): ProjectReadinessWire {
           ...(eligibleModelIds.size === 0 ? ["shared_model_unavailable" as const] : [])
         ]
       };
+}
+
+export function projectDefaultsProjection(
+  defaults: ProjectDefaultsWire,
+  visible: Readonly<{
+    assistantIds: ReadonlySet<string>;
+    hasMcp: boolean;
+    knowledgeBaseIds: ReadonlySet<string>;
+    knowledgeSourceIds: ReadonlySet<string>;
+    modelIds: ReadonlySet<string>;
+    searchIds: ReadonlySet<string>;
+  }>
+): Readonly<{
+  defaults: ProjectDefaultsWire;
+  unavailableDefaults: readonly ProjectDefaultResourceKindWire[];
+}> {
+  const unavailable: ProjectDefaultResourceKindWire[] = [];
+  if (defaults.assistantId && !visible.assistantIds.has(defaults.assistantId)) {
+    unavailable.push("assistant");
+  }
+  if (defaults.knowledgePlan.mode === "all_my_knowledge" ||
+    defaults.knowledgePlan.mode === "inherited" ||
+    defaults.knowledgePlan.baseIds.some((id) => !visible.knowledgeBaseIds.has(id)) ||
+    defaults.knowledgePlan.sourceIds.some((id) => !visible.knowledgeSourceIds.has(id))) {
+    unavailable.push("knowledge");
+  }
+  if (defaults.mcpMode !== "off" && !visible.hasMcp) unavailable.push("mcp");
+  if (defaults.providerModelId && !visible.modelIds.has(defaults.providerModelId)) {
+    unavailable.push("model");
+  }
+  if (defaults.searchPlan.optionIds.some((id) => !visible.searchIds.has(id))) {
+    unavailable.push("search");
+  }
+  return {
+    defaults: {
+      ...defaults,
+      assistantId: defaults.assistantId && visible.assistantIds.has(defaults.assistantId)
+        ? defaults.assistantId
+        : null,
+      knowledgePlan: explicitKnowledgeSelection({
+        baseIds: defaults.knowledgePlan.mode === "explicit"
+          ? defaults.knowledgePlan.baseIds.filter((id) => visible.knowledgeBaseIds.has(id))
+          : [],
+        sourceIds: defaults.knowledgePlan.mode === "explicit"
+          ? defaults.knowledgePlan.sourceIds.filter((id) => visible.knowledgeSourceIds.has(id))
+          : []
+      }),
+      mcpMode: visible.hasMcp ? defaults.mcpMode : "off",
+      providerModelId: defaults.providerModelId && visible.modelIds.has(defaults.providerModelId)
+        ? defaults.providerModelId
+        : null,
+      searchPlan: {
+        ...defaults.searchPlan,
+        optionIds: defaults.searchPlan.optionIds.filter((id) => visible.searchIds.has(id))
+      }
+    },
+    unavailableDefaults: unavailable
+  };
 }
 
 function detail(
@@ -910,29 +1014,14 @@ function detail(
     resource.type === "search" ? [resource.resourceId] : []
   ));
   const rawDefaults = storedDefaults(row.defaults);
-  const safeDefaults: ProjectDefaultsWire = {
-    ...rawDefaults,
-    assistantId: rawDefaults.assistantId && visibleAssistants.has(rawDefaults.assistantId)
-      ? rawDefaults.assistantId
-      : null,
-    knowledgePlan: rawDefaults.knowledgePlan.mode === "inherited"
-      ? rawDefaults.knowledgePlan
-      : explicitKnowledgeSelection({
-          baseIds: rawDefaults.knowledgePlan.baseIds.filter((id) => visibleKnowledge.has(id)),
-          sourceIds: rawDefaults.knowledgePlan.sourceIds.filter((id) =>
-            visibleKnowledgeSources.has(id))
-        }),
-    mcpMode: visibleResources.some((resource) => resource.type === "mcp")
-      ? rawDefaults.mcpMode
-      : "off",
-    providerModelId: rawDefaults.providerModelId && visibleModels.has(rawDefaults.providerModelId)
-      ? rawDefaults.providerModelId
-      : null,
-    searchPlan: {
-      ...rawDefaults.searchPlan,
-      optionIds: rawDefaults.searchPlan.optionIds.filter((id) => visibleSearch.has(id))
-    }
-  };
+  const { defaults: safeDefaults, unavailableDefaults } = projectDefaultsProjection(rawDefaults, {
+    assistantIds: visibleAssistants,
+    hasMcp: visibleResources.some((resource) => resource.type === "mcp"),
+    knowledgeBaseIds: visibleKnowledge,
+    knowledgeSourceIds: visibleKnowledgeSources,
+    modelIds: visibleModels,
+    searchIds: visibleSearch
+  });
   const base: ProjectSummaryWire = {
     accessRevision: row.accessRevision,
     audienceCount: audienceCount ?? row.grants.filter((grant) =>
@@ -965,7 +1054,8 @@ function detail(
     policyRevision: row.policyRevision,
     publicSharingEnabled: row.publicSharingEnabled,
     ...readiness(row),
-    resources: visibleResources
+    resources: visibleResources,
+    unavailableDefaults
   };
 }
 
@@ -1760,8 +1850,8 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
         state: active.knowledgeSource.has(source.id) ? "active" : "will_add",
         type: "knowledge"
       } : {
-        label: source?.name ?? "Required Knowledge Source",
-        reason: "Not publishable as a ready Source for the active installation Knowledge Profile.",
+        label: source?.name ?? "Required Knowledge document",
+        reason: "Not publishable as a ready document for the active installation Knowledge profile.",
         state: "ineligible",
         type: "knowledge"
       });

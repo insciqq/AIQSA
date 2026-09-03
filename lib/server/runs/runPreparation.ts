@@ -1018,7 +1018,7 @@ export async function prepareRun(
       return failure(
         "sources_processing",
         409,
-        "Selected Knowledge sources are still processing."
+        "Selected Knowledge documents are still processing."
       );
     }
   }

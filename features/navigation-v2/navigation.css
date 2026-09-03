@@ -52,6 +52,33 @@
     transform var(--v2-motion-base);
 }
 
+.v2-navigation-skip {
+  position: absolute;
+  z-index: 80;
+  top: max(0.5rem, env(safe-area-inset-top));
+  left: max(0.5rem, env(safe-area-inset-left));
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--v2-color-accent);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-float);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  translate: 0 calc(-100% - 1rem);
+}
+
+.v2-navigation-skip:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  translate: 0;
+}
+
 .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-navigation,
 .v2-workspace-shell[data-shell-section="library"] .v2-navigation {
   pointer-events: none;
@@ -179,11 +206,7 @@
 }
 
 .v2-new-chat-menu {
-  position: absolute;
-  top: calc(100% + 0.375rem);
-  right: 0;
-  left: 0;
-  z-index: 50;
+  width: 15rem;
 }
 
 /* Sidebar-scoped chat filter: one quiet field, never a global command search. */
@@ -367,7 +390,7 @@
 .v2-folder-menu-trigger {
   width: 1.875rem;
   height: 1.875rem;
-  opacity: 0;
+  opacity: 0.55;
 }
 
 .v2-folder-row:hover .v2-folder-menu-trigger,
@@ -377,10 +400,6 @@
 }
 
 .v2-folder-menu {
-  position: absolute;
-  z-index: 45;
-  top: 2rem;
-  right: 0.25rem;
   width: 14rem;
 }
 
@@ -519,7 +538,7 @@
   right: 0.1875rem;
   width: 1.875rem;
   height: 1.875rem;
-  opacity: 0;
+  opacity: 0.55;
 }
 
 .v2-chat-row-wrap:hover .v2-chat-menu-trigger,
@@ -529,11 +548,7 @@
 }
 
 .v2-chat-menu {
-  position: absolute;
-  top: 2rem;
-  right: 0.25rem;
-  z-index: 40;
-  width: 13.5rem;
+  width: 15rem;
 }
 
 /* Drawer footer (mobile only): the rail destinations and the account entry. */
@@ -663,7 +678,7 @@
 
 /* The Library section has no chat list to reveal: no floats beside the rail
    (the extra attribute outranks the compact-collapsed rule below). */
-@media (min-width: 900px) {
+@media (min-width: 768px) {
   .v2-workspace-shell[data-shell-section="library"][data-sidebar-composition] .v2-sidebar-floats {
     opacity: 0;
     pointer-events: none;
@@ -724,7 +739,7 @@
   }
 }
 
-@media (min-width: 900px) and (max-width: 1023px) {
+@media (min-width: 768px) and (max-width: 1023px) {
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) {
     grid-template-columns: 3.5rem 0 minmax(0, 1fr);
   }
@@ -767,15 +782,15 @@
   }
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   .v2-workspace-shell,
   .v2-workspace-shell[data-sidebar-collapsed="true"],
   .v2-workspace-shell[data-shell-section="library"] {
     display: block;
   }
 
-  /* No rail below 900px; the drawer footer carries its destinations. */
-  .v2-rail {
+  /* No rail below 768px; the drawer footer carries its destinations. */
+  .v2-workspace-shell > .v2-rail {
     display: none;
   }
 
@@ -900,16 +915,16 @@
   .v2-navigation-destination,
   .v2-navigation-load-more,
   .v2-navigation-retry {
-    min-height: 2.5rem;
+    min-height: 2.75rem;
   }
 
   .v2-new-chat-wrap {
-    grid-template-columns: minmax(0, 1fr) 2.5rem;
+    grid-template-columns: minmax(0, 1fr) 2.75rem;
   }
 
   .v2-chat-menu-trigger {
-    width: 2.5rem;
-    height: 2.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
   }
 
   .v2-chat-menu-trigger {
@@ -919,9 +934,13 @@
   }
 
   .v2-folder-menu-trigger {
-    width: 2.5rem;
-    height: 2.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
     opacity: 1;
+  }
+
+  .v2-chat-row {
+    padding-right: 3rem;
   }
 }
 
@@ -1077,7 +1096,7 @@ html[data-motion="off"] .v2-chat-pulse {
 /* Drawer footer destinations in one row (UX audit 2026-09-02 #15). */
 .v2-navigation-destinations {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.25rem;
   margin-bottom: 0.25rem;
 }
@@ -1132,12 +1151,6 @@ html[data-motion="off"] .v2-chat-pulse {
   padding-top: 0.25rem;
 }
 
-/* The landing column title already says "Projects": the block keeps only its
-   create control. */
-.v2-navigation[data-view="projects"] .v2-project-navigation-heading > span {
-  display: none;
-}
-
 /* Touch (C2): list rows and the mobile islands keep 44px targets. */
 @media (hover: none), (pointer: coarse) {
   .v2-chat-row,
@@ -1147,7 +1160,7 @@ html[data-motion="off"] .v2-chat-pulse {
   }
 }
 
-@media (max-width: 899px) and ((hover: none) or (pointer: coarse)) {
+@media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
   .v2-sidebar-floats > .v2-icon-button {
     width: 2.75rem;
     height: 2.75rem;

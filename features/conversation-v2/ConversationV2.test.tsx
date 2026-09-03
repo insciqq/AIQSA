@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ConversationInlineEditV2,
   ConversationTurnV2,
   ConversationV2,
   shouldClampUserBubbleV2,
@@ -88,6 +89,90 @@ describe("Conversation v2", () => {
     expect(onRegenerate).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Copy question" }));
     expect(onCopy).toHaveBeenCalledOnce();
+  });
+
+  it("edits a question in its bubble and restores focus to Edit on Escape", async () => {
+    function Harness() {
+      const [editing, setEditing] = useState(false);
+      const [draft, setDraft] = useState("Saved question");
+      return (
+        <ConversationTurnV2
+          actions={{ onEdit: () => setEditing(true) }}
+          anchorId="question/one"
+          content="Saved question"
+          edit={editing ? {
+            attachmentSlot: <span>report.pdf</span>,
+            draft,
+            onCancel: () => setEditing(false),
+            onChange: setDraft,
+            onSubmit: vi.fn()
+          } : undefined}
+          role="user"
+        />
+      );
+    }
+
+    render(<Harness />);
+    const edit = screen.getByRole("button", { name: "Edit question" });
+    edit.focus();
+    fireEvent.click(edit);
+
+    const input = screen.getByRole("textbox", { name: "Edit question" });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("Saved question");
+    expect(screen.getByLabelText("Attachments in this message")).toHaveTextContent("report.pdf");
+    expect(screen.getByText(/original history stays unchanged/iu)).toBeVisible();
+    expect(screen.queryByRole("toolbar", { name: "Question actions" })).toBeNull();
+
+    fireEvent.change(input, { target: { value: "Rewritten question" } });
+    expect(input).toHaveValue("Rewritten question");
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.getByText("Saved question")).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit question" })).toHaveFocus());
+  });
+
+  it("auto-grows the inline field and follows both send keyboard modes", () => {
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(144);
+    const onSubmit = vi.fn();
+    const props = {
+      draft: "Edited question",
+      onCancel: vi.fn(),
+      onChange: vi.fn(),
+      onSubmit
+    };
+    const { rerender } = render(<ConversationInlineEditV2 {...props} />);
+    const input = screen.getByRole("textbox", { name: "Edit question" });
+    expect(input).toHaveStyle({ height: "144px" });
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+
+    rerender(<ConversationInlineEditV2 {...props} sendWithEnter={false} />);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+    fireEvent.keyDown(input, { ctrlKey: true, key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an unsuccessful inline edit recoverable and locks it while saving", () => {
+    render(
+      <ConversationInlineEditV2
+        draft="Edited question"
+        error="The message changed on another branch."
+        onCancel={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        pending
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("changed on another branch");
+    expect(screen.getByRole("textbox", { name: "Edit question" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
 
   it("clamps only a long question and restores it with «Show full message»", () => {

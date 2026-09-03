@@ -11,10 +11,10 @@ export type SettingsDestinationSnapshot = {
 export type SettingsDestinationStore = SettingsDestinationSnapshot & {
   closeMemory(): void;
   closeSettings(): void;
-  openMemorySettings(): void;
+  openMemoryLibrary(): void;
+  openMemoryTab(): void;
   openMcpSettings(): void;
   openSettings(): void;
-  openSettingsSection(section: SettingsSection): void;
 };
 
 export const initialSettingsDestinationSnapshot: SettingsDestinationSnapshot = {
@@ -31,16 +31,16 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
   closeSettings() {
     set({ settingsOpen: false });
   },
-  openMemorySettings() {
+  openMemoryLibrary() {
     set({ memoryOpen: true, settingsOpen: false });
+  },
+  openMemoryTab() {
+    set({ settingsOpen: true, settingsSection: "memory" });
   },
   openMcpSettings() {
     set({ memoryOpen: false, settingsOpen: true, settingsSection: "mcp" });
   },
   openSettings() {
     set({ memoryOpen: false, settingsOpen: true, settingsSection: "general" });
-  },
-  openSettingsSection(section) {
-    set({ memoryOpen: false, settingsOpen: true, settingsSection: section });
   }
 }));

@@ -57,9 +57,21 @@ export type ConversationMessagePresentationV2 = Readonly<{
   afterActions?: ReactNode;
   afterContent?: ReactNode;
   beforeContent?: ReactNode;
+  edit?: ConversationInlineEditV2Props;
   renderCitation?: MarkdownCitationRenderer;
   /** Always-visible controls at the start of the actions row (pager, Sources chip). */
   toolbarLeading?: ReactNode;
+}>;
+
+export type ConversationInlineEditV2Props = Readonly<{
+  attachmentSlot?: ReactNode;
+  draft: string;
+  error?: string | null;
+  onCancel(): void;
+  onChange(value: string): void;
+  onSubmit(): void;
+  pending?: boolean;
+  sendWithEnter?: boolean;
 }>;
 
 type ConversationTurnV2Props = Readonly<{
@@ -72,6 +84,7 @@ type ConversationTurnV2Props = Readonly<{
   className?: string;
   content: string;
   emptyText?: string;
+  edit?: ConversationInlineEditV2Props;
   expandForReadingAnchor?: boolean;
   hideEmptyContent?: boolean;
   role: "assistant" | "user";
@@ -79,6 +92,102 @@ type ConversationTurnV2Props = Readonly<{
   streaming?: boolean;
   toolbarLeading?: ReactNode;
 }>;
+
+export function ConversationInlineEditV2({
+  attachmentSlot = null,
+  draft,
+  error = null,
+  onCancel,
+  onChange,
+  onSubmit,
+  pending = false,
+  sendWithEnter = true
+}: ConversationInlineEditV2Props) {
+  const descriptionId = useId();
+  const errorId = useId();
+  const inputId = useId();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const canSubmit = Boolean(draft.trim()) && !pending;
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [draft]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, []);
+
+  function submit() {
+    if (canSubmit) onSubmit();
+  }
+
+  function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === "Escape") {
+      if (pending) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCancel();
+      return;
+    }
+    if (
+      event.key === "Enter" &&
+      (event.metaKey || event.ctrlKey || (sendWithEnter && !event.shiftKey && !event.altKey))
+    ) {
+      event.preventDefault();
+      submit();
+    }
+  }
+
+  return (
+    <form
+      className="v2-inline-message-edit"
+      data-testid="inline-message-edit-v2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <label className="v2-sr-only" htmlFor={inputId}>Edit question</label>
+      <textarea
+        ref={textareaRef}
+        aria-describedby={`${descriptionId}${error ? ` ${errorId}` : ""}`}
+        aria-invalid={Boolean(error) || undefined}
+        className="v2-inline-message-edit-input v2-focusable"
+        disabled={pending}
+        id={inputId}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={handleInputKeyDown}
+        rows={1}
+        value={draft}
+      />
+      {attachmentSlot ? (
+        <div aria-label="Attachments in this message" className="v2-inline-message-edit-attachments">
+          {attachmentSlot}
+        </div>
+      ) : null}
+      <p className="v2-inline-message-edit-note" id={descriptionId}>
+        <UiV2Icon name="branch" />
+        <span>Sending creates a new branch; the original history stays unchanged.</span>
+      </p>
+      {error ? (
+        <p className="v2-inline-message-edit-error" id={errorId} role="alert">{error}</p>
+      ) : null}
+      <div className="v2-inline-message-edit-actions">
+        <UiV2Button disabled={pending} onClick={onCancel} type="button">Cancel</UiV2Button>
+        <UiV2Button busy={pending} disabled={!canSubmit} tone="primary" type="submit">
+          Send
+        </UiV2Button>
+      </div>
+    </form>
+  );
+}
 
 function interactiveTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(
@@ -114,6 +223,7 @@ export function ConversationTurnV2({
   className = "",
   content,
   emptyText = "This message has no text.",
+  edit,
   expandForReadingAnchor = false,
   hideEmptyContent = false,
   role,
@@ -135,6 +245,7 @@ export function ConversationTurnV2({
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const isUser = role === "user";
+  const editing = isUser && Boolean(edit);
   const hasActions = Boolean(
     actions?.onBranchFromHere || actions?.onCopy || actions?.onDelete ||
     actions?.onEdit || actions?.onMore || actions?.onRegenerate
@@ -220,11 +331,31 @@ export function ConversationTurnV2({
     setControlsOpen(false);
   }
 
+  function cancelInlineEdit() {
+    edit?.onCancel();
+    if (!anchorId) return;
+    const restoreFocus = () => {
+      const turn = [...document.querySelectorAll<HTMLElement>("[data-message-id]")]
+        .find((candidate) => candidate.dataset.messageId === anchorId);
+      const button = turn?.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit question"]'
+      );
+      button?.focus();
+      return Boolean(button);
+    };
+    queueMicrotask(() => {
+      if (!restoreFocus() && typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => restoreFocus());
+      }
+    });
+  }
+
   return (
     <article
       className={`v2-conversation-turn ${className}`.trim()}
       data-controls-open={controlsOpen || undefined}
       data-conversation-message-id={anchorId}
+      data-editing={editing || undefined}
       data-message-id={anchorId}
       data-role={role}
       aria-label={ariaLabel ?? label}
@@ -240,31 +371,37 @@ export function ConversationTurnV2({
         data-thread-message-content
       >
         {beforeContent}
-        <div className="v2-conversation-markdown">
-          {content.trim() ? (
-            <MarkdownMessage
-              content={content}
-              renderCitation={role === "assistant" && !streaming ? renderCitation : undefined}
-              streaming={streaming}
-            />
-          ) : !hideEmptyContent ? (
-            <p className="v2-conversation-empty-turn">{emptyText}</p>
-          ) : null}
-        </div>
-        {bubbleClampCandidate ? (
-          <button
-            className="v2-bubble-expander v2-focusable"
-            type="button"
-            aria-expanded={bubbleExpanded}
-            onClick={() => setBubbleExpansion(bubbleClamped ? "expanded" : "collapsed")}
-          >
-            {bubbleExpanded ? "Collapse" : "Show full message"}
-          </button>
-        ) : null}
-        {afterContent}
+        {editing && edit ? (
+          <ConversationInlineEditV2 {...edit} onCancel={cancelInlineEdit} />
+        ) : (
+          <>
+            <div className="v2-conversation-markdown">
+              {content.trim() ? (
+                <MarkdownMessage
+                  content={content}
+                  renderCitation={role === "assistant" && !streaming ? renderCitation : undefined}
+                  streaming={streaming}
+                />
+              ) : !hideEmptyContent ? (
+                <p className="v2-conversation-empty-turn">{emptyText}</p>
+              ) : null}
+            </div>
+            {bubbleClampCandidate ? (
+              <button
+                className="v2-bubble-expander v2-focusable"
+                type="button"
+                aria-expanded={bubbleExpanded}
+                onClick={() => setBubbleExpansion(bubbleClamped ? "expanded" : "collapsed")}
+              >
+                {bubbleExpanded ? "Collapse" : "Show full message"}
+              </button>
+            ) : null}
+            {afterContent}
+          </>
+        )}
       </div>
 
-      {(actions && hasActions) || toolbarLeading ? (
+      {!editing && ((actions && hasActions) || toolbarLeading) ? (
         <div
           className="v2-message-actions"
           data-testid="conversation-message-actions"
@@ -378,7 +515,7 @@ export function ConversationTurnV2({
           </span> : null}
         </div>
       ) : null}
-      {afterActions}
+      {!editing ? afterActions : null}
     </article>
   );
 }
@@ -598,6 +735,7 @@ export function ConversationV2({
                       anchorId={message.id}
                       beforeContent={getMessagePresentation?.(message)?.beforeContent}
                       content={message.content}
+                      edit={getMessagePresentation?.(message)?.edit}
                       renderCitation={getMessagePresentation?.(message)?.renderCitation}
                       toolbarLeading={getMessagePresentation?.(message)?.toolbarLeading}
                       role={message.role}

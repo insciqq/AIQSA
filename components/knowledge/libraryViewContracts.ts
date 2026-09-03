@@ -114,6 +114,7 @@ export type KnowledgeSourceDetailView = {
   onSave(): void;
   onRestore(): void;
   onTrash(): void;
+  parentLabel?: string;
   source: KnowledgeSourceDetail | null;
 };
 

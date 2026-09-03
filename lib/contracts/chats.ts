@@ -307,6 +307,7 @@ export type ChatMemoryStateResponseWire = {
 
 export type ArchivedChatSummaryWire = WorkspaceChatSummaryWire & {
   archived: true;
+  lastMessageAt: string | null;
   memoryMode: RetainedChatMemoryMode;
   sourceRevision: number;
 };
@@ -1323,6 +1324,7 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "defaultProvider",
       "folderId",
       "id",
+      "lastMessageAt",
       "memoryMode",
       "messageCount",
       "pinned",
@@ -1334,10 +1336,17 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
   ) return null;
   if (value.projectId !== null) return null;
   const summary = decodeWorkspaceChatSummaryWire(value);
+  const lastMessageAt = value.lastMessageAt === null
+    ? null
+    : isoTimestamp(value.lastMessageAt);
   const memoryMode = retainedMemoryMode(value.memoryMode);
   const sourceRevision = nonNegativeInteger(value.sourceRevision);
-  return summary && memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)
-    ? { ...summary, archived: true, memoryMode, sourceRevision }
+  return summary &&
+    (value.lastMessageAt === null || lastMessageAt !== null) &&
+    memoryMode &&
+    sourceRevision !== null &&
+    Number.isSafeInteger(sourceRevision)
+    ? { ...summary, archived: true, lastMessageAt, memoryMode, sourceRevision }
     : null;
 }
 

@@ -51,10 +51,23 @@ describe("administrator Knowledge operations service", () => {
         uploadedBytes24h: 2_048n,
         warningArtifacts: 6
       }])
-      .mockResolvedValueOnce([reconciliation({ mappedDocuments: 1n })]);
+      .mockResolvedValueOnce([reconciliation({ mappedDocuments: 1n })])
+      .mockResolvedValueOnce([{
+        expectedProjections: 4,
+        failedProjections: 1,
+        pendingProjections: 1,
+        readyProjections: 2,
+        workerLastSeenAt: new Date("2026-08-18T23:50:00.000Z")
+      }]);
     const client = { $queryRaw: queryRaw } as unknown as PrismaClient;
+    const search = {
+      checkKnowledgeIndex: vi.fn().mockRejectedValue(new Error("private-search-endpoint"))
+    };
 
-    const result = await createAdminKnowledgeOperationsService(client).read();
+    const result = await createAdminKnowledgeOperationsService(client, {
+      now: NOW,
+      search
+    }).read();
     const operationsSql = queryRaw.mock.calls[0]?.[0] as { strings?: string[] } | undefined;
     const operationsSqlText = operationsSql?.strings?.join(" ") ?? "";
     const retiredStructuredOutcome = ["structured", "clarification", "required"].join("_");
@@ -68,10 +81,14 @@ describe("administrator Knowledge operations service", () => {
       alerts: [
         { code: "knowledge_deletion_blocked", severity: "critical" },
         { code: "knowledge_ingestion_queue_stalled", severity: "critical" },
+        { code: "knowledge_search_backend_unavailable", severity: "critical" },
+        { code: "knowledge_search_projection_failures", severity: "critical" },
+        { code: "knowledge_search_worker_unavailable", severity: "critical" },
         { code: "knowledge_v1_reconciliation_incomplete", severity: "critical" },
         { code: "knowledge_deletion_backlog", severity: "warning" },
         { code: "knowledge_ingestion_failures", severity: "warning" },
         { code: "knowledge_retrieval_degraded", severity: "warning" },
+        { code: "knowledge_search_projection_backlog", severity: "warning" },
         { code: "knowledge_upload_sessions_expired", severity: "warning" }
       ],
       checkedAt: NOW.toISOString(),
@@ -86,8 +103,17 @@ describe("administrator Knowledge operations service", () => {
         degradedOperations24h: 5,
         operations24h: 20,
         p95DurationMs24h: 401
+      },
+      search: {
+        backendState: "unavailable",
+        expectedProjections: 4,
+        failedProjections: 1,
+        pendingProjections: 1,
+        readyProjections: 2,
+        workerState: "stale"
       }
     });
+    expect(search.checkKnowledgeIndex).toHaveBeenCalledOnce();
     expect(JSON.stringify(result)).not.toMatch(/filename|passage|query|excerpt|storageKey/iu);
   });
 
@@ -129,12 +155,34 @@ describe("administrator Knowledge operations service", () => {
         v1Documents: 0n,
         v1GenerationCandidates: 0n,
         v1Versions: 0n
-      })]);
+      })])
+      .mockResolvedValueOnce([{
+        expectedProjections: 0,
+        failedProjections: 0,
+        pendingProjections: 0,
+        readyProjections: 0,
+        workerLastSeenAt: NOW
+      }]);
     const client = { $queryRaw: queryRaw } as unknown as PrismaClient;
+    const search = { checkKnowledgeIndex: vi.fn().mockResolvedValue(undefined) };
 
-    await expect(createAdminKnowledgeOperationsService(client).read()).resolves.toMatchObject({
+    await expect(createAdminKnowledgeOperationsService(client, {
+      now: NOW,
+      search
+    }).read()).resolves.toMatchObject({
       alerts: [],
-      migration: { discrepancies: 0 }
+      migration: { discrepancies: 0 },
+      search: {
+        backendState: "available",
+        expectedProjections: 0,
+        failedProjections: 0,
+        pendingProjections: 0,
+        readyProjections: 0,
+        workerLastSeenAt: NOW.toISOString(),
+        workerState: "healthy"
+      }
     });
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(search.checkKnowledgeIndex).toHaveBeenCalledOnce();
   });
 });

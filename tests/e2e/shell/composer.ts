@@ -65,7 +65,7 @@ export async function chooseSearchStrategy(page: Page, label: string): Promise<v
   }
 
   // The Search chip owns its engine menu; choosing an engine closes it.
-  await page.getByRole("button", { name: "Choose web search" }).click();
+  await page.getByRole("button", { name: /^Choose web search/u }).click();
   const search = page.getByRole("menu", { name: "Web search" });
   await search.getByRole("menuitemradio", { name: new RegExp(label, "iu") }).click();
   await expect(search).toHaveCount(0);

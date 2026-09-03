@@ -15,6 +15,7 @@ import {
 } from "@/components/app-shell/theme";
 import { createPortal } from "react-dom";
 import {
+  useEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -97,10 +98,13 @@ export function SettingsV2({
   initialSection = "general",
   mcpContent,
   noticeSlot,
+  obscured = false,
   onClose,
   onDiscard,
+  onSectionChange,
   onThemeChange,
   panels = {},
+  subview,
   themeId
 }: Readonly<{
   busy?: boolean;
@@ -110,11 +114,16 @@ export function SettingsV2({
   initialSection?: SettingsSectionV2;
   mcpContent: ReactNode;
   noticeSlot?: ReactNode;
+  /** True while a nested confirmation dialog owns interaction above Settings. */
+  obscured?: boolean;
   onClose(): void;
   onDiscard?(): void;
+  onSectionChange?(section: SettingsSectionV2): void;
   onThemeChange(theme: ThemeId): void;
   /** Bodies of the remaining tabs; a tab without a body is not listed. */
   panels?: Partial<Record<Exclude<SettingsSectionV2, "general" | "mcp">, ReactNode>>;
+  /** A task owned by the active Settings section, rendered under its breadcrumb. */
+  subview?: Readonly<{ label: string; onBack(): void }>;
   themeId: ThemeId;
 }>) {
   const available = SECTION_ORDER.filter((section) =>
@@ -124,15 +133,25 @@ export function SettingsV2({
     available.includes(initialSection) ? initialSection : "general"
   );
   const [discardIntent, setDiscardIntent] = useState<SettingsIntentV2 | null>(null);
+  const sectionNavRef = useRef<HTMLElement | null>(null);
+  const sectionRefs = useRef<Partial<Record<SettingsSectionV2, HTMLButtonElement | null>>>({});
+  const subviewBackRef = useRef<HTMLButtonElement | null>(null);
   const themeRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const applyIntent = (intent: SettingsIntentV2) => {
+    if (intent.kind === "close") {
+      onClose();
+      return;
+    }
+    onSectionChange?.(intent.section);
+    setActiveSection(intent.section);
+  };
   const request = (intent: SettingsIntentV2) => {
     if (busy) return;
     if (dirty && activeSection === "mcp") {
       setDiscardIntent(intent);
       return;
     }
-    if (intent.kind === "close") onClose();
-    else setActiveSection(intent.section);
+    applyIntent(intent);
   };
   const {
     dialogRef,
@@ -140,7 +159,7 @@ export function SettingsV2({
     onDialogKeyDown,
     portalReady
   } = useModalLayerV2({
-    closeBlocked: busy || discardIntent !== null,
+    closeBlocked: busy || discardIntent !== null || obscured,
     onClose: () => request({ kind: "close" })
   });
 
@@ -149,9 +168,25 @@ export function SettingsV2({
     if (!intent) return;
     onDiscard?.();
     setDiscardIntent(null);
-    if (intent.kind === "close") onClose();
-    else setActiveSection(intent.section);
+    applyIntent(intent);
   };
+
+  useEffect(() => {
+    if (subview?.label) subviewBackRef.current?.focus();
+  }, [subview?.label]);
+
+  // Mobile Settings keeps all destinations in one horizontal strip. Reveal a
+  // selected deep-link (for example Data) without stealing focus from the
+  // dialog's deliberate entry control.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const nav = sectionNavRef.current;
+      const tab = sectionRefs.current[activeSection];
+      if (!nav || !tab || nav.scrollWidth <= nav.clientWidth) return;
+      tab.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSection]);
 
   const handleThemeKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex: number | null = null;
@@ -183,22 +218,23 @@ export function SettingsV2({
       <section
         ref={dialogRef}
         aria-busy={busy || undefined}
-        aria-hidden={discardIntent !== null || undefined}
+        aria-hidden={discardIntent !== null || obscured || undefined}
         aria-label="Settings"
         aria-modal="true"
         className="v2-settings-dialog"
         data-testid="settings-v2"
-        inert={discardIntent !== null || undefined}
+        inert={discardIntent !== null || obscured || undefined}
         role="dialog"
         onKeyDown={onDialogKeyDown}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <UiV2IconSprite />
         {/* Left column: the vertical tabs (PRD §4.9). */}
-        <nav className="v2-settings-nav" aria-label="Settings sections">
+        <nav ref={sectionNavRef} className="v2-settings-nav" aria-label="Settings sections">
           <h1>Settings</h1>
           {available.map((section) => (
             <button
+              ref={(node) => { sectionRefs.current[section] = node; }}
               aria-current={activeSection === section ? "page" : undefined}
               className="v2-settings-nav-button v2-focusable"
               data-selected={activeSection === section || undefined}
@@ -213,7 +249,24 @@ export function SettingsV2({
           ))}
         </nav>
         <header className="v2-settings-header">
-          <h2 id={`v2-settings-${activeSection}-heading`}>{activeMeta.label}</h2>
+          <div className="v2-settings-heading">
+            {subview ? (
+              <UiV2IconButton
+                ref={subviewBackRef}
+                disabled={busy}
+                icon="arrow-left"
+                label={`Back to ${activeMeta.label}`}
+                onClick={subview.onBack}
+              />
+            ) : null}
+            <h2
+              aria-label={subview ? `${activeMeta.label} / ${subview.label}` : undefined}
+              id={`v2-settings-${activeSection}-heading`}
+            >
+              {activeMeta.label}
+              {subview ? <><span> / </span><strong>{subview.label}</strong></> : null}
+            </h2>
+          </div>
           <UiV2IconButton
             ref={initialFocusRef}
             disabled={busy}

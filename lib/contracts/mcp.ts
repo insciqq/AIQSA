@@ -199,6 +199,19 @@ export type McpReadiness =
   | "starting"
   | "unavailable";
 
+const MCP_STARTABLE_READINESS = new Set<McpReadiness>([
+  "idle",
+  "queued",
+  "ready",
+  "restarting",
+  "starting"
+]);
+
+/** States for which exact admission can start or reconcile an enabled server on demand. */
+export function isMcpReadinessStartable(readiness: McpReadiness): boolean {
+  return MCP_STARTABLE_READINESS.has(readiness);
+}
+
 export type McpCredentialSource = "oauth" | "personal" | "shared";
 
 export type UserMcpConfigurationField = {

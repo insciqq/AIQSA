@@ -6,9 +6,13 @@ import type { SearchPlan } from "../../contracts/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
   buildMcpRunPlan,
+  isMcpRunPlanRecordStartable,
   type McpRunPlanRecord
 } from "../mcp/runPlan";
-import { assistantRunControlsSupported } from "./runControlMaterialization";
+import {
+  assistantRunControlIssue,
+  type AssistantRunControlIssue
+} from "./runControlMaterialization";
 
 export type AssistantCatalogView = {
   accessibleMcpServerIds: ReadonlySet<string>;
@@ -23,9 +27,11 @@ export type AssistantCatalogView = {
 
 export type AssistantCatalogValidationFailure =
   | "model"
-  | "run_controls"
   | "search"
-  | "tools";
+  | "tools"
+  | ({ kind: "run_controls" } & AssistantRunControlIssue);
+
+export type AssistantMcpRunnability = "accessible" | "exact" | "startable";
 
 export type AssistantCatalogConfiguration = {
   mcpServerIds: readonly string[];
@@ -43,13 +49,17 @@ export type AssistantCatalogConfiguration = {
 export function validateAssistantConfigurationAgainstCatalog(
   configuration: AssistantCatalogConfiguration,
   view: AssistantCatalogView,
-  options: { requireRunnableMcp: boolean }
+  options: { mcpRunnability: AssistantMcpRunnability }
 ): AssistantCatalogValidationFailure | null {
   const model = view.modelById.get(configuration.providerModelId);
   if (!model) return "model";
 
-  if (!assistantRunControlsSupported(configuration.runControls, model.parameterControls)) {
-    return "run_controls";
+  const runControlIssue = assistantRunControlIssue(
+    configuration.runControls,
+    model.parameterControls
+  );
+  if (runControlIssue) {
+    return { kind: "run_controls", ...runControlIssue };
   }
 
   const searchOptions = configuration.searchPlan.optionIds.map((optionId) => {
@@ -105,7 +115,12 @@ export function validateAssistantConfigurationAgainstCatalog(
       (serverId) => !view.accessibleMcpServerIds.has(serverId)
     ) ||
     (configuration.mcpServerIds.length > 0 && !model.capabilities.toolCalling) ||
-    (options.requireRunnableMcp &&
+    (options.mcpRunnability === "startable" &&
+      (selectedMcpRecords.some((record) => !record) ||
+        selectedMcpRecords.some(
+          (record) => record !== undefined && !isMcpRunPlanRecordStartable(record)
+        ))) ||
+    (options.mcpRunnability === "exact" &&
       (selectedMcpRecords.some((record) => !record) ||
         !buildMcpRunPlan(
           selectedMcpRecords.filter(

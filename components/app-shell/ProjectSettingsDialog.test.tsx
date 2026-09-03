@@ -56,7 +56,10 @@ describe("ProjectSettingsDialog", () => {
       />
     );
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Close project settings" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close Default Knowledge" })).toHaveFocus());
+    expect(screen.getByRole("heading", { name: "Default Knowledge" })).toBeVisible();
+    expect(screen.getByText(/Used for future runs in this folder/u)).toBeVisible();
+    expect(screen.queryByText(/this project/u)).toBeNull();
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onCancel).toHaveBeenCalled();
@@ -89,7 +92,7 @@ describe("ProjectSettingsDialog", () => {
         restoreFocus={() => fallback}
       />
     );
-    await waitFor(() => expect(screen.getByRole("button", { name: "Close project settings" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close Default Knowledge" })).toHaveFocus());
     trigger.style.display = "none";
 
     view.unmount();
@@ -119,7 +122,7 @@ describe("ProjectSettingsDialog", () => {
 
     expect(screen.queryByLabelText("Project instructions")).not.toBeInTheDocument();
     expect(screen.queryByText(/Saved memory|Draft memory|Project Memory/i)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Close project settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Default Knowledge" }));
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
@@ -141,7 +144,7 @@ describe("ProjectSettingsDialog", () => {
       />
     );
 
-    const projectDialog = screen.getByRole("dialog", { name: "Project Settings Research" });
+    const projectDialog = screen.getByRole("dialog", { name: "Default Knowledge for Research" });
     fireEvent.mouseDown(projectDialog.parentElement!);
 
     expect(onCancel).toHaveBeenCalledOnce();
@@ -170,14 +173,14 @@ describe("ProjectSettingsDialog", () => {
       />
     );
 
-    const closeProjectSettings = screen.getByRole("button", { name: "Close project settings" });
+    const closeProjectSettings = screen.getByRole("button", { name: "Close Default Knowledge" });
     await waitFor(() => expect(closeProjectSettings).toHaveFocus());
     fireEvent.click(closeProjectSettings);
 
     const keepEditing = screen.getByRole("button", { name: "Keep editing" });
     const discardChanges = screen.getByRole("button", { name: "Confirm discard changes" });
     await waitFor(() => expect(keepEditing).toHaveFocus());
-    expect(screen.getByLabelText("Project Settings Research", { selector: "div" })).toHaveAttribute(
+    expect(screen.getByLabelText("Default Knowledge for Research", { selector: "div" })).toHaveAttribute(
       "aria-hidden",
       "true"
     );
@@ -188,7 +191,7 @@ describe("ProjectSettingsDialog", () => {
     expect(keepEditing).toHaveFocus();
 
     fireEvent.keyDown(keepEditing, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Discard project settings changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Discard Default Knowledge changes" })).not.toBeInTheDocument();
     expect(onCancel).not.toHaveBeenCalled();
     expect(closeProjectSettings).toHaveFocus();
   });
@@ -211,9 +214,9 @@ describe("ProjectSettingsDialog", () => {
       />
     );
 
-    const dialog = screen.getByRole("dialog", { name: "Project Settings Research" });
+    const dialog = screen.getByRole("dialog", { name: "Default Knowledge for Research" });
     expect(dialog).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("button", { name: "Close project settings" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close Default Knowledge" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(screen.queryByLabelText("Project instructions")).not.toBeInTheDocument();
 
@@ -221,7 +224,7 @@ describe("ProjectSettingsDialog", () => {
     fireEvent.mouseDown(dialog.parentElement!);
 
     expect(onCancel).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog", { name: "Discard project settings changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Discard Default Knowledge changes" })).not.toBeInTheDocument();
   });
 
   it("shows the ordered project Knowledge default and guards it as a dirty edit", () => {
@@ -251,8 +254,8 @@ describe("ProjectSettingsDialog", () => {
     const activeLabel = screen.getByText(/Policies.*order 2/).closest("label");
     fireEvent.click(within(activeLabel!).getByRole("checkbox"));
     expect(onKnowledgeBaseIdsChange).toHaveBeenCalledWith(["retained"]);
-    fireEvent.click(screen.getByRole("button", { name: "Close project settings" }));
-    expect(screen.getByRole("dialog", { name: "Discard project settings changes" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close Default Knowledge" }));
+    expect(screen.getByRole("dialog", { name: "Discard Default Knowledge changes" })).toBeVisible();
   });
 
   it("shows a project Knowledge load error with a retry action", () => {

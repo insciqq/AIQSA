@@ -213,7 +213,14 @@ const archivedChatSummarySelect = {
   ...chatSummarySelect,
   archived: true,
   memoryMode: true,
-  memorySourceRevision: true
+  memorySourceRevision: true,
+  messages: {
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: {
+      createdAt: true
+    },
+    take: 1
+  }
 } satisfies Prisma.ChatSelect;
 
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
@@ -754,6 +761,7 @@ function serializeArchivedChatSummary(
   return {
     ...serializeChatSummary(chat),
     archived: true,
+    lastMessageAt: chat.messages[0]?.createdAt ?? null,
     memoryMode: chat.memoryMode,
     sourceRevision: chat.memorySourceRevision
   };
@@ -856,7 +864,8 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
   }
 
   descriptors.set("find_tools", { serverName: "Auto tools", toolName: "find_tools" });
-  descriptors.set("retrieve_knowledge", { serverName: "Knowledge", toolName: "retrieve_knowledge" });
+  descriptors.set("search_knowledge", { serverName: "Knowledge", toolName: "search_knowledge" });
+  descriptors.set("retrieve_knowledge", { serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [
     "forget_memory",
     "list_memories",

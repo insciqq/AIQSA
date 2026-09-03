@@ -957,10 +957,12 @@ describe("Prisma-backed chat repository", () => {
       });
       const ids = Array.from({ length: 51 }, (_, index) =>
         `archived-history-${randomUUID()}-${index}`);
+      const messageBase = new Date("2026-08-10T08:00:00.000Z").getTime();
       await prisma.message.createMany({
         data: ids.map((id, index) => ({
           chatId: chat.id,
           content: textMessageContent(`Archived message ${index}`),
+          createdAt: new Date(messageBase + index * 1_000),
           id,
           parentMessageId: index === 0 ? null : ids[index - 1],
           role: index % 2 === 0 ? "user" : "assistant",
@@ -1027,7 +1029,10 @@ describe("Prisma-backed chat repository", () => {
         sourceRevision: 0
       });
       await expect(repository.listArchivedChats({ cursor: null, userId })).resolves.toMatchObject({
-        chats: [expect.objectContaining({ id: chat.id })],
+        chats: [expect.objectContaining({
+          id: chat.id,
+          lastMessageAt: new Date(messageBase + 50_000)
+        })],
         kind: "ok"
       });
       await expect(repository.setArchived({

@@ -1,8 +1,9 @@
 "use client";
 
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
-import { UiV2IconButton } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
+import { assistantUnavailabilityCopy } from "@/features/library-v2/assistantAvailabilityCopy";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -13,9 +14,9 @@ type PickerGroup = Readonly<{
 }>;
 
 function assistantFingerprint(assistant: AssistantSummary): string {
-  if (!assistant.availability.ok) return "Required access unavailable";
   const facts = [
     assistant.fingerprint.modelLabel,
+    assistant.fingerprint.knowledgeLabel,
     assistant.fingerprint.searchOptionCount > 0
       ? `Search · ${assistant.fingerprint.searchOptionCount}`
       : null,
@@ -32,8 +33,8 @@ export function AssistantPickerV2({
   onClose,
   onCreateFromCurrentSetup,
   onManage,
-  onRemove,
   onSelect,
+  onUnavailableAction,
   recentIds,
   selectedAssistantId
 }: Readonly<{
@@ -42,8 +43,8 @@ export function AssistantPickerV2({
   onClose(): void;
   onCreateFromCurrentSetup(): void;
   onManage(): void;
-  onRemove?: (() => void) | null;
   onSelect(assistantId: string): void;
+  onUnavailableAction?(assistantId: string, action: "mcp-settings" | "open-editor"): void;
   recentIds: string[];
   selectedAssistantId: string | null;
 }>) {
@@ -124,6 +125,17 @@ export function AssistantPickerV2({
         </header>
 
         <div className="v2-assistant-picker-list" data-testid="assistant-picker-list">
+          <button
+            className="v2-assistant-picker-create v2-focusable"
+            type="button"
+            onClick={onCreateFromCurrentSetup}
+          >
+            <UiV2Icon name="plus" />
+            <span>
+              <strong>Create from current setup</strong>
+              <small>Save this chat&apos;s model, tools and knowledge as a new assistant</small>
+            </span>
+          </button>
           {loading && assistants.length === 0 ? (
             <p role="status">Loading assistants…</p>
           ) : groups.length === 0 ? (
@@ -138,23 +150,37 @@ export function AssistantPickerV2({
               <ul>
                 {group.items.map((assistant) => {
                   const current = assistant.id === selectedAssistantId;
+                  const unavailable = assistantUnavailabilityCopy(assistant);
                   return (
-                    <li key={assistant.id}>
+                    <li className="v2-assistant-picker-item" key={assistant.id}>
                       <button
                         aria-current={current || undefined}
                         className="v2-assistant-picker-row v2-focusable"
                         data-testid={`assistant-picker-row-${assistant.id}`}
                         disabled={!assistant.availability.ok}
+                        title={unavailable?.explanation}
                         type="button"
                         onClick={() => onSelect(assistant.id)}
                       >
                         <AssistantAvatarV2 recipe={assistant.avatar} size={24} />
                         <span>
                           <strong>{assistant.name}</strong>
-                          <small>{assistantFingerprint(assistant)}</small>
+                          <small data-tone={unavailable ? "warn" : undefined}>
+                            {unavailable
+                              ? `${unavailable.headline}${unavailable.explanation ? `, ${unavailable.explanation.toLocaleLowerCase()}` : ""}`
+                              : assistantFingerprint(assistant)}
+                          </small>
                         </span>
-                        {current ? <em>Current</em> : null}
+                        {current ? <UiV2Icon className="v2-assistant-picker-current" name="check" /> : null}
                       </button>
+                      {unavailable?.action ? (
+                        <UiV2Button
+                          className="v2-assistant-picker-fix"
+                          onClick={() => onUnavailableAction?.(assistant.id, unavailable.action!.kind)}
+                        >
+                          {unavailable.action.label}
+                        </UiV2Button>
+                      ) : null}
                     </li>
                   );
                 })}
@@ -164,22 +190,10 @@ export function AssistantPickerV2({
         </div>
 
         <footer className="v2-assistant-picker-actions" data-testid="assistant-picker-actions">
-          <button className="v2-focusable" type="button" onClick={onCreateFromCurrentSetup}>
-            Create from current setup
-          </button>
+          <p>Use applies to your next message only.</p>
           <button className="v2-focusable" type="button" onClick={onManage}>
-            Manage assistants
+            Manage in Library <span aria-hidden="true">›</span>
           </button>
-          {onRemove ? (
-            <button
-              className="v2-focusable"
-              data-testid="assistant-picker-remove"
-              type="button"
-              onClick={onRemove}
-            >
-              Remove assistant
-            </button>
-          ) : null}
         </footer>
       </section>
     </div>,

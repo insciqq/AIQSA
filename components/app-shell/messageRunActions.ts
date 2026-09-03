@@ -435,15 +435,6 @@ export function useMessageRunActions({
   }
 
   async function submitComposer() {
-    const sourceSession = selectComposerSession(
-      useComposerSessionStore.getState(),
-      useComposerSessionStore.getState().activeSessionKey
-    );
-    if (sourceSession.editingMessageId) {
-      await editMessageBranch();
-      return;
-    }
-
     await sendMessage();
   }
 
@@ -703,8 +694,9 @@ export function useMessageRunActions({
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
-    let sendFailedBeforeRun = false;
+    let sendFailureHandled = false;
     let sendRejectionMessage: string | null = null;
+    let sendRunId: string | null = null;
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
@@ -746,10 +738,7 @@ export function useMessageRunActions({
         try {
           await persistActiveLeaf(chatIdForSend, parentLeafForSend);
         } catch (error) {
-          setNotice({
-            kind: "error",
-            text: errorMessage(error)
-          });
+          sendFailureMessage = errorMessage(error);
           return;
         }
       }
@@ -878,6 +867,10 @@ export function useMessageRunActions({
           // The user-owned refresh action reconciles it with durable server state.
         }
       });
+      sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
+      sendFailureMessage = result.failureMessage ?? null;
+      sendRejectionMessage = result.rejectionMessage ?? null;
+      sendRunId = result.runId;
       if (
         refreshProjectWorkspace &&
         (result.failureCode === "project_setup_required" ||
@@ -891,43 +884,29 @@ export function useMessageRunActions({
         }
       }
       if (result.failureCode === "memory_intent_confirmation_required") {
+        sendFailureHandled = true;
         await showMemoryTargetSelection();
       }
       if (temporaryRun) {
         await reconcileTemporaryAdmission(chatIdForSend);
       }
-      sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
-      sendFailureMessage = result.failureMessage ?? null;
-      // The Memory-target prompt already carries its own persistent action.
-      sendFailedBeforeRun = result.failed && result.runId === null &&
-        result.failureCode !== "memory_intent_confirmation_required";
-      sendRejectionMessage = result.rejectionMessage ?? null;
     } catch (error) {
-      setNotice({
-        kind: "error",
-        text: errorMessage(error)
-      });
+      const message = errorMessage(error);
+      if (sendOutcome === "failed" && sendRunId === null && !sendFailureHandled) {
+        sendFailureMessage = message;
+      } else {
+        setNotice({ kind: "error", text: message });
+      }
     } finally {
       useComposerSessionStore.getState().finishSend(
         sendToken,
         sendOutcome,
-        sendOutcome === "failed"
-          ? sendFailureMessage ?? "Send failed. Your draft was preserved."
+        sendOutcome === "failed" && !sendFailureHandled
+          ? sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
           : null,
-        sendFailureLive
+        sendFailureLive,
+        sendRunId
       );
-    }
-    // A send that never started a run leaves nothing in the thread, so the
-    // persistent notice carries the server's reason and a Retry that resends
-    // the preserved draft (UX audit 2026-09-02 A8); failures after run_start
-    // keep the in-thread error card.
-    if (sendOutcome === "failed" && sendFailedBeforeRun) {
-      setNotice({
-        action: { label: "Retry", onClick: () => void sendMessage() },
-        kind: "error",
-        persistent: true,
-        text: sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
-      });
     }
   }
 
@@ -1255,6 +1234,7 @@ export function useMessageRunActions({
     refreshInterruptedRun,
     regenerateMessage,
     sendStarterPrompt,
+    submitMessageEdit: editMessageBranch,
     submitComposer
   };
 }

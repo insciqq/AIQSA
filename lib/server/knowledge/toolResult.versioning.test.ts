@@ -183,6 +183,23 @@ function readEvidence(): KnowledgeRetrievalEvidence {
   });
 }
 
+function searchUnavailableEvidence(): KnowledgeRetrievalEvidence {
+  return currentEvidence({
+    bases: [],
+    candidateCount: 0,
+    candidateLimit: 64,
+    embeddingExecutions: [],
+    failureCode: "knowledge_search_projection_unavailable",
+    fusion: "weighted_rrf_v2",
+    operation: "automatic_search",
+    outcome: "search_unavailable",
+    query: "knowledge_search_unavailable",
+    resultLimit: 16,
+    results: [],
+    scopeAliases: undefined
+  });
+}
+
 describe("Knowledge result contract versioning", () => {
   it("keeps the legacy V1 provider bytes and does not invent a Source alias while decoding", () => {
     const legacy = legacyEvidence();
@@ -566,6 +583,44 @@ describe("Knowledge result contract versioning", () => {
       }]);
       expect(rehydratePersistedKnowledgeToolExecutionResult(compacted!)).toEqual(result);
     }
+  });
+
+  it("decodes, compacts, and rehydrates a content-free search outage as an error", () => {
+    const evidence = searchUnavailableEvidence();
+    const result = { ...executionResult(evidence), status: "error" as const };
+    const compacted = compactKnowledgeToolExecutionResult(result);
+
+    expect(decodeKnowledgeRetrievalEvidence(evidence)).toEqual(evidence);
+    expect(evidence.providerText).toBe(
+      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+    );
+    expect(compacted).not.toBeNull();
+    expect(rehydratePersistedKnowledgeToolExecutionResult(compacted!)).toEqual(result);
+    expect(compactKnowledgeToolExecutionResult({ ...result, status: "complete" })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      failureCode: undefined
+    })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      embeddingExecutions: currentEvidence().embeddingExecutions
+    })).toMatchObject({
+      embeddingExecutions: [expect.objectContaining({ status: "complete" })],
+      failureCode: "knowledge_search_projection_unavailable",
+      outcome: "search_unavailable"
+    });
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      query: "private outage query"
+    })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      bases: currentEvidence().bases
+    })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      scopeAliases: currentEvidence().scopeAliases
+    })).toBeNull();
   });
 
   it("strictly decodes the normalized V2 read receipt and rejects legacy reinterpretation", () => {

@@ -47,7 +47,6 @@ export function RailV2({
   accountLabel,
   active,
   adminEntryVisible = false,
-  onArchivedChats,
   onChats,
   onLibrary,
   onProjects,
@@ -56,7 +55,6 @@ export function RailV2({
   accountLabel?: string | null;
   active: RailSectionV2;
   adminEntryVisible?: boolean;
-  onArchivedChats?(): void;
   onChats(): void;
   onLibrary?(): void;
   onProjects?(): void;
@@ -74,9 +72,6 @@ export function RailV2({
         ) : null}
         {onLibrary ? (
           <RailButton active={active === "library"} icon="library" label="Library" onClick={onLibrary} />
-        ) : null}
-        {onArchivedChats ? (
-          <RailButton icon="archive" label="Archived chats" onClick={onArchivedChats} />
         ) : null}
       </div>
       <div className="v2-rail-group v2-rail-bottom">

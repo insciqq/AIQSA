@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "../prisma";
 import { createKnowledgeOpenSearchTransport } from "../search/opensearch/transport";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { readKnowledgeSearchHealth } from "./searchHealth";
 import {
   deleteKnowledgeSearchArtifacts,
   inspectKnowledgeSearchIntegrity,
   rebuildKnowledgeSearchProjections,
   runKnowledgeSearchProjectionPass
 } from "./searchProjection";
+import { createPrismaKnowledgeSearchWorkerHeartbeat } from
+  "./searchWorkerHeartbeat";
 
 const fingerprint = "f".repeat(64);
 
@@ -30,6 +33,46 @@ type Fixture = Readonly<{
   sourceVersionId: string;
   userId: string;
 }>;
+
+async function withCleanupOnFailure<T>(
+  operation: () => Promise<T>,
+  cleanup: () => Promise<void>
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (operationError) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [operationError, cleanupError],
+        "knowledge_search_fixture_setup_cleanup_failed"
+      );
+    }
+    throw operationError;
+  }
+}
+
+async function runFixtureCleanupSteps(
+  searchCleanup: () => Promise<void>,
+  databaseCleanup: () => Promise<void>
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await searchCleanup();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await databaseCleanup();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "knowledge_search_fixture_cleanup_failed");
+  }
+}
 
 async function createFixture(): Promise<Fixture> {
   const suffix = randomUUID();
@@ -356,27 +399,7 @@ async function createFixture(): Promise<Fixture> {
     },
     where: { id: artifactId }
   });
-  const projection = await runKnowledgeSearchProjectionPass({ client: prisma, limit: 16 });
-  if (projection.projected < 1) throw new Error("knowledge_search_projection_fixture_failed");
-  await prisma.knowledgeRunSourceBinding.create({
-    data: {
-      directSelected: true,
-      fileNameSnapshot: "opaque-reference.bin",
-      modelRunId: run.id,
-      ordinal: 0,
-      profileBindingId: profileBinding.id,
-      readinessState: "ready",
-      selectionKind: "direct",
-      sourceAlias: "S1",
-      sourceArtifactId: artifactId,
-      sourceId,
-      sourceNameSnapshot: "Exact policy source",
-      sourceVersionId,
-      sourceVersionNumber: 1
-    }
-  });
-
-  return {
+  const fixture = {
     artifactId,
     chatId: chat.id,
     hierarchyId,
@@ -388,28 +411,121 @@ async function createFixture(): Promise<Fixture> {
     sourceVersionId,
     userId
   };
+  return withCleanupOnFailure(async () => {
+    const projection = await runKnowledgeSearchProjectionPass({ client: prisma, limit: 16 });
+    if (projection.projected < 1) throw new Error("knowledge_search_projection_fixture_failed");
+    await prisma.knowledgeRunSourceBinding.create({
+      data: {
+        directSelected: true,
+        fileNameSnapshot: "opaque-reference.bin",
+        modelRunId: run.id,
+        ordinal: 0,
+        profileBindingId: profileBinding.id,
+        readinessState: "ready",
+        selectionKind: "direct",
+        sourceAlias: "S1",
+        sourceArtifactId: artifactId,
+        sourceId,
+        sourceNameSnapshot: "Exact policy source",
+        sourceVersionId,
+        sourceVersionNumber: 1
+      }
+    });
+    return fixture;
+  }, () => cleanupFixture(fixture));
 }
 
 async function cleanupFixture(fixture: Fixture): Promise<void> {
-  await deleteKnowledgeSearchArtifacts({ indexArtifactIds: [fixture.hierarchyId] });
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
-    await tx.modelRun.deleteMany({ where: { id: fixture.runId } });
-    await tx.chat.deleteMany({ where: { id: fixture.chatId } });
-    await tx.knowledgeSourceIndexArtifact.deleteMany({ where: { id: fixture.artifactId } });
-    await tx.knowledgeSource.updateMany({
-      data: { currentVersionId: null },
-      where: { id: fixture.sourceId }
-    });
-    await tx.knowledgeSourceVersion.deleteMany({ where: { id: fixture.sourceVersionId } });
-    await tx.knowledgeSource.deleteMany({ where: { id: fixture.sourceId } });
-    await tx.user.deleteMany({ where: { id: fixture.userId } });
-  });
+  await runFixtureCleanupSteps(
+    () => deleteKnowledgeSearchArtifacts({ indexArtifactIds: [fixture.hierarchyId] }),
+    () => prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+      await tx.modelRun.deleteMany({ where: { id: fixture.runId } });
+      await tx.chat.deleteMany({ where: { id: fixture.chatId } });
+      await tx.knowledgeSourceIndexArtifact.deleteMany({ where: { id: fixture.artifactId } });
+      await tx.knowledgeSource.updateMany({
+        data: { currentVersionId: null },
+        where: { id: fixture.sourceId }
+      });
+      await tx.knowledgeSourceVersion.deleteMany({ where: { id: fixture.sourceVersionId } });
+      await tx.knowledgeSource.deleteMany({ where: { id: fixture.sourceId } });
+      await tx.user.deleteMany({ where: { id: fixture.userId } });
+    })
+  );
 }
 
 describe("Prisma Knowledge ordinary exact retrieval", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("runs database fixture cleanup after setup and search cleanup both fail", async () => {
+    const setupFailure = new Error("projection_setup_failed");
+    const searchCleanupFailure = new Error("search_cleanup_failed");
+    const databaseCleanup = vi.fn(async () => undefined);
+
+    const failure = await withCleanupOnFailure(
+      async () => { throw setupFailure; },
+      () => runFixtureCleanupSteps(
+        async () => { throw searchCleanupFailure; },
+        databaseCleanup
+      )
+    ).catch((error: unknown) => error);
+
+    expect(databaseCleanup).toHaveBeenCalledOnce();
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      setupFailure,
+      searchCleanupFailure
+    ]);
+  });
+
+  it("projects real projection states and a persisted worker heartbeat into search health", async () => {
+    const fixture = await createFixture();
+    const now = new Date();
+    const search = { checkKnowledgeIndex: async () => undefined };
+
+    try {
+      await expect(prisma.$transaction(async (tx) => {
+        const heartbeat = createPrismaKnowledgeSearchWorkerHeartbeat(tx as never, {
+          instanceId: `knowledge-health-${randomUUID()}`,
+          startedAt: now
+        });
+        await heartbeat.beat(now);
+        await expect(readKnowledgeSearchHealth(tx as never, { now, search }))
+          .resolves.toMatchObject({
+            backendState: "available",
+            workerLastSeenAt: now.toISOString(),
+            workerState: "healthy"
+          });
+        throw new Error("knowledge_search_health_fixture_rollback");
+      })).rejects.toThrow("knowledge_search_health_fixture_rollback");
+
+      const ready = await readKnowledgeSearchHealth(prisma, { now, search });
+      expect(ready.expectedProjections).toBeGreaterThanOrEqual(1);
+      expect(ready.readyProjections).toBeGreaterThanOrEqual(1);
+
+      await prisma.knowledgeSearchProjection.update({
+        data: { state: "FAILED" },
+        where: { indexArtifactId: fixture.hierarchyId }
+      });
+      const failed = await readKnowledgeSearchHealth(prisma, { now, search });
+      expect(failed.failedProjections).toBeGreaterThanOrEqual(1);
+      expect(failed.readyProjections).toBe(ready.readyProjections - 1);
+
+      await prisma.knowledgeSearchProjection.update({
+        data: {
+          nextAttemptAt: new Date("2099-01-01T00:00:00.000Z"),
+          state: "RETRY_WAIT"
+        },
+        where: { indexArtifactId: fixture.hierarchyId }
+      });
+      const pending = await readKnowledgeSearchHealth(prisma, { now, search });
+      expect(pending.pendingProjections).toBeGreaterThanOrEqual(1);
+      expect(pending.readyProjections).toBe(ready.readyProjections - 1);
+    } finally {
+      await cleanupFixture(fixture);
+    }
   });
 
   it("proves query-first pg_trgm containment for beginning and middle metadata queries", async () => {
@@ -475,6 +591,42 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
         userId: fixture.userId,
         vectors: []
       })).rejects.toThrow("knowledge_search_projection_incomplete");
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
+  it("fails closed and reports pending health for a stale projection fingerprint", async () => {
+    const fixture = await createFixture();
+    const now = new Date();
+    const search = { checkKnowledgeIndex: async () => undefined };
+    try {
+      await expect(prisma.$transaction(async (tx) => {
+        await tx.knowledgeSearchProjection.update({
+          data: { projectionFingerprint: "0".repeat(64) },
+          where: { indexArtifactId: fixture.hierarchyId }
+        });
+
+        await expect(readKnowledgeSearchHealth(tx as never, { now, search }))
+          .resolves.toMatchObject({
+            failedProjections: 0,
+            pendingProjections: expect.any(Number),
+            readyProjections: expect.any(Number)
+          });
+        const stale = await readKnowledgeSearchHealth(tx as never, { now, search });
+        expect(stale.pendingProjections).toBeGreaterThanOrEqual(1);
+
+        await expect(executeKnowledgeRetrievalCore(tx as never, {
+          candidateLimit: 64,
+          excludedContentHashes: [],
+          query: "SAFE-2718",
+          resultLimit: 16,
+          runId: fixture.runId,
+          userId: fixture.userId,
+          vectors: []
+        })).rejects.toThrow("knowledge_search_projection_incomplete");
+        throw new Error("knowledge_search_stale_projection_fixture_rollback");
+      })).rejects.toThrow("knowledge_search_stale_projection_fixture_rollback");
     } finally {
       await cleanupFixture(fixture);
     }

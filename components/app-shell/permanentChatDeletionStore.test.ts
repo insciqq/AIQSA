@@ -11,6 +11,7 @@ import {
   confirmPermanentChatDeletion,
   deactivatePermanentChatDeletionAccount,
   openPermanentChatDeletion,
+  permanentChatDeletionFocusReturnTarget,
   setPermanentChatDeletionOriginForget,
   usePermanentChatDeletionStore
 } from "./permanentChatDeletionStore";
@@ -163,5 +164,23 @@ describe("permanent chat deletion store", () => {
       title: "Private chat"
     });
     expect(usePermanentChatDeletionStore.getState().target).toBeNull();
+  });
+
+  it("resolves a connected fallback after deletion removes the originating control", async () => {
+    const origin = document.createElement("button");
+    const fallback = document.createElement("input");
+    document.body.append(origin, fallback);
+    await activatePermanentChatDeletionAccount("account-a");
+    openPermanentChatDeletion({
+      chatId: "chat-1",
+      location: "ARCHIVED",
+      title: "Private chat"
+    }, origin, () => fallback);
+
+    expect(permanentChatDeletionFocusReturnTarget()).toBe(origin);
+    origin.remove();
+    expect(permanentChatDeletionFocusReturnTarget()).toBe(fallback);
+
+    fallback.remove();
   });
 });

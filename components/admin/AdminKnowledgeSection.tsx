@@ -43,11 +43,15 @@ function formatDuration(value: number | null): string {
 const operationsAlertCopy: Record<AdminKnowledgeOperationsAlert["code"], string> = {
   knowledge_deletion_backlog: "Private-data deletion work is waiting to settle.",
   knowledge_deletion_blocked: "A private-data deletion obligation needs administrator action.",
-  knowledge_ingestion_failures: "One or more Sources need processing attention.",
-  knowledge_ingestion_queue_stalled: "The oldest Source has waited unusually long for processing.",
+  knowledge_ingestion_failures: "One or more documents need processing attention.",
+  knowledge_ingestion_queue_stalled: "The oldest document has waited unusually long for processing.",
   knowledge_retrieval_degraded: "Recent Knowledge retrieval is frequently using degraded paths.",
+  knowledge_search_backend_unavailable: "The Knowledge search index is unavailable.",
+  knowledge_search_projection_backlog: "Knowledge search projections are waiting to be indexed.",
+  knowledge_search_projection_failures: "One or more Knowledge search projections need administrator action.",
+  knowledge_search_worker_unavailable: "The Knowledge search worker heartbeat is missing or stale.",
   knowledge_upload_sessions_expired: "Expired upload sessions are awaiting cleanup or retry.",
-  knowledge_v1_reconciliation_incomplete: "The legacy-to-Source reconciliation is incomplete."
+  knowledge_v1_reconciliation_incomplete: "Legacy Knowledge reconciliation is incomplete."
 };
 
 export function AdminKnowledgeSection({
@@ -230,6 +234,11 @@ export function AdminKnowledgeSection({
   const profileRolloutPercent = profileRollout && profileRollout.totalBases > 0
     ? Math.round(profileRollout.activeProfileBases / profileRollout.totalBases * 100)
     : 100;
+  const searchWorkerLabel = settings?.operations.search.workerState === "healthy"
+    ? "Worker healthy"
+    : settings?.operations.search.workerState === "stale"
+      ? "Worker stale"
+      : "Worker missing";
 
   return (
     <section aria-labelledby="admin-knowledge-heading" className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
@@ -239,7 +248,7 @@ export function AdminKnowledgeSection({
             <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation settings</p>
             <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="admin-knowledge-heading">Knowledge processing</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">
-              Choose how Sources are processed and how new answers use them. Accepted runs keep their original route and limits.
+              Choose how documents are processed and how new answers use them. Accepted runs keep their original route and limits.
             </p>
           </div>
           <button
@@ -478,7 +487,7 @@ export function AdminKnowledgeSection({
                 </ul>
               ) : null}
 
-              <div className="mt-4 grid border-y border-trace-subtle sm:grid-cols-2 xl:grid-cols-4">
+              <div className="mt-4 grid border-y border-trace-subtle sm:grid-cols-2 xl:grid-cols-5">
                 <dl className="px-3 py-4 sm:border-r sm:border-trace-subtle">
                   <dt className="text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted">Processing</dt>
                   <dd className="mt-2 text-lg font-semibold tabular-nums text-ink">
@@ -513,6 +522,18 @@ export function AdminKnowledgeSection({
                   </dd>
                   <dd className="mt-2 text-xs text-ink-secondary">
                     Server p95 · {formatDuration(settings.operations.retrieval.p95DurationMs24h)}
+                  </dd>
+                </dl>
+                <dl className="border-t border-trace-subtle px-3 py-4 sm:border-r xl:border-t-0">
+                  <dt className="text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted">Search index</dt>
+                  <dd className="mt-2 text-lg font-semibold tabular-nums text-ink">
+                    {settings.operations.search.readyProjections.toLocaleString()} / {settings.operations.search.expectedProjections.toLocaleString()}
+                  </dd>
+                  <dd className="mt-1 text-xs leading-5 text-ink-muted">
+                    ready projections · {settings.operations.search.pendingProjections.toLocaleString()} pending · {settings.operations.search.failedProjections.toLocaleString()} failed
+                  </dd>
+                  <dd className="mt-2 text-xs text-ink-secondary">
+                    Search backend {settings.operations.search.backendState} · {searchWorkerLabel}
                   </dd>
                 </dl>
                 <dl className="border-t border-trace-subtle px-3 py-4 xl:border-t-0">

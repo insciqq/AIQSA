@@ -1423,7 +1423,7 @@ describe("Knowledge chunk profiles", () => {
       tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
     });
 
-    expect(normalized.warnings).toContain("table_extraction_degraded");
+    expect(normalized.warnings).not.toContain("table_extraction_degraded");
     expect(normalized.blocks).toHaveLength(6);
     expect(normalized.blocks.every((entry) => entry.type === "table" && entry.table === null))
       .toBe(true);

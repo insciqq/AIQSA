@@ -1,6 +1,5 @@
 "use client";
 
-import { ArchivedChatsDialog } from "@/components/app-shell/ArchivedChatsDialog";
 import {
   ChatDeleteConfirmationDialog,
   FolderDeleteConfirmationDialog,
@@ -8,7 +7,6 @@ import {
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
-import { MemoryWorkspace } from "@/components/app-shell/MemoryWorkspace";
 import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
@@ -19,7 +17,11 @@ import {
 } from "@/components/app-shell/attachmentCapabilities";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
-import { refreshMemoryList } from "@/components/app-shell/memoryManagerStore";
+import {
+  openMemoryManager,
+  refreshMemoryList,
+  useMemoryManagerStore
+} from "@/components/app-shell/memoryManagerStore";
 import {
   refreshMemorySettings,
   useMemorySettingsStore
@@ -46,8 +48,7 @@ import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import {
   BranchDrawerV2,
-  BranchPagerSlotV2,
-  EditBranchStripV2
+  BranchPagerSlotV2
 } from "@/features/branches-v2/BranchesV2";
 import { branchPagerForMessageV2 } from "@/features/branches-v2/branchModel";
 import { AssistantPickerV2 } from "@/features/composer-v2/AssistantPickerV2";
@@ -84,6 +85,7 @@ import {
   transportLostForMessageV2
 } from "@/features/workspace-v2/runTransportPresentation";
 import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
+import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
 import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
@@ -103,6 +105,8 @@ import {
   usePermanentChatDeletionStore
 } from "@/components/app-shell/permanentChatDeletionStore";
 import { ProjectNavigationV2 } from "@/features/projects-v2/ProjectNavigationV2";
+import { ProjectMobileWorkspaceV2 } from "@/features/projects-v2/ProjectMobileWorkspaceV2";
+import { ProjectsSurfaceV2 } from "@/features/projects-v2/ProjectsSurfaceV2";
 import {
   CreateProjectDialogV2,
   ProjectBlankOrientationV2,
@@ -138,6 +142,25 @@ export {
   type TemporaryChatHeaderMemoryV2,
   type WorkspaceHeaderFolderV2
 } from "./WorkspaceHeaderV2";
+
+export function ComposerOperationErrorV2({
+  error,
+  live,
+  onRetry,
+  retryable
+}: Readonly<{
+  error: string | null;
+  live: boolean;
+  onRetry(): void;
+  retryable: boolean;
+}>) {
+  return error ? (
+    <div className="v2-live-composer-error" role={live ? "alert" : "status"}>
+      <span>{error}</span>
+      {retryable ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
+    </div>
+  ) : null;
+}
 
 function messageText(message: ThreadMessage): string {
   return textFromThreadContent(message.content);
@@ -213,6 +236,38 @@ export function blankConversationOrientationV2(input: Readonly<{
     : input.assistantOrientation;
 }
 
+type ChatLocationFolderV2 = Readonly<{
+  id: string;
+  name: string;
+  parentId: string | null;
+}>;
+
+/** Resolves the visible chat breadcrumb from the authority that owns it. */
+export function chatLocationCrumbV2(input: Readonly<{
+  chat: Readonly<{ folderId: string | null; projectId?: string | null }> | null;
+  personalFolders: readonly ChatLocationFolderV2[];
+  project: Readonly<{ id: string; name: string }> | null;
+  projectFolders: readonly ChatLocationFolderV2[];
+}>): string | null {
+  const projectId = input.chat?.projectId ?? null;
+  const projectMatches = Boolean(projectId && input.project?.id === projectId);
+  const folders = projectId
+    ? projectMatches ? input.projectFolders : []
+    : input.personalFolders;
+  const folderNames: string[] = [];
+  let cursor: string | null = input.chat?.folderId ?? null;
+  const seen = new Set<string>();
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor);
+    const folder = folders.find((candidate) => candidate.id === cursor);
+    if (!folder) break;
+    folderNames.unshift(folder.name);
+    cursor = folder.parentId;
+  }
+  const names = projectMatches ? [input.project!.name, ...folderNames] : folderNames;
+  return names.length > 0 ? names.join(" / ") : null;
+}
+
 export function SkillLibraryOverlayV2({
   onClose,
   onSelectionChange,
@@ -237,10 +292,11 @@ export function SkillLibraryOverlayV2({
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const [runSetupOpen, setRunSetupOpen] = useState(false);
-  const [memoryOwnerOpen, setMemoryOwnerOpen] = useState(false);
+  const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpDirty, setMcpDirty] = useState(false);
   const [mcpKey, setMcpKey] = useState(0);
+  const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
@@ -254,29 +310,22 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const permanentChatDeletionAvailable = useMemorySettingsStore(
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
   );
+  const permanentChatDeletionModalOpen = usePermanentChatDeletionStore(
+    (state) => Boolean(state.target) || state.statusOpen
+  );
+  const archivedManageRef = useRef<HTMLButtonElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerLayerController = useRef<ComposerV2LayerController | null>(null);
+  const previousActiveChatIdRef = useRef(session.activeChatId);
   const personalMemoryOpen = settings.memory.open;
   const closePersonalMemory = settings.closeMemory;
   const libraryOpen = Boolean(settings.library || settings.knowledge || personalMemoryOpen);
+
+  const closeDataSubview = () => {
+    setDataSubview(null);
+    window.requestAnimationFrame(() => archivedManageRef.current?.focus());
+  };
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
-  // Folder crumb for the header: the folder chain of the active chat, oldest
-  // ancestor first; chats outside folders show no crumb.
-  const activeChatCrumb = useMemo(() => {
-    const folderId = activeChatSummary?.folderId ?? null;
-    if (!folderId) return null;
-    const names: string[] = [];
-    let cursor: string | null = folderId;
-    const seen = new Set<string>();
-    while (cursor && !seen.has(cursor)) {
-      seen.add(cursor);
-      const folder = navigationFolders.find((candidate) => candidate.id === cursor);
-      if (!folder) break;
-      names.unshift(folder.name);
-      cursor = folder.parentId;
-    }
-    return names.length ? names.join(" / ") : null;
-  }, [activeChatSummary?.folderId, navigationFolders]);
   const selectedProjectContext = Boolean(
     workspace.projects.detail &&
     workspace.projects.selectedProjectId === workspace.projects.detail.id
@@ -291,6 +340,54 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (selectedProjectContext && !activeChatSummary)
     ? workspace.projects.detail
     : null;
+  const projectHeaderFolders = useMemo(
+    () => (workspace.projects.workspace?.folders ?? []).map((folder) => ({
+      ...folder,
+      // The current Project UI is deliberately one level. Legacy parent
+      // links remain useful for the location crumb, but never mint a nested
+      // movement target in the header.
+      parentId: null
+    })),
+    [workspace.projects.workspace?.folders]
+  );
+  const headerFolders = projectContext ? projectHeaderFolders : navigationFolders;
+  // Project chat locations use the Project-owned folder tree and keep the
+  // Project name as the first crumb. Personal chats retain their folder-only
+  // path. The cycle guard makes older malformed parent data harmless.
+  const activeChatCrumb = useMemo(() => {
+    const projectId = activeChatSummary?.projectId ?? null;
+    const project = projectId
+      ? workspace.projects.detail?.id === projectId
+        ? workspace.projects.detail
+        : workspace.projects.projects.find((candidate) => candidate.id === projectId) ?? null
+      : null;
+    return chatLocationCrumbV2({
+      chat: activeChatSummary,
+      personalFolders: navigationFolders,
+      project,
+      projectFolders: projectId === workspace.projects.selectedProjectId
+        ? workspace.projects.workspace?.folders ?? []
+        : []
+    });
+  }, [
+    activeChatSummary,
+    navigationFolders,
+    workspace.projects.detail,
+    workspace.projects.projects,
+    workspace.projects.selectedProjectId,
+    workspace.projects.workspace?.folders
+  ]);
+
+  useEffect(() => {
+    const previousChatId = previousActiveChatIdRef.current;
+    previousActiveChatIdRef.current = session.activeChatId;
+    if (
+      projectsSurfaceOpen && session.activeChatId &&
+      session.activeChatId !== previousChatId
+    ) {
+      setProjectsSurfaceOpen(false);
+    }
+  }, [projectsSurfaceOpen, session.activeChatId]);
 
   useEffect(() => {
     void refreshMcpSettings().catch(() => undefined);
@@ -369,22 +466,20 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       return;
     }
     if (!personalMemoryOpen) return;
+    const bound = useMemoryManagerStore.getState().accountId === session.accountId;
     void Promise.all([
       refreshMemorySettings().catch(() => null),
-      refreshMemoryList().catch(() => undefined)
+      (bound ? refreshMemoryList() : openMemoryManager(session.accountId)).catch(() => undefined)
     ]);
-  }, [closePersonalMemory, personalMemoryOpen, projectContext]);
+  }, [closePersonalMemory, personalMemoryOpen, projectContext, session.accountId]);
 
   const config = useMemo<ComposerConfig | null>(() => composer.catalog ? ({
     assistants: composer.assistant.pickerItems,
     catalog: composer.catalog,
-    knowledgeBases: composer.knowledge.bases.map((base) => ({
-      archived: base.archived,
-      description: base.description,
-      id: base.id,
-      name: base.name,
-      owned: base.owned
-    })),
+    knowledgeBases: composer.knowledge.bases,
+    ...(composer.knowledge.documentTotal === null
+      ? {}
+      : { knowledgeDocumentTotal: composer.knowledge.documentTotal }),
     knowledgeSources: composer.knowledge.sources,
     mcpServers: projectContext
       ? activeProject?.policy.externalToolsEnabled
@@ -416,7 +511,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             : []
         )
       : skillCatalog?.skills ?? []
-  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.sources, mcpServers, projectContext, skillCatalog?.skills]);
+  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.documentTotal, composer.knowledge.sources, mcpServers, projectContext, skillCatalog?.skills]);
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
@@ -480,15 +575,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       config={config}
       configError={Boolean(composer.catalogError)}
       contextStats={session.activeChatId ? composer.composerContextStats : null}
-      disabledReason={composer.composerDisabledHint}
+      disabledReason={thread.editingMessageId
+        ? "Finish or cancel the inline edit first."
+        : composer.composerDisabledHint}
       draft={composer.draft}
-      editStatusSlot={thread.editingMessageId ? (
-        <EditBranchStripV2
-          error={composer.operationError}
-          pending={thread.editingMessagePending}
-          onCancel={composer.composerActions.cancelMessageEdit}
-        />
-      ) : null}
       hasReadyAttachments={attachmentItems.some((item) => !item.blocksSend)}
       layerController={composerLayerController}
       modelParametersSummary={modelParametersSummary}
@@ -504,6 +594,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenSkillLibrary={() => {
         if (!projectContext) setSkillLibraryOpen(true);
       }}
+      onOverrideKnowledgePlan={composer.knowledge.override}
       onRemoveAssistant={composer.assistant.remove}
       onRemoveAttachment={composer.composerActions.removeAttachment}
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
@@ -536,6 +627,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onUploadFiles={(files) => composer.uploadFiles(files)}
       runId={thread.currentRunId}
       selectedAssistant={composer.assistant.selected}
+      knowledgePlanSource={composer.knowledge.planSource}
       mcpSelection={mcpSelection}
       selectedKnowledgeSelection={composer.knowledge.selection}
       selectedModelId={composer.selectedModelId}
@@ -549,6 +641,19 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       usageStats={composer.composerUsageStats}
     />
   );
+  const composerOperationError = (
+    <ComposerOperationErrorV2
+      error={composer.operationError}
+      live={composer.operationErrorLive}
+      onRetry={() => void composer.submitComposer()}
+      retryable={Boolean(composer.operationErrorRetryable)}
+    />
+  );
+  const shellNotice = session.notice ? (
+    <div className="v2-live-notice">
+      <ShellNotice notice={session.notice} onDismiss={session.dismissNotice} />
+    </div>
+  ) : null;
   const assistantOrientation = composer.assistant.selected &&
     !composer.draft.trim() &&
     composer.attachments.length === 0 &&
@@ -607,10 +712,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }, [conversationMessages.length]);
 
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
-    const mutationBlocked = thread.activeChatStreaming || Boolean(projectMutationReason);
+    const editMutationReason = thread.editingMessageId
+      ? "Finish or cancel the inline edit first."
+      : null;
+    const mutationBlocked = thread.activeChatStreaming ||
+      Boolean(projectMutationReason) || Boolean(editMutationReason);
     const disabledReason = thread.activeChatStreaming
       ? "Wait for the current answer to finish."
-      : projectMutationReason;
+      : projectMutationReason ?? editMutationReason;
     return {
       branchDisabled: mutationBlocked,
       deleteDisabled: mutationBlocked || projectContext,
@@ -639,7 +748,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <BranchPagerSlotV2
         disabledReason={thread.activeChatStreaming
           ? "Wait for the current answer to finish."
-          : projectMutationReason}
+          : projectMutationReason ?? (thread.editingMessageId
+              ? "Finish or cancel the inline edit first."
+              : null)}
         graph={branches.graph}
         messageId={source.id}
         onCheckout={branches.checkoutBranch}
@@ -666,6 +777,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <span className="v2-project-message-author">{source.author.displayName}</span>
           ) : undefined}
           content={messageText(source)}
+          edit={thread.editingMessageId === source.id ? {
+            attachmentSlot: <SentAttachmentsV2 blocks={sentAttachments} />,
+            draft: thread.editingMessageDraft,
+            error: thread.editingMessageError,
+            onCancel: () => thread.cancelMessageEdit(source.id),
+            onChange: thread.changeEditingMessageDraft,
+            onSubmit: () => void thread.submitMessageEdit(),
+            pending: thread.editingMessagePending,
+            sendWithEnter: composer.sendWithEnter
+          } : undefined}
           expandForReadingAnchor={source.id === readingAnchorMessageId}
           role="user"
         />
@@ -711,6 +832,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const noticeSlot = settled && artifact?.memoryAction ? (
       <MemoryActionConfirmationV2
         action={artifact.memoryAction}
+        onOpenMemoryReset={settings.openMemorySettingsTab}
         onOpenMemorySettings={settings.openMemory}
       />
     ) : null;
@@ -779,7 +901,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     }
   };
   const createNavigationChat = (mode: NewChatMode) => {
-    workspace.projects.actions.leave();
     void workspace.pane.actions.createChat(null, mode);
   };
   const navigationChatState = (chat: ChatNavigationSummaryWire): NavigationChatRowState | null => {
@@ -828,7 +949,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           accountLabel={session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
           chatActive={Boolean(session.activeChatId)}
+          projectsSectionOpen={projectsSurfaceOpen}
           section={libraryOpen && !projectContext ? "library" : "chats"}
+          onProjectsSectionChange={setProjectsSurfaceOpen}
           onChats={() => {
             settings.library?.onBackToChat();
             settings.knowledge?.onBackToChat();
@@ -847,7 +970,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) void workspace.pane.actions.deleteChat(full);
             else void workspace.pane.actions.retry();
           }}
-          onArchivedChats={workspace.pane.actions.openArchivedChats}
           onCancelChatRename={workspace.pane.actions.cancelChatEdit}
           onCancelFolderRename={workspace.pane.actions.cancelFolderEdit}
           onChangeChatRename={workspace.pane.actions.changeEditingChatTitle}
@@ -916,10 +1038,27 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.shareChat(full);
           }}
-          onSettings={projectContext
+          onSettings={projectContext && workspace.projects.detail
             ? () => workspace.projects.actions.openSettings("general")
-            : settings.open}
+            : () => {
+                setDataSubview(null);
+                settings.open();
+              }}
+          projectComposerAvailable={Boolean(
+            workspace.projects.detail &&
+            workspace.projects.detail.status === "ACTIVE" &&
+            workspace.projects.detail.capabilities.mutateChats &&
+            workspace.projects.detail.readiness !== "SETUP_REQUIRED"
+          )}
           projectContextActive={Boolean(workspace.projects.selectedProjectId)}
+          projectTitle={workspace.projects.detail ? (
+            <span className="v2-project-column-identity">
+              <span className="v2-project-mark" aria-hidden="true">
+                {workspace.projects.detail.name.slice(0, 1).toUpperCase()}
+              </span>
+              <span>{workspace.projects.detail.name}</span>
+            </span>
+          ) : "Projects"}
           projectsSlot={(onNavigate, { landing }) => (
             <ProjectNavigationV2
               activeChatId={session.activeChatId}
@@ -933,8 +1072,41 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <LibrarySurfaceV2
               composer={composer}
               props={props}
-              onOpenMemoryOwner={() => setMemoryOwnerOpen(true)}
-              onOpenSkillLibrary={() => setSkillLibraryOpen(true)}
+            />
+          ) : projectsSurfaceOpen ? (
+            <ProjectsSurfaceV2
+              composerSlot={(
+                <div className="v2-project-page-composer-stack" ref={composerDockRef}>
+                  {shellNotice}
+                  {composerOperationError}
+                  {composerSurface}
+                </div>
+              )}
+              controller={workspace.projects}
+              mobileNavigationSlot={workspace.projects.selectedProjectId ? (
+                <ProjectMobileWorkspaceV2
+                  activeChatId={session.activeChatId}
+                  controller={workspace.projects}
+                  onNavigate={() => setProjectsSurfaceOpen(false)}
+                />
+              ) : null}
+              onBackToChat={() => {
+                setProjectsSurfaceOpen(false);
+                if (workspace.projects.selectedProjectId && !session.activeChatId) {
+                  workspace.projects.actions.leave();
+                }
+              }}
+              onStartChat={() => {
+                void workspace.projects.actions.createChat().then((created) => {
+                  if (!created) return;
+                  setProjectsSurfaceOpen(false);
+                  window.requestAnimationFrame(() => {
+                    document.querySelector<HTMLTextAreaElement>(
+                      '[data-testid="composer-v2"] textarea:not(:disabled)'
+                    )?.focus();
+                  });
+                });
+              }}
             />
           ) : (
           <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
@@ -954,7 +1126,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   ? workspace.pane.state.editingChatTitle
                   : null
               }
-              folders={navigationFolders}
+              folders={headerFolders}
               leadingSlot={(
                 <ProjectContextRailV2
                   activeChatProjectId={activeProject?.id ?? activeChatSummary?.projectId ?? null}
@@ -962,7 +1134,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 />
               )}
               modelSelector={headerModelSelector}
-              moveDisabled={projectContext}
+              moveDisabled={Boolean(
+                projectContext && (
+                  workspace.projects.busy ||
+                  projectMutationReason ||
+                  !activeProjectChat
+                )
+              )}
+              moveRootLabel={projectContext ? "Project root" : undefined}
               onArchive={withActiveChat((full) => {
                 if (projectContext) {
                   if (activeProject) void workspace.projects.actions.archiveChat(full.id, true);
@@ -993,10 +1172,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                       void workspace.pane.actions.toggleChatMemorySource(full, mode);
                     }
                   }}
-              onMove={(folderId) => {
-                const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
-                if (full) void workspace.pane.actions.moveChat(full.id, folderId);
-              }}
+              onMove={projectContext
+                ? activeProject?.capabilities.manageProject && activeProjectChat
+                  ? (folderId) => void workspace.projects.actions.moveChat(activeProjectChat.id, folderId)
+                  : null
+                : (folderId) => {
+                    const full = session.activeChatId
+                      ? currentWorkspaceChat(session.activeChatId)
+                      : null;
+                    if (full) void workspace.pane.actions.moveChat(full.id, folderId);
+                  }}
               onRenameCancel={workspace.pane.actions.cancelChatEdit}
               onRenameChange={workspace.pane.actions.changeEditingChatTitle}
               onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
@@ -1009,13 +1194,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
-            {session.notice ? (
-              <div className="v2-live-notice">
-                <ShellNotice notice={session.notice} onDismiss={session.dismissNotice} />
-              </div>
-            ) : null}
             <ConversationV2
-              composerSlot={conversationMessages.length === 0 ? composerSurface : undefined}
+              composerSlot={conversationMessages.length === 0 ? (
+                <div className="v2-live-empty-composer-stack" ref={composerDockRef}>
+                  {shellNotice}
+                  {composerOperationError}
+                  {composerSurface}
+                </div>
+              ) : undefined}
               error={thread.activeChatDetailError}
               hasOlder={thread.hasOlderMessages}
               jumpToLatestBottomOffset={composerDockHeight}
@@ -1044,11 +1230,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             />
             {conversationMessages.length > 0 ? (
               <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={composerDockRef}>
-                {composer.operationError ? (
-                  <p className="v2-live-composer-error" role={composer.operationErrorLive ? "alert" : "status"}>
-                    {composer.operationError}
-                  </p>
-                ) : null}
+                {shellNotice}
+                {composerOperationError}
                 {composerSurface}
               </div>
             ) : null}
@@ -1079,10 +1262,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             composer.assistant.setPickerOpen(false);
             composer.assistant.openLibrary();
           }}
-          onRemove={composer.assistant.selected ? () => {
+          onUnavailableAction={(assistantId, action) => {
             composer.assistant.setPickerOpen(false);
-            composer.assistant.remove();
-          } : null}
+            if (action === "mcp-settings") settings.openMcp();
+            else composer.assistant.editById(assistantId);
+          }}
           onSelect={composer.assistant.selectById}
           recentIds={composer.assistant.recentIds}
           selectedAssistantId={composer.assistant.selected?.id ?? null}
@@ -1116,7 +1300,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <CreateProjectDialogV2 controller={workspace.projects} />
       <ProjectSettingsDialogV2 controller={workspace.projects} />
 
-      {settings.settings.open && !libraryOpen ? (
+      {settings.settings.open && (!libraryOpen || personalMemoryOpen) ? (
         <SettingsV2
           busy={mcpBusy}
           dirty={mcpDirty}
@@ -1176,6 +1360,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           noticeSlot={settings.notice ? (
             <ShellNotice notice={settings.notice} onDismiss={settings.dismissNotice} />
           ) : null}
+          obscured={permanentChatDeletionModalOpen}
+          onSectionChange={() => setDataSubview(null)}
           panels={{
             account: (
               <SettingsAccountPanelV2
@@ -1183,23 +1369,23 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 adminEntryVisible={session.adminEntryVisible}
               />
             ),
-            data: (
+            data: dataSubview === "archived" ? (
+              <ArchivedChatsPanelV2 onRestored={workspace.archived.onRestored} />
+            ) : (
               <>
                 <SettingsRowV2
                   description="Restore or permanently delete chats you archived."
                   title="Archived chats"
                 >
                   <UiV2Button
+                    ref={archivedManageRef}
                     icon="chevron-right"
-                    onClick={() => {
-                      settings.closeSettings();
-                      workspace.pane.actions.openArchivedChats();
-                    }}
+                    onClick={() => setDataSubview("archived")}
                   >
                     Manage
                   </UiV2Button>
                 </SettingsRowV2>
-                <SettingsPendingDeletionRowV2 onReview={settings.closeSettings} />
+                <SettingsPendingDeletionRowV2 />
                 <SettingsRowV2
                   description="Uploads stay bound to the messages where they were added."
                   title="Files"
@@ -1242,18 +1428,21 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 ) : null}
               </>
             ),
-            memory: projectContext ? null : (
+            memory: projectContext ? undefined : (
               <MemorySettingsRowsV2
-                onManage={() => {
+                onOpenLibrary={() => {
                   settings.closeSettings();
                   settings.openMemory();
-                  setMemoryOwnerOpen(true);
                 }}
               />
             )
           }}
+          subview={dataSubview === "archived"
+            ? { label: "Archived chats", onBack: closeDataSubview }
+            : undefined}
           themeId={settings.settings.themeId}
           onClose={() => {
+            setDataSubview(null);
             settings.dismissNotice();
             settings.closeSettings();
           }}
@@ -1262,14 +1451,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             setMcpKey((value) => value + 1);
           }}
           onThemeChange={settings.updateTheme}
-        />
-      ) : null}
-      {memoryOwnerOpen && personalMemoryOpen && !projectContext ? (
-        <MemoryWorkspace
-          accountId={session.accountId}
-          notice={settings.notice}
-          onClose={() => setMemoryOwnerOpen(false)}
-          onDismissNotice={settings.dismissNotice}
         />
       ) : null}
       {overlays.share.target ? (
@@ -1291,9 +1472,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (folder) void workspace.projectSettings.save(folder);
           }}
         />
-      ) : null}
-      {workspace.archived.open ? (
-        <ArchivedChatsDialog onRestored={workspace.archived.onRestored} />
       ) : null}
       {overlays.confirmations.chat ? (
         <ChatDeleteConfirmationDialog
@@ -1368,7 +1546,8 @@ function SettingsDefaultModelRowV2({ composer }: Readonly<{ composer: ShellCompo
   );
 }
 
-function SettingsPendingDeletionRowV2({ onReview }: Readonly<{ onReview(): void }>) {
+function SettingsPendingDeletionRowV2() {
+  const reviewRef = useRef<HTMLButtonElement>(null);
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const status = usePermanentChatDeletionStore((state) => state.status?.status ?? null);
   const pending = Boolean(reference && status && status !== "COMPLETE");
@@ -1381,11 +1560,9 @@ function SettingsPendingDeletionRowV2({ onReview }: Readonly<{ onReview(): void 
     >
       {pending ? (
         <UiV2Button
+          ref={reviewRef}
           icon="chevron-right"
-          onClick={() => {
-            onReview();
-            openPermanentChatDeletionStatus();
-          }}
+          onClick={() => openPermanentChatDeletionStatus(() => reviewRef.current)}
         >
           Review
         </UiV2Button>
