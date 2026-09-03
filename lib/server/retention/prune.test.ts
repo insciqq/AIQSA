@@ -7,6 +7,10 @@ function fakeRepository(input: {
   claims?: AttachmentDeletionClaim[];
   deletionJobIds?: string[];
   eventIds?: string[];
+  inboundMcpAuthorizationCodeIds?: string[];
+  inboundMcpClientIds?: string[];
+  inboundMcpGrantIds?: string[];
+  inboundMcpTokenFamilyIds?: string[];
   knowledgeMatched?: number;
   knowledgeObjects?: number;
   knowledgeStageJobs?: number;
@@ -37,6 +41,15 @@ function fakeRepository(input: {
       mutations.push(`delete-sessions:${ids.join(",")}`);
       return ids.length;
     },
+    async deletePrunableInboundMcpOAuth({ candidates }) {
+      mutations.push("delete-inbound-mcp-oauth");
+      return {
+        authorizationCodes: candidates.authorizationCodeIds.length,
+        clients: candidates.clientIds.length,
+        grants: candidates.grantIds.length,
+        tokenFamilies: candidates.tokenFamilyIds.length
+      };
+    },
     async deleteModelRunEvents(ids) {
       mutations.push(`delete-events:${ids.join(",")}`);
       return ids.length;
@@ -49,6 +62,14 @@ function fakeRepository(input: {
     },
     async findPrunableAuthSessionIds() {
       return input.authSessionIds ?? [];
+    },
+    async findPrunableInboundMcpOAuth() {
+      return {
+        authorizationCodeIds: input.inboundMcpAuthorizationCodeIds ?? [],
+        clientIds: input.inboundMcpClientIds ?? [],
+        grantIds: input.inboundMcpGrantIds ?? [],
+        tokenFamilyIds: input.inboundMcpTokenFamilyIds ?? []
+      };
     },
     async findPrunableModelRunEventIds() {
       return input.eventIds ?? [];
@@ -132,6 +153,10 @@ describe("retention prune rules", () => {
       authSessionIds: ["session-1"],
       deletionJobIds: ["job-1"],
       eventIds: ["event-1", "event-2"],
+      inboundMcpAuthorizationCodeIds: ["mcp-code-1"],
+      inboundMcpClientIds: ["mcp-client-1"],
+      inboundMcpGrantIds: ["mcp-grant-1"],
+      inboundMcpTokenFamilyIds: ["mcp-family-1"],
       knowledgeMatched: 1,
       knowledgeObjects: 2,
       orphanMatched: 2,
@@ -171,6 +196,12 @@ describe("retention prune rules", () => {
         multipartSessionsMatched: 1,
         multipartSessionsReleased: 0
       },
+      inboundMcpOAuth: {
+        authorizationCodes: { deleted: 0, matched: 1 },
+        clients: { deleted: 0, matched: 1 },
+        grants: { deleted: 0, matched: 1 },
+        tokenFamilies: { deleted: 0, matched: 1 }
+      },
       modelRunEvents: { deleted: 0, matched: 2 },
       orphanedAttachments: { jobsStaged: 0, matched: 2, rowsDeleted: 0, shared: 1 }
     });
@@ -198,6 +229,10 @@ describe("retention prune rules", () => {
       ],
       deletionJobIds: ["job-ok", "job-fail"],
       eventIds: ["event-1"],
+      inboundMcpAuthorizationCodeIds: ["mcp-code-1"],
+      inboundMcpClientIds: ["mcp-client-1"],
+      inboundMcpGrantIds: ["mcp-grant-1"],
+      inboundMcpTokenFamilyIds: ["mcp-family-1"],
       knowledgeMatched: 1,
       knowledgeObjects: 2,
       knowledgeStageJobs: 2,
@@ -246,6 +281,12 @@ describe("retention prune rules", () => {
       },
       authFlowTokens: { deleted: 1, matched: 1 },
       authSessions: { deleted: 1, matched: 1 },
+      inboundMcpOAuth: {
+        authorizationCodes: { deleted: 1, matched: 1 },
+        clients: { deleted: 1, matched: 1 },
+        grants: { deleted: 1, matched: 1 },
+        tokenFamilies: { deleted: 1, matched: 1 }
+      },
       modelRunEvents: { deleted: 1, matched: 1 },
       knowledgePayloads: {
         jobsStaged: 2,

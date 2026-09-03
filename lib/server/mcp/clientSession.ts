@@ -1,16 +1,17 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
-import type { JsonSchemaType, JsonSchemaValidator } from "@modelcontextprotocol/sdk/validation";
 import {
-  ErrorCode,
-  McpError,
+  Client,
+  SdkError,
+  SdkErrorCode,
+  StreamableHTTPClientTransport,
+  type FetchLike,
   type Implementation,
+  type JsonSchemaType,
+  type JsonSchemaValidator,
+  type OAuthClientProvider,
+  type RequestOptions,
   type ServerCapabilities
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/client";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import packageMetadata from "@/package.json";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import { McpResponseGuard } from "./responseGuard";
@@ -235,7 +236,7 @@ function requestFailure(
   if (signal?.aborted) {
     return sessionError("mcp_request_cancelled", operation);
   }
-  if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+  if (SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout) {
     return sessionError("mcp_request_timeout", operation, true);
   }
   return sessionError(fallbackCode, operation, true);
@@ -738,10 +739,10 @@ export class McpClientSession {
         const result = await this.guardedRequest(
           "list_tools",
           sdkOptions.timeout,
-          () => this.client.listTools(
-            cursor === undefined ? undefined : { cursor },
-            sdkOptions
-          )
+          () => this.client.request({
+            method: "tools/list",
+            params: cursor === undefined ? {} : { cursor }
+          }, sdkOptions)
         );
         if (tools.length + result.tools.length > this.limits.maxTools) {
           throw sessionError("mcp_inventory_tool_limit", "list_tools");
@@ -808,7 +809,6 @@ export class McpClientSession {
         sdkOptions.timeout,
         () => this.client.callTool(
           { arguments: validatedArguments, name },
-          undefined,
           sdkOptions
         )
       );

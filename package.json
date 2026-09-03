@@ -58,6 +58,7 @@
     "smoke:gemini": "tsx scripts/smoke-gemini-interactions.ts",
     "smoke:memory-semantic": "tsx scripts/smoke-memory-semantic-retrieval.ts",
     "smoke:memory-browser-paid": "node scripts/smoke-memory-browser-paid.cjs",
+    "smoke:memory-mcp-codex": "prisma generate && tsx scripts/smoke-memory-mcp-codex.ts",
     "smoke:memory-synthesis-provider": "tsx scripts/smoke-memory-synthesis-provider.ts",
     "smoke:openrouter": "tsx scripts/smoke-openrouter-perplexity.ts",
     "smoke:nginx-upload-envelope": "node scripts/smoke-nginx-upload-envelope.mjs",
@@ -81,7 +82,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1063.0",
     "@aws-sdk/s3-request-presigner": "3.1063.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "@napi-rs/canvas": "^0.1.100",
     "@prisma/client": "^6.19.3",
     "jose": "6.2.3",
@@ -101,6 +103,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@modelcontextprotocol/node": "2.0.0",
     "@playwright/test": "1.60.0",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.1.0",

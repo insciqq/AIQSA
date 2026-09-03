@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { FetchLike } from "@modelcontextprotocol/client";
 import {
   MCP_JSON_RPC_REQUEST_MAX_BYTES,
   McpResponseTooLargeError,

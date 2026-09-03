@@ -1,8 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ListToolsRequestSchema, type ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { Server, type ListToolsResult } from "@modelcontextprotocol/server";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
@@ -35,7 +34,7 @@ async function startRemoteFixture(
     { name: "aiqsa-validator-fixture", title: "AIQSA validator fixture", version: "2.1.0" },
     { capabilities: { tools: { listChanged: true } } }
   );
-  server.setRequestHandler(ListToolsRequestSchema, async (request): Promise<ListToolsResult> => {
+  server.setRequestHandler("tools/list", async (request): Promise<ListToolsResult> => {
     const cursor = request.params?.cursor;
     cursors.push(cursor);
     return cursor === undefined
@@ -56,7 +55,7 @@ async function startRemoteFixture(
         };
   });
 
-  const transport = new StreamableHTTPServerTransport({
+  const transport = new NodeStreamableHTTPServerTransport({
     enableJsonResponse: true,
     sessionIdGenerator: () => "aiqsa-validator-session"
   });

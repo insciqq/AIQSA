@@ -7,6 +7,7 @@ import {
   MemoryResumeConfirmationDialog,
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
+import { ConnectedAppsSection } from "@/components/app-shell/ConnectedAppsSection";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { MemoryWorkspace } from "@/components/app-shell/MemoryWorkspace";
 import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
@@ -215,6 +216,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [memoryOwnerOpen, setMemoryOwnerOpen] = useState(false);
+  const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpDirty, setMcpDirty] = useState(false);
   const [mcpKey, setMcpKey] = useState(0);
@@ -986,7 +988,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {settings.settings.open && !libraryOpen ? (
         <SettingsV2
-          busy={mcpBusy}
+          busy={mcpBusy || connectedAppsBusy}
+          busyMessage={connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}
+          connectedAppsContent={(
+            <ConnectedAppsSection
+              accountId={session.accountId}
+              onBusyChange={setConnectedAppsBusy}
+            />
+          )}
           dirty={mcpDirty}
           initialSection={settings.settings.section}
           mcpContent={(

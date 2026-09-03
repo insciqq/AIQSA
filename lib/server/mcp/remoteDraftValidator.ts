@@ -5,7 +5,7 @@ import type {
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 import {
   McpClientSession,
   McpClientSessionError,

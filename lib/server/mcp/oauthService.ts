@@ -1,19 +1,18 @@
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  OAuthError,
+  OAuthErrorCode,
   auth,
   discoverOAuthServerInfo,
   refreshAuthorization,
   selectClientAuthMethod,
+  type AuthorizationServerMetadata,
+  type FetchLike,
+  type OAuthClientInformationMixed,
+  type OAuthClientMetadata,
   type OAuthClientProvider,
-  type OAuthDiscoveryState
-} from "@modelcontextprotocol/sdk/client/auth.js";
-import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type {
-  AuthorizationServerMetadata,
-  OAuthClientInformationMixed,
-  OAuthClientMetadata,
-  OAuthTokens
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+  type OAuthDiscoveryState,
+  type OAuthTokens
+} from "@modelcontextprotocol/client";
 import { createMcpSafeFetch } from "./safeFetch";
 import {
   bindMcpOAuthPolicyResource,
@@ -725,7 +724,7 @@ export class McpOAuthService {
       if (!rotated) throw new McpOAuthError("mcp_oauth_reauthorization_required");
       return rotated.tokens;
     } catch (error) {
-      if (error instanceof InvalidGrantError) {
+      if (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant) {
         const winner = await this.#repository.loadConnection(latest.id);
         if (winner && winner.tokenVersion !== latest.tokenVersion &&
           ["ready", "disconnecting"].includes(winner.state)) {

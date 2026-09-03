@@ -30,6 +30,7 @@ Workspace state is stored in PostgreSQL and private S3-compatible storage. Conte
 - Exact model selection with per-model controls and optional reasoning or streaming settings where supported.
 - Ordered web-search plans with up to three entitled sources, compatibility checks, normalized citations, and answer-bound Sources.
 - Optional Memory for explicitly saved facts and retained-chat recall, with private management, lifecycle, and deletion controls.
+- Remote Personal Memory MCP access for authorized external clients, limited to fact CRUD/search and independent of chat history.
 - MCP server administration, user enablement, personal fields, OAuth flows, readiness checks, and approval before protected tool execution.
 - Multi-user accounts, invitations, access rules and groups, optional Google/Yandex sign-in, usage views, and an administrative Control Center.
 - System, light, and dark themes; responsive desktop/mobile layouts; code and math rendering; and private S3-compatible uploads.
@@ -65,6 +66,51 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the initial
 PostgreSQL and uploaded objects live in named Docker volumes. A normal rebuild or update preserves them. Never run `docker compose down -v` unless permanent deletion of installation data is intentional.
 
 The release pipeline owns a same-Alpine PostgreSQL companion image with pgvector and records its immutable multi-platform digest; Compose adopts that image only after the manifest is published and verified, without changing the existing database volume. An external PostgreSQL deployment used with Knowledge features must make pgvector 0.7 or later available before its schema migration runs; pgvector 0.8.x is recommended for filtered approximate-nearest-neighbor retrieval.
+
+## Personal Memory over MCP
+
+Each AIQSA user can authorize a compatible external MCP client to use the same
+Personal Memory facts as the AIQSA Memory UI. Use the installation's public URL
+with `/mcp`, for example `https://aiqsa.example/mcp`. This is an inbound
+connection to AIQSA; it is separate from the MCP servers that AIQSA calls from
+its own chats.
+
+For Codex CLI:
+
+```bash
+codex mcp add aiqsa-memory --url https://aiqsa.example/mcp
+codex mcp login aiqsa-memory
+codex mcp list
+```
+
+For Claude Code, add the HTTP server and then open `/mcp` inside Claude Code to
+complete browser authentication:
+
+```bash
+claude mcp add --transport http aiqsa-memory https://aiqsa.example/mcp
+```
+
+For an interactive protocol check, start MCP Inspector, select Streamable HTTP,
+enter the same `/mcp` URL, and complete its OAuth flow:
+
+```bash
+npx -y @modelcontextprotocol/inspector
+```
+
+AIQSA's consent page names the client and grants one fact-only permission. The
+client can discover `add_memory`, `search_memories`, `list_memories`,
+`get_memory`, `update_memory`, and `delete_memory`. It cannot read chat history,
+and AIQSA does not run a System or answer model or compose answers for these
+calls; the model in the external client decides when to use the tools and how
+to answer. Semantic search may still use AIQSA's configured Memory embedding
+and score-only reranker routes.
+
+Review or revoke a client in **Settings -> Connected apps**. Revocation stops
+future calls for that client and keeps every stored Memory fact. See the current
+[Codex MCP](https://developers.openai.com/codex/mcp/),
+[Claude Code MCP](https://code.claude.com/docs/en/mcp), and
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) documentation
+for client-specific behavior.
 
 ## Network exposure
 

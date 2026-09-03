@@ -21,6 +21,8 @@ Mutable drafts use optimistic versions; activation creates immutable revisions. 
 
 Authentication keeps one identity/session transition owner. Password, OAuth, invite, verification, reset, bootstrap, and administrator actions retain generic enumeration-safe public outcomes and transactional one-winner token/session changes. [Security](SECURITY.md) owns the threat model.
 
+The Personal Memory MCP is an inbound same-installation resource, not part of the administrator-managed outbound MCP control plane. Its OAuth grant resolves one current active AIQSA account at every call; that identity is the sole Memory owner and no client-supplied tenant or user selector is accepted. The first version exposes only canonical personal Memory facts and creates no Chat, Message, ModelRun, `MemoryRetrievalAttempt`, or outbound MCP state; governed query-embedding and reranker executions use their content-free inbound-request owner.
+
 Installation model recommendation and internal system utility selection are separate. Neither grants entitlement. The utility role resolves only its exact configured model and installation credential; absence or invalidity fails closed without fallback.
 
 ## Files, Jobs, And Shares

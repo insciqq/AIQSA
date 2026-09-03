@@ -391,7 +391,8 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
           AND NOT (
             binding."ownerType" IN (
               'JOB'::"MemoryExecutionOwnerType",
-              'MUTATION_AUTHORIZATION'::"MemoryExecutionOwnerType"
+              'MUTATION_AUTHORIZATION'::"MemoryExecutionOwnerType",
+              'INBOUND_MCP_REQUEST'::"MemoryExecutionOwnerType"
             )
             AND binding."state" IN (
               'SUCCEEDED'::"MemoryExecutionState",

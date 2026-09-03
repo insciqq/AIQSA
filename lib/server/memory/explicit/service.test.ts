@@ -181,6 +181,45 @@ describe("explicit Memory service", () => {
     expect(JSON.stringify(vi.mocked(authorizations.mint).mock.calls)).not.toContain(STATEMENT);
   });
 
+  it("accepts only the server-owned delegated MCP authorization origin", async () => {
+    const authorizations = authorizationRepository();
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizations,
+      clock: () => NOW,
+      factRepository: factRepository(),
+      readRepository: readRepository(),
+      scopeRepository: scopeRepository()
+    });
+    const authorization = {
+      action: "SAVE" as const,
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      exactStatementHash: memorySha256(STATEMENT),
+      requestNonce: "nonce-delegated"
+    };
+
+    await expect(service.mintAuthorization(
+      "user-1",
+      authorization,
+      { origin: "DELEGATED_MCP" }
+    )).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
+    await expect(service.mintAuthorization(
+      "user-1",
+      authorization,
+      { origin: "MODEL_PROPOSAL" } as never
+    )).rejects.toEqual(new ExplicitMemoryServiceError("memory_contract_invalid"));
+    await expect(service.mintAuthorization("user-1", {
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: 4,
+      expectedSettingsRevision: 2,
+      operation: "DELETE_ALL_REUSABLE",
+      requestNonce: "nonce-delegated-reset"
+    }, { origin: "DELEGATED_MCP" })).rejects.toEqual(
+      new ExplicitMemoryServiceError("memory_operation_unsupported")
+    );
+    expect(authorizations.mint).toHaveBeenCalledTimes(1);
+  });
+
   it("mints shipped Move and bulk-delete authorizations", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({

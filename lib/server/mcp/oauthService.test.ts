@@ -3,7 +3,7 @@ import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthTokens
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+} from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import {
   bindMcpOAuthPolicyResource,

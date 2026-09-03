@@ -39,6 +39,7 @@ export const memoryExecutionBindingSelect = {
   destinationFingerprint: true,
   errorCode: true,
   id: true,
+  inboundMcpRequestId: true,
   inputHash: true,
   inputTokens: true,
   logicalRole: true,
@@ -115,7 +116,8 @@ async function assertActiveExecutionOwner(
   owner: MemoryExecutionOwner,
   now: Date
 ): Promise<void> {
-  if (owner.type === "JOB" || owner.type === "MODEL_RUN_TOOL_CALL") return;
+  if (owner.type === "JOB" || owner.type === "MODEL_RUN_TOOL_CALL" ||
+    owner.type === "INBOUND_MCP_REQUEST") return;
   const rows = owner.type === "RETRIEVAL_ATTEMPT"
     ? await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id"

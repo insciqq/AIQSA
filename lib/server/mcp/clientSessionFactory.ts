@@ -1,5 +1,4 @@
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
 import {
   McpClientSession,
   McpClientSessionError,

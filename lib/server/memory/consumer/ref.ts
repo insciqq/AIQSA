@@ -7,7 +7,7 @@ import {
 export const MEMORY_CONSUMER_REF_TTL_MS = 24 * 60 * 60 * 1_000;
 export const MEMORY_CONSUMER_REF_MAX_LENGTH = 4_096;
 
-export const MEMORY_CONSUMER_REF_OPERATIONS = ["EDIT", "FORGET"] as const;
+export const MEMORY_CONSUMER_REF_OPERATIONS = ["READ", "EDIT", "FORGET"] as const;
 export type MemoryConsumerRefOperation =
   (typeof MEMORY_CONSUMER_REF_OPERATIONS)[number];
 
@@ -76,7 +76,7 @@ function boundedCursor(value: unknown): value is string {
 function validOperations(
   value: unknown
 ): value is readonly MemoryConsumerRefOperation[] {
-  return Array.isArray(value) && value.length > 0 && value.length <= 2 &&
+  return Array.isArray(value) && value.length > 0 && value.length <= 3 &&
     new Set(value).size === value.length &&
     value.every((entry) => typeof entry === "string" && operationSet.has(entry));
 }

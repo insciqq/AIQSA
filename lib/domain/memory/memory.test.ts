@@ -33,7 +33,7 @@ describe("Memory sensitivity and mutation-intent safety", () => {
     expect(memoryDerivativePlaintextAllowed("SECRET", false)).toBe(false);
   });
 
-  it("permits only direct exact owner intent and rejects model/background authority", () => {
+  it("permits exact direct or delegated MCP owner intent and rejects model authority", () => {
     const directSave = {
       action: "SAVE" as const,
       confirmationCopyVersion: "memory-confirmation-v1",
@@ -44,6 +44,7 @@ describe("Memory sensitivity and mutation-intent safety", () => {
       origin: "DIRECT_UI" as const
     };
     expect(memoryMutationIntentAllowed(directSave)).toBe(true);
+    expect(memoryMutationIntentAllowed({ ...directSave, origin: "DELEGATED_MCP" })).toBe(true);
     expect(memoryMutationIntentAllowed({ ...directSave, origin: "MODEL_PROPOSAL" })).toBe(false);
     expect(memoryMutationIntentAllowed({ ...directSave, confirmationCopyVersion: "stale" })).toBe(false);
     expect(memoryMutationIntentAllowed({ ...directSave, action: "FORGET" })).toBe(false);

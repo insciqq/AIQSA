@@ -1,16 +1,16 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
+  type FetchLike,
+  type OAuthClientProvider
+} from "@modelcontextprotocol/client";
+import {
+  Server,
   type CallToolResult,
   type ListToolsResult,
   type Tool
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/server";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   McpClientSession,
@@ -102,20 +102,20 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
       ...(options.instructions ? { instructions: options.instructions } : {})
     }
   );
-  server.setRequestHandler(ListToolsRequestSchema, async (request) =>
+  server.setRequestHandler("tools/list", async (request) =>
     options.listTools?.(request.params?.cursor) ?? { tools: [tool("echo")] }
   );
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) =>
+  server.setRequestHandler("tools/call", async (request, extra) =>
     options.callTool?.({
       arguments: request.params.arguments ?? {},
       name: request.params.name,
-      signal: extra.signal
+      signal: extra.mcpReq.signal
     }) ?? {
       content: [{ text: request.params.name, type: "text" }]
     }
   );
 
-  const transport = new StreamableHTTPServerTransport({
+  const transport = new NodeStreamableHTTPServerTransport({
     enableJsonResponse: options.enableJsonResponse ?? true,
     sessionIdGenerator: () => "aiqsa-test-session"
   });
@@ -696,6 +696,7 @@ describe("McpClientSession", () => {
       })
     });
     const provider = {
+      clientInformation: () => ({ client_id: "runtime-client" }),
       exactKnownSecrets: () => [accessSecret, refreshSecret],
       tokens: vi.fn(async () => ({ access_token: accessSecret, token_type: "Bearer" }))
     } as unknown as OAuthClientProvider;

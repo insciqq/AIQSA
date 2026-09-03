@@ -113,6 +113,30 @@ Any observed Personal Memory `DEGRADED` outcome in a provider smoke, benchmark, 
 
 `npm run smoke:memory-browser-paid` is an optional, non-gating Playwright smoke for the local disposable Compose stand. It has no standing paid-provider permission: set `AIQSA_MEMORY_BROWSER_PAID_SMOKE=DISPOSABLE`, provide the exact loopback `AIQSA_MEMORY_BROWSER_PAID_SMOKE_DATABASE_URL`, and select either the `DIRECT` or `DREAM` scenario through `AIQSA_MEMORY_BROWSER_PAID_SMOKE_SCENARIO` only after the operator authorizes paid calls. Run both scenarios separately when full browser evidence is wanted. The script requires the dev profile's 120-second Memory admission timeout, emits sanitized aggregates, bounds provider work, and permanently deletes only chats and Memory refs it created. A successful `DREAM` result may contain either one classified/retrieved pattern or a structurally valid empty synthesis result; do not reroll an unchanged source set to force a model-authored pattern.
 
+`npm run smoke:memory-mcp-codex` is the opt-in external-client gate for inbound
+Personal Memory MCP. It requires
+`AIQSA_MEMORY_MCP_CODEX_SMOKE=DISPOSABLE`, accepts only the explicit loopback
+`aiqsa` PostgreSQL administrator URL ending in `/postgres`, and creates a
+unique database, app origin, synthetic account, facts, and isolated Codex home
+for each run. It uses only the reviewed `codex-lb` provider from the existing
+Codex profile, performs real browser OAuth with the installed Codex, checks the
+current protocol and stable stateless compatibility schemas, and exercises
+Codex without an experimental MCP feature flag. It exercises all six
+fact-only tools, proves revoke-before-execution, compares independent AIQSA
+state, and always removes its database and temporary client configuration. Its
+semantic leg restores the existing local development profile into the
+disposable database, selects the reviewed Memory embedding/reranker routes,
+activates a hybrid generation, and waits for the synthetic fact vector. It
+captures the actual autonomous `search_memories` argument only in process and
+requires zero normalized lexical overlap, a deterministic lexical miss, a
+compatible vector hit, ordered identity parity with the native facts-only entry
+point, the expected content-free utility bindings, and no Chat/run/history
+artifacts; the client answer alone is never evidence. The command has no
+standing paid-provider permission and must never target the default persistent
+installation. Evidence is limited to versions, tool names, stable codes,
+booleans, counts, and bounded duration; raw prompts, facts, answers, OAuth
+material, refs, identifiers, and event payloads remain private.
+
 ## Test Authoring And Completion
 
 Test observable contracts, not implementation shape. Add the cheapest deterministic regression. Keep fixtures small, isolated, content-safe, and order-independent; `.only`, broad snapshots, permanent environment skips, real paid calls, and unowned global cleanup are forbidden. Explicitly cover loading/error/empty and lifecycle terminals when changed.

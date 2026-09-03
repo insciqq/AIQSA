@@ -11,6 +11,7 @@ export function memoryDerivativePlaintextAllowed(
 export const MEMORY_MUTATION_INTENT_ORIGINS = [
   "DIRECT_UI",
   "DIRECT_API",
+  "DELEGATED_MCP",
   "CURRENT_USER_EXACT_SPAN",
   "MODEL_PROPOSAL",
   "BACKGROUND_INFERENCE"

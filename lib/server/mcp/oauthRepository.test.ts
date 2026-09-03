@@ -1,8 +1,7 @@
 // @vitest-environment node
 
 import type { PrismaClient } from "@prisma/client";
-import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { OAuthClientMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { OAuthClientMetadata, OAuthDiscoveryState } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { hashCanonicalMcpValue } from "./definitions";
