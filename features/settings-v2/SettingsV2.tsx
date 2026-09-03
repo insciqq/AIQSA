@@ -14,7 +14,7 @@ import {
 } from "react";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 
-export type SettingsSectionV2 = "appearance" | "mcp";
+export type SettingsSectionV2 = "appearance" | "connected_apps" | "mcp";
 
 type SettingsIntentV2 =
   | Readonly<{ kind: "close" }>
@@ -22,6 +22,8 @@ type SettingsIntentV2 =
 
 export function SettingsV2({
   busy = false,
+  busyMessage = "Updating settings…",
+  connectedAppsContent,
   dirty = false,
   initialSection = "appearance",
   mcpContent,
@@ -32,6 +34,8 @@ export function SettingsV2({
   themeId
 }: Readonly<{
   busy?: boolean;
+  busyMessage?: string;
+  connectedAppsContent: ReactNode;
   dirty?: boolean;
   initialSection?: SettingsSectionV2;
   mcpContent: ReactNode;
@@ -114,7 +118,7 @@ export function SettingsV2({
         <header className="v2-settings-header">
           <div>
             <h1>Settings</h1>
-            <p>Appearance and your personal tool connections</p>
+            <p>Appearance, connected apps, and personal tools</p>
           </div>
           <UiV2IconButton
             ref={initialFocusRef}
@@ -136,6 +140,16 @@ export function SettingsV2({
             <UiV2Icon name="sun" /> Appearance
           </button>
           <button
+            aria-current={activeSection === "connected_apps" ? "page" : undefined}
+            className="v2-settings-nav-button v2-focusable"
+            data-selected={activeSection === "connected_apps" || undefined}
+            disabled={busy && activeSection !== "connected_apps"}
+            type="button"
+            onClick={() => request({ kind: "section", section: "connected_apps" })}
+          >
+            <UiV2Icon name="lock" /> Connected apps
+          </button>
+          <button
             aria-current={activeSection === "mcp" ? "page" : undefined}
             className="v2-settings-nav-button v2-focusable"
             data-selected={activeSection === "mcp" || undefined}
@@ -148,7 +162,7 @@ export function SettingsV2({
         </nav>
         {busy || dirty ? (
           <p className="v2-settings-state" role="status">
-            {busy ? "Updating MCP…" : "Unsaved MCP values"}
+            {busy ? busyMessage : "Unsaved MCP values"}
           </p>
         ) : null}
         {noticeSlot ? <div className="v2-settings-notice">{noticeSlot}</div> : null}
@@ -188,6 +202,16 @@ export function SettingsV2({
                     </button>
                   );
                 })}
+              </div>
+            </section>
+          ) : activeSection === "connected_apps" ? (
+            <section className="v2-settings-section" aria-labelledby="v2-connected-apps-heading">
+              <h2 id="v2-connected-apps-heading">Connected apps</h2>
+              <p className="v2-settings-intro">
+                Review external applications that you authorized to use Personal Memory.
+              </p>
+              <div className="v2-settings-owner-slot" data-testid="settings-connected-apps-owner">
+                {connectedAppsContent}
               </div>
             </section>
           ) : (

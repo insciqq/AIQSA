@@ -1,5 +1,5 @@
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   McpClientSessionError,

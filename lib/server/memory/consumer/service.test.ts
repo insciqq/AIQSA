@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   memoryDeletionFixture,
+  memoryDetailFixture,
   memorySettingsFixture,
   memorySummaryFixture
 } from "@/tests/support/memoryFixtures";
@@ -42,8 +43,13 @@ function dependencies(input: Readonly<{
   return {
     explicitService: {
       create: vi.fn(async () => ({ memory: summary })),
+      get: vi.fn(async () => memoryDetailFixture(summary)),
       list: vi.fn(async () => ({ memories: [summary], nextCursor: "internal-cursor" })),
-      mintAuthorization: vi.fn(async () => ({
+      mintAuthorization: vi.fn(async (
+        _userId: string,
+        _input: unknown,
+        _context?: unknown
+      ) => ({
         expiresAt: "2026-08-21T10:05:00.000Z",
         mutationAuthorizationId: "internal-authorization-id"
       })),
@@ -70,17 +76,19 @@ function dependencies(input: Readonly<{
 describe("Memory consumer service", () => {
   it("projects settings and items without persistence or control-plane fields", async () => {
     const deps = dependencies();
+    const refService = refs();
     const service = createMemoryConsumerService({
       clock: () => now,
       explicitService: deps.explicitService as never,
       lifecycleService: deps.lifecycleService as never,
       readResetState: deps.readResetState,
-      refs: refs(),
+      refs: refService,
       settingsService: deps.settingsService as never
     });
 
-    const [settings, list, search] = await Promise.all([
+    const [settings, item, list, search] = await Promise.all([
       service.settings("user-1"),
+      service.get("user-1", "opaque-item-ref"),
       service.list("user-1", { pageSize: 20 }),
       service.search("user-1", { pageSize: 20, query: "concise" })
     ]);
@@ -116,8 +124,15 @@ describe("Memory consumer service", () => {
       nextCursor: "opaque-cursor-ref"
     });
     expect(search.items[0]?.memoryRef).toBe("opaque-item-ref");
+    expect(item.item).toMatchObject({
+      memoryRef: "opaque-item-ref",
+      statement: expect.any(String)
+    });
+    expect(refService.mintItem).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      allowedOperations: ["READ", "EDIT", "FORGET"]
+    }), now);
 
-    const browserJson = JSON.stringify({ list, search, settings });
+    const browserJson = JSON.stringify({ item, list, search, settings });
     expect(browserJson).not.toMatch(
       /internal-|memoryRevision|settingsRevision|generation|deployment|fingerprint|score|hash/iu
     );
@@ -330,6 +345,12 @@ describe("Memory consumer service", () => {
     });
     expect(forgotten).toEqual({ status: "FORGOTTEN" });
     expect(deps.explicitService.mintAuthorization).toHaveBeenCalledTimes(3);
+    expect(deps.explicitService.mintAuthorization.mock.calls.map((call) => call[2]))
+      .toEqual([
+        { origin: "DIRECT_API" },
+        { origin: "DIRECT_API" },
+        { origin: "DIRECT_API" }
+      ]);
     expect(deps.explicitService.update).toHaveBeenCalledWith(
       "user-1",
       "internal-fact-id",
@@ -339,6 +360,64 @@ describe("Memory consumer service", () => {
       })
     );
     expect(JSON.stringify({ created, edited, forgotten })).not.toContain("internal-");
+  });
+
+  it("uses delegated mutation authority only when the server supplies that context", async () => {
+    const deps = dependencies();
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+
+    await service.create("user-1", {
+      requestId: "request-id-delegated-0001",
+      statement: "Remember this from an OAuth-authorized MCP call"
+    }, { authority: "DELEGATED_MCP" });
+
+    expect(deps.explicitService.mintAuthorization).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ action: "SAVE" }),
+      { origin: "DELEGATED_MCP" }
+    );
+    await expect(service.create("user-1", {
+      requestId: "request-id-invalid-context",
+      statement: "This must not be authorized"
+    }, { authority: "MODEL_PROPOSAL" } as never)).rejects.toMatchObject({
+      code: "memory_contract_invalid"
+    });
+    expect(deps.explicitService.mintAuthorization).toHaveBeenCalledTimes(1);
+  });
+
+  it("revalidates exact current fact state for get", async () => {
+    const deps = dependencies();
+    const refService = refs();
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refService,
+      settingsService: deps.settingsService as never
+    });
+
+    await expect(service.get("user-1", "opaque-item-ref")).resolves.toMatchObject({
+      item: { memoryRef: "opaque-item-ref" }
+    });
+    deps.explicitService.get.mockResolvedValueOnce(memoryDetailFixture(memorySummaryFixture({
+      currentVersionId: "new-version-id",
+      id: "internal-fact-id"
+    })));
+    await expect(service.get("user-1", "opaque-item-ref")).rejects.toMatchObject({
+      code: "memory_changed"
+    });
+    vi.mocked(refService.resolveItem).mockReturnValueOnce(null);
+    await expect(service.get("other-user", "opaque-item-ref")).rejects.toMatchObject({
+      code: "memory_not_found"
+    });
   });
 
   it("reports only active reset work and does not persist a misleading Complete badge", async () => {

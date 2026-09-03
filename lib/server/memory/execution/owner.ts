@@ -18,15 +18,21 @@ export type MemoryExecutionOwner =
   | Readonly<{
       mutationAuthorizationId: string;
       type: "MUTATION_AUTHORIZATION";
+    }>
+  | Readonly<{
+      inboundMcpRequestId: string;
+      type: "INBOUND_MCP_REQUEST";
     }>;
 
 type StoredOwnerShape = Readonly<{
+  inboundMcpRequestId: string | null;
   memoryJobId: string | null;
   modelRunId: string | null;
   modelRunToolCallId: string | null;
   mutationAuthorizationId: string | null;
   ownerType:
     | "JOB"
+    | "INBOUND_MCP_REQUEST"
     | "MODEL_RUN_TOOL_CALL"
     | "MUTATION_AUTHORIZATION"
     | "RETRIEVAL_ATTEMPT";
@@ -40,6 +46,7 @@ export function isValidMemoryExecutionIdentifier(value: unknown): value is strin
 }
 
 export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
+  inboundMcpRequestId: string | null;
   memoryJobId: string | null;
   modelRunId: string | null;
   modelRunToolCallId: string | null;
@@ -49,6 +56,7 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
 } {
   if (owner.type === "JOB" && isValidMemoryExecutionIdentifier(owner.memoryJobId)) {
     return {
+      inboundMcpRequestId: null,
       memoryJobId: owner.memoryJobId,
       modelRunId: null,
       modelRunToolCallId: null,
@@ -62,6 +70,7 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
     isValidMemoryExecutionIdentifier(owner.retrievalAttemptId)
   ) {
     return {
+      inboundMcpRequestId: null,
       memoryJobId: null,
       modelRunId: null,
       modelRunToolCallId: null,
@@ -76,6 +85,7 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
     isValidMemoryExecutionIdentifier(owner.modelRunToolCallId)
   ) {
     return {
+      inboundMcpRequestId: null,
       memoryJobId: null,
       modelRunId: owner.modelRunId,
       modelRunToolCallId: owner.modelRunToolCallId,
@@ -89,10 +99,25 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
     isValidMemoryExecutionIdentifier(owner.mutationAuthorizationId)
   ) {
     return {
+      inboundMcpRequestId: null,
       memoryJobId: null,
       modelRunId: null,
       modelRunToolCallId: null,
       mutationAuthorizationId: owner.mutationAuthorizationId,
+      ownerType: owner.type,
+      retrievalAttemptId: null
+    };
+  }
+  if (
+    owner.type === "INBOUND_MCP_REQUEST" &&
+    isValidMemoryExecutionIdentifier(owner.inboundMcpRequestId)
+  ) {
+    return {
+      inboundMcpRequestId: owner.inboundMcpRequestId,
+      memoryJobId: null,
+      modelRunId: null,
+      modelRunToolCallId: null,
+      mutationAuthorizationId: null,
       ownerType: owner.type,
       retrievalAttemptId: null
     };
@@ -106,6 +131,7 @@ export function memoryExecutionOwnerWhere(
 ): Prisma.MemoryExecutionBindingWhereInput {
   const shape = memoryExecutionOwnerData(owner);
   return {
+    inboundMcpRequestId: shape.inboundMcpRequestId,
     memoryJobId: shape.memoryJobId,
     modelRunId: shape.modelRunId,
     modelRunToolCallId: shape.modelRunToolCallId,
@@ -122,6 +148,7 @@ export function storedMemoryExecutionOwner(
   if (
     record.ownerType === "JOB" &&
     record.memoryJobId &&
+    record.inboundMcpRequestId === null &&
     record.retrievalAttemptId === null &&
     record.modelRunId === null &&
     record.modelRunToolCallId === null &&
@@ -132,6 +159,7 @@ export function storedMemoryExecutionOwner(
   if (
     record.ownerType === "RETRIEVAL_ATTEMPT" &&
     record.retrievalAttemptId &&
+    record.inboundMcpRequestId === null &&
     record.memoryJobId === null &&
     record.modelRunId === null &&
     record.modelRunToolCallId === null &&
@@ -143,6 +171,7 @@ export function storedMemoryExecutionOwner(
     record.ownerType === "MODEL_RUN_TOOL_CALL" &&
     record.modelRunId &&
     record.modelRunToolCallId &&
+    record.inboundMcpRequestId === null &&
     record.memoryJobId === null &&
     record.retrievalAttemptId === null &&
     record.mutationAuthorizationId === null
@@ -156,6 +185,7 @@ export function storedMemoryExecutionOwner(
   if (
     record.ownerType === "MUTATION_AUTHORIZATION" &&
     record.mutationAuthorizationId &&
+    record.inboundMcpRequestId === null &&
     record.memoryJobId === null &&
     record.retrievalAttemptId === null &&
     record.modelRunId === null &&
@@ -164,6 +194,20 @@ export function storedMemoryExecutionOwner(
     return {
       mutationAuthorizationId: record.mutationAuthorizationId,
       type: "MUTATION_AUTHORIZATION"
+    };
+  }
+  if (
+    record.ownerType === "INBOUND_MCP_REQUEST" &&
+    record.inboundMcpRequestId &&
+    record.memoryJobId === null &&
+    record.retrievalAttemptId === null &&
+    record.modelRunId === null &&
+    record.modelRunToolCallId === null &&
+    record.mutationAuthorizationId === null
+  ) {
+    return {
+      inboundMcpRequestId: record.inboundMcpRequestId,
+      type: "INBOUND_MCP_REQUEST"
     };
   }
   return memoryExecutionFailure("memory_execution_snapshot_invalid");

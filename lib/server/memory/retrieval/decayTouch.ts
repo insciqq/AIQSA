@@ -5,6 +5,7 @@ import {
   MEMORY_DECAY_TOUCH_INCREMENT
 } from "../../../domain/memory/retrieval";
 import { decodeMemoryPreparingSettingsSnapshot } from "../../runs/preparingRun";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 
 export type MemoryDecayTouchIdentity = Readonly<{
   bindingId?: string;
@@ -16,6 +17,15 @@ export type MemoryDecayTouchIdentity = Readonly<{
 export type MemoryDecayTouchResult = Readonly<{
   eligibleItems: number;
   touchedItems: number;
+}>;
+
+export type DirectMemoryFactAccessTouchInput = Readonly<{
+  facts: readonly Readonly<{
+    factId: string;
+    factVersionId: string;
+  }>[];
+  now: Date;
+  userId: string;
 }>;
 
 class MemoryDecayTouchIneligibleError extends Error {}
@@ -178,4 +188,78 @@ export function scheduleMemoryDecayTouch(
   input: MemoryDecayTouchIdentity
 ): void {
   void runMemoryDecayTouchWithRetry(() => touchFrozenMemoryPack(client, input));
+}
+
+function boundedTouchIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.trim() === value &&
+    value.length > 0 && value.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+/** Applies the same bounded fact-use temperature update as a finalized native
+ * run, but from an already packed run-independent fact selection. No query or
+ * result text is persisted. */
+export async function touchDirectMemoryFactAccess(
+  client: PrismaClient,
+  input: DirectMemoryFactAccessTouchInput
+): Promise<MemoryDecayTouchResult> {
+  const facts = [...new Map(input.facts.map((fact) => [
+    `${fact.factId}:${fact.factVersionId}`,
+    fact
+  ])).values()].slice(0, MEMORY_DECAY_MAX_RETAINED_TOUCHES);
+  if (
+    !boundedTouchIdentifier(input.userId) ||
+    !(input.now instanceof Date) || !Number.isFinite(input.now.getTime()) ||
+    facts.length !== input.facts.length ||
+    facts.some((fact) => !boundedTouchIdentifier(fact.factId) ||
+      !boundedTouchIdentifier(fact.factVersionId))
+  ) throw new Error("memory_decay_touch_input_invalid");
+  if (facts.length === 0) return { eligibleItems: 0, touchedItems: 0 };
+
+  const selected = Prisma.sql`(${Prisma.join(facts.map((fact) => Prisma.sql`(
+    fact."id" = ${fact.factId} AND version."id" = ${fact.factVersionId}
+  )`), " OR ")})`;
+  const touchedItems = await client.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFact" AS fact
+    SET
+      "lastUsedAt" = CASE
+        WHEN fact."lastUsedAt" IS NULL OR fact."lastUsedAt" < ${input.now}
+          THEN ${input.now}
+        ELSE fact."lastUsedAt"
+      END,
+      "temperatureScore" = LEAST(
+        1::double precision,
+        fact."temperatureScore" + ${MEMORY_DECAY_TOUCH_INCREMENT}
+      ),
+      "temperatureClass" = CASE
+        WHEN LEAST(
+          1::double precision,
+          fact."temperatureScore" + ${MEMORY_DECAY_TOUCH_INCREMENT}
+        ) >= 0.5
+          THEN 'HOT'::"MemoryTemperatureClass"
+        ELSE 'WARM'::"MemoryTemperatureClass"
+      END
+    FROM "MemoryFactVersion" AS version,
+      "MemoryScope" AS scope,
+      "UserMemorySettings" AS settings
+    WHERE ${selected}
+      AND settings."decayEnabled" = TRUE
+      AND settings."decayPolicyVersion" = ${MEMORY_DECAY_POLICY_VERSION}
+      AND ${memoryReusableFactAuthorityPredicate(input.userId, {
+        fact: Prisma.sql`fact`,
+        includePatterns: false,
+        lifecycle: "CURRENT",
+        scope: Prisma.sql`scope`,
+        settings: Prisma.sql`settings`,
+        version: Prisma.sql`version`
+      })}
+  `);
+  return { eligibleItems: facts.length, touchedItems };
+}
+
+export function scheduleDirectMemoryFactAccessTouch(
+  client: PrismaClient,
+  input: DirectMemoryFactAccessTouchInput
+): void {
+  void runMemoryDecayTouchWithRetry(() => touchDirectMemoryFactAccess(client, input));
 }

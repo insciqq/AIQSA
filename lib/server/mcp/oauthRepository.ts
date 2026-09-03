@@ -4,15 +4,13 @@ import {
   type McpOAuthConnectionState,
   type PrismaClient
 } from "@prisma/client";
-import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
-  OAuthClientInformationFullSchema,
-  OAuthClientInformationSchema,
-  OAuthTokensSchema,
+  specTypeSchemas,
   type OAuthClientInformationMixed,
   type OAuthClientMetadata,
+  type OAuthDiscoveryState,
   type OAuthTokens
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+} from "@modelcontextprotocol/client";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import { resolveEffectiveMcpGrant } from "./access";
@@ -264,10 +262,15 @@ function tokenVersion(tokenGeneration: number): string {
 }
 
 function parseClientInformation(value: unknown): OAuthClientInformationMixed | null {
-  const full = OAuthClientInformationFullSchema.safeParse(value);
-  if (full.success) return full.data;
-  const minimal = OAuthClientInformationSchema.safeParse(value);
-  return minimal.success ? minimal.data : null;
+  const full = specTypeSchemas.OAuthClientInformationFull["~standard"].validate(value);
+  if (!full.issues) return full.value;
+  const minimal = specTypeSchemas.OAuthClientInformation["~standard"].validate(value);
+  return minimal.issues ? null : minimal.value;
+}
+
+function parseTokens(value: unknown): OAuthTokens | null {
+  const parsed = specTypeSchemas.OAuthTokens["~standard"].validate(value);
+  return parsed.issues ? null : parsed.value;
 }
 
 function parseStoredClientMetadata(value: unknown): StoredClientMetadata | null {
@@ -350,27 +353,28 @@ function parseTokenEnvelope(
   );
   const record = jsonRecord(decoded);
   const policy = jsonRecord(record?.policy);
-  const parsedTokens = OAuthTokensSchema.safeParse(record?.tokens);
+  const parsedTokens = parseTokens(record?.tokens);
   if (
     record?.version !== 1 ||
     typeof record.issuedAt !== "string" ||
     !Number.isFinite(Date.parse(record.issuedAt)) ||
     !policy ||
     (policy.resourceMode !== "explicit" && policy.resourceMode !== "auto_same_origin") ||
-    !parsedTokens.success
+    !parsedTokens
   ) {
     throw new Error("mcp_oauth_tokens_invalid");
   }
   return {
     issuedAt: record.issuedAt,
     policy: policy as McpOAuthPolicy,
-    tokens: parsedTokens.data,
+    tokens: parsedTokens,
     version: 1
   };
 }
 
 function checkedTokens(tokens: OAuthTokens): OAuthTokens {
-  const parsed = OAuthTokensSchema.parse(tokens);
+  const parsed = parseTokens(tokens);
+  if (!parsed) throw new Error("mcp_oauth_tokens_invalid");
   if (Buffer.byteLength(JSON.stringify(parsed), "utf8") > MAX_OAUTH_ENVELOPE_JSON_BYTES) {
     throw new Error("mcp_oauth_tokens_invalid");
   }

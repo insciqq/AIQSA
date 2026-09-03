@@ -471,6 +471,89 @@ describe("Prisma Memory execution", () => {
     }
   });
 
+  it("governs a content-free inbound MCP request without a synthetic run owner", async () => {
+    const fixture = await createEmbeddingFixture();
+    try {
+      const policy = await prisma.$transaction(async (tx) => {
+        const settings = await tx.userMemorySettings.findUniqueOrThrow({
+          where: { userId: fixture.userId }
+        });
+        return resolveCurrentMemoryUtilityPolicy(tx, fixture.userId, settings);
+      });
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: INITIAL_NOW,
+          acceptedUtilityEgressFingerprint: policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      const service = createPrismaMemoryExecutionService({
+        egressConsentMode: "PER_USER",
+        now: () => INITIAL_NOW
+      }, prisma);
+      const requestId = `inbound-mcp-${randomUUID()}`;
+      const binding = await service.admission.bind(fixture.userId, {
+        inputHash: "9".repeat(64),
+        ordinal: 1,
+        owner: { inboundMcpRequestId: requestId, type: "INBOUND_MCP_REQUEST" },
+        role: "MEMORY_QUERY_EMBED",
+        versions: VERSIONS
+      });
+
+      expect(binding).toMatchObject({
+        owner: { inboundMcpRequestId: requestId, type: "INBOUND_MCP_REQUEST" },
+        replayed: false,
+        state: "PENDING"
+      });
+      await expect(service.admission.bind(fixture.userId, {
+        inputHash: "8".repeat(64),
+        ordinal: 1,
+        owner: { inboundMcpRequestId: requestId, type: "INBOUND_MCP_REQUEST" },
+        role: "MEMORY_QUERY_EMBED",
+        versions: VERSIONS
+      })).rejects.toMatchObject({ code: "memory_execution_binding_conflict" });
+      await expect(service.admission.start(fixture.userId, binding.id))
+        .resolves.toMatchObject({
+          owner: { inboundMcpRequestId: requestId, type: "INBOUND_MCP_REQUEST" }
+        });
+      await service.lifecycle.settle(fixture.userId, binding.id, {
+        acceptedOutputHash: "7".repeat(64),
+        errorCode: null,
+        providerResponseId: "inbound-memory-response",
+        state: "SUCCEEDED",
+        usage: completeUsage(4)
+      });
+
+      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({
+        select: {
+          inboundMcpRequestId: true,
+          logicalRole: true,
+          memoryJobId: true,
+          modelRunId: true,
+          modelRunToolCallId: true,
+          mutationAuthorizationId: true,
+          ownerType: true,
+          retrievalAttemptId: true,
+          state: true
+        },
+        where: { id: binding.id }
+      })).resolves.toEqual({
+        inboundMcpRequestId: requestId,
+        logicalRole: "MEMORY_QUERY_EMBED",
+        memoryJobId: null,
+        modelRunId: null,
+        modelRunToolCallId: null,
+        mutationAuthorizationId: null,
+        ownerType: "INBOUND_MCP_REQUEST",
+        retrievalAttemptId: null,
+        state: "SUCCEEDED"
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("rejects linked result use and rebound dispatch after target drift", async () => {
     const fixture = await createEmbeddingFixture();
     try {

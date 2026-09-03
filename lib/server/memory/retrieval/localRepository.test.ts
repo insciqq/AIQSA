@@ -2495,6 +2495,63 @@ describe("local Memory retrieval repository", () => {
       entry.failureCode === "memory_read_statement_timeout" && entry.timedOut)).toBe(true);
   });
 
+  it("admits a run-independent snapshot only for the fixed global facts plan", async () => {
+    const mocked = mockClient(snapshotRow({
+      chatFolderId: null,
+      chatId: null,
+      chatMemoryMode: null,
+      referenceChatHistory: true
+    }));
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      currentUserText: "What should I call you?",
+      filters: { sourceKinds: ["FACT"] },
+      mode: "TARGETED_CURRENT",
+      now,
+      temporalIntent: "ANY"
+    });
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: null,
+      now,
+      plan,
+      userId: "user-1"
+    });
+
+    expect(snapshot).toMatchObject({
+      assistantId: null,
+      chatId: null,
+      chatMemoryMode: "NORMAL",
+      folderId: null,
+      historyAuthorityRevision: null,
+      referenceChatHistory: false,
+      status: "READY"
+    });
+    await expect(repository.retrieve({
+      assistantId: null,
+      chatId: null,
+      now,
+      plan,
+      sourceSnapshot: snapshot,
+      userId: "user-1"
+    })).resolves.toMatchObject({ snapshot });
+    expect(mocked.laneSql.join("\n")).not.toContain("HISTORY_");
+
+    await expect(repository.snapshot({
+      assistantId: null,
+      chatId: null,
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "What did we discuss?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    })).rejects.toThrow("memory_retrieval_context_invalid");
+  });
+
   it("issues a frozen O(1) snapshot capability over every authority scalar", async () => {
     const mocked = mockClient();
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);

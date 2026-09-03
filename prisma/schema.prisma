@@ -149,6 +149,26 @@ enum McpActivationStage {
   failed
 }
 
+enum InboundMcpOAuthApplicationType {
+  NATIVE
+  WEB
+}
+
+enum InboundMcpOAuthClientKind {
+  CLIENT_ID_METADATA_DOCUMENT
+  DYNAMIC_REGISTRATION
+}
+
+enum InboundMcpOAuthGrantState {
+  ACTIVE
+  REVOKED
+}
+
+enum InboundMcpOAuthTokenKind {
+  ACCESS
+  REFRESH
+}
+
 enum ModelRunToolCallState {
   pending
   running
@@ -444,6 +464,7 @@ enum MemoryExecutionOwnerType {
   RETRIEVAL_ATTEMPT
   MODEL_RUN_TOOL_CALL
   MUTATION_AUTHORIZATION
+  INBOUND_MCP_REQUEST
 }
 
 enum MemoryExecutionState {
@@ -696,6 +717,7 @@ model User {
   knowledgeSources                    KnowledgeSource[]                  @relation("KnowledgeSourceOwner")
   knowledgeUploadBatches              KnowledgeUploadBatch[]
   memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
+  inboundMcpOAuthGrants               InboundMcpOAuthGrant[]
   mcpGrants                           McpGrant[]
   mcpActivationJobs                   McpActivationJob[]
   mcpOAuthConnections                 McpOAuthConnection[]
@@ -2833,6 +2855,104 @@ model McpOAuthConnection {
 
   @@index([oauthClientId])
   @@index([serverId, userId, purpose, state])
+}
+
+model InboundMcpOAuthClient {
+  id                  String                             @id @default(uuid())
+  clientId            String                             @unique @db.VarChar(2048)
+  clientName          String                             @db.VarChar(200)
+  clientOrigin        String                             @db.VarChar(2048)
+  clientUri           String?                            @db.VarChar(2048)
+  redirectUris        String[]
+  applicationType     InboundMcpOAuthApplicationType
+  kind                InboundMcpOAuthClientKind
+  metadataFingerprint String                             @db.VarChar(64)
+  metadataExpiresAt   DateTime?
+  lastUsedAt          DateTime?
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
+  authorizationCodes  InboundMcpOAuthAuthorizationCode[]
+  grants              InboundMcpOAuthGrant[]
+
+  @@index([kind, lastUsedAt, createdAt])
+  @@index([metadataExpiresAt])
+}
+
+model InboundMcpOAuthGrant {
+  id                 String                             @id @default(uuid())
+  userId             String
+  oauthClientId      String
+  revision           Int                                @default(1)
+  state              InboundMcpOAuthGrantState          @default(ACTIVE)
+  connectedAt        DateTime                           @default(now())
+  lastUsedAt         DateTime?
+  revokedAt          DateTime?
+  createdAt          DateTime                           @default(now())
+  updatedAt          DateTime                           @updatedAt
+  authorizationCodes InboundMcpOAuthAuthorizationCode[]
+  client             InboundMcpOAuthClient              @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
+  tokenFamilies      InboundMcpOAuthTokenFamily[]
+  user               User                               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([id, oauthClientId])
+  @@unique([userId, oauthClientId])
+  @@index([oauthClientId, state])
+  @@index([userId, state, updatedAt])
+}
+
+model InboundMcpOAuthAuthorizationCode {
+  id            String                @id @default(uuid())
+  codeHash      String                @unique @db.VarChar(64)
+  grantId       String
+  oauthClientId String
+  grantRevision Int
+  redirectUri   String                @db.VarChar(2048)
+  codeChallenge String                @db.VarChar(43)
+  issuer        String                @db.VarChar(2048)
+  resource      String                @db.VarChar(2048)
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  createdAt     DateTime              @default(now())
+  client        InboundMcpOAuthClient @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
+  grant         InboundMcpOAuthGrant  @relation(fields: [grantId, oauthClientId], references: [id, oauthClientId], onDelete: Cascade)
+
+  @@index([expiresAt, consumedAt])
+  @@index([grantId, grantRevision])
+  @@index([oauthClientId])
+}
+
+model InboundMcpOAuthTokenFamily {
+  id                  String                 @id @default(uuid())
+  grantId             String
+  grantRevision       Int
+  issuer              String                 @db.VarChar(2048)
+  resource            String                 @db.VarChar(2048)
+  inactivityExpiresAt DateTime
+  lastUsedAt          DateTime?
+  revokedAt           DateTime?
+  revocationReason    String?                @db.VarChar(64)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  grant               InboundMcpOAuthGrant   @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  tokens              InboundMcpOAuthToken[]
+
+  @@index([grantId, grantRevision, revokedAt])
+  @@index([inactivityExpiresAt, revokedAt])
+}
+
+model InboundMcpOAuthToken {
+  id         String                     @id @default(uuid())
+  familyId   String
+  kind       InboundMcpOAuthTokenKind
+  tokenHash  String                     @unique @db.VarChar(64)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime                   @default(now())
+  family     InboundMcpOAuthTokenFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt, kind, consumedAt])
+  @@index([familyId, kind, consumedAt])
 }
 
 model McpRuntimeGeneration {
@@ -5078,6 +5198,7 @@ model MemoryExecutionBinding {
   modelRunId                  String?
   modelRunToolCallId          String?
   mutationAuthorizationId     String?
+  inboundMcpRequestId         String?
   logicalRole                 String                   @db.VarChar(64)
   ordinal                     Int
   state                       MemoryExecutionState     @default(PENDING)
@@ -5114,6 +5235,7 @@ model MemoryExecutionBinding {
   @@index([userId, retrievalAttemptId, ordinal])
   @@index([userId, modelRunId, modelRunToolCallId, ordinal])
   @@index([userId, mutationAuthorizationId, ordinal])
+  @@index([userId, inboundMcpRequestId, ordinal], map: "MemoryExecutionBinding_user_inbound_mcp_ordinal_idx")
   @@index([connectionId, providerModelId])
   @@index([credentialId, credentialVersionId])
 }

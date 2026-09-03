@@ -71,6 +71,20 @@ export type KnowledgeUploadSessionStageResult = KnowledgeUploadSessionInspection
   multipartSessionsReleased: number;
 };
 
+export type InboundMcpOAuthPruneCandidates = Readonly<{
+  authorizationCodeIds: string[];
+  clientIds: string[];
+  grantIds: string[];
+  tokenFamilyIds: string[];
+}>;
+
+export type InboundMcpOAuthPruneResult = Readonly<{
+  authorizationCodes: number;
+  clients: number;
+  grants: number;
+  tokenFamilies: number;
+}>;
+
 export type RetentionRepository = {
   claimAttachmentDeletionJobs(input: {
     claimableBefore: Date;
@@ -80,6 +94,10 @@ export type RetentionRepository = {
   completeAttachmentDeletionJob(input: { claimToken: string; id: string }): Promise<boolean>;
   deleteAuthFlowTokens(input: { cutoff: Date; ids: string[] }): Promise<number>;
   deleteAuthSessions(input: { cutoff: Date; ids: string[] }): Promise<number>;
+  deletePrunableInboundMcpOAuth(input: {
+    candidates: InboundMcpOAuthPruneCandidates;
+    cutoff: Date;
+  }): Promise<InboundMcpOAuthPruneResult>;
   deleteModelRunEvents(ids: string[]): Promise<number>;
   findClaimableAttachmentDeletionJobIds(input: {
     claimableBefore: Date;
@@ -87,6 +105,10 @@ export type RetentionRepository = {
   }): Promise<string[]>;
   findPrunableAuthFlowTokenIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
   findPrunableAuthSessionIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
+  findPrunableInboundMcpOAuth(input: {
+    cutoff: Date;
+    limit: number;
+  }): Promise<InboundMcpOAuthPruneCandidates>;
   findPrunableModelRunEventIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
   inspectOrphanedAttachments(input: { cutoff: Date; limit: number }): Promise<AttachmentInspection>;
   inspectStaleKnowledgePayloads(input: {
@@ -183,6 +205,12 @@ export type PruneRetentionSummary = {
   authSessions: RetentionCount;
   dryRun: boolean;
   eventCutoff: string;
+  inboundMcpOAuth: {
+    authorizationCodes: RetentionCount;
+    clients: RetentionCount;
+    grants: RetentionCount;
+    tokenFamilies: RetentionCount;
+  };
   knowledgePayloadCutoff: string;
   knowledgePayloads: {
     jobsStaged: number;
@@ -374,6 +402,49 @@ function prunableAuthFlowTokenWhere(cutoff: Date): Prisma.AuthFlowTokenWhereInpu
   };
 }
 
+function prunableInboundMcpAuthorizationCodeWhere(
+  cutoff: Date
+): Prisma.InboundMcpOAuthAuthorizationCodeWhereInput {
+  return {
+    OR: [
+      { consumedAt: { lt: cutoff } },
+      { consumedAt: null, expiresAt: { lt: cutoff } }
+    ]
+  };
+}
+
+function prunableInboundMcpTokenFamilyWhere(
+  cutoff: Date
+): Prisma.InboundMcpOAuthTokenFamilyWhereInput {
+  return {
+    OR: [
+      { revokedAt: { lt: cutoff } },
+      { inactivityExpiresAt: { lt: cutoff }, revokedAt: null }
+    ]
+  };
+}
+
+function prunableInboundMcpGrantWhere(
+  cutoff: Date
+): Prisma.InboundMcpOAuthGrantWhereInput {
+  return {
+    revokedAt: { lt: cutoff },
+    state: "REVOKED"
+  };
+}
+
+function prunableInboundMcpClientWhere(
+  cutoff: Date
+): Prisma.InboundMcpOAuthClientWhereInput {
+  return {
+    grants: { none: {} },
+    OR: [
+      { lastUsedAt: { lt: cutoff } },
+      { createdAt: { lt: cutoff }, lastUsedAt: null }
+    ]
+  };
+}
+
 function staleKnowledgePayloadWhere(cutoff: Date): Prisma.KnowledgeDocumentVersionWhereInput {
   return {
     currentFor: null,
@@ -506,6 +577,49 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
 
       return deleted.count;
     },
+    deletePrunableInboundMcpOAuth({ candidates, cutoff }) {
+      return prisma.$transaction(async (tx) => {
+        const authorizationCodes = candidates.authorizationCodeIds.length === 0
+          ? { count: 0 }
+          : await tx.inboundMcpOAuthAuthorizationCode.deleteMany({
+            where: {
+              ...prunableInboundMcpAuthorizationCodeWhere(cutoff),
+              id: { in: candidates.authorizationCodeIds }
+            }
+          });
+        const tokenFamilies = candidates.tokenFamilyIds.length === 0
+          ? { count: 0 }
+          : await tx.inboundMcpOAuthTokenFamily.deleteMany({
+            where: {
+              ...prunableInboundMcpTokenFamilyWhere(cutoff),
+              id: { in: candidates.tokenFamilyIds }
+            }
+          });
+        const grants = candidates.grantIds.length === 0
+          ? { count: 0 }
+          : await tx.inboundMcpOAuthGrant.deleteMany({
+            where: {
+              ...prunableInboundMcpGrantWhere(cutoff),
+              id: { in: candidates.grantIds }
+            }
+          });
+        const clients = candidates.clientIds.length === 0
+          ? { count: 0 }
+          : await tx.inboundMcpOAuthClient.deleteMany({
+            where: {
+              ...prunableInboundMcpClientWhere(cutoff),
+              id: { in: candidates.clientIds }
+            }
+          });
+
+        return {
+          authorizationCodes: authorizationCodes.count,
+          clients: clients.count,
+          grants: grants.count,
+          tokenFamilies: tokenFamilies.count
+        };
+      });
+    },
     async deleteModelRunEvents(ids) {
       if (ids.length === 0) {
         return 0;
@@ -581,6 +695,41 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       });
 
       return rows.map((row) => row.id);
+    },
+    async findPrunableInboundMcpOAuth({ cutoff, limit }) {
+      const [authorizationCodes, tokenFamilies, grants, clients] = await Promise.all([
+        prisma.inboundMcpOAuthAuthorizationCode.findMany({
+          orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+          select: { id: true },
+          take: limit,
+          where: prunableInboundMcpAuthorizationCodeWhere(cutoff)
+        }),
+        prisma.inboundMcpOAuthTokenFamily.findMany({
+          orderBy: [{ inactivityExpiresAt: "asc" }, { id: "asc" }],
+          select: { id: true },
+          take: limit,
+          where: prunableInboundMcpTokenFamilyWhere(cutoff)
+        }),
+        prisma.inboundMcpOAuthGrant.findMany({
+          orderBy: [{ revokedAt: "asc" }, { id: "asc" }],
+          select: { id: true },
+          take: limit,
+          where: prunableInboundMcpGrantWhere(cutoff)
+        }),
+        prisma.inboundMcpOAuthClient.findMany({
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: { id: true },
+          take: limit,
+          where: prunableInboundMcpClientWhere(cutoff)
+        })
+      ]);
+
+      return {
+        authorizationCodeIds: authorizationCodes.map((row) => row.id),
+        clientIds: clients.map((row) => row.id),
+        grantIds: grants.map((row) => row.id),
+        tokenFamilyIds: tokenFamilies.map((row) => row.id)
+      };
     },
     async findPrunableModelRunEventIds({ cutoff, limit }) {
       const rows = await prisma.modelRunEvent.findMany({
@@ -1136,6 +1285,7 @@ function emptySummary(input: {
   dryRun: boolean;
   eventCutoff: Date;
   eventIds: string[];
+  inboundMcpOAuthCandidates: InboundMcpOAuthPruneCandidates;
   knowledgePayloadCutoff: Date;
   knowledgePayloadInspection: KnowledgePayloadInspection;
   knowledgeTrashCutoff: Date;
@@ -1164,6 +1314,24 @@ function emptySummary(input: {
     },
     dryRun: input.dryRun,
     eventCutoff: input.eventCutoff.toISOString(),
+    inboundMcpOAuth: {
+      authorizationCodes: {
+        deleted: 0,
+        matched: input.inboundMcpOAuthCandidates.authorizationCodeIds.length
+      },
+      clients: {
+        deleted: 0,
+        matched: input.inboundMcpOAuthCandidates.clientIds.length
+      },
+      grants: {
+        deleted: 0,
+        matched: input.inboundMcpOAuthCandidates.grantIds.length
+      },
+      tokenFamilies: {
+        deleted: 0,
+        matched: input.inboundMcpOAuthCandidates.tokenFamilyIds.length
+      }
+    },
     knowledgePayloadCutoff: input.knowledgePayloadCutoff.toISOString(),
     knowledgePayloads: {
       jobsStaged: 0,
@@ -1252,6 +1420,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     knowledgeUploadSessionInspection,
     authSessionIds,
     authFlowTokenIds,
+    inboundMcpOAuthCandidates,
     initialDeletionJobIds
   ] = await Promise.all([
     options.repository.findPrunableModelRunEventIds({ cutoff: eventCutoff, limit: batchSize }),
@@ -1264,6 +1433,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     }),
     options.repository.findPrunableAuthSessionIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableAuthFlowTokenIds({ cutoff: authCutoff, limit: batchSize }),
+    options.repository.findPrunableInboundMcpOAuth({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findClaimableAttachmentDeletionJobIds({ claimableBefore, limit: batchSize })
   ]);
   const summary = emptySummary({
@@ -1274,6 +1444,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     dryRun,
     eventCutoff,
     eventIds,
+    inboundMcpOAuthCandidates,
     knowledgePayloadCutoff,
     knowledgePayloadInspection,
     knowledgeTrashCutoff,
@@ -1288,10 +1459,14 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     return summary;
   }
 
-  const [deletedEvents, deletedSessions, deletedFlowTokens] = await Promise.all([
+  const [deletedEvents, deletedSessions, deletedFlowTokens, deletedInboundMcpOAuth] = await Promise.all([
     options.repository.deleteModelRunEvents(eventIds),
     options.repository.deleteAuthSessions({ cutoff: authCutoff, ids: authSessionIds }),
-    options.repository.deleteAuthFlowTokens({ cutoff: authCutoff, ids: authFlowTokenIds })
+    options.repository.deleteAuthFlowTokens({ cutoff: authCutoff, ids: authFlowTokenIds }),
+    options.repository.deletePrunableInboundMcpOAuth({
+      candidates: inboundMcpOAuthCandidates,
+      cutoff: authCutoff
+    })
   ]);
   const stagedKnowledgeTrash = await options.repository.stageExpiredKnowledgeTrash({
     cutoff: knowledgeTrashCutoff,
@@ -1332,6 +1507,10 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   summary.modelRunEvents.deleted = deletedEvents;
   summary.authSessions.deleted = deletedSessions;
   summary.authFlowTokens.deleted = deletedFlowTokens;
+  summary.inboundMcpOAuth.authorizationCodes.deleted = deletedInboundMcpOAuth.authorizationCodes;
+  summary.inboundMcpOAuth.clients.deleted = deletedInboundMcpOAuth.clients;
+  summary.inboundMcpOAuth.grants.deleted = deletedInboundMcpOAuth.grants;
+  summary.inboundMcpOAuth.tokenFamilies.deleted = deletedInboundMcpOAuth.tokenFamilies;
   summary.knowledgePayloads = {
     jobsStaged: stagedKnowledgePayloads.jobsStaged,
     matched: stagedKnowledgePayloads.matched,

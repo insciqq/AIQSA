@@ -30,7 +30,13 @@ const publicPrefixes = [
   "/api/auth/verify-email",
   "/api/auth/logout",
   "/api/test/auth-mails",
-  "/api/public-shares"
+  "/api/public-shares",
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/oauth-protected-resource",
+  "/oauth/register",
+  "/oauth/revoke",
+  "/oauth/token",
+  "/mcp"
 ];
 
 function isPublicPath(

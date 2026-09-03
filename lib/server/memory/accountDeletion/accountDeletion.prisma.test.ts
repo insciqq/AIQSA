@@ -259,15 +259,27 @@ async function drainAccountMemoryProjection(userId: string, now: Date) {
         projectionBatch: 16,
         verificationBatch: 4
       },
+      // Other stateful suites can own unrelated projection generations in the
+      // same disposable database. This helper proves the account's ordered
+      // purge duties; global generation verification belongs to its own lane.
+      deferVerification: true,
       now: new Date(now.getTime() + passNumber),
       openSearchConfiguration,
       search: search.client,
       store
     });
-    if (pass.failed !== 0 || pass.integrityFailed !== 0) {
-      throw new Error("account_memory_projection_drain_failed");
-    }
-    if (pass.claimed === 0) break;
+    const targetFailed = await prisma.memoryLexicalProjectionEvent.count({
+      where: {
+        state: { in: ["BLOCKED_REQUIRES_ADMIN", "RETRY_WAIT"] },
+        userId
+      }
+    });
+    if (targetFailed !== 0) throw new Error("account_memory_projection_drain_failed");
+    const targetOutstanding = await prisma.memoryLexicalProjectionEvent.count({
+      where: { state: { not: "SUCCEEDED" }, userId }
+    });
+    if (targetOutstanding === 0) break;
+    if (pass.claimed === 0) throw new Error("account_memory_projection_drain_stalled");
   }
   const outstanding = await prisma.memoryLexicalProjectionEvent.count({
     where: { state: { not: "SUCCEEDED" }, userId }
@@ -304,6 +316,7 @@ async function populateReusableMemory(
   const versionId = randomUUID();
   const jobId = randomUUID();
   const bindingId = randomUUID();
+  const inboundMcpBindingId = randomUUID();
   const mutationAuthorizationId = randomUUID();
   const manualClassifierBindingId = randomUUID();
   const entityId = randomUUID();
@@ -554,6 +567,35 @@ async function populateReusableMemory(
         userId
       }
     });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: "7".repeat(64),
+        completedAt: input.now,
+        connectionId: provider.connectionId,
+        createdAt: startedAt,
+        credentialId: provider.credentialId,
+        credentialVersionId: provider.credentialVersionId,
+        destinationFingerprint: "8".repeat(64),
+        inboundMcpRequestId: randomUUID(),
+        inputHash: "9".repeat(64),
+        logicalRole: "MEMORY_QUERY_EMBED",
+        ordinal: 1,
+        ownerType: "INBOUND_MCP_REQUEST",
+        pipelineVersion: "account-memory-test-v1",
+        policyVersion: "account-memory-test-v1",
+        promptVersion: "account-memory-test-v1",
+        providerId: "openai_compatible",
+        providerModelId: provider.modelId,
+        providerResponseId: `account-memory-inbound-response-${randomUUID()}`,
+        recoverableUntil: new Date(input.now.getTime() - 1),
+        schemaVersion: "account-memory-test-v1",
+        secretFreeExecutionSnapshot: { schemaVersion: "account-memory-test-v1" },
+        startedAt,
+        state: "SUCCEEDED",
+        userId,
+        id: inboundMcpBindingId
+      }
+    });
     await tx.memoryMutationAuthorization.create({
       data: {
         action: "SAVE",
@@ -632,6 +674,15 @@ async function populateReusableMemory(
         userId
       }
     });
+    await tx.usageEvent.create({
+      data: {
+        memoryExecutionBindingId: inboundMcpBindingId,
+        modelId: embeddingConfiguration.upstreamModelId,
+        provider: "openai_compatible",
+        providerModelId: provider.modelId,
+        userId
+      }
+    });
   });
 
   const feedback = createPrismaMemoryFeedbackRepository(prisma);
@@ -647,7 +698,14 @@ async function populateReusableMemory(
     requestId: randomUUID(),
     retractsFeedbackId: original.feedbackId
   });
-  return { bindingId, factId, jobId, manualClassifierBindingId, versionId };
+  return {
+    bindingId,
+    factId,
+    inboundMcpBindingId,
+    jobId,
+    manualClassifierBindingId,
+    versionId
+  };
 }
 
 async function populatePendingFactExtraction(
@@ -1181,6 +1239,18 @@ describe("Prisma account Memory deletion", () => {
         credentialId: null,
         credentialVersionId: null,
         ownerType: "MUTATION_AUTHORIZATION",
+        providerModelId: null,
+        providerResponseId: null,
+        relationsDetachedAt: clock
+      });
+      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
+        where: { id: fixture.inboundMcpBindingId }
+      })).toMatchObject({
+        connectionId: null,
+        credentialId: null,
+        credentialVersionId: null,
+        inboundMcpRequestId: expect.any(String),
+        ownerType: "INBOUND_MCP_REQUEST",
         providerModelId: null,
         providerResponseId: null,
         relationsDetachedAt: clock

@@ -1,4 +1,4 @@
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { FetchLike } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   McpRequestTooLargeError,

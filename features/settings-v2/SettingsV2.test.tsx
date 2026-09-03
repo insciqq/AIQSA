@@ -7,6 +7,7 @@ describe("SettingsV2", () => {
     const onThemeChange = vi.fn();
     render(
       <SettingsV2
+        connectedAppsContent={<p>Connected apps owner</p>}
         mcpContent={<p>MCP owner</p>}
         onClose={vi.fn()}
         onThemeChange={onThemeChange}
@@ -27,6 +28,7 @@ describe("SettingsV2", () => {
     const onDiscard = vi.fn();
     render(
       <SettingsV2
+        connectedAppsContent={<p>Connected apps owner</p>}
         dirty
         initialSection="mcp"
         mcpContent={<p>MCP owner</p>}
@@ -49,6 +51,7 @@ describe("SettingsV2", () => {
     render(
       <SettingsV2
         busy
+        connectedAppsContent={<p>Connected apps owner</p>}
         initialSection="mcp"
         mcpContent={<p>MCP owner</p>}
         onClose={onClose}
@@ -59,5 +62,26 @@ describe("SettingsV2", () => {
     expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Settings" }), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps authorized apps separate from MCP servers AIQSA calls", () => {
+    render(
+      <SettingsV2
+        connectedAppsContent={<p>Personal Memory grants</p>}
+        mcpContent={<p>Outbound MCP servers</p>}
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+        themeId="dark"
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connected apps" }));
+    expect(screen.getByRole("heading", { name: "Connected apps" })).toBeInTheDocument();
+    expect(screen.getByText("Personal Memory grants")).toBeInTheDocument();
+    expect(screen.queryByText("Outbound MCP servers")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "MCP & tools" }));
+    expect(screen.getByText("Outbound MCP servers")).toBeInTheDocument();
+    expect(screen.queryByText("Personal Memory grants")).not.toBeInTheDocument();
   });
 });

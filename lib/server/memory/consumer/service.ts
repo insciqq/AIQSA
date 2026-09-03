@@ -1,12 +1,14 @@
 import type { MemoryDeletionState } from "@prisma/client";
 import {
   MEMORY_CONSUMER_CONFIRMATION_COPY_VERSION,
+  decodeMemoryConsumerItemResponse,
   decodeMemoryConsumerListResponse,
   decodeMemoryConsumerMutationResponse,
   decodeMemoryConsumerSettingsResponse,
   type MemoryConsumerForgetInput,
   type MemoryConsumerForgetResponse,
   type MemoryConsumerItem,
+  type MemoryConsumerItemResponse,
   type MemoryConsumerListInput,
   type MemoryConsumerListResponse,
   type MemoryConsumerMutationResponse,
@@ -25,7 +27,8 @@ import {
 import { memorySha256 } from "../persistence/lexical";
 import {
   ExplicitMemoryServiceError,
-  type ExplicitMemoryService
+  type ExplicitMemoryService,
+  type MemoryMutationAuthorizationContext
 } from "../explicit/service";
 import {
   MemoryLifecycleServiceError,
@@ -61,21 +64,29 @@ export type MemoryConsumerResetStateReader = (
   userId: string
 ) => Promise<MemoryDeletionState | null>;
 
+export type MemoryConsumerMutationContext = Readonly<{
+  authority: "DELEGATED_MCP" | "DIRECT_USER";
+}>;
+
 export type MemoryConsumerService = Readonly<{
   create(
     userId: string,
-    input: MemoryConsumerStatementMutation
+    input: MemoryConsumerStatementMutation,
+    context?: MemoryConsumerMutationContext
   ): Promise<MemoryConsumerMutationResponse>;
   edit(
     userId: string,
     memoryRef: string,
-    input: MemoryConsumerStatementMutation
+    input: MemoryConsumerStatementMutation,
+    context?: MemoryConsumerMutationContext
   ): Promise<MemoryConsumerMutationResponse>;
   forget(
     userId: string,
     memoryRef: string,
-    input: MemoryConsumerForgetInput
+    input: MemoryConsumerForgetInput,
+    context?: MemoryConsumerMutationContext
   ): Promise<MemoryConsumerForgetResponse>;
+  get(userId: string, memoryRef: string): Promise<MemoryConsumerItemResponse>;
   list(
     userId: string,
     input: MemoryConsumerListInput
@@ -263,7 +274,7 @@ function projectSettings(
   return decoded.ok ? decoded.value : failure("memory_action_failed");
 }
 
-function itemFromSummary(
+export function projectMemoryConsumerItem(
   refs: MemoryConsumerRefService,
   userId: string,
   summary: MemorySummary,
@@ -279,7 +290,7 @@ function itemFromSummary(
     category: category(summary.category),
     createdAt: summary.createdAt,
     memoryRef: refs.mintItem(userId, {
-      allowedOperations: ["EDIT", "FORGET"],
+      allowedOperations: ["READ", "EDIT", "FORGET"],
       factId: summary.id,
       factVersionId: versionId
     }, now),
@@ -290,6 +301,17 @@ function itemFromSummary(
   };
 }
 
+function projectItem(
+  refs: MemoryConsumerRefService,
+  userId: string,
+  summary: MemorySummary,
+  now: Date
+): MemoryConsumerItemResponse {
+  const candidate = { item: projectMemoryConsumerItem(refs, userId, summary, now) };
+  const decoded = decodeMemoryConsumerItemResponse(candidate);
+  return decoded.ok ? decoded.value : failure("memory_action_failed");
+}
+
 function projectList(
   refs: MemoryConsumerRefService,
   userId: string,
@@ -297,7 +319,8 @@ function projectList(
   now: Date
 ): MemoryConsumerListResponse {
   const candidate: MemoryConsumerListResponse = {
-    items: response.memories.map((memory) => itemFromSummary(refs, userId, memory, now)),
+    items: response.memories.map((memory) =>
+      projectMemoryConsumerItem(refs, userId, memory, now)),
     nextCursor: response.nextCursor
       ? refs.mintCursor(userId, response.nextCursor, now)
       : null
@@ -312,9 +335,21 @@ function projectMutation(
   response: Awaited<ReturnType<ExplicitMemoryService["create"]>>,
   now: Date
 ): MemoryConsumerMutationResponse {
-  const candidate = { item: itemFromSummary(refs, userId, response.memory, now) };
+  const candidate = projectItem(refs, userId, response.memory, now);
   const decoded = decodeMemoryConsumerMutationResponse(candidate);
   return decoded.ok ? decoded.value : failure("memory_action_failed");
+}
+
+function mutationAuthorizationContext(
+  context: MemoryConsumerMutationContext | undefined
+): MemoryMutationAuthorizationContext {
+  if (!context || context.authority === "DIRECT_USER") {
+    return { origin: "DIRECT_API" };
+  }
+  if (context.authority === "DELEGATED_MCP") {
+    return { origin: "DELEGATED_MCP" };
+  }
+  return failure("memory_contract_invalid");
 }
 
 function resolvedCursor(
@@ -350,14 +385,14 @@ export function createMemoryConsumerService(input: Readonly<{
   }
 
   return Object.freeze({
-    create(userId, createInput) {
+    create(userId, createInput, context) {
       return safe(async () => {
         const authorization = await input.explicitService.mintAuthorization(userId, {
           action: "SAVE",
           confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
           exactStatementHash: memorySha256(createInput.statement),
           requestNonce: createInput.requestId
-        });
+        }, mutationAuthorizationContext(context));
         const response = await input.explicitService.create(userId, {
           mutationAuthorizationId: authorization.mutationAuthorizationId,
           scope: { type: "GLOBAL_USER" },
@@ -367,7 +402,7 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    edit(userId, memoryRef, editInput) {
+    edit(userId, memoryRef, editInput, context) {
       return safe(async () => {
         const target = refs.resolveItem(userId, memoryRef, "EDIT", clock());
         if (!target) return failure("memory_not_found");
@@ -377,7 +412,7 @@ export function createMemoryConsumerService(input: Readonly<{
           expectedTargetVersionId: target.factVersionId,
           requestNonce: editInput.requestId,
           targetFactId: target.factId
-        });
+        }, mutationAuthorizationContext(context));
         const response = await input.explicitService.update(userId, target.factId, {
           expectedVersionId: target.factVersionId,
           mutationAuthorizationId: authorization.mutationAuthorizationId,
@@ -387,7 +422,7 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    forget(userId, memoryRef, forgetInput) {
+    forget(userId, memoryRef, forgetInput, context) {
       return safe(async () => {
         const target = refs.resolveItem(userId, memoryRef, "FORGET", clock());
         if (!target) return failure("memory_not_found");
@@ -397,12 +432,30 @@ export function createMemoryConsumerService(input: Readonly<{
           expectedTargetVersionId: target.factVersionId,
           requestNonce: forgetInput.requestId,
           targetFactId: target.factId
-        });
+        }, mutationAuthorizationContext(context));
         await input.lifecycleService.forget(userId, target.factId, {
           expectedVersionId: target.factVersionId,
           mutationAuthorizationId: authorization.mutationAuthorizationId
         });
         return { status: "FORGOTTEN" };
+      });
+    },
+
+    get(userId, memoryRef) {
+      return safe(async () => {
+        const now = clock();
+        const target = refs.resolveItem(userId, memoryRef, "READ", now);
+        if (!target) return failure("memory_not_found");
+        const detail = await input.explicitService.get(userId, target.factId);
+        const currentVersionId = detail.memory.currentVersionId ??
+          detail.memory.actionVersionId;
+        if (detail.memory.factState !== "ACTIVE" || !currentVersionId) {
+          return failure("memory_not_found");
+        }
+        if (currentVersionId !== target.factVersionId) {
+          return failure("memory_changed");
+        }
+        return projectItem(refs, userId, detail.memory, now);
       });
     },
 

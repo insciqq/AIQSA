@@ -176,7 +176,8 @@ export type ExplicitMemoryService = Readonly<{
   list(userId: string, input: MemoryListInput): Promise<MemoryListResponse>;
   mintAuthorization(
     userId: string,
-    input: MemoryMutationAuthorizationInput
+    input: MemoryMutationAuthorizationInput,
+    context?: MemoryMutationAuthorizationContext
   ): Promise<MemoryMutationAuthorizationResponse>;
   search(userId: string, input: MemoryListSearchInput): Promise<MemoryListResponse>;
   resolveConflict(
@@ -195,6 +196,10 @@ export type ExplicitMemoryService = Readonly<{
     input: MemoryUpdateInput,
     execution?: MemoryOperationExecutionContext
   ): Promise<MemoryMutationResponse>;
+}>;
+
+export type MemoryMutationAuthorizationContext = Readonly<{
+  origin: "DELEGATED_MCP" | "DIRECT_API";
 }>;
 
 export type MemoryOperationExecutionContext = Readonly<{
@@ -589,7 +594,19 @@ export function createExplicitMemoryService(input: Readonly<{
       ));
     },
 
-    async mintAuthorization(userId, authorizationInput) {
+    async mintAuthorization(userId, authorizationInput, context) {
+      const origin = context?.origin ?? "DIRECT_API";
+      if (origin !== "DIRECT_API" && origin !== "DELEGATED_MCP") {
+        return failure("memory_contract_invalid");
+      }
+      if (
+        origin === "DELEGATED_MCP" &&
+        authorizationInput.action !== "SAVE" &&
+        authorizationInput.action !== "EDIT" &&
+        authorizationInput.action !== "FORGET"
+      ) {
+        return failure("memory_operation_unsupported");
+      }
       if (
         authorizationInput.action === "BULK_DELETE" &&
         authorizationInput.operation !== "DELETE_EXPLICIT" &&
@@ -613,7 +630,7 @@ export function createExplicitMemoryService(input: Readonly<{
         exactTarget: authorizationInput.action !== "SAVE",
         expectedVersion: target !== null,
         explicitConfirmation: true,
-        origin: "DIRECT_API"
+        origin
       });
       if (!allowed) return failure("memory_intent_confirmation_required");
       const now = clock();

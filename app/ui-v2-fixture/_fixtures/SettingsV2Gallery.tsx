@@ -28,6 +28,12 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
       <UiV2Button onClick={() => setOpen(true)}>Open settings</UiV2Button>
       {open ? (
         <SettingsV2
+          connectedAppsContent={(
+            <div className="v2-settings-fixture-dirty">
+              <p>Codex · Active · Personal Memory facts</p>
+              <p>Revoking access keeps stored Memory facts.</p>
+            </div>
+          )}
           dirty={dirty}
           initialSection={state === "appearance" ? "appearance" : "mcp"}
           mcpContent={(

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type SettingsSection = "appearance" | "mcp";
+export type SettingsSection = "appearance" | "connected_apps" | "mcp";
 
 export type SettingsDestinationSnapshot = {
   memoryOpen: boolean;

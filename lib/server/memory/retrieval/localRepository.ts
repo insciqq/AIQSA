@@ -191,7 +191,8 @@ export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 export type MemoryLocalRetrievalSnapshot = Readonly<{
   activeGenerationId: string | null;
   assistantId: string | null;
-  chatId: string;
+  /** Null only for the run-independent, global facts-only read boundary. */
+  chatId: string | null;
   chatMemoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   decayEnabled: boolean;
   decayPolicyVersion: string | null;
@@ -227,7 +228,8 @@ export type MemoryLocalRetrievalInput = Readonly<{
   assistantId: string | null;
   /** Original-query ordinary-read floor. Null/omitted for typed bounded modes. */
   baselinePlan?: MemoryRetrievalPlan;
-  chatId: string;
+  /** Null admits only the strict global current-FACT plan; it is not a Chat id. */
+  chatId: string | null;
   now: Date;
   plan: MemoryRetrievalPlan;
   settleSignal?: AbortSignal;
@@ -886,7 +888,7 @@ function snapshotAuthorityFingerprint(snapshot: MemoryLocalRetrievalSnapshot): s
     keys.some((key, index) => key !== memoryLocalRetrievalSnapshotKeys[index]) ||
     !nullableToken(snapshot.activeGenerationId) ||
     !nullableToken(snapshot.assistantId) ||
-    !validToken(snapshot.chatId) ||
+    !nullableToken(snapshot.chatId) ||
     !["EXCLUDED", "NORMAL", "TEMPORARY"].includes(snapshot.chatMemoryMode) ||
     !nullableToken(snapshot.contextualKeyPolicyVersion ?? null) ||
     typeof snapshot.decayEnabled !== "boolean" ||
@@ -918,10 +920,14 @@ async function loadSnapshot(
   client: PrismaClient,
   input: MemoryLocalRetrievalInput
 ): Promise<MemoryLocalRetrievalSnapshot> {
+  const directFactRead = input.chatId === null;
   if (
-    !validToken(input.userId) || !validToken(input.chatId) ||
+    !validToken(input.userId) ||
+    (!directFactRead && !validToken(input.chatId)) ||
+    (directFactRead && input.assistantId !== null) ||
     (input.assistantId !== null && !validToken(input.assistantId)) ||
-    !(input.now instanceof Date) || !Number.isFinite(input.now.getTime())
+    !(input.now instanceof Date) || !Number.isFinite(input.now.getTime()) ||
+    (directFactRead && !validDirectFactPlan(input.plan))
   ) throw new Error("memory_retrieval_context_invalid");
   const rows = await withMemoryReadBudget(
     client,
@@ -968,7 +974,8 @@ async function loadSnapshot(
     `)
   );
   const row = rows[0];
-  if (!row || row.ownerStatus !== "active" || row.chatId !== input.chatId) {
+  if (!row || row.ownerStatus !== "active" ||
+    (!directFactRead && row.chatId !== input.chatId)) {
     throw new Error("memory_retrieval_context_unavailable");
   }
   if (row.chatFolderId !== null && row.folderOwnerId !== input.userId) {
@@ -978,7 +985,7 @@ async function loadSnapshot(
     ? input.assistantId
     : null;
   const useMemoryFacts = row.useMemoryFacts === true;
-  const referenceChatHistory = row.referenceChatHistory === true;
+  const referenceChatHistory = !directFactRead && row.referenceChatHistory === true;
   const memoryRevision = Number.isSafeInteger(row.memoryRevision)
     ? Number(row.memoryRevision)
     : 0;
@@ -995,7 +1002,8 @@ async function loadSnapshot(
     activeGenerationId: row.activeIndexGenerationId,
     assistantId,
     chatId: input.chatId,
-    chatMemoryMode: row.chatMemoryMode === "EXCLUDED" || row.chatMemoryMode === "TEMPORARY"
+    chatMemoryMode: !directFactRead &&
+      (row.chatMemoryMode === "EXCLUDED" || row.chatMemoryMode === "TEMPORARY")
       ? row.chatMemoryMode
       : "NORMAL",
     decayEnabled: row.decayEnabled === true,
@@ -1020,7 +1028,7 @@ async function loadSnapshot(
     useMemoryFacts,
     userId: input.userId
   } as const;
-  if (row.chatMemoryMode === "TEMPORARY") {
+  if (!directFactRead && row.chatMemoryMode === "TEMPORARY") {
     return { ...base, reason: "temporary_chat", status: "DISABLED" };
   }
   if (!useMemoryFacts) {
@@ -5821,6 +5829,27 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
     temporalShape && modeShape &&
     (!plan.profileRequested || !plan.recencyRequested) &&
     (plan.lexicalQuery === null || plan.lexicalQuery.length <= 2_000);
+}
+
+function validDirectFactPlan(plan: MemoryRetrievalPlan): boolean {
+  return validPlan(plan) &&
+    plan.mode === "TARGETED_CURRENT" &&
+    plan.temporalIntent === "ANY" &&
+    plan.filters.sourceKinds.length === 1 &&
+    plan.filters.sourceKinds[0] === "FACT" &&
+    plan.filters.asOf === null &&
+    plan.filters.from === null &&
+    plan.filters.to === null &&
+    plan.filters.scopeType === null &&
+    plan.filters.scopeTargetId === null &&
+    !plan.aggregationRequested &&
+    !plan.applyResponsePreferences &&
+    !plan.includePatterns &&
+    !plan.profileRequested &&
+    !plan.recencyRequested &&
+    plan.answerFocus === null &&
+    plan.semanticQueryVariants.length === 1 &&
+    plan.semanticQueryVariants[0]?.kind === "ORIGINAL";
 }
 
 function validBaselinePlan(

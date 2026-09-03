@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeMemoryConsumerListInput,
   decodeMemoryConsumerListResponse,
+  decodeMemoryConsumerItemResponse,
   decodeMemoryConsumerSearchInput,
   decodeMemoryConsumerSettingsResponse
 } from "./memoryConsumer";
@@ -71,6 +72,10 @@ describe("Memory consumer contracts", () => {
     };
     expect(decodeMemoryConsumerListResponse({ items: [item], nextCursor: null }).ok)
       .toBe(true);
+    expect(decodeMemoryConsumerItemResponse({ item })).toEqual({
+      ok: true,
+      value: { item }
+    });
     for (const forbidden of [
       "id",
       "versionId",
@@ -85,6 +90,9 @@ describe("Memory consumer contracts", () => {
       expect(decodeMemoryConsumerListResponse({
         items: [{ ...item, [forbidden]: "private" }],
         nextCursor: null
+      })).toEqual({ code: "memory_contract_invalid", ok: false });
+      expect(decodeMemoryConsumerItemResponse({
+        item: { ...item, [forbidden]: "private" }
       })).toEqual({ code: "memory_contract_invalid", ok: false });
     }
   });

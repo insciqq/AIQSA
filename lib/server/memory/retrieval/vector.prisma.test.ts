@@ -209,7 +209,8 @@ async function insertReadyChunks(
   fixture: HistoryFixture,
   prefix: string,
   count: number,
-  divisor: number
+  divisor: number,
+  topFiveDivisor = divisor
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     // This qualification corpus intentionally exceeds the production
@@ -289,7 +290,9 @@ async function insertReadyChunks(
       repeat(md5(${prefix} || '-suppression-' || n), 2),
       (
         ARRAY[1::real] ||
-        array_fill((n::real / ${divisor}), ARRAY[1023])
+        array_fill((
+          n::real / CASE WHEN n <= 5 THEN ${topFiveDivisor} ELSE ${divisor} END
+        ), ARRAY[1023])
       )::vector,
       1024,
       'READY'::"MemoryEmbeddingState"
@@ -401,7 +404,10 @@ describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => 
       annFixture,
       `memory-vector-ann-${suffix}`,
       MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1,
-      100_000
+      100_000,
+      // Preserve the realistic smooth corpus while giving the asserted top
+      // cohort a meaningful margin from effectively tied neighbours.
+      10_000_000
     );
     await insertReadyChunks(
       exactFixture,

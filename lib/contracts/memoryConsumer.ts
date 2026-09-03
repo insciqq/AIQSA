@@ -196,9 +196,21 @@ export function decodeMemoryConsumerStatementMutation(
   return decode(memoryConsumerStatementMutationSchema, value);
 }
 
-const memoryConsumerMutationResponseSchema = z.strictObject({
+const memoryConsumerItemResponseSchema = z.strictObject({
   item: memoryConsumerItemSchema
 });
+
+export type MemoryConsumerItemResponse = z.infer<
+  typeof memoryConsumerItemResponseSchema
+>;
+
+export function decodeMemoryConsumerItemResponse(
+  value: unknown
+): MemoryConsumerDecodeResult<MemoryConsumerItemResponse> {
+  return decode(memoryConsumerItemResponseSchema, value);
+}
+
+const memoryConsumerMutationResponseSchema = memoryConsumerItemResponseSchema;
 
 export type MemoryConsumerMutationResponse = z.infer<
   typeof memoryConsumerMutationResponseSchema
