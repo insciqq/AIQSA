@@ -232,7 +232,13 @@ async function extractGifsInSubprocess(buffers: Buffer[]): Promise<unknown[]> {
   ).href;
   const serializedBuffers = JSON.stringify(buffers.map((buffer) => buffer.toString("base64")));
   const source = `
-    import { extractImageMetadata } from ${JSON.stringify(moduleUrl)};
+    import * as imageMetadataModule from ${JSON.stringify(moduleUrl)};
+    const extractImageMetadata =
+      imageMetadataModule.extractImageMetadata ??
+      imageMetadataModule.default?.extractImageMetadata;
+    if (typeof extractImageMetadata !== "function") {
+      throw new Error("image_metadata_export_unavailable");
+    }
     const results = ${serializedBuffers}.map((value) => {
       try {
         return extractImageMetadata(Buffer.from(value, "base64"), "image/gif");
