@@ -189,7 +189,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
       "knowledge_search_projection_incomplete"
     );
     expect(lexicalSearch).not.toHaveBeenCalled();
-    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
   });
 
   it("fails closed on an unavailable OpenSearch request without a PostgreSQL lexical retry", async () => {

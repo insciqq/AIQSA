@@ -1,10 +1,18 @@
-import type { AssistantRunControls } from "../../contracts/assistants";
+import type {
+  AssistantRunControlField,
+  AssistantRunControls
+} from "../../contracts/assistants";
 import type { ModelParameterControls } from "../../contracts/catalog";
 import { validateRunParams } from "../../domain/runParams";
 
 export type AssistantRunParamsResult =
   | { ok: false }
   | { ok: true; params: Record<string, unknown> };
+
+export type AssistantRunControlIssue = {
+  control: AssistantRunControlField;
+  limit?: number;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -14,27 +22,57 @@ function recordValue(value: unknown): Record<string, unknown> {
   return isRecord(value) ? { ...value } : {};
 }
 
+export function assistantRunControlIssue(
+  runControls: AssistantRunControls,
+  controls: ModelParameterControls
+): AssistantRunControlIssue | null {
+  if (runControls.backgroundMode !== undefined && !controls.background.supported) {
+    return { control: "backgroundMode" };
+  }
+  if (runControls.streamMode !== undefined && !controls.stream.supported) {
+    return { control: "streamMode" };
+  }
+  if (
+    runControls.maxOutputTokens !== undefined &&
+    runControls.maxOutputTokens > controls.maxOutputTokens.maxValue
+  ) {
+    return {
+      control: "maxOutputTokens",
+      limit: controls.maxOutputTokens.maxValue
+    };
+  }
+  if (runControls.temperature !== undefined) {
+    if (!controls.temperature.supported) return { control: "temperature" };
+    if (runControls.temperature < controls.temperature.minValue) {
+      return { control: "temperature", limit: controls.temperature.minValue };
+    }
+    if (runControls.temperature > controls.temperature.maxValue) {
+      return { control: "temperature", limit: controls.temperature.maxValue };
+    }
+  }
+  if (
+    runControls.reasoningMode !== undefined &&
+    !(controls.reasoningMode?.supported === true &&
+      controls.reasoningMode.options.includes(runControls.reasoningMode))
+  ) {
+    return { control: "reasoningMode" };
+  }
+  if (
+    runControls.reasoningEffort !== undefined &&
+    (controls.reasoningEffort.supported
+      ? !controls.reasoningEffort.options.includes(runControls.reasoningEffort)
+      : runControls.reasoningEffort !== "none")
+  ) {
+    return { control: "reasoningEffort" };
+  }
+  return null;
+}
+
 export function assistantRunControlsSupported(
   runControls: AssistantRunControls,
   controls: ModelParameterControls
 ): boolean {
-  return !(
-    (runControls.backgroundMode !== undefined && !controls.background.supported) ||
-    (runControls.streamMode !== undefined && !controls.stream.supported) ||
-    (runControls.maxOutputTokens !== undefined &&
-      runControls.maxOutputTokens > controls.maxOutputTokens.maxValue) ||
-    (runControls.temperature !== undefined &&
-      (!controls.temperature.supported ||
-        runControls.temperature < controls.temperature.minValue ||
-        runControls.temperature > controls.temperature.maxValue)) ||
-    (runControls.reasoningMode !== undefined &&
-      !(controls.reasoningMode?.supported === true &&
-        controls.reasoningMode.options.includes(runControls.reasoningMode))) ||
-    (runControls.reasoningEffort !== undefined &&
-      (controls.reasoningEffort.supported
-        ? !controls.reasoningEffort.options.includes(runControls.reasoningEffort)
-        : runControls.reasoningEffort !== "none"))
-  );
+  return assistantRunControlIssue(runControls, controls) === null;
 }
 
 /**

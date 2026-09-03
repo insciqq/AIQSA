@@ -11,6 +11,30 @@ type ScrollMetrics = Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scroll
 const threadMessageSelector = "[data-message-id]";
 const threadMessageContentSelector = "[data-thread-message-content]";
 const readingSpacerSelector = "[data-thread-reading-spacer]";
+const threadComposerDockSelector = "[data-thread-composer-dock]";
+
+/**
+ * Height of the docked composer overlapping the container's bottom edge (0
+ * while the composer is in flow). The reading-anchor math works with the
+ * visible height, so a question taller than the viewport still shows the
+ * answer start above the composer (UX audit 2026-09-02 A3).
+ */
+function readingBottomInset(element: HTMLElement): number {
+  const dock = element.ownerDocument.querySelector<HTMLElement>(threadComposerDockSelector);
+  if (!dock) {
+    return 0;
+  }
+  const containerBottom = element.getBoundingClientRect().bottom;
+  const dockTop = dock.getBoundingClientRect().top;
+  if (!Number.isFinite(containerBottom) || !Number.isFinite(dockTop)) {
+    return 0;
+  }
+  return Math.max(0, containerBottom - dockTop);
+}
+
+function visibleReadingHeight(element: HTMLElement): number {
+  return Math.max(0, element.clientHeight - readingBottomInset(element));
+}
 
 export function isPinnedToBottom(element: ScrollMetrics, thresholdPx = defaultPinnedThresholdPx): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= thresholdPx;
@@ -26,7 +50,7 @@ export function hasUnseenLatestMessageContent(
     return false;
   }
 
-  const containerBottom = element.getBoundingClientRect().bottom;
+  const containerBottom = element.getBoundingClientRect().bottom - readingBottomInset(element);
   const latestMessageContent = latestMessage.querySelector<HTMLElement>(threadMessageContentSelector);
   const latestMessageBottom = (latestMessageContent ?? latestMessage).getBoundingClientRect().bottom;
   return (
@@ -128,25 +152,26 @@ export function usePinnedScroll<T extends HTMLElement>({
       return null;
     }
 
+    const visibleHeight = visibleReadingHeight(element);
     const liveAnswer = messages.at(-1) ?? target;
     const liveAnswerHeight = Math.max(0, liveAnswer.getBoundingClientRect().height);
-    spacer.style.height = `${Math.max(0, element.clientHeight - liveAnswerHeight)}px`;
+    spacer.style.height = `${Math.max(0, visibleHeight - liveAnswerHeight)}px`;
 
     const targetHeight = Math.max(0, target.getBoundingClientRect().height);
     const preferredContext = Math.min(
       defaultReadingContextMaxPx,
       Math.max(
         defaultReadingContextMinPx,
-        element.clientHeight * defaultReadingContextViewportRatio
+        visibleHeight * defaultReadingContextViewportRatio
       )
     );
     const contextOffset = Math.min(
       preferredContext,
-      Math.max(0, element.clientHeight - targetHeight)
+      Math.max(0, visibleHeight - targetHeight)
     );
     const targetViewportOffset =
-      targetHeight > element.clientHeight && liveAnswer !== target
-        ? element.clientHeight -
+      targetHeight > visibleHeight && liveAnswer !== target
+        ? visibleHeight -
           targetHeight -
           Math.min(preferredContext, liveAnswerHeight)
         : contextOffset;

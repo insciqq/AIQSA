@@ -1283,6 +1283,7 @@ export function createPrismaRunRepository(
                   createdAt: "desc"
                 },
                 select: {
+                  answerStartedAt: true,
                   assistantId: true,
                   assistantMessageId: true,
                   assistantRevision: {
@@ -1292,6 +1293,7 @@ export function createPrismaRunRepository(
                       revisionNumber: true
                     }
                   },
+                  createdAt: true,
                   events: {
                     orderBy: {
                       sequence: "asc"
@@ -1343,7 +1345,8 @@ export function createPrismaRunRepository(
                       state: true,
                       toolName: true
                     }
-                  }
+                  },
+                  updatedAt: true
                 },
                 take: 1
               }

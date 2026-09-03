@@ -90,6 +90,7 @@ enum KnowledgeRunOutcome {
   base_indexing
   embedding_model_unavailable
   no_relevant_evidence
+  search_unavailable
   source_location_unavailable
   budget_exhausted
   structured_clarification_required
@@ -964,6 +965,9 @@ model UserSettings {
   defaultSearchStrategyId String         @default("openai-native-web-search")
   defaultSearchPlan       Json?
   defaultControlValues    Json           @default("{}")
+  defaultKnowledgePlan    Json?
+  defaultMcpMode          String         @default("auto")
+  sendWithEnter           Boolean        @default(true)
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
   createdAt               DateTime       @default(now())
@@ -1795,6 +1799,15 @@ model KnowledgeSearchProjection {
   indexArtifact         KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 
   @@index([state, nextAttemptAt, leaseExpiresAt, createdAt], map: "KnowledgeSearchProjection_queue_idx")
+}
+
+/// Installation-scoped liveness evidence for the Knowledge lexical-search
+/// projection worker. Projection leases remain the work-ownership authority.
+model KnowledgeSearchWorkerHeartbeat {
+  id         String   @id @db.VarChar(64)
+  instanceId String   @db.VarChar(128)
+  startedAt  DateTime
+  lastSeenAt DateTime
 }
 
 model KnowledgeArtifactDocumentIndex {
@@ -2651,6 +2664,7 @@ model ModelRun {
   estimatedCostMicros         Int                                 @default(0)
   errorPayload                Json?
   toolLoopState               Json?
+  answerStartedAt             DateTime?
   createdAt                   DateTime                            @default(now())
   updatedAt                   DateTime                            @updatedAt
   assistantMessage            Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
@@ -3013,6 +3027,7 @@ model ModelRunToolCall {
   result                     Json?
   startedAt                  DateTime?
   completedAt                DateTime?
+  usageAccountedAt           DateTime?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   mcpRunBinding              McpRunBinding?              @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)

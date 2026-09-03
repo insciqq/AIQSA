@@ -46,6 +46,7 @@ const folders = [
 
 export type NavigationGalleryState =
   | "default"
+  | "destinations"
   | "empty"
   | "error"
   | "loading"
@@ -80,12 +81,16 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
         setToastChat(chat);
       }}
       onClose={onClose}
+      onLibrary={state === "destinations" ? () => undefined : undefined}
       onLoadMore={() => undefined}
       onMemoryMode={(_chat, nextMode) => setMode(nextMode)}
       onNewChat={setMode}
       onRetry={() => undefined}
       onSearch={setSearch}
       onSelectChat={(chat) => setSelected(chat.id)}
+      onSettings={state === "destinations" ? () => undefined : undefined}
+      onProjects={state === "destinations" ? () => undefined : undefined}
+      drawerDestinations={state === "destinations"}
       ready={state !== "loading" && state !== "error"}
       searchError={null}
       searchLoading={false}
@@ -96,8 +101,10 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
   return (
     <div data-testid="ui-v2-navigation-gallery">
       <ReadingRoomShellV2
+        onLibrary={() => undefined}
         onNewChat={setMode}
         onSelectChat={(chat) => setSelected(chat.id)}
+        onSettings={() => undefined}
         sidebar={sidebar}
       >
         <main className="v2-navigation-fixture-main">

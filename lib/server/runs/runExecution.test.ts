@@ -61,6 +61,10 @@ import {
   KnowledgeAnswerContractError,
   type KnowledgeGroundingResult
 } from "../knowledge/grounding";
+import {
+  KNOWLEDGE_INSUFFICIENT_MESSAGE,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
+} from "../knowledge/answerGroundingV5";
 import { KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } from
   "../knowledge/answerGroundingV21";
 import { KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 } from
@@ -323,6 +327,26 @@ function emptyKnowledgeEvidence(): KnowledgeRetrievalEvidence {
     outcome: "base_empty",
     providerText: "pending",
     results: []
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
+function searchUnavailableKnowledgeEvidence(): KnowledgeRetrievalEvidence {
+  const complete = knowledgeEvidence();
+  const draft: KnowledgeRetrievalEvidence = {
+    ...complete,
+    bases: [],
+    candidateCount: 0,
+    candidateLimit: 64,
+    failureCode: "knowledge_search_backend_unavailable",
+    fusion: "weighted_rrf_v2",
+    operation: "automatic_search",
+    outcome: "search_unavailable",
+    providerText: "pending",
+    query: "knowledge_search_unavailable",
+    resultLimit: 16,
+    results: [],
+    scopeAliases: undefined
   };
   return { ...draft, providerText: knowledgeToolResultText(draft) };
 }
@@ -816,7 +840,7 @@ function toolLoopKnowledgeExecutor(evidence = knowledgeEvidence()) {
       knowledgeRetrieval: evidence,
       providerCall: true
     },
-    status: "complete"
+    status: evidence.outcome === "search_unavailable" ? "error" : "complete"
   }));
   const executor: KnowledgeToolExecutor = {
     accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
@@ -1094,10 +1118,21 @@ function createRepository(options: RepositoryOptions = {}) {
         throw options.usagePersistenceError;
       }
       recordedRunUsageEvents.push(input);
+      if (input.usageAccountedToolCallIds) {
+        const accounted = new Set(input.usageAccountedToolCallIds);
+        for (const [id, call] of toolCalls) {
+          if (accounted.has(id)) {
+            toolCalls.set(id, { ...call, usageAccountedAt: new Date().toISOString() });
+          }
+        }
+      }
       return true;
     },
     async resetToolLoopAssistantDraft() {
       return true;
+    },
+    async markRunAnswerStarted() {
+      return undefined;
     },
     async settleToolLoopCall({ callId, result, state }) {
       const call = toolCalls.get(callId);
@@ -1262,6 +1297,9 @@ function createMemoryEgressRecorder() {
     runId: string;
     userId: string;
   }> = [];
+  const recoveredTools: Parameters<
+    MemoryToolEgressReceiptService["settleRecoveredToolDispatch"]
+  >[0][] = [];
   let ordinal = 0;
   const service: MemoryToolEgressReceiptService = {
     async beginDispatch(input) {
@@ -1278,6 +1316,10 @@ function createMemoryEgressRecorder() {
       recovered.push(input);
       return true;
     },
+    async settleRecoveredToolDispatch(input) {
+      recoveredTools.push(input);
+      return true;
+    },
     async completeDispatch(receiptId) {
       completed.push(receiptId);
       return true;
@@ -1287,7 +1329,7 @@ function createMemoryEgressRecorder() {
       return true;
     }
   };
-  return { began, blocked, completed, failed, recovered, service };
+  return { began, blocked, completed, failed, recovered, recoveredTools, service };
 }
 
 function parseSse(text: string): ModelRunSseEvent[] {
@@ -2750,7 +2792,7 @@ describe("run execution", () => {
       expect.objectContaining({
         error: {
           code: "no_retrieval_candidates",
-          message: "No retrieval candidates were found in the ready Knowledge sources."
+          message: "No retrieval candidates were found in the ready Knowledge documents."
         },
         options: { recoveryTerminal: true }
       })
@@ -3130,6 +3172,53 @@ describe("run execution", () => {
       expect.objectContaining({ result: expect.anything(), state: "error" })
     ]);
     expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
+  });
+
+  it("durably settles a classified Knowledge outage and exposes only its safe result", async () => {
+    const repository = createRepository();
+    const { execute, executor } = toolLoopKnowledgeExecutor(
+      searchUnavailableKnowledgeEvidence()
+    );
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      return providerRequests.length === 1
+        ? providerResult({
+            finalText: "",
+            toolCalls: [{
+              arguments: { query: "private outage query" },
+              id: "knowledge-unavailable-call-1",
+              name: KNOWLEDGE_SEARCH_TOOL_NAME
+            }]
+          })
+        : providerResult({ finalText: "Untrusted answer after the failed lookup." });
+    });
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: executor,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(providerRequests).toHaveLength(2);
+    const continuation = JSON.stringify(providerRequests[1]?.providerToolMessages);
+    expect(continuation).toContain(
+      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+    );
+    expect(continuation).not.toContain("knowledge_search_backend_unavailable");
+    expect([...repository.toolCalls.values()]).toEqual([
+      expect.objectContaining({ result: expect.anything(), state: "error" })
+    ]);
+    expect(repository.completeRuns).toEqual([
+      expect.objectContaining({ finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE })
+    ]);
     expect(repository.failedRuns).toEqual([]);
   });
 
@@ -4876,6 +4965,11 @@ describe("run execution", () => {
       }
     });
     expect(repository.recordedRunUsageEvents[0]?.usageAttributions).toHaveLength(1);
+    expect(repository.recordedRunUsageEvents[1]?.usageAccountedToolCallIds).toEqual([
+      "persisted-tool-call-1"
+    ]);
+    expect(repository.recordedRunUsageEvents[2]?.usageAccountedToolCallIds).toEqual([]);
+    expect(repository.recordedRunUsageEvents[3]?.usageAccountedToolCallIds).toEqual([]);
     expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([
       {
         estimatedCostMicros: null,

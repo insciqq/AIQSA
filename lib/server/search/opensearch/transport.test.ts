@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   KNOWLEDGE_SEARCH_INDEX_DEFINITION,
-  KNOWLEDGE_SEARCH_INDEX_NAME
+  KNOWLEDGE_SEARCH_INDEX_NAME,
+  KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT
 } from "./contract";
 import {
   AiqsaOpenSearchTransport,
@@ -25,11 +26,50 @@ function transport(): AiqsaOpenSearchTransport {
   });
 }
 
+function knowledgeIndexSettings(overrides: Record<string, unknown> = {}) {
+  return {
+    index: {
+      creation_date: "1788277335377",
+      max_result_window: String(
+        KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.max_result_window
+      ),
+      number_of_replicas: "0",
+      number_of_shards: "1",
+      provided_name: KNOWLEDGE_SEARCH_INDEX_NAME,
+      replication: { type: "DOCUMENT" },
+      similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } },
+      uuid: "index-uuid",
+      version: { created: "137297827" },
+      ...overrides
+    }
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("AIQSA OpenSearch transport", () => {
+  it("checks the existing Knowledge index without issuing a write", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings()
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().checkKnowledgeIndex()).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.map((call) => call[1]?.method)).toEqual(["GET", "GET"]);
+    expect(fetch.mock.calls[1]![0].toString()).toBe(
+      `http://search.example.test:9200/${KNOWLEDGE_SEARCH_INDEX_NAME}`
+    );
+  });
+
   it("creates and validates the exact versioned Knowledge index", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
@@ -38,13 +78,7 @@ describe("AIQSA OpenSearch transport", () => {
       .mockResolvedValueOnce(jsonResponse({
         [KNOWLEDGE_SEARCH_INDEX_NAME]: {
           mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
-          settings: {
-            index: {
-              number_of_replicas: "0",
-              number_of_shards: "1",
-              similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } }
-            }
-          }
+          settings: knowledgeIndexSettings()
         }
       }));
     vi.stubGlobal("fetch", fetch);
@@ -67,18 +101,67 @@ describe("AIQSA OpenSearch transport", () => {
       .mockResolvedValueOnce(jsonResponse({
         [KNOWLEDGE_SEARCH_INDEX_NAME]: {
           mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
-          settings: {
-            index: {
-              number_of_replicas: "0",
-              number_of_shards: "1",
-              similarity: { default: { b: "0.9", k1: "1.2", type: "BM25" } }
-            }
-          }
+          settings: knowledgeIndexSettings({
+            similarity: { default: { b: "0.9", k1: "1.2", type: "BM25" } }
+          })
         }
       }));
     vi.stubGlobal("fetch", fetch);
 
     await expect(transport().ensureKnowledgeIndex()).rejects.toMatchObject({
+      code: "opensearch_index_incompatible"
+    });
+  });
+
+  it("rejects a result window that cannot serve the bounded search request", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings({ max_result_window: "1" })
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().checkKnowledgeIndex()).rejects.toMatchObject({
+      code: "opensearch_index_incompatible"
+    });
+  });
+
+  it("rejects an unowned semantic index setting", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings({ refresh_interval: "-1" })
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().checkKnowledgeIndex()).rejects.toMatchObject({
+      code: "opensearch_index_incompatible"
+    });
+  });
+
+  it("rejects semantics-changing field parameters in an otherwise matching mapping", async () => {
+    const mappings = structuredClone(KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings);
+    const body = mappings.properties.body as typeof mappings.properties.body & {
+      index?: boolean;
+    };
+    body.index = false;
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings,
+          settings: knowledgeIndexSettings()
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().checkKnowledgeIndex()).rejects.toMatchObject({
       code: "opensearch_index_incompatible"
     });
   });
@@ -93,13 +176,7 @@ describe("AIQSA OpenSearch transport", () => {
       .mockResolvedValueOnce(jsonResponse({
         [KNOWLEDGE_SEARCH_INDEX_NAME]: {
           mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
-          settings: {
-            index: {
-              number_of_replicas: "0",
-              number_of_shards: "1",
-              similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } }
-            }
-          }
+          settings: knowledgeIndexSettings()
         }
       }));
     vi.stubGlobal("fetch", fetch);
@@ -221,7 +298,9 @@ describe("AIQSA OpenSearch transport", () => {
 
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[0]![0].toString()).toBe(
-      `http://search.example.test:9200/${KNOWLEDGE_SEARCH_INDEX_NAME}/_delete_by_query?refresh=true`
+      `http://search.example.test:9200/${KNOWLEDGE_SEARCH_INDEX_NAME}/_delete_by_query?refresh=true&scroll_size=${
+        KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT
+      }`
     );
     expect(fetch.mock.calls[1]![0].toString()).toBe(
       `http://search.example.test:9200/${KNOWLEDGE_SEARCH_INDEX_NAME}/_count`

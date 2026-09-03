@@ -1,16 +1,20 @@
 "use client";
 
-import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import {
   UiV2Icon,
   UiV2IconButton,
   UiV2IconSprite,
+  UiV2MenuActions,
   UiV2MenuItem,
   UiV2MenuLink,
-  UiV2MenuSurface,
   UiV2Skeleton
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { UiV2RovingTree } from "@/components/ui-v2/RovingTreeV2";
+import { AccountMenuV2 } from "./AccountMenuV2";
+import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./chatMenuActions";
+import { RailV2, type RailSectionV2 } from "./RailV2";
 import {
   clearChatNavigationSearch,
   loadChatNavigation,
@@ -18,12 +22,12 @@ import {
 } from "@/components/app-shell/chatNavigationActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
+import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import {
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import {
   useEffect,
   useLayoutEffect,
@@ -37,9 +41,9 @@ type SidebarCompositionV2 = "compact" | "desktop" | "mobile";
 
 function currentSidebarCompositionV2(): SidebarCompositionV2 {
   if (typeof window === "undefined") return "desktop";
-  if (window.matchMedia?.("(max-width: 899px)").matches) return "mobile";
+  if (window.matchMedia?.("(max-width: 767px)").matches) return "mobile";
   if (window.matchMedia?.("(max-width: 1023px)").matches) return "compact";
-  if (!window.matchMedia && window.innerWidth < 900) return "mobile";
+  if (!window.matchMedia && window.innerWidth < 768) return "mobile";
   if (!window.matchMedia && window.innerWidth < 1024) return "compact";
   return "desktop";
 }
@@ -70,7 +74,6 @@ export type NavigationSidebarProps = Readonly<{
   loading: boolean;
   now?: Date;
   onArchive?(chat: ChatNavigationSummaryWire): void;
-  onArchivedChats?(): void;
   onCancelChatRename?(): void;
   onCancelFolderRename?(): void;
   onChangeChatRename?(value: string): void;
@@ -84,11 +87,29 @@ export type NavigationSidebarProps = Readonly<{
    */
   onDelete?(chat: ChatNavigationSummaryWire): void;
   onDeleteFolder?(folder: ChatNavigationFolderWire): void;
-  onExport?(chat: ChatNavigationSummaryWire): void;
+  /** Row menu "Branches": the shell selects the chat and opens the Branches view. */
+  onBranches?(chat: ChatNavigationSummaryWire): void;
+  /** Row menu "Copy entire thread" for that chat. */
+  onCopyThread?(chat: ChatNavigationSummaryWire): void;
+  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onFolderProjectSettings?(folder: ChatNavigationFolderWire): void;
+  /**
+   * Rail/drawer Projects and Library are personal-workspace destinations:
+   * inside a shared Project the owner leaves it first so the destination has
+   * a visible answer (the Projects block or the Library column).
+   */
+  onLeaveProject?(): void;
   onLibrary?(): void;
   onLoadMore(): void;
+  /** Rail/drawer Projects: opens the dedicated Projects section. */
+  onProjects?(): void;
+  /**
+   * Mobile drawer only: the rail destinations (Projects, Library,
+   * Settings, Control Center) and the account entry live in the drawer
+   * footer because the rail is absent below 768px.
+   */
+  drawerDestinations?: boolean;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
@@ -104,8 +125,21 @@ export type NavigationSidebarProps = Readonly<{
   onSearch(value: string): void;
   /** A selected Project owns the sidebar list region; personal chats stay hidden until it is left. */
   projectContextActive?: boolean;
-  /** Shared-workspace navigation rendered before the personal chat tree. */
-  projectsSlot?: ReactNode | ((onNavigate: () => void) => ReactNode);
+  /** Whether the selected Project currently exposes an enabled message composer. */
+  projectComposerAvailable?: boolean;
+  /** Selected Project identity rendered as the second-column heading. */
+  projectTitle?: ReactNode;
+  /** Shared-workspace navigation that exclusively owns the column in Projects mode. */
+  projectsSlot?:
+    | ReactNode
+    | ((onNavigate: () => void, options: Readonly<{ landing: boolean }>) => ReactNode);
+  /**
+   * "projects" turns the column into the Projects landing (rail/drawer
+   * destination): only the Projects block, no chat list or filter.
+   */
+  view?: "chats" | "projects";
+  /** Legacy Projects-to-Chats route; the shell normally owns this through the rail. */
+  onShowChats?(): void;
   ready: boolean;
   searchError: string | null;
   searchLoading: boolean;
@@ -136,35 +170,15 @@ function dateGroup(updatedAt: string, now = new Date()): DateGroup {
   return "earlier";
 }
 
-export type FlattenedFolder<Folder> = Readonly<{ depth: number; folder: Folder }>;
-
 /**
- * Depth-first flattening of the folder tree for move pickers: every folder —
- * nested ones included — appears once with its depth for indentation. Passing
- * `excludeId` removes that folder and its entire subtree (a folder can never
- * be moved into itself or a descendant). Folders whose parent is not part of
- * the projection are treated as roots so no destination silently disappears.
+ * Depth-first flattening of the folder tree for move pickers (shared with the
+ * header menu through `chatMenuActions`): every folder — nested ones included
+ * — appears once with its depth for indentation. Passing `excludeId` removes
+ * that folder and its entire subtree (a folder can never be moved into itself
+ * or a descendant). Folders whose parent is not part of the projection are
+ * treated as roots so no destination silently disappears.
  */
-export function flattenFolderTree<
-  Folder extends Readonly<{ id: string; name: string; parentId: string | null }>
->(
-  folders: readonly Folder[],
-  excludeId?: string | null
-): readonly FlattenedFolder<Folder>[] {
-  const ids = new Set(folders.map((folder) => folder.id));
-  const result: FlattenedFolder<Folder>[] = [];
-  const visit = (parentId: string | null, depth: number) => {
-    for (const folder of folders) {
-      const effectiveParent =
-        folder.parentId !== null && ids.has(folder.parentId) ? folder.parentId : null;
-      if (effectiveParent !== parentId || folder.id === excludeId) continue;
-      result.push({ depth, folder });
-      visit(folder.id, depth + 1);
-    }
-  };
-  visit(null, 0);
-  return result;
-}
+export { flattenFolderTree, type FlattenedFolder };
 
 function ChatRow({
   active,
@@ -173,9 +187,12 @@ function ChatRow({
   editing,
   editingTitle,
   folders,
+  level,
   onArchive,
+  onBranches,
   onCancelRename,
   onChangeRename,
+  onCopyThread,
   onDelete,
   onExport,
   onFavorite,
@@ -192,11 +209,14 @@ function ChatRow({
   editing?: boolean;
   editingTitle?: string;
   folders: readonly ChatNavigationFolderWire[];
+  level: number;
   onArchive?(chat: ChatNavigationSummaryWire): void;
+  onBranches?(chat: ChatNavigationSummaryWire): void;
   onCancelRename?(): void;
   onChangeRename?(value: string): void;
+  onCopyThread?(chat: ChatNavigationSummaryWire): void;
   onDelete?(chat: ChatNavigationSummaryWire): void;
-  onExport?(chat: ChatNavigationSummaryWire): void;
+  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
@@ -205,12 +225,9 @@ function ChatRow({
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSelect(chat: ChatNavigationSummaryWire): void;
 }) {
+  const displayTitle = chatTitleForDisplay(chat.title);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [moveOpen, setMoveOpen] = useState(false);
-  const closeMenu = () => {
-    setMenuOpen(false);
-    setMoveOpen(false);
-  };
+  const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const rowState = chatStateFor?.(chat) ?? null;
   const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
@@ -225,7 +242,7 @@ function ChatRow({
       >
         <input
           autoFocus
-          aria-label={`New title: ${chat.title}`}
+          aria-label={`New title: ${displayTitle}`}
           maxLength={120}
           value={editingTitle ?? chat.title}
           onChange={(event) => onChangeRename?.(event.target.value)}
@@ -243,91 +260,77 @@ function ChatRow({
     );
   }
   return (
-    <div className="v2-chat-row-wrap" data-navigation-chat-id={chat.id}>
+    <div
+      className="v2-chat-row-wrap"
+      data-navigation-chat-id={chat.id}
+      data-v2-tree-row="true"
+    >
       <button
+        aria-current={active ? "page" : undefined}
+        aria-label={displayTitle}
+        aria-level={level}
+        aria-selected={active}
         className="v2-chat-row v2-focusable"
         data-selected={active || undefined}
-        title={chat.title}
+        data-v2-tree-item="true"
+        role="treeitem"
+        tabIndex={-1}
+        title={displayTitle}
         type="button"
         onClick={() => onSelect(chat)}
       >
         {chat.activeRun ? (
           <span className="v2-chat-pulse" aria-label="Answer in progress" />
         ) : <span aria-hidden="true" />}
-        <span className="v2-chat-title">{chat.title}</span>
+        <span className="v2-chat-title">{displayTitle}</span>
       </button>
       <UiV2IconButton
         className="v2-chat-menu-trigger"
         icon="more"
-        label={`Actions: ${chat.title}`}
+        label={`Actions: ${displayTitle}`}
         aria-expanded={menuOpen}
+        aria-haspopup="menu"
+        data-v2-row-menu-trigger="true"
         ref={triggerRef}
+        tabIndex={-1}
         onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
       />
       {menuOpen ? (
-        <UiV2MenuSurface
+        <UiV2ResponsiveMenu
+          anchorRef={triggerRef}
           className="v2-chat-menu"
-          label={`Chat actions: ${chat.title}`}
-          ref={menuRef}
+          label={`Chat actions: ${displayTitle}`}
+          menuRef={menuRef}
+          onClose={closeMenu}
         >
-          <UiV2MenuItem onClick={() => { closeMenu(); onRename?.(chat); }}>Rename</UiV2MenuItem>
-          <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((open) => !open)}>
-            Move to…
-          </UiV2MenuItem>
-          {moveOpen ? (
-            <div className="v2-chat-move-options" aria-label="Choose a folder">
-              <UiV2MenuItem onClick={() => { closeMenu(); onMove?.(chat, null); }}>No folder</UiV2MenuItem>
-              {flattenFolderTree(folders).map(({ depth: folderDepth, folder }) => (
-                <UiV2MenuItem
-                  key={folder.id}
-                  style={{ paddingLeft: `${0.5 + folderDepth * 0.75}rem` }}
-                  onClick={() => { closeMenu(); onMove?.(chat, folder.id); }}
-                >
-                  {folder.name}
-                </UiV2MenuItem>
-              ))}
-            </div>
-          ) : null}
-          <UiV2MenuItem
-            selected={rowState?.favorite ?? false}
-            onClick={() => { closeMenu(); onFavorite?.(chat); }}
-          >
-            Favorite
-          </UiV2MenuItem>
-          {onMemoryMode ? (
-            <UiV2MenuItem
-              onClick={() => {
-                closeMenu();
-                triggerRef.current?.focus();
-                onMemoryMode(chat, memoryUsed ? "EXCLUDED" : "NORMAL");
-              }}
-            >
-              {resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action")}
-            </UiV2MenuItem>
-          ) : null}
-          <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Share</UiV2MenuItem>
-          <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Export</UiV2MenuItem>
-          <UiV2MenuItem
-            disabled={chat.activeRun}
-            onClick={() => {
+          {/* Rows stay scannable: object actions first, destructive actions last. */}
+          <UiV2MenuActions
+            actions={chatMenuActionsV2({
+              archiveDisabled: chat.activeRun,
+              deleteDisabled: chat.activeRun,
+              favorite: rowState?.favorite ?? false,
+              folders,
+              memoryUsed: onMemoryMode ? memoryUsed : null,
+              onArchive: () => onArchive?.(chat),
+              onBranches: onBranches ? () => onBranches(chat) : undefined,
+              onCopyThread: onCopyThread ? () => onCopyThread(chat) : undefined,
+              onDelete: onDelete ? () => onDelete(chat) : undefined,
+              onExport: (format) => onExport?.(chat, format),
+              onFavorite: () => onFavorite?.(chat),
+              onMemoryMode: onMemoryMode ? (mode) => onMemoryMode(chat, mode) : undefined,
+              onMove: (folderId) => onMove?.(chat, folderId),
+              onRename: () => onRename?.(chat),
+              onShare: () => onShare?.(chat),
+              surface: "row"
+            })}
+            onClose={() => {
+              // Activating an item returns focus to the menu button; a
+              // surface the action opens (rename field, dialog) takes it next.
               closeMenu();
-              onArchive?.(chat);
+              triggerRef.current?.focus();
             }}
-          >
-            Archive
-          </UiV2MenuItem>
-          {onDelete ? (
-            <UiV2MenuItem
-              disabled={chat.activeRun}
-              onClick={() => {
-                closeMenu();
-                onDelete(chat);
-              }}
-            >
-              Delete…
-            </UiV2MenuItem>
-          ) : null}
-        </UiV2MenuSurface>
+          />
+        </UiV2ResponsiveMenu>
       ) : null}
     </div>
   );
@@ -352,20 +355,16 @@ function FolderGroup({
   // scannable (UX audit F10).
   const [open, setOpen] = useState(depth === 0);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [moveOpen, setMoveOpen] = useState(false);
   const [subfolderOpen, setSubfolderOpen] = useState(false);
   const [subfolderName, setSubfolderName] = useState("");
-  const closeMenu = () => {
-    setMenuOpen(false);
-    setMoveOpen(false);
-  };
+  const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const directChats = chats.filter((chat) => chat.folderId === folder.id);
   const children = folders.filter((candidate) => candidate.parentId === folder.id);
   const editing = props.editingFolderId === folder.id;
   return (
-    <div className="v2-navigation-group" data-folder-id={folder.id}>
-      <div className="v2-folder-row">
+    <div className="v2-navigation-group" data-folder-id={folder.id} role="none">
+      <div className="v2-folder-row" data-v2-tree-row="true">
         {editing ? (
           <form className="v2-folder-rename" onSubmit={(event) => {
             event.preventDefault();
@@ -391,13 +390,17 @@ function FolderGroup({
         ) : (
           <>
             <button
+              aria-level={depth + 1}
+              aria-selected={false}
               className="v2-folder-toggle v2-focusable"
+              data-v2-tree-item="true"
+              role="treeitem"
+              tabIndex={-1}
               type="button"
               aria-expanded={open}
               onClick={() => setOpen((value) => !value)}
             >
               <UiV2Icon name={open ? "chevron-down" : "chevron-right"} />
-              <UiV2Icon name="folder" />
               <span className="v2-chat-title">{folder.name}</span>
             </button>
             <UiV2IconButton
@@ -405,51 +408,61 @@ function FolderGroup({
               icon="more"
               label={`Folder actions: ${folder.name}`}
               aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              data-v2-row-menu-trigger="true"
               ref={triggerRef}
+              tabIndex={-1}
               onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
             />
             {menuOpen ? (
-              <UiV2MenuSurface
+              <UiV2ResponsiveMenu
+                anchorRef={triggerRef}
                 className="v2-folder-menu"
                 label={`Folder actions: ${folder.name}`}
-                ref={menuRef}
+                menuRef={menuRef}
+                onClose={closeMenu}
               >
-                <UiV2MenuItem onClick={() => { closeMenu(); props.onRenameFolder?.(folder); }}>
-                  Rename
-                </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => { closeMenu(); setSubfolderOpen(true); setOpen(true); }}>
-                  New subfolder
-                </UiV2MenuItem>
-                <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((value) => !value)}>
-                  Move to…
-                </UiV2MenuItem>
-                {moveOpen ? (
-                  <div className="v2-chat-move-options" aria-label="Move folder">
-                    <UiV2MenuItem onClick={() => { closeMenu(); props.onMoveFolder?.(folder, null); }}>Top level</UiV2MenuItem>
-                    {flattenFolderTree(folders, folder.id).map(({ depth: folderDepth, folder: candidate }) => (
-                      <UiV2MenuItem
-                        key={candidate.id}
-                        style={{ paddingLeft: `${0.5 + folderDepth * 0.75}rem` }}
-                        onClick={() => { closeMenu(); props.onMoveFolder?.(folder, candidate.id); }}
-                      >
-                        {candidate.name}
-                      </UiV2MenuItem>
-                    ))}
-                  </div>
-                ) : null}
-                <UiV2MenuItem onClick={() => { closeMenu(); props.onFolderProjectSettings?.(folder); }}>
-                  Project settings
-                </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => { closeMenu(); props.onDeleteFolder?.(folder); }}>
-                  Delete folder
-                </UiV2MenuItem>
-              </UiV2MenuSurface>
+                <UiV2MenuActions
+                  actions={[
+                    { icon: "edit", label: "Rename", onSelect: () => props.onRenameFolder?.(folder) },
+                    {
+                      icon: "folder-plus",
+                      label: "New subfolder",
+                      onSelect: () => {
+                        setSubfolderOpen(true);
+                        setOpen(true);
+                      }
+                    },
+                    {
+                      icon: "folder",
+                      label: "Move to…",
+                      submenu: [
+                        { label: "Top level", onSelect: () => props.onMoveFolder?.(folder, null) },
+                        ...flattenFolderTree(folders, folder.id).map(({ depth: folderDepth, folder: candidate }) => ({
+                          depth: folderDepth,
+                          label: candidate.name,
+                          onSelect: () => props.onMoveFolder?.(folder, candidate.id)
+                        }))
+                      ]
+                    },
+                    { icon: "settings", label: "Default Knowledge…", onSelect: () => props.onFolderProjectSettings?.(folder) },
+                    {
+                      icon: "trash",
+                      label: "Delete folder",
+                      onSelect: () => props.onDeleteFolder?.(folder),
+                      separatorBefore: true,
+                      tone: "destructive"
+                    }
+                  ]}
+                  onClose={closeMenu}
+                />
+              </UiV2ResponsiveMenu>
             ) : null}
           </>
         )}
       </div>
       {open ? (
-        <div className="v2-folder-children">
+        <div className="v2-folder-children" role="group">
           {subfolderOpen ? (
             <form className="v2-new-folder-inline" onSubmit={(event) => {
               event.preventDefault();
@@ -480,10 +493,13 @@ function FolderGroup({
               editingTitle={props.editingChatTitle}
               folders={folders}
               key={chat.id}
+              level={depth + 2}
               onArchive={props.onArchive}
               onCancelRename={props.onCancelChatRename}
               onChangeRename={props.onChangeChatRename}
               onDelete={props.onDelete}
+              onBranches={props.onBranches}
+              onCopyThread={props.onCopyThread}
               onExport={props.onExport}
               onFavorite={props.onFavorite}
               onMemoryMode={props.onMemoryMode}
@@ -540,26 +556,6 @@ function findAnchoredChatRow(container: HTMLElement, id: string): HTMLElement | 
 
 export function NavigationSidebar(props: NavigationSidebarProps) {
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState<string | null>(null);
-  const {
-    menuRef: accountMenuRef,
-    triggerRef: accountTriggerRef
-  } = useMenuDismissalV2({
-    onClose: () => setAccountOpen(false),
-    open: accountOpen
-  });
-  const signOut = async () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    setSignOutError(null);
-    const result = await signOutCurrentSession();
-    if (!result.ok) {
-      setSignOutError(result.error);
-      setSigningOut(false);
-    }
-  };
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   // "Filter chats…" is a sidebar-scoped lookup over the user's own chats on
@@ -642,6 +638,8 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     open: newChatMenuOpen
   });
   const currentMode = props.currentNewChatMode ?? "NORMAL";
+  const projectsView = props.view === "projects";
+  const projectColumn = projectsView || Boolean(props.projectContextActive);
   // Navigating away from search results resets the query so no stale
   // results view survives chat selection.
   const selectChat = (chat: ChatNavigationSummaryWire) => {
@@ -657,21 +655,55 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       id
     }))
     .filter((group) => group.chats.length > 0);
+  const focusMessageComposer = () => {
+    if (currentSidebarCompositionV2() !== "desktop") props.onClose();
+    window.setTimeout(() => {
+      document.querySelector<HTMLTextAreaElement>(
+        '[data-testid="composer-v2"] textarea:not(:disabled)'
+      )?.focus();
+    }, 0);
+  };
 
   return (
     <aside
       className="v2-navigation"
-      aria-label="Chat navigation"
+      aria-label={projectColumn ? "Project navigation" : "Chat navigation"}
       data-project-context={props.projectContextActive || undefined}
+      data-view={projectsView ? "projects" : undefined}
     >
+      {!projectsView && (!props.projectContextActive || props.projectComposerAvailable) ? (
+        <button
+          className="v2-navigation-skip v2-focusable"
+          type="button"
+          onClick={focusMessageComposer}
+        >
+          Skip to message composer
+        </button>
+      ) : null}
       <div className="v2-navigation-header">
+        {/* Desktop/compact: the column title plus the hide-list control; the
+            mobile drawer shows the wordmark and a close cross instead. */}
         <div className="v2-navigation-brand">
           <span className="v2-navigation-wordmark">
-            <span className="v2-navigation-mark" aria-hidden="true">A</span>
+            <span className="v2-navigation-mark" aria-hidden="true"><UiV2Icon name="brand" /></span>
             AIQSA
           </span>
-          <UiV2IconButton icon="close" label="Close sidebar" onClick={props.onClose} />
+          <span className="v2-navigation-column-title">
+            {props.projectContextActive ? props.projectTitle ?? "Project" : projectsView ? "Projects" : "Chats"}
+          </span>
+          <button
+            className="v2-icon-button v2-focusable v2-navigation-close"
+            type="button"
+            aria-label="Close sidebar"
+            data-tooltip="Hide chat list"
+            data-tooltip-side="left"
+            onClick={props.onClose}
+          >
+            <UiV2Icon name="panel" />
+            <UiV2Icon name="close" />
+          </button>
         </div>
+        {projectColumn ? null : (
         <div className="v2-new-chat-wrap">
           <button
             className="v2-new-chat-main v2-focusable"
@@ -686,6 +718,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               className="v2-new-chat-menu-trigger v2-focusable"
               type="button"
               aria-expanded={newChatMenuOpen}
+              aria-haspopup="menu"
               aria-label="New chat mode"
               ref={newChatTriggerRef}
               onClick={() => setNewChatMenuOpen((open) => !open)}
@@ -694,10 +727,12 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             </button>
           ) : null}
           {!props.projectContextActive && newChatMenuOpen ? (
-            <UiV2MenuSurface
+            <UiV2ResponsiveMenu
+              anchorRef={newChatTriggerRef}
               className="v2-new-chat-menu"
               label="New chat mode"
-              ref={newChatMenuRef}
+              menuRef={newChatMenuRef}
+              onClose={() => setNewChatMenuOpen(false)}
             >
               <UiV2MenuItem
                 selected={currentMode === "NORMAL"}
@@ -720,10 +755,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               >
                 Temporary chat
               </UiV2MenuItem>
-            </UiV2MenuSurface>
+            </UiV2ResponsiveMenu>
           ) : null}
         </div>
-        {!props.projectContextActive ? (
+        )}
+        {!projectColumn ? (
           <div className="v2-navigation-filter">
             <UiV2Icon name="search" />
             <input
@@ -738,9 +774,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 setFilterValue(event.target.value);
               }}
               onKeyDown={(event) => {
-                if (event.key !== "Escape" || !filterValue) return;
+                if (event.key !== "Escape") return;
                 event.preventDefault();
-                clearFilter();
+                // Escape clears a query first, then leaves the field (A15).
+                if (filterValue) clearFilter();
+                else event.currentTarget.blur();
               }}
             />
             {filterValue ? (
@@ -756,10 +794,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       </div>
 
       <div className="v2-navigation-scroll" aria-live="polite" ref={scrollRef}>
-        {typeof props.projectsSlot === "function"
-          ? props.projectsSlot(props.onClose)
-          : props.projectsSlot}
-        {!props.projectContextActive ? <>
+        {projectColumn
+          ? typeof props.projectsSlot === "function"
+            ? props.projectsSlot(props.onClose, { landing: projectsView })
+            : props.projectsSlot
+          : null}
+        {!projectColumn ? <>
+        <UiV2RovingTree className="v2-navigation-tree" label="Personal chats">
         {!props.ready && props.loading ? (
           <div className="v2-navigation-skeletons" aria-label="Loading chats">
             {[0, 1, 2, 3, 4].map((index) => (
@@ -785,8 +826,8 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         ) : props.searchQuery && props.chats.length === 0 ? (
           <div className="v2-navigation-status">Nothing found</div>
         ) : props.searchQuery ? (
-          <div className="v2-navigation-group">
-            <div className="v2-navigation-group-label">Results</div>
+          <div className="v2-navigation-group" role="group" aria-labelledby="v2-navigation-results">
+            <div className="v2-navigation-group-label" id="v2-navigation-results">Results</div>
             {props.chats.map((chat) => (
               <ChatRow
                 active={chat.id === props.activeChatId}
@@ -796,10 +837,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 editingTitle={props.editingChatTitle}
                 folders={props.folders}
                 key={chat.id}
+                level={1}
                 onArchive={props.onArchive}
                 onCancelRename={props.onCancelChatRename}
                 onChangeRename={props.onChangeChatRename}
                 onDelete={props.onDelete}
+                onBranches={props.onBranches}
+                onCopyThread={props.onCopyThread}
                 onExport={props.onExport}
                 onFavorite={props.onFavorite}
                 onMemoryMode={props.onMemoryMode}
@@ -818,8 +862,15 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             ) : null}
             {/* Recent unfiled chats first, then the folder tree (UX audit F10). */}
             {dateGroups.map((group) => (
-              <div className="v2-navigation-group" key={group.id}>
-                <div className="v2-navigation-group-label">{dateLabels[group.id]}</div>
+              <div
+                aria-labelledby={`v2-navigation-${group.id}`}
+                className="v2-navigation-group"
+                key={group.id}
+                role="group"
+              >
+                <div className="v2-navigation-group-label" id={`v2-navigation-${group.id}`}>
+                  {dateLabels[group.id]}
+                </div>
                 {group.chats.map((chat) => (
                   <ChatRow
                     active={chat.id === props.activeChatId}
@@ -829,10 +880,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                     editingTitle={props.editingChatTitle}
                     folders={props.folders}
                     key={chat.id}
+                    level={1}
                     onArchive={props.onArchive}
                     onCancelRename={props.onCancelChatRename}
                     onChangeRename={props.onChangeChatRename}
                     onDelete={props.onDelete}
+                    onBranches={props.onBranches}
+                    onCopyThread={props.onCopyThread}
                     onExport={props.onExport}
                     onFavorite={props.onFavorite}
                     onMemoryMode={props.onMemoryMode}
@@ -846,7 +900,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               </div>
             ))}
             {roots.length > 0 || props.onCreateFolder ? (
-              <div className="v2-navigation-group">
+              <div className="v2-navigation-group" role="group" aria-label="Folders">
                 {/* Folder creation lives with the folders, not in the New-chat
                     mode menu (UX audit F16); the header row stays so the
                     action is reachable before the first folder exists. */}
@@ -898,6 +952,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             ) : null}
           </>
         )}
+        </UiV2RovingTree>
         {props.hasMore ? (
           <div className="v2-navigation-load-more-row" data-error={pageError ? "" : undefined}>
             {pageError && props.ready ? <span>Could not load earlier chats.</span> : null}
@@ -916,58 +971,41 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         </> : null}
       </div>
 
-      <div className="v2-navigation-footer">
-        {props.onArchivedChats ? (
-          <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onArchivedChats}>
-            <UiV2Icon name="archive" /> Archived chats
-          </button>
-        ) : null}
-        <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onLibrary}>
-          <UiV2Icon name="library" />
-          Library
-        </button>
-        {/* One account entry for the shell (UX audit F11): Settings, Control
-            Center, and Sign out live here, not in the chat header. */}
-        <div className="v2-navigation-account">
-          <button
-            className="v2-navigation-account-trigger v2-focusable"
-            type="button"
-            aria-expanded={accountOpen}
-            aria-haspopup="menu"
-            aria-label="Account menu"
-            ref={accountTriggerRef}
-            onClick={() => setAccountOpen((open) => !open)}
-          >
-            <span className="v2-navigation-account-avatar" aria-hidden="true">
-              {(props.accountLabel?.slice(0, 1) || "A").toLocaleUpperCase()}
-            </span>
-            <span className="v2-chat-title">{props.accountLabel || "Account"}</span>
-            <UiV2Icon name="chevron-down" />
-          </button>
-          {accountOpen ? (
-            <UiV2MenuSurface
-              className="v2-navigation-account-menu"
-              label="Account"
-              ref={accountMenuRef}
+      {props.drawerDestinations ? (
+        <div className="v2-navigation-footer">
+          {/* One row of destinations (UX audit 2026-09-02 #15) so the chat
+              list keeps the drawer's height; Settings and Control Center live
+              in the account menu, exactly as on the rail. */}
+          <div className="v2-navigation-destinations">
+            <button
+              className="v2-navigation-destination v2-focusable"
+              type="button"
+              onClick={props.onProjects}
             >
-              {props.onSettings ? (
-                <UiV2MenuItem onClick={() => { setAccountOpen(false); props.onSettings?.(); }}>
-                  Settings
-                </UiV2MenuItem>
-              ) : null}
-              {props.adminEntryVisible ? (
-                <UiV2MenuLink href="/admin">Control Center</UiV2MenuLink>
-              ) : null}
-              <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
-                {signingOut ? "Signing out…" : "Sign out"}
-              </UiV2MenuItem>
-              {signOutError ? (
-                <p className="v2-live-menu-error" role="alert">Could not sign out.</p>
-              ) : null}
-            </UiV2MenuSurface>
-          ) : null}
+              <UiV2Icon name="layers" /><span>Projects</span>
+            </button>
+            {props.onLibrary ? (
+              <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onLibrary}>
+                <UiV2Icon name="library" /><span>Library</span>
+              </button>
+            ) : null}
+            {props.onSettings ? (
+              <button
+                className="v2-navigation-destination v2-focusable"
+                type="button"
+                onClick={props.onSettings}
+              >
+                <UiV2Icon name="settings" /><span>Settings</span>
+              </button>
+            ) : null}
+          </div>
+          <AccountMenuV2
+            accountLabel={props.accountLabel}
+            adminEntryVisible={props.adminEntryVisible}
+            onSettings={props.onSettings}
+          />
         </div>
-      </div>
+      ) : null}
     </aside>
   );
 }
@@ -1047,16 +1085,41 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
 }
 
 type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
-  | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
+  | "activeChatId" | "chats" | "drawerDestinations" | "error" | "folders" | "hasMore" | "loading"
   | "now" | "onClose" | "onLoadMore" | "onRetry" | "onSearch" | "ready"
   | "searchError" | "searchLoading" | "searchQuery"
 > & {
+  /** Marks an open chat so the mobile "+" island yields to the title pill. */
+  chatActive?: boolean;
   children: ReactNode;
+  /** Rail "Chats" while another section is open: returns to the chat. */
+  onChats?(): void;
+  /** Mirrors whether the Projects reading surface is open. */
+  onProjectsSectionChange?(open: boolean): void;
+  /** Optional controlled state for the Projects reading/column destination. */
+  projectsSectionOpen?: boolean;
+  /** Which second-column section is open; the rail marks it. */
+  section?: RailSectionV2;
   sidebar?: ReactNode | ((onClose: () => void) => ReactNode);
 };
 
+/** Platform-specific hint for a Ctrl/⌘ shortcut: "shift+o" → "Ctrl+Shift+O" / "⌘⇧O". */
+export function shortcutHintV2(keys: string): string {
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+  const parts = keys.split("+").map((part) => part.trim().toLowerCase());
+  if (mac) {
+    return `⌘${parts.map((part) => (part === "shift" ? "⇧" : part.toUpperCase())).join("")}`;
+  }
+  return ["Ctrl", ...parts.map((part) => (part === "shift" ? "Shift" : part.toUpperCase()))].join("+");
+}
+
 export function ReadingRoomShellV2({
+  chatActive = false,
   children,
+  onChats,
+  onProjectsSectionChange,
+  projectsSectionOpen,
+  section = "chats",
   sidebar,
   ...navigationOwnerProps
 }: ReadingRoomShellV2Props) {
@@ -1069,15 +1132,20 @@ export function ReadingRoomShellV2({
     target: "open" | "sidebar";
   }> | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Presentation-only: the second column shows the Projects landing instead
+  // of the chat list until a chat is chosen or Chats is pressed.
+  const [uncontrolledProjectsView, setProjectsView] = useState(false);
+  const projectsView = projectsSectionOpen ?? uncontrolledProjectsView;
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const compositionRef = useRef<SidebarCompositionV2>("desktop");
   const focusBeforeCompactRef = useRef<HTMLElement | null>(null);
   const handledFocusRequestRef = useRef(0);
   const lastNavigationFocusRef = useRef<HTMLElement | null>(null);
   const previousCompositionRef = useRef<SidebarCompositionV2>("desktop");
-  const previousMobileOpenRef = useRef(false);
+  const previousDrawerOpenRef = useRef(false);
   const searchQuery = useWorkspaceStore((state) => state.navigationSearchQuery);
   const collapsed = composition === "compact" ? !compactExpanded : desktopCollapsed;
+  const drawerOpen = mobileOpen || (composition === "compact" && compactExpanded);
 
   useLayoutEffect(() => {
     const update = () => {
@@ -1164,7 +1232,7 @@ export function ReadingRoomShellV2({
       handledFocusRequestRef.current = focusRequest.id;
     } else if (focusRequest.target === "sidebar" && sidebarPresented) {
       document.querySelector<HTMLElement>(
-        ".v2-navigation button:not([disabled])"
+        ".v2-navigation .v2-navigation-close"
       )?.focus();
       handledFocusRequestRef.current = focusRequest.id;
     }
@@ -1183,26 +1251,34 @@ export function ReadingRoomShellV2({
   }, [searchQuery]);
 
   useEffect(() => {
-    if (!mobileOpen) return;
+    if (!drawerOpen) return;
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMobileOpen(false);
+      if (event.key !== "Escape") return;
+      setMobileOpen(false);
+      setCompactExpanded(false);
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [mobileOpen]);
+  }, [drawerOpen]);
 
   useEffect(() => {
-    if (!mobileOpen) return;
+    if (!drawerOpen) return;
     const navigationElement = document.querySelector<HTMLElement>(".v2-navigation");
     if (!navigationElement) return;
+    const focusRoots = composition === "compact"
+      ? [document.querySelector<HTMLElement>(".v2-rail"), navigationElement]
+          .filter((element): element is HTMLElement => Boolean(element))
+      : [navigationElement];
     const focusableSelector = [
       "button:not([disabled])",
       "input:not([disabled])",
       "a[href]",
       "[tabindex]:not([tabindex='-1'])"
     ].join(",");
-    const focusable = () => [...navigationElement.querySelectorAll<HTMLElement>(focusableSelector)]
-      .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+    const focusable = () => focusRoots.flatMap((root) =>
+      [...root.querySelectorAll<HTMLElement>(focusableSelector)]
+        .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true")
+    );
     let cancelled = false;
     let focusFrame: number | null = null;
     let focusAttemptsRemaining = 8;
@@ -1212,7 +1288,8 @@ export function ReadingRoomShellV2({
     // the retry as soon as the modal closes or changes composition.
     const focusInitialControl = () => {
       if (cancelled) return;
-      const target = focusable()[0];
+      const target = navigationElement.querySelector<HTMLElement>(".v2-navigation-close") ??
+        navigationElement.querySelector<HTMLElement>(focusableSelector);
       target?.focus();
       if (target && document.activeElement !== target && focusAttemptsRemaining > 0) {
         focusAttemptsRemaining -= 1;
@@ -1240,44 +1317,150 @@ export function ReadingRoomShellV2({
       if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
       window.removeEventListener("keydown", trapFocus);
     };
-  }, [mobileOpen]);
+  }, [composition, drawerOpen]);
 
   useEffect(() => {
-    const wasMobileOpen = previousMobileOpenRef.current;
-    previousMobileOpenRef.current = mobileOpen;
-    if (wasMobileOpen && !mobileOpen) openButtonRef.current?.focus();
-  }, [mobileOpen]);
+    const wasDrawerOpen = previousDrawerOpenRef.current;
+    previousDrawerOpenRef.current = drawerOpen;
+    if (wasDrawerOpen && !drawerOpen && (composition === "mobile" || collapsed)) {
+      openButtonRef.current?.focus();
+    }
+  }, [collapsed, composition, drawerOpen]);
 
+  const closeDrawers = () => {
+    setMobileOpen(false);
+    setCompactExpanded(false);
+  };
   const closeSidebar = () => {
     setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "open" }));
-    if (composition === "mobile") setMobileOpen(false);
-    else if (composition === "compact") setCompactExpanded(false);
-    else setDesktopCollapsed(true);
+    if (composition === "desktop") setDesktopCollapsed(true);
+    else closeDrawers();
   };
   const projectSlot = navigationOwnerProps.projectsSlot;
   const navigationProjectsSlot = typeof projectSlot === "function"
-    ? () => projectSlot(() => {
+    ? (_onNavigate: () => void, options: Readonly<{ landing: boolean }>) => projectSlot(() => {
+        setProjectsView(false);
+        onProjectsSectionChange?.(false);
         if (composition !== "desktop") closeSidebar();
-      })
+      }, options)
     : projectSlot;
   const createPersonalChat = (mode: NewChatMode) => {
+    navigationOwnerProps.onLeaveProject?.();
+    setProjectsView(false);
+    onProjectsSectionChange?.(false);
     onNewChat(mode);
-    if (composition === "mobile") setMobileOpen(false);
+    closeDrawers();
   };
+  const revealList = () => {
+    setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
+    if (composition === "mobile") setMobileOpen(true);
+    else if (composition === "compact") setCompactExpanded(true);
+    else setDesktopCollapsed(false);
+  };
+  const sidebarShown = composition === "mobile"
+    ? mobileOpen
+    : composition === "compact" ? compactExpanded : !desktopCollapsed;
+  const toggleSidebar = () => (sidebarShown ? closeSidebar() : revealList());
+  // Keyboard shortcuts as in ChatGPT: Ctrl/⌘+Shift+O starts a chat,
+  // Ctrl/⌘+Shift+S toggles the sidebar and Ctrl/⌘+K jumps to the chat filter
+  // (revealing the list first). They are ignored while a modal layer owns
+  // the keyboard (UX audit 2026-09-02 #16).
+  const shortcutsRef = useRef({ createPersonalChat, revealList, toggleSidebar });
+  useEffect(() => {
+    shortcutsRef.current = { createPersonalChat, revealList, toggleSidebar };
+  });
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifier = event.metaKey || event.ctrlKey;
+      if (!modifier || event.altKey || event.defaultPrevented || event.isComposing) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      const key = event.key.toLowerCase();
+      if (event.shiftKey && key === "o") {
+        event.preventDefault();
+        shortcutsRef.current.createPersonalChat("NORMAL");
+      } else if (event.shiftKey && key === "s") {
+        event.preventDefault();
+        shortcutsRef.current.toggleSidebar();
+      } else if (!event.shiftKey && key === "k") {
+        event.preventDefault();
+        shortcutsRef.current.revealList();
+        window.setTimeout(() => {
+          document.querySelector<HTMLInputElement>('input[aria-label="Filter chats"]')?.focus();
+        }, 60);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+  // Projects owns the whole second column. The reading surface is mirrored to
+  // the parent shell while a selected Project remains the contextual section.
+  const showChats = () => {
+    navigationOwnerProps.onLeaveProject?.();
+    setProjectsView(false);
+    onProjectsSectionChange?.(false);
+    if (section !== "chats") {
+      closeDrawers();
+      onChats?.();
+      return;
+    }
+    if (collapsed) revealList();
+  };
+  const showProjects = () => {
+    if (section !== "chats") onChats?.();
+    setProjectsView(true);
+    onProjectsSectionChange?.(true);
+    if (collapsed) revealList();
+  };
+  const showLibrary = navigationOwnerProps.onLibrary
+    ? () => {
+        setProjectsView(false);
+        onProjectsSectionChange?.(false);
+        navigationOwnerProps.onLeaveProject?.();
+        closeDrawers();
+        navigationOwnerProps.onLibrary?.();
+      }
+    : undefined;
+  const showSettings = navigationOwnerProps.onSettings
+    ? () => {
+        closeDrawers();
+        navigationOwnerProps.onSettings?.();
+      }
+    : undefined;
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
+      drawerDestinations={composition === "mobile"}
       projectsSlot={navigationProjectsSlot}
       onClose={closeSidebar}
-      onNewChat={createPersonalChat}
-      onSelectChat={(chat) => { navigationOwnerProps.onSelectChat(chat); setMobileOpen(false); }}
+      onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
+      onShowChats={showChats}
+      onLibrary={showLibrary}
+      onNewChat={(mode) => {
+        createPersonalChat(mode);
+      }}
+      onSettings={showSettings}
+      onSelectChat={(chat) => {
+        setProjectsView(false);
+        onProjectsSectionChange?.(false);
+        navigationOwnerProps.onSelectChat(chat);
+        // A drawer (mobile, compact) yields to the chosen chat.
+        setMobileOpen(false);
+        if (composition === "compact") setCompactExpanded(false);
+      }}
+      view={projectsView ? "projects" : "chats"}
     />
   );
+
+  const resolvedSection: RailSectionV2 = section === "library"
+    ? "library"
+    : projectsView || navigationOwnerProps.projectContextActive ? "projects" : "chats";
 
   return (
     <div
       className="v2-workspace-shell"
+      data-chat-active={chatActive || undefined}
       data-mobile-sidebar={mobileOpen || undefined}
+      data-shell-section={resolvedSection}
       data-sidebar-collapsed={collapsed || undefined}
       data-sidebar-compact-expanded={composition === "compact" && compactExpanded || undefined}
       data-sidebar-composition={composition}
@@ -1289,33 +1472,50 @@ export function ReadingRoomShellV2({
       }}
     >
       <UiV2IconSprite />
+      {composition !== "mobile" ? (
+        <RailV2
+          accountLabel={navigationOwnerProps.accountLabel}
+          active={resolvedSection}
+          adminEntryVisible={navigationOwnerProps.adminEntryVisible}
+          onChats={showChats}
+          onLibrary={showLibrary}
+          onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
+          onSettings={showSettings}
+        />
+      ) : null}
       <button
         className="v2-navigation-scrim"
         type="button"
         aria-label="Close navigation"
-        onClick={() => setMobileOpen(false)}
+        aria-hidden={drawerOpen ? undefined : true}
+        tabIndex={-1}
+        onClick={closeSidebar}
       />
       {navigation}
       <div
         className="v2-sidebar-floats"
         aria-label="Navigation"
-        inert={mobileOpen ? true : undefined}
+        inert={drawerOpen ? true : undefined}
       >
         <UiV2IconButton
           ref={openButtonRef}
-          icon="menu"
+          icon={composition === "mobile" ? "menu" : "panel"}
           label="Open sidebar"
+          tooltip={composition === "mobile" ? "Open navigation" : "Show chat list"}
+          tooltipSide="right"
           aria-expanded={composition === "mobile" ? mobileOpen : !collapsed}
-          onClick={() => {
-            setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
-            if (composition === "mobile") setMobileOpen(true);
-            else if (composition === "compact") setCompactExpanded(true);
-            else setDesktopCollapsed(false);
-          }}
+          onClick={revealList}
         />
-        <UiV2IconButton icon="plus" label="New chat" onClick={() => createPersonalChat("NORMAL")} />
+        {resolvedSection === "chats" ? (
+          <UiV2IconButton
+            icon="plus"
+            label="New chat"
+            tooltip={`New chat · ${shortcutHintV2("shift+o")}`}
+            onClick={() => createPersonalChat("NORMAL")}
+          />
+        ) : null}
       </div>
-      <div className="v2-workspace-content" inert={mobileOpen ? true : undefined}>{children}</div>
+      <div className="v2-workspace-content" inert={drawerOpen ? true : undefined}>{children}</div>
     </div>
   );
 }

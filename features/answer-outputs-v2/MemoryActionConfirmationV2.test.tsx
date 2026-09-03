@@ -15,6 +15,12 @@ const resultItem = (overrides: Partial<MemoryActionResultItem> = {}): MemoryActi
   ...overrides
 });
 
+/** Edit / Forget / Manage Memories wait behind the notice's "⋯" menu. */
+function pickAction(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Memory actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+}
+
 describe("client-safe Memory action feedback", () => {
   afterEach(() => {
     cleanup();
@@ -35,12 +41,17 @@ describe("client-safe Memory action feedback", () => {
     );
 
     expect(screen.getByText("Memory saved.")).toBeVisible();
-    expect(screen.getByText("Done")).toBeVisible();
+    // One quiet line: no status badge, the verbs behind "⋯".
+    expect(screen.queryByText("Done")).not.toBeInTheDocument();
     expect(screen.getByTestId("memory-action-statement")).toHaveTextContent(
       "I prefer concise answers."
     );
-    expect(screen.getByRole("button", { name: "Edit" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Forget" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Memory actions" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Edit",
+      "Forget"
+    ]);
+    expect(screen.getByRole("menuitem", { name: "Forget" })).toHaveAttribute("data-tone", "destructive");
     expect(screen.queryByText("mr1.save-reference")).not.toBeInTheDocument();
 
     rerender(
@@ -54,7 +65,8 @@ describe("client-safe Memory action feedback", () => {
       />
     );
     expect(screen.getByText("Memory updated.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Edit" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Memory actions" }));
+    expect(screen.getByRole("menuitem", { name: "Edit" })).toBeVisible();
 
     rerender(
       <MemoryActionConfirmationV2
@@ -79,7 +91,7 @@ describe("client-safe Memory action feedback", () => {
         }}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    pickAction("Edit");
     fireEvent.change(screen.getByRole("textbox", { name: "Correct this memory" }), {
       target: { value: "Unsaved local text" }
     });
@@ -115,7 +127,7 @@ describe("client-safe Memory action feedback", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    pickAction("Edit");
     fireEvent.change(screen.getByRole("textbox", { name: "Correct this memory" }), {
       target: { value: "The corrected statement." }
     });
@@ -138,7 +150,7 @@ describe("client-safe Memory action feedback", () => {
         }}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    pickAction("Forget");
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body)))
       .toMatchObject({
@@ -249,16 +261,19 @@ describe("client-safe Memory action feedback", () => {
 
   it("opens Memory settings for reset confirmation and handles non-actions plainly", () => {
     const onOpenMemorySettings = vi.fn();
+    const onOpenMemoryReset = vi.fn();
     const { rerender } = render(
       <MemoryActionConfirmationV2
         action={{ operation: "RESET", status: "CONFIRMATION_REQUIRED" }}
+        onOpenMemoryReset={onOpenMemoryReset}
         onOpenMemorySettings={onOpenMemorySettings}
       />
     );
-    expect(screen.getByText(/Reset personal memory needs your confirmation/u)).toBeVisible();
+    expect(screen.getByText(/Forgetting everything needs your confirmation/u)).toBeVisible();
     expect(screen.getByText("Confirmation needed")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Review reset" }));
-    expect(onOpenMemorySettings).toHaveBeenCalledOnce();
+    expect(onOpenMemoryReset).toHaveBeenCalledOnce();
+    expect(onOpenMemorySettings).not.toHaveBeenCalled();
 
     rerender(
       <MemoryActionConfirmationV2

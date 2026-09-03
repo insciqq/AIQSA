@@ -54,29 +54,55 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function exactJson(value: unknown, expected: unknown): boolean {
+  if (Array.isArray(expected)) {
+    return Array.isArray(value) && value.length === expected.length &&
+      expected.every((entry, index) => exactJson(value[index], entry));
+  }
+  if (record(expected)) {
+    if (!record(value)) return false;
+    const expectedKeys = Object.keys(expected).sort();
+    const actualKeys = Object.keys(value).sort();
+    return actualKeys.length === expectedKeys.length &&
+      actualKeys.every((key, index) => key === expectedKeys[index]) &&
+      expectedKeys.every((key) => exactJson(value[key], expected[key]));
+  }
+  return value === expected;
+}
+
 function exactPropertyMapping(value: unknown): boolean {
-  if (!record(value) || value.dynamic !== "strict" || !record(value._source) ||
-    value._source.enabled !== false || !record(value.properties)) return false;
-  const expected = KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings.properties;
-  const properties = value.properties as Record<string, unknown>;
-  const actualKeys = Object.keys(properties).sort();
-  const expectedKeys = Object.keys(expected).sort();
-  if (actualKeys.length !== expectedKeys.length ||
-    actualKeys.some((key, index) => key !== expectedKeys[index])) return false;
-  return expectedKeys.every((key) => {
-    const actual = properties[key];
-    const wanted = expected[key as keyof typeof expected];
-    return record(actual) && actual.type === wanted.type &&
-      (!("analyzer" in wanted) || actual.analyzer === wanted.analyzer);
-  });
+  return exactJson(value, KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings);
 }
 
 function exactKnowledgeIndexSettings(value: unknown): boolean {
-  if (!record(value) || !record(value.index)) return false;
+  if (!record(value) || Object.keys(value).length !== 1 || !record(value.index)) return false;
   const index = value.index;
-  if (!record(index.similarity) || !record(index.similarity.default)) return false;
+  const expectedKeys = [
+    "creation_date",
+    "max_result_window",
+    "number_of_replicas",
+    "number_of_shards",
+    "provided_name",
+    "replication",
+    "similarity",
+    "uuid",
+    "version"
+  ];
+  if (Object.keys(index).sort().some((key, position) => key !== expectedKeys[position]) ||
+    Object.keys(index).length !== expectedKeys.length ||
+    !/^\d+$/u.test(String(index.creation_date)) ||
+    index.provided_name !== KNOWLEDGE_SEARCH_INDEX_NAME ||
+    typeof index.uuid !== "string" || index.uuid.length < 1 || index.uuid.length > 128 ||
+    !record(index.replication) || !exactJson(index.replication, { type: "DOCUMENT" }) ||
+    !record(index.version) || Object.keys(index.version).length !== 1 ||
+    !/^\d+$/u.test(String(index.version.created))) return false;
+  if (!record(index.similarity) || Object.keys(index.similarity).length !== 1 ||
+    !record(index.similarity.default) ||
+    Object.keys(index.similarity.default).sort().join(",") !== "b,k1,type") return false;
   const similarity = index.similarity.default;
-  return Number(index.number_of_shards) ===
+  return Number(index.max_result_window) ===
+      KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.max_result_window &&
+    Number(index.number_of_shards) ===
       KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.number_of_shards &&
     Number(index.number_of_replicas) ===
       KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.number_of_replicas &&
@@ -184,6 +210,31 @@ export class AiqsaOpenSearchTransport {
     return this.#core.request(input);
   }
 
+  async #validateKnowledgeIndexDefinition(): Promise<void> {
+    const definition = await this.#request({
+      indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
+      maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
+      method: "GET",
+      path: KNOWLEDGE_SEARCH_INDEX_NAME,
+      timeoutMs: HEALTH_TIMEOUT_MS
+    });
+    if (!record(definition.body) || !record(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME]) ||
+      !exactPropertyMapping(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME].mappings) ||
+      !exactKnowledgeIndexSettings(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME].settings)) {
+      throw new OpenSearchTransportError("opensearch_index_incompatible");
+    }
+  }
+
+  /** Read-only liveness and exact-index-contract check for operation preflight
+   * and the administrator health projection. */
+  async checkKnowledgeIndex(): Promise<void> {
+    if (this.#namespace !== "knowledge") {
+      throw new OpenSearchTransportError("opensearch_index_incompatible");
+    }
+    await this.#ensureServerVersion();
+    await this.#validateKnowledgeIndexDefinition();
+  }
+
   async ensureKnowledgeIndex(): Promise<void> {
     if (this.#namespace !== "knowledge") {
       throw new OpenSearchTransportError("opensearch_index_incompatible");
@@ -207,18 +258,7 @@ export class AiqsaOpenSearchTransport {
         timeoutMs: WRITE_TIMEOUT_MS
       });
     }
-    const definition = await this.#request({
-      indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
-      maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
-      method: "GET",
-      path: KNOWLEDGE_SEARCH_INDEX_NAME,
-      timeoutMs: HEALTH_TIMEOUT_MS
-    });
-    if (!record(definition.body) || !record(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME]) ||
-      !exactPropertyMapping(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME].mappings) ||
-      !exactKnowledgeIndexSettings(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME].settings)) {
-      throw new OpenSearchTransportError("opensearch_index_incompatible");
-    }
+    await this.#validateKnowledgeIndexDefinition();
   }
 
   async #ensureServerVersion(): Promise<void> {
@@ -482,7 +522,9 @@ export class AiqsaOpenSearchTransport {
       indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
       maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
       method: "POST",
-      path: `${KNOWLEDGE_SEARCH_INDEX_NAME}/_delete_by_query?refresh=true`,
+      path: `${KNOWLEDGE_SEARCH_INDEX_NAME}/_delete_by_query?refresh=true&scroll_size=${
+        KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT
+      }`,
       timeoutMs: WRITE_TIMEOUT_MS
     });
     if (!record(response.body) || response.body.timed_out !== false ||

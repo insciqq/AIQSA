@@ -72,6 +72,8 @@ export type MessageRunLifecycleResult = {
   failureCode?: string;
   failureMessage?: string;
   receivedChatUpdate: boolean;
+  /** User-facing reason of a server-rejected request (no run was started). */
+  rejectionMessage?: string;
   runId: string | null;
 };
 
@@ -154,6 +156,13 @@ function finishStream(input: {
   );
 }
 
+function runWasCancelled(abortController: AbortController, runId: string | null): boolean {
+  return (
+    abortController.signal.aborted ||
+    Boolean(runId && useRunLifecycleStore.getState().cancelledRunIds.has(runId))
+  );
+}
+
 export async function executeMessageRunLifecycle({
   activeStreamAbortRef,
   chatId,
@@ -175,6 +184,7 @@ export async function executeMessageRunLifecycle({
   let failureMessage: string | null = null;
   let failureCode: string | null = null;
   let receivedChatUpdate = false;
+  let rejectionMessage: string | null = null;
   let runId: string | null = null;
   let serverRejectedRequest = false;
   let userFacingFailureMessage: string | null = null;
@@ -202,6 +212,7 @@ export async function executeMessageRunLifecycle({
         `${failurePrefix}_${response.status}`
       );
       failureCode = details.code ?? null;
+      rejectionMessage = details.message;
       userFacingFailureMessage = details.preserveForComposer ? details.message : null;
       throw new Error(details.message);
     }
@@ -241,10 +252,12 @@ export async function executeMessageRunLifecycle({
       tokenBuffer
     });
 
-    failed = streamResult.failed;
-    cancelled = streamResult.terminalStatus === "cancelled";
     receivedChatUpdate = streamResult.receivedChatUpdate;
     runId = streamResult.runId;
+    cancelled =
+      streamResult.terminalStatus === "cancelled" ||
+      runWasCancelled(abortController, runId);
+    failed = streamResult.failed && !cancelled;
     if (runId) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
     }
@@ -269,7 +282,7 @@ export async function executeMessageRunLifecycle({
     }
   } catch (error) {
     tokenBuffer.flush();
-    cancelled = abortController.signal.aborted;
+    cancelled = runWasCancelled(abortController, runId);
     failed = !cancelled;
     failureMessage = cancelled ? null : userFacingFailureMessage;
     if (activeStreamAbortRef.current.get(chatId) === abortController) {
@@ -315,6 +328,7 @@ export async function executeMessageRunLifecycle({
     ...(failureCode ? { failureCode } : {}),
     ...(failureMessage ? { failureMessage } : {}),
     receivedChatUpdate,
+    ...(rejectionMessage && !cancelled ? { rejectionMessage } : {}),
     runId
   };
 }

@@ -3,6 +3,7 @@ import {
   confirmPermanentChatDeletion,
   dismissCompletedPermanentChatDeletion,
   openPermanentChatDeletionStatus,
+  permanentChatDeletionFocusReturnTarget,
   refreshPermanentChatDeletionStatus,
   setPermanentChatDeletionOriginForget,
   usePermanentChatDeletionStore
@@ -22,7 +23,12 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { useEffect } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useSyncExternalStore } from "react";
+
+const subscribeToBrowser = () => () => undefined;
+const browserSnapshot = () => true;
+const serverSnapshot = () => false;
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
@@ -31,6 +37,23 @@ const button =
 
 function t(key: PermanentChatDeletionUiCopyKey): string {
   return permanentChatDeletionUiCopy(key);
+}
+
+function restoreSurfaceFocus(): void {
+  window.requestAnimationFrame(() => {
+    const target = permanentChatDeletionFocusReturnTarget();
+    if (target?.isConnected) target.focus({ preventScroll: true });
+  });
+}
+
+function closeSurface(): void {
+  closePermanentChatDeletionDialog();
+  restoreSurfaceFocus();
+}
+
+function dismissCompletedSurface(): void {
+  dismissCompletedPermanentChatDeletion();
+  restoreSurfaceFocus();
 }
 
 function errorText(reason: string | null): string {
@@ -60,14 +83,15 @@ function ModalFrame({
   labelledBy
 }: Readonly<{ children: React.ReactNode; labelledBy: string }>) {
   const dialogRef = useDialogFocus<HTMLDivElement>({
-    onClose: closePermanentChatDeletionDialog
+    onClose: closeSurface,
+    restoreFocus: permanentChatDeletionFocusReturnTarget
   });
   return (
     <div
       className="fixed inset-0 z-[110] flex items-end justify-center bg-scrim/70 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
       data-testid="permanent-chat-deletion-dialog"
       role="presentation"
-      onMouseDown={closePermanentChatDeletionDialog}
+      onMouseDown={closeSurface}
     >
       <div
         ref={dialogRef}
@@ -112,11 +136,11 @@ function Confirmation() {
           </p>
         </div>
         <button
-          aria-label={t("cancel")}
+          aria-label={t("close")}
           className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
           disabled={busy}
           type="button"
-          onClick={closePermanentChatDeletionDialog}
+          onClick={closeSurface}
         >
           <X className="size-4" aria-hidden="true" />
         </button>
@@ -159,7 +183,7 @@ function Confirmation() {
           className={`${button} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
           disabled={busy}
           type="button"
-          onClick={closePermanentChatDeletionDialog}
+          onClick={closeSurface}
         >
           {t("cancel")}
         </button>
@@ -219,7 +243,7 @@ function StatusDialog() {
           aria-label={t("close")}
           className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
           type="button"
-          onClick={closePermanentChatDeletionDialog}
+          onClick={closeSurface}
         >
           <X className="size-4" aria-hidden="true" />
         </button>
@@ -247,8 +271,8 @@ function StatusDialog() {
           className={`${button} ${completed ? "bg-proof text-proof-contrast hover:bg-proof-hover" : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
           type="button"
           onClick={() => {
-            if (completed) dismissCompletedPermanentChatDeletion();
-            else closePermanentChatDeletionDialog();
+            if (completed) dismissCompletedSurface();
+            else closeSurface();
           }}
         >
           {t("close")}
@@ -283,9 +307,12 @@ function ProgressNotice() {
           {t(blocked ? "noticeBlocked" : completed ? "noticeSucceeded" : "noticePending")}
         </p>
         <button
+          data-testid="permanent-chat-deletion-notice-action"
           className={`${button} shrink-0 bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
           type="button"
-          onClick={openPermanentChatDeletionStatus}
+          onClick={() => openPermanentChatDeletionStatus(() =>
+            document.querySelector<HTMLElement>("[data-testid='permanent-chat-deletion-notice-action']")
+          )}
         >
           {t("noticeAction")}
         </button>
@@ -297,6 +324,11 @@ function ProgressNotice() {
 export function PermanentChatDeletionSurface() {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const status = usePermanentChatDeletionStore((current) => current.status?.status ?? null);
+  const portalReady = useSyncExternalStore(
+    subscribeToBrowser,
+    browserSnapshot,
+    serverSnapshot
+  );
 
   useEffect(() => {
     if (!reference || !status || status === "COMPLETE") return;
@@ -306,11 +338,12 @@ export function PermanentChatDeletionSurface() {
     return () => window.clearTimeout(timer);
   }, [reference, status]);
 
-  return (
+  if (!portalReady) return null;
+  return createPortal((
     <>
       <Confirmation />
       <StatusDialog />
       <ProgressNotice />
     </>
-  );
+  ), document.body);
 }

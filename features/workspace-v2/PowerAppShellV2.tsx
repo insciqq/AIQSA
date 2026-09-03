@@ -74,6 +74,7 @@ import {
 } from "@/components/app-shell/runLifecycleActions";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import {
+  liveWorkDurationMs,
   selectRunSurface,
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
@@ -107,9 +108,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import {
   deactivateArchivedChats,
-  openArchivedChats,
-  removePermanentlyDeletedArchivedChat,
-  useArchivedChatsStore
+  removePermanentlyDeletedArchivedChat
 } from "@/components/app-shell/archivedChatsStore";
 import {
   activatePermanentChatDeletionAccount,
@@ -149,6 +148,11 @@ import {
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
 import { useProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
+import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
+import type {
+  KnowledgeBaseSummary,
+  KnowledgeSourceListResponse
+} from "@/lib/contracts/knowledge";
 
 export {
   runCatalogLoadDeduped,
@@ -170,6 +174,23 @@ export function effectiveComposerDisabledHint(input: Readonly<{
   projectHint: string | null;
 }>): string | null {
   return input.projectContext ? input.projectHint : input.personalHint;
+}
+
+function personalComposerKnowledgeBase(
+  base: KnowledgeBaseSummary
+): ComposerConfigKnowledgeBase {
+  return {
+    archived: base.archived,
+    attentionDocumentCount: base.readiness.attentionSources,
+    description: base.description,
+    documentCount: base.sourceCount,
+    id: base.id,
+    name: base.name,
+    owned: base.owned,
+    processingDocumentCount: base.readiness.processingSources,
+    readinessState: base.readiness.state,
+    readyDocumentCount: base.readiness.readySources
+  };
 }
 
 function cloneComposerControlSnapshot(
@@ -271,7 +292,6 @@ export function PowerAppShellV2({
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
   const pendingChatFolderId = useWorkspaceStore((state) => state.pendingChatFolderId);
   const memorySettings = useMemorySettingsStore((state) => state.data);
-  const archivedChatsOpen = useArchivedChatsStore((state) => state.open);
   const activeChatDetailLoading = useWorkspaceStore((state) => state.activeChatDetailLoading);
   const activeChatDetailError = useWorkspaceStore((state) => state.activeChatDetailError);
   const setCatalog = useWorkspaceStore((state) => state.setCatalog);
@@ -317,6 +337,8 @@ export function PowerAppShellV2({
   const attachments = composerSession.attachments;
   const backgroundMode = useComposerControlStore((state) => state.backgroundMode);
   const draft = composerSession.draft;
+  const editingMessageDraft = composerSession.editingDraft;
+  const editingMessageError = composerSession.editingError;
   const editingMessageId = composerSession.editingMessageId;
   const editingMessagePending = Boolean(composerSession.pendingEdit);
   const maxOutputTokens = useComposerControlStore((state) => state.maxOutputTokens);
@@ -324,6 +346,7 @@ export function PowerAppShellV2({
   const reasoningMode = useComposerControlStore((state) => state.reasoningMode);
   const selectedAssistant = useComposerControlStore((state) => state.selectedAssistant);
   const knowledgeSelection = useComposerControlStore((state) => state.knowledgeSelection);
+  const knowledgePlanSource = useComposerControlStore((state) => state.knowledgePlanSource);
   const selectedKnowledgeBaseIds = useComposerControlStore((state) => state.selectedKnowledgeBaseIds);
   const assistantRemovedNotice = useComposerControlStore((state) => state.assistantRemovedNotice);
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
@@ -337,6 +360,7 @@ export function PowerAppShellV2({
   const temperature = useComposerControlStore((state) => state.temperature);
   const applyControlDefaults = useComposerControlStore((state) => state.applyControlDefaults);
   const setDraft = useComposerSessionStore((state) => state.setDraft);
+  const setEditingDraft = useComposerSessionStore((state) => state.setEditingDraft);
   const setSelectedModelId = useComposerControlStore((state) => state.setSelectedModelId);
   const setSelectedKnowledgePlan = useComposerControlStore((state) => state.setSelectedKnowledgePlan);
   const setSelectedProvider = useComposerControlStore((state) => state.setSelectedProvider);
@@ -346,8 +370,9 @@ export function PowerAppShellV2({
   const settingsOpen = useSettingsDestinationStore((state) => state.settingsOpen);
   const settingsSection = useSettingsDestinationStore((state) => state.settingsSection);
   const memoryOpen = useSettingsDestinationStore((state) => state.memoryOpen);
-  const closeMemoryWorkspace = useSettingsDestinationStore((state) => state.closeMemory);
-  const openMemorySettings = useSettingsDestinationStore((state) => state.openMemorySettings);
+  const closeMemoryLibrary = useSettingsDestinationStore((state) => state.closeMemory);
+  const openMemoryLibrary = useSettingsDestinationStore((state) => state.openMemoryLibrary);
+  const openMemoryTab = useSettingsDestinationStore((state) => state.openMemoryTab);
   const openMcpSettings = useSettingsDestinationStore((state) => state.openMcpSettings);
   const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
   const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
@@ -363,6 +388,11 @@ export function PowerAppShellV2({
   const uploading = composerSession.pendingUploadGenerations.length > 0;
   const [notice, setNotice] = useState<Notice | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<Notice | null>(null);
+  // The composer owns an unfiltered, first-page snapshot. Reusing the
+  // Library's mutable query/page state would make its "All" total and recent
+  // documents silently change after browsing the Library.
+  const [composerKnowledgeData, setComposerKnowledgeData] =
+    useState<KnowledgeSourceListResponse | null>(null);
   const [shareDialogTarget, setShareDialogTarget] = useState<ShareDialogTarget | null>(null);
   const [memoryResumeTarget, setMemoryResumeTarget] = useState<WorkspaceChatSummary | null>(null);
   const [personalReadingAnchor, setPersonalReadingAnchor] = useState<Readonly<{
@@ -586,6 +616,10 @@ export function PowerAppShellV2({
     removeAssistantFromComposer,
     selectModel,
     selectSearchPlan,
+    setDefaultKnowledgePlan,
+    setDefaultMcpMode,
+    setDefaultSearchPlan,
+    setSendWithEnter,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     useOrganizationModelDefault,
@@ -802,6 +836,15 @@ export function PowerAppShellV2({
       void knowledgeLibraryActions.refreshSources();
     }
   }, [knowledgeLibraryActions, knowledgeSnapshot.sourceData]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchKnowledgeSources({ filter: "all", page: 1, pageSize: 100 }).then((result) => {
+      if (!cancelled && result.ok) setComposerKnowledgeData(result.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [knowledgeSnapshot.sourceData]);
   const searchComposerKnowledgeSources = useEventCallback(async (query: string) => {
     const result = await fetchKnowledgeSources({ filter: "all", page: 1, pageSize: 100, query });
     if (!result.ok) return [];
@@ -830,6 +873,10 @@ export function PowerAppShellV2({
     })),
     knowledgeDataError: knowledgeSnapshot.dataError,
     knowledgeDataState: knowledgeSnapshot.dataState,
+    openMcpSettings: () => {
+      useAssistantLibraryStore.getState().patch({ editor: null, history: null, open: false, task: "list" });
+      openMcpSettings();
+    },
     retryCatalog: () => void retryCatalog(),
     retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
     retrySkills: () => void refreshSkillLibrary(true).catch(() => undefined),
@@ -866,6 +913,8 @@ export function PowerAppShellV2({
           id,
           name: skillsById.get(id) ?? "Project Skill"
         })),
+        knowledgeLabel: projectAssistant.summary.fingerprint.knowledgeLabel,
+        knowledgeResourceCount: projectAssistant.summary.fingerprint.knowledgeResourceCount,
         name: projectAssistant.summary.name,
         promptCharacterCount: projectAssistant.promptCharacterCount,
         starterPrompts: projectAssistant.summary.starterPrompts
@@ -997,28 +1046,36 @@ export function PowerAppShellV2({
     selectProjectChat
   ]);
   const openAssistantLibrary = () => {
-    closeMemoryWorkspace();
+    closeMemoryLibrary();
     closeGeneralSettings();
     knowledgeLibraryActions.closeLibrary();
     assistantLibraryActions.openLibrary("discover");
   };
   const openKnowledgeLibrary = () => {
-    closeMemoryWorkspace();
+    closeMemoryLibrary();
     closeGeneralSettings();
     assistantLibraryActions.closeLibrary();
     knowledgeLibraryActions.openLibrary();
   };
-  const openMemoryWorkspace = () => {
+  const openKnowledgeLibrarySource = (sourceId: string) => {
+    openKnowledgeLibrary();
+    knowledgeLibraryActions.openSourceDetail(sourceId);
+  };
+  const openMemoryLibraryDestination = () => {
     // Personal Memory is not a Project capability. This callback is also
     // passed to answer actions, so guard it even when a stale action arrives
     // after navigation into a shared Project.
     if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) {
-      closeMemoryWorkspace();
+      closeMemoryLibrary();
       return;
     }
     assistantLibraryActions.closeLibrary();
     knowledgeLibraryActions.closeLibrary();
-    openMemorySettings();
+    openMemoryLibrary();
+  };
+  const openMemorySettingsTab = () => {
+    if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) return;
+    openMemoryTab();
   };
   const openSettingsDestination = () => {
     assistantLibraryActions.closeLibrary();
@@ -1101,6 +1158,7 @@ export function PowerAppShellV2({
     refreshInterruptedRun,
     regenerateMessage,
     sendStarterPrompt,
+    submitMessageEdit,
     submitComposer
   } = useMessageRunActions({
     activeChat,
@@ -1116,7 +1174,7 @@ export function PowerAppShellV2({
     currentModel,
     fetchRun,
     notifyAnswerReady,
-    openMemorySettings: openMemoryWorkspace,
+    openMemorySettings: openMemoryLibraryDestination,
     persistActiveLeaf,
     primeAnswerSound,
     refreshActiveChat,
@@ -1141,10 +1199,6 @@ export function PowerAppShellV2({
   });
 
   const composerActions = {
-    cancelMessageEdit() {
-      const sessionStore = useComposerSessionStore.getState();
-      sessionStore.cancelEdit(sessionStore.activeSessionKey);
-    },
     changeDraft: setDraft,
     rejectAttachmentCount(input: {
       attemptedCount: number;
@@ -1319,9 +1373,6 @@ export function PowerAppShellV2({
       exportChat,
       moveChat: updateChatFolder,
       moveFolder: updateFolderParent,
-      openArchivedChats: () => {
-        void openArchivedChats().catch(() => undefined);
-      },
       openChatMessage: openPersonalChatMessageEvent,
       retry: retryWorkspace,
       saveChatTitle: renameChat,
@@ -1340,8 +1391,7 @@ export function PowerAppShellV2({
     archived: {
       onRestored: async (chatId: string) => {
         await refreshWorkspace(chatId, { preserveControls: true });
-      },
-      open: archivedChatsOpen
+      }
     },
     pane: workspacePaneView,
     projects: projectWorkspace,
@@ -1362,8 +1412,15 @@ export function PowerAppShellV2({
     activeChatDetailError,
     activeChatDetailLoading,
     activeChatStreaming,
+    cancelMessageEdit(messageId: string) {
+      const sessionStore = useComposerSessionStore.getState();
+      sessionStore.cancelEdit(sessionStore.activeSessionKey, messageId);
+    },
+    changeEditingMessageDraft: setEditingDraft,
     copyVisibleThread,
     currentRunId,
+    editingMessageDraft,
+    editingMessageError,
     editingMessageId,
     editingMessagePending,
     events: activeRunSurface.events,
@@ -1378,11 +1435,13 @@ export function PowerAppShellV2({
     jumpToLatest,
     hasOlderMessages: activeThreadHistory.hasOlder,
     liveArtifactSummary,
+    liveWorkDurationMs: liveWorkDurationMs(activeRunSurface),
     loadEarlierMessages,
     loadingOlderMessages: activeThreadHistory.loading,
     olderMessagesError: activeThreadHistory.error,
     retryActiveChatDetail,
     showJumpToLatest,
+    submitMessageEdit,
     threadScrollRef,
     visibleMessages
   } satisfies ShellThreadView;
@@ -1504,6 +1563,17 @@ export function PowerAppShellV2({
     composerActions,
     assistant: {
       clearRemovedNotice: () => useComposerControlStore.getState().clearAssistantRemovedNotice(),
+      editById: (assistantId: string) => {
+        setAssistantPickerOpen(false);
+        if (projectContext) {
+          projectWorkspace.actions.openSettings();
+          return;
+        }
+        closeMemoryLibrary();
+        closeGeneralSettings();
+        knowledgeLibraryActions.closeLibrary();
+        void assistantLibraryActions.openAssistantEditor(assistantId);
+      },
       openLibrary: projectContext ? projectWorkspace.actions.openSettings : openAssistantLibrary,
       openPicker: assistantPickerOpen,
       pickerItems: projectContext
@@ -1550,13 +1620,28 @@ export function PowerAppShellV2({
     knowledge: {
       bases: projectContext
         ? activeProject?.composer?.knowledgeBases ?? []
-        : knowledgeSnapshot.data?.knowledgeBases ?? [],
+        : (knowledgeSnapshot.data?.knowledgeBases ?? []).map(personalComposerKnowledgeBase),
+      documentTotal: projectContext
+        ? activeProject?.composer?.knowledgeDocumentTotal ?? null
+        : composerKnowledgeData?.pagination.totalItems ?? null,
+      override: () => {
+        const controls = useComposerControlStore.getState();
+        // A Knowledge override is an ordinary governed-control edit: detach
+        // Assistant identity while preserving its other resolved controls.
+        // Privacy-hidden inherited plans normalize to Off in the store.
+        controls.setSelectedKnowledgePlan(
+          controls.knowledgeSelection,
+          "explicit",
+          "user"
+        );
+      },
+      planSource: knowledgePlanSource,
       searchSources: projectContext ? undefined : searchComposerKnowledgeSources,
       select: (selection) => setSelectedKnowledgePlan(selection, "explicit", "user"),
       selection: knowledgeSelection,
       sources: projectContext
         ? activeProject?.composer?.knowledgeSources ?? []
-        : (knowledgeSnapshot.sourceData?.sources ?? []).map((source) => ({
+        : (composerKnowledgeData?.sources ?? []).map((source) => ({
             description: source.description,
             id: source.id,
             name: source.name,
@@ -1578,9 +1663,20 @@ export function PowerAppShellV2({
       toggleTemporary: projectContext ? () => undefined : toggleTemporaryComposer
     },
     makeModelDefault: projectContext ? undefined : makeModelDefault,
+    chatDefaults: projectContext || !catalog ? undefined : {
+      knowledgePlan: catalog.defaults.knowledgePlan ?? null,
+      mcpMode: catalog.defaults.mcpMode ?? "auto",
+      searchPlan: catalog.defaults.searchPlan,
+      setKnowledgePlan: setDefaultKnowledgePlan,
+      setMcpMode: setDefaultMcpMode,
+      setSearchPlan: setDefaultSearchPlan
+    },
+    sendWithEnter: catalog?.defaults.sendWithEnter ?? true,
+    setSendWithEnter,
     notificationSoundEnabled,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,
+    operationErrorRetryable: composerSession.operationErrorRetryable,
     reasoningEffort,
     reasoningMode,
     retryCatalog,
@@ -1618,7 +1714,7 @@ export function PowerAppShellV2({
   } satisfies ShellBranchesView;
 
   const settingsView = {
-    closeMemory: closeMemoryWorkspace,
+    closeMemory: closeMemoryLibrary,
     closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
     knowledge: buildKnowledgeLibraryView(knowledgeLibraryActions, knowledgeSnapshot),
@@ -1640,6 +1736,10 @@ export function PowerAppShellV2({
         })),
         knowledgeDataError: knowledgeSnapshot.dataError,
         knowledgeDataState: knowledgeSnapshot.dataState,
+        openMcpSettings: () => {
+          useAssistantLibraryStore.getState().patch({ editor: null, history: null, open: false, task: "list" });
+          openMcpSettings();
+        },
         retryCatalog: () => void retryCatalog(),
         retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
         retrySkills: () => void refreshSkillLibrary(true).catch(() => undefined),
@@ -1658,7 +1758,8 @@ export function PowerAppShellV2({
     open: openSettingsDestination,
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
-    openMemory: openMemoryWorkspace,
+    openMemory: openMemoryLibraryDestination,
+    openMemorySettingsTab,
     openMcp: openMcpSettings,
     settings: {
       open: settingsOpen,
@@ -1699,7 +1800,7 @@ export function PowerAppShellV2({
   } satisfies ShellOverlaysView;
 
   return (
-    <KnowledgeCitationViewerProvider>
+    <KnowledgeCitationViewerProvider onOpenLibrarySource={openKnowledgeLibrarySource}>
       <PowerAppShellV2View
         branches={branchesView}
         composer={composerView}

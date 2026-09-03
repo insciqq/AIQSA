@@ -435,15 +435,6 @@ export function useMessageRunActions({
   }
 
   async function submitComposer() {
-    const sourceSession = selectComposerSession(
-      useComposerSessionStore.getState(),
-      useComposerSessionStore.getState().activeSessionKey
-    );
-    if (sourceSession.editingMessageId) {
-      await editMessageBranch();
-      return;
-    }
-
     await sendMessage();
   }
 
@@ -593,6 +584,29 @@ export function useMessageRunActions({
     if (!modelForSend) {
       return;
     }
+    // A Search engine the model cannot run is never kept silently (UX audit
+    // 2026-09-02 A6): the message goes out without it, the composer choice
+    // becomes Off, and a short notice says so.
+    const unavailableSearchOptionId = runControlSnapshot.searchPreferencePlan.optionIds.find(
+      (optionId) => optionId !== "search-disabled" && !modelForSend.searchStrategyIds.includes(optionId)
+    );
+    if (unavailableSearchOptionId) {
+      const optionName = runControlSnapshot.searchOptions.find(
+        (option) => option.strategyId === unavailableSearchOptionId
+      )?.displayName ?? "The selected search engine";
+      useComposerControlStore.getState().setSelectedSearchPlan(
+        runControlSnapshot.searchPreferencePlan.optionIds.filter((optionId) =>
+          modelForSend.searchStrategyIds.includes(optionId)
+        ),
+        runControlSnapshot.searchPreferencePlan.mode,
+        "system"
+      );
+      setNotice({
+        autoDismiss: true,
+        kind: "error",
+        text: `Sent without web search: ${optionName} is not available for ${modelForSend.displayName}.`
+      });
+    }
     const blockingAttachment = sourceSession.attachments.find(
       (attachment) => attachmentBlocksSend(attachment, modelForSend)
     );
@@ -680,6 +694,9 @@ export function useMessageRunActions({
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
+    let sendFailureHandled = false;
+    let sendRejectionMessage: string | null = null;
+    let sendRunId: string | null = null;
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
@@ -721,10 +738,7 @@ export function useMessageRunActions({
         try {
           await persistActiveLeaf(chatIdForSend, parentLeafForSend);
         } catch (error) {
-          setNotice({
-            kind: "error",
-            text: errorMessage(error)
-          });
+          sendFailureMessage = errorMessage(error);
           return;
         }
       }
@@ -853,6 +867,10 @@ export function useMessageRunActions({
           // The user-owned refresh action reconciles it with durable server state.
         }
       });
+      sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
+      sendFailureMessage = result.failureMessage ?? null;
+      sendRejectionMessage = result.rejectionMessage ?? null;
+      sendRunId = result.runId;
       if (
         refreshProjectWorkspace &&
         (result.failureCode === "project_setup_required" ||
@@ -866,26 +884,28 @@ export function useMessageRunActions({
         }
       }
       if (result.failureCode === "memory_intent_confirmation_required") {
+        sendFailureHandled = true;
         await showMemoryTargetSelection();
       }
       if (temporaryRun) {
         await reconcileTemporaryAdmission(chatIdForSend);
       }
-      sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
-      sendFailureMessage = result.failureMessage ?? null;
     } catch (error) {
-      setNotice({
-        kind: "error",
-        text: errorMessage(error)
-      });
+      const message = errorMessage(error);
+      if (sendOutcome === "failed" && sendRunId === null && !sendFailureHandled) {
+        sendFailureMessage = message;
+      } else {
+        setNotice({ kind: "error", text: message });
+      }
     } finally {
       useComposerSessionStore.getState().finishSend(
         sendToken,
         sendOutcome,
-        sendOutcome === "failed"
-          ? sendFailureMessage ?? "Send failed. Your draft was preserved."
+        sendOutcome === "failed" && !sendFailureHandled
+          ? sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
           : null,
-        sendFailureLive
+        sendFailureLive,
+        sendRunId
       );
     }
   }
@@ -1214,6 +1234,7 @@ export function useMessageRunActions({
     refreshInterruptedRun,
     regenerateMessage,
     sendStarterPrompt,
+    submitMessageEdit: editMessageBranch,
     submitComposer
   };
 }

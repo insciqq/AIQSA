@@ -7,6 +7,8 @@
   padding: 0.375rem 0 var(--v2-composer-wrap-bottom);
 }
 
+/* Signal composer: a floating surface (the only non-overlay shadow) whose
+   focus state is the accent border plus a 3px accent-dim ring. */
 .v2-composer {
   position: relative;
   min-width: 0;
@@ -15,11 +17,17 @@
   border-radius: var(--v2-radius-l);
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
-  transition: border-color var(--v2-motion-fast);
+  box-shadow: var(--v2-shadow-float);
+  transition:
+    border-color var(--v2-motion-fast),
+    box-shadow var(--v2-motion-fast);
 }
 
 .v2-composer:focus-within {
-  border-color: color-mix(in srgb, var(--v2-color-accent) 55%, var(--v2-color-border2));
+  border-color: var(--v2-color-accent);
+  box-shadow:
+    0 0 0 3px var(--v2-color-accent-dim),
+    var(--v2-shadow-float);
 }
 
 .v2-composer-input-label {
@@ -66,18 +74,49 @@
   min-height: 1.75rem;
   align-items: center;
   gap: 0.4375rem;
-  margin: -0.125rem 0 0.25rem;
+  flex-wrap: wrap;
+  margin: -0.125rem 0 0.375rem;
   color: var(--v2-color-text2);
   font-size: 0.75rem;
   line-height: 1.4;
 }
 
+.v2-composer-assistant-chip {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.25rem 0 0.5rem;
+  border-radius: 999px;
+  color: var(--v2-color-accent-text);
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-composer-assistant-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .v2-composer-assistant strong {
-  color: var(--v2-color-text);
+  color: inherit;
   font-weight: 500;
 }
 
-.v2-composer-assistant button,
+.v2-composer-assistant-chip > .v2-icon-button {
+  width: 1.5rem;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0;
+  color: inherit;
+}
+
+.v2-composer-assistant-help {
+  color: var(--v2-color-text3);
+}
+
 .v2-composer-status button,
 .v2-composer-text-action {
   padding: 0.25rem 0.375rem;
@@ -89,11 +128,7 @@
   cursor: pointer;
 }
 
-.v2-composer-assistant button {
-  margin-left: auto;
-}
-
-.v2-composer-assistant button:hover,
+.v2-composer-assistant-chip > .v2-icon-button:hover,
 .v2-composer-status button:hover,
 .v2-composer-text-action:hover {
   background: var(--v2-color-hover);
@@ -182,95 +217,92 @@
   flex: 0 0 auto;
 }
 
-.v2-composer-controls > .v2-composer-model-trigger {
-  flex: 0 1 auto;
-  min-width: 4.5rem;
-}
-
 .v2-composer-controls > .v2-composer-indicators {
   flex: 0 1 auto;
   min-width: 0;
+  /* When the row is narrower than its chips (compact compositions), the strip
+     scrolls instead of clipping a chip's close control under its neighbour. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.v2-composer-controls > .v2-composer-indicators::-webkit-scrollbar {
+  display: none;
 }
 
 .v2-composer-controls > .v2-icon-button {
   width: 2rem;
   height: 2rem;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
 }
 
-.v2-composer-model-trigger {
+/*
+ * Chips are neutral at rest (surface2 / text2 / border) and carry exactly one
+ * accent when active: accent-dim wash, accent ink, and a glowing 6px dot.
+ * Violet never appears here (PRD §3.2).
+ */
+.v2-composer-indicator {
   display: inline-flex;
   min-width: 0;
-  max-width: 16rem;
-  min-height: 2rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
   align-items: center;
-  gap: 0.3125rem;
-  padding: 0.25rem 0.4375rem;
-  border: 0;
-  border-radius: var(--v2-radius-s);
+  gap: 0.375rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 999px;
   color: var(--v2-color-text2);
-  background: transparent;
+  background: var(--v2-color-surface2);
   font: inherit;
-  font-size: 0.75rem;
-  line-height: 1.35;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
+  transition:
+    color var(--v2-motion-fast),
+    background-color var(--v2-motion-fast),
+    border-color var(--v2-motion-fast);
 }
 
-.v2-composer-model-trigger:hover:not(:disabled) {
+.v2-composer-indicator[data-quiet]:hover:not(:disabled) {
+  border-color: var(--v2-color-border2);
   color: var(--v2-color-text);
   background: var(--v2-color-hover);
-}
-
-.v2-composer-model-trigger > strong {
-  overflow: hidden;
-  color: var(--v2-color-text);
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v2-composer-model-trigger:disabled {
-  color: var(--v2-color-text3);
-  cursor: not-allowed;
 }
 
 .v2-composer-indicators {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 0.125rem;
+  gap: 0.375rem;
   overflow: hidden;
 }
 
-.v2-composer-indicator {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 1.75rem;
-  align-items: center;
-  gap: 0.3125rem;
-  padding: 0.1875rem 0.375rem;
-  border: 0;
-  border-radius: 0.375rem;
-  color: var(--v2-color-text2);
-  background: transparent;
-  font: inherit;
-  font-size: 0.75rem;
-  line-height: 1.35;
-  white-space: nowrap;
-  cursor: pointer;
+/* Chips keep their full label; a narrow strip scrolls rather than squeezing
+   a chip's chevron and close control together. */
+.v2-composer-indicators > * {
+  flex: 0 0 auto;
 }
 
-.v2-composer-indicator:hover:not(:disabled) {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
+.v2-composer-indicator:not([data-quiet]) {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+  color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-composer-indicator:not([data-quiet]):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 40%, transparent);
 }
 
 .v2-composer-indicator > span:first-child {
-  width: 0.3125rem;
-  height: 0.3125rem;
+  width: 0.375rem;
+  height: 0.375rem;
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--v2-color-accent);
+  box-shadow: 0 0 0.375rem var(--v2-color-accent);
 }
 
 .v2-composer-indicator[data-quiet] > span:first-child {
@@ -280,39 +312,70 @@
 .v2-composer-indicator .v2-icon {
   width: 0.75rem;
   height: 0.75rem;
-  color: var(--v2-color-text3);
+  color: currentcolor;
+  opacity: 0.8;
+}
+
+/* Icon-pill glyphs (globe/book) show only in the compact mobile row. */
+.v2-composer-indicator-glyph {
+  display: none;
 }
 
 .v2-composer-indicator:disabled {
   cursor: default;
 }
 
-/* A selected Knowledge chip pairs its picker trigger with a small clear
-   control; the pair reads as one chip. */
+/* An active Search/Knowledge chip pairs its picker trigger with a clear
+   control inside ONE accent pill (UX audit 2026-09-02 #9): the group carries
+   the pill chrome and both buttons inside are flat, so the "×" never reads as
+   a stray glyph between chips. */
 .v2-composer-indicator-group {
   display: inline-flex;
   min-width: 0;
   align-items: center;
 }
 
+.v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
+  height: 1.75rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+  border-radius: 999px;
+  background: var(--v2-color-accent-dim);
+  transition: border-color var(--v2-motion-fast);
+}
+
+.v2-composer-indicator-group:has(.v2-composer-indicator-clear):hover {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 40%, transparent);
+}
+
+.v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator {
+  height: calc(1.75rem - 2px);
+  min-height: 0;
+  padding-right: 0.25rem;
+  border: 0;
+  border-radius: 999px 0 0 999px;
+  background: transparent;
+}
+
 .v2-composer-indicator-clear {
   display: inline-flex;
   width: 1.5rem;
-  height: 1.75rem;
+  height: calc(1.75rem - 2px);
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  margin-left: -0.125rem;
+  padding-right: 0.125rem;
   border: 0;
-  border-radius: 0.375rem;
-  color: var(--v2-color-text3);
+  border-radius: 0 999px 999px 0;
+  color: var(--v2-color-accent);
   background: transparent;
+  opacity: 0.75;
   cursor: pointer;
+  transition: opacity var(--v2-motion-fast), background-color var(--v2-motion-fast);
 }
 
 .v2-composer-indicator-clear:hover:not(:disabled) {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
+  background: color-mix(in srgb, var(--v2-color-accent) 14%, transparent);
+  opacity: 1;
 }
 
 .v2-composer-indicator-clear .v2-icon {
@@ -436,10 +499,14 @@
 }
 
 .v2-composer-run-action .v2-icon-button {
-  width: 2.125rem;
-  height: 2.125rem;
+  width: 2rem;
+  height: 2rem;
   color: var(--v2-color-accent-ink);
   background: var(--v2-color-accent);
+}
+
+.v2-composer-run-action .v2-icon-button .v2-icon {
+  stroke-width: 2.2;
 }
 
 .v2-composer-run-action .v2-icon-button:disabled {
@@ -448,9 +515,19 @@
   opacity: 1;
 }
 
-.v2-composer-run-action .v2-icon-button:has(.v2-icon use[href="#v2-icon-stop"]) {
-  color: var(--v2-color-canvas);
-  background: var(--v2-color-text);
+/* Stop keeps the accent circle; the 10px square is the only change. While the
+   server has not yet acknowledged the run the control only waits: it stays an
+   accent Stop (dimmed), never a grey disabled send (UX audit 2026-09-02 #8). */
+.v2-composer-run-action .v2-icon-button:has(.v2-icon use[href="#v2-icon-stop"]) .v2-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.v2-composer-run-action .v2-icon-button:disabled:has(.v2-icon use[href="#v2-icon-stop"]) {
+  color: var(--v2-color-accent-ink);
+  background: var(--v2-color-accent);
+  opacity: 0.6;
+  cursor: progress;
 }
 
 .v2-composer-layer-backdrop {
@@ -475,22 +552,76 @@
   animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
-.v2-composer-layer[data-kind="capabilities"] {
+/* Anchored popovers (PRD §4.6): each opens upward from its own trigger with
+   the width the menu needs; no scrim and no close control on desktop. */
+.v2-composer-layer[data-kind="add"] {
   left: 0;
+  width: min(18.75rem, calc(100vw - 2rem));
 }
 
 .v2-composer-layer[data-kind="model"] {
   left: 2.5rem;
+  width: min(23.75rem, calc(100vw - 2rem));
 }
 
 /* Chip-anchored pickers open above their own chip (UX audit F2/F3). */
 .v2-composer-layer[data-kind="knowledge"],
+.v2-composer-layer[data-kind="search"],
 .v2-composer-layer[data-kind="tools"] {
   left: var(--v2-composer-layer-left, 0px);
 }
 
+.v2-composer-layer[data-kind="search"] {
+  width: min(20.625rem, calc(100vw - 2rem));
+}
+
+.v2-composer-layer[data-kind="knowledge"] {
+  width: min(23.75rem, calc(100vw - 2rem));
+}
+
 .v2-composer-layer[data-kind="tools"] {
-  width: min(18rem, calc(100vw - 2rem));
+  width: min(21.25rem, calc(100vw - 2rem));
+}
+
+/* A layer opened from outside the composer (the header model selector) is
+   fixed below its anchor and opens downward, as tall as the viewport allows;
+   the ≤840px sheet rules keep their own geometry. */
+@media (min-width: 841px) and (min-height: 32.01rem) {
+  .v2-composer-layer[data-anchor="external"] {
+    position: fixed;
+    top: var(--v2-composer-layer-top, 0px);
+    right: auto;
+    bottom: auto;
+    left: var(--v2-composer-layer-left, 0px);
+    max-height: calc(100dvh - var(--v2-composer-layer-top, 0px) - 1rem);
+  }
+}
+
+/* Anchored popovers flip below the composer when the space above is short
+   and the space below is larger (blank chat with a centred composer, UX
+   audit 2026-09-02 A11); the flipped layer is capped to that space. */
+@media (min-width: 841px) and (min-height: 32.01rem) {
+  .v2-composer .v2-composer-layer[data-placement="below"] {
+    top: calc(100% + 0.5rem);
+    bottom: auto;
+    max-height: min(34rem, calc(var(--v2-composer-layer-space-below, 100dvh) - 1rem));
+  }
+}
+
+/* Desktop popover title (the sheet header carries it on mobile). */
+.v2-composer-layer-title {
+  margin: 0;
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+@media (max-width: 840px), (max-height: 32rem) {
+  .v2-composer-layer-title {
+    display: none;
+  }
 }
 
 /* The blank-chat composer is vertically centered rather than docked: it fills
@@ -503,7 +634,7 @@
   padding: 0;
 }
 
-@media (min-width: 900px) and (min-height: 32.01rem) {
+@media (min-width: 841px) and (min-height: 32.01rem) {
   .v2-conversation-empty-composer .v2-composer {
     padding: 0.875rem 0.875rem 0.625rem;
   }
@@ -513,15 +644,16 @@
     font-size: 1rem;
   }
 
-  /* The blank chat sits under the in-flow header: keep the upward layer
-     clear of the header band and inside the reading column's box. */
+  /* The blank chat's composer is centred: an upward layer is capped to the
+     measured room above it (below the header) rather than a fixed share of
+     the viewport (UX audit 2026-09-02 A11). */
   .v2-conversation-empty-composer .v2-composer-layer {
-    max-height: min(34rem, calc(50dvh - 6rem));
+    max-height: min(34rem, calc(var(--v2-composer-layer-space-above, 50dvh) - 1rem));
   }
 }
 
 /* Tall viewports may grow the field further before it scrolls internally. */
-@media (min-width: 900px) and (min-height: 48rem) {
+@media (min-width: 841px) and (min-height: 48rem) {
   .v2-composer-input {
     max-height: 18rem;
   }
@@ -548,22 +680,62 @@
   height: 2rem;
 }
 
+/* Desktop popovers have no title bar or close control (PRD §4.6). */
+@media (min-width: 841px) and (min-height: 32.01rem) {
+  .v2-composer-layer > .v2-composer-layer-header {
+    display: none;
+  }
+}
+
 .v2-composer-layer-scroll {
   min-height: 0;
-  padding: 0.25rem 0;
+  padding: 0.25rem 0 2rem;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
+}
+
+.v2-composer-knowledge-inherited {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.375rem 0.625rem;
+  margin: 0.25rem 0.375rem 0.5rem;
+  padding: 0.625rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 24%, var(--v2-color-border));
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-accent-dim);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-composer-knowledge-inherited > .v2-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.125rem;
+  color: var(--v2-color-accent);
+}
+
+.v2-composer-knowledge-inherited strong {
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-composer-knowledge-inherited > .v2-composer-layer-link {
+  grid-column: 2;
+  justify-self: start;
+  margin-left: -0.375rem;
 }
 
 .v2-composer-layer-label {
   padding: 0.625rem 0.625rem 0.25rem;
   color: var(--v2-color-text3);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  letter-spacing: 0.065em;
   line-height: 1.2;
-  text-transform: uppercase;
 }
 
 .v2-composer-layer-divider {
@@ -603,11 +775,106 @@
   color: var(--v2-color-accent);
 }
 
+.v2-composer-capability-row > .v2-icon:first-child {
+  color: var(--v2-color-text2);
+}
+
+/* Radio glyph for single-choice rows: hairline ring, accent when checked. */
+.v2-composer-radio {
+  display: inline-block;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border: 1.5px solid var(--v2-color-border2);
+  border-radius: 50%;
+  background: transparent;
+  transition:
+    border-color var(--v2-motion-fast),
+    box-shadow var(--v2-motion-fast);
+}
+
+.v2-composer-radio[data-checked] {
+  border-color: var(--v2-color-accent);
+  box-shadow: inset 0 0 0 0.1875rem var(--v2-color-surface);
+  background: var(--v2-color-accent);
+}
+
+.v2-composer-capability-row:disabled .v2-composer-radio {
+  opacity: 0.6;
+}
+
+/* Footer band under a menu: hairline, a quiet note and one link/action. */
+.v2-composer-layer-footer {
+  display: grid;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+  padding: 0.5rem 0.625rem 0.375rem;
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-composer-layer-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.v2-composer-layer-footer .v2-composer-layer-note {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 0;
+  font-size: 0.71875rem;
+}
+
+.v2-composer-layer-link {
+  display: inline-flex;
+  min-height: 1.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0 0.375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-accent);
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-composer-layer-link:hover {
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-composer-layer-link .v2-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.v2-composer-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.v2-composer-tag {
+  display: inline-flex;
+  min-height: 1.375rem;
+  align-items: center;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+  font-size: 0.71875rem;
+}
+
 .v2-composer-capability-copy {
   display: grid;
   min-width: 0;
   gap: 0.0625rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
+  font-weight: 400;
   line-height: 1.35;
 }
 
@@ -617,7 +884,7 @@
 
 .v2-composer-capability-copy > span + span {
   color: var(--v2-color-text3);
-  font-size: 0.71875rem;
+  font-size: 0.75rem;
 }
 
 .v2-composer-text-action {
@@ -679,7 +946,22 @@
 }
 
 .v2-composer-model-search-wrap input::placeholder {
+  color: var(--v2-color-text2);
+  opacity: 0.8;
+}
+
+/* Model count sits inside the search field's right edge. */
+.v2-composer-model-search-wrap input {
+  padding-right: 2.5rem;
+}
+
+.v2-composer-model-count {
+  position: absolute;
+  right: 0.625rem;
   color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .v2-composer-model-group {
@@ -691,46 +973,56 @@
   margin-top: 0.375rem;
 }
 
+/* Provider group: a 16px family monogram plus the provider name in text3. */
 .v2-composer-model-group h3 {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem;
   margin: 0;
   padding: 0.625rem 0.625rem 0.25rem;
   color: var(--v2-color-text3);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  letter-spacing: 0.065em;
   line-height: 1.2;
-  text-transform: uppercase;
 }
 
-.v2-composer-model-group h3 span {
-  font-variant-numeric: tabular-nums;
+.v2-composer-model-group h3 > .v2-provider-mark {
+  --v2-provider-mark-size: 0.9375rem;
+  color: var(--v2-color-text2);
 }
 
+.v2-composer-model-group h3 > .v2-monogram {
+  --v2-monogram-size: 1rem;
+}
+
+/* Model rows (PRD §4.6): 38px, name 14px/500, capability glyphs in text3,
+   a slot for the default star and one for the current check. Hovering a row
+   swaps the glyphs for "Set as default". */
 .v2-composer-model-row {
   position: relative;
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   border-radius: var(--v2-radius-s);
 }
 
-.v2-composer-model-row:hover {
+.v2-composer-model-row:hover,
+.v2-composer-model-row:focus-within {
   background: var(--v2-color-hover);
 }
 
+.v2-composer-model-row[data-selected] {
+  background: var(--v2-color-active);
+}
+
 .v2-composer-model-option {
-  display: grid;
+  display: flex;
   min-width: 0;
-  min-height: 3.25rem;
-  grid-template-columns: minmax(0, 1fr) 1rem;
+  min-height: 2.375rem;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.4375rem 0.625rem;
+  padding: 0.25rem 0.625rem;
   border: 0;
   border-radius: var(--v2-radius-s);
   color: var(--v2-color-text);
@@ -740,68 +1032,151 @@
   cursor: pointer;
 }
 
-.v2-composer-model-copy {
-  display: grid;
+.v2-composer-model-name {
   min-width: 0;
-  gap: 0.125rem;
-}
-
-.v2-composer-model-copy strong {
-  overflow-wrap: anywhere;
-  font-size: 0.8125rem;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.35;
-}
-
-.v2-composer-model-copy > span:not(.v2-composer-model-facts) {
-  color: var(--v2-color-text3);
-  font-size: 0.71875rem;
-  line-height: 1.35;
-}
-
-.v2-composer-model-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-  color: var(--v2-color-text2);
-  font-size: 0.6875rem;
-  line-height: 1.35;
-}
-
-.v2-composer-model-facts em {
-  font-style: normal;
-}
-
-/* One joined line that ellipsizes once at the end; individual tags must never
-   shrink into fragments. */
-.v2-composer-model-tags {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.v2-composer-model-option > .v2-icon {
+.v2-composer-model-fact {
+  flex: 0 0 auto;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-style: normal;
+}
+
+.v2-composer-model-glyphs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--v2-color-text3);
+}
+
+.v2-composer-model-glyphs .v2-icon {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
+.v2-composer-model-mark {
+  display: inline-grid;
+  width: 2.5rem;
+  flex: 0 0 auto;
+  grid-template-columns: 1rem 1rem;
+  justify-content: end;
+  gap: 0.5rem;
+}
+
+.v2-composer-model-mark .v2-icon {
+  grid-column: 2;
+}
+
+.v2-composer-model-mark .v2-composer-model-star {
+  grid-column: 1;
   color: var(--v2-color-accent);
 }
 
+.v2-composer-model-mark .v2-composer-model-check {
+  color: var(--v2-color-accent);
+  stroke-width: 2.2;
+}
+
+/* Every non-default model keeps an outline star visible at rest. Hover or
+   keyboard focus expands that same action into its text label while the
+   capability glyphs yield the space. */
 .v2-composer-model-default {
+  position: absolute;
+  top: 50%;
+  right: 3.1875rem;
+  display: inline-flex;
   min-height: 1.75rem;
-  margin-right: 0.375rem;
+  align-items: center;
+  gap: 0.3125rem;
   padding: 0.25rem 0.375rem;
   border: 0;
   border-radius: 0.375rem;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
+  white-space: nowrap;
   cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.v2-composer-model-default .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.v2-composer-model-default-label {
+  display: none;
+}
+
+.v2-composer-model-row:hover .v2-composer-model-default-label,
+.v2-composer-model-row:focus-within .v2-composer-model-default-label {
+  display: inline;
+}
+
+.v2-composer-model-row:hover .v2-composer-model-glyphs,
+.v2-composer-model-row:focus-within .v2-composer-model-glyphs {
+  visibility: hidden;
 }
 
 .v2-composer-model-default:hover {
   color: var(--v2-color-text);
   background: var(--v2-color-active);
+}
+
+/* Picker footer: the Parameters row opens the existing sheet. */
+.v2-composer-model-parameters {
+  display: flex;
+  width: 100%;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-composer-model-parameters:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-composer-model-parameters > .v2-icon:first-child {
+  color: var(--v2-color-text2);
+}
+
+.v2-composer-model-parameters-summary {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--v2-color-text3);
+  font-weight: 400;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-composer-model-parameters > .v2-icon:last-child {
+  color: var(--v2-color-text3);
+}
+
+.v2-composer-layer-footer .v2-composer-model-note {
+  padding: 0.25rem 0.375rem 0;
 }
 
 .v2-composer-empty-options {
@@ -820,11 +1195,12 @@
   min-width: 0;
   height: 100dvh;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
 .v2-composer-gallery-main > .v2-conversation {
+  grid-row: 2;
   height: auto;
   min-height: 0;
 }
@@ -836,7 +1212,7 @@
 .v2-composer-gallery-dock {
   position: relative;
   z-index: 20;
-  grid-row: 2;
+  grid-row: 3;
   padding-top: 0.5rem;
   background: var(--v2-color-canvas);
 }
@@ -904,9 +1280,46 @@
 
 .v2-assistant-picker-list {
   min-height: 0;
-  padding: 0.375rem;
+  padding: 0.375rem 0.375rem 2rem;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
+}
+
+.v2-assistant-picker-create {
+  display: grid;
+  width: 100%;
+  min-height: 3.25rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 0.375rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 24%, var(--v2-color-border));
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-accent-text);
+  background: var(--v2-color-accent-dim);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-assistant-picker-create > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.v2-assistant-picker-create strong {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-assistant-picker-create small {
+  color: var(--v2-color-text2);
+  font-size: 0.6875rem;
+  line-height: 1.4;
 }
 
 .v2-assistant-picker-list > p {
@@ -936,6 +1349,13 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.v2-assistant-picker-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.375rem;
 }
 
 .v2-assistant-picker-row {
@@ -990,10 +1410,34 @@
   font-style: normal;
 }
 
+.v2-assistant-picker-row small[data-tone="warn"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-assistant-picker-current {
+  flex: 0 0 auto;
+  color: var(--v2-color-accent);
+}
+
+.v2-assistant-picker-fix {
+  white-space: nowrap;
+}
+
 .v2-assistant-picker-actions {
-  display: grid;
-  padding: 0.375rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.375rem 0.5rem;
   border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-assistant-picker-actions p {
+  margin: 0;
+  padding-left: 0.375rem;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  line-height: 1.4;
 }
 
 .v2-assistant-picker-actions button {
@@ -1030,7 +1474,38 @@
   }
 }
 
-@media (max-width: 899px), (max-height: 32rem) {
+/*
+ * Compact composer row (PRD §4.5): the Search, Knowledge, and MCP chips
+ * become 28px icon pills in their state color. MCP stays visible in every
+ * mode (FRONTEND: the ordinary MCP choice is always visible).
+ */
+@media (max-width: 767px) {
+  .v2-composer-indicator[data-glyph] {
+    width: 1.75rem;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .v2-composer-indicator[data-glyph] > span:first-child,
+  .v2-composer-indicator[data-glyph] > .v2-composer-indicator-label,
+  .v2-composer-indicator[data-glyph] > .v2-icon:not(.v2-composer-indicator-glyph) {
+    display: none;
+  }
+
+  .v2-composer-indicator[data-glyph] > .v2-composer-indicator-glyph {
+    display: block;
+    width: 0.9375rem;
+    height: 0.9375rem;
+    opacity: 1;
+  }
+
+  /* The icon pill has no room for a clear control; the menu offers None. */
+  .v2-composer-indicator-clear {
+    display: none;
+  }
+}
+
+@media (max-width: 840px), (max-height: 32rem) {
   .v2-composer-wrap {
     width: min(var(--v2-measure), calc(100% - 1.25rem));
     padding-right: env(safe-area-inset-right);
@@ -1107,8 +1582,13 @@
     min-height: 2.75rem;
   }
 
+  /* Touch has no hover: keep the compact star action fully touch-sized. */
   .v2-composer-model-default {
     min-height: 2.5rem;
+  }
+
+  .v2-composer-model-glyphs {
+    visibility: hidden;
   }
 
   .v2-assistant-picker-scrim {
@@ -1128,6 +1608,16 @@
     border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
     animation: v2-sheet-enter var(--v2-motion-base) both;
   }
+
+  .v2-assistant-picker-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .v2-assistant-picker-fix {
+    min-height: 2.75rem;
+    justify-self: start;
+    margin: 0 0 0.375rem 2.875rem;
+  }
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -1138,10 +1628,17 @@
     height: 2.75rem;
   }
 
-  .v2-composer-model-trigger,
+  /* Touch targets stay ≥44px (interaction contract) even though the chips
+     read as 28px pills on fine pointers. */
   .v2-composer-indicator,
   .v2-composer-indicator-clear {
+    height: auto;
     min-height: 2.75rem;
+  }
+
+  .v2-composer-indicator[data-glyph] {
+    width: auto;
+    min-width: 2.75rem;
   }
 
   .v2-composer-indicator-clear {
@@ -1158,8 +1655,9 @@
   }
 }
 
-/* Phones keep one control row (UX audit F9): chips shorten their labels and
-   scroll sideways inside their strip instead of wrapping under the row. */
+/* Phones keep one control row (UX audit F9; 2026-09-02 #1): the icon pills —
+   MCP included — stay in reach without scrolling; only when even that is not
+   enough does the strip scroll. */
 @media (max-width: 26rem) {
   .v2-composer {
     padding-right: 0.625rem;
@@ -1170,24 +1668,17 @@
     gap: 0.125rem;
   }
 
-  .v2-composer-model-trigger {
-    max-width: 6.5rem;
-  }
-
-  /* `contain: inline-size` keeps the strip's intrinsic width at zero so its
-     non-shrinking chips scroll inside it instead of widening the composer;
-     the strip takes the row's free space and the spacer yields it. */
   .v2-composer-controls > .v2-composer-indicators {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    contain: inline-size;
     scrollbar-width: none;
   }
 
   .v2-composer-controls > .v2-composer-spacer {
-    flex: 0 0 0;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .v2-composer-indicators::-webkit-scrollbar {
@@ -1204,5 +1695,81 @@
 
   .v2-composer-indicator-prefix {
     display: none;
+  }
+}
+
+/* Very narrow phones (≤352px): slightly tighter controls so the full row —
+   Add, Search, Knowledge, MCP, Send — still fits without scrolling. */
+@media (max-width: 22rem) {
+  .v2-composer {
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+  }
+
+  .v2-composer-controls {
+    gap: 0;
+  }
+
+  .v2-composer-controls > .v2-icon-button,
+  .v2-composer-indicator[data-glyph],
+  .v2-composer-run-action .v2-icon-button {
+    width: 2.5rem;
+    min-width: 2.5rem;
+  }
+}
+
+/* Icon pills (≤767px) hide the clear control, so the chip group hands the
+   pill chrome back to its trigger. */
+@media (max-width: 767px) {
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
+    height: auto;
+    border: 0;
+    background: transparent;
+  }
+
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator {
+    height: 1.75rem;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+    border-radius: 999px;
+    background: var(--v2-color-accent-dim);
+  }
+}
+
+/* Coarse pointers keep the 44px hit area inside the grouped pill. */
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
+    min-height: 2.75rem;
+  }
+
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator,
+  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator-clear {
+    height: auto;
+    min-height: 2.75rem;
+  }
+}
+
+/* Touch: the star alone marks "Set as default" (the label stays its
+   accessible name); the sheet regains the capability glyphs the label had
+   displaced. */
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-input,
+  .v2-composer-model-search-wrap input,
+  .v2-composer-model-default,
+  .v2-composer-model-parameters {
+    min-height: 2.75rem;
+  }
+
+  .v2-composer-model-default-label {
+    display: none;
+  }
+
+  .v2-composer-model-default {
+    min-width: 2.75rem;
+    justify-content: center;
+  }
+
+  .v2-composer-model-glyphs {
+    visibility: visible;
   }
 }

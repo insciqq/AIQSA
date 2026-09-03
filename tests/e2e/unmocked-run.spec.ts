@@ -75,7 +75,7 @@ async function prepareFakeBlankChat(page: Page) {
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
   await chooseSearchStrategy(page, "Off");
-  await expect(page.locator(".v2-composer-model-trigger")).toContainText("Fake QSA");
+  await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
 }
 
 async function waitForActiveChatId(page: Page): Promise<string> {
@@ -185,9 +185,10 @@ test("streams a new answer on the branch created by editing an answered question
     const question = page.locator('article[data-role="user"]').last();
     await question.hover();
     await question.getByRole("button", { name: "Edit question" }).click();
-    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(prompt);
-    await page.getByRole("textbox", { name: "Message" }).fill(editedPrompt);
-    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    const inlineEdit = question.getByTestId("inline-message-edit-v2");
+    await expect(inlineEdit.getByRole("textbox", { name: "Edit question" })).toHaveValue(prompt);
+    await inlineEdit.getByRole("textbox", { name: "Edit question" }).fill(editedPrompt);
+    await inlineEdit.getByRole("textbox", { name: "Edit question" }).press("Enter");
 
     await expect(page.getByTestId("conversation-thread")).toContainText(editedPrompt, { timeout: 20_000 });
     await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${editedPrompt}`, {
@@ -238,19 +239,65 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
     const stopButton = page.getByRole("button", { name: "Stop answer" });
     await expect(stopButton).toBeVisible({ timeout: 10_000 });
     await expect(stopButton).toBeEnabled({ timeout: 10_000 });
+    const headerXDuring = (await page.getByTestId("header-model-trigger").boundingBox())?.x;
 
     await stopButton.click();
 
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 10_000 });
-    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
-    await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
-
     await expect
       .poll(async () => (chatId ? (await latestRunForChat(page, chatId))?.status ?? null : null), {
         timeout: 15_000
       })
       .toBe("cancelled");
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    await expect(page.locator(".v2-live-composer-error")).toHaveCount(0);
+    expect(
+      (await page.getByRole("alert").allTextContents()).filter((text) => text.trim())
+    ).toEqual([]);
+    await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
+    await expect(page.getByRole("button", { name: "Regenerate", exact: true })).toBeVisible();
+    const headerXAfter = (await page.getByTestId("header-model-trigger").boundingBox())?.x;
+    expect(headerXDuring).toBeDefined();
+    expect(headerXAfter).toBeDefined();
+    expect(Math.abs(headerXAfter! - headerXDuring!)).toBeLessThanOrEqual(1);
+
   } finally {
+    if (chatId) {
+      await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+    }
+  }
+});
+
+test("shows a rejected send once at the composer with a Retry action", async ({ page }) => {
+  const prompt = `${testTitlePrefix} rejected send ${Date.now()}`;
+  let chatId: string | null = null;
+
+  await page.route("**/api/chats/*/messages", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "provider_unavailable" },
+      status: 502
+    });
+  });
+
+  try {
+    await prepareFakeBlankChat(page);
+    await page.getByRole("textbox", { name: "Message" }).fill(prompt);
+    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    chatId = await waitForActiveChatId(page);
+
+    const composerError = page.locator(".v2-live-composer-error");
+    await expect(composerError).toHaveCount(1);
+    await expect(composerError).toContainText(/provider is unavailable/iu);
+    await expect(composerError.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(prompt);
+    await expect(page.locator(".v2-live-notice")).toHaveCount(0);
+    expect(
+      (await page.getByRole("alert").allTextContents()).filter((text) => text.trim())
+    ).toEqual([expect.stringMatching(/provider is unavailable/iu)]);
+  } finally {
+    await page.unroute("**/api/chats/*/messages");
     if (chatId) {
       await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
     }

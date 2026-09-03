@@ -41,7 +41,11 @@ function model(
   };
 }
 
-function record(serverId: string, toolCount: number): McpRunPlanRecord {
+function record(
+  serverId: string,
+  toolCount: number,
+  overrides: Partial<McpRunPlanRecord> = {}
+): McpRunPlanRecord {
   return {
     credentialSources: [],
     enabled: true,
@@ -63,7 +67,8 @@ function record(serverId: string, toolCount: number): McpRunPlanRecord {
     readiness: "ready",
     revisionId: `revision-${serverId}`,
     serverId,
-    serverName: serverId
+    serverName: serverId,
+    ...overrides
   };
 }
 
@@ -83,6 +88,114 @@ function configuration(overrides: {
 }
 
 describe("Assistant catalog validation", () => {
+  it("returns the exact invalid run-control field and model limit", () => {
+    const catalogModel = model();
+    const view = {
+      accessibleMcpServerIds: new Set<string>(),
+      entitledSearchOptionIds: new Set<string>(),
+      mcpRunPlan: {
+        isGenerationLive: () => false,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map()
+      },
+      modelById: new Map([[catalogModel.modelId, catalogModel]])
+    } satisfies AssistantCatalogView;
+
+    expect(validateAssistantConfigurationAgainstCatalog(
+      { ...configuration(), runControls: { maxOutputTokens: 128_001 } },
+      view,
+      { mcpRunnability: "accessible" }
+    )).toEqual({
+      control: "maxOutputTokens",
+      kind: "run_controls",
+      limit: 128_000
+    });
+  });
+
+  it.each(["idle", "queued", "starting", "ready", "restarting"] as const)(
+    "treats enabled %s MCP as startable before exact admission",
+    (readiness) => {
+      const selected = record("mcp-1", 1, { readiness });
+      const view = {
+        accessibleMcpServerIds: new Set([selected.serverId]),
+        entitledSearchOptionIds: new Set<string>(),
+        mcpRunPlan: {
+          isGenerationLive: () => readiness === "ready",
+          now: new Date("2026-08-07T10:00:00.000Z"),
+          recordsByServerId: new Map([[selected.serverId, selected]])
+        },
+        modelById: new Map([["model-1", model()]])
+      } satisfies AssistantCatalogView;
+
+      expect(validateAssistantConfigurationAgainstCatalog(
+        configuration({ mcpServerIds: [selected.serverId] }),
+        view,
+        { mcpRunnability: "startable" }
+      )).toBeNull();
+    }
+  );
+
+  it.each([
+    "authorizing",
+    "disabled",
+    "needs_authorization",
+    "needs_setup",
+    "reauthorization_required",
+    "unavailable"
+  ] as const)(
+    "rejects %s MCP from the startable availability projection",
+    (readiness) => {
+      const selected = record("mcp-1", 1, {
+        enabled: readiness !== "disabled",
+        readiness
+      });
+      const view = {
+        accessibleMcpServerIds: new Set([selected.serverId]),
+        entitledSearchOptionIds: new Set<string>(),
+        mcpRunPlan: {
+          isGenerationLive: () => false,
+          now: new Date("2026-08-07T10:00:00.000Z"),
+          recordsByServerId: new Map([[selected.serverId, selected]])
+        },
+        modelById: new Map([["model-1", model()]])
+      } satisfies AssistantCatalogView;
+
+      expect(validateAssistantConfigurationAgainstCatalog(
+        configuration({ mcpServerIds: [selected.serverId] }),
+        view,
+        { mcpRunnability: "startable" }
+      )).toBe("tools");
+    }
+  );
+
+  it("keeps exact admission stricter than startable availability", () => {
+    const selected = record("mcp-1", 1, {
+      generationId: null,
+      readiness: "idle"
+    });
+    const view = {
+      accessibleMcpServerIds: new Set([selected.serverId]),
+      entitledSearchOptionIds: new Set<string>(),
+      mcpRunPlan: {
+        isGenerationLive: () => false,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map([[selected.serverId, selected]])
+      },
+      modelById: new Map([["model-1", model()]])
+    } satisfies AssistantCatalogView;
+
+    expect(validateAssistantConfigurationAgainstCatalog(
+      configuration({ mcpServerIds: [selected.serverId] }),
+      view,
+      { mcpRunnability: "startable" }
+    )).toBeNull();
+    expect(validateAssistantConfigurationAgainstCatalog(
+      configuration({ mcpServerIds: [selected.serverId] }),
+      view,
+      { mcpRunnability: "exact" }
+    )).toBe("tools");
+  });
+
   it("rejects Search plus MCP when the selected option has no client-tool-compatible route", () => {
     const catalogModel = model({
       "hosted-only": {
@@ -107,7 +220,7 @@ describe("Assistant catalog validation", () => {
         searchPlan: { mode: "model_choice", optionIds: ["hosted-only"] }
       },
       view,
-      { requireRunnableMcp: false }
+      { mcpRunnability: "accessible" }
     )).toBe("search");
 
   });
@@ -143,7 +256,7 @@ describe("Assistant catalog validation", () => {
         }
       },
       view,
-      { requireRunnableMcp: false }
+      { mcpRunnability: "accessible" }
     )).toBe("search");
 
     const completeModel = model({
@@ -169,7 +282,7 @@ describe("Assistant catalog validation", () => {
         entitledSearchOptionIds: new Set(["hosted-a", "client-b"]),
         modelById: new Map([[completeModel.modelId, completeModel]])
       },
-      { requireRunnableMcp: false }
+      { mcpRunnability: "accessible" }
     )).toBeNull();
   });
 
@@ -193,7 +306,7 @@ describe("Assistant catalog validation", () => {
     expect(validateAssistantConfigurationAgainstCatalog(
       configuration({ mcpServerIds: records.map(({ serverId }) => serverId) }),
       view,
-      { requireRunnableMcp: true }
+      { mcpRunnability: "exact" }
     )).toBe("tools");
   });
 });

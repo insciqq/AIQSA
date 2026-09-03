@@ -333,6 +333,7 @@ describe("Prisma Knowledge Source Library", () => {
     });
     const ownerDetail = await repository.getDetail(fixture.ownerUserId, fixture.sourceId);
     expect(ownerDetail).toMatchObject({
+      canReprocess: false,
       memberships: [{ id: fixture.baseAId, name: "Product" }],
       readiness: { state: "ready", warningCodes: ["partial_parse"] },
       versions: [
@@ -368,6 +369,7 @@ describe("Prisma Knowledge Source Library", () => {
     ]);
     const sharedDetail = await repository.getDetail(fixture.sharedUserId, fixture.sourceId);
     expect(sharedDetail).toMatchObject({
+      canReprocess: false,
       eligibleBases: [],
       memberships: [{ id: fixture.baseAId }],
       owned: false,
@@ -463,11 +465,44 @@ describe("Prisma Knowledge Source Library", () => {
   });
 
   it("creates and retries a Source-scoped replacement without legacy document rows", async () => {
+    const missingStorageVersionId = `source-library-missing-storage-${randomUUID()}`;
     const sourceVersionId = `source-library-replacement-${randomUUID()}`;
     const beforeRevision = await prisma.knowledgeBase.findUniqueOrThrow({
       select: { sourceRevision: true },
       where: { id: fixture.baseCId }
     });
+    await prisma.knowledgeSourceVersion.create({
+      data: {
+        byteSize: 1_024,
+        checksum: "f".repeat(64),
+        fileName: "missing-storage.md",
+        id: missingStorageVersionId,
+        mimeType: "text/markdown",
+        ownerUserId: fixture.ownerUserId,
+        sourceId: fixture.sourceId,
+        versionNumber: 3
+      }
+    });
+    await prisma.knowledgeSourceIndexArtifact.create({
+      data: {
+        errorCode: "original_unavailable",
+        profileRevisionId: fixture.profileRevisionId,
+        sourceVersionId: missingStorageVersionId,
+        state: "failed"
+      }
+    });
+    await prisma.knowledgeSource.update({
+      data: { pendingVersionId: missingStorageVersionId },
+      where: { id: fixture.sourceId }
+    });
+    await expect(repository.getDetail(fixture.ownerUserId, fixture.sourceId))
+      .resolves.toMatchObject({ canReprocess: false });
+    await expect(repository.reprocess(
+      fixture.ownerUserId,
+      fixture.sourceId,
+      new Date()
+    )).resolves.toEqual({ kind: "not_retryable" });
+
     await expect(repository.createVersion({
       byteSize: 1_024,
       checksum: "e".repeat(64),
@@ -487,6 +522,8 @@ describe("Prisma Knowledge Source Library", () => {
       processingStage: "queued",
       state: "pending"
     });
+    await expect(repository.getDetail(fixture.ownerUserId, fixture.sourceId))
+      .resolves.toMatchObject({ canReprocess: false, replacement: { state: "processing" } });
     expect(artifact.normalizedTextStorageKey).toContain("normalized-v2.json");
     await expect(Promise.all([
       prisma.knowledgeDocument.count({ where: { knowledgeBaseId: fixture.baseCId } }),
@@ -505,6 +542,29 @@ describe("Prisma Knowledge Source Library", () => {
       },
       where: { id: artifact.id }
     });
+    await expect(repository.getDetail(fixture.ownerUserId, fixture.sourceId))
+      .resolves.toMatchObject({ canReprocess: true, replacement: { state: "needs_attention" } });
+    await expect(repository.listForUser({
+      filter: "yours",
+      page: 1,
+      pageSize: 25,
+      query: "",
+      userId: fixture.ownerUserId
+    })).resolves.toMatchObject({
+      sources: [expect.objectContaining({ canReprocess: true, id: fixture.sourceId })]
+    });
+    await prisma.knowledgeBase.update({
+      data: { archivedAt: new Date() },
+      where: { id: fixture.baseCId }
+    });
+    await expect(repository.getDetail(fixture.ownerUserId, fixture.sourceId))
+      .resolves.toMatchObject({ canReprocess: false });
+    await prisma.knowledgeBase.update({
+      data: { archivedAt: null },
+      where: { id: fixture.baseCId }
+    });
+    await expect(repository.getDetail(fixture.ownerUserId, fixture.sourceId))
+      .resolves.toMatchObject({ canReprocess: true });
     await expect(repository.reprocess(
       fixture.ownerUserId,
       fixture.sourceId,
@@ -518,6 +578,8 @@ describe("Prisma Knowledge Source Library", () => {
       processingStage: "queued",
       state: "pending"
     });
+    await expect(repository.getDetail(fixture.ownerUserId, fixture.sourceId))
+      .resolves.toMatchObject({ canReprocess: false, replacement: { state: "processing" } });
 
     await prisma.knowledgeSourceIndexArtifact.update({
       data: {

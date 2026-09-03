@@ -18,6 +18,12 @@ function token(theme: Theme, name: string): string {
   return match[1]!.trim().toLowerCase();
 }
 
+function componentToken(name: string): string {
+  const match = tokens.match(new RegExp(`--v2-${name}:\\s*([^;]+);`, "u"));
+  if (!match) throw new Error(`Missing component token ${name}`);
+  return match[1]!.trim().toLowerCase();
+}
+
 function hex(value: string): Rgb {
   if (!/^#[0-9a-f]{6}$/u.test(value)) throw new Error(`Invalid contrast color ${value}`);
   const parsed = Number.parseInt(value.slice(1), 16);
@@ -61,4 +67,25 @@ describe("UI theme contrast", () => {
       ).toBeGreaterThanOrEqual(6.2);
     }
   );
+
+  it("keeps every Assistant avatar initial readable", () => {
+    for (const palette of [
+      "coral",
+      "ember",
+      "meadow",
+      "ocean",
+      "pine",
+      "plum",
+      "sand",
+      "slate"
+    ]) {
+      expect(
+        contrast(
+          componentToken(`avatar-${palette}-fg`),
+          componentToken(`avatar-${palette}-bg`)
+        ),
+        palette
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 });

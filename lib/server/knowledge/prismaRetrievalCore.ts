@@ -63,7 +63,12 @@ import type {
   KnowledgeParentExpansion,
   KnowledgeParentExpansionUnit
 } from "./retrievalTypes";
-import type { KnowledgeBm25Hit } from "../search/opensearch/contract";
+import {
+  KNOWLEDGE_SEARCH_BACKEND_KIND,
+  KNOWLEDGE_SEARCH_MAPPING_VERSION,
+  KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION,
+  type KnowledgeBm25Hit
+} from "../search/opensearch/contract";
 import {
   createKnowledgePassageBm25Search,
   KnowledgeLexicalBackendEvidenceV1,
@@ -76,7 +81,7 @@ const KNOWLEDGE_VECTOR_BUCKET_COUNT = 16;
 const KNOWLEDGE_LINEAR_CONTEXT_RADIUS = 1;
 const KNOWLEDGE_LINEAR_CONTEXT_MAX = 2;
 
-type RetrievalCoreClient = Readonly<{
+export type KnowledgeRetrievalCoreClient = Readonly<{
   $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
 }>;
 
@@ -101,7 +106,7 @@ export type KnowledgeRetrievalScopeFilter = Readonly<{
   sourceIds?: readonly string[];
 }>;
 
-type ScopeRow = Readonly<{
+export type KnowledgeSearchScope = Readonly<{
   acceptedIndexArtifactIds: readonly string[];
   baseName: string;
   bindingOrdinal: number;
@@ -111,6 +116,8 @@ type ScopeRow = Readonly<{
   projectionComplete: boolean;
   targetDimension: number;
 }>;
+
+type ScopeRow = KnowledgeSearchScope;
 
 type CandidateRow = Omit<KnowledgeRetrievalCandidate, "signals" | "sourceArtifactId"> & Readonly<{
   contributingBindingOrdinals: readonly number[];
@@ -387,6 +394,8 @@ function scopedPassagesSql(): Prisma.Sql {
       version."fileName",
       source_binding."artifactId" AS "sourceArtifactId",
       hierarchy."id" AS "indexArtifactId",
+      hierarchy."checksum" AS "hierarchicalChecksum",
+      hierarchy."passageCount" AS "hierarchicalPassageCount",
       passage."id" AS "chunkId",
       passage."ordinal" AS "chunkIndex",
       passage."sectionId",
@@ -430,7 +439,10 @@ function scopedPassagesSql(): Prisma.Sql {
      AND source_artifact."sourceVersionId" = source_binding."sourceVersionId"
      AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
     INNER JOIN LATERAL (
-      SELECT candidate_hierarchy."id"
+      SELECT
+        candidate_hierarchy."checksum",
+        candidate_hierarchy."id",
+        candidate_hierarchy."passageCount"
       FROM "KnowledgeHierarchicalIndexArtifact" AS candidate_hierarchy
       WHERE candidate_hierarchy."sourceArtifactId" = source_artifact."id"
         AND candidate_hierarchy."sourceVersionId" = source_artifact."sourceVersionId"
@@ -473,12 +485,21 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
       COALESCE(
         bool_and(
           COALESCE(
-            projection."backendKind" = 'opensearch_bm25_v1'
-            AND projection."mappingVersion" = 1
+            projection."backendKind" = ${KNOWLEDGE_SEARCH_BACKEND_KIND}
+            AND projection."mappingVersion" = ${KNOWLEDGE_SEARCH_MAPPING_VERSION}
             AND projection."state" = 'READY'::"KnowledgeSearchProjectionState"
-            AND projection."expectedPassageCount" = projection."indexedPassageCount"
-            AND projection."expectedPassageCount" > 0
-            AND projection."projectionFingerprint" ~ '^[0-9a-f]{64}$',
+            AND projection."expectedPassageCount" = passage."hierarchicalPassageCount"
+            AND projection."indexedPassageCount" = passage."hierarchicalPassageCount"
+            AND passage."hierarchicalPassageCount" > 0
+            AND projection."projectionFingerprint" = encode(sha256(convert_to(concat(
+              '{"backend":"', ${KNOWLEDGE_SEARCH_BACKEND_KIND},
+              '","hierarchicalChecksum":"', passage."hierarchicalChecksum",
+              '","indexArtifactId":"', passage."indexArtifactId",
+              '","mappingVersion":', ${KNOWLEDGE_SEARCH_MAPPING_VERSION},
+              ',"passageCount":', passage."hierarchicalPassageCount",
+              ',"physicalIndexVersion":', ${KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION},
+              ',"version":1}'
+            ), 'UTF8')), 'hex'),
             false
           )
         ) FILTER (WHERE passage."indexArtifactId" IS NOT NULL),
@@ -532,6 +553,70 @@ function decodeScope(value: unknown): ScopeRow | null {
     projectionComplete: value.projectionComplete,
     targetDimension
   };
+}
+
+function validKnowledgeRetrievalScopeFilter(input: Readonly<{
+  bindingOrdinals: readonly number[];
+  sourceIds: readonly string[];
+}>): boolean {
+  return input.bindingOrdinals.length <= KNOWLEDGE_SCOPE_MAX_BINDINGS &&
+    input.bindingOrdinals.every((ordinal) =>
+      Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < KNOWLEDGE_SCOPE_MAX_BINDINGS) &&
+    new Set(input.bindingOrdinals).size === input.bindingOrdinals.length &&
+    input.sourceIds.length <= KNOWLEDGE_SCOPE_MAX_BINDINGS * 1_024 &&
+    input.sourceIds.every((sourceId) =>
+      typeof sourceId === "string" && sourceId.length > 0 && sourceId.length <= 512) &&
+    new Set(input.sourceIds).size === input.sourceIds.length;
+}
+
+/**
+ * Re-resolves the immutable accepted run scope and proves that every required
+ * lexical projection is ready. The tool executor calls this before query
+ * embedding; the retrieval core calls it again immediately before search so a
+ * projection that changes between stages still fails closed.
+ */
+export async function assertKnowledgeSearchScopeReady(
+  client: KnowledgeRetrievalCoreClient,
+  input: Readonly<{
+    bindingOrdinals?: readonly number[];
+    runId: string;
+    sourceIds?: readonly string[];
+    userId: string;
+  }>
+): Promise<readonly KnowledgeSearchScope[]> {
+  const bindingOrdinals = input.bindingOrdinals ?? [];
+  const sourceIds = input.sourceIds ?? [];
+  if (!input.runId || !input.userId || !validKnowledgeRetrievalScopeFilter({
+    bindingOrdinals,
+    sourceIds
+  })) {
+    throw new Error("knowledge_retrieval_scope_filter_invalid");
+  }
+  const scopeRows = await client.$queryRaw<unknown[]>(knowledgeRetrievalScopeSql({
+    ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+    runId: input.runId,
+    ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+    userId: input.userId
+  }));
+  const decodedScopes = scopeRows.map(decodeScope);
+  if (decodedScopes.some((scope) => scope === null)) {
+    throw new Error("knowledge_retrieval_scope_invalid");
+  }
+  const acceptedScopes = decodedScopes as ScopeRow[];
+  if (
+    acceptedScopes.length < 1 || acceptedScopes.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+    new Set(acceptedScopes.map((scope) => scope.bindingOrdinal)).size !== acceptedScopes.length ||
+    acceptedScopes.some((scope, index) => index > 0 &&
+      scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
+  ) throw new Error("knowledge_retrieval_scope_invalid");
+
+  const acceptedIndexArtifactIds = [...new Set(acceptedScopes.flatMap((scope) =>
+    scope.acceptedIndexArtifactIds))].sort();
+  if (acceptedIndexArtifactIds.length > 0 &&
+    acceptedScopes.some((scope) => !scope.projectionComplete)) {
+    throw new Error("knowledge_search_projection_incomplete");
+  }
+  return Object.freeze(acceptedScopes.map((scope) => Object.freeze(scope)));
 }
 
 function vectorLiteral(vector: readonly number[]): string {
@@ -1629,7 +1714,7 @@ function legacyExpansionUnit(
 }
 
 export async function executeKnowledgeRetrievalCore(
-  client: RetrievalCoreClient,
+  client: KnowledgeRetrievalCoreClient,
   input: Readonly<{
     anchorQuery?: string;
     candidateLimit: number;
@@ -1667,16 +1752,10 @@ export async function executeKnowledgeRetrievalCore(
     excludedContentHashes.size !== input.excludedContentHashes.length ||
     input.excludedContentHashes.some((hash) => !/^[0-9a-f]{64}$/u.test(hash))
   ) throw new Error("knowledge_retrieval_exclusion_invalid");
-  if (
-    requestedBindingOrdinals.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
-    requestedBindingOrdinals.some((ordinal) =>
-      !Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS) ||
-    new Set(requestedBindingOrdinals).size !== requestedBindingOrdinals.length ||
-    requestedSourceIds.length > KNOWLEDGE_SCOPE_MAX_BINDINGS * 1_024 ||
-    requestedSourceIds.some((sourceId) =>
-      typeof sourceId !== "string" || !sourceId || sourceId.length > 512) ||
-    new Set(requestedSourceIds).size !== requestedSourceIds.length
-  ) throw new Error("knowledge_retrieval_scope_filter_invalid");
+  if (!validKnowledgeRetrievalScopeFilter({
+    bindingOrdinals: requestedBindingOrdinals,
+    sourceIds: requestedSourceIds
+  })) throw new Error("knowledge_retrieval_scope_filter_invalid");
   if (
     input.vectors.length > KNOWLEDGE_SCOPE_MAX_BINDINGS * 2 ||
     [...input.vectors.reduce((counts, vector) => counts.set(
@@ -1691,23 +1770,12 @@ export async function executeKnowledgeRetrievalCore(
       vector.vector.some((value) => !Number.isFinite(value)))
   ) throw new Error("knowledge_query_vector_invalid");
 
-  const scopeRows = await client.$queryRaw<unknown[]>(knowledgeRetrievalScopeSql({
+  const acceptedScopes = await assertKnowledgeSearchScopeReady(client, {
     ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
     runId: input.runId,
     ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
     userId: input.userId
-  }));
-  const decodedScopes = scopeRows.map(decodeScope);
-  if (decodedScopes.some((scope) => scope === null)) {
-    throw new Error("knowledge_retrieval_scope_invalid");
-  }
-  const acceptedScopes = decodedScopes as ScopeRow[];
-  if (
-    acceptedScopes.length < 1 || acceptedScopes.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
-    new Set(acceptedScopes.map((scope) => scope.bindingOrdinal)).size !== acceptedScopes.length ||
-    acceptedScopes.some((scope, index) => index > 0 &&
-      scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
-  ) throw new Error("knowledge_retrieval_scope_invalid");
+  });
 
   const rerankConfigured = Boolean(input.rerank);
   const envelope = decodeHybridQueryEnvelope(await client.$queryRaw<unknown[]>(
@@ -1731,10 +1799,6 @@ export async function executeKnowledgeRetrievalCore(
 
   const acceptedIndexArtifactIds = [...new Set(acceptedScopes.flatMap((scope) =>
     scope.acceptedIndexArtifactIds))].sort();
-  if (acceptedIndexArtifactIds.length > 0 &&
-    acceptedScopes.some((scope) => !scope.projectionComplete)) {
-    throw new Error("knowledge_search_projection_incomplete");
-  }
   const bm25 = await (input.lexicalSearch ?? createKnowledgePassageBm25Search())({
     indexArtifactIds: acceptedIndexArtifactIds,
     ownerUserId: input.userId,

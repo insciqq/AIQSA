@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ConversationInlineEditV2,
   ConversationTurnV2,
   ConversationV2,
   shouldClampUserBubbleV2,
@@ -79,12 +80,99 @@ describe("Conversation v2", () => {
     );
     expect(screen.queryByText(/assistant|user/i)).toBeNull();
 
-    fireEvent.keyDown(assistant, { key: "Enter" });
+    // Turns are not tab stops (A15): the dock reveals on tap/hover/focus-within.
+    expect(assistant).not.toHaveAttribute("tabindex");
+    expect(question).not.toHaveAttribute("tabindex");
+    fireEvent.click(assistant);
     expect(assistant).toHaveAttribute("data-controls-open", "true");
     fireEvent.click(screen.getByRole("button", { name: "Regenerate answer" }));
     expect(onRegenerate).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Copy question" }));
     expect(onCopy).toHaveBeenCalledOnce();
+  });
+
+  it("edits a question in its bubble and restores focus to Edit on Escape", async () => {
+    function Harness() {
+      const [editing, setEditing] = useState(false);
+      const [draft, setDraft] = useState("Saved question");
+      return (
+        <ConversationTurnV2
+          actions={{ onEdit: () => setEditing(true) }}
+          anchorId="question/one"
+          content="Saved question"
+          edit={editing ? {
+            attachmentSlot: <span>report.pdf</span>,
+            draft,
+            onCancel: () => setEditing(false),
+            onChange: setDraft,
+            onSubmit: vi.fn()
+          } : undefined}
+          role="user"
+        />
+      );
+    }
+
+    render(<Harness />);
+    const edit = screen.getByRole("button", { name: "Edit question" });
+    edit.focus();
+    fireEvent.click(edit);
+
+    const input = screen.getByRole("textbox", { name: "Edit question" });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("Saved question");
+    expect(screen.getByLabelText("Attachments in this message")).toHaveTextContent("report.pdf");
+    expect(screen.getByText(/original history stays unchanged/iu)).toBeVisible();
+    expect(screen.queryByRole("toolbar", { name: "Question actions" })).toBeNull();
+
+    fireEvent.change(input, { target: { value: "Rewritten question" } });
+    expect(input).toHaveValue("Rewritten question");
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.getByText("Saved question")).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit question" })).toHaveFocus());
+  });
+
+  it("auto-grows the inline field and follows both send keyboard modes", () => {
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(144);
+    const onSubmit = vi.fn();
+    const props = {
+      draft: "Edited question",
+      onCancel: vi.fn(),
+      onChange: vi.fn(),
+      onSubmit
+    };
+    const { rerender } = render(<ConversationInlineEditV2 {...props} />);
+    const input = screen.getByRole("textbox", { name: "Edit question" });
+    expect(input).toHaveStyle({ height: "144px" });
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+
+    rerender(<ConversationInlineEditV2 {...props} sendWithEnter={false} />);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+    fireEvent.keyDown(input, { ctrlKey: true, key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an unsuccessful inline edit recoverable and locks it while saving", () => {
+    render(
+      <ConversationInlineEditV2
+        draft="Edited question"
+        error="The message changed on another branch."
+        onCancel={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        pending
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("changed on another branch");
+    expect(screen.getByRole("textbox", { name: "Edit question" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
 
   it("clamps only a long question and restores it with «Show full message»", () => {
@@ -184,13 +272,16 @@ describe("Conversation v2", () => {
     const more = screen.getByRole("button", { name: "More answer actions" });
     fireEvent.click(more);
     const menu = screen.getByRole("menu", { name: "Answer menu" });
-    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Delete" })).toHaveFocus());
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus());
+    // Branch first; Delete last, destructive, and behind a separator (B4).
     expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Delete",
-      "Branch from here"
+      "Branch from here",
+      "Delete"
     ]);
+    expect(within(menu).getByRole("menuitem", { name: "Delete" })).toHaveAttribute("data-tone", "destructive");
+    expect(within(menu).getByRole("separator")).toBeInTheDocument();
     fireEvent.keyDown(menu, { key: "ArrowUp" });
-    expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus();
+    expect(within(menu).getByRole("menuitem", { name: "Delete" })).toHaveFocus();
     fireEvent.keyDown(menu, { key: "Escape" });
     await waitFor(() => expect(more).toHaveFocus());
     expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
@@ -216,9 +307,12 @@ describe("Conversation v2", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Regenerate answer" })).toBeDisabled();
+    const regenerate = screen.getByRole("button", { name: "Regenerate answer" });
+    expect(regenerate).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit answer" })).toBeDisabled();
-    expect(screen.getByText("Wait for the answer to finish or stop it.")).toBeVisible();
+    // The reason is the disabled controls' tooltip, not a permanent line (B6).
+    expect(regenerate).toHaveAttribute("data-tooltip", "Wait for the answer to finish or stop it.");
+    expect(screen.getByText("Wait for the answer to finish or stop it.")).toHaveClass("v2-sr-only");
     fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeDisabled();

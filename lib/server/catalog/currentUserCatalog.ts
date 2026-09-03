@@ -14,14 +14,41 @@ import {
   type ResolvedEntitlements
 } from "../auth/entitlements";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
+import {
+  decodeChatDefaultMcpMode,
+  INSTALLATION_CHAT_DEFAULTS,
+  type ChatDefaults
+} from "../../contracts/chatDefaults";
+import { decodeKnowledgePlan } from "../../contracts/knowledge";
 
 export type CatalogSettingsRecord = {
   defaultControlValues: unknown;
+  /** Persisted knowledge selection for new chats; absent or invalid means none. */
+  defaultKnowledgePlan?: unknown;
+  defaultMcpMode?: string | null;
   defaultProviderModelId: string | null;
   defaultSearchPlan: unknown;
+  sendWithEnter?: boolean | null;
   showCitations: boolean;
   showReasoningBlocks: boolean;
 };
+
+/** Personal chat defaults from the settings row; unreadable values fall back to the installation defaults. */
+export function resolveChatDefaults(
+  settings: Pick<CatalogSettingsRecord, "defaultKnowledgePlan" | "defaultMcpMode" | "sendWithEnter">
+): ChatDefaults {
+  const decodedPlan = settings.defaultKnowledgePlan === null || settings.defaultKnowledgePlan === undefined
+    ? null
+    : decodeKnowledgePlan(settings.defaultKnowledgePlan);
+  const knowledgePlan = decodedPlan?.ok && decodedPlan.plan.mode !== "none" && decodedPlan.plan.mode !== "inherited"
+    ? decodedPlan.plan
+    : null;
+  return {
+    knowledgePlan,
+    mcpMode: decodeChatDefaultMcpMode(settings.defaultMcpMode) ?? INSTALLATION_CHAT_DEFAULTS.mcpMode,
+    sendWithEnter: settings.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter
+  };
+}
 
 export type CatalogData = {
   entitlements: ResolvedEntitlements;
@@ -181,6 +208,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       organizationSearchPlan: searchPreference.organizationPlan,
       searchPlan: searchPreference.preferredPlan,
       searchPreferenceSource: searchPreference.source,
+      ...resolveChatDefaults(input.settings),
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks
     },

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ModelParameterControls } from "../../contracts/catalog";
-import { materializeAssistantRunParams } from "./runControlMaterialization";
+import {
+  assistantRunControlIssue,
+  materializeAssistantRunParams
+} from "./runControlMaterialization";
 
 function controls(overrides: Partial<ModelParameterControls> = {}): ModelParameterControls {
   return {
@@ -19,6 +22,32 @@ function controls(overrides: Partial<ModelParameterControls> = {}): ModelParamet
 }
 
 describe("materializeAssistantRunParams", () => {
+  it.each([
+    [{ backgroundMode: true }, { control: "backgroundMode" }],
+    [{ streamMode: true }, { control: "streamMode" }],
+    [{ reasoningEffort: "ultra" }, { control: "reasoningEffort" }],
+    [{ reasoningMode: "ultra" }, { control: "reasoningMode" }]
+  ] as const)("identifies the exact unsupported run-control field", (runControls, expected) => {
+    expect(assistantRunControlIssue(
+      runControls,
+      controls({
+        background: { defaultValue: false, supported: false },
+        stream: { defaultValue: false, supported: false }
+      })
+    )).toEqual(expected);
+  });
+
+  it("returns the violated numeric model limit", () => {
+    expect(assistantRunControlIssue(
+      { maxOutputTokens: 128_001 },
+      controls()
+    )).toEqual({ control: "maxOutputTokens", limit: 128_000 });
+    expect(assistantRunControlIssue(
+      { temperature: -1 },
+      controls()
+    )).toEqual({ control: "temperature", limit: 0 });
+  });
+
   it("builds exact OpenAI dialect params from saved controls", () => {
     const result = materializeAssistantRunParams({
       baseParams: { reasoning: { summary: "auto" } },

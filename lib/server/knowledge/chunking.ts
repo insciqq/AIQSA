@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import {
+  geometryProvenRepeatedFurniture,
+  KNOWLEDGE_FURNITURE_EDGE_FRACTION,
+  KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT,
+  KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION
+} from "../../domain/knowledgeFurniture";
+import {
   MAX_EMBEDDING_BATCH_INPUTS,
   MAX_EMBEDDING_INPUT_CHARS,
   MAX_EMBEDDING_REQUEST_BYTES
@@ -37,6 +43,12 @@ import type {
 } from "./normalizedDocument";
 import type { KnowledgeTokenCounter } from "./tokenizer/types";
 
+export {
+  KNOWLEDGE_FURNITURE_EDGE_FRACTION,
+  KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT,
+  KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION
+} from "../../domain/knowledgeFurniture";
+
 export const KNOWLEDGE_CHUNK_MAX_TOKENS = 400;
 export const KNOWLEDGE_CHUNK_OVERLAP_TOKENS = 48;
 /**
@@ -54,9 +66,6 @@ export const KNOWLEDGE_CHUNK_OVERLAP_CHARS = 200;
 export const KNOWLEDGE_EMBEDDING_BATCH_SIZE = 64;
 export const KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS = 16_000;
 export const KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES = 48_000;
-export const KNOWLEDGE_FURNITURE_EDGE_FRACTION = 0.15;
-export const KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION = 0.5;
-export const KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT = 0.05;
 
 export type KnowledgeChunkLayoutKind =
   | "body"
@@ -868,102 +877,20 @@ function legacyRepeatedFurniture(blocks: readonly KnowledgeNormalizedBlock[]): S
   return new Set(blocks.filter((block) => keys.has(furnitureKey(block))).map((block) => block.id));
 }
 
-type PageVerticalExtent = Readonly<{
-  maximum: number;
-  minimum: number;
-}>;
-
-function verticalExtents(
-  blocks: readonly KnowledgeNormalizedBlock[]
-): ReadonlyMap<string, PageVerticalExtent> {
-  const mutable = new Map<string, { maximum: number; minimum: number }>();
-  for (const block of blocks) {
-    for (const box of block.boundingBoxes) {
-      const key = `${box.page}:${box.coordinateOrigin}`;
-      const low = Math.min(box.top, box.bottom);
-      const high = Math.max(box.top, box.bottom);
-      const current = mutable.get(key);
-      if (current) {
-        current.minimum = Math.min(current.minimum, low);
-        current.maximum = Math.max(current.maximum, high);
-      } else {
-        mutable.set(key, { maximum: high, minimum: low });
-      }
-    }
-  }
-  return mutable;
-}
-
-function furniturePosition(
-  block: KnowledgeNormalizedBlock,
-  extents: ReadonlyMap<string, PageVerticalExtent>
-): Readonly<{ edge: "bottom" | "top"; position: number }> | null {
-  if (block.locator.pageStart !== block.locator.pageEnd || block.boundingBoxes.length === 0) {
-    return null;
-  }
-  const page = block.locator.pageStart;
-  if (block.boundingBoxes.some((box) => box.page !== page) ||
-    new Set(block.boundingBoxes.map((box) => box.coordinateOrigin)).size !== 1) {
-    return null;
-  }
-  const origin = block.boundingBoxes[0]!.coordinateOrigin;
-  const extent = extents.get(`${page}:${origin}`);
-  if (!extent || extent.maximum <= extent.minimum) return null;
-  const low = Math.min(...block.boundingBoxes.map((box) => Math.min(box.top, box.bottom)));
-  const high = Math.max(...block.boundingBoxes.map((box) => Math.max(box.top, box.bottom)));
-  const rawPosition = ((low + high) / 2 - extent.minimum) /
-    (extent.maximum - extent.minimum);
-  const position = origin === "top_left" ? rawPosition : 1 - rawPosition;
-  if (!Number.isFinite(position)) return null;
-  if (position <= KNOWLEDGE_FURNITURE_EDGE_FRACTION) return { edge: "top", position };
-  if (position >= 1 - KNOWLEDGE_FURNITURE_EDGE_FRACTION) {
-    return { edge: "bottom", position };
-  }
-  return null;
-}
-
 function conservativeRepeatedFurniture(
   document: StoredKnowledgeNormalizedDocument,
   preserveCanonical: boolean
 ): Set<string> {
-  const extents = verticalExtents(document.blocks);
-  const candidatesByKey = new Map<string, Array<Readonly<{
-    block: KnowledgeNormalizedBlock;
-    edge: "bottom" | "top";
-    position: number;
-  }>>>();
-  for (const block of document.blocks) {
-    if (!block.text || block.text.length > 240 ||
-      block.type === "title" || block.type === "heading" || block.type === "table" ||
-      block.type === "image" || block.table !== null) continue;
-    const position = furniturePosition(block, extents);
-    if (!position) continue;
-    const key = furnitureKey(block);
-    const candidates = candidatesByKey.get(key) ?? [];
-    candidates.push({ block, ...position });
-    candidatesByKey.set(key, candidates);
-  }
-
-  const requiredPageCount = Math.max(
-    3,
-    Math.ceil(document.pageCount * KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION)
-  );
-  const excluded = new Set<string>();
-  for (const candidates of candidatesByKey.values()) {
-    const pages = new Set(candidates.map(({ block }) => block.locator.pageStart));
-    const edges = new Set(candidates.map(({ edge }) => edge));
-    const positions = candidates.map(({ position }) => position);
-    if (pages.size < requiredPageCount || edges.size !== 1 ||
-      Math.max(...positions) - Math.min(...positions) >
-        KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT) continue;
-    const duplicates = preserveCanonical
-      ? [...candidates]
-          .sort((left, right) => left.block.order - right.block.order)
-          .slice(1)
-      : candidates;
-    for (const { block } of duplicates) excluded.add(block.id);
-  }
-  return excluded;
+  return new Set(geometryProvenRepeatedFurniture(document.blocks.map((block) => ({
+    boundingBoxes: block.boundingBoxes,
+    id: block.id,
+    order: block.order,
+    pageEnd: block.locator.pageEnd,
+    pageStart: block.locator.pageStart,
+    table: block.table,
+    text: block.text,
+    type: block.type
+  })), document.pageCount, preserveCanonical));
 }
 
 function repeatedFurniture(

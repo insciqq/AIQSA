@@ -62,7 +62,7 @@ describe("McpSettingsSection", () => {
 
     expect(disclosure).toHaveAttribute("open");
     expect(screen.getByText(/Auto starts with a small schema-free catalog/)).toBeVisible();
-    expect(screen.getByText(/Selected eagerly loads the servers you choose/)).toBeVisible();
+    expect(screen.getByText(/Load all eagerly loads every enabled server/)).toBeVisible();
     expect(screen.getByText(/Enabled runtimes stay asleep until a run actually needs them/)).toBeVisible();
   });
 
@@ -88,25 +88,25 @@ describe("McpSettingsSection", () => {
     const disabledStatus = initial.getByText("Disabled", {
       selector: "[data-resource-availability]"
     });
-    const enable = initial.getByRole("button", { name: "Enable Todoist" });
+    const control = initial.getByRole("switch", { name: "Todoist" });
     expect(disabledStatus.closest("button")).toBeNull();
-    expect(disabledStatus).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
-    expect(enable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+    expect(disabledStatus).toHaveAttribute("data-resource-availability", "disabled");
+    expect(control).toHaveAttribute("aria-checked", "false");
 
-    fireEvent.click(enable);
+    fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(true));
     expect(within(card!).getByText("Enabled", {
       selector: "[data-resource-availability]"
-    })).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-ink");
-    const disable = within(card!).getByRole("button", { name: "Disable Todoist" });
-    expect(disable).toHaveClass("bg-control-surface", "text-ink-secondary");
+    })).toHaveAttribute("data-resource-availability", "enabled");
+    expect(within(card!).getByRole("switch", { name: "Todoist" })).toHaveAttribute("aria-checked", "true");
+    expect(within(card!).getByText("Ready")).toHaveAttribute("data-tone", "ok");
 
-    fireEvent.click(disable);
+    fireEvent.click(within(card!).getByRole("switch", { name: "Todoist" }));
     await waitFor(() => expect(todoist.enabled).toBe(false));
     expect(within(card!).getByText("Disabled", {
       selector: "[data-resource-availability]"
     })).toBeVisible();
-    expect(within(card!).getByRole("button", { name: "Enable Todoist" })).toBeVisible();
+    expect(within(card!).getByRole("switch", { name: "Todoist" })).toHaveAttribute("aria-checked", "false");
   });
 
   it("lets a user independently enable multiple granted MCPs and save a write-only value", async () => {
@@ -138,8 +138,8 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
     await waitFor(() => expect(servers[0]?.fields[0]?.source).toBe("personal"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Enable Mem0" }));
-    fireEvent.click(screen.getByRole("button", { name: "Enable Todoist" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Mem0" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Todoist" }));
     await waitFor(() => expect(servers.every((server) => server.enabled)).toBe(true));
 
     const patchBodies = fetchMock.mock.calls
@@ -147,7 +147,10 @@ describe("McpSettingsSection", () => {
       .map(([, init]) => JSON.parse(String(init?.body)));
     expect(patchBodies).toContainEqual({ enabled: true });
     expect(patchBodies).toContainEqual({ values: { api_key: "personal-token" } });
-    expect(screen.getAllByText(/available tool/)).toHaveLength(2);
+    // The status line counts tools once per enabled server; no separate
+    // "available tools" line contradicts the catalog count.
+    expect(screen.getAllByText("1 tool")).toHaveLength(2);
+    expect(screen.getByText("2 of 2 servers enabled · 2 tools")).toBeVisible();
   });
 
   it("shows the transient authorizing state while an OAuth redirect is in flight", async () => {
@@ -187,7 +190,7 @@ describe("McpSettingsSection", () => {
     await screen.findByRole("heading", { name: "Notion" });
     const connectToEnable = screen.getByRole("link", { name: "Connect Notion to enable" });
     expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
-    expect(connectToEnable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+    expect(connectToEnable).toHaveAttribute("data-tone", "primary");
     expect(connectToEnable).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
     connectToEnable.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(connectToEnable);
@@ -250,7 +253,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
-    fireEvent.click(screen.getByRole("button", { name: "Enable Notion" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Notion" }));
 
     expect(await screen.findByText("Connect Notion to an external account before enabling it.")).toBeVisible();
     const reconnect = screen.getByRole("link", { name: "Reconnect" });
@@ -267,11 +270,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
     expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveClass(
-      "border-proof/25",
-      "bg-proof/[0.08]",
-      "text-proof"
-    );
+    expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveAttribute("data-tone", "primary");
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
     expect(screen.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
@@ -290,8 +289,8 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: `Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}` });
-    fireEvent.click(screen.getByRole("button", {
-      name: `Enable Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}`
+    fireEvent.click(screen.getByRole("switch", {
+      name: `Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}`
     }));
 
     expect(screen.getByText(
@@ -320,7 +319,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
-    fireEvent.click(screen.getByRole("button", { name: "Enable Candidate" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Candidate" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
@@ -347,7 +346,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
-    fireEvent.click(screen.getByRole("button", { name: "Enable Candidate" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Candidate" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
@@ -374,13 +373,16 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Authorizing server" });
 
-    const authorizingReadiness = screen.getByText("Authorizing").closest("p");
-    const queuedReadiness = screen.getByText("Activating").closest("p");
-    const idleReadiness = screen.getByText("Available on demand").closest("p");
-    expect(authorizingReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(queuedReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).not.toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-circle-check");
+    const authorizingReadiness = screen.getByText("Authorizing");
+    const queuedReadiness = screen.getByText("Activating");
+    const idleReadiness = screen.getByText("Available on demand");
+    // Progress states show the spinner; ready states the check with the "ok" tone.
+    expect(authorizingReadiness.querySelector(".v2-spinner")).not.toBeNull();
+    expect(queuedReadiness.querySelector(".v2-spinner")).not.toBeNull();
+    expect(idleReadiness.querySelector(".v2-spinner")).toBeNull();
+    expect(idleReadiness).toHaveAttribute("data-tone", "ok");
+    // The status line reads as one sentence: availability · readiness · tools.
+    expect(idleReadiness.closest("p")).toHaveTextContent("Enabled · Available on demand · 1 tool");
     expect(screen.queryByText("Queued")).not.toBeInTheDocument();
     expect(screen.queryByText("Needs setup")).not.toBeInTheDocument();
   });
@@ -402,7 +404,7 @@ describe("McpSettingsSection", () => {
     expect(within(card!).getByText("Enabled", {
       selector: "[data-resource-availability]"
     })).toBeVisible();
-    expect(within(card!).getByText("Needs authorization")).toHaveClass("text-caution");
+    expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     expect(within(card!).getByRole("link", { name: "Connect" })).toBeVisible();
   });
 });

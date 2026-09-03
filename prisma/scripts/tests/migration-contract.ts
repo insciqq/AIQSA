@@ -118,6 +118,12 @@ const KNOWLEDGE_GLOBAL_SCOPE_CLOSURE_V2_MIGRATION =
   "20260901150000_knowledge_global_scope_closure_v2";
 const KNOWLEDGE_NON_MISSING_CLOSURE_ADMISSION_V1_MIGRATION =
   "20260901160000_knowledge_non_missing_closure_admission_v1";
+const KNOWLEDGE_SEARCH_HEALTH_MIGRATION =
+  "20260903220000_knowledge_search_health";
+const KNOWLEDGE_TOOL_USAGE_CHECKPOINT_MIGRATION =
+  "20260903233000_knowledge_tool_usage_checkpoint";
+const KNOWLEDGE_OUTAGE_EVIDENCE_SHAPE_MIGRATION =
+  "20260903234500_knowledge_search_outage_evidence_shape";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
@@ -6757,6 +6763,332 @@ function runKnowledgeToolCoexistenceMigrationProof(
   );
 }
 
+function runKnowledgeSearchHealthMigrationProof(
+  database: string,
+  committed: readonly string[],
+): void {
+  const rerankerReceiptV2Index = committed.indexOf(KNOWLEDGE_RERANKER_RECEIPT_V2_MIGRATION);
+  const searchHealthIndex = committed.indexOf(KNOWLEDGE_SEARCH_HEALTH_MIGRATION);
+  const toolUsageCheckpointIndex = committed.indexOf(KNOWLEDGE_TOOL_USAGE_CHECKPOINT_MIGRATION);
+  const outageEvidenceShapeIndex = committed.indexOf(
+    KNOWLEDGE_OUTAGE_EVIDENCE_SHAPE_MIGRATION
+  );
+  assert.ok(
+    searchHealthIndex > rerankerReceiptV2Index,
+    "Knowledge search health migration must follow the current automatic-search receipt guard",
+  );
+  assert.ok(
+    toolUsageCheckpointIndex > searchHealthIndex,
+    "Knowledge tool usage checkpoint migration must follow search outage receipts",
+  );
+  assert.ok(
+    outageEvidenceShapeIndex > toolUsageCheckpointIndex,
+    "Knowledge outage evidence shape migration must follow its receipt and usage contracts",
+  );
+  const searchHealthSql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_SEARCH_HEALTH_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.match(
+    searchHealthSql,
+    /ALTER TYPE "KnowledgeRunOutcome"[\s\S]*ADD VALUE IF NOT EXISTS 'search_unavailable'/u,
+    "Knowledge search health migration must append the unavailable outcome",
+  );
+  assert.match(
+    readFileSync(
+      join(migrationsRoot, KNOWLEDGE_TOOL_USAGE_CHECKPOINT_MIGRATION, "migration.sql"),
+      "utf8",
+    ),
+    /ALTER TABLE "ModelRunToolCall"[\s\S]*ADD COLUMN "usageAccountedAt" timestamp\(3\)/u,
+    "Knowledge outage recovery must persist a clock-independent tool usage checkpoint",
+  );
+  const outageEvidenceShapeSql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_OUTAGE_EVIDENCE_SHAPE_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.match(
+    outageEvidenceShapeSql,
+    /ADD CONSTRAINT "KnowledgeRun_evidence_shape_check"[\s\S]*jsonb_array_length\("baseEvidence"\) >= 1[\s\S]*outcome::text = 'search_unavailable'[\s\S]*VALIDATE CONSTRAINT "KnowledgeRun_evidence_shape_check"/u,
+    "Knowledge evidence shape must reserve empty Base evidence for classified search outages",
+  );
+  assert.doesNotMatch(
+    outageEvidenceShapeSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Knowledge outage evidence shape migration must not rewrite immutable receipts",
+  );
+  assert.match(
+    searchHealthSql,
+    /ADD CONSTRAINT "KnowledgeRun_search_unavailable_shape_check"[\s\S]*VALIDATE CONSTRAINT "KnowledgeRun_search_unavailable_shape_check"/u,
+    "Knowledge search outage receipts must have one validated global shape guard",
+  );
+  assert.match(
+    searchHealthSql,
+    /CREATE TABLE "KnowledgeSearchWorkerHeartbeat"[\s\S]*"KnowledgeSearchWorkerHeartbeat_singleton_check"[\s\S]*"KnowledgeSearchWorkerHeartbeat_clock_check"/u,
+    "Knowledge search worker heartbeat must retain singleton and monotonic-clock checks",
+  );
+  assert.doesNotMatch(
+    searchHealthSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Knowledge search health migration must not rewrite immutable historical receipts",
+  );
+
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_enum AS enum_value
+      INNER JOIN pg_type AS enum_type ON enum_type.oid = enum_value.enumtypid
+      WHERE enum_type.typname = 'KnowledgeRunOutcome'
+        AND enum_value.enumlabel = 'search_unavailable';
+    `),
+    "1",
+    "Knowledge search unavailable enum label is missing",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_constraint
+      WHERE conrelid = '"KnowledgeRun"'::regclass
+        AND conname = 'KnowledgeRun_search_unavailable_shape_check'
+        AND convalidated;
+    `),
+    "1",
+    "Knowledge search outage shape constraint is missing or unvalidated",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_constraint
+      WHERE conrelid = '"KnowledgeSearchWorkerHeartbeat"'::regclass
+        AND conname IN (
+          'KnowledgeSearchWorkerHeartbeat_singleton_check',
+          'KnowledgeSearchWorkerHeartbeat_clock_check'
+        )
+        AND convalidated;
+    `),
+    "2",
+    "Knowledge search heartbeat checks are missing or unvalidated",
+  );
+
+  psqlScalar(database, `
+    INSERT INTO "User" (id, "displayName", role, status, "updatedAt")
+    VALUES (
+      'knowledge-search-health-owner', 'Search health owner', 'user', 'active',
+      CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Chat" (id, "userId", title, "updatedAt")
+    VALUES (
+      'knowledge-search-health-chat', 'knowledge-search-health-owner',
+      'Search health receipts', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Message" (id, "chatId", role, content, "updatedAt")
+    VALUES (
+      'knowledge-search-health-message', 'knowledge-search-health-chat', 'user',
+      '{}'::jsonb, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ModelRun" (
+      id, "chatId", "userId", "userMessageId", provider, "modelId", status,
+      "normalizedRequest", "updatedAt"
+    ) VALUES (
+      'knowledge-search-health-run', 'knowledge-search-health-chat',
+      'knowledge-search-health-owner', 'knowledge-search-health-message',
+      'fixture', 'fixture-model', 'complete', '{}'::jsonb, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ModelRunToolCall" (
+      id, "modelRunId", "roundIndex", ordinal, "providerCallId", "toolName",
+      arguments, state, "startedAt", "completedAt", "updatedAt"
+    ) VALUES
+      (
+        'knowledge-search-health-backend-call', 'knowledge-search-health-run', 0, 0,
+        'knowledge-search-health-backend-provider-call', 'search_knowledge',
+        '{"query":"backend outage","sourceAliases":[]}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-search-health-projection-call', 'knowledge-search-health-run', 0, 1,
+        'knowledge-search-health-projection-provider-call', 'search_knowledge',
+        '{"query":"projection outage","sourceAliases":["S1"]}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+    INSERT INTO "KnowledgeRun" (
+      id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
+      outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
+      "baseEvidence", results, "providerText", "embeddingUsage", "failureCode",
+      "durationMs", "updatedAt"
+    ) VALUES
+      (
+        'knowledge-search-health-backend-run', 'knowledge-search-health-run',
+        'knowledge-search-health-backend-call', 1, 'automatic_search',
+        'knowledge_search_unavailable',
+        'search_unavailable', 'weighted_rrf_v2', 64, 16, 0,
+        '[]'::jsonb, '[]'::jsonb,
+        'Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.',
+        jsonb_build_array(jsonb_build_object(
+          'bindingOrdinals', jsonb_build_array(0),
+          'durationMs', 1,
+          'inputTokens', 2,
+          'modelId', 'embedding-health',
+          'provider', 'fixture',
+          'providerModelId', 'embedding-health',
+          'requestId', 'embedding-health-request',
+          'status', 'complete',
+          'totalTokens', 2
+        )),
+        'knowledge_search_backend_unavailable', 1, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-search-health-projection-run', 'knowledge-search-health-run',
+        'knowledge-search-health-projection-call', 2, 'automatic_search',
+        'knowledge_search_unavailable', 'search_unavailable', 'weighted_rrf_v2', 64, 8, 0,
+        '[]'::jsonb, '[]'::jsonb,
+        'Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.',
+        '[]'::jsonb, 'knowledge_search_projection_unavailable', 1, CURRENT_TIMESTAMP
+      );
+    SELECT 'knowledge-search-health-receipts-ready';
+  `);
+  assert.equal(
+    psqlScalar(database, `
+      SELECT string_agg(
+        "failureCode" || ':' || jsonb_array_length("embeddingUsage")::text,
+        ':' ORDER BY "invocationOrdinal"
+      )
+      FROM "KnowledgeRun"
+      WHERE id IN (
+        'knowledge-search-health-backend-run',
+        'knowledge-search-health-projection-run'
+      )
+        AND outcome::text = 'search_unavailable'
+        AND operation = 'automatic_search'
+        AND "candidateCount" = 0
+        AND query = 'knowledge_search_unavailable'
+        AND "baseEvidence" = '[]'::jsonb
+        AND "budgetEvidence" = '{}'::jsonb
+        AND results = '[]'::jsonb
+        AND "providerText" =
+          'Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.'
+        AND "lexicalBackendEvidence" IS NULL
+        AND "readReceipt" IS NULL;
+    `),
+    "knowledge_search_backend_unavailable:1:knowledge_search_projection_unavailable:0",
+    "Knowledge search health migration rejected a valid pre- or post-embedding outage receipt",
+  );
+
+  for (const malformedReceipt of [
+    {
+      label: "missing failure code",
+      set: '"failureCode" = NULL',
+    },
+    {
+      label: "unclassified failure code",
+      set: '"failureCode" = \'knowledge_search_internal_detail\'',
+    },
+    {
+      label: "nonzero candidate count",
+      set: '"candidateCount" = 1',
+    },
+    {
+      label: "content-bearing query",
+      set: "query = 'private outage query'",
+    },
+    {
+      label: "content-bearing Base evidence",
+      set: '"baseEvidence" = \'[{"baseName":"private label"}]\'::jsonb',
+    },
+    {
+      label: "content-bearing budget evidence",
+      set: '"budgetEvidence" = \'{"privateText":"forbidden"}\'::jsonb',
+    },
+    {
+      label: "noncanonical provider text",
+      set: '"providerText" = \'private failure detail\'',
+    },
+    {
+      label: "content-bearing lexical evidence",
+      set: '"lexicalBackendEvidence" = \'{"privateText":"forbidden"}\'::jsonb',
+    },
+  ] as const) {
+    const rejectedReceipt = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `BEGIN;
+        ALTER TABLE "KnowledgeRun"
+          DISABLE TRIGGER "KnowledgeRun_basic_focused_guard";
+        UPDATE "KnowledgeRun" SET ${malformedReceipt.set}
+        WHERE id = 'knowledge-search-health-backend-run';
+        ROLLBACK;`,
+    ]);
+    assert.notEqual(
+      rejectedReceipt.status,
+      0,
+      `Knowledge search health accepted a ${malformedReceipt.label} outage receipt`,
+    );
+    assert.match(
+      `${rejectedReceipt.stdout}\n${rejectedReceipt.stderr}`,
+      /KnowledgeRun_search_unavailable_shape_check/u,
+      `Rejected ${malformedReceipt.label} outage did not reach the stable shape constraint`,
+    );
+  }
+
+  psqlScalar(database, `
+    INSERT INTO "KnowledgeSearchWorkerHeartbeat" (
+      id, "instanceId", "startedAt", "lastSeenAt"
+    ) VALUES (
+      'installation', 'search-worker-fixture',
+      TIMESTAMP '2026-09-03 22:00:00', TIMESTAMP '2026-09-03 22:00:05'
+    );
+    UPDATE "KnowledgeSearchWorkerHeartbeat"
+    SET "lastSeenAt" = TIMESTAMP '2026-09-03 22:00:10'
+    WHERE id = 'installation';
+    SELECT 'knowledge-search-heartbeat-ready';
+  `);
+  assert.equal(
+    psqlScalar(database, `
+      SELECT "instanceId" || ':' ||
+        EXTRACT(EPOCH FROM ("lastSeenAt" - "startedAt"))::integer::text
+      FROM "KnowledgeSearchWorkerHeartbeat"
+      WHERE id = 'installation';
+    `),
+    "search-worker-fixture:10",
+    "Knowledge search heartbeat rejected the valid singleton or forward clock update",
+  );
+
+  for (const invalidHeartbeat of [
+    {
+      constraint: "KnowledgeSearchWorkerHeartbeat_singleton_check",
+      label: "second singleton identity",
+      sql: `INSERT INTO "KnowledgeSearchWorkerHeartbeat" (
+        id, "instanceId", "startedAt", "lastSeenAt"
+      ) VALUES (
+        'other', 'search-worker-other',
+        TIMESTAMP '2026-09-03 22:00:00', TIMESTAMP '2026-09-03 22:00:01'
+      );`,
+    },
+    {
+      constraint: "KnowledgeSearchWorkerHeartbeat_clock_check",
+      label: "backward heartbeat clock",
+      sql: `UPDATE "KnowledgeSearchWorkerHeartbeat"
+        SET "lastSeenAt" = "startedAt" - interval '1 millisecond'
+        WHERE id = 'installation';`,
+    },
+  ] as const) {
+    const rejectedHeartbeat = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database, "--command", invalidHeartbeat.sql,
+    ]);
+    assert.notEqual(
+      rejectedHeartbeat.status,
+      0,
+      `Knowledge search heartbeat accepted a ${invalidHeartbeat.label}`,
+    );
+    assert.match(
+      `${rejectedHeartbeat.stdout}\n${rejectedHeartbeat.stderr}`,
+      new RegExp(invalidHeartbeat.constraint, "u"),
+      `Rejected ${invalidHeartbeat.label} did not reach its stable check constraint`,
+    );
+  }
+}
+
 function runMemoryVNextRetrievalCutoverMigrationProof(
   database: string,
   committed: readonly string[],
@@ -6888,6 +7220,7 @@ function main(
   runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
   runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
   runKnowledgeToolCoexistenceMigrationProof(migrations);
+  runKnowledgeSearchHealthMigrationProof(shadowDatabase, migrations);
   runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
 
   if (mode === "smoke") {
@@ -6904,7 +7237,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Memory vNext legacy-job retirement/retrieval indexes, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Knowledge search outage/heartbeat guards, Memory vNext legacy-job retirement/retrieval indexes, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

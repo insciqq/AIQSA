@@ -88,6 +88,8 @@ export type ThreadArtifactSummary = {
   memorySources?: MemoryAnswerSource[];
   reasoningText: string[];
   sources: ThreadSearchSource[];
+  /** Admission → first answer token, in ms; present only when reasoning or tool steps ran. */
+  workDurationMs?: number;
 };
 
 export type ThreadKnowledgeAnswerState = Readonly<{
@@ -305,6 +307,7 @@ export type ChatMemoryStateResponseWire = {
 
 export type ArchivedChatSummaryWire = WorkspaceChatSummaryWire & {
   archived: true;
+  lastMessageAt: string | null;
   memoryMode: RetainedChatMemoryMode;
   sourceRevision: number;
 };
@@ -724,6 +727,14 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     memoryStatus = value.memoryStatus;
   }
 
+  let workDurationMs: number | undefined;
+  if (value.workDurationMs !== undefined) {
+    if (!Number.isSafeInteger(value.workDurationMs) || (value.workDurationMs as number) < 0) {
+      return null;
+    }
+    workDurationMs = value.workDurationMs as number;
+  }
+
   return {
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
@@ -737,7 +748,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     reasoningText: value.reasoningText as string[],
     sources: sources.filter(
       (source): source is ThreadSearchSource => source !== null
-    )
+    ),
+    ...(workDurationMs !== undefined ? { workDurationMs } : {})
   };
 }
 
@@ -1312,6 +1324,7 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "defaultProvider",
       "folderId",
       "id",
+      "lastMessageAt",
       "memoryMode",
       "messageCount",
       "pinned",
@@ -1323,10 +1336,17 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
   ) return null;
   if (value.projectId !== null) return null;
   const summary = decodeWorkspaceChatSummaryWire(value);
+  const lastMessageAt = value.lastMessageAt === null
+    ? null
+    : isoTimestamp(value.lastMessageAt);
   const memoryMode = retainedMemoryMode(value.memoryMode);
   const sourceRevision = nonNegativeInteger(value.sourceRevision);
-  return summary && memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)
-    ? { ...summary, archived: true, memoryMode, sourceRevision }
+  return summary &&
+    (value.lastMessageAt === null || lastMessageAt !== null) &&
+    memoryMode &&
+    sourceRevision !== null &&
+    Number.isSafeInteger(sourceRevision)
+    ? { ...summary, archived: true, lastMessageAt, memoryMode, sourceRevision }
     : null;
 }
 

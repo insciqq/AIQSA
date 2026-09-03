@@ -31,10 +31,18 @@ describe("useWorkspaceInteractionController", () => {
     act(() => result.current.paneActions.startChatEdit(chat));
     expect(result.current.paneState).toMatchObject({
       editingChatId: chat.id,
+      editingChatOrigin: "row",
       editingChatTitle: chat.title
     });
     act(() => result.current.chatMutation.finishEditing());
     expect(result.current.paneState.editingChatId).toBeNull();
+    expect(result.current.paneState.editingChatOrigin).toBeNull();
+
+    // The header rename records its origin so only one field renders (A7).
+    act(() => result.current.paneActions.startChatEdit(chat, "header"));
+    expect(result.current.paneState.editingChatOrigin).toBe("header");
+    act(() => result.current.paneActions.cancelChatEdit());
+    expect(result.current.paneState.editingChatOrigin).toBeNull();
 
     act(() => {
       result.current.paneActions.startFolderEdit(folder);

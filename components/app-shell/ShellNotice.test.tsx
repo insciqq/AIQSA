@@ -13,10 +13,10 @@ describe("ShellNotice", () => {
     render(<ShellNotice notice={{ kind: "error", text: "Something failed" }} onDismiss={onDismiss} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent("Something failed");
-    expect(screen.getByRole("button", { name: "Dismiss notice" })).toHaveClass(
-      "size-11",
-      "[@media(pointer:coarse)]:!size-11"
-    );
+    // Signal surface: kind icon, text, close (coarse-pointer size lives in CSS).
+    expect(screen.getByRole("alert")).toHaveAttribute("data-kind", "error");
+    expect(screen.getByRole("alert").querySelector(".v2-notice-icon use")).toHaveAttribute("href", "#v2-icon-alert");
+    expect(screen.getByRole("button", { name: "Dismiss notice" })).toHaveClass("v2-notice-close");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss notice" }));
 
     expect(onDismiss).toHaveBeenCalledOnce();
@@ -109,16 +109,10 @@ describe("ShellNotice", () => {
       />
     );
 
-    expect(screen.getByRole("link", { name: "https://app.local/s/share" })).toHaveClass("min-h-touch");
-    expect(screen.getByRole("button", { name: "Revoke link" })).toHaveClass(
-      "rounded-control",
-      "text-critical"
-    );
-    expect(screen.getByRole("button", { name: "Copy link" })).toHaveClass(
-      "min-h-touch",
-      "border-trace-subtle",
-      "text-ink"
-    );
+    expect(screen.getByRole("link", { name: "https://app.local/s/share" })).toHaveClass("v2-notice-link");
+    expect(screen.getByRole("button", { name: "Revoke link" })).toHaveAttribute("data-tone", "destructive");
+    expect(screen.getByRole("button", { name: "Copy link" })).toHaveAttribute("data-tone", "ghost");
+    expect(screen.getByRole("status").querySelector(".v2-notice-icon use")).toHaveAttribute("href", "#v2-icon-check");
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
     expect(onCopy).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Revoke link" }));
@@ -142,10 +136,7 @@ describe("ShellNotice", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Retry" })).toHaveClass(
-      "min-h-touch",
-      "[@media(hover:none)]:!min-h-touch"
-    );
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveClass("v2-notice-action", "v2-button");
   });
 
   it("stays readable and blocks click-through without controls while a modal owns focus", () => {
@@ -164,7 +155,7 @@ describe("ShellNotice", () => {
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent("The modal action failed");
-    expect(screen.getByRole("alert")).toHaveClass("pointer-events-auto");
+    expect(screen.getByRole("alert")).toHaveClass("v2-notice");
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.getByText("https://app.local/s/share")).toBeVisible();

@@ -128,6 +128,26 @@ html[data-motion="off"] *::after {
   background: var(--v2-color-accent-dim);
 }
 
+/*
+ * Code highlighting reads the Signal tokens through Shiki's CSS-variables
+ * theme: keywords in the answer-phase violet, functions in the accent, and
+ * everything else on the text scale. The palette still lives only in
+ * tokens-v2.css; these are role aliases, not colors.
+ */
+:root {
+  --shiki-foreground: var(--v2-color-text);
+  --shiki-background: transparent;
+  --shiki-token-constant: var(--v2-color-warn);
+  --shiki-token-string: var(--v2-color-ok);
+  --shiki-token-comment: var(--v2-color-text3);
+  --shiki-token-keyword: var(--v2-color-accent2);
+  --shiki-token-parameter: var(--v2-color-text2);
+  --shiki-token-function: var(--v2-color-accent);
+  --shiki-token-string-expression: var(--v2-color-ok);
+  --shiki-token-punctuation: var(--v2-color-text2);
+  --shiki-token-link: var(--v2-color-accent);
+}
+
 .shiki,
 .shiki span {
   color: var(--shiki-dark);

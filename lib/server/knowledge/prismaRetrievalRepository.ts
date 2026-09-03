@@ -49,6 +49,7 @@ import {
   knowledgeToolResultText
 } from "./toolResult";
 import {
+  assertKnowledgeSearchScopeReady,
   executeKnowledgeRetrievalCore
 } from "./prismaRetrievalCore";
 import { KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS } from "./hierarchicalIndex";
@@ -84,6 +85,10 @@ import {
   createKnowledgePassageBm25Search,
   type KnowledgePassageBm25Search
 } from "./searchRetrieval";
+import {
+  createKnowledgeOpenSearchTransport,
+  type AiqsaOpenSearchTransport
+} from "../search/opensearch/transport";
 
 type RetrievalPrisma = Pick<
   PrismaClient,
@@ -447,12 +452,34 @@ export function createPrismaKnowledgeParentContextLoader(
 
 export function createPrismaKnowledgeRetrievalStore(
   client: RetrievalPrisma,
-  lexicalSearch: KnowledgePassageBm25Search = createKnowledgePassageBm25Search()
+  lexicalSearch?: KnowledgePassageBm25Search,
+  searchTransport: AiqsaOpenSearchTransport = createKnowledgeOpenSearchTransport()
 ): KnowledgeRetrievalStore {
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
   const parentContextLoader = createPrismaKnowledgeParentContextLoader(client);
   const retrievalCoreClient = boundedRetrievalCoreClient(client);
+  const passageBm25Search = lexicalSearch ?? createKnowledgePassageBm25Search(searchTransport);
   return {
+    async assertSearchReady(input): Promise<void> {
+      const scopes = await assertKnowledgeSearchScopeReady(retrievalCoreClient, {
+        ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+        runId: input.runId,
+        ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+        userId: input.userId
+      });
+      const expected = [...input.bindings].sort((left, right) => left.ordinal - right.ordinal);
+      if (scopes.length !== expected.length || scopes.some((scope, index) => {
+        const binding = expected[index];
+        return !binding || scope.bindingOrdinal !== binding.ordinal ||
+          scope.knowledgeBaseId !== binding.knowledgeBaseId ||
+          scope.indexGenerationId !== binding.indexGenerationId ||
+          scope.targetDimension !== binding.targetDimension ||
+          scope.baseName !== binding.baseName;
+      })) {
+        throw new Error("knowledge_retrieval_scope_invalid");
+      }
+      await searchTransport.checkKnowledgeIndex();
+    },
     async budgetState(input): Promise<KnowledgeBudgetState | null> {
       const expectedToolNames = Prisma.sql`ARRAY[${Prisma.join(
         operationToolNames[input.operation]
@@ -572,7 +599,7 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
         excludedContentHashes: input.excludedContentHashes,
-        lexicalSearch,
+        lexicalSearch: passageBm25Search,
         // FR-14/FR-15: child-to-parent expansion applies only to automatic
         // search results; bounded exact reads and metadata discovery never
         // expand, and receipt replay short-circuits before this call.
@@ -1261,7 +1288,7 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(receipt.failureCode ? { failureCode: receipt.failureCode } : {}),
         fusion: receipt.fusion,
         invocationOrdinal: receipt.invocationOrdinal,
-        ...(receipt.operation === "automatic_search"
+        ...(receipt.operation === "automatic_search" && receipt.lexicalBackendEvidence !== null
           ? { lexicalBackend: receipt.lexicalBackendEvidence }
           : {}),
         operation: receipt.operation,
@@ -1861,6 +1888,10 @@ export function createPrismaKnowledgeRetrievalStore(
       if (input.evidence.version !== KNOWLEDGE_RESULT_VERSION) {
         throw new Error("knowledge_legacy_receipt_write_forbidden");
       }
+      if (input.evidence.outcome === "search_unavailable" &&
+        decodeKnowledgeRetrievalEvidence(input.evidence) === null) {
+        throw new Error("knowledge_search_unavailable_receipt_unsafe");
+      }
       if (input.evidence.outcome === "zero_above_threshold") {
         throw new Error("knowledge_legacy_outcome_write_forbidden");
       }
@@ -2203,7 +2234,8 @@ export function createPrismaKnowledgeRetrievalStore(
             fusion: evidence.fusion,
             id: knowledgeRunId,
             invocationOrdinal: evidence.invocationOrdinal,
-            lexicalBackendEvidence: evidence.operation === "automatic_search"
+            lexicalBackendEvidence: evidence.operation === "automatic_search" &&
+              evidence.lexicalBackend
               ? json(evidence.lexicalBackend)
               : Prisma.DbNull,
             modelRunId: input.runId,

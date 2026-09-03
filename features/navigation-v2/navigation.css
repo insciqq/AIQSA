@@ -1,15 +1,32 @@
+/* Shell grid (PRD §4.1): rail | list | content. Collapse and the Library
+   section hide only the list column; the rail stays. */
 .v2-workspace-shell {
   display: grid;
   min-width: 0;
   min-height: 100dvh;
-  grid-template-columns: var(--v2-sidebar-width) minmax(0, 1fr);
+  grid-template-columns: 3.5rem var(--v2-sidebar-width) minmax(0, 1fr);
   color: var(--v2-color-text);
   background: var(--v2-color-canvas);
   transition: grid-template-columns var(--v2-motion-base);
 }
 
-.v2-workspace-shell[data-sidebar-collapsed="true"] {
-  grid-template-columns: 0 minmax(0, 1fr);
+.v2-workspace-shell[data-sidebar-collapsed="true"],
+.v2-workspace-shell[data-shell-section="library"] {
+  grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+}
+
+/* Explicit placement: a fixed-position drawer or scrim must not shift the
+   content column into the list's (zero-width) track. */
+.v2-workspace-shell > .v2-rail {
+  grid-column: 1;
+}
+
+.v2-workspace-shell > .v2-navigation {
+  grid-column: 2;
+}
+
+.v2-workspace-shell > .v2-workspace-content {
+  grid-column: 3;
 }
 
 .v2-workspace-content {
@@ -35,7 +52,35 @@
     transform var(--v2-motion-base);
 }
 
-.v2-workspace-shell[data-sidebar-collapsed="true"] .v2-navigation {
+.v2-navigation-skip {
+  position: absolute;
+  z-index: 80;
+  top: max(0.5rem, env(safe-area-inset-top));
+  left: max(0.5rem, env(safe-area-inset-left));
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--v2-color-accent);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-float);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  translate: 0 calc(-100% - 1rem);
+}
+
+.v2-navigation-skip:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  translate: 0;
+}
+
+.v2-workspace-shell[data-sidebar-collapsed="true"] .v2-navigation,
+.v2-workspace-shell[data-shell-section="library"] .v2-navigation {
   pointer-events: none;
   visibility: hidden;
   opacity: 0;
@@ -48,6 +93,8 @@
   padding: 0.875rem 0.75rem 0.5rem;
 }
 
+/* Column head: "Chats" + the hide-list control on desktop/compact; the mobile
+   drawer shows the wordmark and a close cross instead (PRD §4.2 / §4.8). */
 .v2-navigation-brand {
   display: flex;
   min-height: 2rem;
@@ -56,42 +103,75 @@
   gap: 0.5rem;
 }
 
+.v2-navigation-column-title {
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
 .v2-navigation-wordmark {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 0.5625rem;
-  color: var(--v2-color-text2);
+  color: var(--v2-color-text);
   font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.04em;
 }
 
+.v2-navigation-close {
+  color: var(--v2-color-text2);
+}
+
+.v2-navigation-close > .v2-icon:last-child {
+  display: none;
+}
+
+/* Bubble-Q brand mark: the chat bubble drawn as a Q, always in the accent. */
 .v2-navigation-mark {
   display: grid;
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.375rem;
+  height: 1.375rem;
   place-items: center;
-  border: 1px solid var(--v2-color-border2);
-  border-radius: 50%;
   color: var(--v2-color-accent);
-  font-size: 0.625rem;
+}
+
+.v2-navigation-mark > .v2-icon {
+  width: 1.375rem;
+  height: 1.375rem;
+  stroke-width: 2;
 }
 
 /*
  * The New-chat split control is a quiet row per the prototype: no border box,
  * hover wash only, with the mode chevron kept as the split affordance.
  */
+/* New chat (PRD §4.2): one bordered split control on the surface — the
+   accent plus on the left, the mode chevron behind a hairline on the right. */
 .v2-new-chat-wrap {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 1.875rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface);
+}
+
+/* No overflow clipping on the wrap (it would swallow the mode menu, UX audit
+   v2 A1): the two halves round their own outer corners instead. */
+.v2-new-chat-main {
+  border-radius: calc(var(--v2-radius-s) - 1px) 0 0 calc(var(--v2-radius-s) - 1px);
+}
+
+.v2-new-chat-menu-trigger {
+  border-radius: 0 calc(var(--v2-radius-s) - 1px) calc(var(--v2-radius-s) - 1px) 0;
 }
 
 .v2-new-chat-main,
 .v2-new-chat-menu-trigger {
   min-height: 2.125rem;
   border: 0;
-  border-radius: var(--v2-radius-s);
+  border-radius: 0;
   color: var(--v2-color-text);
   background: transparent;
   cursor: pointer;
@@ -101,16 +181,22 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.25rem 0.625rem;
   font: inherit;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
   text-align: left;
+}
+
+.v2-new-chat-main > .v2-icon {
+  color: var(--v2-color-accent);
+  stroke-width: 2;
 }
 
 .v2-new-chat-menu-trigger {
   display: grid;
   place-items: center;
+  border-left: 1px solid var(--v2-color-border);
   color: var(--v2-color-text2);
 }
 
@@ -120,11 +206,7 @@
 }
 
 .v2-new-chat-menu {
-  position: absolute;
-  top: calc(100% + 0.375rem);
-  right: 0;
-  left: 0;
-  z-index: 50;
+  width: 15rem;
 }
 
 /* Sidebar-scoped chat filter: one quiet field, never a global command search. */
@@ -152,7 +234,7 @@
   border-radius: var(--v2-radius-s);
   outline: none;
   color: var(--v2-color-text);
-  background: var(--v2-color-canvas);
+  background: var(--v2-color-surface);
   font: inherit;
   font-size: 0.8125rem;
   appearance: none;
@@ -163,11 +245,12 @@
 }
 
 .v2-navigation-filter input::placeholder {
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
+  opacity: 0.8;
 }
 
 .v2-navigation-filter input:focus-visible {
-  border-color: color-mix(in srgb, var(--v2-color-accent) 55%, var(--v2-color-border2));
+  border-color: var(--v2-color-accent);
 }
 
 .v2-navigation-filter-clear {
@@ -250,14 +333,14 @@
   margin-top: 0.75rem;
 }
 
+/* Section labels are sentence case, 12px/500, text3 — no caps, no tracking. */
 .v2-navigation-group-label {
   padding: 0.25rem 0.5rem;
   color: var(--v2-color-text3);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  letter-spacing: 0.065em;
-  line-height: 1.2;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  line-height: 1.3;
 }
 
 /* A group header that also hosts its one creation action (Folders "+"),
@@ -279,26 +362,35 @@
 .v2-folder-row {
   position: relative;
   display: flex;
-  min-height: 2.25rem;
+  min-height: 2.125rem;
   align-items: center;
   gap: 0.375rem;
   padding: 0 0.375rem;
 }
 
-/* Nested rows hang from a guide line instead of stepping an ever-wider
-   indent (UX audit F10). */
+/* Folder rows keep the chat-row pitch: a folder group adds no section gap
+   of its own (UX audit 2026-09-02 B5). */
+.v2-navigation-group[data-folder-id] {
+  margin-top: 0.125rem;
+}
+
+.v2-folder-children .v2-navigation-group[data-folder-id] {
+  margin-top: 0;
+}
+
+/* One nesting step (24px) without a guide line: a folder's chats and
+   subfolders start where the folder's own name starts, so nested chat
+   titles and nested folder names share one edge (PRD §4.2, B5). */
 .v2-folder-children {
   display: grid;
   gap: 0.125rem;
-  margin-left: 0.9375rem;
-  padding-left: 0.375rem;
-  border-left: 1px solid var(--v2-color-border);
+  margin-left: 1.5rem;
 }
 
 .v2-folder-menu-trigger {
   width: 1.875rem;
   height: 1.875rem;
-  opacity: 0;
+  opacity: 0.55;
 }
 
 .v2-folder-row:hover .v2-folder-menu-trigger,
@@ -308,20 +400,9 @@
 }
 
 .v2-folder-menu {
-  position: absolute;
-  z-index: 45;
-  top: 2rem;
-  right: 0.25rem;
   width: 14rem;
 }
 
-.v2-chat-move-options {
-  max-height: 11rem;
-  margin: 0.25rem 0;
-  padding: 0.25rem 0 0.25rem 0.5rem;
-  border-left: 1px solid var(--v2-color-border2);
-  overflow-y: auto;
-}
 
 .v2-chat-rename,
 .v2-folder-rename,
@@ -365,9 +446,13 @@
   color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: 0.84375rem;
   text-align: left;
   cursor: pointer;
+}
+
+.v2-folder-toggle > .v2-icon {
+  color: var(--v2-color-text3);
 }
 
 .v2-folder-toggle:hover {
@@ -380,29 +465,52 @@
   min-width: 0;
 }
 
-/* Chat rows: 14px at a 36px row height (UX audit F10). */
+/* Chat rows (PRD §4.2): 34px, 13.5px/400; the active row is 500 on the
+   `active` wash with a 3px accent bar at the column's edge. */
 .v2-chat-row {
+  position: relative;
   display: grid;
   width: 100%;
-  min-height: 2.25rem;
+  min-height: 2.125rem;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.4375rem;
-  padding: 0.3125rem 2rem 0.3125rem 0.5rem;
+  padding: 0.25rem 2rem 0.25rem 0.5rem;
   border: 0;
   border-radius: var(--v2-radius-s);
   color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: 0.84375rem;
+  font-weight: 400;
   text-align: left;
   cursor: pointer;
 }
 
-.v2-chat-row:hover,
+.v2-chat-row > span:first-child:empty {
+  display: none;
+}
+
+.v2-chat-row:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
 .v2-chat-row[data-selected="true"] {
   color: var(--v2-color-text);
+  font-weight: 500;
   background: var(--v2-color-active);
+}
+
+.v2-chat-row[data-selected="true"]::before {
+  position: absolute;
+  top: 0.4375rem;
+  bottom: 0.4375rem;
+  left: -0.5rem;
+  width: 0.1875rem;
+  border-radius: 0 2px 2px 0;
+  background: var(--v2-color-accent);
+  content: "";
 }
 
 .v2-chat-title {
@@ -412,12 +520,15 @@
   white-space: nowrap;
 }
 
+/* Live chat: the accent dot glows (the only glow in the sidebar). */
 .v2-chat-pulse {
   width: 0.4375rem;
   height: 0.4375rem;
   border-radius: 50%;
   background: var(--v2-color-accent);
-  box-shadow: 0 0 0 0 var(--v2-color-accent-dim);
+  box-shadow:
+    0 0 0.375rem var(--v2-color-accent),
+    0 0 0 0 var(--v2-color-accent-dim);
   animation: v2-navigation-pulse 1.8s ease-out infinite;
 }
 
@@ -427,7 +538,7 @@
   right: 0.1875rem;
   width: 1.875rem;
   height: 1.875rem;
-  opacity: 0;
+  opacity: 0.55;
 }
 
 .v2-chat-row-wrap:hover .v2-chat-menu-trigger,
@@ -437,18 +548,19 @@
 }
 
 .v2-chat-menu {
-  position: absolute;
-  top: 2rem;
-  right: 0.25rem;
-  z-index: 40;
-  width: 13.5rem;
+  width: 15rem;
 }
 
+/* Drawer footer (mobile only): the rail destinations and the account entry. */
 .v2-navigation-footer {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.125rem;
   padding: 0.625rem 0.75rem max(0.75rem, env(safe-area-inset-bottom));
   border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-navigation-destination {
+  text-decoration: none;
 }
 
 .v2-navigation-destination {
@@ -532,7 +644,7 @@
 .v2-sidebar-floats {
   position: fixed;
   top: env(safe-area-inset-top);
-  left: max(0.75rem, env(safe-area-inset-left));
+  left: calc(3.5rem + max(0.75rem, env(safe-area-inset-left)));
   z-index: 25;
   display: flex;
   height: var(--v2-header-height);
@@ -543,9 +655,34 @@
   transition: opacity var(--v2-motion-fast);
 }
 
+/* "Show list" and "New chat" split by a hairline (PRD §4.1). */
+.v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+  position: relative;
+  margin-left: 0.25rem;
+}
+
+.v2-sidebar-floats > .v2-icon-button + .v2-icon-button::before {
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: -0.25rem;
+  width: 1px;
+  background: var(--v2-color-border);
+  content: "";
+}
+
 .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-sidebar-floats {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* The Library section has no chat list to reveal: no floats beside the rail
+   (the extra attribute outranks the compact-collapsed rule below). */
+@media (min-width: 768px) {
+  .v2-workspace-shell[data-shell-section="library"][data-sidebar-composition] .v2-sidebar-floats {
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 
 .v2-navigation-scrim {
@@ -596,13 +733,40 @@
 @keyframes v2-navigation-pulse {
   70%,
   100% {
-    box-shadow: 0 0 0 0.375rem transparent;
+    box-shadow:
+      0 0 0.375rem var(--v2-color-accent),
+      0 0 0 0.375rem transparent;
   }
 }
 
-@media (min-width: 900px) and (max-width: 1023px) {
+@media (min-width: 768px) and (max-width: 1023px) {
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) {
-    grid-template-columns: 0 minmax(0, 1fr);
+    grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+  }
+
+  /* Expanded compact list is a drawer beside the rail with a scrim. */
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] {
+    grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+  }
+
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 3.5rem;
+    z-index: 30;
+    box-shadow: var(--v2-shadow-overlay);
+  }
+
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation-scrim {
+    position: fixed;
+    z-index: 29;
+    inset: 0 0 0 3.5rem;
+    display: block;
+    border: 0;
+    background: var(--v2-color-scrim);
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-navigation {
@@ -618,10 +782,81 @@
   }
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   .v2-workspace-shell,
-  .v2-workspace-shell[data-sidebar-collapsed="true"] {
+  .v2-workspace-shell[data-sidebar-collapsed="true"],
+  .v2-workspace-shell[data-shell-section="library"] {
     display: block;
+  }
+
+  /* No rail below 768px; the drawer footer carries its destinations. */
+  .v2-workspace-shell > .v2-rail {
+    display: none;
+  }
+
+  .v2-navigation-wordmark {
+    display: inline-flex;
+  }
+
+  .v2-navigation-column-title {
+    display: none;
+  }
+
+  .v2-navigation-close > .v2-icon:first-child {
+    display: none;
+  }
+
+  .v2-navigation-close > .v2-icon:last-child {
+    display: block;
+  }
+
+  /* The Library section still offers the drawer through the menu island. */
+  .v2-workspace-shell[data-shell-section="library"][data-mobile-sidebar="true"] .v2-navigation {
+    pointer-events: auto;
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  /* Islands (PRD §4.8): the menu island and, on the blank chat, "+". */
+  .v2-sidebar-floats {
+    top: max(0.625rem, env(safe-area-inset-top));
+    left: max(0.75rem, env(safe-area-inset-left));
+    height: auto;
+    gap: 0.5rem;
+  }
+
+  .v2-sidebar-floats > .v2-icon-button {
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--v2-color-border2);
+    border-radius: 50%;
+    color: var(--v2-color-text);
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: var(--v2-shadow-float);
+  }
+
+  /* "New chat" is the right-hand island (ChatGPT/LibreChat placement); with
+     an open chat it sits left of the "⋯" island. Temporary chats hand the
+     right edge to their indicator, and the Library has no chat to start. */
+  .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+    position: fixed;
+    top: max(0.625rem, env(safe-area-inset-top));
+    right: max(0.75rem, env(safe-area-inset-right));
+    margin-left: 0;
+  }
+
+  .v2-sidebar-floats > .v2-icon-button + .v2-icon-button::before {
+    content: none;
+  }
+
+  .v2-workspace-shell[data-chat-active="true"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+    right: calc(max(0.75rem, env(safe-area-inset-right)) + 3rem);
+  }
+
+  .v2-workspace-shell:has(.v2-live-temporary) .v2-sidebar-floats > .v2-icon-button + .v2-icon-button,
+  .v2-workspace-shell[data-shell-section="library"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+    display: none;
   }
 
   .v2-navigation,
@@ -653,7 +888,7 @@
     inset: 0;
     display: block;
     border: 0;
-    background: color-mix(in srgb, var(--v2-color-canvas) 38%, transparent);
+    background: var(--v2-color-scrim);
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--v2-motion-base);
@@ -680,16 +915,16 @@
   .v2-navigation-destination,
   .v2-navigation-load-more,
   .v2-navigation-retry {
-    min-height: 2.5rem;
+    min-height: 2.75rem;
   }
 
   .v2-new-chat-wrap {
-    grid-template-columns: minmax(0, 1fr) 2.5rem;
+    grid-template-columns: minmax(0, 1fr) 2.75rem;
   }
 
   .v2-chat-menu-trigger {
-    width: 2.5rem;
-    height: 2.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
   }
 
   .v2-chat-menu-trigger {
@@ -699,9 +934,13 @@
   }
 
   .v2-folder-menu-trigger {
-    width: 2.5rem;
-    height: 2.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
     opacity: 1;
+  }
+
+  .v2-chat-row {
+    padding-right: 3rem;
   }
 }
 
@@ -722,5 +961,208 @@ html[data-motion="off"] .v2-chat-pulse {
   .v2-chat-pulse {
     animation: none;
     transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Icon rail (PRD §4.1): 56px, the mark on top, destinations, account.    */
+/* ---------------------------------------------------------------------- */
+.v2-rail {
+  position: relative;
+  z-index: 31;
+  display: flex;
+  width: 3.5rem;
+  min-height: 100dvh;
+  max-height: 100dvh;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 0 max(0.75rem, env(safe-area-inset-bottom));
+  border-right: 1px solid var(--v2-color-border);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-rail);
+}
+
+.v2-rail-brand {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  margin-bottom: 0.5rem;
+  color: var(--v2-color-accent);
+}
+
+.v2-rail-brand > .v2-icon {
+  width: 1.375rem;
+  height: 1.375rem;
+  stroke-width: 2;
+}
+
+.v2-rail-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.v2-rail-bottom {
+  margin-top: auto;
+}
+
+.v2-rail-button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0.625rem;
+  color: var(--v2-color-text2);
+  background: transparent;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    color var(--v2-motion-fast),
+    background-color var(--v2-motion-fast);
+}
+
+.v2-rail-button > .v2-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.v2-rail-button:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
+.v2-rail-button[aria-current="page"] {
+  color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+}
+
+/* The rail's account entry is the avatar only; its menu opens upward. */
+.v2-rail .v2-navigation-account {
+  margin-top: 0.25rem;
+}
+
+.v2-rail .v2-navigation-account-trigger {
+  width: 2.5rem;
+  min-height: 2.5rem;
+  justify-content: center;
+  padding: 0;
+  border-radius: 0.625rem;
+}
+
+.v2-rail .v2-navigation-account-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.625rem;
+}
+
+.v2-rail .v2-navigation-account-menu {
+  right: auto;
+  bottom: 0;
+  left: calc(100% + 0.5rem);
+  width: 13rem;
+}
+
+/* Who is signed in: a caption above the account menu's actions. */
+.v2-navigation-account-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  padding: 0.375rem 0.625rem 0.5rem;
+  border-bottom: 1px solid var(--v2-color-border);
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+}
+
+.v2-navigation-account-identity > .v2-navigation-account-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  font-size: 0.5625rem;
+}
+
+.v2-navigation-account-identity > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Drawer footer destinations in one row (UX audit 2026-09-02 #15). */
+.v2-navigation-destinations {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.v2-navigation-destinations > .v2-navigation-destination {
+  min-height: 3.25rem;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.375rem 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-align: center;
+}
+
+.v2-navigation-destinations > .v2-navigation-destination > .v2-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+/* Projects landing (rail/drawer destination, UX audit 2026-09-02 #10): the
+   column holds only the Projects block under a return row. */
+.v2-navigation-back {
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  padding: 0.375rem 0.5rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-navigation-back:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
+.v2-navigation-back > .v2-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.v2-navigation[data-view="projects"] .v2-project-navigation {
+  padding-top: 0.25rem;
+}
+
+/* Touch (C2): list rows and the mobile islands keep 44px targets. */
+@media (hover: none), (pointer: coarse) {
+  .v2-chat-row,
+  .v2-folder-row,
+  .v2-folder-toggle {
+    min-height: 2.75rem;
+  }
+}
+
+@media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
+  .v2-sidebar-floats > .v2-icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
   }
 }

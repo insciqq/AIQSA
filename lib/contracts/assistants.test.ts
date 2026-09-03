@@ -212,6 +212,17 @@ describe("assistant draft decode", () => {
       ok: true
     });
   });
+
+  it("identifies a structurally invalid run-control field", () => {
+    expect(decodeAssistantDraft({
+      ...validDraft(),
+      runControls: { maxOutputTokens: 0 }
+    })).toEqual({
+      code: "assistant_run_controls_invalid",
+      field: "maxOutputTokens",
+      ok: false
+    });
+  });
 });
 
 function validSummary(): Record<string, unknown> {
@@ -222,6 +233,8 @@ function validSummary(): Record<string, unknown> {
     category: "coding",
     description: "Reviews changes.",
     fingerprint: {
+      knowledgeLabel: "Knowledge · 1",
+      knowledgeResourceCount: 1,
       mcpServerCount: 2,
       modelLabel: "Claude Sonnet",
       reasoningEffort: "high",
@@ -250,6 +263,72 @@ describe("assistant wire decoders", () => {
         viewer: { canPublishInstallation: false }
       })
     ).not.toBeNull();
+  });
+
+  it("decodes bounded availability dependencies", () => {
+    expect(decodeAssistantSummary({
+      ...validSummary(),
+      owned: true,
+      availability: {
+        dependencies: [
+          { kind: "mcp", name: "GitHub" },
+          { kind: "model", name: "GPT-5" }
+        ],
+        ok: false,
+        reason: "tools_access"
+      }
+    })?.availability).toEqual({
+      dependencies: [
+        { kind: "mcp", name: "GitHub" },
+        { kind: "model", name: "GPT-5" }
+      ],
+      ok: false,
+      reason: "tools_access"
+    });
+    expect(decodeAssistantSummary({
+      ...validSummary(),
+      availability: {
+        dependencies: [{ kind: "mcp", name: "" }],
+        ok: false,
+        reason: "tools_access"
+      }
+    })).toBeNull();
+    expect(decodeAssistantSummary({
+      ...validSummary(),
+      availability: {
+        dependencies: [{ kind: "mcp", name: "Private server" }],
+        ok: false,
+        reason: "tools_access"
+      },
+      owned: false
+    })).toBeNull();
+  });
+
+  it("accepts the full supported model display-name length in owner availability", () => {
+    const modelName = "M".repeat(160);
+
+    expect(decodeAssistantSummary({
+      ...validSummary(),
+      availability: {
+        dependencies: [{ kind: "model", name: modelName }],
+        ok: false,
+        reason: "model_access"
+      },
+      owned: true
+    })?.availability).toEqual({
+      dependencies: [{ kind: "model", name: modelName }],
+      ok: false,
+      reason: "model_access"
+    });
+    expect(decodeAssistantSummary({
+      ...validSummary(),
+      availability: {
+        dependencies: [{ kind: "model", name: `${modelName}M` }],
+        ok: false,
+        reason: "model_access"
+      },
+      owned: true
+    })).toBeNull();
   });
 
   it("fails closed on malformed availability, scope, and fingerprint", () => {

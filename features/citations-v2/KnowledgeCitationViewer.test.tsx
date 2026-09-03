@@ -38,6 +38,7 @@ function citation() {
     excerptTruncated: false,
     handle: "K1",
     headingPath: ["Policy", "Limits"],
+    libraryAvailable: true,
     locator: {
       boundingBoxes: [{
         bottom: 120,
@@ -184,16 +185,17 @@ describe("Knowledge citation viewer", () => {
         </p>
       </KnowledgeCitationViewerProvider>
     );
-    const trigger = screen.getByRole("button", { name: "Open source K1" });
+    const trigger = screen.getByRole("button", { name: "Open document K1" });
     act(() => trigger.focus());
     const preview = await screen.findByRole("tooltip");
-    expect(preview).toHaveTextContent("Engineering handbook · Page 18 · version 1");
+    expect(preview).toHaveTextContent("Engineering handbook · Page 18");
+    expect(preview).not.toHaveTextContent("version 1");
     expect(preview).toHaveTextContent("Earlier accepted version");
     expect(preview).toHaveTextContent("Maximum file size: 25 MB.");
     expect(trigger).toHaveAttribute("aria-describedby", "knowledge-citation-preview");
 
     fireEvent.click(trigger);
-    const rail = await screen.findByRole("dialog", { name: "Knowledge source viewer" });
+    const rail = await screen.findByRole("dialog", { name: "Knowledge document viewer" });
     expect(rail).toHaveClass("w-full", "sm:max-w-[44rem]");
     expect(screen.getByText("Earlier accepted version · Removed from this base after the answer")).toBeVisible();
     expect(screen.getByRole("cell", { name: "25 MB" })).toBeVisible();
@@ -210,9 +212,9 @@ describe("Knowledge citation viewer", () => {
       expect.objectContaining({ method: "GET" })
     );
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Close source viewer" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close document viewer" })).toHaveFocus());
     fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Knowledge source viewer" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Knowledge document viewer" })).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
   });
 
@@ -230,13 +232,41 @@ describe("Knowledge citation viewer", () => {
       </KnowledgeCitationViewerProvider>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
     expect(await screen.findByText(/Original page preview is unavailable/u)).toBeVisible();
     expect(screen.queryByText(/Stored highlight coordinates/u)).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /Highlighted regions on page/u })).not.toBeInTheDocument();
   });
 
-  it("falls back to the exact PDF page when highlighted rendering is unavailable", async () => {
+  it("opens an available citation in the canonical Library document", async () => {
+    const onOpenLibrarySource = vi.fn();
+    shellFetch.mockImplementation(async (input: RequestInfo | URL) =>
+      String(input).endsWith("?asset=library")
+        ? jsonResponse({ sourceId: "source-1" })
+        : jsonResponse({ citation: citation() }));
+    render(
+      <KnowledgeCitationViewerProvider onOpenLibrarySource={onOpenLibrarySource}>
+        <KnowledgeCitationControl reference={{
+          handle: "K1",
+          messageId: "message-1",
+          runId: "run-1"
+        }} />
+      </KnowledgeCitationViewerProvider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open in Library" }));
+
+    await waitFor(() => expect(onOpenLibrarySource).toHaveBeenCalledWith("source-1"));
+    expect(shellFetch).toHaveBeenCalledWith(
+      "/api/runs/run-1/messages/message-1/citations/K1?asset=library",
+      expect.objectContaining({ method: "GET" })
+    );
+    expect(screen.queryByRole("dialog", { name: "Knowledge document viewer" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("fails closed without framing the private PDF when page rendering is unavailable", async () => {
     shellFetch.mockImplementation(async () => jsonResponse({ citation: citation() }));
     render(
       <KnowledgeCitationViewerProvider>
@@ -247,13 +277,16 @@ describe("Knowledge citation viewer", () => {
         }} />
       </KnowledgeCitationViewerProvider>
     );
-    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
     const highlighted = await screen.findByRole("img", {
       name: "Highlighted cited area on page 18"
     });
     fireEvent.error(highlighted);
-    expect(await screen.findByTitle("policy.pdf, page 18")).toHaveAttribute(
-      "src",
+    expect(await screen.findByText("Page preview is unavailable. Open the original to inspect this page."))
+      .toBeVisible();
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open page 18" })).toHaveAttribute(
+      "href",
       "/api/runs/run-1/messages/message-1/citations/K1?asset=original#page=18"
     );
   });
@@ -272,10 +305,10 @@ describe("Knowledge citation viewer", () => {
         }} />
       </KnowledgeCitationViewerProvider>
     );
-    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
-    expect((await screen.findAllByText("Source unavailable"))[0]).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
+    expect((await screen.findAllByText("Document unavailable"))[0]).toBeVisible();
     expect(document.body).not.toHaveTextContent("must-not-leak.pdf");
-    fireEvent.click(screen.getByRole("button", { name: "Close source viewer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close document viewer" }));
 
     shellFetch.mockResolvedValueOnce(jsonResponse({
       citation: { handle: "K1", state: "deleted" }
@@ -289,8 +322,8 @@ describe("Knowledge citation viewer", () => {
         }} />
       </KnowledgeCitationViewerProvider>
     );
-    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
-    expect(await screen.findByText("Deleted Knowledge source")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
+    expect(await screen.findByText("Deleted Knowledge document")).toBeVisible();
     expect(document.body).toHaveTextContent("No filename, passage, or locator is retained.");
   });
 
@@ -306,7 +339,7 @@ describe("Knowledge citation viewer", () => {
       </KnowledgeCitationViewerProvider>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
     expect(await screen.findByTestId("knowledge-workbook-evidence")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Summed Revenue over 2 matching rows." })).toBeVisible();
     expect(screen.getByLabelText("Cited workbook ranges")).toHaveTextContent("Sales!B2:B3");
@@ -314,7 +347,7 @@ describe("Knowledge citation viewer", () => {
     expect(screen.getByRole("cell", { name: "300" })).toBeVisible();
     expect(screen.getByRole("cell", { name: /200.*B2\*2/u })).toBeVisible();
     expect(screen.getByText("Cached formula values were used.")).toBeVisible();
-    expect(screen.queryByText("Exact accepted excerpt")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cited passage")).not.toBeInTheDocument();
   });
 
   it("shows the original visual and caption before the bounded generated description", async () => {
@@ -329,7 +362,7 @@ describe("Knowledge citation viewer", () => {
       </KnowledgeCitationViewerProvider>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
     expect(await screen.findByRole("heading", { name: "Original visual evidence" })).toBeVisible();
     expect(screen.getByText("Quarterly revenue by region")).toBeVisible();
     expect(screen.getByRole("img", { name: "Quarterly revenue by region" })).toHaveAttribute(
@@ -337,7 +370,7 @@ describe("Knowledge citation viewer", () => {
       "/api/runs/run-1/messages/message-1/citations/K1?asset=original"
     );
     expect(screen.getByText("North increased while South remained flat.")).toBeVisible();
-    expect(screen.queryByText("Exact accepted excerpt")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cited passage")).not.toBeInTheDocument();
   });
 
   it("uses the same state owner for a Source Library preview", async () => {
@@ -350,11 +383,16 @@ describe("Knowledge citation viewer", () => {
       </KnowledgeCitationViewerProvider>
     );
     fireEvent.click(screen.getByRole("button", { name: "Preview source" }));
-    expect(await screen.findByRole("dialog", { name: "Knowledge source viewer" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "Knowledge document viewer" })).toBeVisible();
     expect(shellFetch).toHaveBeenCalledWith(
       "/api/me/knowledge-sources/source-1/viewer",
       expect.objectContaining({ method: "GET" })
     );
-    expect(screen.getByText("Source Library")).toBeVisible();
+    expect(screen.queryByText("Document library")).toBeNull();
+    expect(screen.getByRole("img", { name: "policy.pdf, page 18" })).toHaveAttribute(
+      "src",
+      "/api/me/knowledge-sources/source-1/viewer?asset=page&page=18"
+    );
+    expect(document.querySelector("iframe")).toBeNull();
   });
 });

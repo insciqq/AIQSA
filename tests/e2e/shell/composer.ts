@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 export function composerRunSummary(page: Page): Locator {
-  return page.locator(".v2-composer-model-trigger");
+  return page.getByTestId("header-model-trigger");
 }
 
 export async function openModelPicker(page: Page): Promise<Locator> {
@@ -32,9 +32,9 @@ export async function selectModel(
 export async function openRunSetup(page: Page): Promise<Locator> {
   const setup = page.getByRole("dialog", { name: "Model parameters" });
   if (await setup.isVisible()) return setup;
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  const capabilities = page.getByRole("menu", { name: "Capabilities" });
-  await capabilities.getByRole("menuitemcheckbox", { name: /Model parameters/ }).click();
+  // Parameters live in the model picker's footer (PRD §4.6).
+  const picker = await openModelPicker(page);
+  await picker.getByTestId("composer-v2-model-parameters").click();
   await expect(setup).toBeVisible();
   return setup;
 }
@@ -64,10 +64,11 @@ export async function chooseSearchStrategy(page: Page, label: string): Promise<v
     return;
   }
 
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  const capabilities = page.getByRole("menu", { name: "Capabilities" });
-  await capabilities.getByRole("menuitemcheckbox", { name: new RegExp(label, "iu") }).click();
-  await capabilities.getByRole("button", { name: "Close" }).click();
+  // The Search chip owns its engine menu; choosing an engine closes it.
+  await page.getByRole("button", { name: /^Choose web search/u }).click();
+  const search = page.getByRole("menu", { name: "Web search" });
+  await search.getByRole("menuitemradio", { name: new RegExp(label, "iu") }).click();
+  await expect(search).toHaveCount(0);
 }
 
 export async function chooseReasoningEffort(page: Page, value: string): Promise<void> {

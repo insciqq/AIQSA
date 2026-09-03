@@ -4,13 +4,16 @@ import {
   UiV2Button,
   UiV2Icon,
   UiV2IconButton,
-  UiV2MenuItem,
-  UiV2MenuSeparator,
-  UiV2MenuSurface
+  UiV2MenuActions,
+  UiV2MenuSurface,
+  UiV2ProviderMark,
+  type UiV2MenuAction,
+  type UiV2MenuSubmenuItem
 } from "@/components/ui-v2";
+import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import { flattenFolderTree } from "@/features/navigation-v2/NavigationV2";
-import { Fragment, useRef, useState, type ReactNode } from "react";
+import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
+import { useRef, useState, type ReactNode } from "react";
 
 export type TemporaryChatHeaderMemoryV2 = Readonly<{
   explanation: string;
@@ -89,27 +92,12 @@ export function TemporaryChatIndicatorV2({ memory }: Readonly<{
     </span>
   );
 }
-export type HeaderOverflowSubmenuItemV2 = Readonly<{
-  depth?: number;
-  label: string;
-  onSelect(): void;
-}>;
+export type HeaderOverflowSubmenuItemV2 = UiV2MenuSubmenuItem;
 
-export type HeaderOverflowActionV2 = Readonly<{
-  disabled?: boolean;
-  label: string;
-  /** Rendered only below 900px via CSS; e.g. Share joins the menu there. */
-  mobileOnly?: boolean;
-  onSelect?(): void;
-  /** Starts a new visual group (UX audit F17). */
-  separatorBefore?: boolean;
-  /** Inline disclosure list (folder picker); scrolls locally when long. */
-  submenu?: readonly HeaderOverflowSubmenuItemV2[];
-  tone?: "destructive";
-}>;
+export type HeaderOverflowActionV2 = UiV2MenuAction;
 
 /**
- * The single header "⋯" menu on every width. Below 900px it is the only route
+ * The single header "⋯" menu on every width. Below 768px it is the only route
  * to the header actions the compact header hides, so it must never be removed
  * without a replacement. Dismissal follows the shared wave-1 contract (Escape,
  * outside pointer, focus-out).
@@ -119,11 +107,7 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
   label: string;
 }>) {
   const [open, setOpen] = useState(false);
-  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
-  const close = () => {
-    setOpen(false);
-    setOpenSubmenu(null);
-  };
+  const close = () => setOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({
     onClose: close,
     open
@@ -138,6 +122,7 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
         data-testid="header-more-trigger"
         icon="more"
         label={label}
+        tooltip={label}
         onClick={() => (open ? close() : setOpen(true))}
       />
       {open ? (
@@ -147,46 +132,63 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
           label={label}
           ref={menuRef}
         >
-          {actions.map((action) => (
-            <Fragment key={action.label}>
-              {action.separatorBefore ? <UiV2MenuSeparator /> : null}
-              <UiV2MenuItem
-                data-mobile-only={action.mobileOnly ? "" : undefined}
-                disabled={action.disabled}
-                tone={action.tone}
-                {...(action.submenu ? { "aria-expanded": openSubmenu === action.label } : {})}
-                onClick={() => {
-                  if (action.submenu) {
-                    setOpenSubmenu((current) => current === action.label ? null : action.label);
-                    return;
-                  }
-                  close();
-                  action.onSelect?.();
-                }}
-              >
-                {action.label}
-              </UiV2MenuItem>
-              {action.submenu && openSubmenu === action.label ? (
-                <div aria-label={action.label} className="v2-live-more-submenu">
-                  {action.submenu.map((item, index) => (
-                    <UiV2MenuItem
-                      key={`${item.label}-${index}`}
-                      style={{ paddingLeft: `${0.5 + (item.depth ?? 0) * 0.75}rem` }}
-                      onClick={() => {
-                        close();
-                        item.onSelect();
-                      }}
-                    >
-                      {item.label}
-                    </UiV2MenuItem>
-                  ))}
-                </div>
-              ) : null}
-            </Fragment>
-          ))}
+          <UiV2MenuActions
+            actions={actions}
+            onClose={() => {
+              close();
+              triggerRef.current?.focus();
+            }}
+          />
         </UiV2MenuSurface>
       ) : null}
     </span>
+  );
+}
+
+export type WorkspaceHeaderModelSelectorV2 = Readonly<{
+  /** No catalog yet, no models, or an answer is streaming. */
+  disabled?: boolean;
+  /** Whether the model picker is open (it belongs to the composer's layers). */
+  expanded: boolean;
+  /** Catalog provider family for the monochrome mark; null falls back to a monogram. */
+  family: string | null;
+  /** Monogram source (the provider name) when the family has no mark. */
+  label: string;
+  /** An Assistant governs the model: the trigger shows a lock and cannot open. */
+  locked?: boolean;
+  lockedReason?: string;
+  /** "Claude Opus 5", or "Assistant · model" while locked. */
+  name: string;
+  onToggle(anchor: HTMLButtonElement): void;
+}>;
+
+/**
+ * The model selector of the chat header on every width (LibreChat/Open WebUI
+ * pattern, operator decision 2026-09-02): provider mark, name, chevron. It
+ * only anchors the composer-owned model picker; the picker, its keyboard
+ * contract, search, and Parameters row are unchanged. On phones it is the
+ * centre island between the menu and the action islands.
+ */
+export function HeaderModelSelectorV2({ selector }: Readonly<{
+  selector: WorkspaceHeaderModelSelectorV2;
+}>) {
+  const locked = Boolean(selector.locked);
+  return (
+    <button
+      aria-expanded={selector.expanded}
+      aria-haspopup="dialog"
+      className="v2-live-model v2-focusable"
+      data-locked={locked || undefined}
+      data-testid="header-model-trigger"
+      disabled={selector.disabled || locked}
+      title={locked ? selector.lockedReason ?? "Managed by the Assistant" : "Choose model"}
+      type="button"
+      onClick={(event) => selector.onToggle(event.currentTarget)}
+    >
+      <UiV2ProviderMark family={selector.family} label={selector.label} />
+      <span className="v2-live-model-name">{selector.name}</span>
+      <UiV2Icon name={locked ? "lock" : "chevron-down"} />
+    </button>
   );
 }
 
@@ -199,17 +201,24 @@ export type WorkspaceHeaderFolderV2 = Readonly<{
 export function WorkspaceHeaderV2({
   active,
   archiveDisabled = false,
+  crumb = null,
   deleteDisabled = false,
   editingTitle = null,
+  favorite = false,
   folders = [],
   leadingSlot = null,
+  memoryUsed = null,
+  modelSelector = null,
   moveDisabled = false,
+  moveRootLabel,
   onArchive,
   onBranches,
   onCopyLink = null,
   onCopyThread,
   onDelete = null,
   onExport,
+  onFavorite = null,
+  onMemoryMode = null,
   onMove,
   renameDisabled = false,
   onRenameCancel,
@@ -223,17 +232,33 @@ export function WorkspaceHeaderV2({
 }: Readonly<{
   active: boolean;
   archiveDisabled?: boolean;
+  /**
+   * Folder path shown before the title, only while the chat lives in a
+   * folder ("Workspace 1 / Project 7"); date groups never produce a crumb.
+   */
+  crumb?: string | null;
   deleteDisabled?: boolean;
   /** Non-null while the header title is being renamed inline. */
   editingTitle?: string | null;
+  /** Current Favorite state; shown as a checked menu item when `onFavorite` exists. */
+  favorite?: boolean;
   folders?: readonly WorkspaceHeaderFolderV2[];
+  /** Whether Memory reads this chat; null hides the Memory item. */
+  memoryUsed?: boolean | null;
   /**
    * Context rendered before the title inside the same island (the shared
    * Project chip). The island also shows while no chat is active when this
    * slot renders something.
    */
   leadingSlot?: ReactNode;
+  /**
+   * The header model selector; rendered before the title on every width and
+   * on the blank chat too, where it is the only header content.
+   */
+  modelSelector?: WorkspaceHeaderModelSelectorV2 | null;
   moveDisabled?: boolean;
+  /** Project chats call the top-level Move to… destination "Project root". */
+  moveRootLabel?: string;
   onArchive(): void;
   onBranches(): void;
   onCopyLink?: (() => void) | null;
@@ -241,7 +266,10 @@ export function WorkspaceHeaderV2({
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
   onExport(format: "json" | "markdown"): void;
-  onMove(folderId: string | null): void;
+  onFavorite?: (() => void) | null;
+  onMemoryMode?: ((mode: "EXCLUDED" | "NORMAL") => void) | null;
+  /** Null hides Move to… when the current authority cannot move this chat. */
+  onMove?: ((folderId: string | null) => void) | null;
   renameDisabled?: boolean;
   onRenameCancel(): void;
   onRenameChange(value: string): void;
@@ -252,38 +280,38 @@ export function WorkspaceHeaderV2({
   temporaryMemory: TemporaryChatHeaderMemoryV2 | null;
   title: string;
 }>) {
+  const displayTitle = chatTitleForDisplay(title);
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
-  // 900px, where the Share text button collapses. The menu reads in three
-  // groups (UX audit F17): the chat itself · its content · destructive last.
-  const overflowActions: HeaderOverflowActionV2[] = [
-    { disabled: shareDisabled, label: "Share", mobileOnly: true, onSelect: onShare },
-    { disabled: renameDisabled, label: "Rename", onSelect: onRenameStart },
-    {
-      disabled: moveDisabled,
-      label: "Move to…",
-      submenu: [
-        { label: "No folder", onSelect: () => onMove(null) },
-        ...flattenFolderTree(folders).map(({ depth, folder }) => ({
-          depth,
-          label: folder.name,
-          onSelect: () => onMove(folder.id)
-        }))
-      ]
-    },
-    { label: "Branches", onSelect: onBranches, separatorBefore: true },
-    { label: "Export", onSelect: () => onExport("markdown") },
-    { label: "Export as JSON", onSelect: () => onExport("json") },
-    { label: "Copy entire thread", onSelect: onCopyThread },
-    ...(onCopyLink ? [{ label: "Copy link to chat", onSelect: onCopyLink }] : []),
-    { disabled: archiveDisabled, label: "Archive", onSelect: onArchive, separatorBefore: true },
-    ...(onDelete
-      ? [{ disabled: deleteDisabled, label: "Delete…", onSelect: onDelete, tone: "destructive" as const }]
-      : [])
-  ];
+  // 768px, where the Share text button collapses. The complete header menu
+  // also owns content-level actions that do not belong in compact row menus.
+  const overflowActions = chatMenuActionsV2({
+    archiveDisabled,
+    deleteDisabled,
+    favorite,
+    folders,
+    memoryUsed: onMemoryMode ? memoryUsed : null,
+    moveDisabled,
+    moveRootLabel,
+    onArchive,
+    onBranches,
+    onCopyLink: onCopyLink ?? undefined,
+    onCopyThread,
+    onDelete: onDelete ?? undefined,
+    onExport,
+    onFavorite: onFavorite ?? undefined,
+    onMemoryMode: onMemoryMode ?? undefined,
+    onMove: onMove ?? undefined,
+    onRename: onRenameStart,
+    onShare,
+    renameDisabled,
+    shareDisabled,
+    surface: "header"
+  });
 
   return (
     <header className="v2-live-header">
+      {modelSelector ? <HeaderModelSelectorV2 selector={modelSelector} /> : null}
       <div className="v2-live-title">
         {leadingSlot}
         {/* The welcome screen keeps a quiet empty header: actions only. */}
@@ -298,7 +326,7 @@ export function WorkspaceHeaderV2({
             >
               <input
                 autoFocus
-                aria-label={`New title: ${title}`}
+                aria-label={`New title: ${displayTitle}`}
                 maxLength={120}
                 value={editingTitle}
                 onChange={(event) => onRenameChange(event.target.value)}
@@ -314,6 +342,12 @@ export function WorkspaceHeaderV2({
             </form>
           ) : (
             <h1>
+              {crumb ? (
+                <span className="v2-live-crumb" data-testid="header-crumb">
+                  {crumb}
+                  <span aria-hidden="true"> / </span>
+                </span>
+              ) : null}
               <button
                 className="v2-live-title-button v2-focusable"
                 data-testid="header-title"
@@ -322,7 +356,7 @@ export function WorkspaceHeaderV2({
                 type="button"
                 onClick={onRenameStart}
               >
-                <span className="v2-live-title-text">{title}</span>
+                <span className="v2-live-title-text">{displayTitle}</span>
                 {/* The pencil states what a click does; it shows on
                     hover/focus and always on coarse pointers. */}
                 {renameDisabled ? null : <UiV2Icon name="edit" />}
@@ -337,7 +371,7 @@ export function WorkspaceHeaderV2({
             F11); the header carries only the chat's own actions. */}
         {active ? (
           <>
-            <UiV2Button disabled={shareDisabled} onClick={onShare}>Share</UiV2Button>
+            <UiV2Button disabled={shareDisabled} icon="share" onClick={onShare}>Share</UiV2Button>
             <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions} />
           </>
         ) : null}

@@ -1,4 +1,5 @@
 import { KNOWLEDGE_PROCESSING_WARNING_CODES } from "../../domain/knowledgeProcessingWarnings";
+import { geometryProvenRepeatedFurniture } from "../../domain/knowledgeFurniture";
 import type {
   ParsedDocument,
   ParsedDocumentAsset,
@@ -56,18 +57,16 @@ function qualityFor(
     for (let page = group.page; page <= group.pageEnd; page += 1) coveredPages.add(page);
   }
 
-  const repeated = new Map<string, Set<number>>();
-  for (const block of usable) {
-    const text = block.text.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
-    if (!text || text.length > 240) continue;
-    const pages = repeated.get(text) ?? new Set<number>();
-    pages.add(block.page);
-    repeated.set(text, pages);
-  }
-  const duplicateBlocks = usable.filter((block) => {
-    const key = block.text.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
-    return (repeated.get(key)?.size ?? 0) >= 2;
-  }).length;
+  const duplicateBlocks = geometryProvenRepeatedFurniture(usable.map((block) => ({
+    boundingBoxes: block.boundingBoxes,
+    id: block.index,
+    order: block.readingOrder,
+    pageEnd: block.pageEnd,
+    pageStart: block.page,
+    table: block.table,
+    text: block.text,
+    type: block.type
+  })), pageCount, true).size;
   const characterCount = usable.reduce((total, block) => total + block.text.length, 0) +
     usableFieldGroups.reduce((total, group) => total + group.cells.reduce((cellTotal, cell) =>
       cellTotal + cell.text.length, 0), 0);
@@ -93,8 +92,7 @@ function qualityFor(
 function canonicalWarnings(
   requested: readonly ParsedDocumentWarningCode[],
   quality: ParsedDocumentQuality,
-  status: ParsedDocument["status"],
-  blocks: readonly ParsedDocumentBlock[]
+  status: ParsedDocument["status"]
 ): readonly ParsedDocumentWarningCode[] {
   const warnings = new Set(requested);
   if (status === "partial") warnings.add("partial_parse");
@@ -110,10 +108,7 @@ function canonicalWarnings(
   if (quality.ocrConfidence !== null && quality.ocrConfidence < 0.65) {
     warnings.add("low_ocr_confidence");
   }
-  if (quality.duplicateFurnitureRatio > 0.3) warnings.add("repeated_header_footer");
-  if (blocks.some((block) => block.type === "table" && !block.table)) {
-    warnings.add("table_extraction_degraded");
-  }
+  if (quality.duplicateFurnitureRatio > 0) warnings.add("repeated_header_footer");
   return Object.freeze(WARNING_ORDER.filter((warning) => warnings.has(warning)));
 }
 
@@ -126,7 +121,7 @@ export function finalizeParsedDocument(input: ParsedDocumentDraft): ParsedDocume
   ].filter(Boolean).join("\n\n");
   const quality = qualityFor(input.blocks, fieldGroups, pageCount, input.ocrConfidence ?? null);
   const languages = input.languages ?? parsedLanguageHints(text);
-  const warnings = canonicalWarnings(input.warnings ?? [], quality, input.status, input.blocks);
+  const warnings = canonicalWarnings(input.warnings ?? [], quality, input.status);
 
   return Object.freeze({
     assets: Object.freeze([...(input.assets ?? [])]),

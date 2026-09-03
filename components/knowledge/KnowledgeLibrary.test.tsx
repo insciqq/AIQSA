@@ -1,5 +1,15 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const viewerMocks = vi.hoisted(() => ({
+  loadKnowledgeSourceViewer: vi.fn().mockRejectedValue(new Error("preview unavailable"))
+}));
+
+vi.mock("@/features/citations-v2/knowledgeCitationApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/features/citations-v2/knowledgeCitationApi")>(),
+  loadKnowledgeSourceViewer: viewerMocks.loadKnowledgeSourceViewer
+}));
+
 import type {
   KnowledgeBaseDetail,
   KnowledgeReadiness,
@@ -13,7 +23,12 @@ import type {
   KnowledgeListView,
   KnowledgeSourceDetailView
 } from "./libraryViewContracts";
-import { KnowledgeLibrary } from "./KnowledgeLibrary";
+import {
+  isKnowledgeSubview,
+  KnowledgeLibrary,
+  knowledgeSubviewChrome,
+  useKnowledgeLibraryExit
+} from "./KnowledgeLibrary";
 
 function readiness(
   state: KnowledgeReadiness["state"] = "ready",
@@ -97,6 +112,7 @@ function source(overrides: Partial<KnowledgeSourceDetail> = {}): KnowledgeSource
     versionNumber: 2
   };
   return {
+    canReprocess: false,
     currentVersion,
     deletionPending: false,
     description: "Canonical product guidance",
@@ -136,7 +152,7 @@ function sourceDetail(overrides: Partial<KnowledgeSourceDetailView> = {}): Knowl
   const value = source();
   return {
     actionId: null,
-    backLabel: "Back to Sources",
+    backLabel: "Back to documents",
     dataError: null,
     dataState: "ready",
     dirty: false,
@@ -176,7 +192,7 @@ function creation(overrides: Partial<KnowledgeCreateView> = {}): KnowledgeCreate
     dirty: false,
     draft: { description: "", files: [], name: "" },
     error: null,
-    maxUploadBytes: 50_000_000,
+    maxUploadBytes: 25_000_000,
     onCancel: vi.fn(),
     onChange: vi.fn(),
     onSave: vi.fn(),
@@ -197,7 +213,7 @@ function detail(overrides: Partial<KnowledgeDetailView> = {}): KnowledgeDetailVi
     dirty: false,
     draft: { description: owner.description, name: owner.name },
     error: null,
-    maxUploadBytes: 50_000_000,
+    maxUploadBytes: 25_000_000,
     onArchiveToggle: vi.fn(),
     onBack: vi.fn(),
     onCancelUpload: vi.fn(),
@@ -246,51 +262,22 @@ function view(overrides: Partial<KnowledgeLibraryView> = {}): KnowledgeLibraryVi
 
 afterEach(() => {
   cleanup();
+  viewerMocks.loadKnowledgeSourceViewer.mockReset().mockRejectedValue(new Error("preview unavailable"));
   vi.useRealTimers();
 });
 
 describe("KnowledgeLibrary", () => {
-  it("shows simple Base readiness, Source count, access, and updated time", () => {
-    const affected = base({
-      sourceCount: 3,
-      readiness: {
-        attentionSources: 1,
-        processingSources: 1,
-        readySources: 1,
-        state: "needs_attention",
-        supportReference: "K-0123456789AB",
-        totalSources: 3
-      }
-    });
-    const { publications: _publications, ...summary } = affected;
-    render(<KnowledgeLibrary view={view({ list: list({ knowledgeBases: [summary] }) })} />);
-
-    const row = screen.getByTestId("knowledge-base-base-1");
-    expect(row).toHaveTextContent("1 ready · 1 processing · 1 needs attention");
-    expect(row).toHaveTextContent("3 Sources");
-    expect(row).toHaveTextContent("Yours");
-    expect(row).toHaveTextContent("Updated");
-    expect(row).not.toHaveTextContent(/embedding|generation|revision|fingerprint|chunk/iu);
-  });
-
-  it("keeps existing Bases available while creation is temporarily unavailable", () => {
-    const listView = list({ canCreate: false });
-    render(<KnowledgeLibrary view={view({ list: listView })} />);
-
-    expect(screen.getByText("Knowledge is temporarily unavailable")).toBeVisible();
-    expect(screen.getByRole("button", { name: "New knowledge base" })).toBeDisabled();
-    fireEvent.click(screen.getByText("Product docs"));
-    expect(listView.onOpenBase).toHaveBeenCalledWith("base-1");
-  });
-
   it("creates from identity and optional files without technical settings", async () => {
     const createView = creation();
     render(<KnowledgeLibrary view={view({ create: createView, task: "create" })} />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Back to Knowledge" })).toHaveFocus());
+    // The crumb and Back control belong to the Library (A14): the content
+    // starts with the sub-view heading.
+    expect(screen.getByRole("heading", { level: 2, name: "New Knowledge base" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Back to Knowledge" })).not.toBeInTheDocument();
     expect(screen.queryByText(/embedding|provider|dimension|fingerprint|revision|generation/iu))
       .not.toBeInTheDocument();
-    expect(screen.getByText(/Up to 50 MB per file/)).toBeVisible();
+    expect(screen.getByText(/Up to 25 MB per file/)).toBeVisible();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Runbooks" } });
     expect(createView.onChange).toHaveBeenCalledWith({ name: "Runbooks" });
 
@@ -315,7 +302,7 @@ describe("KnowledgeLibrary", () => {
     expect(createView.onChange).toHaveBeenCalledWith({ files: [file] });
   });
 
-  it("keeps Source troubleshooting safe and routes recovery through Source details", () => {
+  it("keeps unavailable-document troubleshooting safe and does not promise recovery", () => {
     const affected = source({
       currentVersion: null,
       readiness: {
@@ -335,15 +322,17 @@ describe("KnowledgeLibrary", () => {
       sources: baseSources(affected)
     });
     render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
-    expect(screen.getByText(/Up to 50 MB per file/)).toBeVisible();
+    expect(screen.getByText(/up to 25 MB each/iu)).toBeVisible();
 
-    expect(screen.getByTestId("knowledge-readiness-summary")).toHaveTextContent(/needs attention/iu);
-    expect(screen.getByText(/Support reference K-ABCDEF012345/)).toBeVisible();
-    expect(screen.getByText(/Processing needs attention. Open the Source/)).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Product docs" }).parentElement)
+      .toHaveTextContent("Needs attention · 1 document");
+    expect(screen.getByText("This document is unavailable.")).toBeVisible();
+    expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("Unavailable");
     expect(screen.queryByText(/errorCode|embedding_failed|generation|revision|chunks?/iu))
       .not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Source" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Product guide" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open document" }));
     expect(detailView.onOpenSource).toHaveBeenCalledWith("source-1");
     expect(screen.queryByRole("button", { name: /reprocess/iu })).not.toBeInTheDocument();
   });
@@ -370,14 +359,16 @@ describe("KnowledgeLibrary", () => {
     });
     render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
 
-    expect(screen.getByText("The usable part is searchable")).toBeVisible();
-    expect(screen.getByText("Some pages could not be read")).toBeVisible();
+    expect(screen.getByText("Part of the file could not be read. The rest is searchable."))
+      .toBeVisible();
+    expect(screen.queryByText(/Some pages could not be read/)).not.toBeInTheDocument();
     expect(screen.queryByText(/partial_parse|unreadable_pages|coverage|confidence/iu))
       .not.toBeInTheDocument();
   });
 
-  it("keeps retry and replacement actions on the canonical Source", () => {
+  it("shows Reprocess only when the server projects an actionable recovery", () => {
     const affected = source({
+      canReprocess: true,
       currentVersion: null,
       readiness: {
         state: "needs_attention",
@@ -392,12 +383,81 @@ describe("KnowledgeLibrary", () => {
     });
     render(<KnowledgeLibrary view={view({ sourceDetail: detailView, task: "source-detail" })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry processing" }));
+    expect(screen.getByText("Needs attention", { exact: true })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Reprocess this document" }));
     expect(detailView.onReprocess).toHaveBeenCalledOnce();
 
     const replacement = new File(["replacement"], "guide-new.md", { type: "text/markdown" });
     fireEvent.change(screen.getByLabelText("Replace file"), { target: { files: [replacement] } });
     expect(detailView.onReplace).toHaveBeenCalledWith(replacement);
+  });
+
+  it("keeps a usable current version Ready when its replacement cannot be reprocessed", () => {
+    const unavailableReplacement = source({
+      canReprocess: false,
+      replacement: { state: "needs_attention", supportReference: "K-ABCDEF012345" }
+    });
+    render(<KnowledgeLibrary view={view({
+      sourceDetail: sourceDetail({
+        draft: {
+          description: unavailableReplacement.description,
+          name: unavailableReplacement.name,
+          tags: unavailableReplacement.tags.join(", ")
+        },
+        source: unavailableReplacement
+      }),
+      task: "source-detail"
+    })} />);
+
+    expect(screen.getByText("Ready · replacement unavailable")).toBeVisible();
+    expect(screen.getByText("Replacement unavailable")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reprocess" })).not.toBeInTheDocument();
+  });
+
+  it("labels failed versions unavailable when no retry action can succeed", () => {
+    const currentVersion = {
+      ...source().currentVersion!,
+      readiness: {
+        state: "needs_attention" as const,
+        supportReference: "K-ABCDEF012345",
+        warningCodes: []
+      }
+    };
+    const unavailable = source({
+      canReprocess: false,
+      currentVersion,
+      readiness: currentVersion.readiness,
+      versions: [
+        currentVersion,
+        {
+          ...currentVersion,
+          createdAt: "2026-08-17T10:00:00.000Z",
+          fileName: "product-guide-v1.pdf",
+          isCurrent: false,
+          versionNumber: 1
+        }
+      ]
+    });
+    render(<KnowledgeLibrary view={view({
+      sourceDetail: sourceDetail({
+        draft: {
+          description: unavailable.description,
+          name: unavailable.name,
+          tags: unavailable.tags.join(", ")
+        },
+        source: unavailable
+      }),
+      task: "source-detail"
+    })} />);
+
+    fireEvent.click(screen.getByText("History · 1 earlier version"));
+    const versions = screen.getByRole("list", { name: "Document versions" });
+    const versionRows = within(versions).getAllByRole("listitem");
+    expect(versionRows[0]).toHaveTextContent("Current · product-guide.pdf");
+    expect(versionRows[0]).toHaveTextContent("Unavailable");
+    expect(versionRows[1]).toHaveTextContent("Unavailable");
+    expect(within(versions).queryByText(/Needs attention/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open original" })).not.toBeInTheDocument();
   });
 
   it("uploads, opens, and removes a Source with product-level consequences", () => {
@@ -410,10 +470,11 @@ describe("KnowledgeLibrary", () => {
     fireEvent.drop(screen.getByTestId("knowledge-drop-zone"), { dataTransfer: transfer });
     expect(detailView.onUpload).toHaveBeenCalledWith([first, second]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Source" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     expect(detailView.onOpenSource).toHaveBeenCalledWith("source-1");
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove from base" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Product guide" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from base" }));
     const confirmation = screen.getByRole("dialog", { name: "Remove Product guide from Product docs" });
     expect(confirmation).toHaveTextContent(/future chats/iu);
     expect(confirmation).not.toHaveTextContent(/version|binding|revision/iu);
@@ -503,7 +564,7 @@ describe("KnowledgeLibrary", () => {
     render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
 
     expect(screen.getByText(/Showing 26–26 of 26 matching/)).toBeVisible();
-    fireEvent.change(screen.getByRole("searchbox", { name: "Search Sources in this base" }), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search documents in this base" }), {
       target: { value: "incident" }
     });
     expect(detailView.onSourceQueryChange).toHaveBeenCalledWith("incident");
@@ -525,7 +586,7 @@ describe("KnowledgeLibrary", () => {
 
     expect(screen.getByText("Read-only shared base")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Add Sources")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add documents")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Troubleshooting" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Publication" })).not.toBeInTheDocument();
   });
@@ -536,11 +597,15 @@ describe("KnowledgeLibrary", () => {
       <KnowledgeLibrary view={view({ detail: active, task: "detail" })} />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Move Product docs to Trash" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Product docs" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to Trash" }));
     const trashConfirmation = screen.getByRole("dialog", {
       name: "Move to Trash Product docs"
     });
-    expect(trashConfirmation).toHaveTextContent("Future Chat, Project, and Assistant runs");
+    expect(trashConfirmation).toHaveTextContent("Future chats stop using this base immediately");
+    expect(trashConfirmation).toHaveTextContent(
+      "restore its document memberships and sharing settings"
+    );
     fireEvent.click(within(trashConfirmation).getByRole("button", {
       name: "Confirm move to trash"
     }));
@@ -567,8 +632,9 @@ describe("KnowledgeLibrary", () => {
     const deleteConfirmation = screen.getByRole("dialog", {
       name: "Permanently delete Product docs"
     });
-    expect(deleteConfirmation).toHaveTextContent("Canonical Sources remain available");
-    expect(deleteConfirmation).toHaveTextContent("generic citation handles");
+    expect(deleteConfirmation).toHaveTextContent("reusable documents stay in your Library");
+    expect(deleteConfirmation).toHaveTextContent("Past answers remain unchanged");
+    expect(deleteConfirmation).not.toHaveTextContent(/generic citation handles/iu);
     fireEvent.click(within(deleteConfirmation).getByRole("button", {
       name: "Confirm delete permanently"
     }));
@@ -590,14 +656,14 @@ describe("KnowledgeLibrary", () => {
     });
     render(<KnowledgeLibrary view={view({ sourceDetail: sourceView, task: "source-detail" })} />);
 
-    expect(screen.getByRole("region", { name: "Source Trash actions" }))
+    expect(screen.getByRole("region", { name: "Document Trash actions" }))
       .toHaveTextContent(/Deleted .*purge scheduled/u);
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     expect(sourceView.onRestore).not.toHaveBeenCalled();
     const confirmation = screen.getByRole("dialog", { name: "Restore Product guide" });
-    expect(confirmation).toHaveTextContent("2 Base memberships");
+    expect(confirmation).toHaveTextContent("belongs to 2 bases");
     fireEvent.click(within(confirmation).getByRole("button", {
-      name: "Confirm restore source"
+      name: "Confirm restore document"
     }));
     expect(sourceView.onRestore).toHaveBeenCalledOnce();
   });
@@ -614,10 +680,18 @@ describe("KnowledgeLibrary", () => {
     });
     render(<KnowledgeLibrary view={view({ list: listView })} />);
 
-    expect(screen.getByText(/Sources are reusable files/)).toBeVisible();
+    expect(screen.getByText(/Documents are reusable files/)).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Documents" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "Document filters" }).querySelector("[aria-pressed=\"true\"]"))
+      .toHaveTextContent("All");
+    expect(knowledgeSubviewChrome(view({ list: listView }))).toEqual({
+      backLabel: "Back to Knowledge",
+      key: "sources",
+      label: "Documents"
+    });
     expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("Product guide");
     expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("1 base");
-    fireEvent.change(screen.getByRole("searchbox", { name: "Search Sources" }), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search documents" }), {
       target: { value: "policy" }
     });
     expect(listView.onSourceQueryChange).toHaveBeenCalledWith("policy");
@@ -629,35 +703,123 @@ describe("KnowledgeLibrary", () => {
     const detailView = sourceDetail();
     render(<KnowledgeLibrary view={view({ sourceDetail: detailView, task: "source-detail" })} />);
 
-    expect(screen.getByText("One canonical file identity, reused wherever you add it.")).toBeVisible();
-    expect(screen.getByText("Version history · 2")).toBeVisible();
+    expect(screen.getByText("History · 1 earlier version")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Product guide" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage bases…" }));
 
     fireEvent.click(screen.getByLabelText("Assistant docs"));
     fireEvent.click(screen.getByRole("button", { name: "Add to selected" }));
     expect(detailView.onAddToBases).toHaveBeenCalledWith(["base-2"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Move Source" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move document" }));
     expect(detailView.onMove).toHaveBeenCalledWith("base-1", "base-2");
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove from base" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     const confirmation = screen.getByRole("dialog", { name: "Remove Product guide from Product docs" });
     expect(confirmation).toHaveTextContent("stays in your library and in its other bases");
     fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm remove from base" }));
     expect(detailView.onRemoveFromBase).toHaveBeenCalledWith("base-1");
   });
 
-  it("opens a ready Source in the shared viewer from Source details", () => {
-    const onPreviewSource = vi.fn();
-    render(
-      <KnowledgeLibrary
-        onPreviewSource={onPreviewSource}
-        view={view({ sourceDetail: sourceDetail(), task: "source-detail" })}
-      />
+  it("renders an authenticated page preview inside ready document details", () => {
+    const { rerender } = render(
+      <KnowledgeLibrary view={view({ sourceDetail: sourceDetail(), task: "source-detail" })} />
     );
 
-    const preview = screen.getByRole("button", { name: "Preview" });
-    fireEvent.click(preview);
-    expect(onPreviewSource).toHaveBeenCalledWith("source-1", preview);
+    expect(screen.getByRole("img", { name: "product-guide.pdf, page 1" })).toHaveAttribute(
+      "src",
+      "/api/me/knowledge-sources/source-1/viewer?asset=page&page=1"
+    );
+    expect(screen.getByRole("link", { name: "Open original" })).toHaveAttribute(
+      "href",
+      "/api/me/knowledge-sources/source-1/viewer?asset=original#page=1"
+    );
+    expect(document.querySelector("iframe")).toBeNull();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Preview page" }), {
+      target: { value: "8" }
+    });
+    expect(screen.getByRole("img", { name: "product-guide.pdf, page 8" })).toBeVisible();
+
+    const replacementBaseline = source();
+    const replacementVersion = {
+      ...replacementBaseline.currentVersion!,
+      pageCount: 1,
+      versionNumber: 3
+    };
+    const replacement = source({
+      currentVersion: replacementVersion,
+      versions: [replacementVersion, ...replacementBaseline.versions]
+    });
+    rerender(<KnowledgeLibrary view={view({
+      sourceDetail: sourceDetail({ source: replacement }),
+      task: "source-detail"
+    })} />);
+
+    expect(screen.getByRole("img", { name: "product-guide.pdf, page 1" })).toHaveAttribute(
+      "src",
+      "/api/me/knowledge-sources/source-1/viewer?asset=page&page=1"
+    );
+  });
+
+  it("renders normalized text instead of an unavailable placeholder for ready non-visual documents", async () => {
+    viewerMocks.loadKnowledgeSourceViewer.mockResolvedValueOnce({
+      blocks: [{
+        boundingBoxes: [],
+        headingPath: ["Release policy"],
+        pageEnd: 1,
+        pageStart: 1,
+        relation: "target",
+        table: null,
+        text: "Rollback remains available for fourteen calendar days.",
+        type: "paragraph"
+      }],
+      excerpt: "Rollback remains available for fourteen calendar days.",
+      excerptTruncated: false,
+      headingPath: ["Release policy"],
+      libraryAvailable: true,
+      locator: { boundingBoxes: [], pageEnd: 1, pageStart: 1 },
+      originalKind: null,
+      source: {
+        baseName: "Product docs",
+        fileName: "release-policy.md",
+        mimeType: "text/markdown",
+        name: "Release policy",
+        statuses: [],
+        versionNumber: 2
+      },
+      state: "available",
+      visual: null,
+      workbook: null
+    });
+    const markdownVersion = {
+      ...source().currentVersion!,
+      fileName: "release-policy.md",
+      pageCount: 1
+    };
+    const markdownSource = source({
+      currentVersion: markdownVersion,
+      versions: [markdownVersion]
+    });
+
+    render(<KnowledgeLibrary view={view({
+      sourceDetail: sourceDetail({ source: markdownSource }),
+      task: "source-detail"
+    })} />);
+
+    expect(await screen.findByTestId("knowledge-normalized-preview")).toHaveTextContent(
+      "Rollback remains available for fourteen calendar days."
+    );
+    expect(screen.queryByText("This file does not have an in-app page preview.")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open original" })).toHaveAttribute(
+      "href",
+      "/api/me/knowledge-sources/source-1/viewer?asset=original"
+    );
+    expect(viewerMocks.loadKnowledgeSourceViewer).toHaveBeenCalledWith(
+      "source-1",
+      expect.any(AbortSignal)
+    );
   });
 
   it("keeps a ready Source usable while surfacing bounded extraction warnings", () => {
@@ -687,8 +849,13 @@ describe("KnowledgeLibrary", () => {
       task: "source-detail"
     })} />);
 
-    expect(screen.getAllByText("Ready with warnings").length).toBeGreaterThan(0);
-    expect(screen.getByText("Some table structure was simplified")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Processing notes" }))
+      .getByText("Ready")).toBeVisible();
+    expect(screen.queryByText("Ready with warnings")).not.toBeInTheDocument();
+    expect(screen.getByText("Processing note")).toBeVisible();
+    expect(screen.getByText("Some table structure was simplified. Its text is searchable."))
+      .toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reprocess" })).not.toBeInTheDocument();
     expect(screen.queryByText(/table_extraction_degraded|parser|score/iu)).not.toBeInTheDocument();
   });
 
@@ -710,12 +877,55 @@ describe("KnowledgeLibrary", () => {
       task: "source-detail"
     })} />);
 
-    expect(screen.getByText("Read-only shared Source")).toBeVisible();
-    expect(screen.getByText("Version history · 1")).toBeVisible();
+    expect(screen.getByText("Read-only shared document")).toBeVisible();
+    expect(screen.getByText("History · 0 earlier versions")).toBeVisible();
     expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add to selected" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Move Source" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove from base" })).not.toBeInTheDocument();
+  });
+
+  it("names the Library crumb for every sub-view and keeps the Bases list out of it", () => {
+    const detailView = detail();
+    expect(isKnowledgeSubview(view({ list: list() }))).toBe(false);
+    expect(isKnowledgeSubview(view({ list: list({ catalog: "sources" }) }))).toBe(true);
+    expect(knowledgeSubviewChrome(view({ detail: detailView, task: "detail" }))).toEqual({
+      backLabel: "Back to Knowledge",
+      key: "detail:base-1",
+      label: "Product docs"
+    });
+    expect(knowledgeSubviewChrome(view({ sourceDetail: sourceDetail(), task: "source-detail" }))).toEqual({
+      backLabel: "Back to documents",
+      key: "source:source-1",
+      label: "Product guide"
+    });
+  });
+
+  it("asks for an explicit discard before a dirty sub-view leaves through the Library", () => {
+    const detailView = detail({ dirty: true });
+    const after = vi.fn();
+    function Harness() {
+      const exit = useKnowledgeLibraryExit(view({ detail: detailView, task: "detail" }));
+      return (
+        <>
+          <button onClick={() => exit.requestExit(after)} type="button">Back to Knowledge</button>
+          {exit.confirmation}
+        </>
+      );
+    }
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Knowledge" }));
+    const confirmation = screen.getByRole("dialog", { name: "Discard Knowledge base settings changes" });
+    expect(detailView.onBack).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(after).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Knowledge" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm discard changes" }));
+    expect(detailView.onBack).toHaveBeenCalledOnce();
+    expect(after).toHaveBeenCalledOnce();
   });
 
   it("polls only while observed processing work is transient", async () => {

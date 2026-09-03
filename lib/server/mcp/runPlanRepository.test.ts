@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   loadMcpCapabilityCatalog,
   loadMcpRunPlanRecords,
+  loadMcpRunPlanRecordsForServers,
   loadMcpRunPlanRecordsForProjectServers
 } from "./runPlanRepository";
 
@@ -312,6 +313,26 @@ describe("Prisma MCP run-plan loader", () => {
     }]);
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { enabled: true, userId: "user-1" }
+    }));
+  });
+
+  it("keeps a disabled preference visible to exact-subset availability", async () => {
+    const disabled = preference({ enabled: false });
+    const { client, findMany } = clientWith([disabled]);
+
+    await expect(loadMcpRunPlanRecordsForServers(
+      "user-1",
+      ["server-1"],
+      client
+    )).resolves.toEqual([expect.objectContaining({
+      enabled: false,
+      errorCode: null,
+      readiness: "disabled",
+      serverId: "server-1",
+      serverName: "Example MCP"
+    })]);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { serverId: { in: ["server-1"] }, userId: "user-1" }
     }));
   });
 

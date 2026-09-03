@@ -1,8 +1,12 @@
 import type { WorkspaceChatSummary, FolderSummary } from "@/components/app-shell/types";
 import { useCallback, useMemo, useState } from "react";
 
+export type WorkspaceChatEditOrigin = "header" | "row";
+
 type WorkspaceInteractionPaneState = Readonly<{
   editingChatId: string | null;
+  /** Which surface opened the rename; only that surface renders the field (UX audit 2026-09-02 A7). */
+  editingChatOrigin: WorkspaceChatEditOrigin | null;
   editingChatTitle: string;
   editingFolderId: string | null;
   editingFolderName: string;
@@ -15,7 +19,7 @@ type WorkspaceInteractionPaneActions = Readonly<{
   changeEditingChatTitle(value: string): void;
   changeEditingFolderName(value: string): void;
   openProjectSettings(folder: FolderSummary): void;
-  startChatEdit(chat: WorkspaceChatSummary): void;
+  startChatEdit(chat: WorkspaceChatSummary, origin?: WorkspaceChatEditOrigin): void;
   startFolderEdit(folder: FolderSummary): void;
 }>;
 
@@ -56,6 +60,7 @@ export type WorkspaceInteractionController = Readonly<{
 export function useWorkspaceInteractionController(): WorkspaceInteractionController {
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editingChatOrigin, setEditingChatOrigin] = useState<WorkspaceChatEditOrigin | null>(null);
   const [editingChatTitle, setEditingChatTitle] = useState("");
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
@@ -65,6 +70,7 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
 
   const cancelChatEdit = useCallback(() => {
     setEditingChatId(null);
+    setEditingChatOrigin(null);
     setEditingChatTitle("");
   }, []);
   const cancelFolderEdit = useCallback(() => {
@@ -73,6 +79,7 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
   }, []);
   const finishChatEditing = useCallback(() => {
     setEditingChatId(null);
+    setEditingChatOrigin(null);
     setEditingChatTitle("");
   }, []);
   const openProjectSettings = useCallback((folder: FolderSummary) => {
@@ -83,8 +90,9 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
     setProjectSettingsFolderId(null);
     setProjectKnowledgeBaseIds([]);
   }, []);
-  const startChatEdit = useCallback((chat: WorkspaceChatSummary) => {
+  const startChatEdit = useCallback((chat: WorkspaceChatSummary, origin: WorkspaceChatEditOrigin = "row") => {
     setEditingChatId(chat.id);
+    setEditingChatOrigin(origin);
     setEditingChatTitle(chat.title);
   }, []);
   const startFolderEdit = useCallback((folder: FolderSummary) => {
@@ -104,11 +112,12 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
 
   const paneState = useMemo<WorkspaceInteractionPaneState>(() => ({
     editingChatId,
+    editingChatOrigin,
     editingChatTitle,
     editingFolderId,
     editingFolderName,
     folderActionId
-  }), [editingChatId, editingChatTitle, editingFolderId, editingFolderName, folderActionId]);
+  }), [editingChatId, editingChatOrigin, editingChatTitle, editingFolderId, editingFolderName, folderActionId]);
 
   const paneActions = useMemo<WorkspaceInteractionPaneActions>(() => ({
     cancelChatEdit,

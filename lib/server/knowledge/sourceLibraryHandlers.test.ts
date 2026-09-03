@@ -39,6 +39,7 @@ function session(role: "admin" | "user" = "user"): AuthenticatedSession {
 
 function sourceSummary(overrides: Partial<KnowledgeSourceSummary> = {}): KnowledgeSourceSummary {
   return {
+    canReprocess: false,
     currentVersion: {
       byteSize: 2_048,
       createdAt: "2026-08-18T10:00:00.000Z",
@@ -213,6 +214,7 @@ describe("Knowledge Source Library handlers", () => {
     const body = await response.json();
     expect(body).toMatchObject({
       source: {
+        canReprocess: false,
         memberships: [{ name: "Product" }],
         name: "Guide",
         readiness: { state: "ready" },

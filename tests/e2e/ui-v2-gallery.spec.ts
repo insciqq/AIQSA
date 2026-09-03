@@ -15,7 +15,7 @@ for (const theme of ["dark", "light"] as const) {
     await page.getByRole("menuitem", { name: "Archive" }).click();
     await expect(page.getByRole("status")).toHaveText("Chat moved to archive·Undo");
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByRole("button", {
+    await expect(page.getByRole("treeitem", {
       exact: true,
       name: "Quarterly product brief"
     })).toBeVisible();
@@ -55,9 +55,9 @@ for (const theme of ["dark", "light"] as const) {
       url: "http://127.0.0.1:3000"
     }]);
     await page.setViewportSize({ height: 500, width: 1100 });
-    await page.goto("/ui-v2-fixture?fixture=composer&state=capabilities");
+    await page.goto("/ui-v2-fixture?fixture=composer&state=add");
 
-    const sheet = page.getByRole("menu", { name: "Capabilities" });
+    const sheet = page.getByRole("menu", { name: "Add" });
     await expect(sheet).toBeVisible();
     const sheetBox = await sheet.boundingBox();
     const closeBox = await sheet.getByRole("button", { name: "Close" }).boundingBox();
@@ -92,7 +92,7 @@ test("v2 run lifecycle refreshes only on request and isolates its live source", 
 
   const announcer = page.getByTestId("run-lifecycle-announcer");
   await expect(announcer).toHaveText("Searching the web…");
-  await page.getByRole("button", { exact: true, name: "Settled answer" }).click();
+  await page.getByRole("treeitem", { exact: true, name: "Settled answer" }).click();
   await expect(announcer).toHaveText("");
 });
 
@@ -101,6 +101,10 @@ test("v2 conversation preserves the visible anchor after loading earlier message
   await page.goto("/ui-v2-fixture?fixture=conversation&state=earlier");
   const scroller = page.getByTestId("conversation-scroll");
   const anchor = page.locator('[data-conversation-message-id="earlier-current-4"]');
+  // The mounted thread rests at its latest message; wait for that client
+  // scroll before positioning, otherwise a pre-hydration scrollTop can leave
+  // the top sentinel within its auto-load margin and the page loads itself.
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await scroller.evaluate((element) => {
     element.scrollTop = 760;
   });
@@ -128,9 +132,9 @@ test("v2 composer owns keyboard traversal and restores focus without leaking bin
   await expect(page.getByRole("dialog", { name: "Choose model" })).toBeHidden();
   await expect(page.getByRole("button", { exact: true, name: "Gemini 3 Pro" })).toBeFocused();
 
-  const plus = page.getByRole("button", { name: "Capabilities" });
+  const plus = page.getByRole("button", { name: "Add" });
   await plus.click();
-  await expect(page.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+  await expect(page.getByRole("menu", { name: "Add" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(plus).toBeFocused();
 
@@ -139,6 +143,60 @@ test("v2 composer owns keyboard traversal and restores focus without leaking bin
   expect(text).not.toContain("google-work");
   expect(text).not.toContain("kb-finance");
   expect(text).not.toContain("mcp-office");
+});
+
+test("v2 Knowledge picker keeps exact mixed selections and explicit inherited overrides", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1280 });
+  await page.goto("/ui-v2-fixture?fixture=composer&state=knowledge");
+
+  let picker = page.getByRole("menu", { name: "Knowledge" });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByText("Bases", { exact: true })).toBeVisible();
+  await expect(picker.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }))
+    .toContainText("42 documents · ready");
+  await expect(picker.getByText("Single documents", { exact: true })).toBeVisible();
+  await expect(picker.getByText("Type to find any of your other 84 documents.", { exact: true })).toBeVisible();
+  await expect(picker.getByText("Applies to your next message.", { exact: true })).toBeVisible();
+  await expect(picker.getByRole("menuitem", { name: "Manage in Library" })).toBeVisible();
+  const desktopBox = await picker.boundingBox();
+  expect(desktopBox).not.toBeNull();
+  expect(desktopBox!.width).toBeLessThan(500);
+
+  await picker.getByRole("menuitemcheckbox", { name: /Quarterly source 1/ }).click();
+  await expect(page.getByRole("button", { name: "Choose Knowledge" }))
+    .toContainText("Knowledge: 2");
+  await picker.getByRole("searchbox", { name: "Search Knowledge resources" })
+    .fill("governance");
+  await expect(picker.getByRole("menuitemcheckbox", { name: /Quarterly source 1/ }))
+    .toBeVisible();
+  await expect(picker.getByRole("menuitemcheckbox", { name: /Governance appendix/ }))
+    .toBeVisible();
+
+  await page.goto("/ui-v2-fixture?fixture=composer&state=assistant-knowledge");
+  picker = page.getByRole("menu", { name: "Knowledge" });
+  await expect(page.getByRole("button", { name: "Choose Knowledge" }))
+    .toContainText("Knowledge: 2 from Assistant");
+  await expect(picker.getByText("Research editor controls Knowledge.", { exact: false }))
+    .toBeVisible();
+  await expect(picker.getByRole("menuitemradio", { name: /^Off/ })).toBeDisabled();
+  await picker.getByRole("menuitem", { name: "Override for this chat" }).click();
+  await expect(picker.getByRole("menuitemradio", { name: /^Off/ })).toBeEnabled();
+  await expect(page.getByTestId("composer-v2-assistant-lock")).toHaveCount(0);
+
+  await page.setViewportSize({ height: 900, width: 820 });
+  await page.goto("/ui-v2-fixture?fixture=composer&state=project-knowledge");
+  picker = page.getByRole("menu", { name: "Knowledge" });
+  const sheetBox = await picker.boundingBox();
+  expect(sheetBox).not.toBeNull();
+  expect(sheetBox!.x).toBe(0);
+  expect(sheetBox!.width).toBeGreaterThanOrEqual(819);
+  await expect(picker.getByRole("menuitemradio", { name: /All my knowledge/i }))
+    .toHaveCount(0);
+  await expect(picker.getByRole("menuitemcheckbox", { name: /Product research/ }))
+    .toBeDisabled();
+  await picker.getByRole("menuitem", { name: "Override for this chat" }).click();
+  await expect(picker.getByRole("menuitemcheckbox", { name: /Product research/ }))
+    .toBeEnabled();
 });
 
 test("v2 composer routes picker, drop, and paste through one visible attachment owner", async ({ page }) => {
@@ -226,6 +284,7 @@ const knowledgeCitationResponse = {
     excerptTruncated: false,
     handle: "K1.1",
     headingPath: ["Retrieval", "Architecture"],
+    libraryAvailable: false,
     locator: {
       boundingBoxes: [{
         bottom: 120,
@@ -253,6 +312,13 @@ const knowledgeCitationResponse = {
   }
 } as const;
 
+const libraryKnowledgeCitationResponse = {
+  citation: {
+    ...knowledgeCitationResponse.citation,
+    libraryAvailable: true
+  }
+} as const;
+
 const structuredKnowledgeCitationResponse = {
   citation: {
     blocks: [],
@@ -260,6 +326,7 @@ const structuredKnowledgeCitationResponse = {
     excerptTruncated: false,
     handle: "K1.1",
     headingPath: ["Sales"],
+    libraryAvailable: false,
     locator: { boundingBoxes: [], pageEnd: 1, pageStart: 1 },
     originalKind: null,
     source: {
@@ -330,6 +397,7 @@ const visualKnowledgeCitationResponse = {
     excerptTruncated: false,
     handle: "K1.1",
     headingPath: ["Results"],
+    libraryAvailable: false,
     locator: {
       boundingBoxes: [{
         bottom: 360,
@@ -405,24 +473,32 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   });
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=complete");
 
-  const outputs = page.getByTestId("answer-outputs");
-  await expect(outputs).toContainText("Research assistant");
-  await outputs.getByText("Sources", { exact: true }).click();
+  const answer = page.locator('article[data-role="assistant"]').first();
+  await expect(answer).toContainText("Research assistant");
+  // Sources live in the actions row: a chip that expands the list in place.
+  await expect(page.getByTestId("answer-sources")).toHaveCount(0);
+  const toggle = answer.getByRole("toolbar", { name: "Answer actions" })
+    .getByTestId("answer-sources-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const outputs = answer.getByTestId("answer-sources");
   await expect(outputs.getByRole("link", { name: "Cross-language retrieval evaluation" }))
     .toBeVisible();
-  await expect(outputs).toContainText("Knowledge source [K1.1]");
-  const inline = page.getByRole("button", { name: "Open source K1.1" });
+  await expect(outputs).toContainText("Knowledge document");
+  await expect(outputs.getByRole("button", { name: "Knowledge document [K1.1]" })).toBeVisible();
+  const inline = page.getByRole("button", { name: "Open document K1.1" });
   await inline.focus();
   await expect(page.getByRole("tooltip")).toContainText(
     "Lexical and vector lanes remain independent"
   );
   await inline.click();
-  const viewer = page.getByRole("dialog", { name: "Knowledge source viewer" });
+  const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
   await expect(viewer).toBeVisible();
-  await expect(viewer).toContainText("retrieval-policy.pdf · version 3");
+  await expect(viewer).toContainText("retrieval-policy.pdf · Engineering handbook");
   await expect(viewer).toContainText("Original page preview is unavailable");
   await expect(viewer.getByText("Stored highlight coordinates")).toHaveCount(0);
-  await expect(viewer.getByRole("button", { name: "Close source viewer" })).toBeFocused();
+  await expect(viewer.getByRole("button", { name: "Close document viewer" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(viewer).toBeHidden();
   await expect(inline).toBeFocused();
@@ -434,7 +510,7 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   expect(mobileBox).not.toBeNull();
   expect(mobileBox!.x).toBe(0);
   expect(mobileBox!.width).toBeLessThanOrEqual(390);
-  await viewer.getByRole("button", { name: "Close source viewer" }).click();
+  await viewer.getByRole("button", { name: "Close document viewer" }).click();
   const text = await outputs.innerText();
   expect(text).not.toContain("fixture query never rendered");
   expect(text).not.toContain("fixture-private-id");
@@ -456,14 +532,40 @@ test("v2 citations share one viewer path across personal, Project, and Assistant
     await page.goto(`/ui-v2-fixture?fixture=answer-outputs&state=citation-${surface}`);
     await expect(page.getByTestId("ui-v2-answer-outputs-gallery"))
       .toHaveAttribute("data-citation-surface", surface);
-    await page.getByRole("button", { name: "Open source K1.1" }).click();
-    const viewer = page.getByRole("dialog", { name: "Knowledge source viewer" });
+    await page.getByRole("button", { name: "Open document K1.1" }).click();
+    const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
     await expect(viewer).toContainText(
       "Lexical and vector lanes remain independent until final selection."
     );
     expect(requestCount).toBeGreaterThan(previousRequests);
-    await viewer.getByRole("button", { name: "Close source viewer" }).click();
+    await viewer.getByRole("button", { name: "Close document viewer" }).click();
   }
+});
+
+test("v2 live citation reauthorizes its canonical Library destination", async ({ page }) => {
+  let libraryRequests = 0;
+  await page.route(
+    "**/api/runs/answer-outputs-run/messages/answer-outputs-answer/citations/K1.1**",
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("asset") === "library") {
+        libraryRequests += 1;
+        await route.fulfill({ json: { sourceId: "source-e2e" } });
+        return;
+      }
+      await route.fulfill({ json: libraryKnowledgeCitationResponse });
+    }
+  );
+  await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=citation-personal");
+  await page.getByRole("button", { name: "Open document K1.1" }).click();
+
+  const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
+  await viewer.getByRole("button", { name: "Open in Library" }).click();
+
+  await expect(viewer).toBeHidden();
+  await expect(page.getByTestId("ui-v2-answer-outputs-gallery"))
+    .toHaveAttribute("data-library-source", "source-e2e");
+  expect(libraryRequests).toBe(1);
 });
 
 test("v2 workbook citations keep operation, result, and source range inspectable", async ({ page }) => {
@@ -475,9 +577,9 @@ test("v2 workbook citations keep operation, result, and source range inspectable
     }
   );
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=complete");
-  await page.getByRole("button", { name: "Open source K1.1" }).click();
+  await page.getByRole("button", { name: "Open document K1.1" }).click();
 
-  const viewer = page.getByRole("dialog", { name: "Knowledge source viewer" });
+  const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
   await expect(viewer).toBeVisible();
   await expect(viewer.getByRole("heading", { name: "sum Revenue" })).toBeVisible();
   await expect(viewer.getByLabel("Cited workbook ranges")).toContainText("Sales!B2:B3");
@@ -493,10 +595,10 @@ test("v2 visual citations keep the authenticated original ahead of bounded analy
   await page.setViewportSize({ height: 760, width: 390 });
   await routeVisualCitation(page, visualKnowledgeCitationResponse);
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=citation-visual");
-  const inline = page.getByRole("button", { name: "Open source K1.1" });
+  const inline = page.getByRole("button", { name: "Open document K1.1" });
   await inline.click();
 
-  const viewer = page.getByRole("dialog", { name: "Knowledge source viewer" });
+  const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
   await expect(viewer.getByRole("heading", { name: "Original visual evidence" })).toBeVisible();
   const original = viewer.getByRole("img", { name: "Quarterly revenue by region" });
   await expect(original).toBeVisible();
@@ -511,7 +613,7 @@ test("v2 visual citations keep the authenticated original ahead of bounded analy
   await expectWithinViewport(page, viewer);
   await expectNoHorizontalOverflow(page);
 
-  await viewer.getByRole("button", { name: "Close source viewer" }).click();
+  await viewer.getByRole("button", { name: "Close document viewer" }).click();
   await expect(inline).toBeFocused();
 });
 
@@ -519,9 +621,9 @@ test("v2 local-only visual citations preserve the original without invented anal
   await page.setViewportSize({ height: 760, width: 390 });
   await routeVisualCitation(page, unavailableVisualKnowledgeCitationResponse);
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=citation-visual");
-  await page.getByRole("button", { name: "Open source K1.1" }).click();
+  await page.getByRole("button", { name: "Open document K1.1" }).click();
 
-  const viewer = page.getByRole("dialog", { name: "Knowledge source viewer" });
+  const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
   await expect(viewer.getByRole("img", { name: "Quarterly revenue by region" })).toBeVisible();
   await expect(viewer).toContainText("Automatic visual analysis is unavailable");
   await expect(viewer.getByText("Bounded analysis")).toHaveCount(0);
@@ -537,9 +639,37 @@ test("v2 answer outputs reserve no placeholder and keep Reasoning optional", asy
   expect(await page.locator("body").innerText()).not.toMatch(/Run details|Answer evidence/iu);
 
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=reasoning");
-  await expect(page.getByTestId("answer-reasoning")).toContainText("Reasoning");
+  // One human line above the text; Thinking waits inside the fold.
+  const process = page.getByTestId("tool-activity-disclosure");
+  await expect(process.locator("summary")).toHaveText("Thought for 12s");
+  await process.locator("summary").click();
+  await expect(page.getByTestId("answer-reasoning")).toContainText("Thinking");
   await expect(page.getByTestId("answer-reasoning")).not.toContainText("**");
+  await expect(page.getByTestId("answer-sources-toggle")).toHaveCount(0);
   await expect(page.getByTestId("answer-sources")).toHaveCount(0);
+});
+
+test("v2 memory recall and the saved-memory notice keep their verbs behind menus", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1280 });
+  await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=memory");
+  const answer = page.locator('article[data-role="assistant"]').first();
+  const process = answer.getByTestId("tool-activity-disclosure");
+  await expect(process.locator("summary")).toHaveText("Worked for 8s · Used 2 memories");
+  await expect(answer.getByTestId("memory-action-confirmation")).toContainText("Memory saved.");
+  await expect(answer.getByRole("button", { name: "Edit" })).toHaveCount(0);
+  await process.locator("summary").click();
+  await expect(answer.getByRole("heading", { name: "Steps" })).toBeVisible();
+  await expect(answer.getByRole("heading", { name: "Memory" })).toBeVisible();
+  const rows = answer.getByTestId("memory-source-card");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("My dog is called Bruno and he is a beagle.");
+  await rows.first().getByTestId("memory-source-actions").click();
+  const menu = answer.getByRole("menu", { name: "Memory actions" });
+  await expect(menu.getByRole("menuitem")).toHaveText(["Correct", "Not relevant", "Forget"]);
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(rows.first().getByTestId("memory-source-actions")).toBeFocused();
+  await expectNoHorizontalOverflow(page);
 });
 
 test("v2 MCP approval uses explicit bounded controls", async ({ page }) => {
@@ -601,8 +731,10 @@ test("v2 branch pager and portalled More menu stay bounded and target exact vers
   await answer.click();
   await answer.getByRole("button", { name: "More answer actions" }).click();
   const menu = page.getByRole("menu", { name: "Answer menu" });
-  await expect(menu.getByRole("menuitem").first()).toHaveText("Delete");
-  await expect(menu.getByRole("menuitem").last()).toHaveText("Branch from here");
+  // Branch first; Delete last and destructive (UX audit 2026-09-02 B4).
+  await expect(menu.getByRole("menuitem").first()).toHaveText("Branch from here");
+  await expect(menu.getByRole("menuitem").last()).toHaveText("Delete");
+  await expect(menu.getByRole("menuitem").last()).toHaveAttribute("data-tone", "destructive");
   const bounds = await menu.boundingBox();
   expect(bounds).not.toBeNull();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
@@ -613,17 +745,33 @@ test("v2 branch pager and portalled More menu stay bounded and target exact vers
   await expect(answer.getByRole("button", { name: "More answer actions" })).toBeFocused();
 });
 
-test("v2 branch edit keeps the draft and makes its immutable outcome explicit", async ({ page }) => {
+test("v2 branch edit stays inline and preserves the composer draft", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=branches&state=edit");
 
-  await expect(page.getByTestId("edit-branch-strip-v2")).toContainText(
-    "Sending creates a new branch; history stays unchanged."
+  const inlineEdit = page.getByTestId("inline-message-edit-v2");
+  await expect(inlineEdit).toContainText(
+    "Sending creates a new branch; the original history stays unchanged."
   );
-  const input = page.getByRole("textbox", { name: "Message" });
+  await expect(inlineEdit.getByText("privacy-check.md")).toBeVisible();
+  const composerInput = page.getByRole("textbox", { name: "Message" });
+  await expect(composerInput).toHaveValue("Незавершённый черновик остаётся в композере.");
+  await expect(composerInput).toBeDisabled();
+
+  const input = inlineEdit.getByRole("textbox", { name: "Edit question" });
+  await expect(input).toBeFocused();
+  await input.press("Escape");
+  const editedQuestion = page.locator('article[data-message-id="question-edited"]');
+  const editButton = editedQuestion.getByRole("button", { name: "Edit question" });
+  await expect(editButton).toBeFocused();
+  await editButton.click();
+  await expect(input).toBeFocused();
+  await expect(composerInput).toHaveValue("Незавершённый черновик остаётся в композере.");
   await input.fill("Уточнённый вопрос остаётся в новой ветви");
-  await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByTestId("edit-branch-strip-v2")).toBeHidden();
+  await inlineEdit.getByRole("button", { name: "Send" }).click();
+  await expect(inlineEdit).toBeHidden();
+  await expect(page.getByText("Уточнённый вопрос остаётся в новой ветви")).toBeVisible();
+  await expect(composerInput).toHaveValue("Незавершённый черновик остаётся в композере.");
   await expect(page.locator(".v2-branch-gallery-notice")).toContainText(
     "original history is unchanged"
   );

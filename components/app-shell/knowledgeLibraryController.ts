@@ -112,19 +112,19 @@ function errorText(code: string): string {
     knowledge_reprocess_unavailable:
       "This base cannot be reprocessed yet. Replace any affected files and try again.",
     knowledge_response_invalid: "The Knowledge response could not be read. Refresh and try again.",
-    knowledge_source_input_invalid: "Check the Source fields and try again.",
+    knowledge_source_input_invalid: "Check the document fields and try again.",
     knowledge_source_ingest_in_progress:
-      "Wait for the current Source replacement to finish before starting another one.",
-    knowledge_source_not_available: "This Source is no longer available to you.",
-    knowledge_source_lifecycle_conflict: "This Source cannot be changed from its current lifecycle state.",
-    knowledge_source_must_be_trashed: "Move this Source to Trash before deleting it permanently.",
-    knowledge_source_query_invalid: "Check the Source search and filters and try again.",
+      "Wait for the current document replacement to finish before starting another one.",
+    knowledge_source_not_available: "This document is no longer available to you.",
+    knowledge_source_lifecycle_conflict: "This document cannot be changed from its current lifecycle state.",
+    knowledge_source_must_be_trashed: "Move this document to Trash before deleting it permanently.",
+    knowledge_source_query_invalid: "Check the document search and filters and try again.",
     knowledge_source_profile_unavailable:
-      "This Source cannot be processed until one of its bases has an active Knowledge profile.",
+      "This document cannot be reprocessed with the current Knowledge configuration.",
     knowledge_source_reprocess_not_available:
-      "There is no failed Source version to reprocess. Replace the file instead.",
+      "There is no failed document version to reprocess. Replace the file instead.",
     knowledge_source_version_conflict:
-      "This Source changed in another session. Reload it and reapply your edits.",
+      "This document changed in another session. Reload it and reapply your edits.",
     knowledge_storage_unavailable: "Private document storage is temporarily unavailable.",
     knowledge_temporarily_unavailable:
       "Knowledge is temporarily unavailable. Contact your administrator.",
@@ -746,7 +746,7 @@ export function createKnowledgeLibraryActions() {
     const tags = detail.draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
     if (!name) {
       store().patchSourceDetail({
-        error: { code: "knowledge_source_input_invalid", text: "Give this Source a name." }
+        error: { code: "knowledge_source_input_invalid", text: "Give this document a name." }
       });
       return;
     }
@@ -773,14 +773,14 @@ export function createKnowledgeLibraryActions() {
     });
     upsertSourceSummary(store(), result.data);
     finishOperation(requestId);
-    store().patch({ notice: { kind: "success", text: "Source details saved." } });
+    store().patch({ notice: { kind: "success", text: "Document details saved." } });
   }
 
   function sourceMembershipActionAllowed(): KnowledgeSourceDetailState | null {
     const detail = store().sourceDetail;
     if (!detail?.source?.owned) return null;
     if (sourceBaseline(detail.draft) !== detail.baseline) {
-      store().patch({ notice: { kind: "error", text: "Save or discard Source changes first." } });
+      store().patch({ notice: { kind: "error", text: "Save or discard document changes first." } });
       return null;
     }
     return detail;
@@ -836,7 +836,7 @@ export function createKnowledgeLibraryActions() {
     upsertSourceSummary(store(), result.data);
     finishOperation(requestId);
     store().patch({
-      notice: { kind: "success", text: "Source processing restarted." }
+      notice: { kind: "success", text: "Document processing restarted." }
     });
   }
 
@@ -863,7 +863,7 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: `Source added to ${baseIds.length} base${baseIds.length === 1 ? "" : "s"}.`
+        text: `Document added to ${baseIds.length} base${baseIds.length === 1 ? "" : "s"}.`
       }
     });
     void refreshList();
@@ -892,7 +892,7 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: "Source removed from the base. The Source and accepted chat history are unchanged."
+        text: "Document removed from the base. The document and accepted chat history are unchanged."
       }
     });
     void refreshList();
@@ -921,7 +921,7 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: "Source moved. Future chats use the new Base membership; accepted chats are unchanged."
+        text: "Document moved. Future chats use the new base membership; accepted chats are unchanged."
       }
     });
     void refreshList();
@@ -1021,7 +1021,7 @@ export function createKnowledgeLibraryActions() {
         kind: "success",
         text: trashed
           ? "Knowledge base moved to Trash. Future runs can no longer use it."
-          : "Knowledge base restored with its Sources and sharing settings."
+          : "Knowledge base restored with its documents and sharing settings."
       }
     });
     void refreshDetail(detail.base!.id, true);
@@ -1045,7 +1045,7 @@ export function createKnowledgeLibraryActions() {
       detail: null,
       notice: {
         kind: "success",
-        text: "Permanent base deletion started. Its canonical Sources remain in your library."
+        text: "Permanent base deletion started. Its canonical documents remain in your library."
       },
       task: "list"
     });
@@ -1058,7 +1058,7 @@ export function createKnowledgeLibraryActions() {
     const detail = snapshot.sourceDetail;
     if (!detail?.source?.owned || detail.source.deletionPending) return null;
     if (sourceBaseline(detail.draft) !== detail.baseline) {
-      snapshot.patch({ notice: { kind: "error", text: "Save or discard Source changes first." } });
+      snapshot.patch({ notice: { kind: "error", text: "Save or discard document changes first." } });
       return null;
     }
     return detail;
@@ -1083,8 +1083,8 @@ export function createKnowledgeLibraryActions() {
       notice: {
         kind: "success",
         text: trashed
-          ? "Source moved to Trash. Future runs exclude it from every base."
-          : "Source restored to its previous Base memberships."
+          ? "Document moved to Trash. Future chats exclude it from every base."
+          : "Document restored to its previous base memberships."
       }
     });
     void refreshSourceDetail(detail.source!.id, true);
@@ -1108,7 +1108,7 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: "Permanent Source deletion started. Past answers keep only generic citation handles."
+        text: "Permanent document deletion started. Past answer text stays, but its cited evidence can no longer open."
       },
       sourceDetail: null,
       task: "list"
@@ -1445,7 +1445,7 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: "Source removed from this Knowledge base. It remains in your Source library."
+        text: "Document removed from this Knowledge base. It remains in your document library."
       }
     });
     void refreshDetail(detail.base.id, true);
@@ -1726,7 +1726,7 @@ export function buildKnowledgeLibraryView(
     sourceDetail: sourceDetail
       ? {
           actionId: sourceDetail.actionId,
-          backLabel: sourceDetail.returnBaseId ? "Back to base" : "Back to Sources",
+          backLabel: sourceDetail.returnBaseId ? "Back to base" : "Back to documents",
           dataError: sourceDetail.dataError,
           dataState: sourceDetail.dataState,
           dirty: sourceBaseline(sourceDetail.draft) !== sourceDetail.baseline,
@@ -1771,6 +1771,9 @@ export function buildKnowledgeLibraryView(
           onTrash() {
             void actions.setSourceTrashed(true);
           },
+          parentLabel: sourceDetail.returnBaseId && detail?.baseId === sourceDetail.returnBaseId
+            ? detail.base?.name
+            : undefined,
           source: sourceDetail.source
         }
       : null,

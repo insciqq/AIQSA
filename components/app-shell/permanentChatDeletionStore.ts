@@ -51,6 +51,31 @@ export const usePermanentChatDeletionStore =
 let operationGeneration = 0;
 let activeController: AbortController | null = null;
 let reconcileAdmission: ((chatId: string) => Promise<void> | void) | null = null;
+let focusReturnTarget: HTMLElement | null = null;
+let focusReturnFallback: (() => HTMLElement | null) | null = null;
+
+function captureFocusReturnTarget(
+  explicitTarget?: HTMLElement | null,
+  fallback?: () => HTMLElement | null
+): void {
+  focusReturnFallback = fallback ?? null;
+  if (typeof document === "undefined") return;
+  if (explicitTarget?.isConnected) {
+    focusReturnTarget = explicitTarget;
+    return;
+  }
+  if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+    focusReturnTarget = document.activeElement;
+    return;
+  }
+  focusReturnTarget = null;
+}
+
+export function permanentChatDeletionFocusReturnTarget(): HTMLElement | null {
+  if (focusReturnTarget?.isConnected) return focusReturnTarget;
+  const fallback = focusReturnFallback?.() ?? null;
+  return fallback?.isConnected ? fallback : null;
+}
 
 function validOpaqueId(value: unknown): value is string {
   return typeof value === "string" && value.trim() === value &&
@@ -165,12 +190,19 @@ export function deactivatePermanentChatDeletionAccount(accountId?: string): void
   if (accountId !== undefined && current.accountId !== accountId) return;
   abortActiveRequest();
   reconcileAdmission = null;
+  focusReturnTarget = null;
+  focusReturnFallback = null;
   usePermanentChatDeletionStore.setState(initialState, true);
 }
 
-export function openPermanentChatDeletion(target: PermanentChatDeletionTarget): void {
+export function openPermanentChatDeletion(
+  target: PermanentChatDeletionTarget,
+  focusTarget?: HTMLElement | null,
+  focusFallback?: () => HTMLElement | null
+): void {
   if (!validTarget(target) || !usePermanentChatDeletionStore.getState().accountId ||
     !useMemorySettingsStore.getState().data?.capabilities.permanentChatDeletion) return;
+  captureFocusReturnTarget(focusTarget, focusFallback);
   usePermanentChatDeletionStore.setState({
     alsoForgetOriginMemories: false,
     confirmationError: null,
@@ -193,8 +225,11 @@ export function closePermanentChatDeletionDialog(): void {
   });
 }
 
-export function openPermanentChatDeletionStatus(): void {
+export function openPermanentChatDeletionStatus(
+  focusFallback?: () => HTMLElement | null
+): void {
   if (!usePermanentChatDeletionStore.getState().reference) return;
+  captureFocusReturnTarget(undefined, focusFallback);
   usePermanentChatDeletionStore.setState({ statusOpen: true });
 }
 
@@ -318,5 +353,7 @@ export function dismissCompletedPermanentChatDeletion(): void {
 export function resetPermanentChatDeletionStore(): void {
   abortActiveRequest();
   reconcileAdmission = null;
+  focusReturnTarget = null;
+  focusReturnFallback = null;
   usePermanentChatDeletionStore.setState(initialState, true);
 }

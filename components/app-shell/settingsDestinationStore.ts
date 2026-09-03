@@ -1,6 +1,13 @@
 import { create } from "zustand";
 
-export type SettingsSection = "appearance" | "connected_apps" | "mcp";
+export type SettingsSection =
+  | "account"
+  | "connected_apps"
+  | "data"
+  | "defaults"
+  | "general"
+  | "mcp"
+  | "memory";
 
 export type SettingsDestinationSnapshot = {
   memoryOpen: boolean;
@@ -11,7 +18,8 @@ export type SettingsDestinationSnapshot = {
 export type SettingsDestinationStore = SettingsDestinationSnapshot & {
   closeMemory(): void;
   closeSettings(): void;
-  openMemorySettings(): void;
+  openMemoryLibrary(): void;
+  openMemoryTab(): void;
   openMcpSettings(): void;
   openSettings(): void;
 };
@@ -19,7 +27,7 @@ export type SettingsDestinationStore = SettingsDestinationSnapshot & {
 export const initialSettingsDestinationSnapshot: SettingsDestinationSnapshot = {
   memoryOpen: false,
   settingsOpen: false,
-  settingsSection: "appearance"
+  settingsSection: "general"
 };
 
 export const useSettingsDestinationStore = create<SettingsDestinationStore>((set) => ({
@@ -30,13 +38,16 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
   closeSettings() {
     set({ settingsOpen: false });
   },
-  openMemorySettings() {
+  openMemoryLibrary() {
     set({ memoryOpen: true, settingsOpen: false });
+  },
+  openMemoryTab() {
+    set({ settingsOpen: true, settingsSection: "memory" });
   },
   openMcpSettings() {
     set({ memoryOpen: false, settingsOpen: true, settingsSection: "mcp" });
   },
   openSettings() {
-    set({ memoryOpen: false, settingsOpen: true, settingsSection: "appearance" });
+    set({ memoryOpen: false, settingsOpen: true, settingsSection: "general" });
   }
 }));

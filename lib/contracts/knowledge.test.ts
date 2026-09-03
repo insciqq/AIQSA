@@ -71,6 +71,7 @@ function sourceVersion(overrides: Record<string, unknown> = {}) {
 
 function sourceSummary(overrides: Record<string, unknown> = {}) {
   return {
+    canReprocess: false,
     currentVersion: sourceVersion(),
     deletionPending: false,
     description: "Canonical product guide",
@@ -381,6 +382,9 @@ describe("Knowledge client-safe contracts", () => {
   it("decodes only user-safe Source list and progressive detail fields", () => {
     const summary = sourceSummary();
     expect(decodeKnowledgeSourceSummary(summary)).toEqual(summary);
+    expect(decodeKnowledgeSourceSummary({ ...summary, canReprocess: "yes" })).toBeNull();
+    const { canReprocess: _canReprocess, ...legacySummary } = summary;
+    expect(decodeKnowledgeSourceSummary(legacySummary)).toBeNull();
     expect(decodeKnowledgeSourceSummary({
       ...summary,
       profileRevisionId: "profile-private"

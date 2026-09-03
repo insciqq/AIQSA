@@ -222,6 +222,93 @@ describe("message run lifecycle", () => {
     });
   });
 
+  it("keeps a user-cancelled run cancelled when the closing stream reports an error", async () => {
+    prepareThread();
+    const notifyAnswerReady = vi.fn(async () => undefined);
+
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef: { current: new Map() },
+      chatId: "chat-1",
+      consumeRunStream: async ({ onRunId }) => {
+        onRunId("run-user-cancelled");
+        useRunLifecycleStore.getState().runCancelled({
+          chatId: "chat-1",
+          runId: "run-user-cancelled"
+        });
+        return {
+          failed: true,
+          receivedChatUpdate: true,
+          runId: "run-user-cancelled",
+          terminalStatus: "error"
+        };
+      },
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun: vi.fn(async () => null),
+      notifyAnswerReady,
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => new Response("", { status: 200 })
+    });
+
+    expect(result).toMatchObject({
+      cancelled: true,
+      failed: false,
+      runId: "run-user-cancelled"
+    });
+    expect(notifyAnswerReady).not.toHaveBeenCalled();
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      content: "",
+      status: "cancelled"
+    });
+  });
+
+  it("keeps a user-cancelled run cancelled when its closing stream throws", async () => {
+    prepareThread();
+    const settleFailedRunState = vi.fn();
+
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef: { current: new Map() },
+      chatId: "chat-1",
+      consumeRunStream: async ({ onRunId }) => {
+        onRunId("run-user-cancelled");
+        useRunLifecycleStore.getState().runCancelled({
+          chatId: "chat-1",
+          runId: "run-user-cancelled"
+        });
+        throw new Error("closing stream failed");
+      },
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun: vi.fn(async () => null),
+      notifyAnswerReady: vi.fn(async () => undefined),
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => new Response("", { status: 200 }),
+      settleFailedRunState
+    });
+
+    expect(result).toEqual({
+      assistantMessageId: "assistant-optimistic",
+      cancelled: true,
+      failed: false,
+      receivedChatUpdate: false,
+      runId: "run-user-cancelled"
+    });
+    expect(settleFailedRunState).not.toHaveBeenCalled();
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toEqual({});
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      content: "Stopped.",
+      status: "cancelled"
+    });
+  });
+
   it("refreshes a background source chat without painting it into the active surface", async () => {
     prepareThread();
     useThreadStore.getState().mergeMessages("chat-1", [], {

@@ -35,6 +35,7 @@ const PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0";
 
 export type ArchivedChatSummaryRecord = ChatSummaryRecord & Readonly<{
   archived: true;
+  lastMessageAt: Date | string | null;
   memoryMode: RetainedChatMemoryMode;
   sourceRevision: number;
 }>;
@@ -219,6 +220,7 @@ function serializeArchivedSummary(chat: ArchivedChatSummaryRecord): ArchivedChat
   return {
     ...serializeChatSummary(chat),
     archived: true,
+    lastMessageAt: chat.lastMessageAt === null ? null : iso(chat.lastMessageAt),
     memoryMode: chat.memoryMode,
     sourceRevision: chat.sourceRevision
   };

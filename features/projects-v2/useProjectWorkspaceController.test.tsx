@@ -20,13 +20,17 @@ import type {
 } from "@/lib/contracts/projects";
 
 const apiMocks = vi.hoisted(() => ({
+  createProjectFolder: vi.fn(),
+  deleteProjectFolder: vi.fn(),
   leaveProject: vi.fn(),
   loadProject: vi.fn(),
   loadProjectActivity: vi.fn(),
   loadProjectMemory: vi.fn(),
   loadProjects: vi.fn(),
   loadProjectWorkspace: vi.fn(),
-  removeProjectResource: vi.fn()
+  moveProjectChat: vi.fn(),
+  removeProjectResource: vi.fn(),
+  updateProjectFolder: vi.fn()
 }));
 
 vi.mock("@/components/app-shell/projectWorkspaceApi", async (importOriginal) => ({
@@ -300,7 +304,7 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(result.current.syncWarning).toBeNull();
   });
 
-  it("leaves Project navigation without removing the member grant", async () => {
+  it("leaves Project navigation by clearing its active chat without removing the member grant", async () => {
     apiMocks.loadProjectWorkspace.mockResolvedValue({
       chats: [projectChat({ id: "chat-1", title: "Plan" })],
       folders: []
@@ -315,14 +319,94 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(
       projectComposerSessionKey("project-1")
     );
+    await act(async () => {
+      expect(await result.current.actions.selectChat("chat-1")).toBe(true);
+    });
+    expect(useWorkspaceStore.getState().activeChatId).toBe("chat-1");
     act(() => result.current.actions.leave());
 
     expect(result.current.selectedProjectId).toBeNull();
+    expect(input.activateBlankWorkspace).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
     expect(input.onProjectContextEntered).toHaveBeenCalledOnce();
     expect(input.onProjectContextLeft).toHaveBeenCalledOnce();
     expect(apiMocks.leaveProject).not.toHaveBeenCalled();
     expect(useWorkspaceStore.getState().chats.some((chat) => chat.projectId === "project-1"))
       .toBe(true);
+  });
+
+  it("does not dispatch Manager-only folder or movement mutations for a Contributor", async () => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({
+      chats: [projectChat({ id: "chat-1", title: "Plan" })],
+      folders: [{ id: "folder-1", name: "Research", parentId: null, sortOrder: 0 }]
+    });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.createFolder("Operations")).toBe(false);
+      expect(await result.current.actions.updateFolder("folder-1", { name: "Evidence" }))
+        .toBe(false);
+      expect(await result.current.actions.deleteFolder("folder-1")).toBe(false);
+      expect(await result.current.actions.moveChat("chat-1", "folder-1")).toBe(false);
+    });
+
+    expect(apiMocks.createProjectFolder).not.toHaveBeenCalled();
+    expect(apiMocks.updateProjectFolder).not.toHaveBeenCalled();
+    expect(apiMocks.deleteProjectFolder).not.toHaveBeenCalled();
+    expect(apiMocks.moveProjectChat).not.toHaveBeenCalled();
+  });
+
+  it("sends one-level folder and movement mutations for a Manager", async () => {
+    const managerDetail: ProjectDetailWire = {
+      ...projectDetail,
+      capabilities: {
+        ...projectDetail.capabilities,
+        archiveChats: true,
+        manageProject: true
+      },
+      directRole: "MANAGER",
+      effectiveRole: "MANAGER"
+    };
+    apiMocks.loadProject.mockResolvedValue(managerDetail);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({
+      chats: [projectChat({ id: "chat-1", title: "Plan" })],
+      folders: [{ id: "folder-1", name: "Research", parentId: null, sortOrder: 0 }]
+    });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.createFolder("Operations")).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.updateFolder("folder-1", { name: "Evidence" }))
+        .toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.moveChat("chat-1", "folder-1")).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.deleteFolder("folder-1")).toBe(true);
+    });
+
+    expect(apiMocks.createProjectFolder).toHaveBeenCalledWith("project-1", {
+      name: "Operations",
+      parentId: null
+    });
+    expect(apiMocks.updateProjectFolder).toHaveBeenCalledWith("project-1", "folder-1", {
+      name: "Evidence"
+    });
+    expect(apiMocks.moveProjectChat).toHaveBeenCalledWith("chat-1", "folder-1");
+    expect(apiMocks.deleteProjectFolder).toHaveBeenCalledWith("project-1", "folder-1");
   });
 
   it("enters the isolated control boundary before personal-to-Project and Project-A-to-B loads settle", async () => {
@@ -603,6 +687,70 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(useWorkspaceStore.getState().chats.some((chat) => chat.projectId === "project-1"))
       .toBe(true);
     expect(input.onProjectAccessLost).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the selected Project summary without reordering the Projects list", async () => {
+    const earlierProject: ProjectSummaryWire = {
+      ...projectSummary,
+      id: "project-2",
+      name: "Earlier workspace",
+      updatedAt: "2026-08-16T00:00:00.000Z"
+    };
+    apiMocks.loadProjects.mockResolvedValue([earlierProject, projectSummary]);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    apiMocks.loadProject.mockResolvedValue({
+      ...projectDetail,
+      name: "Launch room refreshed",
+      updatedAt: "2026-08-18T00:00:00.000Z"
+    });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.projects.map((project) => project.id)).toEqual([
+      "project-2",
+      "project-1"
+    ]);
+
+    await act(async () => {
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+
+    expect(result.current.projects.map((project) => project.id)).toEqual([
+      "project-2",
+      "project-1"
+    ]);
+    expect(result.current.projects[1]?.name).toBe("Launch room refreshed");
+  });
+
+  it("does not reinsert a selected Project missing from the authoritative list", async () => {
+    const listedProject: ProjectSummaryWire = {
+      ...projectSummary,
+      id: "project-2",
+      name: "Still accessible"
+    };
+    apiMocks.loadProjects.mockResolvedValue([listedProject]);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    apiMocks.loadProject.mockResolvedValue({
+      ...projectDetail,
+      name: "Selected but absent from list"
+    });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.projects.map((project) => project.id)).toEqual(["project-2"]);
+
+    await act(async () => {
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+
+    expect(result.current.detail?.name).toBe("Selected but absent from list");
+    expect(result.current.projects.map((project) => project.id)).toEqual(["project-2"]);
   });
 
   it("purges cached chats for an unselected Project removed from the accessible list", async () => {

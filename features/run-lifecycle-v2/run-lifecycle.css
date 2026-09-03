@@ -26,102 +26,199 @@
   animation: v2-run-shimmer 1.8s ease-in-out infinite;
 }
 
-.v2-tool-activity {
+/* Process line (answer anatomy): the one disclosure above the text. Live it
+   is the status ("Thinking…", "Searching the web…") with a 12px spinner in a
+   14px slot; settled, the same 28px row is a native disclosure whose label
+   reads the way a person says it ("Worked for 8s · Used 2 memories"). The
+   slot keeps the first glyph in place, so nothing moves when the run settles. */
+.v2-answer-process {
   min-width: 0;
-  margin: 0 0 0.875rem;
+  margin: 0 0 0.625rem -0.375rem;
   color: var(--v2-color-text2);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
-.v2-tool-activity details {
-  min-width: 0;
-}
-
-.v2-tool-activity summary {
+.v2-answer-process[data-live],
+.v2-answer-process > summary {
   display: inline-flex;
   min-height: 1.75rem;
   max-width: 100%;
   align-items: center;
   gap: 0.5rem;
+  padding: 0 0.5rem 0 0.375rem;
   border-radius: var(--v2-radius-s);
+}
+
+.v2-answer-process > summary {
   cursor: pointer;
   list-style: none;
 }
 
-.v2-tool-activity summary::-webkit-details-marker {
+.v2-answer-process > summary::-webkit-details-marker {
   display: none;
 }
 
-.v2-tool-activity-chevron {
+.v2-answer-process > summary:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
+.v2-answer-process > summary:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
+}
+
+.v2-answer-process-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-answer-process-slot {
+  display: grid;
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.v2-answer-process-chevron {
   width: 0.4375rem;
   height: 0.4375rem;
-  flex: 0 0 auto;
   border-right: 1px solid currentcolor;
   border-bottom: 1px solid currentcolor;
   transform: rotate(-45deg);
   transition: transform 140ms ease;
 }
 
-.v2-tool-activity details[open] .v2-tool-activity-chevron {
+.v2-answer-process[open] .v2-answer-process-chevron {
   transform: rotate(45deg) translate(-0.0625rem, -0.0625rem);
 }
 
-.v2-tool-activity ol {
+/* The live spinner is the answer phase's violet; nothing else here is. */
+.v2-answer-process-spinner {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-width: 1.5px;
+  color: var(--v2-color-accent2);
+}
+
+/* Fold body: Thinking → Steps → Memory hang from one hairline. */
+.v2-answer-process-body {
   display: grid;
-  gap: 0.625rem;
-  margin: 0.375rem 0 0 0.1875rem;
-  padding: 0.25rem 0 0.125rem 1rem;
-  border-left: 1px solid var(--v2-color-border2);
+  gap: 0.875rem;
+  margin: -0.125rem 0 0.25rem 0.75rem;
+  padding: 0.375rem 0 0.25rem 0.75rem;
+  border-left: 1px solid var(--v2-color-border);
+}
+
+.v2-answer-process-section {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+}
+
+.v2-answer-process-section > h3 {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.v2-answer-process-reasoning {
+  max-width: 40rem;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.v2-answer-process-reasoning p {
+  margin: 0 0 0.5rem;
+}
+
+.v2-answer-process-reasoning p:last-child {
+  margin-bottom: 0;
+}
+
+.v2-answer-process-steps {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
   list-style: none;
 }
 
-.v2-tool-activity li {
+.v2-answer-process-steps li {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: 0.5625rem;
+  min-height: 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.v2-tool-activity-mark {
-  width: 0.4375rem;
-  height: 0.4375rem;
+.v2-answer-process-mark {
+  display: inline-grid;
+  width: 0.875rem;
+  height: 0.875rem;
   flex: 0 0 auto;
-  margin-top: 0.3125rem;
-  border: 1px solid var(--v2-color-text3);
-  border-radius: 50%;
+  place-items: center;
+  color: var(--v2-color-text3);
 }
 
-.v2-tool-activity-mark[data-status="complete"] {
-  border-color: var(--v2-color-accent);
-  background: var(--v2-color-accent);
+.v2-answer-process-mark .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  stroke-width: 2;
 }
 
-.v2-tool-activity-mark[data-status="error"] {
-  border-color: var(--v2-color-danger);
+.v2-answer-process-mark[data-status="complete"] {
+  color: var(--v2-color-ok);
 }
 
-.v2-tool-activity-mark[data-status="cancelled"] {
+.v2-answer-process-mark[data-status="error"] {
+  color: var(--v2-color-danger);
+}
+
+.v2-answer-process-mark[data-status="running"] {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-width: 1.5px;
+  color: var(--v2-color-accent2);
+}
+
+.v2-answer-process-mark[data-status="cancelled"]::before {
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 0.0625rem;
+  background: currentcolor;
+  content: "";
 }
 
-.v2-tool-activity-copy {
-  display: grid;
+.v2-answer-process-step {
+  display: flex;
   min-width: 0;
-  gap: 0.0625rem;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
-.v2-tool-activity-name {
+.v2-answer-process-step-name {
   overflow-wrap: anywhere;
   color: var(--v2-color-text2);
+  font-size: 0.8125rem;
 }
 
-.v2-tool-activity-meta {
+.v2-answer-process-step-meta {
   color: var(--v2-color-text3);
-  font-size: 0.71875rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 
+/* A reached limit stays visible outside the fold, under the line. */
 .v2-tool-budget-warning {
-  margin-top: 0.5rem;
+  margin: 0 0 0.875rem;
   padding: 0.5rem 0.625rem;
   border-left: 0.125rem solid var(--v2-color-warn);
   border-radius: 0 var(--v2-radius-s) var(--v2-radius-s) 0;
@@ -130,17 +227,20 @@
   line-height: 1.45;
 }
 
+/* Streaming caret: a 2px violet bar — the answer phase's only color. */
 .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
   display: inline-block;
-  width: 0.4375rem;
-  height: 0.9375rem;
-  margin-left: 0.125rem;
-  background: var(--v2-color-text2);
+  width: 0.125rem;
+  height: 1.0625rem;
+  margin-left: 0.1875rem;
+  border-radius: 1px;
+  background: var(--v2-color-accent2);
   content: "";
-  vertical-align: -0.125rem;
+  vertical-align: -0.1875rem;
   animation: v2-run-caret 1s steps(1) infinite;
 }
 
+/* "● Answering…" under the live text: 13px/500 accent2 with a glowing dot. */
 /* Terminal and connection-loss strips are semantic statuses: text2 floor. */
 .v2-run-connection,
 .v2-run-terminal-strip {
@@ -189,11 +289,12 @@
   padding-block: 0.125rem;
 }
 
+/* Error card (PRD §4.4): neutral surface, no colored edge; the alert glyph
+   and the plain-language heading carry the state. */
 .v2-run-error-card {
   margin-top: 0.875rem;
-  padding: 0.75rem 0.875rem;
-  border: 1px solid var(--v2-color-border);
-  border-left: 0.1875rem solid var(--v2-color-danger);
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--v2-color-border2);
   border-radius: var(--v2-radius-m);
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
@@ -202,43 +303,55 @@
 .v2-run-error-heading {
   display: flex;
   min-width: 0;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
-  flex-wrap: wrap;
+}
+
+.v2-run-error-heading > .v2-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--v2-color-danger);
 }
 
 .v2-run-error-heading h2 {
   margin: 0;
   color: var(--v2-color-text);
-  font-size: 0.84375rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.45;
-}
-
-.v2-run-error-heading code {
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  color: var(--v2-color-text3);
-  font-family: var(--font-mono), monospace;
-  font-size: 0.71875rem;
+  line-height: 1.4;
 }
 
 .v2-run-error-card > p {
-  margin: 0.375rem 0 0.625rem;
+  margin: 0.375rem 0 0.75rem;
   color: var(--v2-color-text2);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 
 .v2-run-error-actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
 .v2-run-error-actions .v2-button {
-  min-height: 1.875rem;
+  min-height: 2rem;
+}
+
+.v2-run-error-reference {
+  min-width: 0;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-run-error-reference code {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
 }
 
 .v2-sr-only {
@@ -264,6 +377,8 @@
 }
 
 html[data-motion="off"] .v2-run-shimmer,
+html[data-motion="off"] .v2-answer-process-mark[data-status="running"],
+html[data-motion="off"] .v2-answer-process-spinner,
 html[data-motion="off"] .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
   animation: none;
 }
@@ -284,7 +399,7 @@ html[data-motion="off"] .v2-run-shimmer {
     background: none;
   }
 
-  .v2-tool-activity-chevron {
+  .v2-answer-process-chevron {
     transition: none;
   }
 }
@@ -296,6 +411,11 @@ html[data-motion="off"] .v2-run-shimmer {
 
   .v2-run-error-actions .v2-button {
     flex: 1 1 auto;
+  }
+
+  .v2-run-error-reference {
+    width: 100%;
+    margin-left: 0;
   }
 }
 
@@ -406,7 +526,7 @@ html[data-motion="off"] .v2-run-shimmer {
   font-size: 0.8125rem;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   .v2-run-gallery-document {
     width: calc(100% - 1.5rem);
     padding-top: max(4rem, env(safe-area-inset-top));
@@ -422,5 +542,12 @@ html[data-motion="off"] .v2-run-shimmer {
 
   .v2-run-gallery-group-heading span {
     text-align: left;
+  }
+}
+
+/* Touch (C2): disclosures keep a 44px row. */
+@media (hover: none), (pointer: coarse) {
+  .v2-answer-process > summary {
+    min-height: 2.75rem;
   }
 }

@@ -212,6 +212,43 @@ describe("Project workspace surfaces", () => {
     expect(within(rail).queryByRole("dialog")).toBeNull();
   });
 
+  it("keeps unavailable default categories explicit without exposing hidden resources", async () => {
+    const baseController = controller();
+    const projectController: ProjectWorkspaceController = {
+      ...baseController,
+      detail: {
+        ...baseController.detail!,
+        defaults: {
+          ...baseController.detail!.defaults,
+          assistantId: null,
+          knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+          mcpMode: "off",
+          providerModelId: null,
+          searchPlan: { mode: "all_selected", optionIds: [] }
+        },
+        resources: [],
+        unavailableDefaults: ["assistant", "knowledge", "mcp", "model", "search"]
+      }
+    };
+    const view = render(
+      <ProjectContextRailV2 activeChatProjectId="project-1" controller={projectController} />
+    );
+    const rail = screen.getByRole("complementary", { name: "Shared project context" });
+    fireEvent.click(within(rail).getByTestId("project-context-trigger"));
+    const details = within(rail).getByRole("dialog", { name: "Launch room project context" });
+    expect(within(details).getByText("Unavailable")).toBeVisible();
+    expect(within(details).getByText("Search unavailable · Knowledge unavailable")).toBeVisible();
+    view.unmount();
+
+    render(<ProjectSettingsDialogV2 controller={projectController} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Configured defaults need review");
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "Assistant, Knowledge, MCP, model, Search are unavailable"
+    );
+    expect(dialog).not.toHaveTextContent(/assistant-1|base-1|mcp-1|model-1|search-1/iu);
+  });
+
   it("keeps the retired Project Memory tab and controls unreachable", async () => {
     const projectController = controller();
     const initialTabController: ProjectWorkspaceController = {

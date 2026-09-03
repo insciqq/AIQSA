@@ -178,7 +178,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   });
 
   await signIn(page);
-  const capabilitiesTrigger = page.getByRole("button", { name: "Capabilities" });
+  const capabilitiesTrigger = page.getByRole("button", { name: "Add" });
   const toolsTrigger = page.getByRole("button", { name: "Change MCP mode" });
   await page.setViewportSize({ height: 844, width: 390 });
   await expectTouchSafe(capabilitiesTrigger);
@@ -187,10 +187,11 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await page.setViewportSize({ height: 900, width: 1440 });
   // MCP modes live in the Tools chip's own picker, not in the "+" menu.
   await capabilitiesTrigger.click();
-  await expect(page.getByRole("menu", { name: "Capabilities" })).toBeVisible();
-  await expect(page.getByRole("menu", { name: "Capabilities" }).getByRole("menuitemradio", { name: /^Auto/u }))
+  await expect(page.getByRole("menu", { name: "Add" })).toBeVisible();
+  await expect(page.getByRole("menu", { name: "Add" }).getByRole("menuitemradio", { name: /^Auto/u }))
     .toHaveCount(0);
-  await page.getByRole("menu", { name: "Capabilities" }).getByRole("button", { name: "Close" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu", { name: "Add" })).toHaveCount(0);
   await toolsTrigger.click();
   let tools = page.getByRole("menu", { name: "MCP tools" });
   await expect(tools.getByRole("menuitemradio", { name: /^Auto/u }))
@@ -214,8 +215,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByText("Personal value configured")).toBeVisible();
   await expect(secret).toHaveValue("");
 
-  await settings.getByRole("button", { name: "Enable Mem0" }).click();
-  await settings.getByRole("button", { name: "Enable Todoist" }).click();
+  // Rows toggle with a switch (UX audit 2026-09-02 A13); the switch appears
+  // for Mem0 only after its personal value is saved.
+  await settings.getByRole("switch", { name: "Mem0" }).click();
+  await settings.getByRole("switch", { name: "Todoist" }).click();
   await expect(settings.getByText("Activating", { exact: true })).toBeVisible();
 
   await settings.getByRole("button", { name: "Close settings" }).click();
@@ -226,6 +229,9 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByText("Ready", { exact: true })).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="enabled"]')).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(1);
+  await expect(settings.getByRole("switch", { name: "Mem0" })).toHaveAttribute("aria-checked", "true");
+  await expect(settings.getByText("2 of 3 servers enabled · 2 tools")).toBeVisible();
+  await expect(settings.getByText("How tools use data").locator("xpath=..")).not.toHaveAttribute("open", "");
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
 
   await settings.getByRole("button", { name: "Close settings" }).click();
@@ -235,22 +241,32 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   const loadAllMode = tools.getByRole("menuitemradio", { name: /^Load all/u });
   const offMode = tools.getByRole("menuitemradio", { name: /^Off/u });
   await expect(autoMode).toHaveAttribute("aria-checked", "true");
+  // A mode choice closes the anchored menu; the chip reflects it and the
+  // reopened menu shows the new checked row.
   await loadAllMode.click();
+  await expect(tools).toHaveCount(0);
+  await expect(toolsTrigger).toContainText("MCP: Load all");
+  await toolsTrigger.click();
   await expect(loadAllMode).toHaveAttribute("aria-checked", "true");
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Todoist/u })).toHaveCount(0);
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Notion/u })).toHaveCount(0);
   await offMode.click();
+  await expect(tools).toHaveCount(0);
+  await toolsTrigger.click();
   await expect(offMode).toHaveAttribute("aria-checked", "true");
   await autoMode.click();
+  await expect(tools).toHaveCount(0);
+  await toolsTrigger.click();
   await expect(autoMode).toHaveAttribute("aria-checked", "true");
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
-  await tools.getByRole("button", { name: "Close" }).click();
+  await page.keyboard.press("Escape");
+  await expect(tools).toHaveCount(0);
 
   expect(skillListRequests).toBe(0);
   await capabilitiesTrigger.click();
-  const capabilities = page.getByRole("menu", { name: "Capabilities" });
-  await capabilities.getByRole("menuitem", { name: "Manage Skills…" }).click();
+  const capabilities = page.getByRole("menu", { name: "Add" });
+  await capabilities.getByRole("menuitem", { name: /^Skills…/u }).click();
   let skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expect(skillLibrary.getByRole("button", { name: "Open Incident brief" })).toBeVisible();
   expect(skillListRequests).toBe(1);
@@ -291,7 +307,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
-  await expectTouchSafe(settings.getByRole("button", { name: "Disable Mem0" }));
+  await expectTouchSafe(settings.getByRole("switch", { name: "Mem0" }));
   await expectTouchSafe(settings.getByRole("button", { name: "Close settings" }));
 
   await page.setViewportSize({ height: 390, width: 844 });

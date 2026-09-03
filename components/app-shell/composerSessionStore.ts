@@ -34,13 +34,15 @@ export type ComposerPendingEdit = {
 export type ComposerSessionSnapshot = {
   attachments: ComposerAttachment[];
   draft: string;
-  draftBeforeEdit: string | null;
   editGeneration: number;
   editRevision: number;
+  editingDraft: string;
+  editingError: string | null;
   editingMessageId: string | null;
   latestUploadGeneration: number;
   operationError: string | null;
   operationErrorLive: boolean;
+  operationErrorRetryable: boolean;
   pendingEdit: ComposerPendingEdit | null;
   pendingSend: {
     attachments: ComposerAttachment[];
@@ -70,7 +72,15 @@ export type ComposerSendOptions = Readonly<{
 }>;
 
 export type ComposerSessionPatch = Partial<
-  Pick<ComposerSessionSnapshot, "attachments" | "draft" | "editingMessageId" | "operationError">
+  Pick<
+    ComposerSessionSnapshot,
+    | "attachments"
+    | "draft"
+    | "editingDraft"
+    | "editingError"
+    | "editingMessageId"
+    | "operationError"
+  >
 >;
 
 type ComposerSessionPatchUpdate =
@@ -95,7 +105,8 @@ type ComposerSessionStore = {
     token: ComposerSendToken,
     outcome: ComposerSendOutcome,
     error?: string | null,
-    operationErrorLive?: boolean
+    operationErrorLive?: boolean,
+    runId?: string | null
   ): boolean;
   finishUpload(key: ComposerSessionKey, generation: number, error: string | null): boolean;
   isEditCurrent(token: ComposerEditToken): boolean;
@@ -104,7 +115,7 @@ type ComposerSessionStore = {
   sessionsByKey: Partial<Record<ComposerSessionKey, ComposerSessionSnapshot>>;
   setAttachments(update: StateUpdate<ComposerAttachment[]>): void;
   setDraft(value: string): void;
-  setEditingMessageId(value: string | null): void;
+  setEditingDraft(value: string): void;
   startEdit(messageId: string, draft: string): void;
   transferSession(sourceKey: ComposerSessionKey, targetKey: ComposerSessionKey): boolean;
   updateUploadedAttachment(key: ComposerSessionKey, attachment: ComposerAttachment): boolean;
@@ -121,13 +132,15 @@ const emptyUploadGenerations = Object.freeze([]) as unknown as number[];
 export const emptyComposerSessionSnapshot = Object.freeze({
   attachments: emptyAttachments,
   draft: "",
-  draftBeforeEdit: null,
   editGeneration: 0,
   editRevision: 0,
+  editingDraft: "",
+  editingError: null,
   editingMessageId: null,
   latestUploadGeneration: 0,
   operationError: null,
   operationErrorLive: true,
+  operationErrorRetryable: false,
   pendingEdit: null,
   pendingSend: null,
   pendingUploadGenerations: emptyUploadGenerations,
@@ -240,12 +253,25 @@ function patchedSession(
   const attachmentsChanged =
     hasOwn(patch, "attachments") && patch.attachments !== current.attachments;
   const draftChanged = hasOwn(patch, "draft") && patch.draft !== current.draft;
-  const editChanged =
+  const editingDraftChanged =
+    hasOwn(patch, "editingDraft") && patch.editingDraft !== current.editingDraft;
+  const editingErrorChanged =
+    hasOwn(patch, "editingError") && patch.editingError !== current.editingError;
+  const editingMessageChanged =
     hasOwn(patch, "editingMessageId") && patch.editingMessageId !== current.editingMessageId;
-  const errorChanged =
-    hasOwn(patch, "operationError") && patch.operationError !== current.operationError;
+  const errorPatched = hasOwn(patch, "operationError");
+  const errorChanged = errorPatched && patch.operationError !== current.operationError;
+  const retryabilityChanged = errorPatched && current.operationErrorRetryable;
 
-  if (!attachmentsChanged && !draftChanged && !editChanged && !errorChanged) {
+  if (
+    !attachmentsChanged &&
+    !draftChanged &&
+    !editingDraftChanged &&
+    !editingErrorChanged &&
+    !editingMessageChanged &&
+    !errorChanged &&
+    !retryabilityChanged
+  ) {
     return current;
   }
 
@@ -253,11 +279,14 @@ function patchedSession(
     ...current,
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
-    ...(editChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
+    ...(editingDraftChanged ? { editingDraft: patch.editingDraft ?? "" } : {}),
+    ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
+    ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(errorChanged ? { operationErrorLive: true } : {}),
-    editRevision: current.editRevision + (draftChanged || editChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged || editChanged ? 1 : 0)
+    ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
+    editRevision:
+      current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
+    revision: current.revision + (attachmentsChanged || draftChanged ? 1 : 0)
   };
 }
 
@@ -322,7 +351,12 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
   beginEdit(key, messageId) {
     const state = get();
     const session = state.sessionsByKey[key];
-    if (!session || session.pendingEdit || session.editingMessageId !== messageId) {
+    if (
+      !session ||
+      session.pendingEdit ||
+      session.editingMessageId !== messageId ||
+      !session.editingDraft.trim()
+    ) {
       return null;
     }
 
@@ -339,8 +373,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         [key]: {
           ...session,
           editGeneration: generation,
-          operationError: null,
-          operationErrorLive: true,
+          editingError: null,
           pendingEdit
         }
       }
@@ -386,6 +419,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           editRevision: session.editRevision + (session.draft ? 1 : 0),
           operationError: null,
           operationErrorLive: true,
+          operationErrorRetryable: false,
           pendingSend: {
             attachments: [...session.attachments],
             clearedRevision,
@@ -414,6 +448,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           latestUploadGeneration: generation,
           operationError: null,
           operationErrorLive: true,
+          operationErrorRetryable: false,
           pendingUploadGenerations: [...session.pendingUploadGenerations, generation]
         }
       },
@@ -433,23 +468,21 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     }
 
     const invalidationGeneration = state.editGenerationCounter + 1;
-    const restoredDraft = session.draftBeforeEdit ?? "";
-    const contentChanged =
-      session.draft !== restoredDraft || Boolean(session.editingMessageId);
+    const contentChanged = Boolean(
+      session.editingDraft || session.editingError || session.editingMessageId
+    );
     set({
       editGenerationCounter: invalidationGeneration,
       sessionsByKey: {
         ...state.sessionsByKey,
         [key]: {
           ...session,
-          draft: restoredDraft,
-          draftBeforeEdit: null,
           editGeneration: invalidationGeneration,
           editRevision: session.editRevision + (contentChanged ? 1 : 0),
+          editingDraft: "",
+          editingError: null,
           editingMessageId: null,
-          operationError: null,
-          operationErrorLive: true,
-          revision: session.revision + (contentChanged ? 1 : 0)
+          pendingEdit: null
         }
       }
     });
@@ -473,18 +506,20 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         [token.sourceKey]: {
           ...session,
           ...(error
-            ? { operationError: error, operationErrorLive: true }
+            ? {
+                editingError: error
+              }
             : retireEdit
               ? {
-                  draft: "",
-                  draftBeforeEdit: null,
                   editRevision: session.editRevision + 1,
+                  editingDraft: "",
+                  editingError: null,
                   editingMessageId: null,
-                  operationError: null,
-                  operationErrorLive: true,
-                  revision: session.revision + 1
+                  pendingEdit: null
                 }
-              : { operationError: null, operationErrorLive: true }),
+              : {
+                  editingError: null
+                }),
           editGeneration: invalidationGeneration,
           pendingEdit: null
         }
@@ -492,7 +527,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     });
     return true;
   },
-  finishSend(token, outcome, error = null, operationErrorLive = true) {
+  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null) {
     const state = get();
     const sourceSession = state.sessionsByKey[token.sourceKey];
     const key =
@@ -512,7 +547,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       return false;
     }
 
-    const restore = outcome === "failed" && session.revision === pending.clearedRevision;
+    const failedBeforeRun = outcome === "failed" && runId === null;
+    const restore = failedBeforeRun && session.revision === pending.clearedRevision;
     set({
       sessionsByKey: {
         ...state.sessionsByKey,
@@ -526,8 +562,9 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
                 revision: session.revision + 1
               }
             : {}),
-          operationError: outcome === "failed" ? error : null,
-          operationErrorLive: outcome === "failed" ? operationErrorLive : true,
+          operationError: failedBeforeRun ? error : null,
+          operationErrorLive: failedBeforeRun ? operationErrorLive : true,
+          operationErrorRetryable: restore && Boolean(error),
           pendingSend: null
         }
       }
@@ -553,7 +590,13 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         ...state.sessionsByKey,
         [key]: {
           ...session,
-          ...(ownsFeedback ? { operationError, operationErrorLive: true } : {}),
+          ...(ownsFeedback
+            ? {
+                operationError,
+                operationErrorLive: true,
+                operationErrorRetryable: false
+              }
+            : {}),
           pendingUploadGenerations: session.pendingUploadGenerations.filter(
             (candidate) => candidate !== generation
           )
@@ -594,33 +637,33 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
   setDraft(value) {
     get().updateSession(get().activeSessionKey, { draft: value });
   },
-  setEditingMessageId(value) {
+  setEditingDraft(value) {
     const state = get();
-    if (state.sessionsByKey[state.activeSessionKey]?.pendingEdit) {
+    const session = state.sessionsByKey[state.activeSessionKey];
+    if (!session?.editingMessageId || session.pendingEdit) {
       return;
     }
-    get().updateSession(state.activeSessionKey, { editingMessageId: value });
+    get().updateSession(state.activeSessionKey, {
+      editingDraft: value,
+      editingError: null
+    });
   },
   startEdit(messageId, draft) {
     const state = get();
     const session = state.sessionsByKey[state.activeSessionKey];
-    if (!session || session.pendingEdit) {
+    if (!session || session.pendingEdit || session.pendingSend || session.editingMessageId) {
       return;
     }
 
     const next = patchedSession(session, {
-      draft,
-      editingMessageId: messageId,
-      operationError: null
+      editingDraft: draft,
+      editingError: null,
+      editingMessageId: messageId
     });
     set({
       sessionsByKey: {
         ...state.sessionsByKey,
-        [state.activeSessionKey]: {
-          ...next,
-          draftBeforeEdit:
-            session.editingMessageId === null ? session.draft : session.draftBeforeEdit
-        }
+        [state.activeSessionKey]: next
       }
     });
   },

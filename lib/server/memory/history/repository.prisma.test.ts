@@ -3363,6 +3363,39 @@ describe("Memory lexical history index persistence", () => {
       }))
         .resolves.toBe(true);
 
+      const recoveredToolCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { value: "recovered" },
+          modelRunId: turn.run.id,
+          ordinal: 1,
+          providerCallId: "egress-recovered-tool-call",
+          roundIndex: 0,
+          toolName: "search_knowledge"
+        }
+      });
+      const recoveredToolReceipt = await service.beginDispatch({
+        destinationKind: "knowledge",
+        destinationSnapshot: { kind: "knowledge", toolName: "search_knowledge", version: 1 },
+        mode: "TOOL_CALL",
+        modelRunToolCallId: recoveredToolCall.id,
+        requestEvidence: { current: directCanary },
+        runId: turn.run.id,
+        userId
+      });
+      expect(recoveredToolReceipt.requestOrdinal).toBe(4);
+      await expect(service.settleRecoveredToolDispatch({
+        modelRunToolCallId: recoveredToolCall.id,
+        outcome: "COMPLETED",
+        runId: turn.run.id,
+        userId
+      })).resolves.toBe(true);
+      await expect(service.settleRecoveredToolDispatch({
+        modelRunToolCallId: recoveredToolCall.id,
+        outcome: "COMPLETED",
+        runId: turn.run.id,
+        userId
+      })).resolves.toBe(true);
+
       await expect(service.beginDispatch({
         destinationKind: "mcp",
         destinationSnapshot,
@@ -3406,6 +3439,12 @@ describe("Memory lexical history index persistence", () => {
           errorCode: "provider_dispatch_failed",
           mode: "PROVIDER_REQUEST",
           requestOrdinal: 3
+        }),
+        expect.objectContaining({
+          dispatchState: "COMPLETED",
+          mode: "TOOL_CALL",
+          modelRunToolCallId: recoveredToolCall.id,
+          requestOrdinal: 4
         })
       ]);
       expect(JSON.stringify(receipts)).not.toContain(directCanary);

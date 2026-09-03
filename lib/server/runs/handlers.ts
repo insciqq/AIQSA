@@ -23,6 +23,7 @@ import type { StorageAdapter } from "../uploads/storage";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDispatchLifecycle";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
 import {
   materializePreparedRunData,
@@ -67,6 +68,7 @@ export type {
 export type RunHandlerDeps = {
   allowFakeProvider?: boolean;
   assistants?: RunPreparationDeps["assistants"];
+  chatTitleGenerator?: ChatTitleGenerator;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
   knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
@@ -555,6 +557,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.knowledgeProviderDispatch
         ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
         : {}),
+      ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -709,6 +712,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.knowledgeProviderDispatch
         ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
         : {}),
+      ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),

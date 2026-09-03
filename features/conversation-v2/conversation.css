@@ -10,7 +10,7 @@
 
 .v2-conversation-jump-latest {
   position: absolute;
-  right: max(1rem, calc((100% - var(--v2-measure)) / 2));
+  left: max(0.75rem, calc((100% - var(--v2-measure)) / 2 - 3rem));
   bottom: 1rem;
   z-index: 12;
   border: 1px solid var(--v2-color-border2);
@@ -102,6 +102,75 @@
   line-height: 1.55;
 }
 
+.v2-conversation-turn[data-role="user"][data-editing="true"] .v2-conversation-turn-content {
+  width: min(42rem, 100%);
+  max-width: 100%;
+  padding: 0.75rem;
+}
+
+.v2-inline-message-edit {
+  display: grid;
+  min-width: 0;
+  gap: 0.625rem;
+}
+
+.v2-inline-message-edit-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 5.5rem;
+  max-height: min(45vh, 26rem);
+  resize: none;
+  overflow-y: auto;
+  padding: 0.75rem 0.8125rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.v2-inline-message-edit-input:disabled {
+  color: var(--v2-color-text2);
+  cursor: wait;
+}
+
+.v2-inline-message-edit-attachments {
+  min-width: 0;
+}
+
+.v2-inline-message-edit-note,
+.v2-inline-message-edit-error {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.v2-inline-message-edit-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.375rem;
+  color: var(--v2-color-text2);
+}
+
+.v2-inline-message-edit-note > .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+  margin-top: 0.125rem;
+  color: var(--v2-color-accent);
+}
+
+.v2-inline-message-edit-error {
+  color: var(--v2-color-danger);
+}
+
+.v2-inline-message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 /* Answer body follows S3 §3.2 type.body: 16/1.66. */
 .v2-conversation-turn[data-role="assistant"] .v2-conversation-turn-content {
   width: 100%;
@@ -133,6 +202,14 @@
   background: var(--v2-color-hover);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .v2-bubble-expander {
+    display: inline-flex;
+    min-height: 2.75rem;
+    align-items: center;
+  }
+}
+
 .v2-conversation-markdown,
 .v2-conversation-markdown > div,
 .v2-conversation-markdown p,
@@ -145,24 +222,28 @@
   overflow-wrap: anywhere;
 }
 
+/* Knowledge citation mark (PRD §4.4): an 18px rounded tile in the answer
+   phase's violet — the only violet outside live state. */
 .knowledge-citation-control {
   display: inline-flex;
-  min-height: 1.35rem;
+  height: 1.125rem;
+  min-width: 1.125rem;
   align-items: center;
-  margin: 0 0.08em;
-  padding: 0 0.18em;
+  justify-content: center;
+  margin: 0 0.15em;
+  padding: 0 0.3em;
   border: 0;
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-accent);
-  background: color-mix(in srgb, var(--v2-color-accent) 7%, transparent);
+  border-radius: 0.375rem;
+  color: var(--v2-color-accent2);
+  background: var(--v2-color-accent2-dim);
   cursor: pointer;
-  font: 600 0.72em/1.35 var(--font-mono), monospace;
-  vertical-align: 0.08em;
+  font: 600 0.6875rem/1 var(--font-sans), sans-serif;
+  vertical-align: 0.15em;
   user-select: text;
 }
 
 .knowledge-citation-control:hover {
-  background: color-mix(in srgb, var(--v2-color-accent) 13%, transparent);
+  background: color-mix(in srgb, var(--v2-color-accent2) 24%, transparent);
 }
 
 .knowledge-citation-control:focus-visible {
@@ -225,9 +306,28 @@
   background: var(--v2-color-code-bg);
 }
 
-/* Answer tables per S3 §3.2: 14.5px body with a 12px UPPERCASE thead whose
-   column headers never break mid-word («Res ult» audit §6) — the wrapper owns
-   the horizontal scroll instead. */
+/* Answer tables sit on the surface; the head row is a surface2 band. */
+.v2-conversation-markdown [data-testid="markdown-table-scroll"] {
+  background: var(--v2-color-surface);
+}
+
+/* Code header: "sql · Copy" in 12px mono on a slightly raised band. */
+.v2-conversation-markdown .group\/code > div:first-child {
+  min-height: 2.25rem;
+  border-color: var(--v2-color-border);
+  background: color-mix(in srgb, var(--v2-color-surface2) 55%, transparent);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+}
+
+.v2-conversation-markdown .group\/code > div:first-child button {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+}
+
+/* Answer tables: 14.5px body with an 11.5px UPPERCASE thead whose column
+   headers never break mid-word («Res ult» audit §6) — the wrapper owns the
+   horizontal scroll instead. */
 .v2-conversation-markdown [data-testid="markdown-table-scroll"] table {
   width: 100%;
   min-width: 36rem;
@@ -237,10 +337,18 @@
 .v2-conversation-markdown [data-testid="markdown-table-scroll"] thead th {
   min-width: 4rem;
   overflow-wrap: normal;
-  font-size: 0.75rem;
+  border-color: var(--v2-color-border);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+  font-size: 0.71875rem;
+  font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+.v2-conversation-markdown [data-testid="markdown-table-scroll"] td {
+  border-color: var(--v2-color-border);
 }
 
 .v2-conversation-markdown [data-testid="markdown-table-scroll"] :is(th, td):first-child {
@@ -265,13 +373,23 @@
   justify-content: flex-end;
   gap: 0.125rem;
   color: var(--v2-color-text2);
+}
+
+/* State first, verbs last: the pager and the Sources chip stay visible on
+   every answer; only the verbs (regenerate, copy, more) hover-reveal, so
+   nothing shifts when they appear. */
+.v2-message-actions-verbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
   opacity: 0;
-  visibility: hidden;
+  /* Invisible, not hidden: the dock stays a keyboard target and reveals on
+     focus-within (A15); pointer-events keep it from catching stray clicks. */
+  pointer-events: none;
   transform: translateY(-0.25rem);
   transition:
     opacity var(--v2-motion-fast),
-    transform var(--v2-motion-fast),
-    visibility var(--v2-motion-fast);
+    transform var(--v2-motion-fast);
 }
 
 .v2-conversation-turn[data-role="user"] .v2-message-actions {
@@ -288,15 +406,6 @@
   z-index: 65;
 }
 
-/* The disabled reason carries meaning, so it keeps the text2 floor. */
-.v2-message-action-guidance {
-  max-width: 17rem;
-  padding: 0 0.375rem;
-  color: var(--v2-color-text2);
-  font-size: 0.75rem;
-  line-height: 1.35;
-}
-
 .v2-message-actions .v2-icon-button {
   width: 1.875rem;
   height: 1.875rem;
@@ -311,11 +420,11 @@
   justify-content: flex-start;
 }
 
-.v2-conversation-turn[data-controls-open="true"] .v2-message-actions,
-.v2-conversation-turn:focus-within .v2-message-actions,
-.v2-conversation-thread > li:last-child > .v2-conversation-turn[data-role="assistant"] .v2-message-actions {
+.v2-conversation-turn[data-controls-open="true"] .v2-message-actions-verbs,
+.v2-conversation-turn:focus-within .v2-message-actions-verbs,
+.v2-conversation-thread > li:last-child > .v2-conversation-turn[data-role="assistant"] .v2-message-actions-verbs {
   opacity: 1;
-  visibility: visible;
+  pointer-events: auto;
   transform: translateY(0);
 }
 
@@ -323,9 +432,18 @@
    so the reading flow stays quiet; the newest settled answer keeps its dock
    visible because Regenerate/Copy are its most likely next actions (F5). */
 @media (hover: hover) and (pointer: fine) {
-  .v2-conversation-turn:hover .v2-message-actions {
+  .v2-conversation-turn:hover .v2-message-actions-verbs {
     opacity: 1;
-    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+}
+
+/* Touch has no hover: every settled turn keeps its actions visible. */
+@media (hover: none), (pointer: coarse) {
+  .v2-message-actions-verbs {
+    opacity: 1;
+    pointer-events: auto;
     transform: translateY(0);
   }
 }
@@ -353,8 +471,21 @@
 .v2-conversation-orientation-copy {
   display: grid;
   justify-items: center;
-  gap: 0.5rem;
+  gap: 0.75rem;
   text-align: center;
+}
+
+/* The blank chat greets with the mark above the question (PRD §4.7). */
+.v2-conversation-orientation-mark {
+  display: grid;
+  place-items: center;
+  color: var(--v2-color-accent);
+}
+
+.v2-conversation-orientation-mark > .v2-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  stroke-width: 2;
 }
 
 .v2-conversation-orientation-copy p,
@@ -412,8 +543,8 @@
   height: 2.125rem;
   place-items: center;
   border-radius: 50%;
-  color: var(--v2-color-accent-ink);
-  background: var(--v2-color-accent);
+  color: var(--v2-color-text3);
+  background: var(--v2-color-surface2);
 }
 
 .v2-conversation-state {
@@ -422,9 +553,10 @@
   min-height: 100%;
   margin: 0 auto;
   place-content: center;
-  justify-items: start;
+  justify-items: center;
   gap: 0.75rem;
   padding: max(5rem, env(safe-area-inset-top)) 0 max(5rem, env(safe-area-inset-bottom));
+  text-align: center;
 }
 
 .v2-conversation-state > p:not(.v2-conversation-state-kicker) {
@@ -508,7 +640,7 @@ html[data-motion="off"] .v2-skeleton {
   transition: none;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   .v2-conversation {
     height: 100dvh;
   }
@@ -529,7 +661,14 @@ html[data-motion="off"] .v2-skeleton {
   }
 
   .v2-conversation-turn[data-role="user"] .v2-conversation-turn-content {
-    max-width: 88%;
+    /* Reserve the left lane for the jump-to-latest control even when the
+       question saturates its normal mobile measure. */
+    max-width: min(88%, calc(100% - 3rem));
+  }
+
+  .v2-conversation-turn[data-role="user"][data-editing="true"] .v2-conversation-turn-content {
+    width: 100%;
+    max-width: 100%;
   }
 }
 
@@ -546,7 +685,7 @@ html[data-motion="off"] .v2-skeleton {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .v2-message-actions,
+  .v2-message-actions-verbs,
   .v2-skeleton {
     animation: none;
     transition: none;

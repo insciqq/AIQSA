@@ -927,7 +927,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     }]);
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
   await chooseSearchStrategy(page, "^Off");
-  await expect(page.locator(".v2-composer-model-trigger")).toContainText("GPT-5.6 Sol");
+  await expect(page.getByTestId("header-model-trigger")).toContainText("GPT-5.6 Sol");
   const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();
   const question = `First question after Quick setup ${randomUUID()}`;
@@ -1137,8 +1137,9 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Run profiles" })).toHaveCount(0);
+    // Five native providers plus the Custom (OpenAI-compatible) entry.
     await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
-      .toHaveCount(5);
+      .toHaveCount(6);
     await section.getByRole("button", { name: /Custom 1 configured/ }).click();
     await expect(section.getByRole("heading", { name: "Connect a custom endpoint" })).toBeVisible();
     await expect(section.getByLabel("API root")).toBeVisible();
@@ -1421,7 +1422,8 @@ test("administrator activates a Custom replacement and deletes its complete conf
   await section.getByRole("tab", { name: "Connections" }).click();
   await section.getByTestId("provider-connection-index")
     .getByRole("button", { name: /Lifecycle Custom/ }).click();
-  await section.getByRole("tab", { name: "Models" }).click();
+  // Exact: the workspace strip also has a "System Models" tab.
+  await section.getByRole("tab", { exact: true, name: "Models" }).click();
   await section.getByTestId("provider-task-models")
     .getByRole("button", { name: "Add model" }).click();
   await expect.poll(() => compatibleDiscoveryBodies.length).toBe(1);
@@ -1758,7 +1760,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   expect(submittedKey).toBe("e2e-write-only-provider-key");
   await expect(section.getByText("e2e-write-only-provider-key")).toHaveCount(0);
 
-  await section.getByRole("tab", { name: "Models" }).click();
+  await section.getByRole("tab", { exact: true, name: "Models" }).click();
   const modelWorkflow = section.getByTestId("provider-task-models");
   const modelCatalogResponse = page.waitForResponse((response) => {
     const request = response.request();
@@ -1861,7 +1863,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(section.getByText("Ready to activate.")).toBeVisible();
 
   await expect(section.getByRole("tab", { name: "Diagnostics" })).toHaveCount(0);
-  await section.getByRole("tab", { name: "Models" }).click();
+  await section.getByRole("tab", { exact: true, name: "Models" }).click();
   await section.getByRole("button", { name: "Open E2E Model capabilities" }).click();
   const capabilities = section.getByTestId("provider-model-capabilities-model-e2e");
   await capabilities.getByRole("button", { name: "Run compatibility checks" }).click();

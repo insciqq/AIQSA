@@ -84,6 +84,7 @@ import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
   type KnowledgeAnswerContractPair
 } from "../knowledge/answerGroundingV5";
@@ -417,8 +418,8 @@ function focusedKnowledgeFailure(
       "The Knowledge answer cited evidence outside the final manifest.",
     knowledge_retrieval_failed: "Knowledge retrieval failed.",
     no_retrieval_candidates:
-      "No retrieval candidates were found in the ready Knowledge sources.",
-    sources_processing: "The selected Knowledge sources are still processing."
+      "No retrieval candidates were found in the ready Knowledge documents.",
+    sources_processing: "The selected Knowledge documents are still processing."
   };
   return { code, message: messages[code] };
 }
@@ -693,12 +694,12 @@ type RecoveryToolContext = {
     execute(signal: AbortSignal): Promise<ReadonlyMap<string, ToolExecutionResult>>;
   }>>;
   mcpDiscoveryQueue: Promise<void>;
-  persistedUsageRecordedAt: number | null;
   providerRequest: ProviderRunRequest;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
   searchExecutor: RecoverySearchExecutor | null;
   tools: RunTool[];
+  usageAccountedToolCallIds: Set<string>;
   usageAttributions: RunUsageAttribution[];
 };
 
@@ -970,17 +971,8 @@ async function currentRecoveryMcpDispatchAllowed(
   }
 }
 
-function settledSearchUsageNeedsRecovery(
-  call: PersistedToolLoopCall,
-  persistedUsageRecordedAt: number | null
-): boolean {
-  if (persistedUsageRecordedAt === null) return true;
-  if (!call.completedAt) return false;
-  const completedAt = Date.parse(call.completedAt);
-  return Number.isFinite(completedAt) && completedAt > persistedUsageRecordedAt;
-}
-
 async function recordRecoveredSearchResult(input: Readonly<{
+  modelRunToolCallId: string;
   context: RecoveryToolContext;
   includeUsage: boolean;
   result: ToolExecutionResult;
@@ -1007,12 +999,16 @@ async function recordRecoveredSearchResult(input: Readonly<{
       repository: input.context.deps.repository
     });
   }
+  if (input.includeUsage) {
+    input.context.usageAccountedToolCallIds.add(input.modelRunToolCallId);
+  }
 }
 
 function recordRecoveredKnowledgeResult(input: Readonly<{
   callId: string;
   context: RecoveryToolContext;
   includeUsage: boolean;
+  modelRunToolCallId: string;
   result: ToolExecutionResult;
 }>): void {
   const evidence = knowledgeEvidenceFromToolResult(input.result);
@@ -1027,6 +1023,27 @@ function recordRecoveredKnowledgeResult(input: Readonly<{
   input.context.usageAttributions.push(
     ...knowledgeUsageAttributionsFromToolResult(input.result)
   );
+  input.context.usageAccountedToolCallIds.add(input.modelRunToolCallId);
+}
+
+async function settleRecoveredKnowledgeEgress(input: Readonly<{
+  context: RecoveryToolContext;
+  modelRunToolCallId: string;
+  result: ToolExecutionResult;
+}>): Promise<void> {
+  if (!knowledgeEvidenceFromToolResult(input.result) || !input.context.deps.memoryEgress) return;
+  const settled = await input.context.deps.memoryEgress.settleRecoveredToolDispatch({
+    modelRunToolCallId: input.modelRunToolCallId,
+    outcome: "COMPLETED",
+    runId: input.context.run.id,
+    userId: input.context.run.userId
+  });
+  if (!settled) {
+    throw new ToolLoopRecoveryError(
+      "memory_egress_receipt_conflict",
+      "A recovered Knowledge egress receipt could not be settled."
+    );
+  }
 }
 
 async function executeRecoveredMcpDiscovery(
@@ -1167,6 +1184,69 @@ async function executePersistedToolCall(
     context.deps.repository.claimToolLoopCall
 ): Promise<ToolLoopSettledCall<ToolExecutionResult>> {
   const call = modelToolCall(persisted);
+  if (persisted.state === "running" && isRecoveredKnowledgeCall(context, call.name)) {
+    if (signal.aborted) throw new ToolLoopRecoveryStopped();
+    let replay: Awaited<ReturnType<NonNullable<KnowledgeToolExecutor["preflight"]>>> | null = null;
+    try {
+      replay = await context.deps.knowledgeExecutor!.preflight?.(call, {
+        persistedToolCallId: persisted.id,
+        request: context.providerRequest,
+        runId: context.run.id,
+        userId: context.run.userId
+      }) ?? null;
+    } catch {
+      // A running call may already have crossed an external-I/O boundary. A
+      // receipt read failure must never turn into a fresh dispatch attempt.
+    }
+    if (signal.aborted) throw new ToolLoopRecoveryStopped();
+    if (!replay || replay.kind !== "replayed") {
+      throw new ToolLoopRecoveryError(
+        "tool_call_outcome_unknown",
+        `Tool ${call.name} may have completed before the process stopped and was not repeated.`
+      );
+    }
+    const stored = snapshotToolExecutionResult(
+      replay.result,
+      toolLoopPersistenceLimits.resultBytes
+    );
+    if (stored === null) {
+      throw new ToolLoopRecoveryError(
+        "tool_call_result_invalid",
+        "A persisted Knowledge receipt is invalid and cannot be replayed safely."
+      );
+    }
+    const settled = await context.deps.repository.settleToolLoopCall({
+      callId: persisted.id,
+      result: stored,
+      runId: context.run.id,
+      state: replay.result.status,
+      userId: context.run.userId
+    });
+    if (settled !== "settled" && settled !== "reused") {
+      throw new ToolLoopRecoveryError(
+        "tool_call_settle_conflict",
+        "A recovered Knowledge receipt could not be durably settled."
+      );
+    }
+    await settleRecoveredKnowledgeEgress({
+      context,
+      modelRunToolCallId: persisted.id,
+      result: replay.result
+    });
+    recordRecoveredKnowledgeResult({
+      callId: call.id,
+      context,
+      includeUsage: true,
+      modelRunToolCallId: persisted.id,
+      result: replay.result
+    });
+    return {
+      call,
+      ordinal: persisted.ordinal,
+      result: { status: "complete", value: replay.result },
+      round: persisted.roundIndex
+    };
+  }
   const claim = await claimCall({
     callId: persisted.id,
     runId: context.run.id,
@@ -1196,21 +1276,22 @@ async function executePersistedToolCall(
     if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       await recordRecoveredSearchResult({
         context,
-        includeUsage: settledSearchUsageNeedsRecovery(
-          claim.call,
-          context.persistedUsageRecordedAt
-        ),
+        includeUsage: claim.call.usageAccountedAt == null,
+        modelRunToolCallId: claim.call.id,
         result
       });
     }
     if (isRecoveredKnowledgeCall(context, call.name)) {
+      await settleRecoveredKnowledgeEgress({
+        context,
+        modelRunToolCallId: claim.call.id,
+        result
+      });
       recordRecoveredKnowledgeResult({
         callId: call.id,
         context,
-        includeUsage: settledSearchUsageNeedsRecovery(
-          claim.call,
-          context.persistedUsageRecordedAt
-        ),
+        includeUsage: claim.call.usageAccountedAt == null,
+        modelRunToolCallId: claim.call.id,
         result
       });
     }
@@ -1339,7 +1420,12 @@ async function executePersistedToolCall(
         context.run.id,
         signal
       );
-      await recordRecoveredSearchResult({ context, includeUsage: true, result });
+      await recordRecoveredSearchResult({
+        context,
+        includeUsage: true,
+        modelRunToolCallId: claim.call.id,
+        result
+      });
     } else if (isRecoveredKnowledgeCall(context, call.name)) {
       result = await context.deps.knowledgeExecutor!.execute(
         call,
@@ -1351,7 +1437,13 @@ async function executePersistedToolCall(
           ])
         }
       );
-      recordRecoveredKnowledgeResult({ callId: call.id, context, includeUsage: true, result });
+      recordRecoveredKnowledgeResult({
+        callId: call.id,
+        context,
+        includeUsage: true,
+        modelRunToolCallId: claim.call.id,
+        result
+      });
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -1436,7 +1528,8 @@ async function executePersistedToolBatch(
 ): Promise<readonly ToolLoopSettledCall<ToolExecutionResult>[]> {
   const ordered = [...calls].sort((left, right) => left.ordinal - right.ordinal);
   const ambiguous = ordered.find((call) =>
-    call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME);
+    call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
+    !isRecoveredKnowledgeCall(context, call.toolName));
   if (ambiguous) {
     throw new ToolLoopRecoveryError(
       "tool_call_outcome_unknown",
@@ -1562,11 +1655,6 @@ async function recoverCheckpointedToolLoop(
       runId: run.id,
       userId: run.userId
     });
-    const persistedUsageRecordedAt = persistedUsage.reduce<number | null>((latest, attribution) => {
-      const recordedAt = Date.parse(attribution.recordedAt);
-      if (!Number.isFinite(recordedAt)) return latest;
-      return latest === null ? recordedAt : Math.max(latest, recordedAt);
-    }, null);
     const persistedAttributions = persistedUsage.map(
       ({ recordedAt: _recordedAt, ...attribution }) => attribution
     );
@@ -1715,7 +1803,6 @@ async function recoverCheckpointedToolLoop(
       knowledgeResults: new Map(),
       mcpDiscoveryBatches: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
-      persistedUsageRecordedAt,
       providerRequest,
       run,
       runtime() {
@@ -1724,6 +1811,7 @@ async function recoverCheckpointedToolLoop(
       },
       searchExecutor,
       tools,
+      usageAccountedToolCallIds: new Set(),
       usageAttributions
     };
     tokenBuffer = createRunTokenPersistenceBuffer({
@@ -1841,20 +1929,25 @@ async function recoverCheckpointedToolLoop(
       answerRoundEntry?: PersistedAnswerRoundUsage
     ): Promise<void> {
       const grouped = groupedUsageAttributions(allUsageAttributions());
-      if (grouped.length === 0 && !answerRoundEntry) return;
+      if (grouped.length === 0 && !answerRoundEntry &&
+        context.usageAccountedToolCallIds.size === 0) return;
       const recorded = await deps.repository.recordRunUsageEvents({
         ...(answerRoundEntry ? { answerRoundUsage: answerRoundEntry } : {}),
         chatId: run.chatId,
         runId: run.id,
+        usageAccountedToolCallIds: [...context.usageAccountedToolCallIds],
         usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, grouped),
         userId: run.userId
       });
-      if (answerRoundEntry && !recorded) {
+      if ((answerRoundEntry || context.usageAccountedToolCallIds.size > 0) && !recorded) {
         usageEvidenceTrusted = false;
         throw new ToolLoopRecoveryError(
           "tool_loop_usage_checkpoint_conflict",
           "Recovered provider-round usage could not be checkpointed."
         );
+      }
+      if (recorded) {
+        context.usageAccountedToolCallIds.clear();
       }
     }
 
@@ -2018,6 +2111,16 @@ async function recoverCheckpointedToolLoop(
       }
     }
 
+    function recoveredKnowledgeSearchUnavailable(): boolean {
+      return [...persistedCalls.values()]
+        .filter((call) => call.toolName === KNOWLEDGE_SEARCH_TOOL_NAME)
+        .some((call) => {
+          const result = context.knowledgeResults.get(call.providerCallId);
+          return result !== undefined &&
+            knowledgeEvidenceFromToolResult(result)?.outcome === "search_unavailable";
+        });
+    }
+
     async function finalizeRecoveredKnowledgeToolLoop(): Promise<void> {
       await tokenBuffer!.flush();
       await persistCumulativeUsage();
@@ -2032,7 +2135,9 @@ async function recoverCheckpointedToolLoop(
           knowledgeZeroEvidence: true,
           repository: deps.repository,
           result: {
-            finalText: KNOWLEDGE_INSUFFICIENT_MESSAGE,
+            finalText: recoveredKnowledgeSearchUnavailable()
+              ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
+              : KNOWLEDGE_INSUFFICIENT_MESSAGE,
             ...(currentProviderResponseId
               ? { providerResponseId: currentProviderResponseId }
               : {}),
@@ -3626,45 +3731,13 @@ async function refreshProviderRunOnceRegistered(
           tools: undefined
         };
         const call = modelToolCall(persisted);
-        const claim = await claimCall({ callId: persisted.id, runId, userId });
-        if (claim.kind === "ambiguous") {
-          throw new ToolLoopRecoveryError(
-            "knowledge_retrieval_outcome_unknown",
-            "Focused Knowledge retrieval may have completed and was not repeated."
-          );
-        }
-        if (claim.kind === "not_found" || claim.kind === "cancelled") {
-          throw new ToolLoopRecoveryError(
-            "knowledge_focused_checkpoint_conflict",
-            "The focused Knowledge checkpoint is unavailable."
-          );
-        }
-        let result: ToolExecutionResult;
-        if (claim.kind === "settled") {
-          const stored = parsePersistedToolExecutionResult(call, claim.call.result);
-          if (!stored) {
-            throw new ToolLoopRecoveryError(
-              "knowledge_retrieval_failed",
-              "Persisted focused Knowledge evidence is invalid."
-            );
-          }
-          result = stored;
-        } else {
-          const executionContext = {
-            persistedToolCallId: claim.call.id,
-            request: providerRequest,
-            runId,
-            userId
-          };
-          const preflight = await deps.knowledgeExecutor.preflight?.(call, executionContext);
-          result = preflight && preflight.kind !== "admitted"
-            ? preflight.result
-            : await deps.knowledgeExecutor.execute(call, executionContext, {
-                signal: AbortSignal.any([
-                  signal,
-                  AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
-                ])
-              }).catch((error) => toolExecutionErrorResult(call, error, "Knowledge"));
+        const executionContext = {
+          persistedToolCallId: persisted.id,
+          request: providerRequest,
+          runId,
+          userId
+        };
+        const settleFocusedResult = async (result: ToolExecutionResult): Promise<void> => {
           const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
           if (!stored) {
             throw new ToolLoopRecoveryError(
@@ -3673,7 +3746,7 @@ async function refreshProviderRunOnceRegistered(
             );
           }
           const settled = await deps.repository.settleToolLoopCall({
-            callId: claim.call.id,
+            callId: persisted.id,
             result: stored,
             runId,
             state: result.status,
@@ -3683,6 +3756,100 @@ async function refreshProviderRunOnceRegistered(
             throw new ToolLoopRecoveryError(
               "knowledge_focused_checkpoint_conflict",
               "Recovered focused Knowledge evidence could not be settled."
+            );
+          }
+        };
+        let result: ToolExecutionResult;
+        let usageAccounted = persisted.usageAccountedAt != null;
+        if (persisted.state === "running") {
+          if (signal.aborted) throw new ToolLoopRecoveryStopped();
+          let replay: Awaited<ReturnType<NonNullable<KnowledgeToolExecutor["preflight"]>>> | null =
+            null;
+          try {
+            replay = await deps.knowledgeExecutor.preflight?.(call, executionContext) ?? null;
+          } catch {
+            // A running focused call may already have completed retrieval. A
+            // receipt read failure cannot authorize a second dispatch.
+          }
+          if (signal.aborted) throw new ToolLoopRecoveryStopped();
+          if (!replay || replay.kind !== "replayed") {
+            throw new ToolLoopRecoveryError(
+              "knowledge_retrieval_outcome_unknown",
+              "Focused Knowledge retrieval may have completed and was not repeated."
+            );
+          }
+          result = replay.result;
+          await settleFocusedResult(result);
+        } else {
+          const claim = await claimCall({ callId: persisted.id, runId, userId });
+          if (claim.kind === "ambiguous") {
+            throw new ToolLoopRecoveryError(
+              "knowledge_retrieval_outcome_unknown",
+              "Focused Knowledge retrieval may have completed and was not repeated."
+            );
+          }
+          if (claim.kind === "not_found" || claim.kind === "cancelled") {
+            throw new ToolLoopRecoveryError(
+              "knowledge_focused_checkpoint_conflict",
+              "The focused Knowledge checkpoint is unavailable."
+            );
+          }
+          usageAccounted = claim.call.usageAccountedAt != null;
+          if (claim.kind === "settled") {
+            const stored = parsePersistedToolExecutionResult(call, claim.call.result);
+            if (!stored) {
+              throw new ToolLoopRecoveryError(
+                "knowledge_retrieval_failed",
+                "Persisted focused Knowledge evidence is invalid."
+              );
+            }
+            result = stored;
+          } else {
+            const preflight = await deps.knowledgeExecutor.preflight?.(call, executionContext);
+            result = preflight && preflight.kind !== "admitted"
+              ? preflight.result
+              : await deps.knowledgeExecutor.execute(call, executionContext, {
+                  signal: AbortSignal.any([
+                    signal,
+                    AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
+                  ])
+                }).catch((error) => toolExecutionErrorResult(call, error, "Knowledge"));
+            await settleFocusedResult(result);
+          }
+        }
+        if (knowledgeEvidenceFromToolResult(result) && deps.memoryEgress &&
+          !(await deps.memoryEgress.settleRecoveredToolDispatch({
+            modelRunToolCallId: persisted.id,
+            outcome: "COMPLETED",
+            runId,
+            userId
+          }))) {
+          throw new ToolLoopRecoveryError(
+            "memory_egress_receipt_conflict",
+            "The recovered focused Knowledge egress receipt could not be settled."
+          );
+        }
+        if (!usageAccounted) {
+          const persistedUsage = await deps.repository.loadRunUsageAttributions({ runId, userId });
+          const retrievalAttributions = knowledgeUsageAttributionsFromToolResult(result);
+          const cumulativeAttributions = groupedUsageAttributions([
+            ...persistedUsage.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
+            ...retrievalAttributions
+          ]);
+          const recorded = await deps.repository.recordRunUsageEvents({
+            chatId: control.chatId,
+            runId,
+            usageAccountedToolCallIds: [persisted.id],
+            usageAttributions: await usageAttributionsWithEstimatedCost(
+              deps.repository,
+              cumulativeAttributions
+            ),
+            userId
+          });
+          if (!recorded) {
+            throw new ToolLoopRecoveryError(
+              "tool_loop_usage_checkpoint_conflict",
+              "Focused Knowledge usage could not be checkpointed."
             );
           }
         }
@@ -3698,18 +3865,6 @@ async function refreshProviderRunOnceRegistered(
             "no_retrieval_candidates",
             "No Knowledge retrieval candidates were found."
           );
-        }
-        const retrievalAttributions = knowledgeUsageAttributionsFromToolResult(result);
-        if (retrievalAttributions.length > 0) {
-          await deps.repository.recordRunUsageEvents({
-            chatId: control.chatId,
-            runId,
-            usageAttributions: await usageAttributionsWithEstimatedCost(
-              deps.repository,
-              retrievalAttributions
-            ),
-            userId
-          });
         }
         const draft = focusedKnowledgeEvidenceDispatchDraft({
           exclusions: persistedExclusions,

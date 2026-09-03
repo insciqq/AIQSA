@@ -289,7 +289,8 @@ test.describe("installation model default policy", () => {
 
       let modelPicker = await openModelPicker(userPage);
       const inheritedRow = modelPicker.getByRole("option", { name: /Browser Policy Model/ });
-      await expect(inheritedRow).toContainText("Current");
+      // The current model is the checked row (aria-selected), not a text badge.
+      await expect(inheritedRow).toHaveAttribute("aria-selected", "true");
       await expect(inheritedRow).toContainText("Org default");
       await modelPicker.getByRole("option", { name: /Fake QSA/ }).click();
       await expectRunSummary(userPage, { model: "Fake QSA" });
@@ -300,7 +301,7 @@ test.describe("installation model default policy", () => {
       })).defaultProviderModelId).toBeNull();
 
       modelPicker = await openModelPicker(userPage);
-      await expect(modelPicker.getByRole("option", { name: /Fake QSA/ })).toContainText("Current");
+      await expect(modelPicker.getByRole("option", { name: /Fake QSA/ })).toHaveAttribute("aria-selected", "true");
       await expect(modelPicker.getByRole("option", { name: /Browser Policy Model/ }))
         .toContainText("Org default");
       const personalSave = userPage.waitForResponse((response) =>

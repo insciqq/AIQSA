@@ -1,4 +1,8 @@
 import type { Page, Route } from "@playwright/test";
+import {
+  decodeOptionalChatDefaults,
+  INSTALLATION_CHAT_DEFAULTS
+} from "../../../lib/contracts/chatDefaults";
 import type { UserSettingsWire } from "../../../lib/contracts/settings";
 import { matrixCatalog } from "./catalog";
 
@@ -65,8 +69,16 @@ export async function installMatrixCatalogFixture(
   const fixtureWorkspace = normalizeFixtureWorkspace(
     workspace ?? { chats: [], contentMatches: [], folders: [] }
   );
+  const fixtureDefaults = fixtureCatalog.defaults as Record<string, unknown>;
+  const chatDefaults = decodeOptionalChatDefaults({
+    knowledgePlan: fixtureDefaults.knowledgePlan,
+    mcpMode: fixtureDefaults.mcpMode,
+    sendWithEnter: fixtureDefaults.sendWithEnter
+  }) ?? INSTALLATION_CHAT_DEFAULTS;
   const settings: UserSettingsWire = {
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
+    defaultKnowledgePlan: chatDefaults.knowledgePlan,
+    defaultMcpMode: chatDefaults.mcpMode,
     hasPersonalModelDefault: fixtureCatalog.defaults.hasPersonalModelDefault,
     modelPreferenceSource: fixtureCatalog.defaults.modelPreferenceSource,
     organizationModelDefault: structuredClone(fixtureCatalog.defaults.organizationModelDefault),
@@ -74,6 +86,7 @@ export async function installMatrixCatalogFixture(
     defaultSearchPlan: structuredClone(fixtureCatalog.defaults.searchPlan),
     organizationSearchPlan: structuredClone(fixtureCatalog.defaults.organizationSearchPlan),
     searchPreferenceSource: fixtureCatalog.defaults.searchPreferenceSource,
+    sendWithEnter: chatDefaults.sendWithEnter,
     showCitations: fixtureCatalog.defaults.showCitations,
     showReasoningBlocks: fixtureCatalog.defaults.showReasoningBlocks
   };

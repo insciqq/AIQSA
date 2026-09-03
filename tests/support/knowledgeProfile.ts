@@ -67,6 +67,15 @@ export function adminKnowledgeOperationsFixture(
       p50DurationMs24h: null,
       p95DurationMs24h: null
     },
+    search: {
+      backendState: "available",
+      expectedProjections: 0,
+      failedProjections: 0,
+      pendingProjections: 0,
+      readyProjections: 0,
+      workerLastSeenAt: "2026-08-18T00:00:00.000Z",
+      workerState: "healthy"
+    },
     ...overrides
   };
 }

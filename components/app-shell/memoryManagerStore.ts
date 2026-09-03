@@ -13,7 +13,7 @@ import {
 } from "@/lib/contracts/memoryConsumer";
 import { create } from "zustand";
 
-export type MemoryManagerScreen = "create" | "detail" | "edit" | "list";
+export type MemoryManagerScreen = "create" | "detail" | "edit" | "forget" | "list";
 export type MemoryManagerLoadState = "error" | "idle" | "loading" | "ready";
 export type MemoryManagerMutationState = "forgetting" | "saving" | null;
 export type MemoryManagerNotice = "forgotten" | "saved" | "saved_use_off" | null;
@@ -219,6 +219,22 @@ export function beginEditMemory(): void {
     draftStale: false,
     mutationError: null,
     screen: "edit"
+  });
+}
+
+export function requestForgetMemory(memoryRef: string): void {
+  const memory = useMemoryManagerStore.getState().memories.find(
+    (item) => item.memoryRef === memoryRef
+  );
+  if (!memory?.allowedActions.includes("FORGET")) return;
+  useMemoryManagerStore.setState({
+    activeMemory: memory,
+    draft: draftFromMemory(memory),
+    draftDirty: false,
+    draftStale: false,
+    mutationError: null,
+    notice: null,
+    screen: "forget"
   });
 }
 

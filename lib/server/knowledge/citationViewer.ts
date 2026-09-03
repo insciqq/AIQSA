@@ -61,17 +61,19 @@ export type KnowledgeViewerOriginal = Readonly<{
   byteSize: number;
   checksum: string;
   fileName: string;
-  mimeType: "application/pdf" | "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+  mimeType: string;
   storageKey: string;
 }>;
 
 export type ResolvedKnowledgeCitationViewer = Readonly<{
   citation: KnowledgeCitationViewer;
+  librarySourceId: string | null;
   original: KnowledgeViewerOriginal | null;
 }>;
 
 export type ResolvedKnowledgeSourceViewer = Readonly<{
   original: KnowledgeViewerOriginal | null;
+  pageCount: number;
   source: KnowledgeSourceViewer;
 }>;
 
@@ -394,22 +396,26 @@ function originalReference(version: Readonly<{
   mimeType: string;
   originalStorageKey: string | null;
 }>): KnowledgeViewerOriginal | null {
-  const supported = new Set<KnowledgeViewerOriginal["mimeType"]>([
-    "application/pdf",
-    "image/gif",
-    "image/jpeg",
-    "image/png",
-    "image/webp"
-  ]);
-  return supported.has(version.mimeType as KnowledgeViewerOriginal["mimeType"]) &&
-    version.originalStorageKey
+  return version.originalStorageKey
     ? {
         byteSize: version.byteSize,
         checksum: version.checksum,
         fileName: version.fileName,
-        mimeType: version.mimeType as KnowledgeViewerOriginal["mimeType"],
+        mimeType: version.mimeType,
         storageKey: version.originalStorageKey
       }
+    : null;
+}
+
+function originalKind(original: KnowledgeViewerOriginal | null): "image" | "pdf" | null {
+  if (original?.mimeType === "application/pdf") return "pdf";
+  return original && new Set([
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp"
+  ]).has(original.mimeType)
+    ? "image"
     : null;
 }
 
@@ -607,6 +613,7 @@ function availableViewer(input: Readonly<{
   excerptTruncated: boolean;
   fileName: string;
   headingPath: readonly string[];
+  libraryAvailable: boolean;
   mimeType: string;
   name: string;
   originalKind: "image" | "pdf" | null;
@@ -623,6 +630,7 @@ function availableViewer(input: Readonly<{
     excerpt: input.excerpt,
     excerptTruncated: input.excerptTruncated,
     headingPath: [...input.headingPath],
+    libraryAvailable: input.libraryAvailable,
     locator: {
       boundingBoxes: [...(input.locatorBoxes ?? targetBoxes(input.blocks))]
         .slice(0, KNOWLEDGE_VIEWER_MAX_BOXES),
@@ -879,6 +887,21 @@ function sourceCurrentlyReadable(version: ViewerSourceVersion): boolean {
   return version.source.deletionRequestedAt === null;
 }
 
+function librarySourceIdForEvidence(input: Readonly<{
+  access: ChatAccess;
+  authority: EvidenceAuthority;
+  sourceId: string;
+  userId: string;
+  version: ViewerSourceVersion;
+}>): string | null {
+  if (input.version.source.ownerUserId === input.userId) return input.sourceId;
+  if (input.access.kind !== "personal" || input.version.source.trashedAt ||
+    input.authority.base?.trashedAt || !input.authority.knowledgeBaseId) return null;
+  const membership = input.version.source.baseMemberships.find((candidate) =>
+    candidate.knowledgeBaseId === input.authority.knowledgeBaseId);
+  return membership && !membership.removedAt ? input.sourceId : null;
+}
+
 async function citationFromEvidence(
   client: CitationViewerClient,
   storage: StorageAdapter,
@@ -892,14 +915,17 @@ async function citationFromEvidence(
   if (input.item.state === "deleted") {
     return {
       citation: { handle: input.item.handle, state: "deleted" },
+      librarySourceId: null,
       original: null
     };
   }
   if (
     input.item.state !== "available" ||
-    !input.item.knowledgeBaseId || !input.item.sourceArtifactId || !input.item.passageId ||
+    !input.item.knowledgeBaseId || !input.item.sourceArtifactId || !input.item.sourceId ||
+    !input.item.passageId ||
     input.item.excerpt === null || !input.item.fileName || input.item.page === null
   ) return null;
+  const sourceId = input.item.sourceId;
   const authority = await currentAuthorityForEvidence(client, {
     access: input.access,
     item: input.item,
@@ -933,6 +959,13 @@ async function citationFromEvidence(
   if (blocks.length === 0) return null;
   const workbook = workbookViewer(document, structuredAnalysis(input.item));
   const original = originalReference(version);
+  const librarySourceId = librarySourceIdForEvidence({
+    access: input.access,
+    authority,
+    sourceId,
+    userId: input.userId,
+    version
+  });
   return {
     citation: {
       ...availableViewer({
@@ -944,11 +977,10 @@ async function citationFromEvidence(
         headingPath: input.item.headingPath.length > 0
           ? input.item.headingPath
           : passage?.headingPath ?? [],
+        libraryAvailable: librarySourceId !== null,
         mimeType: version.mimeType,
         name: input.item.sourceName ?? version.source.name,
-        originalKind: original?.mimeType === "application/pdf"
-          ? "pdf"
-          : original ? "image" : null,
+        originalKind: originalKind(original),
         ...(visual ? { locatorBoxes: visual.boundingBoxes } : {}),
         pageEnd: passage?.pageEnd ?? input.item.page,
         pageStart: passage?.page ?? input.item.page,
@@ -964,6 +996,7 @@ async function citationFromEvidence(
       }),
       handle: input.item.handle
     },
+    librarySourceId,
     original
   };
 }
@@ -999,6 +1032,7 @@ async function citationFromLegacyRun(
   if (tombstone) {
     return {
       citation: { handle: input.decodedHandle.handle, state: "deleted" },
+      librarySourceId: null,
       original: null
     };
   }
@@ -1030,6 +1064,7 @@ async function citationFromLegacyRun(
         excerptTruncated: passage.textTruncated,
         fileName: passage.fileName,
         headingPath: passage.headingPath ?? [],
+        libraryAvailable: false,
         mimeType,
         name: passage.sourceName ?? passage.fileName,
         originalKind: null,
@@ -1042,6 +1077,7 @@ async function citationFromLegacyRun(
       }),
       handle: input.decodedHandle.handle
     },
+    librarySourceId: null,
     original: null
   };
 }
@@ -1138,6 +1174,7 @@ export async function resolveKnowledgeCitationViewer(
       return deletedItem
         ? {
             citation: { handle: decodedHandle.handle, state: "deleted" },
+            librarySourceId: null,
             original: null
           }
         : null;
@@ -1222,6 +1259,7 @@ export async function resolveKnowledgeSourceViewer(
   const original = originalReference(version);
   return {
     original,
+    pageCount: document.pageCount,
     source: availableViewer({
       baseName: base?.name ?? null,
       blocks,
@@ -1229,11 +1267,10 @@ export async function resolveKnowledgeSourceViewer(
       excerptTruncated: false,
       fileName: version.fileName,
       headingPath: target.headingPath,
+      libraryAvailable: true,
       mimeType: version.mimeType,
       name: source.name,
-      originalKind: original?.mimeType === "application/pdf"
-        ? "pdf"
-        : original ? "image" : null,
+      originalKind: originalKind(original),
       pageEnd: target.pageEnd,
       pageStart: target.pageStart,
       statuses: source.trashedAt ? ["trash"] : [],

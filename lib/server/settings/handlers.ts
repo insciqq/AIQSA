@@ -8,6 +8,15 @@ import {
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
+  decodeChatDefaultMcpMode,
+  type ChatDefaultMcpMode
+} from "../../contracts/chatDefaults";
+import {
+  decodeKnowledgeSelection,
+  type KnowledgeSelection
+} from "../../contracts/knowledge";
+import {
+  resolveChatDefaults,
   resolveCurrentUserCatalogSelection,
   resolveSearchPreference,
   type CatalogSelectionData,
@@ -22,8 +31,11 @@ export type SettingsHandlerData = CatalogSelectionData & {
 
 export type UserSettingsUpdate = Partial<{
   defaultControlValues: Record<string, unknown>;
+  defaultKnowledgePlan: KnowledgeSelection | null;
+  defaultMcpMode: ChatDefaultMcpMode;
   defaultProviderModelId: string | null;
   defaultSearchPlan: SearchPlan | null;
+  sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
 }>;
@@ -168,8 +180,11 @@ function buildSettingsUpdate(
 
   const supportedKeys = new Set([
     "defaultControlValues",
+    "defaultKnowledgePlan",
+    "defaultMcpMode",
     "defaultProviderModelId",
     "defaultSearchPlan",
+    "sendWithEnter",
     "showCitations",
     "showReasoningBlocks"
   ]);
@@ -213,6 +228,33 @@ function buildSettingsUpdate(
     }
   }
 
+  if ("defaultKnowledgePlan" in body) {
+    if (body.defaultKnowledgePlan === null) {
+      update.defaultKnowledgePlan = null;
+    } else {
+      const decoded = decodeKnowledgeSelection(body.defaultKnowledgePlan);
+      if (!decoded.ok || decoded.plan.mode === "inherited") {
+        return { error: "default_knowledge_plan_invalid" };
+      }
+      update.defaultKnowledgePlan = decoded.plan.mode === "none" ? null : decoded.plan;
+    }
+  }
+
+  if ("defaultMcpMode" in body) {
+    const mode = decodeChatDefaultMcpMode(body.defaultMcpMode);
+    if (!mode) {
+      return { error: "default_mcp_mode_invalid" };
+    }
+    update.defaultMcpMode = mode;
+  }
+
+  if ("sendWithEnter" in body) {
+    if (typeof body.sendWithEnter !== "boolean") {
+      return { error: "send_with_enter_boolean_required" };
+    }
+    update.sendWithEnter = body.sendWithEnter;
+  }
+
   if ("showCitations" in body) {
     if (typeof body.showCitations !== "boolean") {
       return { error: "show_citations_boolean_required" };
@@ -248,8 +290,11 @@ function serializeSettings(
     settings,
     strategies: selection.entitledStrategies
   });
+  const chatDefaults = resolveChatDefaults(settings);
   return {
     defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
+    defaultKnowledgePlan: chatDefaults.knowledgePlan,
+    defaultMcpMode: chatDefaults.mcpMode,
     hasPersonalModelDefault: selection.hasPersonalModelDefault,
     modelPreferenceSource: selection.modelPreferenceSource,
     organizationModelDefault: selection.organizationModelDefault,
@@ -257,6 +302,7 @@ function serializeSettings(
     defaultSearchPlan: searchPreference.preferredPlan,
     organizationSearchPlan: searchPreference.organizationPlan,
     searchPreferenceSource: searchPreference.source,
+    sendWithEnter: chatDefaults.sendWithEnter,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks
   };

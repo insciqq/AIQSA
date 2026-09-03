@@ -236,6 +236,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
           ? [{
               ...chatSummary(normal.id, normal.title, normal.messageCount),
               archived: true,
+              lastMessageAt: timestamp,
               memoryMode,
               sourceRevision
             }]
@@ -294,15 +295,18 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const workspace = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
-  // The menu names the consequence of each state-specific action.
-  await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
-  await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
+  await workspace.getByRole("button", { exact: true, name: "Retained lifecycle" }).click();
+  const headerMenuTrigger = page.getByTestId("header-more-trigger");
+
+  // The complete header menu names the consequence of each state-specific action.
+  await headerMenuTrigger.click();
+  await page.getByTestId("header-more-menu")
     .getByRole("menuitem", { name: "Exclude from Memory" }).click();
   await expect.poll(() => modePatches.length).toBe(1);
   expect(modePatches.at(-1)).toMatchObject({ mode: "EXCLUDED" });
 
-  await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
-  await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
+  await headerMenuTrigger.click();
+  await page.getByTestId("header-more-menu")
     .getByRole("menuitem", { name: "Resume Memory for this chat" }).click();
   const resumeDialog = page.getByRole("dialog", {
     name: "Resume Memory for Retained lifecycle"
@@ -312,10 +316,10 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   expect(modePatches).toHaveLength(1);
   await page.keyboard.press("Escape");
   await expect(resumeDialog).toHaveCount(0);
-  await expect(workspace.getByRole("button", { name: "Actions: Retained lifecycle" })).toBeFocused();
+  await expect(headerMenuTrigger).toBeFocused();
 
-  await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
-  await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
+  await headerMenuTrigger.click();
+  await page.getByTestId("header-more-menu")
     .getByRole("menuitem", { name: "Resume Memory for this chat" }).click();
   await page.getByRole("dialog", { name: "Resume Memory for Retained lifecycle" })
     .getByRole("button", { name: "Resume Memory for this chat" }).click();
@@ -325,19 +329,22 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
   });
 
-  await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
-  await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
+  await headerMenuTrigger.click();
+  await page.getByTestId("header-more-menu")
     .getByRole("menuitem", { name: "Archive" }).click();
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toHaveCount(0);
 
-  await workspace.getByRole("button", { name: "Archived chats" }).click();
-  const archivedDialog = page.getByRole("dialog", { name: "Archived chats" });
-  // Anchored: list rows now also carry Restore/Delete actions naming the chat.
-  await archivedDialog.getByRole("button", { name: /^Retained lifecycle/ }).click();
-  await expect(page.getByRole("dialog", { name: "Retained lifecycle" })).toContainText("Retained answer");
-  await page.getByRole("dialog", { name: "Retained lifecycle" })
-    .getByRole("button", { name: "Restore" }).click();
+  await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  await settingsDialog.getByRole("button", { name: "Data" }).click();
+  await settingsDialog.getByRole("button", { name: "Manage" }).click();
+  const archivedPanel = settingsDialog.getByTestId("settings-archived-panel");
+  await archivedPanel.getByRole("button", { name: "Open preview: Retained lifecycle" }).click();
+  await expect(archivedPanel.getByRole("heading", { name: "Retained lifecycle" })).toBeVisible();
+  await expect(archivedPanel).toContainText("Retained answer");
+  await archivedPanel.getByRole("button", { name: "Restore Retained lifecycle" }).click();
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
+  await settingsDialog.getByRole("button", { name: "Close settings" }).click();
 
   const selectNewChatMode = async (itemName: RegExp) => {
     await workspace.getByRole("button", { name: "New chat mode" }).click();

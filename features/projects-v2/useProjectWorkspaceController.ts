@@ -88,7 +88,7 @@ export type ProjectWorkspaceController = Readonly<{
       folderId?: string | null,
       sourceSessionKey?: ComposerSessionKey
     ): Promise<WorkspaceChatSummary | null>;
-    createFolder(name: string, parentId?: string | null): Promise<boolean>;
+    createFolder(name: string): Promise<boolean>;
     deleteFolder(folderId: string): Promise<boolean>;
     deleteProject(): Promise<boolean>;
     editMemoryFact(factId: string, text: string, validUntil?: string | null): Promise<boolean>;
@@ -102,6 +102,7 @@ export type ProjectWorkspaceController = Readonly<{
     refresh(): Promise<boolean>;
     retrySync(): Promise<boolean>;
     refreshList(): Promise<boolean>;
+    loadActivity?(): Promise<boolean>;
     loadMoreActivity?(): Promise<boolean>;
     previewGrantRemoval(grantId: string): Promise<ProjectGrantRemovalPreviewWire | null>;
     removeGrant(grantId: string, expectedAccessRevision?: number): Promise<boolean>;
@@ -114,7 +115,7 @@ export type ProjectWorkspaceController = Readonly<{
     selectChat(chatId: string): Promise<boolean>;
     selectProject(projectId: string): Promise<boolean>;
     updateGrant(grantId: string, role: ProjectRole): Promise<boolean>;
-    updateFolder(folderId: string, patch: { name?: string; parentId?: string | null }): Promise<boolean>;
+    updateFolder(folderId: string, patch: { name: string }): Promise<boolean>;
     updateProject(patch: UpdateProjectRequestWire): Promise<boolean>;
   }>;
 }>;
@@ -170,6 +171,8 @@ function projectError(error: unknown): string {
     project_update_conflict: "The Project changed elsewhere. Review the preserved draft and try again.",
     project_default_resource_unavailable: "A selected Project default changed elsewhere and is no longer available. Review the current resources and try again.",
     project_external_tools_disabled: "Search and MCP defaults must be off while external tools are disabled.",
+    project_folder_conflict: "That folder changed elsewhere. Review the current folders and try again.",
+    project_folder_not_found: "That folder is no longer available.",
     owner_role_required: "Only a Project Owner can change lifecycle or public-sharing settings.",
     resource_binding_conflict: "That resource is already linked or no longer available."
   };
@@ -406,10 +409,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         setDetail(nextDetail);
         const mergedWorkspace = reconcileWorkspace(projectId, nextWorkspace);
         setWorkspace(mergedWorkspace);
-        setProjects((current) => [
-          summaryFromDetail(nextDetail),
-          ...current.filter((project) => project.id !== projectId)
-        ]);
+        setProjects((current) => current.map((project) =>
+          project.id === projectId ? summaryFromDetail(nextDetail) : project
+        ));
         setLastSyncedAt(Date.now());
         setSyncState("idle");
         setSyncWarning(null);
@@ -481,6 +483,15 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         }
       }
     } while (settingsRefreshQueuedRef.current && selectedRef.current === projectId);
+  });
+
+  const loadActivity = useEventCallback(async (): Promise<boolean> => {
+    try {
+      await refreshSettingsData();
+      return true;
+    } catch {
+      return false;
+    }
   });
 
   const runMutation = useEventCallback(async (
@@ -784,9 +795,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
             });
           })
         : Promise.resolve(false),
-      archiveChat: (chatId, archived) => runMutation(
-        (projectId) => setProjectChatArchived(projectId, chatId, archived)
-      ),
+      archiveChat: (chatId, archived) => detail?.capabilities.archiveChats
+        ? runMutation((projectId) => setProjectChatArchived(projectId, chatId, archived))
+        : Promise.resolve(false),
       closeCreate: () => setCreateOpen(false),
       closeSettings: () => {
         setActionError(null);
@@ -827,12 +838,14 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         return Boolean(await createProjectChatForSend(folderId));
       },
       createChatForSend: createProjectChatForSend,
-      createFolder: (name, parentId = null) => runMutation(async (projectId) => {
-        await createProjectFolder(projectId, { name, parentId });
-      }),
-      deleteFolder: (folderId) => runMutation(
-        (projectId) => deleteProjectFolder(projectId, folderId)
-      ),
+      createFolder: (name) => detail?.capabilities.manageProject
+        ? runMutation(async (projectId) => {
+            await createProjectFolder(projectId, { name, parentId: null });
+          })
+        : Promise.resolve(false),
+      deleteFolder: (folderId) => detail?.capabilities.manageProject
+        ? runMutation((projectId) => deleteProjectFolder(projectId, folderId))
+        : Promise.resolve(false),
       deleteProject: () => runMutation(async (projectId) => {
         await deleteProject(projectId);
         await handleLostAccess(projectId, false);
@@ -847,6 +860,12 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         { refreshMemory: true }
       ),
       leave: () => {
+        const projectId = selectedRef.current;
+        const store = useWorkspaceStore.getState();
+        const activeChat = store.activeChatId
+          ? store.chats.find((chat) => chat.id === store.activeChatId) ?? null
+          : null;
+        if (projectId && activeChat?.projectId === projectId) input.activateBlankWorkspace();
         input.onProjectContextLeft();
         selectedRef.current = null;
         realtimeChatRevisionsRef.current.clear();
@@ -913,6 +932,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         return true;
       },
       refreshList: () => refreshList(false),
+      loadActivity,
       loadMoreActivity: async () => {
         const projectId = selectedRef.current;
         const cursor = activity?.nextCursor;
@@ -1001,9 +1021,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
             expectedPolicyRevision ?? detail.policyRevision
           ))
         : Promise.resolve(false),
-      moveChat: (chatId, folderId) => runMutation(
-        () => moveProjectChat(chatId, folderId)
-      ),
+      moveChat: (chatId, folderId) => detail?.capabilities.manageProject
+        ? runMutation(() => moveProjectChat(chatId, folderId))
+        : Promise.resolve(false),
       reviewMemoryProposal: (proposalId, approve) => runMutation(
         (projectId) => reviewProjectMemoryProposal(projectId, proposalId, approve),
         { refreshMemory: true }
@@ -1056,9 +1076,11 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
             (projectId) => updateProjectGrant(projectId, grantId, role, detail.accessRevision)
           )
         : Promise.resolve(false),
-      updateFolder: (folderId, patch) => runMutation(async (projectId) => {
-        await updateProjectFolder(projectId, folderId, patch);
-      }),
+      updateFolder: (folderId, patch) => detail?.capabilities.manageProject
+        ? runMutation(async (projectId) => {
+            await updateProjectFolder(projectId, folderId, { name: patch.name });
+          })
+        : Promise.resolve(false),
       updateProject: (patch) => runMutation(async (projectId) => {
         await updateProject(projectId, patch);
       })

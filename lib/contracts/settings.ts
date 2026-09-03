@@ -1,7 +1,15 @@
+import {
+  decodeOptionalChatDefaults,
+  type ChatDefaultMcpMode
+} from "./chatDefaults";
+import type { KnowledgeSelection } from "./knowledge";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 
 export type UserSettingsWire = {
   defaultControlValues: Record<string, unknown>;
+  /** Knowledge selection attached to new chats; null starts them without Knowledge. */
+  defaultKnowledgePlan: KnowledgeSelection | null;
+  defaultMcpMode: ChatDefaultMcpMode;
   hasPersonalModelDefault: boolean;
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
@@ -9,6 +17,7 @@ export type UserSettingsWire = {
   defaultSearchPlan: SearchPlan;
   organizationSearchPlan: SearchPlan;
   searchPreferenceSource: "organization" | "personal";
+  sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
 };
@@ -40,7 +49,13 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   const settings = value.settings;
   const defaultSearchPlan = decodeSearchPlan(settings.defaultSearchPlan);
   const organizationSearchPlan = decodeSearchPlan(settings.organizationSearchPlan);
+  const chatDefaults = decodeOptionalChatDefaults({
+    knowledgePlan: settings.defaultKnowledgePlan,
+    mcpMode: settings.defaultMcpMode,
+    sendWithEnter: settings.sendWithEnter
+  });
   if (
+    !chatDefaults ||
     !isRecord(settings.defaultControlValues) ||
     typeof settings.hasPersonalModelDefault !== "boolean" ||
     (settings.modelPreferenceSource !== "none" &&
@@ -62,6 +77,8 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   return {
     settings: {
       defaultControlValues: { ...settings.defaultControlValues },
+      defaultKnowledgePlan: chatDefaults.knowledgePlan,
+      defaultMcpMode: chatDefaults.mcpMode,
       hasPersonalModelDefault: settings.hasPersonalModelDefault,
       modelPreferenceSource: settings.modelPreferenceSource,
       organizationModelDefault: settings.organizationModelDefault,
@@ -69,6 +86,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       defaultSearchPlan: defaultSearchPlan.plan,
       organizationSearchPlan: organizationSearchPlan.plan,
       searchPreferenceSource: settings.searchPreferenceSource,
+      sendWithEnter: chatDefaults.sendWithEnter,
       showCitations: settings.showCitations,
       showReasoningBlocks: settings.showReasoningBlocks
     }

@@ -387,9 +387,8 @@ export function ShareDialog({
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
           <p className="text-sm leading-6 text-ink-secondary" id="share-dialog-description">
-            Creating a link publishes a read-only, sanitized snapshot of the current conversation branch at a
-            secret address. The snapshot never updates with the conversation, and attachments, run internals,
-            and account details are excluded. Anyone with the link can read it until you revoke it.
+            The link opens a read-only snapshot of this branch that never updates; attachments, run
+            internals and account details stay out. Anyone with the link can read it until you revoke it.
           </p>
           {actionError ? (
             <p className="mt-3 break-words text-sm leading-5 text-critical [overflow-wrap:anywhere]">
@@ -440,7 +439,7 @@ export function ShareDialog({
             </div>
           ) : null}
           <section aria-labelledby="share-dialog-links-heading" className="mt-5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-muted" id="share-dialog-links-heading">
+            <h3 className="text-xs font-semibold text-ink-muted" id="share-dialog-links-heading">
               Live links for this chat
             </h3>
             {listPending ? (
