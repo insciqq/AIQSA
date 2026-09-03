@@ -215,6 +215,7 @@ type ToolLoopCallRecord = {
   startedAt: Date | null;
   state: ModelRunToolCallState;
   toolName: string;
+  usageAccountedAt: Date | null;
 };
 
 const toolLoopCallInclude = {
@@ -246,7 +247,8 @@ function persistedToolLoopCall(call: ToolLoopCallRecord): PersistedToolLoopCall 
     roundIndex: call.roundIndex,
     startedAt: call.startedAt?.toISOString() ?? null,
     state: call.state,
-    toolName: call.toolName
+    toolName: call.toolName,
+    usageAccountedAt: call.usageAccountedAt?.toISOString() ?? null
   };
 }
 
@@ -1609,7 +1611,14 @@ export function createPrismaRunToolLoopOperations(
       });
     },
     recordRunUsageEvents: async (input) => {
-      if (input.usageAttributions.length === 0 && !input.answerRoundUsage) {
+      const usageAccountedToolCallIds = [...new Set(input.usageAccountedToolCallIds ?? [])];
+      if (usageAccountedToolCallIds.length !== (input.usageAccountedToolCallIds?.length ?? 0) ||
+        usageAccountedToolCallIds.length > toolLoopPersistenceLimits.batchCalls ||
+        usageAccountedToolCallIds.some((id) => !id.trim())) {
+        return false;
+      }
+      if (input.usageAttributions.length === 0 && !input.answerRoundUsage &&
+        usageAccountedToolCallIds.length === 0) {
         return false;
       }
 
@@ -1626,6 +1635,17 @@ export function createPrismaRunToolLoopOperations(
       return prismaClient.$transaction(async (tx) => {
         const run = await lockToolLoopRun(tx, input);
         if (!run) return false;
+        if (usageAccountedToolCallIds.length > 0) {
+          const calls = await tx.modelRunToolCall.findMany({
+            select: { id: true },
+            where: {
+              id: { in: usageAccountedToolCallIds },
+              modelRunId: input.runId,
+              state: { in: ["complete", "error"] }
+            }
+          });
+          if (calls.length !== usageAccountedToolCallIds.length) return false;
+        }
         const nextCheckpoint = input.answerRoundUsage
           ? (() => {
               const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
@@ -1682,6 +1702,19 @@ export function createPrismaRunToolLoopOperations(
               userId: input.userId
             }))
           });
+        }
+        if (usageAccountedToolCallIds.length > 0) {
+          const accounted = await tx.modelRunToolCall.updateMany({
+            data: { usageAccountedAt: new Date() },
+            where: {
+              id: { in: usageAccountedToolCallIds },
+              modelRunId: input.runId,
+              state: { in: ["complete", "error"] }
+            }
+          });
+          if (accounted.count !== usageAccountedToolCallIds.length) {
+            throw new Error("tool_call_usage_checkpoint_conflict");
+          }
         }
         return true;
       });

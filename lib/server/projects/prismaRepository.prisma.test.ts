@@ -698,6 +698,25 @@ describe("Prisma-backed Project repository", () => {
       expect(afterFirstCommit.composer?.knowledgeSources).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: readySourceId, readiness: "ready" })
       ]));
+      expect(afterFirstCommit.composer?.knowledgeDocumentTotal)
+        .toBe(afterFirstCommit.composer?.knowledgeSources.length);
+      expect(afterFirstCommit.composer?.assistants).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          revision: expect.objectContaining({
+            knowledgeSelection: expect.objectContaining({
+              mode: "explicit",
+              sourceIds: [readySourceId]
+            })
+          }),
+          summary: expect.objectContaining({
+            fingerprint: expect.objectContaining({
+              knowledgeLabel: "Knowledge · 1",
+              knowledgeResourceCount: 1
+            }),
+            id: assistant.assistantId
+          })
+        })
+      ]));
       await expect(repository.previewResourceChange({
         action: "add",
         expectedPolicyRevision: afterFirstCommit.policyRevision,

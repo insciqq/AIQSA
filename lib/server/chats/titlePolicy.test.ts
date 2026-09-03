@@ -7,15 +7,14 @@ describe("local chat title policy", () => {
     vi.unstubAllEnvs();
   });
 
-  it("keeps short first-message text exact after whitespace normalization", () => {
+  it("keeps plain first-line text exact after whitespace normalization", () => {
     expect(
       titleFromMessageContent({
         blocks: [
-          { text: "  Explain\n\ttransaction   isolation  ", type: "text" },
-          { text: "with a practical example", type: "text" }
+          { text: "  Explain   transaction   isolation with an example  ", type: "text" }
         ]
       })
-    ).toBe("Explain transaction isolation with a practical example");
+    ).toBe("Explain transaction isolation with an example");
   });
 
   it("cuts a long title at the last whole-word boundary without persisting an ellipsis", () => {
@@ -28,9 +27,9 @@ describe("local chat title policy", () => {
       ]
     });
 
-    expect(title).toBe("Give a short but complete explanation of transaction");
+    expect(title).toBe("Give a short but complete explanation of");
     expect(title).not.toMatch(/\.\.\.$/);
-    expect(Array.from(title).length).toBeLessThanOrEqual(56);
+    expect(Array.from(title).length).toBeLessThanOrEqual(48);
   });
 
   it("uses a bounded code-point fallback for a single long word", () => {
@@ -38,7 +37,7 @@ describe("local chat title policy", () => {
       blocks: [{ text: "x".repeat(100), type: "text" }]
     });
 
-    expect(title).toBe("x".repeat(56));
+    expect(title).toBe("x".repeat(48));
     expect(title).not.toContain("...");
   });
 
@@ -52,9 +51,78 @@ describe("local chat title policy", () => {
       ]
     });
 
-    expect(title).toBe("🧭 Объясни, как многоязычный поиск сохраняет контекст");
+    expect(title).toBe("🧭 Объясни, как многоязычный поиск сохраняет");
     expect(title).not.toContain("�");
-    expect(Array.from(title).length).toBeLessThanOrEqual(56);
+    expect(Array.from(title).length).toBeLessThanOrEqual(48);
+  });
+
+  it("uses the first sentence from the first non-empty line and removes block markdown", () => {
+    expect(titleFromMessageContent({
+      blocks: [{
+        text: "\n# Audit probe: release checklist review\n\nPlease review the remaining sections.",
+        type: "text"
+      }]
+    })).toBe("Audit probe: release checklist review");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "> - **Quoted decision.** Ignore this sentence.", type: "text" }]
+    })).toBe("Quoted decision.");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "1. First item? Second item.", type: "text" }]
+    })).toBe("First item?");
+  });
+
+  it("removes inline markdown while retaining its readable label and code", () => {
+    expect(titleFromMessageContent({
+      blocks: [{
+        text: "Review **release** [checklist](https://example.test/list) with `qa_runner`",
+        type: "text"
+      }]
+    })).toBe("Review release checklist with qa_runner");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "Keep snake_case_again unchanged", type: "text" }]
+    })).toBe("Keep snake_case_again unchanged");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "Explain `__init__` and `a*b*` safely", type: "text" }]
+    })).toBe("Explain __init__ and a*b* safely");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "Keep snake__case__again unchanged", type: "text" }]
+    })).toBe("Keep snake__case__again unchanged");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "Read [Docs](https://example.test/a_(b)) next", type: "text" }]
+    })).toBe("Read Docs next");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "第一句。 第二句。", type: "text" }]
+    })).toBe("第一句。");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "第一句。第二句。", type: "text" }]
+    })).toBe("第一句。");
+  });
+
+  it("drops fenced code before choosing the first readable line", () => {
+    expect(titleFromMessageContent({
+      blocks: [{
+        text: "```ts\nconst secret = true;\n```\n## Explain the public result",
+        type: "text"
+      }]
+    })).toBe("Explain the public result");
+    expect(titleFromMessageContent({
+      blocks: [{ text: "~~~\nprivate output\n~~~", type: "text" }]
+    })).toBe(defaultChatTitle);
+    expect(titleFromMessageContent({
+      blocks: [{ text: "> ```ts\n> const secret = true;\n> ```\nReadable result", type: "text" }]
+    })).toBe("Readable result");
+    expect(titleFromMessageContent({
+      blocks: [
+        { text: "```ts\nconst secret = true;\n```", type: "text" },
+        { text: "Readable second block", type: "text" }
+      ]
+    })).toBe("Readable second block");
+    expect(titleFromMessageContent({
+      blocks: [{
+        text: "````ts\nprivate\n```not-a-close\nleaked\n````\nPublic result",
+        type: "text"
+      }]
+    })).toBe("Public result");
   });
 
   it("uses the local placeholder for blank, malformed, and attachment-only content", () => {

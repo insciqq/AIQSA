@@ -64,6 +64,7 @@ describe("answer outputs v2", () => {
         excerptTruncated: false,
         handle: "K1.1",
         headingPath: ["Retrieval policy"],
+        libraryAvailable: false,
         locator: { boundingBoxes: [], pageEnd: 18, pageStart: 18 },
         originalKind: null,
         source: {
@@ -105,13 +106,14 @@ describe("answer outputs v2", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveAttribute("aria-controls", screen.getByTestId("answer-sources").id);
     expect(screen.getByRole("link", { name: "Cross-language retrieval" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge document [K1.1]" }));
     expect(await screen.findByText("The accepted Project passage.")).toBeVisible();
     expect(shellFetch).toHaveBeenCalledWith(
       "/api/runs/run-1/messages/message-1/citations/K1.1",
       expect.objectContaining({ method: "GET" })
     );
-    expect(screen.getByText(/retrieval-policy\.pdf · version 3/)).toBeVisible();
+    expect(screen.getByText("retrieval-policy.pdf · Engineering handbook")).toBeVisible();
+    expect(screen.queryByText(/version 3/iu)).not.toBeInTheDocument();
     openProcess();
     expect(screen.getByTestId("answer-reasoning")).toHaveTextContent("Thinking");
     expect(screen.getByTestId("answer-reasoning").textContent).not.toContain("**");
@@ -144,8 +146,8 @@ describe("answer outputs v2", () => {
     // Reasoning hidden by preference leaves nothing for the process line.
     expect(screen.queryByTestId("tool-activity-disclosure")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("answer-sources-toggle"));
-    fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));
-    expect((await screen.findAllByText("Source unavailable"))[0]).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge document [K1.1]" }));
+    expect((await screen.findAllByText("Document unavailable"))[0]).toBeVisible();
   });
 
   it("renders no placeholder when there is no output", () => {
@@ -174,6 +176,21 @@ describe("answer outputs v2", () => {
     expect(state).toHaveAttribute("data-scope", "partial_sources_ready");
     expect(state).toHaveTextContent(/ready documents did not contain enough evidence/iu);
     expect(state).toHaveTextContent(/still processing/iu);
+  });
+
+  it("presents a failed Knowledge retrieval as a technical availability issue", () => {
+    render(
+      <AnswerProcessV2
+        toolActivity={{
+          calls: [{ round: 1, status: "error", toolName: "search_knowledge" }]
+        }}
+      />
+    );
+    openProcess();
+
+    expect(screen.getByText("Knowledge search unavailable")).toBeVisible();
+    expect(screen.getByText(/Failed · round 1/iu)).toBeVisible();
+    expect(document.body.textContent).not.toContain("search_knowledge");
   });
 
   it("renders a quiet Memory source row without refs, scores, or technical metadata", () => {

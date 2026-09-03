@@ -10,9 +10,10 @@ import {
   type AssistantPublicationResponse,
   type AssistantRevisionContent,
   type AssistantRevisionsResponse,
+  type AssistantRunControlField,
   type AssistantSummary
 } from "../../contracts/assistants";
-import { inheritedKnowledgeSelection } from "../../contracts/knowledge";
+import { decodeKnowledgePlan, inheritedKnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
 import { assistantRevisionChangedSections } from "../../domain/assistants";
 import {
@@ -26,8 +27,10 @@ import {
 } from "../catalog/currentUserCatalog";
 import {
   validateAssistantConfigurationAgainstCatalog,
+  type AssistantCatalogValidationFailure,
   type AssistantCatalogView
 } from "./catalogValidation";
+import { isMcpRunPlanRecordStartable } from "../mcp/runPlan";
 import type {
   AssistantAccessEntry,
   AssistantRevisionRow,
@@ -70,8 +73,16 @@ async function readJson(
   return [isRecord(value) ? value : null, requestBodyErrorResponse(value)];
 }
 
-function errorJson(code: string, status: number, message?: string): Response {
-  return Response.json({ error: code, ...(message ? { message } : {}) }, { status });
+function errorJson(
+  code: string,
+  status: number,
+  message?: string,
+  metadata: { field?: AssistantRunControlField; limit?: number } = {}
+): Response {
+  return Response.json(
+    { error: code, ...(message ? { message } : {}), ...metadata },
+    { status }
+  );
 }
 
 export function buildAssistantRunnerCatalogView(input: Readonly<{
@@ -132,10 +143,27 @@ function assistantCategory(value: string | null): AssistantSummary["category"] {
   return value === null ? null : (value as AssistantSummary["category"]);
 }
 
+function knowledgeFingerprintLabel(value: unknown): string | null {
+  const decoded = decodeKnowledgePlan(value);
+  if (!decoded.ok || decoded.plan.mode === "none") return null;
+  if (decoded.plan.mode === "all_my_knowledge") return "All Knowledge";
+  if (decoded.plan.mode === "inherited") return "Knowledge";
+  const count = decoded.plan.baseIds.length + decoded.plan.sourceIds.length;
+  return count > 0 ? `Knowledge · ${count}` : null;
+}
+
+function knowledgeFingerprintCount(value: unknown): number {
+  const decoded = decodeKnowledgePlan(value);
+  return decoded.ok && decoded.plan.mode === "explicit"
+    ? decoded.plan.baseIds.length + decoded.plan.sourceIds.length
+    : 0;
+}
+
 function availabilityFor(
   revision: AssistantRevisionRow,
   searchPlanOptionIds: readonly string[],
-  view: RunnerCatalogView
+  view: RunnerCatalogView,
+  options: { owned: boolean }
 ): AssistantAvailability {
   const runControls = decodeAssistantRunControls(revision.runControls ?? {});
   const searchPlan = decodeSearchPlan(revision.searchPlan);
@@ -153,14 +181,67 @@ function availabilityFor(
       }
     },
     view,
-    { requireRunnableMcp: true }
+    { mcpRunnability: "startable" }
   );
-  if (failure === "search") return { ok: false, reason: "search_access" };
-  if (failure === "tools") return { ok: false, reason: "tools_access" };
-  if (failure === "model" || failure === "run_controls") {
-    return { ok: false, reason: "model_access" };
+  if (!failure) return { ok: true };
+
+  const dependencies = options.owned
+    ? ownerAvailabilityDependencies(revision, failure, view)
+    : [];
+  if (failure === "search") {
+    return {
+      ...(dependencies.length > 0 ? { dependencies } : {}),
+      ok: false,
+      reason: "search_access"
+    };
   }
-  return { ok: true };
+  if (failure === "tools") {
+    return {
+      ...(dependencies.length > 0 ? { dependencies } : {}),
+      ok: false,
+      reason: "tools_access"
+    };
+  }
+  return {
+    ...(dependencies.length > 0 ? { dependencies } : {}),
+    ok: false,
+    reason: "model_access"
+  };
+}
+
+function ownerAvailabilityDependencies(
+  revision: AssistantRevisionRow,
+  failure: AssistantCatalogValidationFailure,
+  view: RunnerCatalogView
+): NonNullable<Extract<AssistantAvailability, { ok: false }>["dependencies"]> {
+  const model = view.modelById.get(revision.providerModelId);
+  if (failure === "model" || typeof failure === "object") {
+    return [{ kind: "model", name: model?.displayName ?? "Saved model" }];
+  }
+  if (failure === "search") {
+    return [{ kind: "search", name: "Web search" }];
+  }
+  if (model && revision.mcpServerIds.length > 0 && !model.capabilities.toolCalling) {
+    return [{ kind: "model", name: model.displayName }];
+  }
+
+  const names = new Set<string>();
+  for (const serverId of revision.mcpServerIds) {
+    const record = view.mcpRunPlan.recordsByServerId.get(serverId);
+    const accessible = view.accessibleMcpServerIds.has(serverId);
+    if (
+      !accessible ||
+      !record ||
+      !isMcpRunPlanRecordStartable(record)
+    ) {
+      names.add(
+        !accessible || !record || record.errorCode === "mcp_startability_unknown"
+          ? "Required MCP tools"
+          : record.serverName
+      );
+    }
+  }
+  return [...names].map((name) => ({ kind: "mcp", name }));
 }
 
 export function buildAssistantSummary(
@@ -168,7 +249,12 @@ export function buildAssistantSummary(
   view: RunnerCatalogView
 ): AssistantSummary {
   const decoded = decodeStoredRevision(entry.revision);
-  const availability = availabilityFor(entry.revision, decoded.searchPlan.optionIds, view);
+  const availability = availabilityFor(
+    entry.revision,
+    decoded.searchPlan.optionIds,
+    view,
+    { owned: entry.owned }
+  );
   return {
     archived: entry.archived,
     availability,
@@ -176,6 +262,8 @@ export function buildAssistantSummary(
     category: assistantCategory(entry.revision.category),
     description: entry.revision.description,
     fingerprint: {
+      knowledgeLabel: knowledgeFingerprintLabel(entry.revision.knowledgeSelection),
+      knowledgeResourceCount: knowledgeFingerprintCount(entry.revision.knowledgeSelection),
       mcpServerCount: entry.revision.mcpServerIds.length,
       modelLabel: view.modelById.get(entry.revision.providerModelId)?.displayName ?? null,
       reasoningEffort: decoded.runControls.reasoningEffort ?? null,
@@ -254,7 +342,12 @@ function detailFromEntry(
   const skillSummaries = entry.revision.skillSummaries ?? [];
   return {
     archived: entry.archived,
-    availability: availabilityFor(entry.revision, decoded.searchPlan.optionIds, view),
+    availability: availabilityFor(
+      entry.revision,
+      decoded.searchPlan.optionIds,
+      view,
+      { owned: entry.owned }
+    ),
     id: entry.id,
     owned: entry.owned,
     ownerDisplayName: entry.ownerDisplayName,
@@ -285,11 +378,14 @@ function validateDraftAgainstCatalog(
   view: RunnerCatalogView
 ): Response | null {
   const failure = validateAssistantConfigurationAgainstCatalog(draft, view, {
-    requireRunnableMcp: false
+    mcpRunnability: "accessible"
   });
   if (failure === "model") return errorJson("assistant_model_not_available", 400);
-  if (failure === "run_controls") {
-    return errorJson("assistant_run_controls_invalid", 400);
+  if (failure !== null && typeof failure === "object") {
+    return errorJson("assistant_run_controls_invalid", 400, undefined, {
+      field: failure.control,
+      ...(failure.limit !== undefined ? { limit: failure.limit } : {})
+    });
   }
   if (failure === "search") {
     return errorJson("assistant_search_option_not_available", 400);
@@ -351,7 +447,11 @@ export function createCreateAssistantHandler(deps: AssistantHandlerDeps) {
     const [body, bodyError] = await readJson(request);
     if (bodyError) return bodyError;
     const decoded = decodeAssistantDraft(body ?? {});
-    if (!decoded.ok) return errorJson(decoded.code, 400);
+    if (!decoded.ok) {
+      return errorJson(decoded.code, 400, undefined, {
+        ...(decoded.field ? { field: decoded.field } : {})
+      });
+    }
     const invalid = validateDraftAgainstCatalog(decoded.draft, resolved.view);
     if (invalid) return invalid;
 
@@ -406,7 +506,11 @@ export function createUpdateAssistantHandler(deps: AssistantHandlerDeps) {
     let result;
     if (hasRevision) {
       const decoded = decodeAssistantDraft(body.revision);
-      if (!decoded.ok) return errorJson(decoded.code, 400);
+      if (!decoded.ok) {
+        return errorJson(decoded.code, 400, undefined, {
+          ...(decoded.field ? { field: decoded.field } : {})
+        });
+      }
       const invalid = validateDraftAgainstCatalog(decoded.draft, resolved.view);
       if (invalid) return invalid;
       result = await deps.repository.revise(

@@ -1,5 +1,6 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
+  ASSISTANT_RUN_CONTROL_FIELDS,
   decodeAssistantDetailResponse,
   decodeAssistantListResponse,
   decodeAssistantRevisionResponse,
@@ -8,15 +9,26 @@ import {
   type AssistantDraft,
   type AssistantListResponse,
   type AssistantRevisionContent,
-  type AssistantRevisionHistoryEntry
+  type AssistantRevisionHistoryEntry,
+  type AssistantRunControlField
 } from "@/lib/contracts/assistants";
 
 export type AssistantApiResult<T> =
   | { data: T; ok: true }
-  | { code: string; message: string; ok: false };
+  | {
+      code: string;
+      field?: AssistantRunControlField;
+      limit?: number;
+      message: string;
+      ok: false;
+    };
 
-async function errorResult(response: Response): Promise<{ code: string; message: string; ok: false }> {
+async function errorResult(
+  response: Response
+): Promise<Extract<AssistantApiResult<never>, { ok: false }>> {
   let code = "assistant_request_failed";
+  let field: AssistantRunControlField | undefined;
+  let limit: number | undefined;
   let message = "The assistant request could not be completed.";
   try {
     const body: unknown = await response.json();
@@ -28,11 +40,26 @@ async function errorResult(response: Response): Promise<{ code: string; message:
       if (typeof record.message === "string" && record.message) {
         message = record.message;
       }
+      if (
+        typeof record.field === "string" &&
+        ASSISTANT_RUN_CONTROL_FIELDS.includes(record.field as AssistantRunControlField)
+      ) {
+        field = record.field as AssistantRunControlField;
+      }
+      if (field && typeof record.limit === "number" && Number.isFinite(record.limit)) {
+        limit = record.limit;
+      }
     }
   } catch {
     // The stable fallback code above covers unreadable bodies.
   }
-  return { code, message, ok: false };
+  return {
+    code,
+    ...(field ? { field } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    message,
+    ok: false
+  };
 }
 
 function decodeFailure<T>(): AssistantApiResult<T> {

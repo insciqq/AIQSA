@@ -31,9 +31,13 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
   if (await actionTrigger.count()) {
     await actionTrigger.click();
     const menu = page.getByRole("menu").filter({ has: page.getByRole("menuitem", { name: "Rename" }) });
-    await expect(menu.getByRole("menuitem", { name: "Move to…" })).toBeVisible();
-    await expect(menu.getByRole("menuitem", { name: "Share" })).toBeVisible();
-    await expect(menu.getByRole("menuitem", { name: "Export" })).toBeVisible();
+    await expect(menu.getByRole("menuitem")).toHaveText([
+      "Rename",
+      "Move to…",
+      "Favorite",
+      "Archive",
+      "Delete…"
+    ]);
     await page.keyboard.press("Escape");
   }
 
@@ -43,6 +47,14 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
     await page.locator("[data-testid='conversation-loading']").waitFor({ state: "detached" });
     // The header keeps Share plus one "⋯" menu; Branches lives inside it.
     await expect(page.getByRole("button", { name: "Share" })).toBeVisible();
+    await page.getByTestId("header-more-trigger").click();
+    await page.getByRole("menuitem", { name: "Export" }).click();
+    await expect(page.getByLabel("Export").getByRole("menuitem")).toHaveText([
+      "Markdown",
+      "JSON",
+      "Copy entire thread"
+    ]);
+    await page.keyboard.press("Escape");
     await page.getByTestId("header-more-trigger").click();
     await page.getByRole("menuitem", { name: "Branches" }).click();
     await expect(page.getByTestId("branch-drawer-scrim")).toBeVisible();

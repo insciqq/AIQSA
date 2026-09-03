@@ -83,6 +83,10 @@ export function createKnowledgePassageBm25Search(
         hits: Object.freeze([])
       });
     }
+    // The executor checks this contract before paid embedding I/O. Recheck it
+    // at the actual lexical-dispatch boundary so mapping, settings, or server
+    // version drift during embedding cannot reach `_msearch` unnoticed.
+    await search.checkKnowledgeIndex();
     const result = await search.searchKnowledgePassages({
       indexArtifactIds: input.indexArtifactIds,
       ownerUserId: input.ownerUserId,

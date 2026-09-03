@@ -1,7 +1,8 @@
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
+import type { AssistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 import type { ReactNode } from "react";
 
-export type LibraryTabIdV2 = "assistants" | "knowledge" | "files" | "memory";
+export type LibraryTabIdV2 = "assistants" | "knowledge" | "files" | "memory" | "skills";
 
 export type LibraryNavigationIntentV2 =
   | Readonly<{ from: LibraryTabIdV2; kind: "exit" }>
@@ -35,6 +36,8 @@ export type LibrarySubviewV2 = Readonly<{
   key: string;
   label: string;
   onBack(): void;
+  /** Optional ancestors between the selected section and this resource. */
+  trail?: readonly string[];
 }>;
 
 export type AssistantSummaryV2 = Readonly<{
@@ -44,20 +47,24 @@ export type AssistantSummaryV2 = Readonly<{
   avatar?: AssistantAvatarRecipe;
   description: string;
   id: string;
+  modelLabel?: string | null;
   name: string;
   owned: boolean;
+  ownerDisplayName?: string | null;
   pinned?: boolean;
   revision: number;
-  unavailableReason?: string;
+  unavailable?: AssistantUnavailabilityCopy;
 }>;
 
 export type KnowledgeSummaryV2 = Readonly<{
+  archived?: boolean;
   description: string;
   sourceCount: number;
   id: string;
   name: string;
   owned: boolean;
-  /** Exact readiness sentence ("1 ready · 1 processing"); the status label otherwise. */
+  purgeScheduledAt?: string | null;
+  /** Exact usability-first status sentence ("Ready · 1 processing"); the status label otherwise. */
   readinessLabel?: string;
   /** Formatted last-update time, when known. */
   updatedLabel?: string;
@@ -69,6 +76,10 @@ export type KnowledgeSummaryV2 = Readonly<{
     | "ready"
     | "trashed"
     | "unavailable";
+  /** Display name only; never an account or resource identifier. */
+  sharedBy?: string;
+  trashed?: boolean;
+  trashedAt?: string | null;
 }>;
 
 export type FileSummaryV2 = Readonly<{

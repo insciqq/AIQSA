@@ -18,6 +18,7 @@ export type ConversationGalleryState =
   | "earlier"
   | "empty"
   | "error"
+  | "jump"
   | "loading"
   | "unavailable";
 
@@ -95,6 +96,15 @@ const earlierCurrentMessages: ConversationMessageV2[] = Array.from(
   })
 );
 
+const jumpMessages: ConversationMessageV2[] = [
+  ...earlierCurrentMessages,
+  {
+    content: "Сформулируй подробный критерий остановки для мультиязычной проверки так, чтобы вопрос занял всю разрешённую ширину сообщения и остался читаемым.",
+    id: "question-jump-latest",
+    role: "user"
+  }
+];
+
 const containmentMessages: ConversationMessageV2[] = [
   {
     content: "Покажи сложный технический фрагмент без расширения страницы.",
@@ -136,11 +146,13 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
   const [messages, setMessages] = useState<ConversationMessageV2[]>(
     state === "containment"
       ? containmentMessages
-      : state === "earlier"
-        ? earlierCurrentMessages
-        : state === "empty" || state === "loading" || state === "error" || state === "unavailable"
-          ? []
-          : baseMessages
+      : state === "jump"
+        ? jumpMessages
+        : state === "earlier"
+          ? earlierCurrentMessages
+          : state === "empty" || state === "loading" || state === "error" || state === "unavailable"
+            ? []
+            : baseMessages
   );
   const [hasOlder, setHasOlder] = useState(state === "earlier");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -213,6 +225,7 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
               )
             } : undefined}
             hasOlder={hasOlder}
+            jumpToLatestBottomOffset={96}
             loading={state === "loading"}
             messages={messages}
             scrollRef={scrollRef}
@@ -221,6 +234,8 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
               setHasOlder(false);
             }}
             onRetry={() => undefined}
+            onJumpToLatest={() => undefined}
+            showJumpToLatest={state === "jump"}
             unavailable={state === "unavailable"}
           />
         </main>

@@ -589,6 +589,7 @@ describe("chat wire contracts", () => {
     const archivedSummary = {
       ...summary,
       archived: true,
+      lastMessageAt: summary.updatedAt,
       memoryMode: "EXCLUDED",
       sourceRevision: 8
     };
@@ -649,6 +650,10 @@ describe("chat wire contracts", () => {
     })).toBeNull();
     expect(decodeArchivedChatsResponse({
       chats: [{ ...archivedSummary, archived: false }],
+      nextCursor: null
+    })).toBeNull();
+    expect(decodeArchivedChatsResponse({
+      chats: [{ ...archivedSummary, lastMessageAt: "not-a-timestamp" }],
       nextCursor: null
     })).toBeNull();
     expect(decodeChatSourceResolutionResponse({

@@ -526,7 +526,7 @@ html[data-motion="off"] .v2-run-shimmer {
   font-size: 0.8125rem;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   .v2-run-gallery-document {
     width: calc(100% - 1.5rem);
     padding-top: max(4rem, env(safe-area-inset-top));

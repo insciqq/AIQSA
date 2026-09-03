@@ -109,6 +109,7 @@ import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
 } from "../knowledge/answerGroundingV5";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
@@ -549,9 +550,9 @@ function toolExecutionErrorResult(
 function safeKnowledgeFailureMessage(code: string): string {
   switch (code) {
     case "sources_processing":
-      return "The selected Knowledge sources are still processing.";
+      return "The selected Knowledge documents are still processing.";
     case "no_retrieval_candidates":
-      return "No retrieval candidates were found in the ready Knowledge sources.";
+      return "No retrieval candidates were found in the ready Knowledge documents.";
     case "knowledge_retrieval_failed":
       return "Knowledge retrieval failed.";
     case "knowledge_answer_failed":
@@ -663,6 +664,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       let projectAccessRevoked = false;
       let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
+      const usageAccountedToolCallIds = new Set<string>();
 
       async function assertProjectRunAccessCurrent(force = false): Promise<void> {
         const project = input.prepared.project;
@@ -734,7 +736,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         answerRoundUsage?: PersistedAnswerRoundUsage
       ): Promise<void> {
         const grouped = groupedUsageAttributions(reportedUsageAttributions);
-        if (grouped.length === 0 && !answerRoundUsage) {
+        if (grouped.length === 0 && !answerRoundUsage && usageAccountedToolCallIds.size === 0) {
           return;
         }
 
@@ -743,14 +745,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ...(answerRoundUsage ? { answerRoundUsage } : {}),
           chatId: normalizedRequest.chatId,
           runId,
+          usageAccountedToolCallIds: [...usageAccountedToolCallIds],
           usageAttributions,
           userId: input.userId
         });
-        if (answerRoundUsage && !recorded) {
+        if ((answerRoundUsage || usageAccountedToolCallIds.size > 0) && !recorded) {
           throw new RunPipelineError(
             "tool_loop_usage_checkpoint_conflict",
             "Provider-round usage could not be checkpointed"
           );
+        }
+        if (recorded) {
+          usageAccountedToolCallIds.clear();
         }
       }
 
@@ -1022,7 +1028,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         if (!admittedKnowledgeReady || !input.prepared.knowledgeAdmissionPlan) {
           throw new RunPipelineError(
             "sources_processing",
-            "Selected Knowledge sources are not ready"
+            "Selected Knowledge documents are not ready"
           );
         }
         const answerRequest: ProviderRunRequest = {
@@ -1089,6 +1095,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         let result: ToolExecutionResult;
+        let focusedUsageAccounted = persisted.usageAccountedAt != null;
         if (claim.kind === "settled") {
           const stored = parsePersistedToolExecutionResult(call, claim.call.result);
           if (!stored) {
@@ -1098,6 +1105,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             );
           }
           result = stored;
+          if (knowledgeEvidenceFromToolResult(result) && input.memoryEgress &&
+            !(await input.memoryEgress.settleRecoveredToolDispatch({
+              modelRunToolCallId: claim.call.id,
+              outcome: "COMPLETED",
+              runId,
+              userId: input.userId
+            }))) {
+            throw new RunPipelineError(
+              "memory_egress_receipt_conflict",
+              "The focused Knowledge egress receipt could not be settled"
+            );
+          }
+          focusedUsageAccounted = claim.call.usageAccountedAt != null;
         } else {
           const executionContext = {
             persistedToolCallId: claim.call.id,
@@ -1195,6 +1215,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           }
         }
 
+        if (!focusedUsageAccounted) {
+          for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
+            rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
+          }
+          usageAccountedToolCallIds.add(persisted.id);
+          await persistReportedUsageForIncompleteRun();
+        }
         const evidence = knowledgeEvidenceFromToolResult(result);
         if (result.status !== "complete" || !evidence) {
           throw new RunPipelineError(
@@ -1207,9 +1234,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             "no_retrieval_candidates",
             "No Knowledge retrieval candidates were found"
           );
-        }
-        for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
-          rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
         }
         let dispatchDraft: KnowledgeEvidenceDispatchManifestDraft;
         try {
@@ -1635,6 +1659,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       ): Promise<ProviderRunResult & {
         knowledgeDispatchDraft?: KnowledgeEvidenceDispatchManifestDraft;
         knowledgeEvidenceEmpty?: true;
+        knowledgeSearchUnavailable?: true;
         usageAttributions: RunUsageAttribution[];
       }> {
         const provider = normalizedRequest.provider;
@@ -1754,6 +1779,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     repository: input.repository
                   });
                 }
+                const persistedCall = persistedCalls.get(call.id);
+                if (persistedCall && persistedCall.usageAccountedAt == null) {
+                  usageAccountedToolCallIds.add(persistedCall.id);
+                }
               }
               if (isKnowledgeCall(call.name)) {
                 knowledgeToolResults.set(call.id, result);
@@ -1763,6 +1792,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     attribution.modelId,
                     attribution.usage
                   );
+                }
+                const persistedCall = persistedCalls.get(call.id);
+                if (persistedCall && persistedCall.usageAccountedAt == null) {
+                  usageAccountedToolCallIds.add(persistedCall.id);
                 }
               }
               for (const artifact of result.artifacts ?? []) {
@@ -1846,6 +1879,23 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (claim.kind === "settled") {
                 const stored = parsePersistedToolExecutionResult(call, claim.call.result);
+                if (stored && isKnowledgeCall(call.name) &&
+                  knowledgeEvidenceFromToolResult(stored) && input.memoryEgress &&
+                  !(await input.memoryEgress.settleRecoveredToolDispatch({
+                    modelRunToolCallId: claim.call.id,
+                    outcome: "COMPLETED",
+                    runId,
+                    userId: input.userId
+                  }))) {
+                  return {
+                    error: {
+                      code: "memory_egress_receipt_conflict",
+                      fatal: true,
+                      message: "The Knowledge egress receipt could not be settled."
+                    },
+                    status: "error"
+                  };
+                }
                 return stored
                   ? { status: "complete", value: stored }
                   : {
@@ -2343,6 +2393,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
         let knowledgeEvidenceEmpty = false;
+        let knowledgeSearchUnavailable = false;
         if (knowledgeToolResults.size > 0) {
           const results = [...knowledgeToolResults.entries()]
             .sort(([leftId], [rightId]) => {
@@ -2352,6 +2403,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               return left.roundIndex - right.roundIndex || left.ordinal - right.ordinal;
             })
             .map(([, result]) => result);
+          knowledgeSearchUnavailable = results.some((result) =>
+            knowledgeEvidenceFromToolResult(result)?.outcome === "search_unavailable");
           try {
             knowledgeDispatchDraft = toolLoopKnowledgeEvidenceDispatchDraft({
               request,
@@ -2371,6 +2424,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ...outcome.final,
           ...(knowledgeDispatchDraft ? { knowledgeDispatchDraft } : {}),
           ...(knowledgeEvidenceEmpty ? { knowledgeEvidenceEmpty: true as const } : {}),
+          ...(knowledgeSearchUnavailable ? { knowledgeSearchUnavailable: true as const } : {}),
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
           usageAttributions: groupedUsageAttributions(reportedUsageAttributions)
         };
@@ -2474,14 +2528,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               const {
                 knowledgeDispatchDraft: _knowledgeDispatchDraft,
                 knowledgeEvidenceEmpty: _knowledgeEvidenceEmpty,
+                knowledgeSearchUnavailable: _knowledgeSearchUnavailable,
                 ...emptyResult
               } = toolLoopResult;
               void _knowledgeDispatchDraft;
               void _knowledgeEvidenceEmpty;
+              void _knowledgeSearchUnavailable;
               knowledgeZeroEvidence = true;
               providerResult = {
                 ...emptyResult,
-                finalText: KNOWLEDGE_INSUFFICIENT_MESSAGE
+                finalText: toolLoopResult.knowledgeSearchUnavailable
+                  ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
+                  : KNOWLEDGE_INSUFFICIENT_MESSAGE
               };
             } else {
               knowledgeAnswerExecution = await runAutomaticKnowledgeAnswer({

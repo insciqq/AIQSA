@@ -13,7 +13,7 @@ import {
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
-import { UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import {
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_INSTRUCTIONS_MAX_LENGTH,
@@ -30,6 +30,12 @@ type EditorState = {
   source: SkillDetail | null;
 };
 
+type SkillLibraryContentProps = Readonly<{
+  mode: "picker" | "section";
+  onSelectionChange(skillIds: readonly string[]): void;
+  selectedIds: readonly string[];
+}>;
+
 const emptyDraft: SkillDraft = { description: "", instructions: "", name: "" };
 
 function scopeLabel(skill: SkillSummary): string {
@@ -38,6 +44,10 @@ function scopeLabel(skill: SkillSummary): string {
     return skill.scope.workspaceNames.join(", ") || "Shared Workspace";
   }
   return "Shared with everyone";
+}
+
+function updatedLabel(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
 }
 
 function editorFor(skill: SkillDetail | null): EditorState {
@@ -64,15 +74,7 @@ function actionErrorMessage(failure: unknown): string {
   return code.replaceAll("_", " ");
 }
 
-export function SkillLibraryDialog({
-  onClose,
-  onSelectionChange,
-  selectedIds
-}: Readonly<{
-  onClose(): void;
-  onSelectionChange(skillIds: readonly string[]): void;
-  selectedIds: readonly string[];
-}>) {
+function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibraryContentProps) {
   const data = useSkillLibraryStore((state) => state.data);
   const error = useSkillLibraryStore((state) => state.error);
   const loadingMore = useSkillLibraryStore((state) => state.loadingMore);
@@ -88,10 +90,13 @@ export function SkillLibraryDialog({
   const [actionError, setActionError] = useState<string | null>(null);
   const searchMounted = useRef(false);
   const detailRequest = useRef(0);
-  const dialogRef = useDialogFocus<HTMLDivElement>({ active: true, onClose });
 
   useEffect(() => {
     void refreshSkillLibrary(true, "").catch(() => undefined);
+  }, []);
+
+  useEffect(() => () => {
+    detailRequest.current += 1;
   }, []);
 
   useEffect(() => {
@@ -107,8 +112,28 @@ export function SkillLibraryDialog({
 
   const skills = data?.skills ?? [];
   const selectedSet = new Set(selectedIds);
+  const detailOpen = detailLoading || Boolean(detail) || Boolean(editor);
 
-  function toggle(skill: SkillSummary | SkillDetail) {
+  function closeDetail(): void {
+    detailRequest.current += 1;
+    setDetailLoading(false);
+    setDetail(null);
+    setEditor(null);
+    setConfirmDelete(false);
+    setActionError(null);
+  }
+
+  function startNew(): void {
+    detailRequest.current += 1;
+    setActionError(null);
+    setNotice(null);
+    setConfirmDelete(false);
+    setDetailLoading(false);
+    setDetail(null);
+    setEditor(editorFor(null));
+  }
+
+  function toggle(skill: SkillSummary | SkillDetail): void {
     if (skill.archived) return;
     const nextIds = selectedSet.has(skill.id)
       ? selectedIds.filter((id) => id !== skill.id)
@@ -121,6 +146,7 @@ export function SkillLibraryDialog({
   async function openDetail(skill: SkillSummary): Promise<void> {
     const requestId = ++detailRequest.current;
     setDetailLoading(true);
+    setDetail(null);
     setActionError(null);
     setNotice(null);
     setConfirmDelete(false);
@@ -161,7 +187,7 @@ export function SkillLibraryDialog({
     }
   }
 
-  async function saveEditor() {
+  async function saveEditor(): Promise<void> {
     if (!editor) return;
     const draft = {
       description: editor.draft.description.trim(),
@@ -230,386 +256,344 @@ export function SkillLibraryDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/35 p-0 sm:items-center sm:p-6" role="presentation">
-      <div
-        ref={dialogRef}
-        aria-label="Skills"
-        aria-modal="true"
-        className="flex h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-t-2xl border border-trace-subtle bg-app-canvas shadow-2xl sm:h-[min(780px,90dvh)] sm:rounded-2xl"
-        role="dialog"
-      >
-        <header className="flex items-center gap-3 border-b border-trace-subtle px-4 py-3 sm:px-6">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-ink">Skills</h2>
-            <p className="mt-0.5 text-xs text-ink-muted">Reusable text instructions for a conversation.</p>
-          </div>
-          <button
-            className="v2-focusable rounded-lg bg-proof px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={busy}
-            type="button"
-            onClick={() => {
-              setActionError(null);
-              setConfirmDelete(false);
-              setDetail(null);
-              setEditor(editorFor(null));
-            }}
-          >
+    <div
+      className="v2-skill-library"
+      data-detail-open={detailOpen || undefined}
+      data-mode={mode}
+      data-testid={`skill-library-${mode}`}
+    >
+      <header className="v2-skill-heading">
+        <div className="v2-skill-heading-copy">
+          <h2>Skills</h2>
+          <p>Reusable text instructions you can add to a conversation in a deliberate order.</p>
+        </div>
+        <div className="v2-skill-heading-actions">
+          <label className="v2-resource-search v2-skill-search">
+            <UiV2Icon name="search" />
+            <input
+              aria-label="Search Skills"
+              placeholder="Search Skills…"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <UiV2Button disabled={busy} icon="plus" tone="primary" onClick={startNew}>
             New Skill
-          </button>
-          <UiV2IconButton icon="close" label="Close Skills" onClick={onClose} />
-        </header>
+          </UiV2Button>
+        </div>
+        <p className="v2-skill-selection-summary">
+          {selectedIds.length} selected · up to {SKILL_MAX_SELECTED}. Selection order is preserved.
+        </p>
+      </header>
 
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] md:grid-cols-[minmax(0,1fr)_minmax(340px,0.82fr)] md:grid-rows-1">
-          <section className="flex min-h-0 flex-col border-trace-subtle md:border-r" aria-label="Skill library">
-            <div className="border-b border-trace-subtle p-4">
-              <label className="relative block">
-                <span className="sr-only">Search Skills</span>
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted">
-                  <UiV2Icon name="search" />
-                </span>
+      {actionError ? <p className="v2-skill-feedback" data-tone="danger" role="alert">{actionError}</p> : null}
+      {notice ? <p className="v2-skill-feedback" data-tone="ok" role="status">{notice}</p> : null}
+
+      <div className="v2-skill-layout">
+        <section className="v2-skill-list-pane" aria-label="Skill library">
+          {loadState === "loading" && !data ? (
+            <p className="v2-skill-state" role="status">Loading Skills…</p>
+          ) : loadState === "error" && !data ? (
+            <div className="v2-skill-state" role="alert">
+              <p>Skills could not be loaded.</p>
+              <UiV2Button onClick={() => void refreshSkillLibrary(true, query).catch(() => undefined)}>
+                Try again
+              </UiV2Button>
+            </div>
+          ) : skills.length === 0 ? (
+            <div className="v2-skill-state">
+              <strong>{query ? "No matching Skills" : "No Skills yet"}</strong>
+              <p>Create a focused workflow with plain-text instructions.</p>
+            </div>
+          ) : (
+            <>
+              {loadState === "loading" ? (
+                <p className="v2-skill-searching" role="status">Searching…</p>
+              ) : null}
+              <ul className="v2-skill-list" aria-label="Available Skills">
+                {skills.map((skill) => {
+                  const selected = selectedSet.has(skill.id);
+                  const selectedOrder = selectedIds.indexOf(skill.id) + 1;
+                  const atLimit = !selected && selectedIds.length >= SKILL_MAX_SELECTED;
+                  const active = detail?.id === skill.id || editor?.source?.id === skill.id;
+                  return (
+                    <li className="v2-skill-row" data-active={active || undefined} key={skill.id}>
+                      <span className="v2-skill-row-icon" aria-hidden="true"><UiV2Icon name="wand" /></span>
+                      <button
+                        aria-label={`Open ${skill.name}`}
+                        className="v2-skill-row-open v2-focusable"
+                        type="button"
+                        onClick={() => void openDetail(skill)}
+                      >
+                        <span className="v2-skill-row-title">
+                          <strong>{skill.name}</strong>
+                          {skill.archived ? <small>Archived</small> : null}
+                        </span>
+                        <span className="v2-skill-row-description">{skill.description || "No description"}</span>
+                        <small className="v2-skill-row-meta">
+                          {scopeLabel(skill)} · By {skill.ownerDisplayName} · Updated {updatedLabel(skill.updatedAt)}
+                          {selected ? ` · Selected ${selectedOrder}` : ""}
+                        </small>
+                      </button>
+                      <UiV2Button
+                        aria-label={`${selected ? "Remove" : "Use"} ${skill.name}`}
+                        aria-pressed={selected}
+                        className="v2-skill-select"
+                        disabled={skill.archived || atLimit || busy}
+                        onClick={() => toggle(skill)}
+                      >
+                        {selected ? "Remove" : "Use"}
+                      </UiV2Button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {data?.nextCursor ? (
+                <div className="v2-skill-load-more">
+                  <UiV2Button busy={loadingMore} onClick={() => void loadMoreSkillLibrary().catch(() => undefined)}>
+                    {loadingMore ? "Loading…" : "Load more"}
+                  </UiV2Button>
+                  {moreError ? <p>More Skills could not be loaded.</p> : null}
+                </div>
+              ) : null}
+            </>
+          )}
+        </section>
+
+        <section className="v2-skill-detail-pane" aria-label="Skill detail">
+          {detailOpen ? (
+            <UiV2Button className="v2-skill-detail-back" icon="arrow-left" onClick={closeDetail}>
+              Back to Skills
+            </UiV2Button>
+          ) : null}
+          {detailLoading ? (
+            <p className="v2-skill-state" role="status">Loading Skill…</p>
+          ) : editor ? (
+            <div className="v2-skill-detail">
+              <div className="v2-skill-detail-heading">
+                <div>
+                  <h3>{editor.source ? "Edit Skill" : "New Skill"}</h3>
+                  <p>Changes apply to future uses; existing conversations stay unchanged.</p>
+                </div>
+                <UiV2Button onClick={() => setEditor(null)}>Cancel</UiV2Button>
+              </div>
+              <label className="v2-skill-field">
+                <span>Name</span>
                 <input
-                  className="v2-focusable w-full rounded-xl border border-trace-subtle bg-surface py-2.5 pl-9 pr-3 text-sm text-ink"
-                  placeholder="Search name, description, or author"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  autoFocus
+                  className="v2-focusable"
+                  maxLength={SKILL_NAME_MAX_LENGTH}
+                  value={editor.draft.name}
+                  onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, name: event.target.value } })}
                 />
               </label>
-              <p className="mt-2 text-xs text-ink-muted">
-                {selectedIds.length} selected · up to {SKILL_MAX_SELECTED}. Selection order is preserved.
-              </p>
+              <label className="v2-skill-field">
+                <span>Description</span>
+                <textarea
+                  className="v2-focusable"
+                  maxLength={SKILL_DESCRIPTION_MAX_LENGTH}
+                  rows={3}
+                  value={editor.draft.description}
+                  onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, description: event.target.value } })}
+                />
+              </label>
+              <label className="v2-skill-field">
+                <span>Instructions</span>
+                <textarea
+                  className="v2-focusable"
+                  data-instructions="true"
+                  maxLength={SKILL_INSTRUCTIONS_MAX_LENGTH}
+                  placeholder="Describe the workflow, decision points, and expected result."
+                  rows={12}
+                  value={editor.draft.instructions}
+                  onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, instructions: event.target.value } })}
+                />
+              </label>
+              <div className="v2-skill-actions">
+                <UiV2Button busy={busy} tone="primary" onClick={() => void saveEditor()}>
+                  {busy ? "Saving…" : editor.source ? "Save changes" : "Create Skill"}
+                </UiV2Button>
+                {editor.source ? (
+                  <UiV2Button disabled={busy} onClick={() => void toggleArchived()}>
+                    {editor.source.archived ? "Restore" : "Archive"}
+                  </UiV2Button>
+                ) : null}
+              </div>
             </div>
+          ) : detail ? (
+            <div className="v2-skill-detail">
+              <div className="v2-skill-detail-heading">
+                <div>
+                  <p className="v2-skill-eyebrow">{scopeLabel(detail)}</p>
+                  <h3>{detail.name}</h3>
+                  <p>By {detail.owner.displayName}</p>
+                </div>
+                <UiV2Button
+                  disabled={detail.archived || (!selectedSet.has(detail.id) && selectedIds.length >= SKILL_MAX_SELECTED)}
+                  tone="primary"
+                  onClick={() => toggle(detail)}
+                >
+                  {selectedSet.has(detail.id) ? "Remove" : "Use"}
+                </UiV2Button>
+              </div>
+              {detail.description ? <p className="v2-skill-description">{detail.description}</p> : null}
+              <div className="v2-skill-detail-section">
+                <h4>Instructions</h4>
+                <pre>{detail.instructions}</pre>
+              </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-3">
-              {loadState === "loading" && !data ? (
-                <p className="p-4 text-sm text-ink-muted">Loading Skills…</p>
-              ) : loadState === "error" && !data ? (
-                <div className="p-4 text-sm">
-                  <p className="text-critical">Skills could not be loaded.</p>
-                  <button
-                    className="v2-focusable mt-3 text-proof"
-                    type="button"
-                    onClick={() => void refreshSkillLibrary(true, query).catch(() => undefined)}
-                  >
-                    Try again
-                  </button>
-                </div>
-              ) : skills.length === 0 ? (
-                <div className="p-8 text-center">
-                  <p className="text-sm font-semibold text-ink">{query ? "No matching Skills" : "No Skills yet"}</p>
-                  <p className="mt-1 text-xs text-ink-muted">Create a focused workflow with plain-text instructions.</p>
-                </div>
-              ) : (
-                <>
-                  {loadState === "loading" ? (
-                    <p className="px-3 pb-2 text-xs text-ink-muted" role="status">Searching…</p>
-                  ) : null}
-                  <ul className="space-y-1" aria-label="Available Skills">
-                    {skills.map((skill) => {
-                      const selected = selectedSet.has(skill.id);
-                      const selectedOrder = selectedIds.indexOf(skill.id) + 1;
-                      const atLimit = !selected && selectedIds.length >= SKILL_MAX_SELECTED;
-                      const active = detail?.id === skill.id || editor?.source?.id === skill.id;
-                      return (
-                        <li
-                          key={skill.id}
-                          className="group flex items-start gap-3 rounded-xl px-3 py-3 hover:bg-surface"
-                          data-active={active ? "true" : undefined}
-                        >
-                          <button
-                            aria-label={`${selected ? "Remove" : "Use"} ${skill.name}`}
-                            aria-pressed={selected}
-                            className="v2-focusable min-w-16 shrink-0 rounded-lg border border-trace-subtle px-2 py-1.5 text-xs font-medium text-proof disabled:opacity-40"
-                            disabled={skill.archived || atLimit || busy}
-                            type="button"
-                            onClick={() => toggle(skill)}
-                          >
-                            {selected ? "Remove" : "Use"}
-                          </button>
-                          <button
-                            aria-label={`Open ${skill.name}`}
-                            className="v2-focusable min-w-0 flex-1 text-left"
-                            type="button"
-                            onClick={() => void openDetail(skill)}
-                          >
-                            <span className="flex items-center gap-2">
-                              <strong className="truncate text-sm text-ink">{skill.name}</strong>
-                              {skill.archived ? <span className="text-metadata text-ink-muted">Archived</span> : null}
-                            </span>
-                            <span className="mt-1 line-clamp-2 block text-xs leading-5 text-ink-secondary">
-                              {skill.description || "No description"}
-                            </span>
-                            <span className="mt-1 block text-metadata text-ink-muted">
-                              {scopeLabel(skill)} · {skill.ownerDisplayName}
-                              {selected ? ` · selected ${selectedOrder}` : ""}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
+              <div className="v2-skill-detail-section">
+                <h4>Current audiences</h4>
+                {detail.audiences.length === 0 ? (
+                  <p>{detail.owned ? "Only you can use this Skill." : "Available through its owner."}</p>
+                ) : (
+                  <ul className="v2-skill-audiences">
+                    {detail.audiences.map((audience) => (
+                      <li key={audience.id}>
+                        <span>
+                          {audience.name}
+                          {audience.kind === "project" ? <small>Project details remain private</small> : null}
+                        </span>
+                        {detail.owned && detail.canUnshare ? (
+                          <UiV2Button disabled={busy} tone="destructive" onClick={() => void unshare(detail, audience.id)}>
+                            Unshare
+                          </UiV2Button>
+                        ) : null}
+                      </li>
+                    ))}
                   </ul>
-                  {data?.nextCursor ? (
-                    <div className="px-3 py-4 text-center">
-                      <button
-                        className="v2-focusable rounded-lg border border-trace-subtle px-4 py-2 text-xs font-medium text-ink-secondary disabled:opacity-50"
-                        disabled={loadingMore}
-                        type="button"
-                        onClick={() => void loadMoreSkillLibrary().catch(() => undefined)}
-                      >
-                        {loadingMore ? "Loading…" : "Load more"}
-                      </button>
-                      {moreError ? <p className="mt-2 text-xs text-critical">More Skills could not be loaded.</p> : null}
+                )}
+              </div>
+
+              {detail.owned ? (
+                <>
+                  <div className="v2-skill-actions v2-skill-detail-section">
+                    {detail.canEdit ? <UiV2Button onClick={() => setEditor(editorFor(detail))}>Edit</UiV2Button> : null}
+                    {detail.archived ? (
+                      <UiV2Button disabled={busy} onClick={() => void restoreArchived(detail)}>Restore</UiV2Button>
+                    ) : null}
+                  </div>
+
+                  {detail.canPublish && !detail.archived && data ? (
+                    <div className="v2-skill-detail-section">
+                      <h4>Add audience</h4>
+                      <div className="v2-skill-actions">
+                        {data.publishableWorkspaces
+                          .filter((workspace) => !detail.audiences.some(
+                            (audience) => audience.kind === "workspace" && audience.workspaceId === workspace.id
+                          ))
+                          .map((workspace) => (
+                            <UiV2Button
+                              disabled={busy}
+                              key={workspace.id}
+                              onClick={() => void share(detail, {
+                                scope: "workspace",
+                                workspaceId: workspace.id
+                              }, `Shared with ${workspace.name}.`)}
+                            >
+                              {workspace.name}
+                            </UiV2Button>
+                          ))}
+                        {data.viewer.canPublishInstallation &&
+                        !detail.audiences.some((audience) => audience.kind === "everyone") ? (
+                          <UiV2Button
+                            disabled={busy}
+                            onClick={() => void share(detail, { scope: "installation" }, "Shared with everyone.")}
+                          >
+                            Everyone
+                          </UiV2Button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {detail.canDelete ? (
+                    <div className="v2-skill-danger v2-skill-detail-section">
+                      <h4>Delete Skill</h4>
+                      {!confirmDelete ? (
+                        <UiV2Button tone="destructive" onClick={() => setConfirmDelete(true)}>Delete…</UiV2Button>
+                      ) : (
+                        <div className="v2-skill-delete-confirmation">
+                          <strong>Delete “{detail.name}”?</strong>
+                          <p>
+                            It is used by {detail.assistantUsageCount} {detail.assistantUsageCount === 1 ? "Assistant" : "Assistants"}
+                            {detail.workspaceUsageCount > 0
+                              ? ` and shared with ${detail.workspaceUsageCount} ${detail.workspaceUsageCount === 1 ? "Workspace" : "Workspaces"}`
+                              : ""}. Deleting removes those links and audiences. Existing conversations stay recoverable.
+                          </p>
+                          <div className="v2-skill-actions">
+                            <UiV2Button busy={busy} tone="destructive" onClick={() => void removePermanently(detail)}>
+                              {busy ? "Deleting…" : "Delete Skill"}
+                            </UiV2Button>
+                            <UiV2Button disabled={busy} onClick={() => setConfirmDelete(false)}>Cancel</UiV2Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </>
-              )}
+              ) : null}
             </div>
-          </section>
+          ) : (
+            <div className="v2-skill-state v2-skill-detail-empty">
+              <UiV2Icon name="wand" />
+              <strong>Choose a Skill to inspect</strong>
+              <p>Skills are text-only. They do not install tools, run code, or start MCP servers.</p>
+              {error ? <p data-tone="danger">{actionErrorMessage(new Error(error))}</p> : null}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
 
-          <section className="min-h-0 overflow-y-auto bg-surface/45 p-4 sm:p-6" aria-label="Skill detail">
-            {actionError ? <p className="mb-4 text-xs text-critical" role="alert">{actionError}</p> : null}
-            {notice ? <p className="mb-4 text-xs text-proof" role="status">{notice}</p> : null}
-            {detailLoading ? (
-              <p className="text-sm text-ink-muted">Loading Skill…</p>
-            ) : editor ? (
-              <div className="mx-auto max-w-lg">
-                <div className="mb-5 flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-ink">{editor.source ? "Edit Skill" : "New Skill"}</h3>
-                    <p className="mt-1 text-xs text-ink-muted">
-                      Changes apply to future uses; existing conversations stay unchanged.
-                    </p>
-                  </div>
-                  <button
-                    className="v2-focusable text-xs text-ink-muted"
-                    type="button"
-                    onClick={() => setEditor(null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-                <label className="block text-xs font-medium text-ink-secondary">
-                  Name
-                  <input
-                    autoFocus
-                    className="v2-focusable mt-1.5 w-full rounded-xl border border-trace-subtle bg-app-canvas px-3 py-2.5 text-sm text-ink"
-                    maxLength={SKILL_NAME_MAX_LENGTH}
-                    value={editor.draft.name}
-                    onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, name: event.target.value } })}
-                  />
-                </label>
-                <label className="mt-4 block text-xs font-medium text-ink-secondary">
-                  Description
-                  <textarea
-                    className="v2-focusable mt-1.5 min-h-20 w-full resize-y rounded-xl border border-trace-subtle bg-app-canvas px-3 py-2.5 text-sm leading-5 text-ink"
-                    maxLength={SKILL_DESCRIPTION_MAX_LENGTH}
-                    value={editor.draft.description}
-                    onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, description: event.target.value } })}
-                  />
-                </label>
-                <label className="mt-4 block text-xs font-medium text-ink-secondary">
-                  Instructions
-                  <textarea
-                    className="v2-focusable mt-1.5 min-h-64 w-full resize-y rounded-xl border border-trace-subtle bg-app-canvas px-3 py-3 font-mono text-[13px] leading-6 text-ink"
-                    maxLength={SKILL_INSTRUCTIONS_MAX_LENGTH}
-                    placeholder="Describe the workflow, decision points, and expected result."
-                    value={editor.draft.instructions}
-                    onChange={(event) => setEditor({ ...editor, draft: { ...editor.draft, instructions: event.target.value } })}
-                  />
-                </label>
-                <div className="mt-5 flex flex-wrap items-center gap-2">
-                  <button
-                    className="v2-focusable rounded-lg bg-proof px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                    disabled={busy}
-                    type="button"
-                    onClick={() => void saveEditor()}
-                  >
-                    {busy ? "Saving…" : editor.source ? "Save changes" : "Create Skill"}
-                  </button>
-                  {editor.source ? (
-                    <button
-                      className="v2-focusable rounded-lg px-3 py-2 text-sm text-ink-secondary"
-                      disabled={busy}
-                      type="button"
-                      onClick={() => void toggleArchived()}
-                    >
-                      {editor.source.archived ? "Restore" : "Archive"}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : detail ? (
-              <div className="mx-auto max-w-lg">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-metadata uppercase tracking-wide text-ink-muted">{scopeLabel(detail)}</p>
-                    <h3 className="mt-1 text-lg font-semibold text-ink">{detail.name}</h3>
-                    <p className="mt-1 text-xs text-ink-muted">By {detail.owner.displayName}</p>
-                  </div>
-                  <button
-                    className="v2-focusable shrink-0 rounded-lg bg-proof px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-                    disabled={detail.archived || (!selectedSet.has(detail.id) && selectedIds.length >= SKILL_MAX_SELECTED)}
-                    type="button"
-                    onClick={() => toggle(detail)}
-                  >
-                    {selectedSet.has(detail.id) ? "Remove" : "Use"}
-                  </button>
-                </div>
-                {detail.description ? (
-                  <p className="mt-5 text-sm leading-6 text-ink-secondary">{detail.description}</p>
-                ) : null}
-                <div className="mt-6 border-t border-trace-subtle pt-5">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Instructions</h4>
-                  <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-ink">{detail.instructions}</pre>
-                </div>
+export function SkillLibrarySection({
+  onSelectionChange,
+  selectedIds
+}: Omit<SkillLibraryContentProps, "mode">) {
+  return (
+    <SkillLibraryContent
+      mode="section"
+      onSelectionChange={onSelectionChange}
+      selectedIds={selectedIds}
+    />
+  );
+}
 
-                <div className="mt-7 border-t border-trace-subtle pt-5">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Current audiences</h4>
-                  {detail.audiences.length === 0 ? (
-                    <p className="mt-3 text-xs text-ink-muted">
-                      {detail.owned ? "Only you can use this Skill." : "Available through its owner."}
-                    </p>
-                  ) : (
-                    <ul className="mt-3 space-y-2">
-                      {detail.audiences.map((audience) => (
-                        <li key={audience.id} className="flex items-center justify-between gap-3 text-sm text-ink-secondary">
-                          <span>
-                            {audience.name}
-                            {audience.kind === "project" ? <small className="ml-2 text-ink-muted">Project details remain private</small> : null}
-                          </span>
-                          {detail.owned && detail.canUnshare ? (
-                            <button
-                              className="v2-focusable rounded-lg px-2 py-1 text-xs text-critical disabled:opacity-50"
-                              disabled={busy}
-                              type="button"
-                              onClick={() => void unshare(detail, audience.id)}
-                            >
-                              Unshare
-                            </button>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+export function SkillLibraryDialog({
+  onClose,
+  onSelectionChange,
+  selectedIds
+}: Readonly<{
+  onClose(): void;
+  onSelectionChange(skillIds: readonly string[]): void;
+  selectedIds: readonly string[];
+}>) {
+  const dialogRef = useDialogFocus<HTMLDivElement>({ active: true, onClose });
 
-                {detail.owned ? (
-                  <>
-                    <div className="mt-7 flex flex-wrap gap-2 border-t border-trace-subtle pt-5">
-                      {detail.canEdit ? (
-                        <button
-                          className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs font-medium text-ink-secondary"
-                          type="button"
-                          onClick={() => setEditor(editorFor(detail))}
-                        >
-                          Edit
-                        </button>
-                      ) : null}
-                      {detail.archived ? (
-                        <button
-                          className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs font-medium text-ink-secondary disabled:opacity-50"
-                          disabled={busy}
-                          type="button"
-                          onClick={() => void restoreArchived(detail)}
-                        >
-                          Restore
-                        </button>
-                      ) : null}
-                    </div>
-
-                    {detail.canPublish && !detail.archived && data ? (
-                      <div className="mt-7 border-t border-trace-subtle pt-5">
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Add audience</h4>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {data.publishableWorkspaces
-                            .filter((workspace) => !detail.audiences.some(
-                              (audience) => audience.kind === "workspace" && audience.workspaceId === workspace.id
-                            ))
-                            .map((workspace) => (
-                              <button
-                                key={workspace.id}
-                                className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs text-ink-secondary disabled:opacity-50"
-                                disabled={busy}
-                                type="button"
-                                onClick={() => void share(detail, {
-                                  scope: "workspace",
-                                  workspaceId: workspace.id
-                                }, `Shared with ${workspace.name}.`)}
-                              >
-                                {workspace.name}
-                              </button>
-                            ))}
-                          {data.viewer.canPublishInstallation &&
-                          !detail.audiences.some((audience) => audience.kind === "everyone") ? (
-                            <button
-                              className="v2-focusable rounded-lg border border-trace-subtle bg-app-canvas px-3 py-2 text-xs text-ink-secondary disabled:opacity-50"
-                              disabled={busy}
-                              type="button"
-                              onClick={() => void share(detail, { scope: "installation" }, "Shared with everyone.")}
-                            >
-                              Everyone
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {detail.canDelete ? (
-                      <div className="mt-8 border-t border-trace-subtle pt-5">
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-critical">Delete Skill</h4>
-                        {!confirmDelete ? (
-                          <button
-                            className="v2-focusable mt-3 rounded-lg border border-critical/40 px-3 py-2 text-xs font-medium text-critical"
-                            type="button"
-                            onClick={() => setConfirmDelete(true)}
-                          >
-                            Delete…
-                          </button>
-                        ) : (
-                          <div className="mt-3">
-                            <p className="text-sm font-medium text-ink">Delete “{detail.name}”?</p>
-                            <p className="mt-2 text-xs leading-5 text-ink-muted">
-                              It is used by {detail.assistantUsageCount} {detail.assistantUsageCount === 1 ? "Assistant" : "Assistants"}
-                              {detail.workspaceUsageCount > 0
-                                ? ` and shared with ${detail.workspaceUsageCount} ${detail.workspaceUsageCount === 1 ? "Workspace" : "Workspaces"}`
-                                : ""}. Deleting removes those links and audiences. Existing conversations stay recoverable.
-                            </p>
-                            <div className="mt-3 flex gap-2">
-                              <button
-                                className="v2-focusable rounded-lg bg-critical px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-                                disabled={busy}
-                                type="button"
-                                onClick={() => void removePermanently(detail)}
-                              >
-                                {busy ? "Deleting…" : "Delete Skill"}
-                              </button>
-                              <button
-                                className="v2-focusable rounded-lg px-3 py-2 text-xs text-ink-secondary"
-                                disabled={busy}
-                                type="button"
-                                onClick={() => setConfirmDelete(false)}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </>
-                ) : null}
-              </div>
-            ) : (
-              <div className="flex min-h-60 flex-col items-center justify-center text-center">
-                <span className="mb-3 text-ink-muted"><UiV2Icon name="book" /></span>
-                <p className="text-sm font-semibold text-ink">Choose a Skill to inspect</p>
-                <p className="mt-1 max-w-xs text-xs leading-5 text-ink-muted">
-                  Skills are text-only. They do not install tools, run code, or start MCP servers.
-                </p>
-                {error ? <p className="mt-4 text-xs text-critical">{actionErrorMessage(new Error(error))}</p> : null}
-              </div>
-            )}
-          </section>
-        </div>
+  return (
+    <div
+      className="v2-skill-dialog-scrim"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div ref={dialogRef} aria-label="Skills" aria-modal="true" className="v2-skill-dialog" role="dialog">
+        <header className="v2-skill-dialog-header">
+          <div>
+            <strong>Choose Skills</strong>
+            <span>Manual Skills stay separate from Assistant-included Skills.</span>
+          </div>
+          <UiV2IconButton icon="close" label="Close Skills" onClick={onClose} />
+        </header>
+        <SkillLibraryContent
+          mode="picker"
+          onSelectionChange={onSelectionChange}
+          selectedIds={selectedIds}
+        />
       </div>
     </div>
   );

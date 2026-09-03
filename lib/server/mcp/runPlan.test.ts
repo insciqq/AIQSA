@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type { McpRunPlanRecord } from "./runPlan";
-import { namespacedMcpToolName, prepareMcpRunPlan } from "./runPlan";
+import {
+  isMcpRunPlanRecordStartable,
+  namespacedMcpToolName,
+  prepareMcpRunPlan,
+  projectMcpRunPlanStartability
+} from "./runPlan";
 
 const now = new Date("2026-07-22T18:00:00.000Z");
 const hash = "a".repeat(64);
@@ -34,6 +39,48 @@ function record(overrides: Partial<McpRunPlanRecord> = {}): McpRunPlanRecord {
 }
 
 describe("MCP run plans", () => {
+  it.each(["idle", "queued", "starting", "ready", "restarting"] as const)(
+    "recognizes enabled %s records as startable on demand",
+    (readiness) => {
+      expect(isMcpRunPlanRecordStartable(record({ readiness }))).toBe(true);
+    }
+  );
+
+  it.each([
+    "authorizing",
+    "disabled",
+    "needs_authorization",
+    "needs_setup",
+    "reauthorization_required",
+    "unavailable"
+  ] as const)("rejects enabled %s records from startable availability", (readiness) => {
+    expect(isMcpRunPlanRecordStartable(record({ readiness }))).toBe(false);
+  });
+
+  it("requires the user's server preference to remain enabled", () => {
+    expect(isMcpRunPlanRecordStartable(record({ enabled: false }))).toBe(false);
+  });
+
+  it("overlays configuration-aware readiness and fails closed without it", () => {
+    const queued = record({ generationId: null, readiness: "queued" });
+
+    expect(projectMcpRunPlanStartability([queued], [{
+      enabled: true,
+      errorCode: "configuration_required",
+      id: queued.serverId,
+      readiness: "needs_setup"
+    }])).toEqual([expect.objectContaining({
+      enabled: true,
+      errorCode: "configuration_required",
+      readiness: "needs_setup"
+    })]);
+    expect(projectMcpRunPlanStartability([queued], [])).toEqual([expect.objectContaining({
+      enabled: false,
+      errorCode: "mcp_startability_unknown",
+      readiness: "unavailable"
+    })]);
+  });
+
   it("keeps an all-disabled ready server while contributing zero run tools", async () => {
     const result = await prepareMcpRunPlan({
       isGenerationLive: () => true,

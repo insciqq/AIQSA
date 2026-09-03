@@ -4,6 +4,7 @@ import {
   useComposerControlStore,
   type ComposerAssistantSelection
 } from "./composerControlStore";
+import { inheritedKnowledgeSelection } from "@/lib/contracts/knowledge";
 
 function assistantSelection(
   overrides: Partial<ComposerAssistantSelection> = {}
@@ -185,6 +186,35 @@ describe("composer control store", () => {
       assistantRemovedNotice: false,
       selectedAssistant: null,
       temperature: "0.5"
+    });
+  });
+
+  it("never turns a privacy-hidden Assistant plan into an explicit inherited request", () => {
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: assistantSelection({ knowledgeLabel: "Knowledge · 2" }),
+      controlDefaults: {
+        backgroundMode: true,
+        maxOutputTokens: "128",
+        reasoningEffort: "low",
+        reasoningMode: "standard",
+        streamMode: false,
+        temperature: "0.9"
+      },
+      knowledgeSelection: inheritedKnowledgeSelection("assistant"),
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      searchOptionIds: [],
+      searchPlanMode: "all_selected"
+    });
+
+    useComposerControlStore.getState().setTemperature("0.5");
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistantRemovedNotice: true,
+      knowledgePlanSource: "off",
+      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [] },
+      selectedAssistant: null,
+      selectedKnowledgeBaseIds: []
     });
   });
 

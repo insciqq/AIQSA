@@ -73,7 +73,7 @@ describe("positioned loose-block table reconstruction", () => {
     expect(document.blocks).toHaveLength(6);
     expect(document.blocks.every((block) =>
       block.isTable && block.table === null && block.type === "table")).toBe(true);
-    expect(document.warnings).toContain("table_extraction_degraded");
+    expect(document.warnings).not.toContain("table_extraction_degraded");
     expect(document.warnings).not.toContain("low_ocr_confidence");
   });
 
@@ -91,10 +91,8 @@ describe("positioned loose-block table reconstruction", () => {
       "Beta",
       "2.5"
     ]);
-    expect(document.warnings).toEqual(expect.arrayContaining([
-      "low_ocr_confidence",
-      "table_extraction_degraded"
-    ]));
+    expect(document.warnings).toContain("low_ocr_confidence");
+    expect(document.warnings).not.toContain("table_extraction_degraded");
   });
 
   it.each([null, 0.64])(
@@ -118,7 +116,7 @@ describe("positioned loose-block table reconstruction", () => {
       expect(parsed.blocks).toHaveLength(4);
       expect(parsed.blocks.every((block) =>
         block.isTable && block.table === null && block.type === "table")).toBe(true);
-      expect(parsed.warnings).toContain("table_extraction_degraded");
+      expect(parsed.warnings).not.toContain("table_extraction_degraded");
       expect(chunks.map((chunk) => chunk.text)).toEqual(["Metric", "Actual", "Alpha", "1.5"]);
       expect(chunks.every((chunk) => chunk.documentContext === null &&
         chunk.layoutKind === "table_ambiguous")).toBe(true);
@@ -163,7 +161,7 @@ describe("positioned loose-block table reconstruction", () => {
     expect(parsed.blocks).toHaveLength(4);
     expect(parsed.blocks.every((block) =>
       block.isTable && block.table === null && block.type === "table")).toBe(true);
-    expect(parsed.warnings).toContain("table_extraction_degraded");
+    expect(parsed.warnings).not.toContain("table_extraction_degraded");
     expect(chunks.map((chunk) => chunk.text)).toEqual(["Metric", "Actual", "Alpha", "1.5"]);
     expect(chunks.every((chunk) => chunk.documentContext === null &&
       chunk.layoutKind === "table_ambiguous")).toBe(true);

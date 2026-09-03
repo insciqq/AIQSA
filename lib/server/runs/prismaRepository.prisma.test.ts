@@ -3099,6 +3099,90 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("atomically marks settled tool-call usage with the replaced run aggregate", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Tool usage checkpoint");
+      await expect(repository.beginToolLoopProviderRound({
+        providerContinuation: { responseId: "response-before-usage" },
+        roundIndex: 0,
+        runId: active.runId,
+        userId
+      })).resolves.toBe("started");
+      const persisted = await repository.persistToolLoopCallBatch({
+        calls: [{
+          arguments: {},
+          ordinal: 0,
+          providerCallId: "usage-call-1",
+          toolName: "lookup"
+        }],
+        providerContinuation: { responseId: "response-before-usage" },
+        roundIndex: 0,
+        runId: active.runId,
+        userId
+      });
+      if (persisted.kind !== "persisted") throw new Error("expected tool-call checkpoint");
+      const call = persisted.calls[0]!;
+      await expect(repository.claimToolLoopCall({
+        callId: call.id,
+        runId: active.runId,
+        userId
+      })).resolves.toMatchObject({ kind: "claimed" });
+      await expect(repository.settleToolLoopCall({
+        callId: call.id,
+        result: { status: "complete" },
+        runId: active.runId,
+        state: "complete",
+        userId
+      })).resolves.toBe("settled");
+
+      const usageAttributions = [{
+        modelId: "tool-model",
+        provider: "tool-provider",
+        usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+      }];
+      await expect(repository.recordRunUsageEvents({
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAccountedToolCallIds: [call.id],
+        usageAttributions,
+        userId
+      })).resolves.toBe(true);
+
+      await expect(prisma.modelRunToolCall.findUniqueOrThrow({
+        select: { usageAccountedAt: true },
+        where: { id: call.id }
+      })).resolves.toEqual({ usageAccountedAt: expect.any(Date) });
+      await expect(repository.loadRunUsageAttributions({
+        runId: active.runId,
+        userId
+      })).resolves.toEqual([expect.objectContaining({
+        modelId: "tool-model",
+        provider: "tool-provider",
+        usage: expect.objectContaining({ inputTokens: 3, totalTokens: 3 })
+      })]);
+
+      await expect(repository.recordRunUsageEvents({
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAccountedToolCallIds: ["missing-tool-call"],
+        usageAttributions: [{
+          modelId: "incorrect-model",
+          provider: "tool-provider",
+          usage: { inputTokens: 99, outputTokens: 0, reasoningTokens: 0, totalTokens: 99 }
+        }],
+        userId
+      })).resolves.toBe(false);
+      await expect(repository.loadRunUsageAttributions({
+        runId: active.runId,
+        userId
+      })).resolves.toEqual([expect.objectContaining({
+        modelId: "tool-model",
+        usage: expect.objectContaining({ inputTokens: 3, totalTokens: 3 })
+      })]);
+    });
+  });
+
   it("atomically replaces partial answer-round usage and rejects terminal conflicts", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

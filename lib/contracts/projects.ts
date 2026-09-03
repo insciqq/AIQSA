@@ -51,6 +51,16 @@ export type ProjectReadinessWire = Readonly<{
   setupReasons: readonly ("default_model_required" | "shared_model_unavailable")[];
 }>;
 
+export const PROJECT_DEFAULT_RESOURCE_KINDS = [
+  "assistant",
+  "knowledge",
+  "mcp",
+  "model",
+  "search"
+] as const;
+export type ProjectDefaultResourceKindWire =
+  (typeof PROJECT_DEFAULT_RESOURCE_KINDS)[number];
+
 export const EMPTY_PROJECT_DEFAULTS: ProjectDefaultsWire = Object.freeze({
   assistantId: null,
   controlValues: Object.freeze({}),
@@ -121,6 +131,8 @@ function decodeProjectDefaultsWith(
     providerModelId === undefined ||
     !controls ||
     !knowledge.ok ||
+    (strictKnowledge &&
+      (knowledge.plan.mode === "all_my_knowledge" || knowledge.plan.mode === "inherited")) ||
     !search.ok ||
     (mcpMode !== "auto" && mcpMode !== "load_all" && mcpMode !== "off")
   ) return { ok: false };
@@ -219,6 +231,7 @@ export type ProjectComposerWire = Readonly<{
   }>[];
   catalog: Catalog;
   knowledgeBases: readonly ComposerConfigKnowledgeBase[];
+  knowledgeDocumentTotal: number;
   knowledgeSources: readonly ComposerConfigKnowledgeSource[];
   mcpServers: readonly ComposerConfigMcpServer[];
 }>;
@@ -251,6 +264,9 @@ export type ProjectDetailWire = ProjectSummaryWire & Readonly<{
   readiness?: ProjectReadinessWire["readiness"];
   resources: readonly ProjectResourceWire[];
   setupReasons?: ProjectReadinessWire["setupReasons"];
+  /** Privacy-safe signal that a configured default was omitted because its
+   * resource is no longer usable. Exact hidden identities stay server-only. */
+  unavailableDefaults?: readonly ProjectDefaultResourceKindWire[];
 }>;
 
 export type ProjectsResponseWire = Readonly<{ projects: readonly ProjectSummaryWire[] }>;
@@ -532,6 +548,7 @@ function decodeProjectResource(value: unknown): ProjectResourceWire | null {
 function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
   if (!isRecord(value) || !Array.isArray(value.assistants) ||
     !Array.isArray(value.knowledgeBases) ||
+    !finiteRevision(value.knowledgeDocumentTotal) ||
     !(value.knowledgeSources === undefined || Array.isArray(value.knowledgeSources)) ||
     !Array.isArray(value.mcpServers)) return null;
   const catalog = decodeCatalogResponse({ catalog: value.catalog });
@@ -547,8 +564,14 @@ function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
   });
   const knowledgeBases = value.knowledgeBases.filter((base): base is ComposerConfigKnowledgeBase =>
     isRecord(base) && typeof base.archived === "boolean" &&
+    (base.attentionDocumentCount === undefined || finiteRevision(base.attentionDocumentCount)) &&
     typeof base.description === "string" && typeof base.id === "string" &&
-    typeof base.name === "string" && typeof base.owned === "boolean"
+    finiteRevision(base.documentCount) && typeof base.name === "string" &&
+    typeof base.owned === "boolean" &&
+    (base.processingDocumentCount === undefined || finiteRevision(base.processingDocumentCount)) &&
+    ["archived", "empty", "needs_attention", "processing", "ready", "trashed"]
+      .includes(String(base.readinessState)) &&
+    (base.readyDocumentCount === undefined || finiteRevision(base.readyDocumentCount))
   );
   const knowledgeSourceValues = value.knowledgeSources ?? [];
   const knowledgeSources = knowledgeSourceValues.filter((source): source is ComposerConfigKnowledgeSource =>
@@ -577,6 +600,7 @@ function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
         assistants: assistants as ProjectComposerWire["assistants"],
         catalog,
         knowledgeBases,
+        knowledgeDocumentTotal: value.knowledgeDocumentTotal,
         knowledgeSources,
         mcpServers
       };
@@ -599,7 +623,12 @@ export function decodeProjectResponse(value: unknown): ProjectResponseWire | nul
     typeof project.publicSharingEnabled !== "boolean" ||
     (project.readiness !== undefined && project.readiness !== "READY" && project.readiness !== "SETUP_REQUIRED") ||
     (project.setupReasons !== undefined && (!Array.isArray(project.setupReasons) ||
-      project.setupReasons.some((reason) => reason !== "default_model_required" && reason !== "shared_model_unavailable")))) return null;
+      project.setupReasons.some((reason) => reason !== "default_model_required" && reason !== "shared_model_unavailable"))) ||
+    (project.unavailableDefaults !== undefined && (!Array.isArray(project.unavailableDefaults) ||
+      project.unavailableDefaults.length > PROJECT_DEFAULT_RESOURCE_KINDS.length ||
+      new Set(project.unavailableDefaults).size !== project.unavailableDefaults.length ||
+      project.unavailableDefaults.some((kind) =>
+        !PROJECT_DEFAULT_RESOURCE_KINDS.includes(kind as ProjectDefaultResourceKindWire))))) return null;
   const capabilityKeys = [
     "archiveChats", "manageMembers", "manageMemory", "manageOwners", "manageProject", "mutateChats"
   ] as const;
@@ -627,7 +656,8 @@ export function decodeProjectResponse(value: unknown): ProjectResponseWire | nul
       publicSharingEnabled: project.publicSharingEnabled,
       readiness: project.readiness ?? "READY",
       resources: resources as ProjectResourceWire[],
-      setupReasons: (project.setupReasons ?? []) as ProjectDetailWire["setupReasons"]
+      setupReasons: (project.setupReasons ?? []) as ProjectDetailWire["setupReasons"],
+      unavailableDefaults: (project.unavailableDefaults ?? []) as ProjectDetailWire["unavailableDefaults"]
     }
   };
 }

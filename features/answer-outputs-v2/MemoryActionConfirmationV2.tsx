@@ -194,9 +194,11 @@ function actionIdentity(action: MemoryActionFeedback): string {
 
 function MemoryActionConfirmationContent({
   action,
+  onOpenMemoryReset,
   onOpenMemorySettings
 }: Readonly<{
   action: MemoryActionFeedback;
+  onOpenMemoryReset?(): void;
   onOpenMemorySettings?(): void;
 }>) {
   const headingId = useId();
@@ -421,9 +423,13 @@ function MemoryActionConfirmationContent({
           <Statement statement={action.status === "REJECTED" ? undefined : action.statement} />
         )}
         {action.status === "CONFIRMATION_REQUIRED" && action.operation === "RESET" &&
-          onOpenMemorySettings ? (
+          (onOpenMemoryReset || onOpenMemorySettings) ? (
             <div className="v2-memory-action-buttons">
-              <UiV2Button onClick={onOpenMemorySettings} tone="primary" type="button">
+              <UiV2Button
+                onClick={onOpenMemoryReset ?? onOpenMemorySettings}
+                tone="primary"
+                type="button"
+              >
                 {t("action.reviewReset")}
               </UiV2Button>
             </div>
@@ -437,6 +443,7 @@ function MemoryActionConfirmationContent({
 
 export function MemoryActionConfirmationV2(props: Readonly<{
   action: MemoryActionFeedback;
+  onOpenMemoryReset?(): void;
   onOpenMemorySettings?(): void;
 }>) {
   return (

@@ -115,7 +115,7 @@ function MemoryStatusV2({ status }: Readonly<{
 }
 
 /* Knowledge rows carry the violet handle mark and a book glyph; the only
-   action is "Open source ›" because the citation projection exposes no
+   action is "Open document ›" because the citation projection exposes no
    private base/document name (CRITICAL_INVARIANTS §9). */
 function KnowledgeSourceV2({
   citation,
@@ -129,7 +129,7 @@ function KnowledgeSourceV2({
       <span className="v2-answer-source-index" data-kind="knowledge">{citation.handle}</span>
       <UiV2Icon className="v2-answer-source-glyph" name="book" />
       <span className="v2-answer-source-main">
-        <strong>{citation.deleted ? "Deleted Knowledge source" : "Knowledge source"}</strong>
+        <strong>{citation.deleted ? "Deleted Knowledge document" : "Knowledge document"}</strong>
         <small>
           {citation.deleted
             ? "citation evidence removed"
@@ -484,7 +484,7 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
           </ol>
         ) : null}
         {knowledge.length > 0 ? (
-          <ol className="v2-answer-knowledge-sources" aria-label="Knowledge sources">
+          <ol className="v2-answer-knowledge-sources" aria-label="Knowledge documents">
             {knowledge.map((citation, index) => (
               <KnowledgeSourceV2
                 citation={citation}

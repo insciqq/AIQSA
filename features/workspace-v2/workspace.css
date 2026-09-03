@@ -75,6 +75,23 @@
   align-items: center;
 }
 
+/* At the desktop/compact boundary the concrete model remains readable while
+   the location trail yields first. Below 960px the mobile/compact rules may
+   shrink the model pill again to protect the viewport. */
+@media (min-width: 60rem) {
+  .v2-live-model {
+    flex: 0 0 auto;
+  }
+
+  .v2-live-title {
+    flex: 1 1 0;
+  }
+
+  .v2-live-crumb {
+    flex: 1 1 0;
+  }
+}
+
 /* The blank chat has no title: the left island disappears entirely. */
 .v2-live-title:empty {
   display: none;
@@ -265,7 +282,7 @@
 }
 
 /*
- * The single header "⋯" menu on every width. Below 900px it is the only
+ * The single header "⋯" menu on every width. Below 768px it is the only
  * reachable route to the header actions, so it must never collapse without a
  * replacement; Share additionally appears inside it there.
  */
@@ -283,7 +300,7 @@
 }
 
 /* Share is a menu route only while the Share text button is collapsed. */
-@media (min-width: 900px) {
+@media (min-width: 768px) {
   .v2-live-more-menu .v2-menu-item[data-mobile-only] {
     display: none;
   }
@@ -457,6 +474,12 @@
   pointer-events: auto;
 }
 
+.v2-live-empty-composer-stack {
+  display: grid;
+  width: 100%;
+  gap: 0.375rem;
+}
+
 /* The composer frame shares the reading column's exact edges (UX audit F7):
    the dock already provides the side gutter, so the wrap takes the full
    inner width instead of insetting itself again. */
@@ -475,8 +498,12 @@
 }
 
 .v2-live-composer-error {
+  display: flex;
   width: min(42rem, 100%);
   margin: 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--v2-color-danger-dim);
   border-radius: var(--v2-radius-s);
@@ -486,13 +513,19 @@
   line-height: 1.4;
 }
 
+.v2-live-composer-error > span {
+  min-width: 0;
+}
+
+.v2-live-composer-error > .v2-button {
+  min-height: 2rem;
+  flex: none;
+  padding: 0.25rem 0.625rem;
+}
+
 .v2-live-notice {
-  position: absolute;
-  z-index: 25;
-  top: calc(var(--v2-header-height) + env(safe-area-inset-top) + 0.75rem);
-  left: 50%;
   width: min(var(--v2-measure), calc(100% - 2rem));
-  transform: translateX(-50%);
+  margin: 0 auto;
 }
 
 /* Shell notices enter like every ephemeral toast layer (S3 §8). */
@@ -684,7 +717,7 @@
 }
 
 /*
- * While the sidebar is collapsed (desktop collapse and compact 900–1023px
+ * While the sidebar is collapsed (desktop collapse and compact 768–1023px
  * default), the fixed `.v2-sidebar-floats` group sits inside the header bar's
  * top-left corner. The bar's content starts to its right so the float buttons
  * never overlap the chat title.
@@ -693,13 +726,13 @@
   padding-left: max(5.75rem, calc(env(safe-area-inset-left) + 5.75rem));
 }
 
-@media (min-width: 900px) and (max-width: 1023px) {
+@media (min-width: 768px) and (max-width: 1023px) {
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-live-header {
     padding-left: max(5.75rem, calc(env(safe-area-inset-left) + 5.75rem));
   }
 }
 
-@media (max-width: 899px) {
+@media (max-width: 767px) {
   /*
    * Mobile has no header bar (PRD §4.8): the title pill and the "⋯" island
    * float over the thread beside the menu island (`.v2-sidebar-floats`).
@@ -853,10 +886,6 @@
     align-self: center;
   }
 
-  .v2-live-notice {
-    top: max(3.75rem, calc(env(safe-area-inset-top) + 3.25rem));
-  }
-
   .v2-live-composer-dock {
     padding-right: 0.625rem;
     padding-left: 0.625rem;
@@ -906,7 +935,7 @@
  * tappable scrim band above the sheet, the sticky header row with the close
  * control, and safe-area padding. The scrim layer stays above the chat header.
  */
-@media (max-width: 899px), (max-height: 32rem) {
+@media (max-width: 767px), (max-height: 32rem) {
   .v2-run-setup-scrim {
     padding: max(2.75rem, calc(env(safe-area-inset-top) + 1.75rem)) 0 0;
     place-items: end stretch;
@@ -937,6 +966,10 @@
  * touch target to at least 40px (S3 §11).
  */
 @media (hover: none), (pointer: coarse) {
+  .v2-live-model {
+    height: 2.75rem;
+  }
+
   .v2-live-temporary-trigger::after {
     content: "";
     position: absolute;
@@ -957,13 +990,9 @@
 }
 
 /* Touch (C2): the "⋯" island and the model pill keep 44px targets. */
-@media (max-width: 899px) and ((hover: none) or (pointer: coarse)) {
+@media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
   .v2-live-header-actions .v2-icon-button {
     width: 2.75rem;
-    height: 2.75rem;
-  }
-
-  .v2-live-model {
     height: 2.75rem;
   }
 

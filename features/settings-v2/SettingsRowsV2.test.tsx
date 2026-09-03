@@ -30,8 +30,24 @@ describe("ChatDefaultsRowsV2", () => {
     render(
       <ChatDefaultsRowsV2
         knowledgeBases={[
-          { archived: false, description: "", id: "kb-1", name: "Handbook", owned: true },
-          { archived: true, description: "", id: "kb-old", name: "Old", owned: true }
+          {
+            archived: false,
+            description: "",
+            documentCount: 1,
+            id: "kb-1",
+            name: "Handbook",
+            owned: true,
+            readinessState: "ready"
+          },
+          {
+            archived: true,
+            description: "",
+            documentCount: 1,
+            id: "kb-old",
+            name: "Old",
+            owned: true,
+            readinessState: "archived"
+          }
         ]}
         knowledgePlan={null}
         mcpMode="auto"

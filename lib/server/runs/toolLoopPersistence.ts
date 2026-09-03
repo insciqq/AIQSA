@@ -52,6 +52,9 @@ export type PersistedToolLoopCall = Readonly<{
   startedAt: string | null;
   state: PersistedToolLoopCallState;
   toolName: string;
+  /** Present on repository records. Optional only for historical/in-memory
+   * fixtures; a missing value is conservatively treated as unaccounted. */
+  usageAccountedAt?: string | null;
 }>;
 
 /** Immutable Project authority needed before recovery performs external I/O. */

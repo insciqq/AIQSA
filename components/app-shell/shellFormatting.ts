@@ -15,6 +15,14 @@ export function formatTokenCount(value: number): string {
   return String(value);
 }
 
+/** Normalizes persisted legacy placeholders without changing real chat titles. */
+export function chatTitleForDisplay(title: string | null | undefined): string {
+  const normalized = title?.trim() ?? "";
+  return !normalized || /^(?:new chat|untitled qsa)$/iu.test(normalized)
+    ? "New chat"
+    : normalized;
+}
+
 /**
  * Deterministic export base name: a unicode-aware slug of the chat title plus
  * the ISO date, e.g. `release-checklist-032-2026-08-13`. The extension is
@@ -85,6 +93,7 @@ export function humanizeErrorCode(code: string): string {
     no_retrieval_candidates:
       "No matching passages were found in the ready documents. Rephrase the question or change the selection",
     provider_not_available: "Provider is not available",
+    provider_unavailable: "Provider is unavailable. Try again",
     project_default_model_unavailable:
       "The Project default model is unavailable. Review Project resources and choose an available default",
     project_setup_required:
@@ -116,13 +125,13 @@ function actionLabel(action: string): string {
     chat_delete: "Chat deletion",
     chat_detail: "Chat detail load",
     chat_update: "Chat update",
+    default_knowledge: "Default Knowledge",
     edit: "Message edit",
     folder_create: "Folder creation",
     folder_delete: "Folder deletion",
     folder_move: "Folder move",
     folder_rename: "Folder rename",
     message_delete: "Message deletion",
-    project_settings: "Project settings",
     prompt_create: "Prompt creation",
     prompt_default: "Default prompt update",
     prompt_delete: "Prompt deletion",

@@ -7,6 +7,7 @@ import {
   openMemoryDetail,
   openMemoryManager,
   refreshMemoryList,
+  requestForgetMemory,
   saveMemoryChanges,
   saveNewMemory,
   useMemoryManagerStore
@@ -136,6 +137,30 @@ describe("Memory manager store", () => {
 
     expect(useMemoryManagerStore.getState().screen).toBe("detail");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("opens inline Forget only for the exact server-authorized item", () => {
+    const allowed = memoryConsumerItemFixture({ memoryRef: "opaque-allowed" });
+    const denied = memoryConsumerItemFixture({
+      allowedActions: ["EDIT"],
+      memoryRef: "opaque-denied"
+    });
+    useMemoryManagerStore.setState({
+      listLoadState: "ready",
+      memories: [allowed, denied]
+    });
+
+    requestForgetMemory(denied.memoryRef);
+    expect(useMemoryManagerStore.getState().screen).toBe("list");
+    requestForgetMemory("opaque-missing");
+    expect(useMemoryManagerStore.getState().screen).toBe("list");
+
+    requestForgetMemory(allowed.memoryRef);
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: allowed,
+      draftDirty: false,
+      screen: "forget"
+    });
   });
 
   it("drops prior-account data before loading the next account", async () => {

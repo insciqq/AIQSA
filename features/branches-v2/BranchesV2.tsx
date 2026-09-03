@@ -21,36 +21,6 @@ import {
   type BranchVersionV2
 } from "./branchModel";
 
-export function EditBranchStripV2({
-  error = null,
-  onCancel,
-  pending = false
-}: Readonly<{
-  error?: string | null;
-  onCancel(): void;
-  pending?: boolean;
-}>) {
-  return (
-    <section className="v2-edit-branch-strip" data-testid="edit-branch-strip-v2">
-      <UiV2Icon name="branch" />
-      <span>
-        <strong>{pending ? "Saving the new branch…" : "Editing message"}</strong>
-        <small>Sending creates a new branch; history stays unchanged.</small>
-        {error ? <small className="v2-edit-branch-error" role="alert">{error}</small> : null}
-      </span>
-      <button
-        aria-label="Cancel editing"
-        disabled={pending}
-        onClick={onCancel}
-        title={pending ? "Wait for the new branch to save" : "Cancel editing"}
-        type="button"
-      >
-        Cancel
-      </button>
-    </section>
-  );
-}
-
 export function BranchPagerV2({
   disabledReason = null,
   onCheckout,

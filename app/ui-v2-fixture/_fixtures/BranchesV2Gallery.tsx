@@ -12,6 +12,7 @@ import {
   ConversationV2,
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
+import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { ComposerV2 } from "@/features/composer-v2/ComposerV2";
 import { composerGalleryConfig } from "./ComposerV2Gallery";
 import { UiV2Button } from "@/components/ui-v2";
@@ -19,8 +20,7 @@ import { useMemo, useState } from "react";
 import {
   BranchDrawerV2,
   BranchPagerV2,
-  BranchesSlotV2,
-  EditBranchStripV2
+  BranchesSlotV2
 } from "@/features/branches-v2/BranchesV2";
 import {
   activeBranchPathV2,
@@ -146,10 +146,13 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
   const [drawerOpen, setDrawerOpen] = useState(
     state === "drawer" || state === "error" || state === "loading" || state === "streaming"
   );
-  const [editing, setEditing] = useState(state === "edit");
-  const [draft, setDraft] = useState(
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(
+    state === "edit" ? "question-edited" : null
+  );
+  const [editDraft, setEditDraft] = useState(
     state === "edit" ? "Добавь критерий остановки и контроль утечек скрытых данных." : ""
   );
+  const [composerDraft, setComposerDraft] = useState("Незавершённый черновик остаётся в композере.");
   const [notice, setNotice] = useState("");
   const [loadError, setLoadError] = useState(state === "error");
   const streaming = state === "streaming";
@@ -196,7 +199,7 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
       >
         <main
           className="v2-branch-gallery-main"
-          data-composer-visible={editing || undefined}
+          data-composer-visible={state === "edit" || editingMessageId ? "true" : undefined}
         >
           <BranchesSlotV2>
             <UiV2Button icon="branch" onClick={() => setDrawerOpen(true)}>
@@ -215,17 +218,45 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
               onBranchFromHere: () => setNotice("A new chat from this point was requested."),
               onCopy: () => setNotice("Message copied."),
               onDelete: () => setNotice("Deleting this branch requires confirmation."),
-              onEdit: () => {
-                setDraft(message.content);
-                setEditing(true);
-              },
-              onRegenerate: () => setNotice("Regenerating creates a sibling answer version."),
+              ...(message.role === "user" ? {
+                onEdit: () => {
+                  setEditDraft(message.content);
+                  setEditingMessageId(message.id);
+                }
+              } : {
+                onRegenerate: () => setNotice("Regenerating creates a sibling answer version.")
+              }),
               regenerateDisabled: streaming
             })}
             getMessagePresentation={(message) => {
               const pager = branchPagerForMessageV2(graph, message.id);
-              return pager ? {
-                afterContent: (
+              const edit = editingMessageId === message.id ? {
+                attachmentSlot: message.id === "question-edited" ? (
+                  <SentAttachmentsV2
+                    blocks={[{
+                      attachmentId: "branches-fixture-report",
+                      label: "privacy-check.md",
+                      type: "file"
+                    }]}
+                  />
+                ) : null,
+                draft: editDraft,
+                onCancel: () => setEditingMessageId(null),
+                onChange: setEditDraft,
+                onSubmit: () => {
+                  setGraph((current) => ({
+                    ...current,
+                    nodes: current.nodes.map((node) => node.id === message.id
+                      ? { ...node, preview: editDraft }
+                      : node)
+                  }));
+                  setEditingMessageId(null);
+                  setNotice("The new branch is saved; the original history is unchanged.");
+                },
+                sendWithEnter: true
+              } : undefined;
+              return pager || edit ? {
+                ...(pager ? { afterContent: (
                   <BranchPagerV2
                     disabledReason={streaming
                       ? "Wait for the answer to finish or stop it."
@@ -233,31 +264,23 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
                     onCheckout={checkout}
                     state={pager}
                   />
-                )
+                ) } : {}),
+                ...(edit ? { edit } : {})
               } : undefined;
             }}
             messages={messages}
           />
           <p aria-live="polite" className="v2-branch-gallery-notice">{notice}</p>
-          {editing ? (
+          {state === "edit" || editingMessageId ? (
             <div className="v2-composer-gallery-dock">
               <ComposerV2
                 config={composerGalleryConfig}
-                draft={draft}
-                editStatusSlot={(
-                  <EditBranchStripV2
-                    onCancel={() => {
-                      setEditing(false);
-                      setDraft("");
-                    }}
-                  />
-                )}
-                onDraftChange={setDraft}
-                onSend={() => {
-                  setEditing(false);
-                  setDraft("");
-                  setNotice("The new branch is saved; the original history is unchanged.");
-                }}
+                disabledReason={editingMessageId
+                  ? "Finish or cancel the inline edit first."
+                  : null}
+                draft={composerDraft}
+                onDraftChange={setComposerDraft}
+                onSend={() => setNotice("The composer draft was sent unchanged.")}
                 selectedModelId="gpt-5.2"
                 selectedProvider="openai-work"
               />

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
-import { SkillLibraryDialog } from "./SkillLibraryDialog";
+import { SkillLibraryDialog, SkillLibrarySection } from "./SkillLibraryDialog";
 
 const ownedSkill = {
   archived: false,
@@ -68,6 +68,25 @@ describe("SkillLibraryDialog", () => {
     cleanup();
     resetSkillLibraryStoreForTest();
     vi.unstubAllGlobals();
+  });
+
+  it("shares the list with the inline Library section without modal chrome", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => listResponse()));
+    const onSelectionChange = vi.fn();
+
+    render(
+      <SkillLibrarySection
+        onSelectionChange={onSelectionChange}
+        selectedIds={[]}
+      />
+    );
+
+    expect(await screen.findByTestId("skill-library-section")).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Skills" })).toBeVisible();
+    expect(screen.getByText(/By Alex · Updated/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Use Action closer" }));
+    expect(onSelectionChange).toHaveBeenCalledWith(["skill-shared"]);
   });
 
   it("selects an accessible Skill and keeps the library text-only", async () => {

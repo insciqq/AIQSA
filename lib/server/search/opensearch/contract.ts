@@ -37,6 +37,7 @@ export const KNOWLEDGE_SEARCH_INDEX_DEFINITION = Object.freeze({
   },
   settings: {
     index: {
+      max_result_window: KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT,
       number_of_replicas: 0,
       number_of_shards: 1,
       similarity: {

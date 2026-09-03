@@ -13,6 +13,14 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
+import {
+  KNOWLEDGE_RESULT_VERSION,
+  type KnowledgeRetrievalEvidence
+} from "../knowledge/retrievalTypes";
+import {
+  knowledgeToolResultContent,
+  knowledgeToolResultText
+} from "../knowledge/toolResult";
 
 const call = { id: "call-1", name: "search_engine_1" };
 
@@ -133,6 +141,55 @@ describe("persisted tool execution result codec", () => {
       throw new Error("expected presentation trace fixture snapshot");
     }
     expect(parsePersistedToolExecutionResult(call, presentationTrace)).toBeNull();
+  });
+
+  it("round-trips a durable Knowledge search outage with error status", () => {
+    const draft: KnowledgeRetrievalEvidence = {
+      bases: [],
+      candidateCount: 0,
+      candidateLimit: 64,
+      durationMs: 3,
+      embeddingExecutions: [],
+      failureCode: "knowledge_search_backend_unavailable",
+      fusion: "weighted_rrf_v2",
+      invocationOrdinal: 1,
+      operation: "automatic_search",
+      outcome: "search_unavailable",
+      providerText: "pending",
+      query: "knowledge_search_unavailable",
+      resultLimit: 16,
+      results: [],
+      version: KNOWLEDGE_RESULT_VERSION
+    };
+    const evidence = { ...draft, providerText: knowledgeToolResultText(draft) };
+    const knowledgeCall = { id: "knowledge-call-1", name: "search_knowledge" };
+    const result = {
+      callId: knowledgeCall.id,
+      content: knowledgeToolResultContent(evidence),
+      name: knowledgeCall.name,
+      rawPreview: {
+        knowledgeResultVersion: evidence.version,
+        knowledgeRetrieval: evidence,
+        providerCall: true
+      },
+      status: "error" as const,
+      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+    };
+
+    const snapshot = snapshotToolExecutionResult(
+      result,
+      toolLoopPersistenceLimits.resultBytes
+    );
+
+    expect(snapshot).not.toBeNull();
+    expect(snapshot).toMatchObject({
+      content: [{
+        type: "json",
+        value: { aiqsaType: "knowledge_result", version: KNOWLEDGE_RESULT_VERSION }
+      }],
+      status: "error"
+    });
+    expect(parsePersistedToolExecutionResult(knowledgeCall, snapshot)).toEqual(result);
   });
 
   it("enforces the complete serialized result boundary one byte below, at, and above", () => {

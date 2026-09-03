@@ -1,5 +1,6 @@
 import { hashCanonicalMcpValue } from "./definitions";
 import {
+  isMcpReadinessStartable,
   MCP_RUN_PLAN_LIMITS,
   type McpCredentialSource,
   type McpReadiness,
@@ -148,6 +149,49 @@ export function isMcpRunPlanRecordRunnable(input: {
   return hasCurrentRunnableGeneration(input.record, input.now) &&
     input.isGenerationLive(input.record.generationId!) &&
     inventoryTools(input.record.inventory) !== null;
+}
+
+/**
+ * Pre-admission availability predicate. Unlike exact runnability, this does
+ * not require a live process-local generation or fresh inventory because run
+ * admission starts and reconciles these enabled states on demand.
+ */
+export function isMcpRunPlanRecordStartable(record: McpRunPlanRecord): boolean {
+  return record.enabled && isMcpReadinessStartable(record.readiness);
+}
+
+/**
+ * Run-plan rows deliberately do not decrypt user configuration, so an enabled
+ * row without a desired generation can only say "queued". Availability
+ * surfaces must overlay the user catalog's configuration/OAuth-aware state
+ * before applying the startable predicate. A missing catalog row fails closed.
+ */
+export function projectMcpRunPlanStartability(
+  records: readonly McpRunPlanRecord[],
+  servers: readonly Readonly<{
+    enabled: boolean;
+    errorCode: string | null;
+    id: string;
+    readiness: McpReadiness;
+  }>[]
+): McpRunPlanRecord[] {
+  const serverById = new Map(servers.map((server) => [server.id, server]));
+  return records.map((record) => {
+    const server = serverById.get(record.serverId);
+    return server
+      ? {
+          ...record,
+          enabled: server.enabled,
+          errorCode: server.errorCode,
+          readiness: server.readiness
+        }
+      : {
+          ...record,
+          enabled: false,
+          errorCode: "mcp_startability_unknown",
+          readiness: "unavailable"
+        };
+  });
 }
 
 function token(value: string, maxLength: number): string {

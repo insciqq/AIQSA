@@ -262,6 +262,17 @@ describe("answer process label", () => {
     expect(describeToolCallV2({ toolName: "search_selected_engines" }, "running")).toBe("Searching the web");
   });
 
+  it("distinguishes Knowledge retrieval progress, success, and technical failure", () => {
+    expect(describeToolCallV2({ toolName: "search_knowledge" }, "running"))
+      .toBe("Searching Knowledge");
+    expect(describeToolCallV2({ toolName: "search_knowledge" }, "settled"))
+      .toBe("Searched Knowledge");
+    expect(describeToolCallV2({ toolName: "search_knowledge" }, "failed"))
+      .toBe("Knowledge search unavailable");
+    expect(describeToolCallV2({ toolName: "retrieve_knowledge" }, "failed"))
+      .toBe("Knowledge search unavailable");
+  });
+
   it("falls back to the settled step durations", () => {
     expect(stepDurationSumV2(null)).toBeNull();
     expect(stepDurationSumV2({ calls: [{ round: 1, status: "running", toolName: "web_search" }] })).toBeNull();

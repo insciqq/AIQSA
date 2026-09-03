@@ -80,6 +80,10 @@ export type AdminKnowledgeOperationsAlert = Readonly<{
     | "knowledge_ingestion_failures"
     | "knowledge_ingestion_queue_stalled"
     | "knowledge_retrieval_degraded"
+    | "knowledge_search_backend_unavailable"
+    | "knowledge_search_projection_backlog"
+    | "knowledge_search_projection_failures"
+    | "knowledge_search_worker_unavailable"
     | "knowledge_upload_sessions_expired"
     | "knowledge_v1_reconciliation_incomplete";
   severity: "critical" | "warning";
@@ -125,6 +129,15 @@ export type AdminKnowledgeOperations = Readonly<{
     operations24h: number;
     p50DurationMs24h: number | null;
     p95DurationMs24h: number | null;
+  }>;
+  search: Readonly<{
+    backendState: "available" | "unavailable";
+    expectedProjections: number;
+    failedProjections: number;
+    pendingProjections: number;
+    readyProjections: number;
+    workerLastSeenAt: string | null;
+    workerState: "healthy" | "missing" | "stale";
   }>;
 }>;
 
@@ -365,17 +378,22 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
 function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
   if (!record(value) || !Array.isArray(value.alerts) || !isoDate(value.checkedAt) ||
     !record(value.deletion) || !record(value.ingestion) || !record(value.migration) ||
-    !record(value.retrieval)) return null;
+    !record(value.retrieval) || !record(value.search)) return null;
   const deletion = value.deletion;
   const ingestion = value.ingestion;
   const migration = value.migration;
   const retrieval = value.retrieval;
+  const search = value.search;
   const alertCodes = new Set<AdminKnowledgeOperationsAlert["code"]>([
     "knowledge_deletion_backlog",
     "knowledge_deletion_blocked",
     "knowledge_ingestion_failures",
     "knowledge_ingestion_queue_stalled",
     "knowledge_retrieval_degraded",
+    "knowledge_search_backend_unavailable",
+    "knowledge_search_projection_backlog",
+    "knowledge_search_projection_failures",
+    "knowledge_search_worker_unavailable",
     "knowledge_upload_sessions_expired",
     "knowledge_v1_reconciliation_incomplete"
   ]);
@@ -417,6 +435,12 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
     "noAnswerOperations24h",
     "operations24h"
   ] as const;
+  const searchKeys = [
+    "expectedProjections",
+    "failedProjections",
+    "pendingProjections",
+    "readyProjections"
+  ] as const;
   if (alerts.some((entry) => entry === null) ||
     new Set(alerts.map((entry) => entry?.code)).size !== alerts.length ||
     deletionKeys.some((key) => !nonNegativeInteger(deletion[key])) ||
@@ -427,6 +451,14 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
     !nullableInteger(ingestion.p95ReadyLatencyMs24h) ||
     migrationKeys.some((key) => !nonNegativeInteger(migration[key])) ||
     retrievalKeys.some((key) => !nonNegativeInteger(retrieval[key])) ||
+    searchKeys.some((key) => !nonNegativeInteger(search[key])) ||
+    search.backendState !== "available" && search.backendState !== "unavailable" ||
+    search.workerState !== "healthy" && search.workerState !== "missing" &&
+      search.workerState !== "stale" ||
+    search.workerLastSeenAt !== null && !isoDate(search.workerLastSeenAt) ||
+    (search.workerState === "missing") !== (search.workerLastSeenAt === null) ||
+    Number(search.readyProjections) + Number(search.pendingProjections) +
+      Number(search.failedProjections) !== Number(search.expectedProjections) ||
     !nullableInteger(retrieval.p50DurationMs24h) ||
     !nullableInteger(retrieval.p95DurationMs24h) ||
     Number(retrieval.degradedOperations24h) > Number(retrieval.operations24h) ||

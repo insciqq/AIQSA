@@ -10,6 +10,7 @@ const baseSupportReference = "K-123456ABCDEF";
 const fileSupportReference = "K-ABCDEF012345";
 
 type SourceFixture = Readonly<{
+  canReprocess: boolean;
   currentVersion: Readonly<{
     byteSize: number;
     createdAt: string;
@@ -83,6 +84,7 @@ function uploadedSource(input: {
     warningCodes
   };
   return {
+    canReprocess: input.state === "needs_attention",
     currentVersion: input.state === "ready" ? {
       byteSize: input.byteSize ?? 24,
       createdAt: timestamp,
@@ -220,6 +222,7 @@ async function installKnowledgeFixture(page: Page) {
       .filter(([id]) => !sourceMembershipIds.includes(id))
       .map(([id, name]) => ({ archived: false, id, name }));
     return {
+      canReprocess: false,
       currentVersion: currentSourceVersion,
       deletionPending: sourceDeletionPending,
       description: sourceDescription,
@@ -582,6 +585,18 @@ async function installKnowledgeFixture(page: Page) {
       return;
     }
     if (path === "/api/me/knowledge-sources/source-e2e/viewer" && method === "GET") {
+      if (url.searchParams.get("asset") === "page") {
+        expect(url.searchParams.get("page")).toMatch(/^[1-8]$/u);
+        await route.fulfill({
+          body: Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            "base64"
+          ),
+          contentType: "image/png",
+          status: 200
+        });
+        return;
+      }
       await fulfillJson(route, {
         source: {
           blocks: [{
@@ -597,6 +612,7 @@ async function installKnowledgeFixture(page: Page) {
           excerpt: "Use the reusable onboarding checklist for every product launch.",
           excerptTruncated: false,
           headingPath: ["Product guide", "Onboarding"],
+          libraryAvailable: true,
           locator: { boundingBoxes: [], pageEnd: 1, pageStart: 1 },
           originalKind: null,
           source: {
@@ -769,41 +785,52 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
   const partialFile = knowledge.getByTestId("knowledge-source-source-upload-1");
   await expect(partialFile.getByText("handbook.md", { exact: true })).toBeVisible();
-  await expect(partialFile.getByText("Ready with warnings", { exact: true })).toBeVisible();
-  await expect(partialFile.getByText("The usable part is searchable", { exact: true })).toBeVisible();
+  await expect(partialFile.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(partialFile.getByText(
+    "Part of the file could not be read. The rest is searchable.",
+    { exact: true }
+  )).toBeVisible();
   const affectedFile = knowledge.getByTestId("knowledge-source-source-upload-2");
   await expect(affectedFile.getByText("Needs attention", { exact: true })).toBeVisible();
-  await expect(knowledge.getByTestId("knowledge-readiness-summary"))
-    .toContainText(`Support reference ${baseSupportReference}`);
+  await expect(knowledge.getByRole("heading", { level: 2, name: "E2E runbooks" }))
+    .toBeVisible();
+  await expect(knowledge).not.toContainText(baseSupportReference);
   expectUserSafeKnowledgeText(await knowledge.innerText());
 
-  await affectedFile.getByRole("button", { name: "Open Source" }).click();
+  await affectedFile.getByRole("button", { name: "More actions for incident.txt" }).click();
+  await page.getByRole("menuitem", { name: "Open document" }).click();
   await expect(knowledge.getByRole("heading", { level: 2, name: "incident.txt" })).toBeVisible();
   await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge / incident.txt");
+    .toHaveText("Library / Knowledge / E2E runbooks / incident.txt");
   await expect(knowledge).toContainText(`Support reference ${fileSupportReference}`);
-  await knowledge.getByRole("button", { name: "Retry processing" }).click();
+  await knowledge.getByRole("button", { name: "Reprocess" }).click();
   await expect(knowledge.getByText("Ready", { exact: true }).first()).toBeVisible();
   await library.getByRole("button", { name: "Back to base" }).click();
   await expect(knowledge.getByTestId("knowledge-source-source-upload-2"))
     .toContainText("Ready");
 
-  await knowledge.getByRole("searchbox", { name: "Search Sources in this base" }).fill("incident");
+  await knowledge.getByRole("searchbox", { name: "Search documents in this base" }).fill("incident");
   await expect(knowledge.getByTestId("knowledge-source-source-upload-2")).toContainText("incident.txt");
   await expect(knowledge.getByTestId("knowledge-source-source-upload-1")).toHaveCount(0);
-  await knowledge.getByRole("searchbox", { name: "Search Sources in this base" }).fill("");
+  await knowledge.getByRole("searchbox", { name: "Search documents in this base" }).fill("");
   await expect(knowledge.getByTestId("knowledge-source-source-upload-1")).toContainText("handbook.md");
 
-  await knowledge.getByRole("button", { name: "Publish" }).click();
-  await expect(knowledge.getByRole("list", { name: "Current Knowledge publications" }))
+  await knowledge.getByRole("button", { name: "More actions for E2E runbooks" }).click();
+  await page.getByRole("menuitem", { name: "Share with a group…" }).click();
+  const sharing = page.getByRole("dialog", { name: "Share Knowledge base" });
+  await sharing.getByRole("button", { name: "Publish" }).click();
+  await expect(sharing.getByRole("list", { name: "Current Knowledge publications" }))
     .toContainText("Research");
-  await expect(knowledge.getByTestId("knowledge-publication-disclosure"))
-    .toContainText("already accepted runs are unchanged");
+  await expect(sharing.getByTestId("knowledge-publication-disclosure"))
+    .toContainText("work already in progress and past answers are unchanged");
+  await sharing.getByRole("button", { name: "Close Share Knowledge base" }).click();
 
-  await knowledge.getByRole("button", { name: "Archive" }).click();
-  await expect(knowledge.getByRole("button", { name: "Restore" })).toBeVisible();
-  await knowledge.getByRole("button", { name: "Restore" }).click();
-  await expect(knowledge.getByRole("button", { name: "Archive" })).toBeVisible();
+  await knowledge.getByRole("button", { name: "More actions for E2E runbooks" }).click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
+  await expect(knowledge).toContainText("Archived");
+  await knowledge.getByRole("button", { name: "More actions for E2E runbooks" }).click();
+  await page.getByRole("menuitem", { name: "Restore from Archive" }).click();
+  await expect(knowledge).toContainText("Ready");
   await expectNoHorizontalOverflow(page);
   expectUserSafeKnowledgeText(await knowledge.innerText());
 
@@ -875,20 +902,20 @@ test("keeps a 50-file intake receipt across reload", async ({ page }) => {
     .toBeVisible();
 });
 
-test("reuses one Source across Bases with distinct Add, Move, and Remove journeys", async ({ page }) => {
+test("reuses one document across Bases with distinct Add, Move, and Remove journeys", async ({ page }) => {
   await runAccountMenuAction(page, "Knowledge");
   const library = page.getByTestId("library-v2");
-  await library.getByRole("button", { name: "Browse Sources" }).click();
+  await library.getByRole("button", { name: "All documents" }).click();
   const knowledge = page.getByTestId("knowledge-library");
   await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge / Sources");
+    .toHaveText("Library / Knowledge / Documents");
 
   const sourceRow = knowledge.getByTestId("knowledge-source-source-e2e");
   await expect(sourceRow).toContainText("Reusable product guide");
   await expect(sourceRow).toContainText("1 base");
-  await knowledge.getByRole("searchbox", { name: "Search Sources" }).fill("onboarding");
+  await knowledge.getByRole("searchbox", { name: "Search documents" }).fill("onboarding");
   await expect(sourceRow).toBeVisible();
-  await knowledge.getByRole("searchbox", { name: "Search Sources" }).fill("");
+  await knowledge.getByRole("searchbox", { name: "Search documents" }).fill("");
 
   for (const viewport of [
     { height: 844, width: 384 },
@@ -897,87 +924,98 @@ test("reuses one Source across Bases with distinct Add, Move, and Remove journey
   ]) {
     await setViewport(page, viewport);
     await expectWithinViewport(page, library);
-    await expect(knowledge.getByRole("heading", { level: 2, name: "Sources" })).toBeInViewport();
+    await expect(knowledge.getByRole("heading", { level: 2, name: "Documents" })).toBeInViewport();
     await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeInViewport();
     await expectNoHorizontalOverflow(page);
   }
 
   await setViewport(page, { height: 844, width: 384 });
-  await sourceRow.getByRole("button").click();
+  await sourceRow.getByRole("button", { name: /Reusable product guide/iu }).click();
   await expect(knowledge.getByRole("heading", { level: 2, name: "Reusable product guide" }))
     .toBeVisible();
-  await expect(library.getByRole("button", { name: "Back to Sources" })).toBeFocused();
-  await expect(knowledge.getByText("One canonical file identity, reused wherever you add it."))
-    .toBeVisible();
-  const previewSource = knowledge.getByRole("button", { name: "Preview" });
-  await previewSource.click();
-  const sourceViewer = page.getByRole("dialog", { name: "Knowledge source viewer" });
-  await expect(sourceViewer).toContainText(
-    "Use the reusable onboarding checklist for every product launch."
+  await expect(library.getByRole("button", { name: "Back to documents" })).toBeFocused();
+  const firstPreviewPage = knowledge.getByRole("img", { name: "product-guide.pdf, page 1" });
+  await expect(firstPreviewPage).toBeVisible();
+  await expect.poll(() => firstPreviewPage.evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBeGreaterThan(0);
+  await expect(knowledge.getByRole("link", { name: "Open original" })).toHaveAttribute(
+    "href",
+    "/api/me/knowledge-sources/source-e2e/viewer?asset=original#page=1"
   );
-  await sourceViewer.getByRole("button", { name: "Close source viewer" }).click();
-  await expect(previewSource).toBeFocused();
-  await expect(knowledge.getByText("Some table structure was simplified")).toBeVisible();
+  await knowledge.getByRole("button", { name: "Next page" }).click();
+  await expect(knowledge.getByRole("img", { name: "product-guide.pdf, page 2" })).toHaveAttribute(
+    "src",
+    "/api/me/knowledge-sources/source-e2e/viewer?asset=page&page=2"
+  );
+  await expect(knowledge.getByText(
+    "Some table structure was simplified. Its text is searchable."
+  )).toBeVisible();
 
-  await knowledge.getByLabel("Name").fill("Reusable product handbook");
-  await knowledge.getByLabel("Tags").fill("product, policy");
-  await knowledge.getByRole("button", { name: "Save details" }).click();
-  await expect(knowledge.getByTestId("knowledge-library-notice")).toContainText("Source details saved");
+  await knowledge.getByRole("button", { name: "More actions for Reusable product guide" }).click();
+  await page.getByRole("menuitem", { name: "Rename and describe…" }).click();
+  const details = page.getByRole("dialog", { name: "Edit document details" });
+  await details.getByLabel("Name").fill("Reusable product handbook");
+  await details.getByLabel("Tags").fill("product, policy");
+  await details.getByRole("button", { name: "Save details" }).click();
+  await expect(knowledge.getByTestId("knowledge-library-notice")).toContainText("Document details saved");
 
-  await knowledge.getByLabel("Assistant docs").check();
-  await knowledge.getByRole("button", { name: "Add to selected" }).click();
-  await expect(knowledge.getByRole("list", { name: "Source Base memberships" }))
+  await knowledge.getByRole("button", { name: "More actions for Reusable product handbook" }).click();
+  await page.getByRole("menuitem", { name: "Manage bases…" }).click();
+  const manageBases = page.getByRole("dialog", { name: "Manage document bases" });
+  await manageBases.getByLabel("Assistant docs").check();
+  await manageBases.getByRole("button", { name: "Add to selected" }).click();
+  await expect(manageBases.getByRole("list", { name: "Current base memberships" }))
     .toContainText("Assistant docs");
 
-  await knowledge.getByRole("button", { name: "Move Source" }).click();
-  const memberships = knowledge.getByRole("list", { name: "Source Base memberships" });
+  await manageBases.getByRole("button", { name: "Move document" }).click();
+  const memberships = manageBases.getByRole("list", { name: "Current base memberships" });
   await expect(memberships).not.toContainText("Product docs");
   await expect(memberships).toContainText("Project docs");
 
   const assistantMembership = memberships.getByRole("listitem").filter({ hasText: "Assistant docs" });
-  await assistantMembership.getByRole("button", { name: "Remove from base" }).click();
+  await assistantMembership.getByRole("button", { name: "Remove" }).click();
   const confirmation = page.getByRole("dialog", {
     name: "Remove Reusable product handbook from Assistant docs"
   });
   await expect(confirmation).toContainText("stays in your library and in its other bases");
   await confirmation.getByRole("button", { name: "Confirm remove from base" }).click();
-  await expect(memberships).not.toContainText("Assistant docs");
-  await expect(memberships).toContainText("Project docs");
+  const remainingMemberships = knowledge.getByRole("list", { name: "Document base memberships" });
+  await expect(remainingMemberships).not.toContainText("Assistant docs");
+  await expect(remainingMemberships).toContainText("Project docs");
 
-  await knowledge.getByText("Version history · 2").click();
-  await expect(knowledge.getByRole("list", { name: "Source versions" }))
+  await knowledge.getByText("History · 1 earlier version").click();
+  await expect(knowledge.getByRole("list", { name: "Document versions" }))
     .toContainText("product-guide-v1.pdf");
   await expectNoHorizontalOverflow(page);
   expectUserSafeKnowledgeText(await knowledge.innerText());
 });
 
-test("moves a Source through Trash, restore, and durable permanent deletion", async ({ page }) => {
+test("moves a document through Trash, restore, and durable permanent deletion", async ({ page }) => {
   await runAccountMenuAction(page, "Knowledge");
   const library = page.getByTestId("library-v2");
-  await library.getByRole("button", { name: "Browse Sources" }).click();
+  await library.getByRole("button", { name: "All documents" }).click();
   const knowledge = page.getByTestId("knowledge-library");
-  await knowledge.getByTestId("knowledge-source-source-e2e").getByRole("button").click();
+  await knowledge.getByTestId("knowledge-source-source-e2e")
+    .getByRole("button", { name: /Reusable product guide/iu }).click();
 
-  await knowledge.getByRole("button", {
-    name: "Move Reusable product guide to Trash"
-  }).click();
+  await knowledge.getByRole("button", { name: "More actions for Reusable product guide" }).click();
+  await page.getByRole("menuitem", { name: "Move to Trash" }).click();
   const firstTrash = page.getByRole("dialog", {
     name: "Move to Trash Reusable product guide"
   });
-  await expect(firstTrash).toContainText("Future runs exclude this Source from every base");
+  await expect(firstTrash).toContainText("Future chats exclude this document from every base");
   await firstTrash.getByRole("button", { name: "Confirm move to trash" }).click();
-  await expect(knowledge.getByRole("heading", { name: "Source is in Trash" })).toBeVisible();
+  await expect(knowledge.getByRole("heading", { name: "Document is in Trash" })).toBeVisible();
   await expect(knowledge).toContainText("purge scheduled");
-  await expect(knowledge.getByLabel("Source Base memberships")).toHaveCount(0);
+  await expect(knowledge.getByLabel("Document base memberships")).toHaveCount(0);
 
   await knowledge.getByRole("button", { name: "Restore" }).click();
   await expect(knowledge.getByRole("button", {
-    name: "Move Reusable product guide to Trash"
+    name: "More actions for Reusable product guide"
   })).toBeVisible();
 
-  await knowledge.getByRole("button", {
-    name: "Move Reusable product guide to Trash"
-  }).click();
+  await knowledge.getByRole("button", { name: "More actions for Reusable product guide" }).click();
+  await page.getByRole("menuitem", { name: "Move to Trash" }).click();
   await page.getByRole("dialog", {
     name: "Move to Trash Reusable product guide"
   }).getByRole("button", { name: "Confirm move to trash" }).click();
@@ -985,14 +1023,14 @@ test("moves a Source through Trash, restore, and durable permanent deletion", as
   const permanent = page.getByRole("dialog", {
     name: "Permanently delete Reusable product guide"
   });
-  await expect(permanent).toContainText("every version, indexed copy, and stored file");
+  await expect(permanent).toContainText("The document, its history, and its stored files");
   await permanent.getByRole("button", { name: "Confirm delete permanently" }).click();
   await expect(knowledge.getByTestId("knowledge-library-notice"))
-    .toContainText("Permanent Source deletion started");
+    .toContainText("Permanent document deletion started");
   await knowledge.getByRole("button", { name: "Trash" }).click();
   const pendingSource = knowledge.getByTestId("knowledge-source-source-e2e");
   await expect(pendingSource).toContainText("Deletion pending");
-  await pendingSource.getByRole("button").click();
+  await pendingSource.getByRole("button", { name: /Reusable product guide/iu }).click();
   await expect(knowledge.getByRole("heading", { name: "Permanent deletion pending" }))
     .toBeVisible();
   await expect(knowledge.getByRole("button", { name: "Restore" })).toHaveCount(0);

@@ -54,6 +54,14 @@ describe("administrator Knowledge section", () => {
     expect(screen.getByRole("heading", { name: "Operations health" })).toBeVisible();
     expect(screen.getByText("No active alerts")).toBeVisible();
     expect(screen.getByText(/V1 reconciliation · clean/)).toBeVisible();
+    const operations = screen.getByRole("heading", { name: "Operations health" })
+      .closest("section");
+    expect(operations).not.toBeNull();
+    expect(within(operations!).getByText("Search index")).toBeVisible();
+    expect(within(operations!).getByText("0 / 0")).toBeVisible();
+    expect(within(operations!).getByText(
+      "Search backend available · Worker healthy"
+    )).toBeVisible();
   });
 
   it("shows actionable aggregate alerts without exposing internal codes", async () => {
@@ -82,8 +90,53 @@ describe("administrator Knowledge section", () => {
     render(<AdminKnowledgeSection active />);
 
     expect(await screen.findByText("1 active alert")).toBeVisible();
-    expect(screen.getByText("The legacy-to-Source reconciliation is incomplete.")).toBeVisible();
+    expect(screen.getByText("Legacy Knowledge reconciliation is incomplete.")).toBeVisible();
     expect(screen.queryByText("knowledge_v1_reconciliation_incomplete")).not.toBeInTheDocument();
+  });
+
+  it("shows aggregate search faults without exposing infrastructure details", async () => {
+    const alertSettings = {
+      ...settings,
+      operations: adminKnowledgeOperationsFixture({
+        alerts: [
+          { code: "knowledge_search_backend_unavailable", severity: "critical" },
+          { code: "knowledge_search_projection_backlog", severity: "warning" },
+          { code: "knowledge_search_projection_failures", severity: "critical" },
+          { code: "knowledge_search_worker_unavailable", severity: "critical" }
+        ],
+        search: {
+          backendState: "unavailable",
+          expectedProjections: 4,
+          failedProjections: 1,
+          pendingProjections: 1,
+          readyProjections: 2,
+          workerLastSeenAt: "2026-08-17T23:50:00.000Z",
+          workerState: "stale"
+        }
+      })
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ knowledge: alertSettings }), { status: 200 })
+    ));
+
+    render(<AdminKnowledgeSection active />);
+
+    expect(await screen.findByText("4 active alerts")).toBeVisible();
+    expect(screen.getByText("The Knowledge search index is unavailable.")).toBeVisible();
+    expect(screen.getByText(
+      "Knowledge search projections are waiting to be indexed."
+    )).toBeVisible();
+    expect(screen.getByText(
+      "One or more Knowledge search projections need administrator action."
+    )).toBeVisible();
+    expect(screen.getByText(
+      "The Knowledge search worker heartbeat is missing or stale."
+    )).toBeVisible();
+    expect(screen.getByText("2 / 4")).toBeVisible();
+    expect(screen.getByText("Search backend unavailable · Worker stale")).toBeVisible();
+    expect(document.body.textContent).not.toMatch(
+      /knowledge_search_|endpoint|instanceId|opensearch|private-search/iu
+    );
   });
 
   it("saves a bounded parallel document processing width for future work", async () => {

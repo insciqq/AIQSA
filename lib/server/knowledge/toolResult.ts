@@ -8,6 +8,8 @@ import {
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_RESULT_VERSIONS,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   type KnowledgeBaseRetrievalEvidence,
   type KnowledgeEvidenceScopeAlias,
@@ -158,7 +160,8 @@ function nullablePositiveRank(value: unknown): number | null | undefined {
 function outcome(value: unknown): KnowledgeRetrievalOutcome | null {
   return value === "base_empty" || value === "base_indexing" ||
     value === "budget_exhausted" || value === "complete" ||
-    value === "embedding_model_unavailable" || value === "source_location_unavailable" ||
+    value === "embedding_model_unavailable" || value === "search_unavailable" ||
+    value === "source_location_unavailable" ||
     value === "no_relevant_evidence" || value === "zero_above_threshold"
     ? value
     : null;
@@ -256,7 +259,10 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
 }
 
 function decodeEmbedding(value: unknown): KnowledgeEmbeddingExecutionEvidence | null {
-  if (!isRecord(value) || !Array.isArray(value.bindingOrdinals) ||
+  if (!isRecord(value) ||
+    Object.keys(value).sort().join(",") !==
+      "bindingOrdinals,durationMs,inputTokens,modelId,provider,providerModelId,requestId,status,totalTokens" ||
+    !Array.isArray(value.bindingOrdinals) ||
     value.bindingOrdinals.length < 1 ||
     value.bindingOrdinals.length > KNOWLEDGE_SCOPE_MAX_BINDINGS) return null;
   const bindingOrdinals = value.bindingOrdinals.map(nonNegativeInteger);
@@ -599,6 +605,8 @@ function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): str
       "Knowledge retrieval could not embed the query: embedding_model_unavailable.",
     no_relevant_evidence:
       "No relevant Knowledge evidence was found. Do not infer or invent an answer from Knowledge.",
+    search_unavailable:
+      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.",
     source_location_unavailable:
       "The requested location was not found inside that admitted Source. Use another exact heading, page, or evidence handle; do not guess.",
     zero_above_threshold:
@@ -1152,7 +1160,8 @@ function decodeDiscoveryEvidence(value: unknown): KnowledgeSourceDiscoveryEviden
 
 export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetrievalEvidence | null {
   if (!isRecord(value) || !isKnowledgeResultVersion(value.version) ||
-    !Array.isArray(value.bases) || value.bases.length < 1 ||
+    !Array.isArray(value.bases) ||
+    (value.bases.length < 1 && value.outcome !== "search_unavailable") ||
     value.bases.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
     !Array.isArray(value.embeddingExecutions) ||
     value.embeddingExecutions.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
@@ -1244,7 +1253,8 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     read !== undefined && (operation !== "read_source" || query !== read.locator) ||
     exact !== undefined && (operation !== "find_exact" || query !== exact.value) ||
     discovery !== undefined && (operation !== "discover_sources" || query !== discovery.query) ||
-    (operation === "automatic_search") !== (lexicalBackend !== undefined) ||
+    (operation === "automatic_search" && decodedOutcome !== "search_unavailable") !==
+      (lexicalBackend !== undefined) ||
     embeddingExecutions.some((entry) => entry === null) ||
     results.some((result) => result === null) || candidateCount === null || candidateLimit === null ||
     candidateLimit < 1 || durationMs === null || invocationOrdinal === null || invocationOrdinal < 1 ||
@@ -1372,6 +1382,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   const deterministicDiscovery = operation === "discover_sources";
   const deterministicOperation = deterministicRead || deterministicExact ||
     deterministicDiscovery;
+  const searchUnavailable = decodedOutcome === "search_unavailable";
   const embeddingForbidden = deterministicOperation;
   const invalidExact = exact !== undefined && (
     fusion !== "none" || (threshold ?? 0) !== 0 || candidateCount !== decodedResults.length ||
@@ -1394,13 +1405,15 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   if (
     new Set(ordinals).size !== ordinals.length ||
     new Set(embeddedOrdinals).size !== embeddedOrdinals.length ||
-    embeddedOrdinals.some((ordinal) => !ordinals.includes(ordinal)) ||
+    (!searchUnavailable && embeddedOrdinals.some((ordinal) => !ordinals.includes(ordinal))) ||
     decodedBases.some((base, index) => index > 0 &&
       base.ordinal <= decodedBases[index - 1]!.ordinal) ||
     decodedBases.some((base) => base.state !== (
       base.indexedContentRevision < base.baseContentRevision
         ? "indexing"
-        : base.candidateCount === 0 && !deterministicOperation ? "empty" : "ready"
+        : base.candidateCount === 0 && !deterministicOperation && !searchUnavailable
+          ? "empty"
+          : "ready"
     )) ||
     decodedBases.reduce((total, base) => total + base.candidateCount, 0) !== candidateCount ||
     (embeddingForbidden && (
@@ -1476,6 +1489,15 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (decodedOutcome === "embedding_model_unavailable" &&
       !decodedEmbeddings.some((entry) =>
         entry.status === "error") && !failureCode) ||
+    (searchUnavailable && (
+      operation !== "automatic_search" || candidateCount !== 0 ||
+      decodedResults.length !== 0 || lexicalBackend !== undefined ||
+      rerankerBinding != null || decodedBases.length !== 0 ||
+      query !== KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY ||
+      (scopeAliases?.length ?? 0) !== 0 || budget !== undefined ||
+      !failureCode || !(KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES as readonly string[])
+        .includes(failureCode)
+    )) ||
     (failureCode === "semantic_retrieval_unavailable" && failedEmbeddingOrdinals.size === 0) ||
     (decodedOutcome === "source_location_unavailable" && (
       operation !== "read_source" || candidateCount !== 0 || decodedResults.length !== 0 ||
@@ -1495,7 +1517,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
         postRerankOrder?.length !== candidateCount ||
         decodedResults.some((result) => !postRerankOrder?.includes(result.chunkId))
       ) ||
-      !embeddingForbidden && (
+      !embeddingForbidden && !searchUnavailable && (
         decodedBases.some((base) => base.vectorSearch === undefined) ||
         decodedBases.some((base) => {
           const vectorSearch = base.vectorSearch!;
@@ -1595,12 +1617,13 @@ export function compactKnowledgeToolExecutionResult(
 ): ToolExecutionResult | null {
   const version = result.rawPreview?.knowledgeResultVersion;
   if (version === undefined) return result;
-  if (!isKnowledgeResultVersion(version) || markerContent(result, version) ||
-    result.status !== "complete") {
+  if (!isKnowledgeResultVersion(version) || markerContent(result, version)) {
     return null;
   }
   const evidence = evidenceFromPreview(result);
-  if (!evidence || result.content.length !== 1 || result.content[0]?.type !== "text" ||
+  if (!evidence ||
+    (result.status === "error") !== (evidence.outcome === "search_unavailable") ||
+    result.content.length !== 1 || result.content[0]?.type !== "text" ||
     result.content[0].text !== knowledgeToolResultText(evidence)) return null;
   return {
     ...result,
@@ -1618,10 +1641,12 @@ export function rehydratePersistedKnowledgeToolExecutionResult(
 ): ToolExecutionResult | null {
   const version = result.rawPreview?.knowledgeResultVersion;
   if (version === undefined) return result;
-  if (!isKnowledgeResultVersion(version) || !markerContent(result, version) ||
-    result.status !== "complete") {
+  if (!isKnowledgeResultVersion(version) || !markerContent(result, version)) {
     return null;
   }
   const evidence = evidenceFromPreview(result);
-  return evidence ? { ...result, content: knowledgeToolResultContent(evidence) } : null;
+  return evidence &&
+    (result.status === "error") === (evidence.outcome === "search_unavailable")
+    ? { ...result, content: knowledgeToolResultContent(evidence) }
+    : null;
 }

@@ -97,7 +97,7 @@ type WorkspaceActionsInput = {
   chatMutation: WorkspaceChatMutationPort;
   loadingChatDetailIdRef: MutableRef<string | null>;
   resumeChatRun(chat: WorkspaceChatSummary): void;
-  setNotice(notice: Notice): void;
+  setNotice(notice: Notice | null): void;
   setSelectedModelId(value: string, origin?: "assistant" | "system" | "user"): void;
   setSelectedKnowledgePlan(
     selection: KnowledgePlan | readonly string[],
@@ -1120,10 +1120,7 @@ export function useWorkspaceActions({
       markCachedSummaryRevision(updated);
       mergeChatIntoList(updated);
       chatMutation.finishEditing();
-      setNotice({
-        kind: "success",
-        text: `Chat renamed: ${updated.title}`
-      });
+      setNotice(null);
     } catch (error) {
       setNotice({
         kind: "error",

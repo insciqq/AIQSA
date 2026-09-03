@@ -39,6 +39,23 @@ describe("Project v2 HTTP handlers", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("rejects personal Knowledge modes as Project defaults before repository access", async () => {
+    const update = vi.fn();
+    const PATCH = createUpdateProjectHandler(deps({ update }));
+    const response = await PATCH(jsonRequest("/api/projects/project-1", {
+      defaults: {
+        knowledgePlan: {
+          baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1
+        }
+      },
+      expectedPolicyRevision: 3
+    }, "PATCH"), projectContext);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "project_input_invalid" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("passes bounded picker search and cursor data without accepting arbitrary offsets", async () => {
     const candidates = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
     const GET = createProjectCandidatesHandler(deps({ candidates }));

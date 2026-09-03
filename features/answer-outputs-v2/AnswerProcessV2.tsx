@@ -121,7 +121,12 @@ export function AnswerProcessV2({
                     <ToolCallMarkV2 status={call.status} />
                     <span className="v2-answer-process-step">
                       <span className="v2-answer-process-step-name">
-                        {describeToolCallV2(call, call.status === "running" ? "running" : "settled")}
+                        {describeToolCallV2(
+                          call,
+                          call.status === "running"
+                            ? "running"
+                            : call.status === "error" ? "failed" : "settled"
+                        )}
                       </span>
                       <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
                     </span>

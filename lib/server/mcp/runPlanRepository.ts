@@ -167,6 +167,13 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   if (!preference.server.enabled || preference.server.archivedAt || !preference.server.activeRevisionId) {
     return inaccessibleRecord(preference, "mcp_server_unavailable");
   }
+  if (!preference.enabled) {
+    return {
+      ...inaccessibleRecord(preference, "mcp_user_disabled"),
+      errorCode: null,
+      readiness: "disabled"
+    };
+  }
   const serverInstructions = revisionServerInstructions(
     preference.server.activeRevision?.validationEvidence
   );

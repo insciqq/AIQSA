@@ -337,7 +337,7 @@ describe("summarizeMessageRunToolActivity", () => {
         round: 1,
         serverName: "Knowledge",
         status: "complete",
-        toolName: "retrieve_knowledge"
+        toolName: "search_knowledge"
       }]
     });
   });

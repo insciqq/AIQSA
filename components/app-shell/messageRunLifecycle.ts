@@ -156,6 +156,13 @@ function finishStream(input: {
   );
 }
 
+function runWasCancelled(abortController: AbortController, runId: string | null): boolean {
+  return (
+    abortController.signal.aborted ||
+    Boolean(runId && useRunLifecycleStore.getState().cancelledRunIds.has(runId))
+  );
+}
+
 export async function executeMessageRunLifecycle({
   activeStreamAbortRef,
   chatId,
@@ -245,10 +252,12 @@ export async function executeMessageRunLifecycle({
       tokenBuffer
     });
 
-    failed = streamResult.failed;
-    cancelled = streamResult.terminalStatus === "cancelled";
     receivedChatUpdate = streamResult.receivedChatUpdate;
     runId = streamResult.runId;
+    cancelled =
+      streamResult.terminalStatus === "cancelled" ||
+      runWasCancelled(abortController, runId);
+    failed = streamResult.failed && !cancelled;
     if (runId) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
     }
@@ -273,7 +282,7 @@ export async function executeMessageRunLifecycle({
     }
   } catch (error) {
     tokenBuffer.flush();
-    cancelled = abortController.signal.aborted;
+    cancelled = runWasCancelled(abortController, runId);
     failed = !cancelled;
     failureMessage = cancelled ? null : userFacingFailureMessage;
     if (activeStreamAbortRef.current.get(chatId) === abortController) {

@@ -33,6 +33,8 @@ export type ChatMenuActionsInputV2 = Readonly<{
   /** Whether Memory reads this chat; null hides the Memory item. */
   memoryUsed?: boolean | null;
   moveDisabled?: boolean;
+  /** The first destination in Move to…; Project chats call this "Project root". */
+  moveRootLabel?: string;
   onArchive?(): void;
   onBranches?(): void;
   onCopyLink?(): void;
@@ -43,23 +45,20 @@ export type ChatMenuActionsInputV2 = Readonly<{
   onFavorite?(): void;
   onMemoryMode?(mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(folderId: string | null): void;
+  /** Optional final Move to… destination that opens the owning folder form. */
+  onMoveCreateFolder?(): void;
   onRename?(): void;
   onShare?(): void;
   renameDisabled?: boolean;
   shareDisabled?: boolean;
-  /**
-   * "menu": Share is a menu entry on every width (the chat row has no Share
-   * button); "mobile": only below 900px, where the header's Share button
-   * collapses into the menu.
-   */
-  sharePlacement: "menu" | "mobile";
+  /** The compact row menu and the complete header overflow have distinct jobs. */
+  surface: "header" | "row";
 }>;
 
 /**
- * The one action list of a chat, shared by the sidebar row menu and the
- * header "⋯" so both read identically: the chat itself · its content ·
- * destructive last (UX audit 2026-09-02 B4). Callers omit the callbacks a
- * surface cannot honour and the entries disappear with them.
+ * Builds the compact five-action row menu or the complete header overflow.
+ * Callers omit callbacks the current user cannot honour and those entries
+ * disappear with them.
  */
 export function chatMenuActionsV2({
   archiveDisabled = false,
@@ -68,6 +67,7 @@ export function chatMenuActionsV2({
   folders,
   memoryUsed = null,
   moveDisabled = false,
+  moveRootLabel = "No folder",
   onArchive,
   onBranches,
   onCopyLink,
@@ -77,11 +77,12 @@ export function chatMenuActionsV2({
   onFavorite,
   onMemoryMode,
   onMove,
+  onMoveCreateFolder,
   onRename,
   onShare,
   renameDisabled = false,
   shareDisabled = false,
-  sharePlacement
+  surface
 }: ChatMenuActionsInputV2): UiV2MenuAction[] {
   const chat: UiV2MenuAction[] = [
     ...(onRename ? [{ disabled: renameDisabled, icon: "edit", label: "Rename", onSelect: onRename }] as const : []),
@@ -91,17 +92,20 @@ export function chatMenuActionsV2({
           icon: "folder",
           label: "Move to…",
           submenu: [
-            { label: "No folder", onSelect: () => onMove(null) },
+            { label: moveRootLabel, onSelect: () => onMove(null) },
             ...flattenFolderTree(folders).map(({ depth, folder }) => ({
               depth,
               label: folder.name,
               onSelect: () => onMove(folder.id)
-            }))
+            })),
+            ...(onMoveCreateFolder
+              ? [{ label: "New folder…", onSelect: onMoveCreateFolder }]
+              : [])
           ]
         }] as const
       : []),
     ...(onFavorite ? [{ icon: "star", label: "Favorite", onSelect: onFavorite, selected: favorite }] as const : []),
-    ...(onMemoryMode && memoryUsed !== null
+    ...(surface === "header" && onMemoryMode && memoryUsed !== null
       ? [{
           icon: "memory",
           label: resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action"),
@@ -109,25 +113,34 @@ export function chatMenuActionsV2({
         }] as const
       : [])
   ];
+  const exportItems = [
+    ...(onExport
+      ? [
+          { label: "Markdown", onSelect: () => onExport("markdown") },
+          { label: "JSON", onSelect: () => onExport("json") }
+        ] as const
+      : []),
+    ...(onCopyThread ? [{ label: "Copy entire thread", onSelect: onCopyThread }] as const : [])
+  ];
   const content: UiV2MenuAction[] = [
-    ...(onShare
+    ...(surface === "header" && onShare
       ? [{
           disabled: shareDisabled,
           icon: "share",
           label: "Share",
-          mobileOnly: sharePlacement === "mobile",
+          mobileOnly: true,
           onSelect: onShare
         }] as const
       : []),
-    ...(onBranches ? [{ icon: "branch", label: "Branches", onSelect: onBranches }] as const : []),
-    ...(onExport
-      ? [
-          { icon: "download", label: "Export", onSelect: () => onExport("markdown") },
-          { icon: "braces", label: "Export as JSON", onSelect: () => onExport("json") }
-        ] as const
+    ...(surface === "header" && onBranches
+      ? [{ icon: "branch", label: "Branches", onSelect: onBranches }] as const
       : []),
-    ...(onCopyThread ? [{ icon: "copy", label: "Copy entire thread", onSelect: onCopyThread }] as const : []),
-    ...(onCopyLink ? [{ icon: "link", label: "Copy link to chat", onSelect: onCopyLink }] as const : [])
+    ...(surface === "header" && exportItems.length > 0
+      ? [{ icon: "download", label: "Export", submenu: exportItems }] as const
+      : []),
+    ...(surface === "header" && onCopyLink
+      ? [{ icon: "link", label: "Copy link to chat", onSelect: onCopyLink }] as const
+      : [])
   ];
   const destructive: UiV2MenuAction[] = [
     ...(onArchive ? [{ disabled: archiveDisabled, icon: "archive", label: "Archive", onSelect: onArchive }] as const : []),

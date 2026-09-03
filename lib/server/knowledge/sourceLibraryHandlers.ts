@@ -211,6 +211,7 @@ function membershipResponse(
 
 function summaryResponse(source: KnowledgeSourceSummary): KnowledgeSourceSummary {
   return {
+    canReprocess: source.canReprocess,
     currentVersion: source.currentVersion ? versionResponse(source.currentVersion) : null,
     deletionPending: source.deletionPending,
     description: source.description,

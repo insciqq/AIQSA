@@ -3,6 +3,7 @@ import {
   DiscardChangesConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
+import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import type {
   KnowledgeCreateView,
   KnowledgeDetailView,
@@ -11,7 +12,21 @@ import type {
   KnowledgeListView,
   KnowledgeSourceDetailView
 } from "@/components/knowledge/libraryViewContracts";
-import { UiV2Button, UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
+import {
+  UiV2Button,
+  UiV2Icon,
+  UiV2IconButton,
+  UiV2MenuItem,
+  UiV2MenuSeparator,
+  type UiV2IconName
+} from "@/components/ui-v2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import {
+  loadKnowledgeSourceViewer,
+  knowledgeSourceOriginalUrl,
+  knowledgeSourcePageUrl
+} from "@/features/citations-v2/knowledgeCitationApi";
 import {
   KNOWLEDGE_BASE_DESCRIPTION_MAX_LENGTH,
   KNOWLEDGE_BASE_NAME_MAX_LENGTH,
@@ -26,17 +41,19 @@ import {
   type KnowledgeSourceSummary
 } from "@/lib/contracts/knowledge";
 import type {
+  KnowledgeSourceViewer,
+  KnowledgeViewerBlock
+} from "@/lib/contracts/knowledgeCitations";
+import type {
   KnowledgeUploadBatch,
   KnowledgeUploadItem
 } from "@/lib/contracts/knowledgeUploads";
+import { knowledgeAggregateStatus } from "@/lib/domain/knowledgePresentation";
+import { knowledgeProcessingNote } from "@/lib/domain/knowledgeProcessingWarnings";
 import {
   KNOWLEDGE_UPLOAD_ACCEPT,
   KNOWLEDGE_UPLOAD_FORMAT_LABELS
 } from "@/lib/domain/uploadFormats";
-import {
-  KNOWLEDGE_PROCESSING_WARNING_LABELS,
-  type KnowledgeProcessingWarningCode
-} from "@/lib/domain/knowledgeProcessingWarnings";
 import {
   useEffect,
   useRef,
@@ -44,6 +61,7 @@ import {
   type DragEvent,
   type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 
 /*
  * Knowledge inside the Library column (UX audit 2026-09-02 A14): the Sources
@@ -58,10 +76,13 @@ import {
  */
 
 type StatusTone = "danger" | "live" | "neutral" | "ok" | "warn";
+type BaseDialogKind = "rename" | "share";
 
-function processingWarningLabels(codes: readonly KnowledgeProcessingWarningCode[]): string[] {
-  return codes.map((code) => KNOWLEDGE_PROCESSING_WARNING_LABELS[code]);
-}
+type NormalizedPreviewState = Readonly<{
+  key: string;
+  status: "error" | "idle" | "loading" | "ready";
+  value: KnowledgeSourceViewer | null;
+}>;
 
 type RemoveTarget =
   { baseId: string; baseName: string; kind: "membership"; sourceId: string; sourceName: string };
@@ -75,15 +96,54 @@ type LifecycleTarget = Readonly<{
 
 function formatDate(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "Date unavailable"
-    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+  const elapsed = date.getTime() - Date.now();
+  const absolute = Math.abs(elapsed);
+  const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (absolute < 60_000) return "just now";
+  if (absolute < 3_600_000) return relative.format(Math.round(elapsed / 60_000), "minute");
+  if (absolute < 86_400_000) return relative.format(Math.round(elapsed / 3_600_000), "hour");
+  if (absolute < 604_800_000) return relative.format(Math.round(elapsed / 86_400_000), "day");
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+function fileTypeLabel(fileName: string): string {
+  const extension = fileName.split(".").pop()?.trim().toLocaleUpperCase();
+  return extension && extension !== fileName.toLocaleUpperCase() ? extension : "Document";
 }
 
 function formatBytes(value: number): string {
   if (value < 1_000) return `${value} B`;
   if (value < 1_000_000) return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} kB`;
   return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)} MB`;
+}
+
+function isVisualPreviewFile(fileName: string): boolean {
+  return /\.(?:gif|jpe?g|pdf|png|webp)$/iu.test(fileName);
+}
+
+function NormalizedDocumentPreview({ blocks }: Readonly<{
+  blocks: readonly KnowledgeViewerBlock[];
+}>) {
+  return (
+    <div
+      aria-label="Normalized document preview"
+      className="v2-knowledge-doc-normalized"
+      data-testid="knowledge-normalized-preview"
+    >
+      {blocks.map((block, index) => (
+        <section
+          data-block-type={block.type}
+          key={`${block.pageStart}:${block.pageEnd}:${block.type}:${index}`}
+        >
+          {block.headingPath.length > 0 ? (
+            <small>{block.headingPath.join(" / ")}</small>
+          ) : null}
+          <p>{block.text || (block.type === "image" ? "Image region" : "")}</p>
+        </section>
+      ))}
+    </div>
+  );
 }
 
 function knowledgeUploadHelp(maxUploadBytes: number): string {
@@ -133,7 +193,7 @@ function taskDiscardLabel(view: KnowledgeLibraryView): string {
   return view.task === "create"
     ? "Knowledge base draft"
     : view.task === "source-detail"
-      ? "Source details"
+      ? "Document details"
       : "Knowledge base settings";
 }
 
@@ -150,6 +210,7 @@ export function knowledgeSubviewChrome(view: KnowledgeLibraryView): Readonly<{
   backLabel: string;
   key: string;
   label: string;
+  trail?: readonly string[];
 }> {
   if (view.task === "create") {
     return { backLabel: "Back to Knowledge", key: "create", label: "New Knowledge base" };
@@ -165,10 +226,11 @@ export function knowledgeSubviewChrome(view: KnowledgeLibraryView): Readonly<{
     return {
       backLabel: view.sourceDetail?.backLabel ?? "Back to Knowledge",
       key: `source:${view.sourceDetail?.source?.id ?? ""}`,
-      label: view.sourceDetail?.source?.name ?? "Source"
+      label: view.sourceDetail?.source?.name ?? "Document",
+      ...(view.sourceDetail?.parentLabel ? { trail: [view.sourceDetail.parentLabel] } : {})
     };
   }
-  return { backLabel: "Back to Knowledge", key: "sources", label: "Sources" };
+  return { backLabel: "Back to Knowledge", key: "sources", label: "Documents" };
 }
 
 /**
@@ -211,15 +273,14 @@ export function useKnowledgeLibraryExit(view: KnowledgeLibraryView | null): Read
 }
 
 export function KnowledgeLibrary({
-  onPreviewSource,
   view
 }: {
-  onPreviewSource?(sourceId: string, trigger: HTMLElement): void;
   view: KnowledgeLibraryView;
 }) {
   const [lifecycleTarget, setLifecycleTarget] = useState<LifecycleTarget | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RemoveTarget | null>(null);
-  const childDialogOpen = lifecycleTarget !== null || removeTarget !== null;
+  const [baseDialog, setBaseDialog] = useState<BaseDialogKind | null>(null);
+  const childDialogOpen = lifecycleTarget !== null || removeTarget !== null || baseDialog !== null;
   useBeforeUnloadGuard(taskDirty(view));
 
   const transientSignature = view.detail?.sources
@@ -294,9 +355,9 @@ export function KnowledgeLibrary({
             detail={view.detail}
             notice={view.notice}
             onDismissNotice={view.onDismissNotice}
+            onOpenBaseDialog={setBaseDialog}
             onRequestLifecycle={setLifecycleTarget}
             onRequestRemove={setRemoveTarget}
-            onPreviewSource={onPreviewSource}
             onRetry={view.onRetry}
           />
         ) : view.task === "source-detail" && view.sourceDetail ? (
@@ -307,7 +368,6 @@ export function KnowledgeLibrary({
             onDismissNotice={view.onDismissNotice}
             onRequestLifecycle={setLifecycleTarget}
             onRequestRemove={setRemoveTarget}
-            onPreviewSource={onPreviewSource}
             onRetry={view.onRetry}
           />
         ) : (
@@ -335,17 +395,17 @@ export function KnowledgeLibrary({
             setRemoveTarget(null);
           }}
           testId="remove-knowledge-source-confirmation"
-          title="Remove Source from this base?"
+          title="Remove document from this base?"
           tone="warning"
         >
-          The Source stays in your library and in its other bases. Future chats using this base will no longer include it; accepted chats are unchanged.
+          The document stays in your library and in its other bases. Future chats using this base will no longer include it; accepted chats are unchanged.
         </ConfirmationDialog>
       ) : null}
       {lifecycleTarget ? (
         <ConfirmationDialog
           confirmLabel={lifecycleTarget.action === "delete"
             ? "Delete permanently"
-            : lifecycleTarget.action === "restore" ? "Restore Source" : "Move to Trash"}
+            : lifecycleTarget.action === "restore" ? "Restore document" : "Move to Trash"}
           dialogLabel={`${lifecycleTarget.action === "delete"
             ? "Permanently delete"
             : lifecycleTarget.action === "restore" ? "Restore" : "Move to Trash"} ${lifecycleTarget.name}`}
@@ -367,28 +427,98 @@ export function KnowledgeLibrary({
           }}
           testId={`knowledge-${lifecycleTarget.kind}-${lifecycleTarget.action}-confirmation`}
           title={lifecycleTarget.action === "delete"
-            ? `Delete this ${lifecycleTarget.kind === "base" ? "base" : "Source"} permanently?`
+            ? `Delete this ${lifecycleTarget.kind === "base" ? "base" : "document"} permanently?`
             : lifecycleTarget.action === "restore"
-              ? "Restore this Source to its Bases?"
-            : `Move this ${lifecycleTarget.kind === "base" ? "base" : "Source"} to Trash?`}
+              ? "Restore this document to its bases?"
+            : `Move this ${lifecycleTarget.kind === "base" ? "base" : "document"} to Trash?`}
           tone={lifecycleTarget.action === "delete" ? "destructive" : "warning"}
         >
           {lifecycleTarget.action === "restore"
-            ? `This Source has ${lifecycleTarget.membershipCount ?? 0} Base memberships. Restoring it makes its current ready version available to future runs through every still-valid membership.`
+            ? `This document belongs to ${lifecycleTarget.membershipCount ?? 0} bases. Restoring it makes the current ready file available to future chats in each accessible base.`
             : lifecycleTarget.action === "delete"
             ? lifecycleTarget.kind === "base"
-              ? "This cannot be undone. The base, its memberships, and its indexed copies will be removed. Canonical Sources remain available. Past answers keep only generic citation handles where evidence is deleted."
-              : "This cannot be undone. The Source, every version, indexed copy, and stored file will be removed when no other resource retains the object. Past answer text remains, but citation evidence becomes a generic deleted-source marker."
+              ? "This cannot be undone. The base and its document memberships will be removed. The reusable documents stay in your Library. Past answers remain unchanged."
+              : "This cannot be undone. The document, its history, and its stored files will be removed. Past answer text remains, but its cited evidence will no longer open."
             : lifecycleTarget.kind === "base"
-              ? "Future Chat, Project, and Assistant runs stop using this base immediately. You can restore its Sources and sharing settings from Trash."
-              : "Future runs exclude this Source from every base immediately. You can restore its previous Base memberships from Trash."}
+              ? "Future chats stop using this base immediately. You can restore its document memberships and sharing settings from Trash."
+              : "Future chats exclude this document from every base immediately. You can restore its previous memberships from Trash."}
         </ConfirmationDialog>
+      ) : null}
+      {baseDialog && view.detail?.base ? (
+        <KnowledgeDialog
+          label={baseDialog === "rename" ? "Rename and describe Knowledge base" : "Share Knowledge base"}
+          onClose={() => {
+            if (baseDialog === "rename") {
+              view.detail?.onChange({
+                description: view.detail.base?.description ?? "",
+                name: view.detail.base?.name ?? ""
+              });
+            }
+            setBaseDialog(null);
+          }}
+          title={baseDialog === "rename" ? "Rename and describe" : "Share with a group"}
+        >
+          {baseDialog === "rename" ? (
+            <>
+              <BaseSettings busy={view.busy} detail={view.detail} compact />
+              <div className="v2-knowledge-form-actions">
+                <UiV2Button disabled={view.busy} onClick={() => setBaseDialog(null)}>Cancel</UiV2Button>
+                <UiV2Button
+                  busy={view.detail.actionId === "settings"}
+                  disabled={view.busy || !view.detail.dirty}
+                  tone="primary"
+                  onClick={() => {
+                    view.detail?.onSave();
+                    setBaseDialog(null);
+                  }}
+                >
+                  Save changes
+                </UiV2Button>
+              </div>
+            </>
+          ) : (
+            <PublicationSection busy={view.busy} detail={view.detail} compact />
+          )}
+        </KnowledgeDialog>
       ) : null}
     </>
   );
 }
 
 /* ---------- Shared pieces ---------- */
+
+function KnowledgeDialog({
+  children,
+  label,
+  onClose,
+  title
+}: Readonly<{
+  children: ReactNode;
+  label: string;
+  onClose(): void;
+  title: string;
+}>) {
+  const dialogRef = useDialogFocus<HTMLDivElement>({ onClose });
+  return createPortal(
+    <div className="v2-knowledge-dialog-layer" role="presentation" onMouseDown={onClose}>
+      <div
+        aria-label={label}
+        aria-modal="true"
+        className="v2-knowledge-dialog"
+        ref={dialogRef}
+        role="dialog"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <h2>{title}</h2>
+          <UiV2IconButton icon="close" label={`Close ${label}`} onClick={onClose} />
+        </header>
+        <div className="v2-knowledge-dialog-body">{children}</div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 function Spinner() {
   return <span className="v2-spinner" aria-hidden="true" />;
@@ -488,7 +618,8 @@ function FilePickerLabel({
   icon,
   inputId,
   multiple = false,
-  onFiles
+  onFiles,
+  tone = "ghost"
 }: {
   accept: string;
   busy?: boolean;
@@ -498,13 +629,14 @@ function FilePickerLabel({
   inputId?: string;
   multiple?: boolean;
   onFiles(files: FileList | null): void;
+  tone?: "ghost" | "primary";
 }) {
   return (
     <label
       aria-disabled={disabled || undefined}
       className="v2-button v2-focusable v2-knowledge-file-picker"
       data-disabled={disabled || undefined}
-      data-tone="ghost"
+      data-tone={tone}
       htmlFor={inputId}
     >
       {busy ? <Spinner /> : <UiV2Icon name={icon} />}
@@ -580,13 +712,13 @@ function SourcesTask({
         actions={(
           <>
             <label className="v2-resource-search" htmlFor="knowledge-search">
-              <span className="v2-sr-only">Search Sources</span>
+              <span className="v2-sr-only">Search documents</span>
               <UiV2Icon name="search" />
               <input
                 disabled={busy}
                 id="knowledge-search"
                 onChange={(event) => list.onSourceQueryChange(event.currentTarget.value)}
-                placeholder="Search Sources"
+                placeholder="Search documents"
                 type="search"
                 value={list.sourceQuery}
               />
@@ -596,11 +728,11 @@ function SourcesTask({
             </UiV2Button>
           </>
         )}
-        meta="Sources are reusable files. Add one Source to several bases without uploading it again."
-        title="Sources"
+        meta="Documents are reusable files. Add one document to several bases without uploading it again."
+        title="Documents"
       />
       {notice ? <NoticeRow notice={notice} onDismiss={onDismissNotice} /> : null}
-      <div aria-label="Source filters" className="v2-resource-filters" role="group">
+      <div aria-label="Document filters" className="v2-resource-filters" role="group">
         {SOURCE_FILTERS.map(([filter, label]) => (
           <button
             aria-pressed={list.sourceFilter === filter}
@@ -616,17 +748,17 @@ function SourcesTask({
         ))}
       </div>
       {list.sourceDataState === "loading" ? (
-        <TaskLoading label="Loading Sources…" />
+        <TaskLoading label="Loading documents…" />
       ) : list.sourceDataState === "error" ? (
         <TaskFailure error={list.sourceDataError} onRetry={onRetry} />
       ) : sources.length === 0 ? (
         <div className="v2-knowledge-state">
           <UiV2Icon name="file" />
-          <p>{filtered ? "No matching Sources" : "No Sources yet"}</p>
+          <p>{filtered ? "No matching documents" : "No documents yet"}</p>
           <span>
             {filtered
               ? "Try another search or filter."
-              : "Upload a file to a Knowledge base. It will appear here when its Source identity is available."}
+              : "Upload a file to a Knowledge base. It will appear here as a reusable document."}
           </span>
           {!filtered ? (
             <UiV2Button disabled={!list.canCreate} icon="plus" onClick={list.onNewBase}>
@@ -636,14 +768,14 @@ function SourcesTask({
         </div>
       ) : (
         <>
-          <ul aria-label="Knowledge Sources" className="v2-knowledge-list">
+          <ul aria-label="Knowledge documents" className="v2-knowledge-list">
             {sources.map((source) => (
               <SourceRow key={source.id} busy={busy} list={list} source={source} />
             ))}
           </ul>
           <Pagination
             busy={busy}
-            label="Source pages"
+            label="Document pages"
             onPageChange={list.onSourcePageChange}
             page={list.sourceData?.pagination.page ?? 1}
             totalPages={list.sourceData?.pagination.totalPages ?? 0}
@@ -662,21 +794,23 @@ function sourceStatus(source: KnowledgeSourceSummary): { label: string; tone: St
       return { label: "Ready · replacement processing", tone: "live" };
     }
     if (source.replacement.state === "needs_attention") {
-      return { label: "Ready · replacement needs attention", tone: "danger" };
+      return source.canReprocess
+        ? { label: "Ready · replacement needs attention", tone: "warn" }
+        : { label: "Ready · replacement unavailable", tone: "warn" };
     }
-    return source.readiness.warningCodes.length > 0
-      ? { label: "Ready with warnings", tone: "warn" }
-      : { label: "Ready", tone: "ok" };
+    return { label: "Ready", tone: "ok" };
   }
   return source.readiness.state === "processing"
     ? { label: "Processing", tone: "live" }
-    : { label: "Needs attention", tone: "danger" };
+    : source.canReprocess
+      ? { label: "Needs attention", tone: "danger" }
+      : { label: "Unavailable", tone: "danger" };
 }
 
 function sourceIcon(source: KnowledgeSourceSummary): { name: UiV2IconName; spinning: boolean } {
   if (source.trashed) return { name: "trash", spinning: false };
   if (source.readiness.state === "ready") {
-    return { name: source.readiness.warningCodes.length > 0 ? "alert" : "check", spinning: false };
+    return { name: "check", spinning: false };
   }
   if (source.readiness.state === "processing") return { name: "history", spinning: true };
   return { name: "alert", spinning: false };
@@ -710,8 +844,13 @@ function SourceRow({
             <span className="v2-knowledge-status" data-tone={status.tone}>{status.label}</span>
           </span>
           {source.description ? <span className="v2-knowledge-row-description">{source.description}</span> : null}
+          {source.readiness.state === "ready" && source.readiness.warningCodes.length > 0 ? (
+            <span className="v2-knowledge-row-note">
+              {knowledgeProcessingNote(source.readiness.warningCodes)}
+            </span>
+          ) : null}
           {source.tags.length > 0 ? (
-            <span className="v2-knowledge-tags" aria-label="Source tags">
+            <span className="v2-knowledge-tags" aria-label="Document tags">
               {source.tags.slice(0, 4).map((tag) => <span className="v2-knowledge-tag" key={tag}>{tag}</span>)}
               {source.tags.length > 4 ? <span className="v2-knowledge-tag-more">+{source.tags.length - 4}</span> : null}
             </span>
@@ -791,10 +930,10 @@ function CreateTask({
   const addFiles = (files: FileList | readonly File[] | null) => {
     if (!files || busy) return;
     const known = new Set(create.draft.files.map(
-      ({ lastModified, name, size }) => `${name} ${size} ${lastModified}`
+      ({ lastModified, name, size }) => `${name}:${size}:${lastModified}`
     ));
     const additions = Array.from(files).filter((file) => {
-      const key = `${file.name} ${file.size} ${file.lastModified}`;
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
       if (known.has(key)) return false;
       known.add(key);
       return true;
@@ -911,45 +1050,126 @@ function CreateTask({
 
 /* ---------- Base detail ---------- */
 
+function BaseActionsMenu({
+  busy,
+  detail,
+  onOpenDialog,
+  onRequestTrash
+}: Readonly<{
+  busy: boolean;
+  detail: KnowledgeDetailView;
+  onOpenDialog(dialog: BaseDialogKind): void;
+  onRequestTrash(): void;
+}>) {
+  const [open, setOpen] = useState(false);
+  const { menuRef, triggerRef } = useMenuDismissalV2({
+    onClose: () => setOpen(false),
+    open
+  });
+  const base = detail.base!;
+  return (
+    <span className="v2-knowledge-menu-wrap">
+      <UiV2IconButton
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        disabled={busy}
+        icon="more"
+        label={`More actions for ${base.name}`}
+        onClick={() => setOpen((value) => !value)}
+      />
+      {open ? (
+        <UiV2ResponsiveMenu
+          anchorRef={triggerRef}
+          label={`Actions for ${base.name}`}
+          menuRef={menuRef}
+          onClose={() => setOpen(false)}
+        >
+          <UiV2MenuItem icon="edit" onClick={() => {
+            setOpen(false);
+            onOpenDialog("rename");
+          }}>
+            Rename and describe…
+          </UiV2MenuItem>
+          <UiV2MenuItem icon="share" onClick={() => {
+            setOpen(false);
+            onOpenDialog("share");
+          }}>
+            Share with a group…
+          </UiV2MenuItem>
+          <UiV2MenuItem icon={base.archived ? "regenerate" : "archive"} onClick={() => {
+            setOpen(false);
+            detail.onArchiveToggle(!base.archived);
+          }}>
+            {base.archived ? "Restore from Archive" : "Archive"}
+          </UiV2MenuItem>
+          <UiV2MenuSeparator />
+          <UiV2MenuItem icon="trash" tone="destructive" onClick={() => {
+            setOpen(false);
+            onRequestTrash();
+          }}>
+            Move to Trash
+          </UiV2MenuItem>
+        </UiV2ResponsiveMenu>
+      ) : null}
+    </span>
+  );
+}
+
 function DetailTask({
   busy,
   detail,
   notice,
   onDismissNotice,
+  onOpenBaseDialog,
   onRequestLifecycle,
   onRequestRemove,
-  onPreviewSource,
   onRetry
 }: {
   busy: boolean;
   detail: KnowledgeDetailView;
   notice: KnowledgeLibraryNotice | null;
   onDismissNotice(): void;
+  onOpenBaseDialog(dialog: BaseDialogKind): void;
   onRequestLifecycle(target: LifecycleTarget): void;
   onRequestRemove(target: RemoveTarget): void;
-  onPreviewSource?(sourceId: string, trigger: HTMLElement): void;
   onRetry(): void;
 }) {
   const base = detail.base;
+  const fileInputId = "knowledge-base-add-files";
+  const aggregate = base ? knowledgeReadinessText(base.readiness, base.purgeScheduledAt) : "Loading";
+  const sharing = base?.publications?.length
+    ? base.publications.some((publication) => publication.scope === "installation")
+      ? "Shared with the installation"
+      : `Shared with ${base.publications[0]?.groupName ?? "a group"}`
+    : "Private";
   const heading = (
     <SubviewHeading
       actions={base?.owned && !base.trashed ? (
-        detail.dirty ? (
-          <UiV2Button busy={detail.actionId === "settings"} disabled={busy} tone="primary" onClick={detail.onSave}>
-            Save settings
-          </UiV2Button>
-        ) : (
-          <UiV2Button
-            disabled={busy}
-            icon={base.archived ? "regenerate" : "archive"}
-            onClick={() => detail.onArchiveToggle(!base.archived)}
+        <>
+          <FilePickerLabel
+            accept={KNOWLEDGE_UPLOAD_ACCEPT}
+            disabled={busy || base.archived}
+            icon="plus"
+            inputId={fileInputId}
+            multiple
+            tone="primary"
+            onFiles={(files) => {
+              if (files?.length) detail.onUpload(Array.from(files));
+            }}
           >
-            {base.archived ? "Restore" : "Archive"}
-          </UiV2Button>
-        )
+            Add files
+          </FilePickerLabel>
+          <BaseActionsMenu
+            busy={busy}
+            detail={detail}
+            onOpenDialog={onOpenBaseDialog}
+            onRequestTrash={() => onRequestLifecycle({ action: "trash", kind: "base", name: base.name })}
+          />
+        </>
       ) : undefined}
       meta={base
-        ? `${scopeText(base)} · ${base.sourceCount} ${base.sourceCount === 1 ? "Source" : "Sources"} · updated ${formatDate(base.updatedAt)}`
+        ? `${aggregate} · ${base.sourceCount} ${base.sourceCount === 1 ? "document" : "documents"} · updated ${formatDate(base.updatedAt)} · ${sharing}`
         : "Loading"}
       title={base?.name ?? "Knowledge base"}
     />
@@ -969,8 +1189,7 @@ function DetailTask({
           <p>{scopeText(base)}. The owner controls files, processing, and access.</p>
         </Callout>
       ) : null}
-      <BaseOverview base={base} />
-      {base.owned ? (
+      {base.owned && (base.trashed || base.deletionPending) ? (
         <LifecycleSection
           busy={busy}
           deletionPending={base.deletionPending}
@@ -984,85 +1203,75 @@ function DetailTask({
           trashedAt={base.trashedAt}
         />
       ) : null}
-      {!base.trashed ? <BaseSettings busy={busy} detail={detail} /> : null}
       {!base.trashed ? (
         <SourcesSection
           busy={busy}
           detail={detail}
-          onPreviewSource={onPreviewSource}
           onRequestRemove={onRequestRemove}
         />
       ) : null}
-      {base.owned && !base.trashed ? <PublicationSection busy={busy} detail={detail} /> : null}
     </>
   );
 }
 
-/** The exact readiness sentence of a base ("1 ready · 1 processing"). */
-export function knowledgeReadinessText(readiness: KnowledgeReadiness): string {
-  if (readiness.state === "trashed") return "In Trash";
-  if (readiness.state === "archived") return "Archived";
-  if (readiness.state === "empty") return "Empty";
-  if (readiness.state === "ready") return "Ready";
-  const parts = [
-    readiness.readySources > 0 ? `${readiness.readySources} ready` : "",
-    readiness.processingSources > 0 ? `${readiness.processingSources} processing` : "",
-    readiness.attentionSources > 0
-      ? `${readiness.attentionSources} need${readiness.attentionSources === 1 ? "s" : ""} attention`
-      : ""
-  ].filter(Boolean);
-  return parts.join(" · ");
+/** The exact aggregate status sentence shared by every Knowledge surface. */
+export function knowledgeReadinessText(
+  readiness: KnowledgeReadiness,
+  purgeScheduledAt: string | null = null
+): string {
+  return knowledgeAggregateStatus({
+    attentionDocuments: readiness.attentionSources,
+    processingDocuments: readiness.processingSources,
+    purgeScheduledAt,
+    readyDocuments: readiness.readySources,
+    state: readiness.state
+  }).label;
 }
 
-function baseTone(state: KnowledgeReadiness["state"]): StatusTone {
-  if (state === "ready") return "ok";
-  if (state === "trashed") return "warn";
-  if (state === "needs_attention") return "danger";
-  if (state === "processing") return "live";
-  return "neutral";
-}
-
-function baseIcon(state: KnowledgeReadiness["state"]): { name: UiV2IconName; spinning: boolean } {
-  if (state === "ready") return { name: "check", spinning: false };
-  if (state === "needs_attention") return { name: "alert", spinning: false };
-  if (state === "processing") return { name: "history", spinning: true };
-  if (state === "archived") return { name: "archive", spinning: false };
-  if (state === "trashed") return { name: "trash", spinning: false };
-  return { name: "book", spinning: false };
-}
-
-function BaseOverview({ base }: { base: KnowledgeBaseSummary }) {
-  const state = base.readiness.state;
-  const icon = baseIcon(state);
-  return (
-    <section
-      aria-labelledby="knowledge-readiness-title"
-      className="v2-knowledge-section v2-knowledge-readiness"
-      data-testid="knowledge-readiness-summary"
-    >
-      <span className="v2-knowledge-row-icon" data-tone={baseTone(state)} aria-hidden="true">
-        <StatusIcon name={icon.name} spinning={icon.spinning} />
-      </span>
-      <div>
-        <h3 id="knowledge-readiness-title">{knowledgeReadinessText(base.readiness)}</h3>
-        <p>
-          {state === "ready" ? "All current Sources are ready for future chats."
-            : state === "processing" ? "Ready Sources stay available while the remaining Sources are processed."
-              : state === "needs_attention" ? "Ready Sources stay available. Open the affected Source below."
-                : state === "archived" ? "Restore this base to add Sources."
-                  : state === "trashed" ? "This base is excluded from future runs until restored."
-                  : "Add Sources to make this base available in future chats."}
-        </p>
-        {base.readiness.supportReference ? (
-          <p className="v2-knowledge-meta">Support reference {base.readiness.supportReference}</p>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function BaseSettings({ busy, detail }: { busy: boolean; detail: KnowledgeDetailView }) {
+function BaseSettings({
+  busy,
+  compact = false,
+  detail
+}: {
+  busy: boolean;
+  compact?: boolean;
+  detail: KnowledgeDetailView;
+}) {
   const base = detail.base!;
+  const fields = base.owned ? (
+    <div className="v2-knowledge-form">
+      <div className="v2-knowledge-field">
+        <label htmlFor="knowledge-detail-name">Name</label>
+        <input
+          className="v2-knowledge-input"
+          disabled={busy}
+          id="knowledge-detail-name"
+          maxLength={KNOWLEDGE_BASE_NAME_MAX_LENGTH}
+          onChange={(event) => detail.onChange({ name: event.currentTarget.value })}
+          value={detail.draft.name}
+        />
+      </div>
+      <div className="v2-knowledge-field">
+        <label htmlFor="knowledge-detail-description">Description</label>
+        <textarea
+          className="v2-knowledge-input"
+          disabled={busy}
+          id="knowledge-detail-description"
+          maxLength={KNOWLEDGE_BASE_DESCRIPTION_MAX_LENGTH}
+          onChange={(event) => detail.onChange({ description: event.currentTarget.value })}
+          rows={4}
+          value={detail.draft.description}
+        />
+      </div>
+      {detail.error ? <p className="v2-knowledge-error v2-knowledge-form-wide" role="alert">{detail.error.text}</p> : null}
+    </div>
+  ) : (
+    <dl className="v2-knowledge-dl">
+      <div><dt>Owner</dt><dd>{base.ownerDisplayName}</dd></div>
+      <div><dt>Description</dt><dd className="v2-knowledge-prewrap">{base.description || "No description"}</dd></div>
+    </dl>
+  );
+  if (compact) return fields;
   return (
     <section aria-labelledby="knowledge-settings-title" className="v2-knowledge-section">
       <div className="v2-knowledge-section-head">
@@ -1072,39 +1281,7 @@ function BaseSettings({ busy, detail }: { busy: boolean; detail: KnowledgeDetail
         </div>
         {base.archived ? <span className="v2-knowledge-tag">Archived</span> : null}
       </div>
-      {base.owned ? (
-        <div className="v2-knowledge-form">
-          <div className="v2-knowledge-field">
-            <label htmlFor="knowledge-detail-name">Name</label>
-            <input
-              className="v2-knowledge-input"
-              disabled={busy}
-              id="knowledge-detail-name"
-              maxLength={KNOWLEDGE_BASE_NAME_MAX_LENGTH}
-              onChange={(event) => detail.onChange({ name: event.currentTarget.value })}
-              value={detail.draft.name}
-            />
-          </div>
-          <div className="v2-knowledge-field">
-            <label htmlFor="knowledge-detail-description">Description</label>
-            <textarea
-              className="v2-knowledge-input"
-              disabled={busy}
-              id="knowledge-detail-description"
-              maxLength={KNOWLEDGE_BASE_DESCRIPTION_MAX_LENGTH}
-              onChange={(event) => detail.onChange({ description: event.currentTarget.value })}
-              rows={4}
-              value={detail.draft.description}
-            />
-          </div>
-          {detail.error ? <p className="v2-knowledge-error v2-knowledge-form-wide" role="alert">{detail.error.text}</p> : null}
-        </div>
-      ) : (
-        <dl className="v2-knowledge-dl">
-          <div><dt>Owner</dt><dd>{base.ownerDisplayName}</dd></div>
-          <div><dt>Description</dt><dd className="v2-knowledge-prewrap">{base.description || "No description"}</dd></div>
-        </dl>
-      )}
+      {fields}
     </section>
   );
 }
@@ -1132,32 +1309,8 @@ function LifecycleSection({
   trashedAt: string | null;
   trashed: boolean;
 }>) {
-  const label = kind === "base" ? "Knowledge base" : "Source";
-  if (!trashed) {
-    return (
-      <section aria-label={`${label} lifecycle`} className="v2-knowledge-section">
-        <div className="v2-knowledge-section-head">
-          <div>
-            <h3>Trash</h3>
-            <p>
-              {kind === "base"
-                ? "Stop future runs from using this base while keeping its Sources and settings recoverable."
-                : "Stop future runs from using this Source in every base while keeping it recoverable."}
-            </p>
-          </div>
-          <UiV2Button
-            aria-label={`Move ${name} to Trash`}
-            disabled={busy}
-            icon="trash"
-            tone="destructive"
-            onClick={onTrash}
-          >
-            Move to Trash
-          </UiV2Button>
-        </div>
-      </section>
-    );
-  }
+  const label = kind === "base" ? "Knowledge base" : "Document";
+  if (!trashed) return null;
 
   return (
     <section aria-label={`${label} Trash actions`} className="v2-knowledge-section">
@@ -1167,10 +1320,10 @@ function LifecycleSection({
         </h3>
         <p>
           {deletionPending
-            ? "The durable deletion worker is removing relational evidence and settling every private object obligation. This item cannot be restored."
+            ? "Deleting permanently… This cannot be undone, and this item can no longer be restored."
             : kind === "base"
-              ? "Future runs cannot use this base. Restore it with its Source memberships and sharing settings, or delete only the base permanently."
-              : "Future runs cannot use this Source. Restore its previous Base memberships, or permanently remove every version and stored object."}
+              ? "Future runs cannot use this base. Restore it with its document memberships and sharing settings, or delete only the base permanently."
+              : "Future runs cannot use this document. Restore its previous base memberships, or permanently remove every version and stored object."}
         </p>
         {trashedAt ? (
           <p className="v2-knowledge-meta">
@@ -1209,15 +1362,15 @@ function uploadState(item: KnowledgeUploadItem): { label: string; tone: StatusTo
     case "ready":
       return { label: "Ready", tone: "ok" };
     case "ready_with_warnings":
-      return { label: "Ready with warnings", tone: "warn" };
+      return { label: "Ready", tone: "ok" };
     case "reused":
-      return { label: "Already in library", tone: "ok" };
+      return { label: "Already added", tone: "ok" };
     case "needs_attention":
       return { label: "Needs attention", tone: "danger" };
     case "cancelled":
       return { label: "Cancelled", tone: "neutral" };
     case "upload_complete":
-      return { label: "Verifying", tone: "live" };
+      return { label: "Uploading", tone: "live" };
     case "processing":
       return { label: "Processing", tone: "live" };
     case "uploading":
@@ -1231,7 +1384,7 @@ function uploadFailureText(code: string | null): string | null {
   if (!code) return null;
   const messages: Record<string, string> = {
     knowledge_checksum_mismatch: "The uploaded bytes did not match this file.",
-    knowledge_processing_failed: "Processing could not produce a usable Source.",
+    knowledge_processing_failed: "Processing could not produce a usable document.",
     knowledge_storage_unavailable: "Private storage is temporarily unavailable.",
     knowledge_upload_session_expired: "The upload session expired. Select the file to retry.",
     knowledge_upload_size_mismatch: "The uploaded size did not match this file.",
@@ -1307,9 +1460,9 @@ function UploadManifest({ busy, detail }: { busy: boolean; detail: KnowledgeDeta
                     key={item.id}
                   >
                     <span className="v2-knowledge-row-icon" data-tone={state.tone} aria-hidden="true">
-                      {item.state === "ready" || item.state === "reused"
+                      {item.state === "ready" || item.state === "ready_with_warnings" || item.state === "reused"
                         ? <UiV2Icon name="check" />
-                        : item.state === "ready_with_warnings" || item.state === "needs_attention"
+                        : item.state === "needs_attention"
                           ? <UiV2Icon name="alert" />
                           : transferring
                             ? <Spinner />
@@ -1321,7 +1474,7 @@ function UploadManifest({ busy, detail }: { busy: boolean; detail: KnowledgeDeta
                         <span className="v2-knowledge-status" data-tone={state.tone}>{state.label}</span>
                       </div>
                       <p className="v2-knowledge-meta">
-                        {formatBytes(item.byteSize)}{item.attemptNumber > 1 ? ` · attempt ${item.attemptNumber}` : ""}
+                        {formatBytes(item.byteSize)}
                       </p>
                       {(live || item.state === "uploading" || item.state === "queued") ? (
                         <div
@@ -1374,17 +1527,18 @@ function UploadManifest({ busy, detail }: { busy: boolean; detail: KnowledgeDeta
 function SourcesSection({
   busy,
   detail,
-  onPreviewSource,
   onRequestRemove
 }: {
   busy: boolean;
   detail: KnowledgeDetailView;
-  onPreviewSource?(sourceId: string, trigger: HTMLElement): void;
   onRequestRemove(target: RemoveTarget): void;
 }) {
+  const [filter, setFilter] = useState<"all" | "needs_attention" | "processing">("all");
   const base = detail.base!;
   const response = detail.sources!;
   const sources = response.sources;
+  const visibleSources = sources.filter((source) => filter === "all" || source.readiness.state === filter ||
+    filter === "needs_attention" && source.replacement.state === "needs_attention");
   const pagination = response.pagination;
   const firstSource = pagination.totalItems === 0
     ? 0
@@ -1401,18 +1555,88 @@ function SourcesSection({
     <section aria-labelledby="knowledge-sources-title" className="v2-knowledge-section">
       <div className="v2-knowledge-section-head">
         <div>
-          <h3 id="knowledge-sources-title">Sources</h3>
+          <h3 id="knowledge-sources-title">Documents</h3>
           <p>
             {pagination.totalItems === 0
-              ? `0 ${pagination.query ? "matching " : ""}Sources`
+              ? `0 ${pagination.query ? "matching " : ""}documents`
               : `Showing ${firstSource}–${lastSource} of ${pagination.totalItems}${pagination.query ? " matching" : ""}`}
-            {" · each Source has one version history across every base"}
           </p>
         </div>
-        <UiV2Button className="v2-knowledge-quiet-action" disabled={busy} onClick={detail.onRefresh}>
-          Refresh status
-        </UiV2Button>
       </div>
+      <div className="v2-knowledge-document-toolbar">
+        <div aria-label="Document status filter" className="v2-resource-filters" role="group">
+          {([
+            ["all", `All ${pagination.totalItems}`],
+            ["needs_attention", `Needs attention ${base.readiness.attentionSources}`],
+            ["processing", `Processing ${base.readiness.processingSources}`]
+          ] as const).map(([value, label]) => (
+            <button
+              aria-pressed={filter === value}
+              className="v2-resource-filter v2-focusable"
+              data-selected={filter === value || undefined}
+              disabled={busy}
+              key={value}
+              type="button"
+              onClick={() => setFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <label className="v2-resource-search v2-knowledge-search" htmlFor="knowledge-source-search-in-base">
+          <span className="v2-sr-only">Search documents in this base</span>
+          <UiV2Icon name="search" />
+          <input
+            autoComplete="off"
+            disabled={busy}
+            id="knowledge-source-search-in-base"
+            maxLength={KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH}
+            onChange={(event) => detail.onSourceQueryChange(event.currentTarget.value)}
+            placeholder="Search documents…"
+            type="search"
+            value={detail.sourceQuery}
+          />
+        </label>
+      </div>
+      <UploadManifest busy={busy} detail={detail} />
+      {visibleSources.length === 0 ? (
+        <div className="v2-knowledge-state">
+          <UiV2Icon name="file" />
+          <p>{detail.sourceQuery
+            ? `No documents match “${detail.sourceQuery}”`
+            : filter === "needs_attention"
+              ? "No documents need attention"
+              : filter === "processing"
+                ? "No documents are processing"
+                : "No documents in this base"}</p>
+          <span>
+            {detail.sourceQuery
+              ? "Try another name, filename, or tag."
+              : "Add one or more files when you are ready."}
+          </span>
+        </div>
+      ) : (
+        <ul aria-label="Documents in this Knowledge base" className="v2-knowledge-list">
+          {visibleSources.map((source) => (
+            <SourceMembershipRow
+              key={source.id}
+              baseId={base.id}
+              baseName={base.name}
+              busy={busy}
+              detail={detail}
+              onRequestRemove={onRequestRemove}
+              source={source}
+            />
+          ))}
+        </ul>
+      )}
+      <Pagination
+        busy={busy}
+        label="Knowledge document pages"
+        onPageChange={detail.onSourcePageChange}
+        page={pagination.page}
+        totalPages={pagination.totalPages}
+      />
       {base.owned ? (
         <div
           className="v2-knowledge-dropzone"
@@ -1422,10 +1646,14 @@ function SourcesSection({
           {...drop.handlers}
         >
           <div>
-            <p>{drop.dragActive ? "Drop files to add Sources" : "Add Sources"}</p>
-            <span>{knowledgeUploadHelp(detail.maxUploadBytes)} Each file becomes a reusable Source.</span>
+            <p>{drop.dragActive ? "Drop files to add them" : "Drop files here to add documents"}</p>
+            <span>PDF, Office files, text, images, and data files · up to {formatBytes(detail.maxUploadBytes)} each.</span>
+            <details className="v2-knowledge-supported-formats">
+              <summary>Supported formats</summary>
+              <span>{KNOWLEDGE_UPLOAD_FORMAT_LABELS.join(", ")}</span>
+            </details>
             {base.archived ? (
-              <span className="v2-knowledge-dropzone-note">Restore this base before adding Sources.</span>
+              <span className="v2-knowledge-dropzone-note">Restore this base before adding documents.</span>
             ) : null}
           </div>
           <FilePickerLabel
@@ -1439,54 +1667,9 @@ function SourcesSection({
           </FilePickerLabel>
         </div>
       ) : null}
-      <UploadManifest busy={busy} detail={detail} />
-      <label className="v2-resource-search v2-knowledge-search" htmlFor="knowledge-source-search-in-base">
-        <span className="v2-sr-only">Search Sources in this base</span>
-        <UiV2Icon name="search" />
-        <input
-          autoComplete="off"
-          disabled={busy}
-          id="knowledge-source-search-in-base"
-          maxLength={KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH}
-          onChange={(event) => detail.onSourceQueryChange(event.currentTarget.value)}
-          placeholder="Search Source names, files, or tags"
-          type="search"
-          value={detail.sourceQuery}
-        />
-      </label>
-      {sources.length === 0 ? (
-        <div className="v2-knowledge-state">
-          <UiV2Icon name="file" />
-          <p>{detail.sourceQuery ? "No Sources match this search" : "No Sources in this base"}</p>
-          <span>
-            {detail.sourceQuery
-              ? "Try another name, filename, or tag. Source contents are not searched here."
-              : "Add one or more files when you are ready."}
-          </span>
-        </div>
-      ) : (
-        <ul aria-label="Sources in this Knowledge base" className="v2-knowledge-list">
-          {sources.map((source) => (
-            <SourceMembershipRow
-              key={source.id}
-              baseId={base.id}
-              baseName={base.name}
-              busy={busy}
-              detail={detail}
-              onPreviewSource={onPreviewSource}
-              onRequestRemove={onRequestRemove}
-              source={source}
-            />
-          ))}
-        </ul>
-      )}
-      <Pagination
-        busy={busy}
-        label="Knowledge Source pages"
-        onPageChange={detail.onSourcePageChange}
-        page={pagination.page}
-        totalPages={pagination.totalPages}
-      />
+      <p className="v2-knowledge-membership-note">
+        A document can live in several bases. Removing it here does not delete the file.
+      </p>
     </section>
   );
 }
@@ -1496,7 +1679,6 @@ function SourceMembershipRow({
   baseName,
   busy,
   detail,
-  onPreviewSource,
   onRequestRemove,
   source
 }: {
@@ -1504,93 +1686,128 @@ function SourceMembershipRow({
   baseName: string;
   busy: boolean;
   detail: KnowledgeDetailView;
-  onPreviewSource?(sourceId: string, trigger: HTMLElement): void;
   onRequestRemove(target: RemoveTarget): void;
   source: KnowledgeSourceSummary;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { menuRef, triggerRef } = useMenuDismissalV2({
+    onClose: () => setMenuOpen(false),
+    open: menuOpen
+  });
   const state = sourceStatus(source);
   const version = source.currentVersion;
   const actionPending = detail.actionId === `base-source:${source.id}:remove`;
   return (
-    <li className="v2-knowledge-row" data-testid={`knowledge-source-${source.id}`}>
+    <li className="v2-knowledge-row v2-knowledge-document-row" data-testid={`knowledge-source-${source.id}`}>
       <span className="v2-knowledge-row-icon" data-tone={state.tone} aria-hidden="true">
         {source.readiness.state === "ready"
-          ? <UiV2Icon name={source.readiness.warningCodes.length > 0 ? "alert" : "check"} />
+          ? <UiV2Icon name="check" />
           : source.readiness.state === "needs_attention"
             ? <UiV2Icon name="alert" />
             : <UiV2Icon name="history" />}
       </span>
-      <div className="v2-knowledge-row-main">
+      <button
+        className="v2-knowledge-row-main v2-knowledge-document-open v2-focusable"
+        disabled={busy}
+        type="button"
+        onClick={() => detail.onOpenSource(source.id)}
+      >
         <div className="v2-knowledge-row-title">
           <span className="v2-knowledge-row-name">{source.name}</span>
-          <span className="v2-knowledge-status" data-tone={state.tone}>{state.label}</span>
         </div>
         <p className="v2-knowledge-meta">
-          {version?.fileName ?? "Waiting for first ready version"}
-          {version ? ` · ${formatBytes(version.byteSize)}` : ""}
+          {version ? `${fileTypeLabel(version.fileName)} · ${formatBytes(version.byteSize)}` : "Waiting for a ready file"}
           {version?.pageCount !== null && version?.pageCount !== undefined
             ? ` · ${version.pageCount} page${version.pageCount === 1 ? "" : "s"}`
             : ""}
-          {` · updated ${formatDate(source.updatedAt)}`}
+          {` · added ${formatDate(source.updatedAt)}`}
         </p>
         {source.replacement.state === "processing" ? (
           <p className="v2-knowledge-row-note">
             Replacement processing; the current ready version remains available.
           </p>
         ) : source.replacement.state === "needs_attention" ? (
-          <p className="v2-knowledge-row-note" data-tone="danger">
-            Replacement needs attention. Open the Source to retry or replace it.
+          <p className="v2-knowledge-row-note" data-tone={source.canReprocess ? "danger" : undefined}>
+            {source.canReprocess
+              ? "Replacement needs attention. Open the document to reprocess or replace it."
+              : "Replacement unavailable. The current ready version remains available."}
           </p>
         ) : source.readiness.state === "needs_attention" ? (
           <p className="v2-knowledge-row-note" data-tone="danger">
-            Processing needs attention. Open the Source to retry or replace it.
+            {source.canReprocess
+              ? "Processing needs attention. Open the document to reprocess or replace it."
+              : "This document is unavailable."}
           </p>
         ) : null}
         {source.readiness.state === "ready" && source.readiness.warningCodes.length > 0 ? (
-          <ul className="v2-knowledge-warnings">
-            {processingWarningLabels(source.readiness.warningCodes).map((label) => (
-              <li key={label}>{label}</li>
-            ))}
-          </ul>
+          <p className="v2-knowledge-row-note"><UiV2Icon name="alert" />
+            {knowledgeProcessingNote(source.readiness.warningCodes)}
+          </p>
         ) : null}
-        <div className="v2-knowledge-actions">
-          {onPreviewSource && version?.readiness.state === "ready" ? (
-            <UiV2Button
-              disabled={busy}
-              icon="file"
-              onClick={(event) => onPreviewSource(source.id, event.currentTarget)}
-            >
-              Preview
-            </UiV2Button>
-          ) : null}
-          <UiV2Button disabled={busy} icon="chevron-right" onClick={() => detail.onOpenSource(source.id)}>
-            Open Source
-          </UiV2Button>
-          {detail.base?.owned ? (
-            <UiV2Button
-              disabled={busy}
-              tone="destructive"
-              onClick={() => onRequestRemove({
-                baseId,
-                baseName,
-                kind: "membership",
-                sourceId: source.id,
-                sourceName: source.name
-              })}
-            >
-              Remove from base
-            </UiV2Button>
-          ) : null}
-          {actionPending ? (
-            <span className="v2-spinner v2-knowledge-action-spinner" aria-label="Source action in progress" role="status" />
-          ) : null}
-        </div>
+      </button>
+      <div className="v2-knowledge-document-controls">
+        <span className="v2-knowledge-status" data-tone={state.tone}>{state.label}</span>
+        {version?.readiness.state === "ready" ? (
+          <UiV2Button disabled={busy} onClick={() => detail.onOpenSource(source.id)}>Preview</UiV2Button>
+        ) : null}
+        <UiV2IconButton
+          ref={triggerRef}
+          aria-expanded={menuOpen}
+          aria-haspopup="menu"
+          disabled={busy}
+          icon="more"
+          label={`More actions for ${source.name}`}
+          onClick={() => setMenuOpen((open) => !open)}
+        />
+        {menuOpen ? (
+          <UiV2ResponsiveMenu
+            anchorRef={triggerRef}
+            label={`Actions for ${source.name}`}
+            menuRef={menuRef}
+            onClose={() => setMenuOpen(false)}
+          >
+            <UiV2MenuItem icon="file" onClick={() => {
+              setMenuOpen(false);
+              detail.onOpenSource(source.id);
+            }}>
+              Open document
+            </UiV2MenuItem>
+            {detail.base?.owned ? (
+              <>
+                <UiV2MenuSeparator />
+                <UiV2MenuItem icon="close" tone="destructive" onClick={() => {
+                  setMenuOpen(false);
+                  onRequestRemove({
+                    baseId,
+                    baseName,
+                    kind: "membership",
+                    sourceId: source.id,
+                    sourceName: source.name
+                  });
+                }}>
+                  Remove from base
+                </UiV2MenuItem>
+              </>
+            ) : null}
+          </UiV2ResponsiveMenu>
+        ) : null}
+        {actionPending ? (
+          <span className="v2-spinner v2-knowledge-action-spinner" aria-label="Document action in progress" role="status" />
+        ) : null}
       </div>
     </li>
   );
 }
 
-function PublicationSection({ busy, detail }: { busy: boolean; detail: KnowledgeDetailView }) {
+function PublicationSection({
+  busy,
+  compact = false,
+  detail
+}: {
+  busy: boolean;
+  compact?: boolean;
+  detail: KnowledgeDetailView;
+}) {
   const base = detail.base!;
   const [scope, setScope] = useState<"group" | "installation">("group");
   const [groupId, setGroupId] = useState(detail.publishableGroups[0]?.id ?? "");
@@ -1603,12 +1820,15 @@ function PublicationSection({ busy, detail }: { busy: boolean; detail: Knowledge
     ? detail.canPublishInstallation
     : canPublishGroup && Boolean(effectiveGroupId);
   return (
-    <section aria-labelledby="knowledge-publication-title" className="v2-knowledge-section">
+    <section
+      aria-labelledby="knowledge-publication-title"
+      className={compact ? "v2-knowledge-publication-dialog" : "v2-knowledge-section"}
+    >
       <div className="v2-knowledge-section-head">
         <div>
           <h3 id="knowledge-publication-title">Publication</h3>
           <p data-testid="knowledge-publication-disclosure">
-            Publishing grants the selected audience live access to this base’s current and future content. Revoking stops future access; already accepted runs are unchanged.
+            Publishing grants the selected audience live access to this base’s current and future content. Revoking stops future access; work already in progress and past answers are unchanged.
           </p>
         </div>
       </div>
@@ -1694,6 +1914,79 @@ function PublicationSection({ busy, detail }: { busy: boolean; detail: Knowledge
 
 /* ---------- Source detail ---------- */
 
+type SourceDialogKind = "bases" | "details";
+
+function SourceActionsMenu({
+  busy,
+  onOpenDialog,
+  onReprocess,
+  onTrash,
+  reprocessAvailable,
+  source
+}: Readonly<{
+  busy: boolean;
+  onOpenDialog(dialog: SourceDialogKind): void;
+  onReprocess(): void;
+  onTrash(): void;
+  reprocessAvailable: boolean;
+  source: KnowledgeSourceSummary;
+}>) {
+  const [open, setOpen] = useState(false);
+  const { menuRef, triggerRef } = useMenuDismissalV2({
+    onClose: () => setOpen(false),
+    open
+  });
+  return (
+    <span className="v2-knowledge-menu-wrap">
+      <UiV2IconButton
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        disabled={busy}
+        icon="more"
+        label={`More actions for ${source.name}`}
+        onClick={() => setOpen((value) => !value)}
+      />
+      {open ? (
+        <UiV2ResponsiveMenu
+          anchorRef={triggerRef}
+          label={`Actions for ${source.name}`}
+          menuRef={menuRef}
+          onClose={() => setOpen(false)}
+        >
+          <UiV2MenuItem icon="edit" onClick={() => {
+            setOpen(false);
+            onOpenDialog("details");
+          }}>
+            Rename and describe…
+          </UiV2MenuItem>
+          <UiV2MenuItem icon="layers" onClick={() => {
+            setOpen(false);
+            onOpenDialog("bases");
+          }}>
+            Manage bases…
+          </UiV2MenuItem>
+          {reprocessAvailable ? (
+            <UiV2MenuItem icon="regenerate" onClick={() => {
+              setOpen(false);
+              onReprocess();
+            }}>
+              Reprocess
+            </UiV2MenuItem>
+          ) : null}
+          <UiV2MenuSeparator />
+          <UiV2MenuItem icon="trash" tone="destructive" onClick={() => {
+            setOpen(false);
+            onTrash();
+          }}>
+            Move to Trash
+          </UiV2MenuItem>
+        </UiV2ResponsiveMenu>
+      ) : null}
+    </span>
+  );
+}
+
 function SourceDetailTask({
   busy,
   detail,
@@ -1701,7 +1994,6 @@ function SourceDetailTask({
   onDismissNotice,
   onRequestLifecycle,
   onRequestRemove,
-  onPreviewSource,
   onRetry
 }: {
   busy: boolean;
@@ -1710,9 +2002,9 @@ function SourceDetailTask({
   onDismissNotice(): void;
   onRequestLifecycle(target: LifecycleTarget): void;
   onRequestRemove(target: RemoveTarget): void;
-  onPreviewSource?(sourceId: string, trigger: HTMLElement): void;
   onRetry(): void;
 }) {
+  const [dialog, setDialog] = useState<SourceDialogKind | null>(null);
   const [selectedBaseIds, setSelectedBaseIds] = useState<string[]>([]);
   const [moveFromBaseId, setMoveFromBaseId] = useState("");
   const [moveToBaseId, setMoveToBaseId] = useState("");
@@ -1723,37 +2015,94 @@ function SourceDetailTask({
   const effectiveMoveTo = source?.eligibleBases.some(({ id }) => id === moveToBaseId)
     ? moveToBaseId
     : source?.eligibleBases[0]?.id ?? "";
+  const currentVersion = source?.currentVersion ?? null;
+  const sourceId = source?.id ?? null;
+  const pageCount = Math.max(1, currentVersion?.pageCount ?? 1);
+  const previewKey = `${source?.id ?? ""}:${currentVersion?.versionNumber ?? ""}:${currentVersion?.fileName ?? ""}`;
+  const [preview, setPreview] = useState({ key: previewKey, page: 1, pageFailed: false });
+  const [normalizedPreviewRetry, setNormalizedPreviewRetry] = useState(0);
+  const [normalizedPreview, setNormalizedPreview] = useState<NormalizedPreviewState>({
+    key: previewKey,
+    status: "idle",
+    value: null
+  });
+  const page = preview.key === previewKey ? preview.page : 1;
+  const pageFailed = preview.key === previewKey ? preview.pageFailed : false;
+  const needsNormalizedPreview = Boolean(
+    source && currentVersion?.readiness.state === "ready" &&
+    !isVisualPreviewFile(currentVersion.fileName)
+  );
+  const activeNormalizedPreview = normalizedPreview.key === previewKey
+    ? normalizedPreview
+    : { key: previewKey, status: "loading" as const, value: null };
+  useEffect(() => {
+    if (!sourceId || !needsNormalizedPreview) return;
+    const controller = new AbortController();
+    void loadKnowledgeSourceViewer(sourceId, controller.signal).then((value) => {
+      if (!controller.signal.aborted) {
+        setNormalizedPreview({ key: previewKey, status: "ready", value });
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setNormalizedPreview({ key: previewKey, status: "error", value: null });
+      }
+    });
+    return () => controller.abort();
+  }, [needsNormalizedPreview, normalizedPreviewRetry, previewKey, sourceId]);
+  const reprocessAvailable = Boolean(source?.canReprocess && (
+    source.readiness.state === "needs_attention" || source.replacement.state === "needs_attention"
+  ));
   const heading = (
     <SubviewHeading
       actions={source ? (
         <>
-          {onPreviewSource && source.currentVersion?.readiness.state === "ready" ? (
-            <UiV2Button
-              disabled={busy}
-              icon="file"
-              onClick={(event) => onPreviewSource(source.id, event.currentTarget)}
+          {source.owned && !source.trashed && !source.deletionPending ? (
+            <FilePickerLabel
+              accept={KNOWLEDGE_UPLOAD_ACCEPT}
+              busy={detail.actionId === "source:replace"}
+              disabled={busy || source.replacement.state === "processing"}
+              icon="attach"
+              inputId="knowledge-source-replace"
+              tone="primary"
+              onFiles={(files) => {
+                const file = files?.[0];
+                if (file) detail.onReplace(file);
+              }}
             >
-              Preview
-            </UiV2Button>
+              Replace file
+            </FilePickerLabel>
           ) : null}
-          <UiV2Button className="v2-knowledge-quiet-action" disabled={busy} onClick={detail.onRefresh}>
-            Refresh
-          </UiV2Button>
+          {source.owned && !source.trashed && !source.deletionPending ? (
+            <SourceActionsMenu
+              busy={busy}
+              onOpenDialog={setDialog}
+              onReprocess={detail.onReprocess}
+              onTrash={() => onRequestLifecycle({ action: "trash", kind: "source", name: source.name })}
+              reprocessAvailable={reprocessAvailable}
+              source={source}
+            />
+          ) : null}
         </>
       ) : undefined}
-      meta={source?.trashed ? "In Trash · excluded from future runs" : "Reusable across Knowledge bases"}
-      title={source?.name ?? "Source"}
+      meta={source?.trashed
+        ? "In Trash · excluded from future chats"
+        : source && currentVersion
+          ? `${sourceStatus(source).label} · ${fileTypeLabel(currentVersion.fileName)} · ${formatBytes(currentVersion.byteSize)}${currentVersion.pageCount ? ` · ${currentVersion.pageCount} pages` : ""} · in ${source.membershipCount} ${source.membershipCount === 1 ? "base" : "bases"}`
+          : "Waiting for a ready file"}
+      title={source?.name ?? "Document"}
     />
   );
   if (detail.dataState === "loading") {
-    return <>{heading}<TaskLoading label="Loading Source…" /></>;
+    return <>{heading}<TaskLoading label="Loading document…" /></>;
   }
   if (detail.dataState === "error" || !source) {
     return <>{heading}<TaskFailure error={detail.dataError} onRetry={onRetry} /></>;
   }
   const status = sourceStatus(source);
-  const reprocessAvailable = source.readiness.state === "needs_attention" ||
-    source.replacement.state === "needs_attention";
+  const retryableVersionNumber = reprocessAvailable
+    ? (source.versions.find((version) => version.isPending) ??
+        source.versions.find((version) => version.isCurrent))?.versionNumber
+    : undefined;
   const validSelectedBaseIds = selectedBaseIds.filter((id) =>
     source.eligibleBases.some((base) => base.id === id)
   );
@@ -1762,42 +2111,142 @@ function SourceDetailTask({
       {heading}
       {notice ? <NoticeRow notice={notice} onDismiss={onDismissNotice} /> : null}
       {!source.owned ? (
-        <Callout title="Read-only shared Source">
+        <Callout title="Read-only shared document">
           <p>Shared by {source.ownerDisplayName}. You can use it through the listed bases; only its owner can edit or move it.</p>
         </Callout>
       ) : null}
 
+      <div className="v2-knowledge-doc-layout">
+        <section aria-label="Document preview" className="v2-knowledge-doc-preview">
+          <div className="v2-knowledge-doc-toolbar">
+            {currentVersion?.fileName.toLocaleLowerCase().endsWith(".pdf") && currentVersion.pageCount ? (
+              <label>
+                <span>Page</span>
+                <select
+                  aria-label="Preview page"
+                  className="v2-knowledge-input"
+                  value={page}
+                  onChange={(event) => {
+                    setPreview({
+                      key: previewKey,
+                      page: Number(event.currentTarget.value),
+                      pageFailed: false
+                    });
+                  }}
+                >
+                  {Array.from({ length: pageCount }, (_, index) => index + 1).map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+                <span>of {pageCount}</span>
+              </label>
+            ) : <span>{currentVersion ? fileTypeLabel(currentVersion.fileName) : "Preview"}</span>}
+            <div>
+              {currentVersion?.fileName.toLocaleLowerCase().endsWith(".pdf") ? (
+                <>
+                  <UiV2Button
+                    aria-label="Previous page"
+                    disabled={page <= 1}
+                    onClick={() => {
+                      setPreview({ key: previewKey, page: Math.max(1, page - 1), pageFailed: false });
+                    }}
+                  >
+                    Previous
+                  </UiV2Button>
+                  <UiV2Button
+                    aria-label="Next page"
+                    disabled={page >= pageCount}
+                    onClick={() => {
+                      setPreview({
+                        key: previewKey,
+                        page: Math.min(pageCount, page + 1),
+                        pageFailed: false
+                      });
+                    }}
+                  >
+                    Next
+                  </UiV2Button>
+                </>
+              ) : null}
+              {currentVersion?.readiness.state === "ready" ? (
+                <a
+                  className="v2-button v2-focusable"
+                  data-tone="ghost"
+                  href={`${knowledgeSourceOriginalUrl(source.id)}${currentVersion.fileName.toLocaleLowerCase().endsWith(".pdf") ? `#page=${page}` : ""}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <UiV2Icon name="download" />
+                  <span>Open original</span>
+                </a>
+              ) : null}
+            </div>
+          </div>
+          <div className="v2-knowledge-doc-canvas">
+            {currentVersion?.readiness.state === "ready" &&
+            currentVersion.fileName.toLocaleLowerCase().endsWith(".pdf") && !pageFailed ? (
+              // The authenticated same-app route renders one bounded page and keeps frame denial intact.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                alt={`${currentVersion.fileName}, page ${page}`}
+                src={knowledgeSourcePageUrl(source.id, page)}
+                onError={() => setPreview({ key: previewKey, page, pageFailed: true })}
+              />
+            ) : currentVersion?.readiness.state === "ready" &&
+              /\.(?:gif|jpe?g|png|webp)$/iu.test(currentVersion.fileName) ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img alt={currentVersion.fileName} src={knowledgeSourceOriginalUrl(source.id)} />
+            ) : needsNormalizedPreview && activeNormalizedPreview.status === "ready" &&
+              activeNormalizedPreview.value?.blocks.length ? (
+              <NormalizedDocumentPreview blocks={activeNormalizedPreview.value.blocks} />
+            ) : needsNormalizedPreview &&
+              (activeNormalizedPreview.status === "idle" || activeNormalizedPreview.status === "loading") ? (
+              <div className="v2-knowledge-doc-preview-unavailable" role="status">
+                <UiV2Icon name="file" />
+                <strong>Preparing preview…</strong>
+                <p>Loading the document&apos;s indexed text.</p>
+              </div>
+            ) : (
+              <div className="v2-knowledge-doc-preview-unavailable" role="status">
+                <UiV2Icon name="file" />
+                <strong>{pageFailed ? "Page preview unavailable" : "Preview unavailable"}</strong>
+                <p>{pageFailed
+                  ? "Try another page or open the original in a new tab."
+                  : needsNormalizedPreview
+                    ? "The indexed text could not be loaded. The original is still available."
+                    : "This document is not ready for preview yet."}</p>
+                {needsNormalizedPreview ? (
+                  <UiV2Button onClick={() => {
+                    setNormalizedPreview({ key: previewKey, status: "loading", value: null });
+                    setNormalizedPreviewRetry((attempt) => attempt + 1);
+                  }}>
+                    Retry preview
+                  </UiV2Button>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </section>
+        <aside className="v2-knowledge-doc-sidebar" aria-label="Document details">
+
       <section aria-labelledby="knowledge-source-overview-title" className="v2-knowledge-section">
         <div className="v2-knowledge-section-head">
           <div>
-            <h3 id="knowledge-source-overview-title">Current Source</h3>
-            <p>One canonical file identity, reused wherever you add it.</p>
+            <h3 id="knowledge-source-overview-title">Processing notes</h3>
           </div>
           <span className="v2-knowledge-status" data-tone={status.tone}>{status.label}</span>
         </div>
-        <dl className="v2-knowledge-dl v2-knowledge-dl-four">
-          <div>
-            <dt>Current file</dt>
-            <dd>{source.currentVersion?.fileName ?? "No ready file"}</dd>
-          </div>
-          <div>
-            <dt>Size</dt>
-            <dd>{source.currentVersion ? formatBytes(source.currentVersion.byteSize) : "Unavailable"}</dd>
-          </div>
-          <div>
-            <dt>Used in</dt>
-            <dd>{source.membershipCount} {source.membershipCount === 1 ? "base" : "bases"}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{formatDate(source.updatedAt)}</dd>
-          </div>
-        </dl>
         {source.readiness.state === "needs_attention" &&
         source.replacement.state !== "needs_attention" ? (
-          <Callout role="status" title="Processing needs attention" tone="danger">
+          <Callout
+            role="status"
+            title={reprocessAvailable ? "Processing needs attention" : "Document unavailable"}
+            tone="danger"
+          >
             <p>
-              Retry processing here or replace the file with a corrected copy.
+              {reprocessAvailable
+                ? "Reprocess this document or replace the file with a corrected copy."
+                : "Processing did not produce a usable document. You can replace the file."}
               {source.readiness.supportReference
                 ? ` Support reference ${source.readiness.supportReference}.`
                 : ""}
@@ -1809,9 +2258,15 @@ function SourceDetailTask({
             <p>The current ready version stays available until the replacement is ready.</p>
           </Callout>
         ) : source.replacement.state === "needs_attention" ? (
-          <Callout role="status" title="Replacement needs attention" tone="danger">
+          <Callout
+            role="status"
+            title={reprocessAvailable ? "Replacement needs attention" : "Replacement unavailable"}
+            tone={reprocessAvailable ? "danger" : "warn"}
+          >
             <p>
-              Retry the replacement or upload a different file. The current ready version is unchanged.
+              {reprocessAvailable
+                ? "Reprocess the replacement or upload a different file. The current ready version is unchanged."
+                : "The replacement could not be used. The current ready version is unchanged."}
               {source.replacement.supportReference
                 ? ` Support reference ${source.replacement.supportReference}.`
                 : ""}
@@ -1819,42 +2274,20 @@ function SourceDetailTask({
           </Callout>
         ) : null}
         {source.readiness.state === "ready" && source.readiness.warningCodes.length > 0 ? (
-          <Callout role="status" title="Ready with warnings" tone="warn">
-            <ul className="v2-knowledge-warnings">
-              {processingWarningLabels(source.readiness.warningCodes).map((label) => (
-                <li key={label}>{label}</li>
-              ))}
-            </ul>
+          <Callout role="status" title="Processing note">
+            <p>{knowledgeProcessingNote(source.readiness.warningCodes)}</p>
           </Callout>
         ) : null}
-        {source.owned && !source.trashed && !source.deletionPending ? (
+        {source.owned && !source.trashed && !source.deletionPending && reprocessAvailable ? (
           <div className="v2-knowledge-actions">
-            {reprocessAvailable ? (
-              <UiV2Button
-                busy={detail.actionId === "source:reprocess"}
-                disabled={busy}
-                icon="regenerate"
-                onClick={detail.onReprocess}
-              >
-                Retry processing
-              </UiV2Button>
-            ) : null}
-            <FilePickerLabel
-              accept={KNOWLEDGE_UPLOAD_ACCEPT}
-              busy={detail.actionId === "source:replace"}
-              disabled={busy || source.replacement.state === "processing"}
-              icon="attach"
-              inputId="knowledge-source-replace"
-              onFiles={(files) => {
-                const file = files?.[0];
-                if (file) detail.onReplace(file);
-              }}
+            <UiV2Button
+              busy={detail.actionId === "source:reprocess"}
+              disabled={busy}
+              icon="regenerate"
+              onClick={detail.onReprocess}
             >
-              Replace file
-            </FilePickerLabel>
-            <p className="v2-knowledge-actions-note">
-              Replacing creates a new version; existing accepted chats keep the version they used.
-            </p>
+              Reprocess this document
+            </UiV2Button>
           </div>
         ) : null}
       </section>
@@ -1886,69 +2319,19 @@ function SourceDetailTask({
           <div className="v2-knowledge-section-head">
             <div><h3 id="knowledge-source-details-title">Details</h3></div>
           </div>
-          {source.owned ? (
-            <form
-              className="v2-knowledge-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                detail.onSave();
-              }}
-            >
-              <div className="v2-knowledge-field">
-                <label htmlFor="knowledge-source-name">Name</label>
-                <input
-                  className="v2-knowledge-input"
-                  disabled={busy}
-                  id="knowledge-source-name"
-                  maxLength={KNOWLEDGE_SOURCE_NAME_MAX_LENGTH}
-                  onChange={(event) => detail.onChange({ name: event.currentTarget.value })}
-                  required
-                  value={detail.draft.name}
-                />
-              </div>
-              <div className="v2-knowledge-field">
-                <label htmlFor="knowledge-source-tags">Tags</label>
-                <input
-                  className="v2-knowledge-input"
-                  disabled={busy}
-                  id="knowledge-source-tags"
-                  maxLength={KNOWLEDGE_SOURCE_TAG_MAX_COUNT * (KNOWLEDGE_SOURCE_TAG_MAX_LENGTH + 2)}
-                  onChange={(event) => detail.onChange({ tags: event.currentTarget.value })}
-                  placeholder="product, policy, onboarding"
-                  value={detail.draft.tags}
-                />
-                <span className="v2-knowledge-field-note">Comma-separated · up to {KNOWLEDGE_SOURCE_TAG_MAX_COUNT}</span>
-              </div>
-              <div className="v2-knowledge-field v2-knowledge-form-wide">
-                <label htmlFor="knowledge-source-description">Description</label>
-                <textarea
-                  className="v2-knowledge-input"
-                  disabled={busy}
-                  id="knowledge-source-description"
-                  maxLength={KNOWLEDGE_SOURCE_DESCRIPTION_MAX_LENGTH}
-                  onChange={(event) => detail.onChange({ description: event.currentTarget.value })}
-                  rows={4}
-                  value={detail.draft.description}
-                />
-              </div>
-              {detail.error ? <p className="v2-knowledge-error v2-knowledge-form-wide" role="alert">{detail.error.text}</p> : null}
-              <div className="v2-knowledge-form-actions v2-knowledge-form-wide">
-                <UiV2Button
-                  busy={detail.actionId === "source:settings"}
-                  disabled={busy || !detail.dirty}
-                  tone="primary"
-                  type="submit"
-                >
-                  Save details
-                </UiV2Button>
-              </div>
-            </form>
-          ) : (
-            <dl className="v2-knowledge-dl">
-              <div><dt>Owner</dt><dd>{source.ownerDisplayName}</dd></div>
-              <div><dt>Description</dt><dd className="v2-knowledge-prewrap">{source.description || "No description"}</dd></div>
-            </dl>
-          )}
+          <dl className="v2-knowledge-dl">
+            <div><dt>Added</dt><dd>{currentVersion ? formatDate(currentVersion.createdAt) : "Unavailable"}</dd></div>
+            <div><dt>Updated</dt><dd>{formatDate(source.updatedAt)}</dd></div>
+            <div><dt>Pages</dt><dd>{currentVersion?.pageCount ?? "Unavailable"}</dd></div>
+            <div><dt>Used in</dt><dd>{source.membershipCount} {source.membershipCount === 1 ? "base" : "bases"}</dd></div>
+            {!source.owned ? <div><dt>Owner</dt><dd>{source.ownerDisplayName}</dd></div> : null}
+            {source.description ? <div><dt>Description</dt><dd className="v2-knowledge-prewrap">{source.description}</dd></div> : null}
+          </dl>
+          {source.tags.length > 0 ? (
+            <div aria-label="Document tags" className="v2-knowledge-tags">
+              {source.tags.map((tag) => <span className="v2-knowledge-tag" key={tag}>{tag}</span>)}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -1956,14 +2339,13 @@ function SourceDetailTask({
         <section aria-labelledby="knowledge-source-bases-title" className="v2-knowledge-section">
           <div className="v2-knowledge-section-head">
             <div>
-              <h3 id="knowledge-source-bases-title">Knowledge bases</h3>
-              <p>These memberships determine where Chat, Project, and Assistant Knowledge selection can use this Source.</p>
+              <h3 id="knowledge-source-bases-title">In bases</h3>
             </div>
           </div>
           {source.memberships.length === 0 ? (
             <p className="v2-knowledge-empty">Not currently used by a base.</p>
           ) : (
-            <ul aria-label="Source Base memberships" className="v2-knowledge-list">
+            <ul aria-label="Document base memberships" className="v2-knowledge-list">
               {source.memberships.map((base) => (
                 <li className="v2-knowledge-row v2-knowledge-row-plain" key={base.id}>
                   <div className="v2-knowledge-row-main">
@@ -1972,104 +2354,10 @@ function SourceDetailTask({
                       {base.archived ? "Archived base" : "Available for future selection"}
                     </p>
                   </div>
-                  {source.owned ? (
-                    <UiV2Button
-                      busy={detail.actionId === `source:remove:${base.id}`}
-                      disabled={busy}
-                      tone="destructive"
-                      onClick={() => onRequestRemove({
-                        baseId: base.id,
-                        baseName: base.name,
-                        kind: "membership",
-                        sourceId: source.id,
-                        sourceName: source.name
-                      })}
-                    >
-                      Remove from base
-                    </UiV2Button>
-                  ) : null}
                 </li>
               ))}
             </ul>
           )}
-          {source.owned && source.eligibleBases.length > 0 ? (
-            <div className="v2-knowledge-membership-tools">
-              <fieldset className="v2-knowledge-fieldset">
-                <legend>Add to bases</legend>
-                <p>Reuse this Source without another upload.</p>
-                <div className="v2-knowledge-checklist">
-                  {source.eligibleBases.map((base) => (
-                    <label key={base.id}>
-                      <input
-                        checked={validSelectedBaseIds.includes(base.id)}
-                        disabled={busy}
-                        onChange={(event) => {
-                          const checked = event.currentTarget.checked;
-                          setSelectedBaseIds((current) => checked
-                            ? [...current, base.id]
-                            : current.filter((id) => id !== base.id));
-                        }}
-                        type="checkbox"
-                      />
-                      <span>{base.name}</span>
-                    </label>
-                  ))}
-                </div>
-                <UiV2Button
-                  busy={detail.actionId === "source:add"}
-                  disabled={busy || validSelectedBaseIds.length === 0}
-                  icon="plus"
-                  onClick={() => {
-                    detail.onAddToBases(validSelectedBaseIds);
-                    setSelectedBaseIds([]);
-                  }}
-                >
-                  Add to selected
-                </UiV2Button>
-              </fieldset>
-              {source.memberships.length > 0 ? (
-                <div className="v2-knowledge-fieldset">
-                  <h4>Move Source</h4>
-                  <p>Move removes one membership and adds another in one action.</p>
-                  <div className="v2-knowledge-move">
-                    <div className="v2-knowledge-field">
-                      <label htmlFor="knowledge-source-move-from">From</label>
-                      <select
-                        className="v2-knowledge-input"
-                        disabled={busy}
-                        id="knowledge-source-move-from"
-                        onChange={(event) => setMoveFromBaseId(event.currentTarget.value)}
-                        value={effectiveMoveFrom}
-                      >
-                        {source.memberships.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}
-                      </select>
-                    </div>
-                    <UiV2Icon className="v2-knowledge-move-arrow" name="chevron-right" />
-                    <div className="v2-knowledge-field">
-                      <label htmlFor="knowledge-source-move-to">To</label>
-                      <select
-                        className="v2-knowledge-input"
-                        disabled={busy}
-                        id="knowledge-source-move-to"
-                        onChange={(event) => setMoveToBaseId(event.currentTarget.value)}
-                        value={effectiveMoveTo}
-                      >
-                        {source.eligibleBases.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                  <UiV2Button
-                    busy={detail.actionId?.startsWith("source:move:") ?? false}
-                    disabled={busy || !effectiveMoveFrom || !effectiveMoveTo}
-                    icon="chevron-right"
-                    onClick={() => detail.onMove(effectiveMoveFrom, effectiveMoveTo)}
-                  >
-                    Move Source
-                  </UiV2Button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
         </section>
       ) : null}
 
@@ -2077,26 +2365,30 @@ function SourceDetailTask({
         <details className="v2-knowledge-details">
           <summary className="v2-focusable" id="knowledge-source-history-title">
             <UiV2Icon name="chevron-right" />
-            <span>Version history · {source.versions.length}</span>
+            <span>History · {Math.max(0, source.versions.filter((version) => !version.isCurrent).length)} earlier {source.versions.filter((version) => !version.isCurrent).length === 1 ? "version" : "versions"}</span>
           </summary>
           <p className="v2-knowledge-details-note">
             Replacements create versions. Existing accepted chats keep the version they used.
           </p>
-          <ul aria-label="Source versions" className="v2-knowledge-list">
+          <ul aria-label="Document versions" className="v2-knowledge-list">
             {source.versions.map((version) => {
               const versionStatus = version.readiness.state === "ready"
-                ? version.readiness.warningCodes.length > 0 ? "Ready with warnings" : "Ready"
+                ? "Ready"
                 : version.readiness.state === "processing"
                   ? "Processing"
-                  : "Needs attention";
+                  : version.versionNumber === retryableVersionNumber
+                    ? "Needs attention"
+                    : "Unavailable";
               return (
                 <li className="v2-knowledge-row v2-knowledge-row-plain" key={version.versionNumber}>
                   <div className="v2-knowledge-row-main">
-                    <span className="v2-knowledge-row-name">Version {version.versionNumber} · {version.fileName}</span>
-                    <p className="v2-knowledge-meta">{formatBytes(version.byteSize)} · {formatDate(version.createdAt)}</p>
+                    <span className="v2-knowledge-row-name">
+                      {version.isCurrent ? "Current" : version.isPending ? "Replacement" : `Uploaded ${formatDate(version.createdAt)}`} · {version.fileName}
+                    </span>
+                    <p className="v2-knowledge-meta">{formatBytes(version.byteSize)} · uploaded {formatDate(version.createdAt)}</p>
                   </div>
                   <span className="v2-knowledge-status" data-tone="neutral">
-                    {version.isCurrent ? "Current · " : version.isPending ? "Replacement · " : ""}{versionStatus}
+                    {versionStatus}
                   </span>
                 </li>
               );
@@ -2104,6 +2396,194 @@ function SourceDetailTask({
           </ul>
         </details>
       </section>
+        </aside>
+      </div>
+      {dialog === "details" ? (
+        <KnowledgeDialog
+          label="Edit document details"
+          title="Rename and describe"
+          onClose={() => {
+            detail.onChange({
+              description: source.description,
+              name: source.name,
+              tags: source.tags.join(", ")
+            });
+            setDialog(null);
+          }}
+        >
+          <form
+            className="v2-knowledge-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              detail.onSave();
+              setDialog(null);
+            }}
+          >
+            <div className="v2-knowledge-field">
+              <label htmlFor="knowledge-source-name">Name</label>
+              <input
+                className="v2-knowledge-input"
+                disabled={busy}
+                id="knowledge-source-name"
+                maxLength={KNOWLEDGE_SOURCE_NAME_MAX_LENGTH}
+                onChange={(event) => detail.onChange({ name: event.currentTarget.value })}
+                required
+                value={detail.draft.name}
+              />
+            </div>
+            <div className="v2-knowledge-field">
+              <label htmlFor="knowledge-source-tags">Tags</label>
+              <input
+                className="v2-knowledge-input"
+                disabled={busy}
+                id="knowledge-source-tags"
+                maxLength={KNOWLEDGE_SOURCE_TAG_MAX_COUNT * (KNOWLEDGE_SOURCE_TAG_MAX_LENGTH + 2)}
+                onChange={(event) => detail.onChange({ tags: event.currentTarget.value })}
+                placeholder="product, policy, onboarding"
+                value={detail.draft.tags}
+              />
+              <span className="v2-knowledge-field-note">Comma-separated · up to {KNOWLEDGE_SOURCE_TAG_MAX_COUNT}</span>
+            </div>
+            <div className="v2-knowledge-field v2-knowledge-form-wide">
+              <label htmlFor="knowledge-source-description">Description</label>
+              <textarea
+                className="v2-knowledge-input"
+                disabled={busy}
+                id="knowledge-source-description"
+                maxLength={KNOWLEDGE_SOURCE_DESCRIPTION_MAX_LENGTH}
+                onChange={(event) => detail.onChange({ description: event.currentTarget.value })}
+                rows={4}
+                value={detail.draft.description}
+              />
+            </div>
+            {detail.error ? <p className="v2-knowledge-error v2-knowledge-form-wide" role="alert">{detail.error.text}</p> : null}
+            <div className="v2-knowledge-form-actions v2-knowledge-form-wide">
+              <UiV2Button disabled={busy} type="button" onClick={() => setDialog(null)}>Cancel</UiV2Button>
+              <UiV2Button
+                busy={detail.actionId === "source:settings"}
+                disabled={busy || !detail.dirty}
+                tone="primary"
+                type="submit"
+              >
+                Save details
+              </UiV2Button>
+            </div>
+          </form>
+        </KnowledgeDialog>
+      ) : null}
+      {dialog === "bases" ? (
+        <KnowledgeDialog label="Manage document bases" title="Manage bases" onClose={() => setDialog(null)}>
+          <div className="v2-knowledge-membership-dialog">
+            <section aria-labelledby="knowledge-current-bases">
+              <h3 id="knowledge-current-bases">In bases</h3>
+              {source.memberships.length ? (
+                <ul aria-label="Current base memberships" className="v2-knowledge-list">
+                  {source.memberships.map((base) => (
+                    <li className="v2-knowledge-row v2-knowledge-row-plain" key={base.id}>
+                      <span className="v2-knowledge-row-name">{base.name}</span>
+                      <UiV2Button
+                        busy={detail.actionId === `source:remove:${base.id}`}
+                        disabled={busy}
+                        tone="destructive"
+                        onClick={() => {
+                          setDialog(null);
+                          onRequestRemove({
+                            baseId: base.id,
+                            baseName: base.name,
+                            kind: "membership",
+                            sourceId: source.id,
+                            sourceName: source.name
+                          });
+                        }}
+                      >
+                        Remove
+                      </UiV2Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="v2-knowledge-empty">Not currently used by a base.</p>}
+            </section>
+            <fieldset className="v2-knowledge-fieldset">
+              <legend>Add to bases</legend>
+              <p>Reuse this document without uploading it again.</p>
+              {source.eligibleBases.length ? (
+                <>
+                  <div className="v2-knowledge-checklist">
+                    {source.eligibleBases.map((base) => (
+                      <label key={base.id}>
+                        <input
+                          checked={validSelectedBaseIds.includes(base.id)}
+                          disabled={busy}
+                          type="checkbox"
+                          onChange={(event) => {
+                            const checked = event.currentTarget.checked;
+                            setSelectedBaseIds((current) => checked
+                              ? [...current, base.id]
+                              : current.filter((id) => id !== base.id));
+                          }}
+                        />
+                        <span>{base.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <UiV2Button
+                    busy={detail.actionId === "source:add"}
+                    disabled={busy || validSelectedBaseIds.length === 0}
+                    icon="plus"
+                    onClick={() => {
+                      detail.onAddToBases(validSelectedBaseIds);
+                      setSelectedBaseIds([]);
+                    }}
+                  >
+                    Add to selected
+                  </UiV2Button>
+                </>
+              ) : <p className="v2-knowledge-empty">This document is already in every available base.</p>}
+            </fieldset>
+            {source.memberships.length > 0 && source.eligibleBases.length > 0 ? (
+              <section aria-labelledby="knowledge-move-document" className="v2-knowledge-fieldset">
+                <h3 id="knowledge-move-document">Move document</h3>
+                <p>Move removes one base membership and adds another.</p>
+                <div className="v2-knowledge-move">
+                  <div className="v2-knowledge-field">
+                    <label htmlFor="knowledge-source-move-from">From</label>
+                    <select
+                      className="v2-knowledge-input"
+                      disabled={busy}
+                      id="knowledge-source-move-from"
+                      onChange={(event) => setMoveFromBaseId(event.currentTarget.value)}
+                      value={effectiveMoveFrom}
+                    >
+                      {source.memberships.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}
+                    </select>
+                  </div>
+                  <UiV2Icon className="v2-knowledge-move-arrow" name="chevron-right" />
+                  <div className="v2-knowledge-field">
+                    <label htmlFor="knowledge-source-move-to">To</label>
+                    <select
+                      className="v2-knowledge-input"
+                      disabled={busy}
+                      id="knowledge-source-move-to"
+                      onChange={(event) => setMoveToBaseId(event.currentTarget.value)}
+                      value={effectiveMoveTo}
+                    >
+                      {source.eligibleBases.map((base) => <option key={base.id} value={base.id}>{base.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <UiV2Button
+                  busy={detail.actionId?.startsWith("source:move:") ?? false}
+                  disabled={busy || !effectiveMoveFrom || !effectiveMoveTo}
+                  icon="chevron-right"
+                  onClick={() => detail.onMove(effectiveMoveFrom, effectiveMoveTo)}
+                >
+                  Move document
+                </UiV2Button>
+              </section>
+            ) : null}
+          </div>
+        </KnowledgeDialog>
+      ) : null}
     </>
   );
 }

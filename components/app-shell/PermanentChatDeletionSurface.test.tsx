@@ -37,6 +37,7 @@ describe("PermanentChatDeletionSurface", () => {
     render(<PermanentChatDeletionSurface />);
 
     const dialog = screen.getByRole("dialog", { name: "Delete this chat permanently?" });
+    expect(screen.getByTestId("permanent-chat-deletion-dialog").parentElement).toBe(document.body);
     expect(within(dialog).getByText("Research notes", { exact: false })).toBeVisible();
     expect(within(dialog).getByRole("checkbox", {
       name: /Also forget saved memories from this chat/i
@@ -50,7 +51,7 @@ describe("PermanentChatDeletionSurface", () => {
     fireEvent.click(within(dialog).getByRole("checkbox"));
     expect(usePermanentChatDeletionStore.getState().alsoForgetOriginMemories).toBe(true);
     await waitFor(() => expect(
-      within(dialog).getAllByRole("button", { name: "Cancel" })[0]
+      within(dialog).getByRole("button", { name: "Close" })
     ).toHaveFocus());
   });
 
@@ -71,7 +72,7 @@ describe("PermanentChatDeletionSurface", () => {
     expect(within(dialog).queryByText("memory_cleanup_residual")).not.toBeInTheDocument();
   });
 
-  it("collapses background progress to a durable actionable notice", () => {
+  it("collapses background progress to a durable actionable notice", async () => {
     usePermanentChatDeletionStore.setState({
       reference: { chatId: "chat-1" },
       status: { status: "IN_PROGRESS" },
@@ -82,6 +83,11 @@ describe("PermanentChatDeletionSurface", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("Chat deleted · cleanup is finishing");
     fireEvent.click(screen.getByRole("button", { name: "View progress" }));
-    expect(screen.getByRole("dialog", { name: "Permanent deletion" })).toBeVisible();
+    const dialog = screen.getByRole("dialog", { name: "Permanent deletion" });
+    expect(dialog).toBeVisible();
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Close" }).at(-1)!);
+    await waitFor(() => expect(
+      screen.getByRole("button", { name: "View progress" })
+    ).toHaveFocus());
   });
 });

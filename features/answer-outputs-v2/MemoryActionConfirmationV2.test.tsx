@@ -261,16 +261,19 @@ describe("client-safe Memory action feedback", () => {
 
   it("opens Memory settings for reset confirmation and handles non-actions plainly", () => {
     const onOpenMemorySettings = vi.fn();
+    const onOpenMemoryReset = vi.fn();
     const { rerender } = render(
       <MemoryActionConfirmationV2
         action={{ operation: "RESET", status: "CONFIRMATION_REQUIRED" }}
+        onOpenMemoryReset={onOpenMemoryReset}
         onOpenMemorySettings={onOpenMemorySettings}
       />
     );
-    expect(screen.getByText(/Reset personal memory needs your confirmation/u)).toBeVisible();
+    expect(screen.getByText(/Forgetting everything needs your confirmation/u)).toBeVisible();
     expect(screen.getByText("Confirmation needed")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Review reset" }));
-    expect(onOpenMemorySettings).toHaveBeenCalledOnce();
+    expect(onOpenMemoryReset).toHaveBeenCalledOnce();
+    expect(onOpenMemorySettings).not.toHaveBeenCalled();
 
     rerender(
       <MemoryActionConfirmationV2

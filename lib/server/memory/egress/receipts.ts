@@ -41,6 +41,13 @@ export type MemoryToolEgressReceiptService = Readonly<{
     runId: string;
     userId: string;
   }>): Promise<boolean>;
+  settleRecoveredToolDispatch(input: Readonly<{
+    errorCode?: string;
+    modelRunToolCallId: string;
+    outcome: "COMPLETED" | "FAILED";
+    runId: string;
+    userId: string;
+  }>): Promise<boolean>;
   completeDispatch(receiptId: string): Promise<boolean>;
   failDispatch(receiptId: string, errorCode: string): Promise<boolean>;
 }>;
@@ -174,6 +181,41 @@ export function createMemoryToolEgressReceiptService(
             dispatchState: input.outcome,
             ...(input.outcome === "FAILED"
               ? { errorCode: safeCode(input.errorCode ?? "provider_dispatch_failed") }
+              : { errorCode: null })
+          },
+          where: { dispatchState: "DISPATCHED", id: receipt.id }
+        });
+        return updated.count === 1;
+      });
+    },
+    async settleRecoveredToolDispatch(input) {
+      return client.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "ModelRun"
+          WHERE "id" = ${input.runId} AND "userId" = ${input.userId}
+          FOR UPDATE
+        `);
+        if (!rows[0]) return false;
+        const receipt = await tx.memoryToolEgressReceipt.findFirst({
+          select: { dispatchState: true, id: true },
+          where: {
+            mode: "TOOL_CALL",
+            modelRunId: input.runId,
+            modelRunToolCallId: input.modelRunToolCallId,
+            userId: input.userId
+          }
+        });
+        // A local/preflight-settled call legitimately has no external receipt.
+        if (!receipt) return true;
+        if (receipt.dispatchState === input.outcome) return true;
+        if (receipt.dispatchState !== "DISPATCHED") return false;
+        const updated = await tx.memoryToolEgressReceipt.updateMany({
+          data: {
+            dispatchCompletedAt: new Date(),
+            dispatchState: input.outcome,
+            ...(input.outcome === "FAILED"
+              ? { errorCode: safeCode(input.errorCode ?? "external_tool_dispatch_failed") }
               : { errorCode: null })
           },
           where: { dispatchState: "DISPATCHED", id: receipt.id }

@@ -10,6 +10,7 @@ import {
   type UiV2MenuAction,
   type UiV2MenuSubmenuItem
 } from "@/components/ui-v2";
+import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
 import { useRef, useState, type ReactNode } from "react";
@@ -96,7 +97,7 @@ export type HeaderOverflowSubmenuItemV2 = UiV2MenuSubmenuItem;
 export type HeaderOverflowActionV2 = UiV2MenuAction;
 
 /**
- * The single header "⋯" menu on every width. Below 900px it is the only route
+ * The single header "⋯" menu on every width. Below 768px it is the only route
  * to the header actions the compact header hides, so it must never be removed
  * without a replacement. Dismissal follows the shared wave-1 contract (Escape,
  * outside pointer, focus-out).
@@ -131,7 +132,13 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
           label={label}
           ref={menuRef}
         >
-          <UiV2MenuActions actions={actions} onClose={close} />
+          <UiV2MenuActions
+            actions={actions}
+            onClose={() => {
+              close();
+              triggerRef.current?.focus();
+            }}
+          />
         </UiV2MenuSurface>
       ) : null}
     </span>
@@ -203,6 +210,7 @@ export function WorkspaceHeaderV2({
   memoryUsed = null,
   modelSelector = null,
   moveDisabled = false,
+  moveRootLabel,
   onArchive,
   onBranches,
   onCopyLink = null,
@@ -249,6 +257,8 @@ export function WorkspaceHeaderV2({
    */
   modelSelector?: WorkspaceHeaderModelSelectorV2 | null;
   moveDisabled?: boolean;
+  /** Project chats call the top-level Move to… destination "Project root". */
+  moveRootLabel?: string;
   onArchive(): void;
   onBranches(): void;
   onCopyLink?: (() => void) | null;
@@ -258,7 +268,8 @@ export function WorkspaceHeaderV2({
   onExport(format: "json" | "markdown"): void;
   onFavorite?: (() => void) | null;
   onMemoryMode?: ((mode: "EXCLUDED" | "NORMAL") => void) | null;
-  onMove(folderId: string | null): void;
+  /** Null hides Move to… when the current authority cannot move this chat. */
+  onMove?: ((folderId: string | null) => void) | null;
   renameDisabled?: boolean;
   onRenameCancel(): void;
   onRenameChange(value: string): void;
@@ -269,10 +280,11 @@ export function WorkspaceHeaderV2({
   temporaryMemory: TemporaryChatHeaderMemoryV2 | null;
   title: string;
 }>) {
+  const displayTitle = chatTitleForDisplay(title);
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
-  // 900px, where the Share text button collapses. The menu is the chat's one
-  // shared action list (same as the sidebar row menu).
+  // 768px, where the Share text button collapses. The complete header menu
+  // also owns content-level actions that do not belong in compact row menus.
   const overflowActions = chatMenuActionsV2({
     archiveDisabled,
     deleteDisabled,
@@ -280,6 +292,7 @@ export function WorkspaceHeaderV2({
     folders,
     memoryUsed: onMemoryMode ? memoryUsed : null,
     moveDisabled,
+    moveRootLabel,
     onArchive,
     onBranches,
     onCopyLink: onCopyLink ?? undefined,
@@ -288,12 +301,12 @@ export function WorkspaceHeaderV2({
     onExport,
     onFavorite: onFavorite ?? undefined,
     onMemoryMode: onMemoryMode ?? undefined,
-    onMove,
+    onMove: onMove ?? undefined,
     onRename: onRenameStart,
     onShare,
     renameDisabled,
     shareDisabled,
-    sharePlacement: "mobile"
+    surface: "header"
   });
 
   return (
@@ -313,7 +326,7 @@ export function WorkspaceHeaderV2({
             >
               <input
                 autoFocus
-                aria-label={`New title: ${title}`}
+                aria-label={`New title: ${displayTitle}`}
                 maxLength={120}
                 value={editingTitle}
                 onChange={(event) => onRenameChange(event.target.value)}
@@ -343,7 +356,7 @@ export function WorkspaceHeaderV2({
                 type="button"
                 onClick={onRenameStart}
               >
-                <span className="v2-live-title-text">{title}</span>
+                <span className="v2-live-title-text">{displayTitle}</span>
                 {/* The pencil states what a click does; it shows on
                     hover/focus and always on coarse pointers. */}
                 {renameDisabled ? null : <UiV2Icon name="edit" />}

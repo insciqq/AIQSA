@@ -12,8 +12,14 @@ import { decodeSearchPlan } from "../../contracts/search";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
-import { isMcpRunPlanRecordRunnable } from "../mcp/runPlan";
-import { loadMcpRunPlanRecords } from "../mcp/runPlanRepository";
+import {
+  isMcpRunPlanRecordRunnable,
+  projectMcpRunPlanStartability
+} from "../mcp/runPlan";
+import {
+  loadMcpRunPlanRecords,
+  loadMcpRunPlanRecordsForServers
+} from "../mcp/runPlanRepository";
 import { lockMemorySettings } from "../memory/persistence/transaction";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
@@ -283,6 +289,14 @@ function isPrismaSerializationConflict(error: unknown): boolean {
 
 export type PrismaAssistantRepositoryOptions = {
   isMcpGenerationLive?(generationId: string): boolean;
+  loadUserMcpServers?(
+    userId: string
+  ): Promise<readonly Readonly<{
+    enabled: boolean;
+    errorCode: string | null;
+    id: string;
+    readiness: import("../../contracts/mcp").McpReadiness;
+  }>[]>;
   loadCatalogView?(
     tx: Prisma.TransactionClient,
     userId: string
@@ -756,10 +770,10 @@ export function createPrismaAssistantRepository(
                 searchPlan: searchPlan.plan
               },
               catalogView,
-              { requireRunnableMcp: false }
+              { mcpRunnability: "accessible" }
             );
             if (invalid === "model") return { kind: "model_not_available" as const };
-            if (invalid === "run_controls") {
+            if (invalid !== null && typeof invalid === "object") {
               return { kind: "run_controls_invalid" as const };
             }
             if (invalid === "search") return { kind: "search_not_available" as const };
@@ -1289,7 +1303,15 @@ export function createPrismaAssistantRepository(
     async loadUserMcpRunPlanView(userId: string) {
       const now = options.now?.() ?? new Date();
       const isGenerationLive = options.isMcpGenerationLive ?? (() => false);
-      const records = await loadMcpRunPlanRecords(userId, client);
+      // Availability needs disabled and attention states too so an owner can
+      // receive a truthful, named dependency. Ordinary Auto discovery keeps
+      // using the enabled-only loader above.
+      const accessibleServerIds = await loadUserAccessibleMcpServerIdsWith(client, userId);
+      const [runPlanRecords, userServers] = await Promise.all([
+        loadMcpRunPlanRecordsForServers(userId, [...accessibleServerIds], client),
+        options.loadUserMcpServers?.(userId).catch(() => []) ?? Promise.resolve([])
+      ]);
+      const records = projectMcpRunPlanStartability(runPlanRecords, userServers);
       return {
         isGenerationLive,
         now,

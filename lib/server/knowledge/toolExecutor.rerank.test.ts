@@ -235,6 +235,7 @@ function store(hybridSearch: KnowledgeRetrievalStore["hybridSearch"]) {
   return {
     persistReceipt,
     store: {
+      assertSearchReady: vi.fn(async () => undefined),
       hybridSearch,
       invocationOrdinal: vi.fn(async () => 1),
       loadBindings: vi.fn(async () => [acceptedBinding]),

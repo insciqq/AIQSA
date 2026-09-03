@@ -14,7 +14,9 @@ import {
 import {
   assistantDraftFromEditorState,
   editorStateFromRevision,
+  reconcileDraftForModel,
   type AssistantEditorDraftState,
+  type AssistantEditorFieldErrors,
   type AssistantLibraryView
 } from "@/components/assistants/libraryViewContracts";
 import { generateAssistantAvatarRecipe } from "@/components/assistants/avatarGeneration";
@@ -26,11 +28,15 @@ import {
 import { loadUserMcpServers } from "@/components/app-shell/mcpSettingsApi";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import type { Catalog, CatalogModel } from "@/components/app-shell/types";
-import type { AssistantDetail } from "@/lib/contracts/assistants";
+import type {
+  AssistantDetail,
+  AssistantRunControlField
+} from "@/lib/contracts/assistants";
 import {
   EMPTY_KNOWLEDGE_SELECTION,
   explicitKnowledgeSelection
 } from "@/lib/contracts/knowledge";
+import { isMcpReadinessStartable } from "@/lib/contracts/mcp";
 
 const RECENT_ASSISTANTS_KEY = "aiqsa.assistants.recent";
 const RECENT_ASSISTANTS_LIMIT = 5;
@@ -86,6 +92,48 @@ function editorErrorText(code: string, message: string): string {
   return known[code] ?? message;
 }
 
+const runControlLabels: Record<AssistantRunControlField, string> = {
+  backgroundMode: "Background",
+  maxOutputTokens: "Max answer length",
+  reasoningEffort: "Reasoning effort",
+  reasoningMode: "Reasoning mode",
+  streamMode: "Stream",
+  temperature: "Temperature"
+};
+
+function resetNotice(fields: readonly AssistantRunControlField[]): string | null {
+  const labels = fields.map((field) => runControlLabels[field]);
+  if (labels.length === 0) return null;
+  if (labels.length === 1) {
+    return `${labels[0]} reset to the model default.`;
+  }
+  const last = labels.at(-1);
+  return `${labels.slice(0, -1).join(", ")} and ${last} reset to the model defaults.`;
+}
+
+function serverFieldErrorText(
+  field: AssistantRunControlField,
+  limit: number | undefined,
+  controls: ReturnType<typeof modelControlsFor>
+): string {
+  if (field === "maxOutputTokens") {
+    return limit === undefined
+      ? "Enter a valid whole-number answer length."
+      : `Enter a whole number no greater than ${limit}.`;
+  }
+  if (field === "temperature") {
+    return controls?.temperature.supported
+      ? `Enter a temperature from ${controls.temperature.minValue} to ${controls.temperature.maxValue}.`
+      : "This model does not accept that Temperature value.";
+  }
+  return `${runControlLabels[field]} is not supported by the selected model.`;
+}
+
+function firstFieldError(fieldErrors: AssistantEditorFieldErrors): string {
+  return Object.values(fieldErrors).find((message): message is string => Boolean(message)) ??
+    "Review the highlighted setup fields.";
+}
+
 function draftBaseline(draft: AssistantEditorDraftState): string {
   return JSON.stringify(draft);
 }
@@ -100,7 +148,7 @@ function modelControlsFor(catalog: Catalog | null, providerModelId: string | nul
 function blankEditorDraft(prefill?: Partial<AssistantEditorDraftState>): AssistantEditorDraftState {
   return {
     avatar: generateAssistantAvatarRecipe(),
-    backgroundMode: false,
+    backgroundMode: null,
     category: null,
     description: "",
     developerPrompt: "",
@@ -115,11 +163,31 @@ function blankEditorDraft(prefill?: Partial<AssistantEditorDraftState>): Assista
     searchPlanMode: "all_selected",
     skillIds: [],
     starterPrompts: [],
-    streamMode: false,
+    streamMode: null,
     systemPrompt: "",
     temperature: "",
     ...prefill
   };
+}
+
+function mcpSelectionError(
+  draft: AssistantEditorDraftState,
+  catalog: Catalog | null,
+  options: AssistantLibrarySnapshot["mcpOptions"]
+): string | null {
+  if (draft.mcpServerIds.length === 0) return null;
+  const model = catalog?.models.find((entry) => entry.modelId === draft.providerModelId);
+  if (model && !model.capabilities.toolCalling) {
+    return "Choose a model that can call tools, or remove the MCP tools.";
+  }
+  const optionById = new Map(options.map((option) => [option.id, option]));
+  const unavailable = draft.mcpServerIds.some((serverId) => {
+    const option = optionById.get(serverId);
+    return !option || !option.enabled || !isMcpReadinessStartable(option.readiness);
+  });
+  return unavailable
+    ? "Remove MCP servers that are disabled or need attention before saving."
+    : null;
 }
 
 export type AssistantLibraryControllerInput = {
@@ -130,6 +198,8 @@ export type AssistantLibraryControllerInput = {
       description: string;
       id: string;
       includedSkills: { id: string; name: string }[];
+      knowledgeLabel?: string | null;
+      knowledgeResourceCount?: number;
       name: string;
       promptCharacterCount: number;
       starterPrompts: string[];
@@ -142,6 +212,7 @@ export type AssistantLibraryControllerInput = {
   knowledgeSources: { available: boolean; id: string; name: string }[];
   knowledgeDataError: string | null;
   knowledgeDataState: "error" | "loading" | "ready";
+  openMcpSettings(): void;
   retryCatalog(): void;
   retryKnowledge(): void;
   retrySkills(): void;
@@ -215,25 +286,37 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   async function refreshMcpOptions() {
+    const snapshot = store();
+    const requestId = snapshot.mcpOptionsRequestId + 1;
+    // A previous successful response is not proof that the dependency remains
+    // runnable. Clear it while revalidating so save fails closed.
+    snapshot.patch({ mcpOptions: [], mcpOptionsRequestId: requestId });
     try {
       const servers = await loadUserMcpServers();
-      store().patch({
+      const current = store();
+      if (!current.open || current.mcpOptionsRequestId !== requestId) return;
+      current.patch({
         mcpOptions: servers
-          .map((server) => ({ id: server.id, name: server.name }))
+          .map((server) => ({
+            enabled: server.enabled,
+            id: server.id,
+            name: server.name,
+            readiness: server.readiness
+          }))
           .sort((left, right) => left.name.localeCompare(right.name))
       });
     } catch {
-      // The editor simply lists no MCP options until a later successful load.
+      // The request-start reset is the safe failure state. A later refresh may
+      // repopulate it, but stale runnable choices are never retained.
     }
   }
 
-  function openLibrary(mode: "discover" | "yours" = "discover") {
+  function openLibrary(_mode: "discover" | "yours" = "discover") {
     const snapshot = store();
     if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
     store().patch({
       editor: null,
       history: null,
-      mode,
       notice: null,
       open: true,
       task: "list"
@@ -245,25 +328,50 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   function closeLibrary() {
     const snapshot = store();
     if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
-    store().patch({ editor: null, history: null, notice: null, open: false, task: "list" });
+    store().patch({
+      editor: null,
+      history: null,
+      mcpOptions: [],
+      mcpOptionsRequestId: snapshot.mcpOptionsRequestId + 1,
+      notice: null,
+      open: false,
+      task: "list"
+    });
   }
 
   function openNewAssistantEditor(prefill?: Partial<AssistantEditorDraftState>) {
     const snapshot = store();
     if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
-    const draft = blankEditorDraft(prefill);
+    const initialDraft = blankEditorDraft(prefill);
+    const controls = modelControlsFor(input.catalog, initialDraft.providerModelId);
+    const reconciliation = controls
+      ? reconcileDraftForModel(initialDraft, controls)
+      : { draft: initialDraft, resetFields: [] };
+    const draft = reconciliation.draft;
+    const reconciliationNotice = resetNotice(reconciliation.resetFields);
     const editor: AssistantLibraryEditorState = {
       assistantId: null,
+      archived: false,
+      availability: null,
       baseline: draftBaseline(draft),
       createdAssistantId: null,
       draft,
       error: null,
+      fieldErrors: null,
       expectedVersion: null,
       publications: null,
       revisionNumber: null,
       saving: false
     };
-    store().patch({ editor, history: null, notice: null, open: true, task: "editor" });
+    store().patch({
+      editor,
+      history: null,
+      notice: reconciliationNotice
+        ? { kind: "success", text: reconciliationNotice }
+        : null,
+      open: true,
+      task: "editor"
+    });
     void refreshList();
     void refreshMcpOptions();
     input.retrySkills();
@@ -290,21 +398,16 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   function editorFromDetail(detail: AssistantDetail): AssistantLibraryEditorState {
-    const fallback = {
-      backgroundMode: false,
-      maxOutputTokens: "",
-      reasoningEffort: "",
-      reasoningMode: "",
-      streamMode: false,
-      temperature: ""
-    };
-    const draft = editorStateFromRevision(detail.revision, fallback);
+    const draft = editorStateFromRevision(detail.revision);
     return {
       assistantId: detail.id,
+      archived: detail.archived,
+      availability: detail.availability,
       baseline: draftBaseline(draft),
       createdAssistantId: null,
       draft,
       error: null,
+      fieldErrors: null,
       expectedVersion: detail.version ?? null,
       publications: detail.publications ?? null,
       revisionNumber: detail.revision.revisionNumber,
@@ -327,10 +430,18 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       });
       return;
     }
+    const editor = editorFromDetail(result.data);
+    const controls = modelControlsFor(input.catalog, editor.draft.providerModelId);
+    const reconciliation = controls
+      ? reconcileDraftForModel(editor.draft, controls)
+      : { draft: editor.draft, resetFields: [] };
+    const reconciliationNotice = resetNotice(reconciliation.resetFields);
     finishBusyOperation(requestId, {
-      editor: editorFromDetail(result.data),
+      editor: { ...editor, draft: reconciliation.draft },
       history: null,
-      notice: null,
+      notice: reconciliationNotice
+        ? { kind: "success", text: reconciliationNotice }
+        : null,
       task: "editor"
     });
   }
@@ -340,14 +451,24 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const editor = snapshot.editor;
     if (!editor || editor.saving || snapshot.busy) return;
     const controls = modelControlsFor(input.catalog, editor.draft.providerModelId);
-    const draft = assistantDraftFromEditorState(editor.draft, controls);
-    if (!draft) {
+    const draftResult = assistantDraftFromEditorState(editor.draft, controls);
+    const fieldErrors: AssistantEditorFieldErrors = "fieldErrors" in draftResult
+      ? { ...draftResult.fieldErrors }
+      : {};
+    const toolsError = mcpSelectionError(editor.draft, input.catalog, snapshot.mcpOptions);
+    if (toolsError) fieldErrors.mcpServerIds = toolsError;
+    if (Object.keys(fieldErrors).length > 0 || !("draft" in draftResult)) {
       store().patchEditor({
-        error: { code: "assistant_model_invalid", text: "Choose a model from your catalog." }
+        error: {
+          code: "assistant_editor_invalid",
+          text: firstFieldError(fieldErrors)
+        },
+        fieldErrors
       });
       return;
     }
-    store().patchEditor({ error: null, saving: true });
+    const draft = draftResult.draft;
+    store().patchEditor({ error: null, fieldErrors: null, saving: true });
     const result = editor.assistantId && editor.expectedVersion !== null
       ? await reviseAssistant(editor.assistantId, editor.expectedVersion, draft)
       : await createAssistant(draft);
@@ -360,8 +481,12 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       return;
     }
     if (!result.ok) {
+      const resultFieldErrors = result.field
+        ? { [result.field]: serverFieldErrorText(result.field, result.limit, controls) }
+        : null;
       store().patchEditor({
         error: { code: result.code, text: editorErrorText(result.code, result.message) },
+        fieldErrors: resultFieldErrors,
         saving: false
       });
       return;
@@ -390,11 +515,17 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
 
   async function openHistory(
     assistantId: string,
-    options: { assistantName?: string; preserveNotice?: boolean } = {}
+    options: {
+      assistantName?: string;
+      preserveNotice?: boolean;
+      returnTask?: "editor" | "list";
+    } = {}
   ) {
     const snapshot = store();
     if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
     const requestId = snapshot.historyRequestId + 1;
+    const returnTask = options.returnTask ??
+      (snapshot.task === "editor" && snapshot.editor ? "editor" : "list");
     const name = options.assistantName ??
       snapshot.data?.assistants.find((assistant) => assistant.id === assistantId)?.name ??
       "Assistant";
@@ -405,6 +536,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
         entries: [],
         loading: true,
         restoring: false,
+        returnTask,
         viewedRevision: null
       },
       historyRequestId: requestId,
@@ -415,7 +547,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const result = await fetchAssistantRevisions(assistantId);
     if (!ownsHistoryRequest(requestId, assistantId)) return;
     if (!result.ok) {
-      store().patch({ history: null, notice: { kind: "error", text: result.message }, task: "list" });
+      store().patch({ history: null, notice: { kind: "error", text: result.message }, task: returnTask });
       return;
     }
     store().patchHistory({ entries: result.data, loading: false });
@@ -463,25 +595,30 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       });
       return;
     }
-    const fallback = {
-      backgroundMode: false,
-      maxOutputTokens: "",
-      reasoningEffort: "",
-      reasoningMode: "",
-      streamMode: false,
-      temperature: ""
-    };
-    const draftState = editorStateFromRevision(revisionResult.data, fallback);
+    const draftState = editorStateFromRevision(revisionResult.data);
     const controls = modelControlsFor(input.catalog, draftState.providerModelId);
-    const draft = assistantDraftFromEditorState(draftState, controls);
-    if (!draft) {
+    const draftResult = assistantDraftFromEditorState(draftState, controls);
+    const restoreFieldErrors: AssistantEditorFieldErrors = "fieldErrors" in draftResult
+      ? { ...draftResult.fieldErrors }
+      : {};
+    const restoreToolsError = mcpSelectionError(
+      draftState,
+      input.catalog,
+      store().mcpOptions
+    );
+    if (restoreToolsError) restoreFieldErrors.mcpServerIds = restoreToolsError;
+    if (Object.keys(restoreFieldErrors).length > 0 || !("draft" in draftResult)) {
       store().patchHistory({ restoring: false });
       store().patch({
-        notice: { kind: "error", text: "This revision's model is no longer in your catalog." }
+        notice: { kind: "error", text: firstFieldError(restoreFieldErrors) }
       });
       return;
     }
-    const result = await reviseAssistant(history.assistantId, detailResult.data.version, draft);
+    const result = await reviseAssistant(
+      history.assistantId,
+      detailResult.data.version,
+      draftResult.draft
+    );
     if (!ownsHistoryRequest(requestId, history.assistantId)) return;
     if (!result.ok) {
       store().patchHistory({ restoring: false });
@@ -500,7 +637,8 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     void refreshList();
     void openHistory(history.assistantId, {
       assistantName: result.data.revision.name,
-      preserveNotice: true
+      preserveNotice: true,
+      returnTask: history.returnTask ?? "list"
     });
   }
 
@@ -538,7 +676,6 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       return;
     }
     finishBusyOperation(requestId, {
-      mode: "yours",
       notice: { kind: "success", text: `Duplicated as ${result.data.revision.name}. The copy is private.` }
     });
     void refreshList();
@@ -654,17 +791,21 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const result = await fetchAssistantDetail(assistantId);
     if (!ownsBusyOperation(requestId)) return false;
     if (!result.ok) {
-      finishBusyOperation(requestId);
-      input.setShellNotice({ kind: "error", text: result.message });
+      const notice = { kind: "error" as const, text: result.message };
+      const libraryOpen = store().open;
+      finishBusyOperation(requestId, libraryOpen ? { notice } : {});
+      if (!libraryOpen) input.setShellNotice(notice);
       return false;
     }
     const detail = result.data;
     if (!detail.availability.ok || detail.archived) {
-      finishBusyOperation(requestId);
-      input.setShellNotice({
+      const notice = {
         kind: "error",
         text: "This assistant needs access you do not currently have."
-      });
+      } as const;
+      const libraryOpen = store().open;
+      finishBusyOperation(requestId, libraryOpen ? { notice } : {});
+      if (!libraryOpen) input.setShellNotice(notice);
       return false;
     }
     if (options.navigate) {
@@ -682,6 +823,12 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
         includedSkills: detail.revision.skillIds.map((id) =>
           skillSummaries.get(id) ?? { id, name: "Unavailable Skill" }
         ),
+        knowledgeLabel: snapshot.data?.assistants.find((assistant) =>
+          assistant.id === assistantId
+        )?.fingerprint.knowledgeLabel ?? null,
+        knowledgeResourceCount: snapshot.data?.assistants.find((assistant) =>
+          assistant.id === assistantId
+        )?.fingerprint.knowledgeResourceCount ?? 0,
         name: detail.revision.name,
         promptCharacterCount:
           detail.revision.systemPrompt.length + (detail.revision.developerPrompt?.length ?? 0),
@@ -690,17 +837,22 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       revision: detail.revision
     });
     if (!applied) {
-      finishBusyOperation(requestId);
-      input.setShellNotice({
+      const notice = {
         kind: "error",
         text: "This assistant's model is not available to you right now."
-      });
+      } as const;
+      const libraryOpen = store().open;
+      finishBusyOperation(requestId, libraryOpen ? { notice } : {});
+      if (!libraryOpen) input.setShellNotice(notice);
       return false;
     }
     rememberRecentAssistant(assistantId);
+    const currentMcpRequestId = store().mcpOptionsRequestId;
     finishBusyOperation(requestId, {
       editor: null,
       history: null,
+      mcpOptions: [],
+      mcpOptionsRequestId: currentMcpRequestId + 1,
       notice: null,
       open: false,
       task: "list"
@@ -743,9 +895,16 @@ export function buildAssistantLibraryView(
     (catalog?.providers ?? []).map((provider) => [provider.id, provider.name])
   );
   const editorModels = (catalog?.models ?? []).map((model: CatalogModel) => ({
+    capabilities: {
+      documentInputMode: model.capabilities.documentInputMode,
+      imageInput: model.capabilities.imageInput,
+      reasoning: model.capabilities.reasoning,
+      toolCalling: model.capabilities.toolCalling
+    },
     controls: model.parameterControls,
     id: model.modelId,
     label: model.displayName,
+    providerFamily: model.providerFamily,
     providerLabel: providerNames.get(model.provider) ?? model.provider,
     supportsTools: model.capabilities.toolCalling
   }));
@@ -755,6 +914,20 @@ export function buildAssistantLibraryView(
 
   const editor = snapshot.editor;
   const history = snapshot.history;
+  const editorMcpOptions = editor
+    ? [
+        ...snapshot.mcpOptions,
+        ...editor.draft.mcpServerIds
+          .filter((serverId) => !snapshot.mcpOptions.some((option) => option.id === serverId))
+          .map((serverId) => ({
+            enabled: false,
+            id: serverId,
+            name: "Unavailable MCP server",
+            readiness: "unavailable" as const
+          }))
+      ]
+    : snapshot.mcpOptions;
+  const editorClean = editor !== null && draftBaseline(editor.draft) === editor.baseline;
 
   return {
     busy: snapshot.busy,
@@ -767,16 +940,39 @@ export function buildAssistantLibraryView(
           : "ready",
     editor: editor
       ? {
+          availability: editor.availability,
           canPublishInstallation: snapshot.data?.viewer.canPublishInstallation ?? false,
-          dirty: draftBaseline(editor.draft) !== editor.baseline,
+          dirty: !editorClean,
           draft: editor.draft,
           error: editor.error,
+          fieldErrors: editor.fieldErrors,
+          justCreated:
+            editor.createdAssistantId !== null &&
+            snapshot.notice?.kind === "success" &&
+            snapshot.notice.text.startsWith("Assistant created."),
           mode: editor.assistantId ? "edit" : "create",
           onCancel: actions.closeEditor,
           onChange(update) {
-            useAssistantLibraryStore.getState().patchEditor({
-              draft: { ...useAssistantLibraryStore.getState().editor!.draft, ...update }
+            const current = useAssistantLibraryStore.getState();
+            if (!current.editor) return;
+            let draft = { ...current.editor.draft, ...update };
+            let resetText: string | null = null;
+            if (Object.prototype.hasOwnProperty.call(update, "providerModelId")) {
+              const reconciliation = reconcileDraftForModel(
+                draft,
+                modelControlsFor(input.catalog, draft.providerModelId)
+              );
+              draft = reconciliation.draft;
+              resetText = resetNotice(reconciliation.resetFields);
+            }
+            current.patchEditor({
+              draft,
+              error: null,
+              fieldErrors: null
             });
+            if (resetText) {
+              current.patch({ notice: { kind: "success", text: resetText } });
+            }
           },
           onGenerateAvatar() {
             useAssistantLibraryStore.getState().patchEditor({
@@ -786,6 +982,17 @@ export function buildAssistantLibraryView(
               }
             });
           },
+          onOpenHistory() {
+            const current = useAssistantLibraryStore.getState().editor;
+            const assistantId = current?.assistantId ?? current?.createdAssistantId;
+            if (assistantId) {
+              void actions.openHistory(assistantId, {
+                assistantName: current?.draft.name || "Assistant",
+                preserveNotice: true
+              });
+            }
+          },
+          onOpenMcpSettings: input.openMcpSettings,
           onPublish(request) {
             const current = useAssistantLibraryStore.getState().editor;
             if (current?.assistantId) {
@@ -801,9 +1008,16 @@ export function buildAssistantLibraryView(
           onSave() {
             void actions.saveEditor();
           },
-          onUseInChat: editor.createdAssistantId
+          onUseInChat:
+            editorClean &&
+            !editor.archived &&
+            editor.availability?.ok === true &&
+            (editor.assistantId ?? editor.createdAssistantId)
             ? () => {
-                void actions.useAssistant(editor.createdAssistantId!, { navigate: true });
+                void actions.useAssistant(
+                  (editor.assistantId ?? editor.createdAssistantId)!,
+                  { navigate: true }
+                );
               }
             : null,
           options: {
@@ -811,7 +1025,7 @@ export function buildAssistantLibraryView(
             knowledgeSources: input.knowledgeSources,
             knowledgeDataError: input.knowledgeDataError,
             knowledgeDataState: input.knowledgeDataState,
-            mcpServers: snapshot.mcpOptions,
+            mcpServers: editorMcpOptions,
             models: editorModels,
             onRetryKnowledge: input.retryKnowledge,
             onRetrySkills: input.retrySkills,
@@ -841,7 +1055,7 @@ export function buildAssistantLibraryView(
             ) {
               return;
             }
-            current.patch({ history: null, task: "list" });
+            current.patch({ history: null, task: history.returnTask ?? "list" });
           },
           onRestore(revisionNumber) {
             void actions.restoreHistoryRevision(revisionNumber);
@@ -855,32 +1069,14 @@ export function buildAssistantLibraryView(
       : null,
     list: {
       assistants: snapshot.data?.assistants ?? [],
-      category: snapshot.category,
-      filter: snapshot.filter,
-      mode: snapshot.mode,
       onArchiveToggle(assistantId, archived) {
         void actions.toggleArchived(assistantId, archived);
-      },
-      onCategoryChange(category) {
-        const current = useAssistantLibraryStore.getState();
-        if (current.busy || current.editor?.saving || current.history?.restoring) return;
-        current.patch({ category });
       },
       onDuplicate(assistantId) {
         void actions.duplicateById(assistantId);
       },
       onEdit(assistantId) {
         void actions.openAssistantEditor(assistantId);
-      },
-      onFilterChange(filter) {
-        const current = useAssistantLibraryStore.getState();
-        if (current.busy || current.editor?.saving || current.history?.restoring) return;
-        current.patch({ filter });
-      },
-      onModeChange(mode) {
-        const current = useAssistantLibraryStore.getState();
-        if (current.busy || current.editor?.saving || current.history?.restoring) return;
-        current.patch({ filter: "all", mode });
       },
       onNewAssistant() {
         actions.openNewAssistantEditor();
@@ -891,15 +1087,9 @@ export function buildAssistantLibraryView(
       onPinToggle(assistantId, pinned) {
         void actions.togglePinned(assistantId, pinned);
       },
-      onQueryChange(query) {
-        const current = useAssistantLibraryStore.getState();
-        if (current.busy || current.editor?.saving || current.history?.restoring) return;
-        current.patch({ query });
-      },
       onUse(assistantId) {
         void actions.useAssistant(assistantId, { navigate: true });
-      },
-      query: snapshot.query
+      }
     },
     notice: snapshot.notice,
     onBackToChat: actions.closeLibrary,

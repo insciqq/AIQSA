@@ -90,6 +90,7 @@ enum KnowledgeRunOutcome {
   base_indexing
   embedding_model_unavailable
   no_relevant_evidence
+  search_unavailable
   source_location_unavailable
   budget_exhausted
   structured_clarification_required
@@ -1778,6 +1779,15 @@ model KnowledgeSearchProjection {
   @@index([state, nextAttemptAt, leaseExpiresAt, createdAt], map: "KnowledgeSearchProjection_queue_idx")
 }
 
+/// Installation-scoped liveness evidence for the Knowledge lexical-search
+/// projection worker. Projection leases remain the work-ownership authority.
+model KnowledgeSearchWorkerHeartbeat {
+  id         String   @id @db.VarChar(64)
+  instanceId String   @db.VarChar(128)
+  startedAt  DateTime
+  lastSeenAt DateTime
+}
+
 model KnowledgeArtifactDocumentIndex {
   indexArtifactId    String                             @id
   sourceName         String
@@ -2897,6 +2907,7 @@ model ModelRunToolCall {
   result                     Json?
   startedAt                  DateTime?
   completedAt                DateTime?
+  usageAccountedAt           DateTime?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   mcpRunBinding              McpRunBinding?              @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)

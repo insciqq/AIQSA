@@ -1,6 +1,7 @@
 "use client";
 
 import { UiV2Button } from "@/components/ui-v2";
+import { SkillLibrarySection } from "@/components/skills/SkillLibraryDialog";
 import { useState } from "react";
 import {
   AssistantsPanelV2,
@@ -13,6 +14,7 @@ import type {
   LibraryNavigationIntentV2,
   LibraryTabIdV2
 } from "@/features/library-v2/contracts";
+import type { MemoryConsumerItem } from "@/lib/contracts/memoryConsumer";
 
 export type LibraryGalleryStateV2 =
   | "assistants"
@@ -20,7 +22,8 @@ export type LibraryGalleryStateV2 =
   | "files"
   | "knowledge"
   | "memory"
-  | "memory-disabled";
+  | "memory-disabled"
+  | "skills";
 
 const assistants = [
   {
@@ -50,7 +53,10 @@ const assistants = [
     name: "Contract analyst",
     owned: false,
     revision: 2,
-    unavailableReason: "Required access unavailable"
+    unavailable: {
+      explanation: "A saved dependency is not available to you.",
+      headline: "Required access unavailable"
+    }
   }
 ] as const;
 
@@ -98,6 +104,59 @@ const files = [
   }
 ] as const;
 
+const memoryItems: readonly MemoryConsumerItem[] = [
+  {
+    allowedActions: ["EDIT", "FORGET"],
+    category: "ABOUT_YOU",
+    createdAt: "2026-08-12T10:00:00.000Z",
+    memoryRef: "memory-gallery-about",
+    provenance: "SAVED",
+    sourceAvailable: true,
+    statement: "Works as a platform engineer on the ingest team.",
+    updatedAt: "2026-09-01T10:00:00.000Z"
+  },
+  {
+    allowedActions: ["EDIT", "FORGET"],
+    category: "PREFERENCES",
+    createdAt: "2026-08-22T10:00:00.000Z",
+    memoryRef: "memory-gallery-preference",
+    provenance: "LEARNED",
+    sourceAvailable: false,
+    statement: "Prefers SQL over ORM query builders in examples.",
+    updatedAt: "2026-08-22T10:00:00.000Z"
+  },
+  {
+    allowedActions: ["EDIT", "FORGET"],
+    category: "CONSTRAINTS_AND_ROUTINES",
+    createdAt: "2026-08-25T10:00:00.000Z",
+    memoryRef: "memory-gallery-long-routine",
+    provenance: "LEARNED",
+    sourceAvailable: false,
+    statement: "Release process: every change to the ingest path goes through a migration note in the Release project, a dry run against the staging corpus and a go/no-go on Thursday; Friday is a freeze day, so anything not signed off by Thursday 16:00 CET waits until Monday, and the on-call engineer is allowed to roll back without asking if p95 goes over 600 ms for more than ten minutes.",
+    updatedAt: "2026-08-25T10:00:00.000Z"
+  },
+  {
+    allowedActions: ["EDIT", "FORGET"],
+    category: "CONSTRAINTS_AND_ROUTINES",
+    createdAt: "2026-08-20T10:00:00.000Z",
+    memoryRef: "memory-gallery-routine",
+    provenance: "SAVED",
+    sourceAvailable: true,
+    statement: "Never suggests emoji in commit messages.",
+    updatedAt: "2026-08-20T10:00:00.000Z"
+  },
+  {
+    allowedActions: ["EDIT"],
+    category: "OTHER",
+    createdAt: "2026-08-18T10:00:00.000Z",
+    memoryRef: "memory-gallery-other",
+    provenance: "SAVED",
+    sourceAvailable: true,
+    statement: "Keeps a standing note for uncategorized personal context.",
+    updatedAt: "2026-08-18T10:00:00.000Z"
+  }
+];
+
 export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGalleryStateV2 }) {
   const initialTab: LibraryTabIdV2 = state === "memory-disabled" ? "memory" : state === "dirty" ? "assistants" : state;
   const [dirty, setDirty] = useState(state === "dirty");
@@ -107,6 +166,14 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
   }> | null>(null);
   const [closed, setClosed] = useState(false);
   const [memoryGates] = useState({ automatic: true, facts: true, history: true });
+  const [memories, setMemories] = useState<readonly MemoryConsumerItem[]>(memoryItems);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryQuery, setMemoryQuery] = useState("");
+  const [memoryRow, setMemoryRow] = useState<Readonly<{
+    memoryRef: string | null;
+    mode: "create" | "edit" | "forget" | null;
+  }>>({ memoryRef: null, mode: null });
+  const [selectedSkillIds, setSelectedSkillIds] = useState<readonly string[]>([]);
   const disabled = state === "memory-disabled";
 
   if (closed) {
@@ -143,10 +210,21 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
             label: "Assistants"
           },
           { content: <KnowledgePanelV2 bases={bases} />, id: "knowledge", label: "Knowledge" },
-          { content: <FilesPanelV2 files={files} />, id: "files", label: "Files" },
+          {
+            content: <FilesPanelV2 files={files} onOpen={() => setClosed(true)} />,
+            id: "files",
+            label: "Files"
+          },
           {
             content: (
               <MemoryPanelV2
+                activeRef={memoryRow.memoryRef}
+                busy={null}
+                draft={memoryDraft}
+                hasMore={false}
+                items={memories.filter((item) => item.statement.toLocaleLowerCase().includes(memoryQuery.toLocaleLowerCase()))}
+                listError={null}
+                listState="ready"
                 memory={{
                   administratorDisabled: disabled,
                   automaticLearning: memoryGates.automatic,
@@ -157,11 +235,64 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                   status: disabled ? "NEEDS_ADMIN_SETUP" : "ON",
                   useMemoryFacts: memoryGates.facts
                 }}
+                mutationError={null}
+                notice={null}
+                onCancelRow={() => setMemoryRow({ memoryRef: null, mode: null })}
+                onConfirmForget={() => {
+                  setMemories((current) => current.filter((item) => item.memoryRef !== memoryRow.memoryRef));
+                  setMemoryRow({ memoryRef: null, mode: null });
+                }}
+                onCreate={() => {
+                  setMemoryDraft("");
+                  setMemoryRow({ memoryRef: null, mode: "create" });
+                }}
+                onDraftChange={setMemoryDraft}
+                onEdit={(memoryRef) => {
+                  setMemoryDraft(memories.find((item) => item.memoryRef === memoryRef)?.statement ?? "");
+                  setMemoryRow({ memoryRef, mode: "edit" });
+                }}
+                onForget={(memoryRef) => setMemoryRow({ memoryRef, mode: "forget" })}
+                onLoadMore={() => undefined}
                 onOpenSettings={() => undefined}
+                onQueryChange={setMemoryQuery}
+                onRetry={() => undefined}
+                onSave={() => {
+                  if (memoryRow.mode === "create") {
+                    setMemories((current) => [{
+                      allowedActions: ["EDIT", "FORGET"],
+                      category: "OTHER",
+                      createdAt: new Date().toISOString(),
+                      memoryRef: `fixture-${current.length + 1}`,
+                      provenance: "SAVED",
+                      sourceAvailable: true,
+                      statement: memoryDraft,
+                      updatedAt: new Date().toISOString()
+                    }, ...current]);
+                  } else if (memoryRow.memoryRef) {
+                    setMemories((current) => current.map((item) => item.memoryRef === memoryRow.memoryRef
+                      ? { ...item, statement: memoryDraft }
+                      : item));
+                  }
+                  setMemoryRow({ memoryRef: null, mode: null });
+                }}
+                onSubmitQuery={() => undefined}
+                query={memoryQuery}
+                searchActive={memoryQuery.trim().length > 0}
+                rowMode={memoryRow.mode}
               />
             ),
             id: "memory",
             label: "Memory"
+          },
+          {
+            content: (
+              <SkillLibrarySection
+                onSelectionChange={setSelectedSkillIds}
+                selectedIds={selectedSkillIds}
+              />
+            ),
+            id: "skills",
+            label: "Skill library"
           }
         ]}
       />

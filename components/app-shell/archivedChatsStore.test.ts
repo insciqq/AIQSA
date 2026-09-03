@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadEarlierArchivedMessages, openArchivedChatPreview, openArchivedChats, restoreArchivedChat, useArchivedChatsStore } from "./archivedChatsStore";
+import {
+  deactivateArchivedChats,
+  loadEarlierArchivedMessages,
+  openArchivedChatPreview,
+  refreshArchivedChats,
+  restoreArchivedChat,
+  restoreArchivedChatSummary,
+  useArchivedChatsStore
+} from "./archivedChatsStore";
 import { resetArchivedChatsStoreForTest } from "@/tests/support/appShellStores";
 
 const updatedAt = "2026-08-10T08:00:00.000Z";
@@ -30,6 +38,7 @@ const summary = {
   defaultProvider: null,
   folderId: null,
   id: "chat-1",
+  lastMessageAt: updatedAt,
   memoryMode: "NORMAL",
   messageCount: 2,
   pinned: false,
@@ -41,6 +50,7 @@ const summary = {
 
 const detail = {
   ...summary,
+  lastMessageAt: undefined,
   contextStats: { approximateActiveBranchInputTokens: 2 },
   messages: [message("message-new", "Newer", "message-old")],
   pageInfo: {
@@ -94,10 +104,9 @@ describe("archived chats store", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await openArchivedChats();
+    await refreshArchivedChats();
     expect(useArchivedChatsStore.getState()).toMatchObject({
       listLoadState: "ready",
-      open: true,
       summaries: [expect.objectContaining({ id: "chat-1" })]
     });
 
@@ -130,10 +139,80 @@ describe("archived chats store", () => {
       nextCursor: null
     })));
 
-    await expect(openArchivedChats()).rejects.toThrow("chat_lifecycle_response_invalid");
+    await expect(refreshArchivedChats()).rejects.toThrow("chat_lifecycle_response_invalid");
     expect(useArchivedChatsStore.getState()).toMatchObject({
       listLoadState: "error",
       summaries: []
     });
+  });
+
+  it("ignores a list restore that settles after the archive surface deactivates", async () => {
+    let settle: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      settle = resolve;
+    })));
+    useArchivedChatsStore.setState({ listLoadState: "ready", summaries: [summary] });
+
+    const restore = restoreArchivedChatSummary(summary);
+    deactivateArchivedChats();
+    settle?.(Response.json({
+      chat: {
+        archived: false,
+        id: "chat-1",
+        memoryMode: "NORMAL",
+        sourceRevision: 5,
+        updatedAt
+      }
+    }));
+
+    await expect(restore).resolves.toBeNull();
+    expect(useArchivedChatsStore.getState()).toEqual(expect.objectContaining({
+      detail: null,
+      listLoadState: "idle",
+      restoring: false,
+      summaries: []
+    }));
+  });
+
+  it("ignores a preview restore that settles after the archive surface deactivates", async () => {
+    let settle: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      settle = resolve;
+    })));
+    useArchivedChatsStore.setState({
+      detail: {
+        ...detail,
+        defaultModelId: "",
+        defaultProvider: "",
+        messages: [{
+          content: "Newer",
+          id: "message-new",
+          parentMessageId: "message-old",
+          role: "user",
+          status: "complete"
+        }]
+      },
+      detailLoadState: "ready"
+    });
+
+    const restore = restoreArchivedChat();
+    deactivateArchivedChats();
+    settle?.(Response.json({
+      chat: {
+        archived: false,
+        id: "chat-1",
+        memoryMode: "NORMAL",
+        sourceRevision: 5,
+        updatedAt
+      }
+    }));
+
+    await expect(restore).resolves.toBeNull();
+    expect(useArchivedChatsStore.getState()).toEqual(expect.objectContaining({
+      detail: null,
+      detailLoadState: "idle",
+      restoring: false,
+      summaries: []
+    }));
   });
 });
