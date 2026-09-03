@@ -18,6 +18,7 @@ export const ASSISTANT_STARTER_PROMPT_MAX_LENGTH = 400;
 export const ASSISTANT_MAX_STARTER_PROMPTS = 4;
 export const ASSISTANT_MAX_MCP_SERVERS = 16;
 export const ASSISTANT_MAX_OUTPUT_TOKENS_CEILING = 1_000_000;
+const ASSISTANT_AVAILABILITY_DEPENDENCY_NAME_MAX_LENGTH = 160;
 
 export const ASSISTANT_CATEGORIES = [
   "coding",
@@ -203,6 +204,17 @@ export type AssistantRunControls = {
   temperature?: number;
 };
 
+export const ASSISTANT_RUN_CONTROL_FIELDS = [
+  "backgroundMode",
+  "maxOutputTokens",
+  "reasoningEffort",
+  "reasoningMode",
+  "streamMode",
+  "temperature"
+] as const;
+
+export type AssistantRunControlField = typeof ASSISTANT_RUN_CONTROL_FIELDS[number];
+
 const runControlKeys = new Set([
   "backgroundMode",
   "maxOutputTokens",
@@ -269,6 +281,43 @@ export function decodeAssistantRunControls(value: unknown): AssistantRunControls
   return controls;
 }
 
+function invalidAssistantRunControlField(
+  value: unknown
+): AssistantRunControlField | undefined {
+  if (!isRecord(value)) return undefined;
+  if ("backgroundMode" in value && typeof value.backgroundMode !== "boolean") {
+    return "backgroundMode";
+  }
+  if (
+    "maxOutputTokens" in value &&
+    (typeof value.maxOutputTokens !== "number" ||
+      !Number.isInteger(value.maxOutputTokens) ||
+      value.maxOutputTokens < 1 ||
+      value.maxOutputTokens > ASSISTANT_MAX_OUTPUT_TOKENS_CEILING)
+  ) {
+    return "maxOutputTokens";
+  }
+  if ("reasoningEffort" in value && !boundedControlToken(value.reasoningEffort)) {
+    return "reasoningEffort";
+  }
+  if ("reasoningMode" in value && !boundedControlToken(value.reasoningMode)) {
+    return "reasoningMode";
+  }
+  if ("streamMode" in value && typeof value.streamMode !== "boolean") {
+    return "streamMode";
+  }
+  if (
+    "temperature" in value &&
+    (typeof value.temperature !== "number" ||
+      !Number.isFinite(value.temperature) ||
+      value.temperature < -10 ||
+      value.temperature > 10)
+  ) {
+    return "temperature";
+  }
+  return undefined;
+}
+
 export type AssistantDraft = {
   avatar: AssistantAvatarRecipe;
   category: AssistantCategory | null;
@@ -286,7 +335,7 @@ export type AssistantDraft = {
 };
 
 export type AssistantDraftDecodeResult =
-  | { code: string; ok: false }
+  | { code: string; field?: AssistantRunControlField; ok: false }
   | { draft: AssistantDraft; ok: true };
 
 function boundedId(value: unknown): value is string {
@@ -342,7 +391,12 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
 
   const runControls = decodeAssistantRunControls(value.runControls ?? {});
   if (!runControls) {
-    return { code: "assistant_run_controls_invalid", ok: false };
+    const field = invalidAssistantRunControlField(value.runControls ?? {});
+    return {
+      code: "assistant_run_controls_invalid",
+      ...(field ? { field } : {}),
+      ok: false
+    };
   }
 
   const decodedPlan = decodeSearchPlan(value.searchPlan);
@@ -413,9 +467,19 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
 
 export type AssistantAvailabilityReason = "model_access" | "search_access" | "tools_access";
 
+export type AssistantAvailabilityDependency = {
+  kind: "mcp" | "model" | "search";
+  name: string;
+};
+
 export type AssistantAvailability =
   | { ok: true }
-  | { ok: false; reason: AssistantAvailabilityReason };
+  | {
+      /** Present only on owner projections; shared consumers receive a neutral reason. */
+      dependencies?: AssistantAvailabilityDependency[];
+      ok: false;
+      reason: AssistantAvailabilityReason;
+    };
 
 export type AssistantAccessScope =
   | { groupNames: string[]; kind: "group" }
@@ -423,6 +487,9 @@ export type AssistantAccessScope =
   | { kind: "owner" };
 
 export type AssistantCapabilityFingerprint = {
+  /** Privacy-safe capability copy; dependency ids and names stay server-side. */
+  knowledgeLabel: string | null;
+  knowledgeResourceCount: number;
   mcpServerCount: number;
   modelLabel: string | null;
   reasoningEffort: string | null;
@@ -525,7 +592,30 @@ function decodeAvailability(value: unknown): AssistantAvailability | null {
     value.ok === false &&
     (value.reason === "model_access" || value.reason === "search_access" || value.reason === "tools_access")
   ) {
-    return { ok: false, reason: value.reason };
+    let dependencies: AssistantAvailabilityDependency[] | undefined;
+    if (value.dependencies !== undefined) {
+      if (!Array.isArray(value.dependencies) || value.dependencies.length > 18) return null;
+      dependencies = [];
+      for (const dependency of value.dependencies) {
+        if (
+          !isRecord(dependency) ||
+          (dependency.kind !== "mcp" &&
+            dependency.kind !== "model" &&
+            dependency.kind !== "search") ||
+          typeof dependency.name !== "string" ||
+          !dependency.name.trim() ||
+          dependency.name.length > ASSISTANT_AVAILABILITY_DEPENDENCY_NAME_MAX_LENGTH
+        ) {
+          return null;
+        }
+        dependencies.push({ kind: dependency.kind, name: dependency.name });
+      }
+    }
+    return {
+      ...(dependencies ? { dependencies } : {}),
+      ok: false,
+      reason: value.reason
+    };
   }
   return null;
 }
@@ -547,6 +637,10 @@ function decodeScope(value: unknown): AssistantAccessScope | null {
 function decodeFingerprint(value: unknown): AssistantCapabilityFingerprint | null {
   if (
     !isRecord(value) ||
+    !stringOrNull(value.knowledgeLabel) ||
+    typeof value.knowledgeResourceCount !== "number" ||
+    !Number.isSafeInteger(value.knowledgeResourceCount) ||
+    value.knowledgeResourceCount < 0 ||
     typeof value.mcpServerCount !== "number" ||
     !stringOrNull(value.modelLabel) ||
     !stringOrNull(value.reasoningEffort) ||
@@ -555,6 +649,8 @@ function decodeFingerprint(value: unknown): AssistantCapabilityFingerprint | nul
     return null;
   }
   return {
+    knowledgeLabel: value.knowledgeLabel,
+    knowledgeResourceCount: value.knowledgeResourceCount,
     mcpServerCount: value.mcpServerCount,
     modelLabel: value.modelLabel,
     reasoningEffort: value.reasoningEffort,
@@ -591,6 +687,7 @@ export function decodeAssistantSummary(value: unknown): AssistantSummary | null 
     !nonEmptyString(value.id) ||
     !nonEmptyString(value.name) ||
     typeof value.owned !== "boolean" ||
+    (value.owned === false && !availability.ok && availability.dependencies !== undefined) ||
     typeof value.ownerDisplayName !== "string" ||
     typeof value.pinned !== "boolean" ||
     typeof value.published !== "boolean" ||
@@ -715,6 +812,7 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     !availability ||
     !nonEmptyString(value.id) ||
     typeof value.owned !== "boolean" ||
+    (value.owned === false && !availability.ok && availability.dependencies !== undefined) ||
     typeof value.ownerDisplayName !== "string" ||
     typeof value.pinned !== "boolean" ||
     !revision

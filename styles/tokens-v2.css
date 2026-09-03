@@ -1,47 +1,60 @@
 :root {
-  --v2-dark-color-canvas: #1b1a17;
-  --v2-dark-color-sidebar: #151412;
-  --v2-dark-color-surface: #242320;
-  --v2-dark-color-surface2: #2c2b27;
-  --v2-dark-color-bubble: #282722;
-  --v2-dark-color-code-bg: #22211e;
-  --v2-dark-color-hover: rgb(236 234 228 / 0.06);
-  --v2-dark-color-active: rgb(236 234 228 / 0.09);
-  --v2-dark-color-border: rgb(236 234 228 / 0.09);
-  --v2-dark-color-border2: rgb(236 234 228 / 0.16);
-  --v2-dark-color-text: #eceae4;
-  --v2-dark-color-text2: #a6a199;
-  --v2-dark-color-text3: #7a766c;
-  --v2-dark-color-accent: #5fbdb2;
-  --v2-dark-color-accent-ink: #0e2b27;
-  --v2-dark-color-accent-dim: rgb(95 189 178 / 0.14);
-  --v2-dark-color-danger: #e08c84;
-  --v2-dark-color-warn: #d9b36a;
-  --v2-dark-color-ok: #93bf85;
-  --v2-dark-shadow-float: 0 2px 10px rgb(0 0 0 / 0.22);
-  --v2-dark-shadow-overlay: 0 12px 40px rgb(0 0 0 / 0.5);
+  --v2-dark-color-canvas: #0c1017;
+  --v2-dark-color-rail: #080b11;
+  --v2-dark-color-sidebar: #0e131b;
+  --v2-dark-color-surface: #131a24;
+  --v2-dark-color-surface2: #19212d;
+  --v2-dark-color-bubble: #172130;
+  --v2-dark-color-code-bg: #10161f;
+  --v2-dark-color-hover: rgb(170 196 224 / 0.06);
+  --v2-dark-color-active: rgb(170 196 224 / 0.1);
+  --v2-dark-color-border: rgb(170 196 224 / 0.11);
+  --v2-dark-color-border2: rgb(170 196 224 / 0.2);
+  --v2-dark-color-text: #e7edf5;
+  --v2-dark-color-text2: #97a5b8;
+  --v2-dark-color-text3: #76839a;
+  --v2-dark-color-accent: #38dfd0;
+  --v2-dark-color-accent-ink: #05201d;
+  --v2-dark-color-accent-dim: rgb(56 223 208 / 0.12);
+  /* Accent-coloured text on the accent-dim wash (active filter counters). */
+  --v2-dark-color-accent-text: #38dfd0;
+  --v2-dark-color-accent2: #b08cff;
+  --v2-dark-color-accent2-dim: rgb(176 140 255 / 0.14);
+  --v2-dark-color-danger: #ff8a80;
+  --v2-dark-color-warn: #f2c46b;
+  --v2-dark-color-ok: #7fd99a;
+  --v2-dark-color-scrim: rgb(3 6 12 / 0.55);
+  --v2-dark-shadow-float: 0 8px 28px rgb(0 0 0 / 0.35);
+  --v2-dark-shadow-overlay: 0 16px 48px rgb(0 0 0 / 0.55);
 
-  --v2-light-color-canvas: #faf9f6;
-  --v2-light-color-sidebar: #f1efe9;
+  --v2-light-color-canvas: #f5f7fa;
+  --v2-light-color-rail: #edf0f4;
+  --v2-light-color-sidebar: #f0f3f7;
   --v2-light-color-surface: #ffffff;
-  --v2-light-color-surface2: #f3f1ec;
-  --v2-light-color-bubble: #eeece5;
-  --v2-light-color-code-bg: #f3f1ec;
-  --v2-light-color-hover: rgb(32 31 27 / 0.05);
-  --v2-light-color-active: rgb(32 31 27 / 0.08);
-  --v2-light-color-border: rgb(32 31 27 / 0.1);
-  --v2-light-color-border2: rgb(32 31 27 / 0.18);
-  --v2-light-color-text: #26241f;
-  --v2-light-color-text2: #6e6a61;
-  --v2-light-color-text3: #9b968b;
-  --v2-light-color-accent: #146b63;
-  --v2-light-color-accent-ink: #f4fffd;
-  --v2-light-color-accent-dim: rgb(20 107 99 / 0.1);
-  --v2-light-color-danger: #b4453c;
+  --v2-light-color-surface2: #f2f5f9;
+  --v2-light-color-bubble: #e9eef5;
+  --v2-light-color-code-bg: #f3f5f8;
+  --v2-light-color-hover: rgb(20 40 70 / 0.05);
+  --v2-light-color-active: rgb(20 40 70 / 0.08);
+  --v2-light-color-border: rgb(20 40 70 / 0.1);
+  --v2-light-color-border2: rgb(20 40 70 / 0.18);
+  --v2-light-color-text: #101828;
+  --v2-light-color-text2: #4f5b6d;
+  --v2-light-color-text3: #606c80;
+  --v2-light-color-accent: #0a6c65;
+  --v2-light-color-accent-ink: #ffffff;
+  --v2-light-color-accent-dim: rgb(10 108 101 / 0.1);
+  --v2-light-color-accent-text: #0a6f68;
+  /* Slightly deeper than the dark theme's violet so code keywords keep 4.5:1
+     on the light code background. */
+  --v2-light-color-accent2: #6f4fcf;
+  --v2-light-color-accent2-dim: rgb(124 92 214 / 0.12);
+  --v2-light-color-danger: #c2413a;
   --v2-light-color-warn: #8a6a1f;
-  --v2-light-color-ok: #3f7d3a;
-  --v2-light-shadow-float: 0 2px 10px rgb(30 28 22 / 0.08);
-  --v2-light-shadow-overlay: 0 12px 40px rgb(30 28 22 / 0.14);
+  --v2-light-color-ok: #2f7d4a;
+  --v2-light-color-scrim: rgb(20 30 50 / 0.4);
+  --v2-light-shadow-float: 0 8px 28px rgb(30 40 60 / 0.12);
+  --v2-light-shadow-overlay: 0 16px 48px rgb(30 40 60 / 0.2);
 
   /*
    * Assistant avatar recipe palette: theme-invariant component tokens.
@@ -50,11 +63,11 @@
    * renders identically in every theme — but their values still live only in
    * this sole token file. They never encode status and never restyle by theme.
    */
-  --v2-avatar-coral-bg: #b85560;
+  --v2-avatar-coral-bg: #984650;
   --v2-avatar-coral-fg: #f6dfe0;
-  --v2-avatar-ember-bg: #b4552d;
+  --v2-avatar-ember-bg: #994629;
   --v2-avatar-ember-fg: #f6ddc8;
-  --v2-avatar-meadow-bg: #3e7c4f;
+  --v2-avatar-meadow-bg: #376f47;
   --v2-avatar-meadow-fg: #dcedd8;
   --v2-avatar-ocean-bg: #2d5e8c;
   --v2-avatar-ocean-fg: #d3e6f4;
@@ -62,7 +75,7 @@
   --v2-avatar-pine-fg: #d2e9e2;
   --v2-avatar-plum-bg: #6c4a7e;
   --v2-avatar-plum-fg: #e9daf0;
-  --v2-avatar-sand-bg: #a4834a;
+  --v2-avatar-sand-bg: #80602f;
   --v2-avatar-sand-fg: #f3e9d0;
   --v2-avatar-slate-bg: #4e5c66;
   --v2-avatar-slate-fg: #dfe6ea;
@@ -73,7 +86,6 @@
   --v2-mobile-sidebar-width: 17.5rem;
   --v2-header-height: 3rem;
   --v2-dialog-width: 27.5rem;
-  --v2-color-scrim: rgb(0 0 0 / 0.42);
   --v2-radius-s: 0.5rem;
   --v2-radius-m: 0.75rem;
   --v2-radius-l: 1.125rem;
@@ -85,6 +97,7 @@
 :root[data-theme="system"] {
   color-scheme: light;
   --v2-color-canvas: var(--v2-light-color-canvas);
+  --v2-color-rail: var(--v2-light-color-rail);
   --v2-color-sidebar: var(--v2-light-color-sidebar);
   --v2-color-surface: var(--v2-light-color-surface);
   --v2-color-surface2: var(--v2-light-color-surface2);
@@ -100,9 +113,13 @@
   --v2-color-accent: var(--v2-light-color-accent);
   --v2-color-accent-ink: var(--v2-light-color-accent-ink);
   --v2-color-accent-dim: var(--v2-light-color-accent-dim);
+  --v2-color-accent-text: var(--v2-light-color-accent-text);
+  --v2-color-accent2: var(--v2-light-color-accent2);
+  --v2-color-accent2-dim: var(--v2-light-color-accent2-dim);
   --v2-color-danger: var(--v2-light-color-danger);
   --v2-color-warn: var(--v2-light-color-warn);
   --v2-color-ok: var(--v2-light-color-ok);
+  --v2-color-scrim: var(--v2-light-color-scrim);
   --v2-shadow-float: var(--v2-light-shadow-float);
   --v2-shadow-overlay: var(--v2-light-shadow-overlay);
 }
@@ -110,6 +127,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --v2-color-canvas: var(--v2-dark-color-canvas);
+  --v2-color-rail: var(--v2-dark-color-rail);
   --v2-color-sidebar: var(--v2-dark-color-sidebar);
   --v2-color-surface: var(--v2-dark-color-surface);
   --v2-color-surface2: var(--v2-dark-color-surface2);
@@ -125,9 +143,13 @@
   --v2-color-accent: var(--v2-dark-color-accent);
   --v2-color-accent-ink: var(--v2-dark-color-accent-ink);
   --v2-color-accent-dim: var(--v2-dark-color-accent-dim);
+  --v2-color-accent-text: var(--v2-dark-color-accent-text);
+  --v2-color-accent2: var(--v2-dark-color-accent2);
+  --v2-color-accent2-dim: var(--v2-dark-color-accent2-dim);
   --v2-color-danger: var(--v2-dark-color-danger);
   --v2-color-warn: var(--v2-dark-color-warn);
   --v2-color-ok: var(--v2-dark-color-ok);
+  --v2-color-scrim: var(--v2-dark-color-scrim);
   --v2-shadow-float: var(--v2-dark-shadow-float);
   --v2-shadow-overlay: var(--v2-dark-shadow-overlay);
 }
@@ -136,6 +158,7 @@
   :root[data-theme="system"] {
     color-scheme: dark;
     --v2-color-canvas: var(--v2-dark-color-canvas);
+    --v2-color-rail: var(--v2-dark-color-rail);
     --v2-color-sidebar: var(--v2-dark-color-sidebar);
     --v2-color-surface: var(--v2-dark-color-surface);
     --v2-color-surface2: var(--v2-dark-color-surface2);
@@ -151,9 +174,13 @@
     --v2-color-accent: var(--v2-dark-color-accent);
     --v2-color-accent-ink: var(--v2-dark-color-accent-ink);
     --v2-color-accent-dim: var(--v2-dark-color-accent-dim);
+    --v2-color-accent-text: var(--v2-dark-color-accent-text);
+    --v2-color-accent2: var(--v2-dark-color-accent2);
+    --v2-color-accent2-dim: var(--v2-dark-color-accent2-dim);
     --v2-color-danger: var(--v2-dark-color-danger);
     --v2-color-warn: var(--v2-dark-color-warn);
     --v2-color-ok: var(--v2-dark-color-ok);
+    --v2-color-scrim: var(--v2-dark-color-scrim);
     --v2-shadow-float: var(--v2-dark-shadow-float);
     --v2-shadow-overlay: var(--v2-dark-shadow-overlay);
   }

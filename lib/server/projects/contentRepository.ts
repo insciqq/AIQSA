@@ -162,7 +162,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
         return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
-            minimumRole: "CONTRIBUTOR",
+            minimumRole: "MANAGER",
             projectId: input.projectId,
             requireActive: true,
             userId: input.userId

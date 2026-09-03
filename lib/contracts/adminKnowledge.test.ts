@@ -92,4 +92,66 @@ describe("administrator Knowledge contract", () => {
       }
     })).toBeNull();
   });
+
+  it("accepts content-free Knowledge search faults and their stable alerts", () => {
+    const operations = adminKnowledgeOperationsFixture({
+      alerts: [
+        { code: "knowledge_search_backend_unavailable", severity: "critical" },
+        { code: "knowledge_search_projection_backlog", severity: "warning" },
+        { code: "knowledge_search_projection_failures", severity: "critical" },
+        { code: "knowledge_search_worker_unavailable", severity: "critical" }
+      ],
+      search: {
+        backendState: "unavailable",
+        expectedProjections: 4,
+        failedProjections: 1,
+        pendingProjections: 1,
+        readyProjections: 2,
+        workerLastSeenAt: "2026-08-18T00:00:00.000Z",
+        workerState: "stale"
+      }
+    });
+    const unavailable = {
+      knowledge: { ...response.knowledge, operations }
+    };
+
+    expect(decodeAdminKnowledgeResponse(unavailable)).toEqual(unavailable);
+    expect(JSON.stringify(unavailable)).not.toMatch(/endpoint|indexName|instanceId|errorMessage/u);
+  });
+
+  it("rejects malformed or internally inconsistent Knowledge search health", () => {
+    const withSearch = (search: Record<string, unknown> | undefined) => ({
+      knowledge: {
+        ...response.knowledge,
+        operations: {
+          ...response.knowledge.operations,
+          search
+        }
+      }
+    });
+    const healthy = response.knowledge.operations.search;
+
+    expect(decodeAdminKnowledgeResponse(withSearch(undefined))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withSearch({
+      ...healthy,
+      expectedProjections: 1
+    }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withSearch({
+      ...healthy,
+      workerLastSeenAt: null
+    }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withSearch({
+      ...healthy,
+      workerLastSeenAt: null,
+      workerState: "missing"
+    }))).not.toBeNull();
+    expect(decodeAdminKnowledgeResponse(withSearch({
+      ...healthy,
+      backendState: "degraded"
+    }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withSearch({
+      ...healthy,
+      workerState: "unknown"
+    }))).toBeNull();
+  });
 });

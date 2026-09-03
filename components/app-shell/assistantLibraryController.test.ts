@@ -5,6 +5,7 @@ import type {
 } from "@/lib/contracts/assistants";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEditorDraftState } from "@/components/assistants/libraryViewContracts";
+import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
 import {
   resetAssistantLibraryStoreForTest,
   resetComposerControlStoreForTest
@@ -99,6 +100,62 @@ function detail(revisionNumber = 3): AssistantDetail {
   };
 }
 
+function catalogModel(overrides: Partial<CatalogModel> = {}): CatalogModel {
+  return {
+    capabilities: {
+      background: true,
+      documentInputMode: "none",
+      imageInput: false,
+      nativeWebSearch: false,
+      openRouterPerplexitySearch: false,
+      reasoning: true,
+      streaming: true,
+      toolCalling: true
+    },
+    contextWindow: 128_000,
+    defaultParams: {},
+    displayName: "Model one",
+    modelId: "model-1",
+    parameterControls: {
+      background: { defaultValue: false, supported: true },
+      maxOutputTokens: { defaultValue: 4096, maxValue: 8192 },
+      reasoningEffort: {
+        defaultValue: "medium",
+        options: ["low", "medium", "high", "max"],
+        supported: true
+      },
+      stream: { defaultValue: true, supported: true },
+      temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
+    },
+    provider: "provider-1",
+    searchOptionCompatibility: {},
+    searchStrategyIds: [],
+    ...overrides
+  };
+}
+
+function catalog(models: CatalogModel[] = [catalogModel()]): Catalog {
+  return {
+    defaults: {
+      controlValues: {},
+      hasPersonalModelDefault: false,
+      modelId: "model-1",
+      modelPreferenceSource: "organization",
+      organizationModelDefault: { modelId: "model-1", provider: "provider-1" },
+      organizationSearchPlan: { mode: "all_selected", optionIds: [] },
+      personalModelDefault: null,
+      provider: "provider-1",
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      searchPreferenceSource: "organization",
+      showCitations: true,
+      showReasoningBlocks: false
+    },
+    models,
+    providers: [{ id: "provider-1", models: models.map((model) => model.modelId), name: "Provider" }],
+    searchStrategies: []
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((next) => {
@@ -135,12 +192,13 @@ function controllerInput(): AssistantLibraryControllerInput {
   return {
     activateBlankWorkspace: vi.fn(),
     applyAssistantToComposer: vi.fn(() => true),
-    catalog: null,
+    catalog: catalog(),
     catalogError: null,
     knowledgeBases: [],
     knowledgeSources: [],
     knowledgeDataError: null,
     knowledgeDataState: "ready",
+    openMcpSettings: vi.fn(),
     retryCatalog: vi.fn(),
     retryKnowledge: vi.fn(),
     retrySkills: vi.fn(),
@@ -158,10 +216,13 @@ function installEditor(options: { busy?: boolean } = {}) {
     busy: options.busy ?? false,
     editor: {
       assistantId: "assistant-1",
+      archived: false,
+      availability: { ok: true },
       baseline: JSON.stringify(editorDraft),
       createdAssistantId: null,
       draft: editorDraft,
       error: null,
+      fieldErrors: null,
       expectedVersion: 3,
       publications: [],
       revisionNumber: 3,
@@ -232,6 +293,242 @@ describe("assistantLibraryController", () => {
     expect(useAssistantLibraryStore.getState().editor?.error?.text).not.toContain("Library");
   });
 
+  it("blocks an invalid run control locally and identifies its field", async () => {
+    installEditor();
+    useAssistantLibraryStore.getState().patchEditor({
+      draft: { ...useAssistantLibraryStore.getState().editor!.draft, maxOutputTokens: "0" }
+    });
+    const actions = createAssistantLibraryActions(controllerInput());
+
+    await actions.saveEditor();
+
+    expect(mocks.reviseAssistant).not.toHaveBeenCalled();
+    expect(useAssistantLibraryStore.getState().editor).toMatchObject({
+      fieldErrors: { maxOutputTokens: "Enter a whole number from 1 to 8192." },
+      saving: false
+    });
+  });
+
+  it("attaches server run-control metadata to the exact editor field", async () => {
+    installEditor();
+    mocks.reviseAssistant.mockResolvedValue({
+      code: "assistant_run_controls_invalid",
+      field: "maxOutputTokens",
+      limit: 8192,
+      message: "Invalid controls.",
+      ok: false
+    });
+    const actions = createAssistantLibraryActions(controllerInput());
+
+    await actions.saveEditor();
+
+    expect(useAssistantLibraryStore.getState().editor).toMatchObject({
+      fieldErrors: { maxOutputTokens: "Enter a whole number no greater than 8192." },
+      saving: false
+    });
+  });
+
+  it("resets model-incompatible overrides visibly without clamping", () => {
+    installEditor();
+    useAssistantLibraryStore.getState().patchEditor({
+      draft: {
+        ...useAssistantLibraryStore.getState().editor!.draft,
+        backgroundMode: true,
+        maxOutputTokens: "8000",
+        reasoningEffort: "max"
+      }
+    });
+    const secondModel = catalogModel({
+      displayName: "Model two",
+      modelId: "model-2",
+      parameterControls: {
+        background: { defaultValue: false, supported: false },
+        maxOutputTokens: { defaultValue: 1024, maxValue: 2048 },
+        reasoningEffort: { defaultValue: "low", options: ["low"], supported: true },
+        stream: { defaultValue: true, supported: true },
+        temperature: { defaultValue: 0.5, maxValue: 1, minValue: 0, supported: true }
+      }
+    });
+    const input = controllerInput();
+    input.catalog = catalog([catalogModel(), secondModel]);
+    const actions = createAssistantLibraryActions(input);
+    const view = buildAssistantLibraryView(input, actions, useAssistantLibraryStore.getState());
+
+    view!.editor!.onChange({ providerModelId: "model-2" });
+
+    expect(useAssistantLibraryStore.getState().editor?.draft).toMatchObject({
+      backgroundMode: null,
+      maxOutputTokens: "",
+      providerModelId: "model-2",
+      reasoningEffort: ""
+    });
+    expect(useAssistantLibraryStore.getState().notice?.text).toBe(
+      "Background, Max answer length and Reasoning effort reset to the model defaults."
+    );
+  });
+
+  it("opens stale saved controls as a visible unsaved reset", async () => {
+    mocks.fetchAssistantDetail.mockResolvedValue({
+      data: {
+        ...detail(),
+        revision: { ...revision(), runControls: { maxOutputTokens: 9000 } }
+      },
+      ok: true
+    });
+    const input = controllerInput();
+    const actions = createAssistantLibraryActions(input);
+    useAssistantLibraryStore.getState().patch({ open: true });
+
+    await actions.openAssistantEditor("assistant-1");
+
+    expect(useAssistantLibraryStore.getState().editor?.draft.maxOutputTokens).toBe("");
+    expect(useAssistantLibraryStore.getState().notice?.text).toBe(
+      "Max answer length reset to the model default."
+    );
+    expect(buildAssistantLibraryView(
+      input,
+      actions,
+      useAssistantLibraryStore.getState()
+    )?.editor?.dirty).toBe(true);
+  });
+
+  it("retains MCP readiness metadata and blocks an unstartable selection", async () => {
+    mocks.loadUserMcpServers.mockResolvedValue([{
+      enabled: false,
+      id: "mcp-disabled",
+      name: "Disabled tools",
+      readiness: "disabled"
+    }]);
+    const actions = createAssistantLibraryActions(controllerInput());
+    actions.openLibrary();
+    await vi.waitFor(() => expect(useAssistantLibraryStore.getState().mcpOptions).toEqual([{
+      enabled: false,
+      id: "mcp-disabled",
+      name: "Disabled tools",
+      readiness: "disabled"
+    }]));
+    actions.openNewAssistantEditor({
+      mcpServerIds: ["mcp-disabled"],
+      name: "Tools helper",
+      providerModelId: "model-1"
+    });
+
+    await actions.saveEditor();
+
+    expect(mocks.createAssistant).not.toHaveBeenCalled();
+    expect(useAssistantLibraryStore.getState().editor?.fieldErrors).toEqual({
+      mcpServerIds: "Remove MCP servers that are disabled or need attention before saving."
+    });
+  });
+
+  it("keeps only the latest MCP refresh and clears stale choices while revalidating", async () => {
+    const stale = deferred<Awaited<ReturnType<typeof mocks.loadUserMcpServers>>>();
+    const latest = deferred<Awaited<ReturnType<typeof mocks.loadUserMcpServers>>>();
+    mocks.loadUserMcpServers
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(latest.promise);
+    const actions = createAssistantLibraryActions(controllerInput());
+
+    actions.openLibrary();
+    actions.openLibrary();
+    expect(useAssistantLibraryStore.getState().mcpOptions).toEqual([]);
+
+    latest.resolve([{
+      enabled: false,
+      id: "mcp-1",
+      name: "GitHub",
+      readiness: "disabled"
+    }]);
+    await vi.waitFor(() => expect(useAssistantLibraryStore.getState().mcpOptions)
+      .toEqual([expect.objectContaining({ enabled: false, id: "mcp-1" })]));
+
+    stale.resolve([{
+      enabled: true,
+      id: "mcp-1",
+      name: "GitHub",
+      readiness: "ready"
+    }]);
+    await stale.promise;
+    expect(useAssistantLibraryStore.getState().mcpOptions).toEqual([
+      expect.objectContaining({ enabled: false, id: "mcp-1", readiness: "disabled" })
+    ]);
+  });
+
+  it("ignores an MCP refresh that resolves after its Library session closes", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof mocks.loadUserMcpServers>>>();
+    mocks.loadUserMcpServers.mockReturnValue(pending.promise);
+    const actions = createAssistantLibraryActions(controllerInput());
+
+    actions.openLibrary();
+    actions.closeLibrary();
+    pending.resolve([{
+      enabled: true,
+      id: "mcp-1",
+      name: "GitHub",
+      readiness: "ready"
+    }]);
+    await pending.promise;
+
+    expect(useAssistantLibraryStore.getState()).toMatchObject({
+      mcpOptions: [],
+      open: false
+    });
+  });
+
+  it("does not retain a previously runnable MCP option after refresh failure", async () => {
+    useAssistantLibraryStore.setState({
+      mcpOptions: [{ enabled: true, id: "mcp-1", name: "GitHub", readiness: "ready" }]
+    });
+    mocks.loadUserMcpServers.mockRejectedValue(new Error("offline"));
+    const actions = createAssistantLibraryActions(controllerInput());
+
+    actions.openLibrary();
+
+    expect(useAssistantLibraryStore.getState().mcpOptions).toEqual([]);
+    await vi.waitFor(() => expect(mocks.loadUserMcpServers).toHaveBeenCalledOnce());
+    expect(useAssistantLibraryStore.getState().mcpOptions).toEqual([]);
+  });
+
+  it("reports an unavailable Use-in-chat failure inside the open Library", async () => {
+    const unavailable = {
+      ...detail(),
+      availability: { ok: false as const, reason: "tools_access" as const }
+    };
+    mocks.fetchAssistantDetail.mockResolvedValue({ data: unavailable, ok: true });
+    useAssistantLibraryStore.getState().patch({ open: true });
+    const input = controllerInput();
+    const actions = createAssistantLibraryActions(input);
+
+    await actions.useAssistant("assistant-1", { navigate: true });
+
+    expect(useAssistantLibraryStore.getState().notice).toEqual({
+      kind: "error",
+      text: "This assistant needs access you do not currently have."
+    });
+    expect(input.setShellNotice).not.toHaveBeenCalled();
+  });
+
+  it("offers Use in chat only for a clean, available, non-archived saved Assistant", () => {
+    installEditor();
+    const input = controllerInput();
+    const actions = createAssistantLibraryActions(input);
+
+    expect(buildAssistantLibraryView(
+      input,
+      actions,
+      useAssistantLibraryStore.getState()
+    )?.editor?.onUseInChat).not.toBeNull();
+
+    useAssistantLibraryStore.getState().patchEditor({
+      availability: { ok: false, reason: "tools_access" }
+    });
+    expect(buildAssistantLibraryView(
+      input,
+      actions,
+      useAssistantLibraryStore.getState()
+    )?.editor?.onUseInChat).toBeNull();
+  });
+
   it("keeps the successful restore notice while history refreshes", async () => {
     useAssistantLibraryStore.setState({
       ...initialAssistantLibrarySnapshot,
@@ -279,10 +576,13 @@ describe("assistantLibraryController", () => {
       ...initialAssistantLibrarySnapshot,
       editor: {
         assistantId: null,
+        archived: false,
+        availability: null,
         baseline: JSON.stringify(editorDraft),
         createdAssistantId: null,
         draft: editorDraft,
         error: null,
+        fieldErrors: null,
         expectedVersion: null,
         publications: null,
         revisionNumber: null,
@@ -359,10 +659,13 @@ describe("assistantLibraryController", () => {
       useAssistantLibraryStore.getState().patch({
         editor: {
           assistantId: "assistant-b",
+          archived: false,
+          availability: { ok: true },
           baseline: JSON.stringify(replacementDraft),
           createdAssistantId: null,
           draft: replacementDraft,
           error: null,
+          fieldErrors: null,
           expectedVersion: 9,
           publications: [],
           revisionNumber: 9,
@@ -504,10 +807,13 @@ describe("assistantLibraryController", () => {
     useAssistantLibraryStore.getState().patch({
       editor: {
         assistantId: "assistant-b",
+        archived: false,
+        availability: { ok: true },
         baseline: JSON.stringify(draft()),
         createdAssistantId: null,
         draft: replacementDraft,
         error: null,
+        fieldErrors: null,
         expectedVersion: 2,
         publications: [],
         revisionNumber: 2,
@@ -569,32 +875,18 @@ describe("assistantLibraryController", () => {
     expect(useAssistantLibraryStore.getState().busy).toBe(false);
   });
 
-  it("guards stale list controls after a library mutation starts", () => {
+  it("guards a stale retry callback after a library mutation starts", () => {
     useAssistantLibraryStore.setState({
       ...initialAssistantLibrarySnapshot,
-      category: null,
-      filter: "all",
-      mode: "discover",
-      open: true,
-      query: ""
+      open: true
     });
     const input = controllerInput();
     const actions = createAssistantLibraryActions(input);
     const view = buildAssistantLibraryView(input, actions, useAssistantLibraryStore.getState());
     useAssistantLibraryStore.getState().patch({ busy: true });
 
-    view!.list.onCategoryChange("coding");
-    view!.list.onFilterChange("pinned");
-    view!.list.onModeChange("yours");
-    view!.list.onQueryChange("changed");
     view!.onRetryCatalog();
 
-    expect(useAssistantLibraryStore.getState()).toMatchObject({
-      category: null,
-      filter: "all",
-      mode: "discover",
-      query: ""
-    });
     expect(input.retryCatalog).not.toHaveBeenCalled();
   });
 

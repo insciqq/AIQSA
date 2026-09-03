@@ -86,14 +86,59 @@ describe("Run lifecycle v2", () => {
 
     const disclosure = screen.getByTestId("tool-activity-disclosure");
     expect(disclosure).not.toHaveAttribute("open");
-    expect(screen.getByText("1 tool call")).toBeVisible();
+    // The line is a human phrase from the recorded step time, never "1 tool call".
+    expect(screen.getByText("Worked for a few seconds")).toBeVisible();
+    expect(screen.queryByText(/tool call/u)).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent(
       "Tool round limit (8) stopped further tool use."
     );
-    fireEvent.click(screen.getByText("1 tool call"));
+    fireEvent.click(screen.getByText("Worked for a few seconds"));
     expect(disclosure).toHaveAttribute("open");
-    expect(screen.getByText("AWS Documentation · search_documentation")).toBeVisible();
-    expect(screen.getByText("Round 1 · Completed · 1.3 s")).toBeVisible();
+    // Step rows read as plain language: no raw `search_documentation`.
+    expect(screen.getByRole("heading", { name: "Steps" })).toBeInTheDocument();
+    expect(screen.getByText("Used AWS Documentation: search documentation")).toBeVisible();
+    expect(screen.getByText("1.3 s · round 1")).toBeVisible();
+    expect(screen.queryByText(/search_documentation/u)).toBeNull();
+  });
+
+  it("prefers the recorded work duration and keeps the line while tokens stream", () => {
+    const { rerender } = render(
+      <RunAnswerV2
+        content="Partial"
+        presentation={presentation({ kind: "streaming", runId: "run-a" })}
+        toolActivity={{ calls: [{ round: 1, status: "complete", toolName: "web_search" }] }}
+        workDurationMs={64_000}
+      />
+    );
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Worked for 1m 4s");
+    expect(screen.queryByTestId("run-status-line")).toBeNull();
+    expect(screen.queryByText("Answering…")).toBeNull();
+
+    rerender(
+      <RunAnswerV2
+        artifact={{
+          citations: [],
+          memorySources: [{
+            actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+            date: "2026-08-21T05:00:00.000Z",
+            memoryRef: "opaque-memory-ref",
+            sourceAvailable: true,
+            sourceType: "SAVED_MEMORY",
+            text: "I prefer concise answers."
+          }],
+          reasoningText: [],
+          sources: [],
+          workDurationMs: 64_000
+        }}
+        content="Partial"
+        presentation={presentation({ kind: "complete", runId: "run-a" })}
+        toolActivity={{ calls: [{ round: 1, status: "complete", toolName: "web_search" }] }}
+        workDurationMs={64_000}
+      />
+    );
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(
+      "Worked for 1m 4s · Used 1 memory"
+    );
   });
 
   it("restores the semantic shimmering tool status from persisted running activity", () => {
@@ -174,9 +219,9 @@ describe("Run lifecycle v2", () => {
       />
     );
 
-    expect(screen.getByRole("region", { name: "Answer interrupted by an error" })).toHaveTextContent(
-      "Answer interrupted by a provider errorprovider_stream_reset"
-    );
+    const interrupted = screen.getByRole("region", { name: "Answer interrupted by an error" });
+    expect(interrupted).toHaveTextContent("Answer interrupted by a provider error");
+    expect(interrupted).toHaveTextContent("Support reference provider_stream_reset");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
 
@@ -195,9 +240,10 @@ describe("Run lifecycle v2", () => {
         })}
       />
     );
-    expect(screen.getByRole("region", { name: "Run failed" })).toHaveTextContent(
-      "Request not completedcontext_budget_exceeded"
-    );
+    const failed = screen.getByRole("region", { name: "Run failed" });
+    expect(failed).toHaveTextContent("Request not completed");
+    expect(failed).toHaveTextContent("Choose a model with a larger context.");
+    expect(failed).toHaveTextContent("Support reference context_budget_exceeded");
     fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(selectModel).toHaveBeenCalledOnce();

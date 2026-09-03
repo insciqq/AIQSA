@@ -218,6 +218,8 @@ test("opens an exact Personal Memory source through the opaque action redirect",
   });
   await signInWithLocalToken(page);
 
+  // Memory recall lives inside the answer's process fold ("Used 1 memory").
+  await page.getByTestId("tool-activity-disclosure").locator("summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });
@@ -293,6 +295,8 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
   });
   await signInWithLocalToken(page);
 
+  // Memory recall lives inside the answer's process fold ("Used 1 memory").
+  await page.getByTestId("tool-activity-disclosure").locator("summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });
@@ -357,8 +361,10 @@ for (const locale of ["EN", "RU"] as const) {
     const answer = page.locator(`[data-message-id="assistant-action-${locale}"]`);
     await expect(answer.getByTestId("memory-action-statement")).toContainText(action.statement!);
     await expect(answer.getByText("Memory saved.", { exact: true })).toBeVisible();
-    await expect(answer.getByRole("button", { name: "Edit" })).toBeVisible();
-    await expect(answer.getByRole("button", { name: "Forget" })).toBeVisible();
+    // One quiet line: Edit and Forget wait behind the notice's "⋯" menu.
+    await answer.getByTestId("memory-action-menu").click();
+    await expect(answer.getByRole("menuitem", { name: "Edit" })).toBeVisible();
+    await expect(answer.getByRole("menuitem", { name: "Forget" })).toBeVisible();
   });
 }
 
@@ -534,14 +540,13 @@ test("confirms reset through the safe consumer action without technical IDs", as
 
   await runAccountMenuAction(page, "Memory");
   await page.getByTestId("library-memory-panel")
-    .getByRole("button", { name: "Manage memory" })
+    .getByRole("button", { name: "Memory settings" })
     .click();
-  const memory = page.getByRole("dialog", { name: "Memory" });
-  await memory.getByRole("button", { name: "Memory options" }).click();
-  await page.getByRole("menuitem", { name: "Reset personal memory" }).click();
-  const resetDialog = memory.getByRole("dialog", { name: "Reset personal memory?" });
+  const memory = page.getByRole("dialog", { name: "Settings" });
+  await memory.getByRole("button", { name: "Forget everything…" }).click();
+  const resetDialog = memory.getByRole("alertdialog", { name: "Forget everything?" });
   await expect(resetDialog).toBeVisible();
-  await resetDialog.getByRole("button", { name: "Reset now" }).click();
+  await resetDialog.getByRole("button", { name: "Forget everything" }).click();
 
   await expect.poll(() => resetBody).toMatchObject({
     confirmationCopyVersion: MEMORY_CONSUMER_CONFIRMATION_COPY_VERSION,
@@ -608,36 +613,28 @@ test("searches, edits, and forgets one exact saved memory", async ({ page }) => 
   await signInWithLocalToken(page);
 
   await runAccountMenuAction(page, "Memory");
-  await page.getByTestId("library-memory-panel")
-    .getByRole("button", { name: "Manage memory" })
-    .click();
-  const memoryWorkspace = page.getByRole("dialog", { name: "Memory" });
-  await memoryWorkspace.getByRole("button", { name: "Manage memory" }).click();
-  const manager = page.getByTestId("manage-memories");
+  const manager = page.getByTestId("library-memory-panel");
   await expect.poll(() => listRequests).toBeGreaterThan(0);
-  await expect(manager.getByTestId("memory-list-pane")
-    .getByText(current.statement, { exact: true })).toBeVisible();
+  await expect(manager.getByText(current.statement, { exact: true })).toBeVisible();
 
-  await manager.getByRole("search").getByLabel("Search saved memories").fill("architecture");
-  await manager.getByRole("search").getByRole("button", { name: "Search", exact: true }).click();
+  await manager.getByRole("searchbox", { name: "Search memories" }).fill("architecture");
+  await manager.getByRole("searchbox", { name: "Search memories" }).press("Enter");
   await expect.poll(() => searchBody).toMatchObject({
     pageSize: 20,
     query: "architecture"
   });
   expect(searchBody).not.toBeNull();
 
-  await manager.getByTestId("memory-list-pane")
-    .getByText(current.statement, { exact: true })
-    .click();
-  await expect(manager.getByRole("heading", { name: "Memory detail" })).toBeVisible();
-  await manager.getByRole("button", { name: "Edit", exact: true }).click();
-  const statement = manager.getByLabel("Exact statement");
+  await manager.getByRole("button", { name: /Memory actions: I prefer concise architecture reviews/ }).click();
+  await manager.getByRole("menuitem", { name: "Edit" }).click();
+  const statement = manager.getByRole("textbox", { name: /Edit I prefer concise architecture reviews/ });
   await statement.fill("I prefer concise architecture reviews with evidence.");
-  await manager.getByRole("button", { name: "Save changes" }).click();
+  await manager.getByRole("button", { name: "Save", exact: true }).click();
   await expect(manager.getByText("Saved memory committed.", { exact: true })).toBeVisible();
-  await expect(manager.getByTestId("memory-detail-pane")
-    .getByText(current.statement, { exact: true })).toBeVisible();
+  await expect(manager.getByText(current.statement, { exact: true })).toBeVisible();
 
+  await manager.getByRole("button", { name: /Memory actions: I prefer concise architecture reviews with evidence/ }).click();
+  await manager.getByRole("menuitem", { name: "Forget" }).click();
   await manager.getByRole("button", { name: "Forget", exact: true }).click();
   await expect(manager.getByText("Forgotten.", { exact: true })).toBeVisible();
   await expect(manager.getByText("No saved memories match this search.", { exact: true })).toBeVisible();

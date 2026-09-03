@@ -13,6 +13,8 @@ import {
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
   blankConversationOrientationV2,
+  chatLocationCrumbV2,
+  ComposerOperationErrorV2,
   SkillLibraryOverlayV2,
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
@@ -64,6 +66,35 @@ describe("MCP discovery failure actions v2", () => {
   });
 });
 
+describe("Composer operation error v2", () => {
+  it("offers one explicit Retry action only for a retryable send rejection", () => {
+    const onRetry = vi.fn();
+    const { rerender } = render(
+      <ComposerOperationErrorV2
+        error="Provider unavailable. Try again."
+        live
+        onRetry={onRetry}
+        retryable
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Provider unavailable. Try again.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+
+    rerender(
+      <ComposerOperationErrorV2
+        error="Upload failed."
+        live={false}
+        onRetry={onRetry}
+        retryable={false}
+      />
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Upload failed.");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+});
+
 function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetupComposerV2 {
   return {
     backgroundMode: false,
@@ -76,19 +107,13 @@ function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetup
     currentModel: galleryModels[0],
     currentParameterControls: galleryModels[0]!.parameterControls,
     maxOutputTokens: "8192",
-    notificationSoundEnabled: false,
     reasoningEffort: "medium",
     reasoningMode: "",
     searchPlanMode: "all_selected",
     selectSearchPlan: vi.fn(),
     selectedSearchOptionIds: [],
-    showCitations: true,
-    showReasoningBlocks: false,
     streamMode: true,
     temperature: "0.7",
-    toggleCitationsVisibility: vi.fn(),
-    toggleNotificationSound: vi.fn(),
-    toggleReasoningBlockVisibility: vi.fn(),
     useOrganizationModelDefault: vi.fn(),
     useOrganizationSearchDefault: vi.fn(),
     ...overrides
@@ -145,19 +170,15 @@ describe("Run setup v2", () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 
-  it("renders display toggles as real switches with visible on/off state", () => {
+  it("keeps only model parameters as switches; display settings live in Settings", () => {
     const composer = runSetupComposer();
     render(<RunSetupV2 composer={composer} onClose={vi.fn()} />);
 
-    const citations = screen.getByRole("switch", { name: /Citations/ });
-    expect(citations).toHaveAttribute("aria-checked", "true");
-    expect(citations).toHaveTextContent("Shown");
-    fireEvent.click(citations);
-    expect(composer.toggleCitationsVisibility).toHaveBeenCalledOnce();
-
-    const reasoning = screen.getByRole("switch", { name: /Reasoning blocks/ });
-    expect(reasoning).toHaveAttribute("aria-checked", "false");
-    expect(reasoning).toHaveTextContent("Hidden");
+    // Citations, Reasoning blocks and the answer sound moved to Settings ›
+    // General (UX audit 2026-09-02 B2): no duplicate toggles here.
+    expect(screen.queryByRole("switch", { name: /Citations/ })).toBeNull();
+    expect(screen.queryByRole("switch", { name: /Reasoning blocks/ })).toBeNull();
+    expect(screen.queryByRole("switch", { name: /sound/i })).toBeNull();
 
     const streaming = screen.getByRole("switch", { name: /Streaming/ });
     expect(streaming).toHaveAttribute("aria-checked", "true");
@@ -305,7 +326,12 @@ describe("Workspace header v2", () => {
   }
 
   it("keeps one kicker-free header: Share plus a single complete ⋯ menu", () => {
-    const props = headerProps();
+    const props = headerProps({
+      favorite: true,
+      memoryUsed: true,
+      onFavorite: vi.fn(),
+      onMemoryMode: vi.fn()
+    });
     render(<WorkspaceHeaderV2 {...props} />);
 
     // No kicker and no standalone Copy/Branches buttons remain.
@@ -322,13 +348,13 @@ describe("Workspace header v2", () => {
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent)
     ).toEqual([
-      "Share",
       "Rename",
       "Move to…",
+      "Favorite",
+      "Exclude from Memory",
+      "Share",
       "Branches",
       "Export",
-      "Export as JSON",
-      "Copy entire thread",
       "Archive",
       "Delete…"
     ]);
@@ -337,20 +363,29 @@ describe("Workspace header v2", () => {
       .toHaveAttribute("data-tone", "destructive");
     expect(within(menu).getByRole("menuitem", { name: "Archive" }))
       .not.toHaveAttribute("data-tone");
-    // Share is a mobile-only route; ≤899px CSS owns the breakpoint and
+    // Share is a mobile-only route; ≤767px CSS owns the breakpoint and
     // toggles this exact marker.
     expect(within(menu).getByRole("menuitem", { name: "Share" }))
       .toHaveAttribute("data-mobile-only");
 
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Export" }));
+    expect(within(screen.getByLabelText("Export")).getAllByRole("menuitem")
+      .map((item) => item.textContent)).toEqual([
+      "Markdown",
+      "JSON",
+      "Copy entire thread"
+    ]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Markdown" }));
     expect(props.onExport).toHaveBeenLastCalledWith("markdown");
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Export as JSON" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "JSON" }));
     expect(props.onExport).toHaveBeenLastCalledWith("json");
 
     fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy entire thread" }));
     expect(props.onCopyThread).toHaveBeenCalledTimes(1);
 
@@ -361,6 +396,55 @@ describe("Workspace header v2", () => {
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(props.onArchive).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveFocus();
+  });
+
+  it("chooses the model from the header selector and locks it under an Assistant", () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(
+      <WorkspaceHeaderV2
+        {...headerProps({ active: false })}
+        modelSelector={{
+          expanded: false,
+          family: "anthropic",
+          label: "Anthropic",
+          name: "Claude Opus 5",
+          onToggle
+        }}
+      />
+    );
+
+    // The blank chat keeps the header for the selector alone: no title, no actions.
+    const trigger = screen.getByTestId("header-model-trigger");
+    expect(trigger).toHaveAccessibleName("Claude Opus 5");
+    expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger.querySelector("use")).toHaveAttribute("href", "#v2-icon-provider-anthropic");
+    expect(screen.queryByTestId("header-title")).toBeNull();
+    expect(screen.queryByTestId("header-more-trigger")).toBeNull();
+    fireEvent.click(trigger);
+    expect(onToggle).toHaveBeenCalledWith(trigger);
+
+    rerender(
+      <WorkspaceHeaderV2
+        {...headerProps()}
+        modelSelector={{
+          expanded: true,
+          family: "openai_compatible",
+          label: "Custom OpenAI",
+          locked: true,
+          name: "Decision Writer · gpt-5.6-terra",
+          onToggle
+        }}
+      />
+    );
+    const locked = screen.getByTestId("header-model-trigger");
+    expect(locked).toBeDisabled();
+    expect(locked).toHaveAttribute("title", "Managed by the Assistant");
+    expect(locked).toHaveAttribute("aria-expanded", "true");
+    expect([...locked.querySelectorAll("use")].map((use) => use.getAttribute("href")))
+      .toEqual(["#v2-icon-plug", "#v2-icon-lock"]);
+    expect(screen.getByTestId("header-title")).toBeVisible();
   });
 
   it("gates Delete… on the capability and lists nested move destinations", () => {
@@ -389,6 +473,28 @@ describe("Workspace header v2", () => {
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
   });
 
+  it("uses Project root for manager movement and hides movement without authority", () => {
+    const onMove = vi.fn();
+    const projectFolders = folders.map((folder) => ({ ...folder, parentId: null }));
+    const { rerender } = render(
+      <WorkspaceHeaderV2
+        {...headerProps({ folders: projectFolders, moveRootLabel: "Project root", onMove })}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("header-more-trigger"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+    const submenu = screen.getByLabelText("Move to…");
+    expect(within(submenu).getAllByRole("menuitem").map((item) => item.textContent))
+      .toEqual(["Project root", "Research", "Recall", "Ops"]);
+    fireEvent.click(within(submenu).getByRole("menuitem", { name: "Research" }));
+    expect(onMove).toHaveBeenCalledWith("root-a");
+
+    rerender(<WorkspaceHeaderV2 {...headerProps({ folders: projectFolders, onMove: null })} />);
+    fireEvent.click(screen.getByTestId("header-more-trigger"));
+    expect(screen.queryByRole("menuitem", { name: "Move to…" })).toBeNull();
+  });
+
   it("starts inline rename from the title with the shared ✓/✕ pattern", () => {
     const props = headerProps();
     const { rerender } = render(<WorkspaceHeaderV2 {...props} />);
@@ -410,6 +516,13 @@ describe("Workspace header v2", () => {
 
     fireEvent.keyDown(input, { key: "Escape" });
     expect(props.onRenameCancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the canonical New chat placeholder until a real title exists", () => {
+    render(<WorkspaceHeaderV2 {...headerProps({ title: "New Chat" })} />);
+
+    expect(screen.getByTestId("header-title")).toHaveTextContent("New chat");
+    expect(screen.queryByText("New Chat")).toBeNull();
   });
 
   it("keeps the welcome header empty and carries no account menu", () => {
@@ -447,6 +560,46 @@ describe("Workspace header v2", () => {
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
   });
 
+});
+
+describe("Chat location crumb v2", () => {
+  it("uses the Project-owned hierarchy and prefixes the Project name", () => {
+    expect(chatLocationCrumbV2({
+      chat: { folderId: "project-child", projectId: "project-1" },
+      personalFolders: [{ id: "project-child", name: "Personal leak", parentId: null }],
+      project: { id: "project-1", name: "Ingest pipeline" },
+      projectFolders: [
+        { id: "project-root", name: "Specs", parentId: null },
+        { id: "project-child", name: "Retries", parentId: "project-root" }
+      ]
+    })).toBe("Ingest pipeline / Specs / Retries");
+
+    expect(chatLocationCrumbV2({
+      chat: { folderId: null, projectId: "project-1" },
+      personalFolders: [],
+      project: { id: "project-1", name: "Ingest pipeline" },
+      projectFolders: []
+    })).toBe("Ingest pipeline");
+  });
+
+  it("keeps personal paths separate and fails closed for a mismatched Project", () => {
+    const personalFolders = [
+      { id: "personal-root", name: "Research", parentId: null },
+      { id: "personal-child", name: "Recall", parentId: "personal-root" }
+    ];
+    expect(chatLocationCrumbV2({
+      chat: { folderId: "personal-child", projectId: null },
+      personalFolders,
+      project: null,
+      projectFolders: []
+    })).toBe("Research / Recall");
+    expect(chatLocationCrumbV2({
+      chat: { folderId: "personal-child", projectId: "project-missing" },
+      personalFolders,
+      project: { id: "other-project", name: "Other" },
+      projectFolders: []
+    })).toBeNull();
+  });
 });
 
 describe("Blank welcome v2", () => {

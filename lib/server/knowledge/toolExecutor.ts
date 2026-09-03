@@ -4,6 +4,10 @@ import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embed
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
+import {
+  OpenSearchTransportError,
+  type OpenSearchFailureCode
+} from "../search/opensearch/transport";
 import type {
   ModelToolCall,
   RunTool,
@@ -24,6 +28,8 @@ import {
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_SCOPED_RESULT_LIMIT,
   KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY,
   KNOWLEDGE_SEARCH_TOOL_NAME,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   type KnowledgeAcceptedBinding,
@@ -113,6 +119,13 @@ export type KnowledgeAcceptedEmbeddingRuntime = Readonly<{
 }>;
 
 export type KnowledgeRetrievalStore = Readonly<{
+  assertSearchReady(input: Readonly<{
+    bindingOrdinals?: readonly number[];
+    bindings: readonly KnowledgeAcceptedBinding[];
+    runId: string;
+    sourceIds?: readonly string[];
+    userId: string;
+  }>): Promise<void>;
   budgetState?(input: Readonly<{
     modelRunToolCallId: string;
     operation: KnowledgeOperationKind;
@@ -291,6 +304,49 @@ function errorResult(call: ModelToolCall, code: string, message?: string): ToolE
   };
 }
 
+type KnowledgeSearchUnavailableFailureCode =
+  (typeof KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES)[number];
+
+const SEARCH_INFRASTRUCTURE_FAILURE_CODES = new Set<OpenSearchFailureCode>([
+  "opensearch_authentication_failed",
+  "opensearch_connection_failed",
+  "opensearch_index_incompatible",
+  "opensearch_index_missing",
+  "opensearch_rate_limited",
+  "opensearch_response_invalid",
+  "opensearch_response_too_large",
+  "opensearch_timeout",
+  "opensearch_unavailable"
+]);
+
+function classifiedSearchUnavailable(error: unknown): Readonly<{
+  failureClass: "backend" | "projection";
+  failureCode: KnowledgeSearchUnavailableFailureCode;
+}> | null {
+  if (error instanceof Error && error.message === "knowledge_search_projection_incomplete") {
+    return {
+      failureClass: "projection",
+      failureCode: "knowledge_search_projection_unavailable"
+    };
+  }
+  if ((error instanceof OpenSearchTransportError &&
+      SEARCH_INFRASTRUCTURE_FAILURE_CODES.has(error.code)) ||
+    (error instanceof Error && error.message === "knowledge_search_candidate_revalidation_failed")) {
+    return {
+      failureClass: "backend",
+      failureCode: "knowledge_search_backend_unavailable"
+    };
+  }
+  return null;
+}
+
+function reportSearchUnavailable(failureClass: "backend" | "projection"): void {
+  console.warn(JSON.stringify({
+    event: "knowledge_search_unavailable",
+    failureClass
+  }));
+}
+
 function budgetRejectionResult(
   call: ModelToolCall,
   stopReason: KnowledgeBudgetStopReason | KnowledgeBudgetReservationStopReason
@@ -331,6 +387,25 @@ function completedResult(
     status: "complete",
     usage: aggregateKnowledgeUsage(evidence.embeddingExecutions)
   };
+}
+
+function unavailableResult(
+  call: ModelToolCall,
+  evidence: KnowledgeRetrievalEvidence
+): ToolExecutionResult {
+  return {
+    ...completedResult(call, evidence),
+    status: "error"
+  };
+}
+
+function resultFromEvidence(
+  call: ModelToolCall,
+  evidence: KnowledgeRetrievalEvidence
+): ToolExecutionResult {
+  return evidence.outcome === "search_unavailable"
+    ? unavailableResult(call, evidence)
+    : completedResult(call, evidence);
 }
 
 /** Content-free tokenizer identity derived from the accepted embedding
@@ -1070,7 +1145,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
     const replay = input.store.loadReceipt
       ? await input.store.loadReceipt({ modelRunToolCallId, runId, userId })
       : null;
-    if (replay) return { kind: "replayed", result: completedResult(call, replay) };
+    if (replay) return { kind: "replayed", result: resultFromEvidence(call, replay) };
     const budgetState = await loadBudgetState({
       call,
       modelRunToolCallId,
@@ -1148,7 +1223,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             userId: context.userId
           })
         : null;
-      if (replay) return completedResult(call, replay);
+      if (replay) return resultFromEvidence(call, replay);
       let budgetState = await loadBudgetState({
         call,
         modelRunToolCallId,
@@ -1250,10 +1325,10 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       }
 
       try {
-      const persist = async (
+      const persistEvidence = async (
         evidence: KnowledgeRetrievalEvidence,
         canonicalSourceProvenance: readonly KnowledgeCanonicalSourceProvenance[] = []
-      ) => {
+      ): Promise<KnowledgeRetrievalEvidence> => {
         const acceptedEvidence = await input.store.persistReceipt({
           ...(activeReservation
             ? {
@@ -1270,8 +1345,40 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           runId,
           userId: context.userId!
         });
-        const persistedEvidence = acceptedEvidence ?? evidence;
-        return completedResult(call, persistedEvidence);
+        return acceptedEvidence ?? evidence;
+      };
+      const persist = async (
+        evidence: KnowledgeRetrievalEvidence,
+        canonicalSourceProvenance: readonly KnowledgeCanonicalSourceProvenance[] = []
+      ) => {
+        return completedResult(call, await persistEvidence(evidence, canonicalSourceProvenance));
+      };
+      const persistSearchUnavailable = async (
+        classified: NonNullable<ReturnType<typeof classifiedSearchUnavailable>>,
+        embeddingExecutions: readonly KnowledgeEmbeddingExecutionEvidence[] = []
+      ) => {
+        const evidence = finalizedEvidence({
+          // The accepted scope remains in its purpose-bound run checkpoint.
+          // Infrastructure receipts intentionally contain no query, Base
+          // label, alias, or persistent resource identity.
+          bases: [],
+          candidateCount: 0,
+          candidateLimit,
+          durationMs: elapsedSince(startedAt),
+          embeddingExecutions,
+          failureCode: classified.failureCode,
+          fusion: "weighted_rrf_v2",
+          invocationOrdinal: budgetState.invocationOrdinal,
+          operation: "automatic_search",
+          outcome: "search_unavailable",
+          query: KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY,
+          resultLimit,
+          results: [],
+          version: KNOWLEDGE_RESULT_VERSION
+        });
+        const acceptedEvidence = await persistEvidence(evidence);
+        reportSearchUnavailable(classified.failureClass);
+        return unavailableResult(call, acceptedEvidence);
       };
       const persistExplicitUnavailable = async (failureCode: string) => {
         const durationMs = elapsedSince(startedAt);
@@ -1521,6 +1628,21 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       if (request.operation !== "automatic_search") {
         return persistExplicitUnavailable("knowledge_operation_not_applicable");
       }
+      try {
+        await input.store.assertSearchReady({
+          ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
+          bindings: scopedBindings,
+          runId,
+          ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}),
+          userId: context.userId
+        });
+      } catch (error) {
+        throwIfAborted(options?.signal);
+        const classified = classifiedSearchUnavailable(error);
+        if (classified) return persistSearchUnavailable(classified);
+        throw error;
+      }
+      throwIfAborted(options?.signal);
       const groups = bindingGroups(scopedBindings);
       if (groups.length !== 1) throw new Error("knowledge_embedding_space_incompatible");
 
@@ -1612,27 +1734,36 @@ export function createKnowledgeToolExecutor(input: Readonly<{
               query: request.query
             })
           : null;
-      const search = await input.store.hybridSearch({
-        ...(anchorQuery ? { anchorQuery } : {}),
-        ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
-        candidateLimit,
-        excludedContentHashes: budgetState.priorContentHashes,
-        operation: request.operation,
-        query: request.query,
-        ...(rerankExecutor
-          ? {
-              rerank: {
-                executor: rerankExecutor,
-                ...(options?.signal ? { signal: options.signal } : {})
+      let search: KnowledgeHybridSearchResult;
+      try {
+        search = await input.store.hybridSearch({
+          ...(anchorQuery ? { anchorQuery } : {}),
+          ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
+          candidateLimit,
+          excludedContentHashes: budgetState.priorContentHashes,
+          operation: request.operation,
+          query: request.query,
+          ...(rerankExecutor
+            ? {
+                rerank: {
+                  executor: rerankExecutor,
+                  ...(options?.signal ? { signal: options.signal } : {})
+                }
               }
-            }
-          : {}),
-        resultLimit,
-        runId,
-        ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}),
-        userId: context.userId,
-        vectors
-      });
+            : {}),
+          resultLimit,
+          runId,
+          ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}),
+          userId: context.userId,
+          vectors
+        });
+      } catch (error) {
+        throwIfAborted(options?.signal);
+        const classified = classifiedSearchUnavailable(error);
+        if (classified) return persistSearchUnavailable(classified, embeddingExecutions);
+        throw error;
+      }
+      throwIfAborted(options?.signal);
       if (search.bindingCount !== scopedBindings.length ||
         Object.values(search.candidateCounts).some((count) => !Number.isSafeInteger(count) || count < 0)) {
         throw new Error("knowledge_hybrid_result_invalid");

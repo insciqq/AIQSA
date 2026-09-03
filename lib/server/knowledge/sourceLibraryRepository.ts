@@ -33,6 +33,7 @@ type VersionRow = Readonly<{
   createdAt: Date;
   fileName: string;
   id: string;
+  originalStorageKey: string | null;
   versionNumber: number;
 }>;
 
@@ -115,6 +116,7 @@ const versionSelect = {
   createdAt: true,
   fileName: true,
   id: true,
+  originalStorageKey: true,
   versionNumber: true
 } satisfies Prisma.KnowledgeSourceVersionSelect;
 
@@ -230,7 +232,11 @@ function safeMemberships(source: SourceRow): KnowledgeSourceBaseMembership[] {
   }));
 }
 
-function safeSummary(source: SourceRow, userId: string): KnowledgeSourceSummary {
+function safeSummary(
+  source: SourceRow,
+  userId: string,
+  requiredProfileAvailable: boolean
+): KnowledgeSourceSummary {
   const pointers = {
     currentVersionId: source.currentVersionId,
     pendingVersionId: source.pendingVersionId
@@ -255,7 +261,14 @@ function safeSummary(source: SourceRow, userId: string): KnowledgeSourceSummary 
       : pendingReadiness
         ? { state: "processing", supportReference: null }
         : { state: "none", supportReference: null };
+  const retryTarget = source.pendingVersion ?? source.currentVersion;
+  const retryReadiness = source.pendingVersion ? pendingReadiness : currentVersion?.readiness ?? null;
+  const canReprocess = source.ownerUserId === userId && source.trashedAt === null &&
+    source.deletionRequestedAt === null && requiredProfileAvailable &&
+    retryTarget?.originalStorageKey !== null && retryTarget?.originalStorageKey !== undefined &&
+    retryReadiness?.state === "needs_attention";
   return {
+    canReprocess,
     currentVersion,
     deletionPending: source.deletionRequestedAt !== null,
     description: source.description,
@@ -302,20 +315,25 @@ function baseAccessWhere(userId: string, groupIds: readonly string[]): Prisma.Kn
   };
 }
 
-async function requiredProfileRevisionIds(
-  tx: Prisma.TransactionClient,
-  sourceId: string,
+type KnowledgeProfileQueryClient = Pick<Prisma.TransactionClient, "$queryRaw">;
+
+async function requiredProfileRevisionRows(
+  tx: KnowledgeProfileQueryClient,
+  sourceIds: readonly string[],
   ownerUserId: string
-): Promise<string[]> {
-  const rows = await tx.$queryRaw<Array<{ profileRevisionId: string }>>`
-    SELECT required."profileRevisionId"
+): Promise<Array<Readonly<{ profileRevisionId: string; sourceId: string }>>> {
+  if (sourceIds.length === 0) return [];
+  return tx.$queryRaw<Array<{ profileRevisionId: string; sourceId: string }>>(Prisma.sql`
+    SELECT required."profileRevisionId", required."sourceId"
     FROM (
-      SELECT profile."activeRevisionId" AS "profileRevisionId"
-      FROM "KnowledgeIndexProfile" AS profile
-      WHERE profile."id" = ${KNOWLEDGE_INDEX_PROFILE_ID}
-        AND profile."activeRevisionId" IS NOT NULL
+      SELECT source."id" AS "sourceId", profile."activeRevisionId" AS "profileRevisionId"
+      FROM "KnowledgeSource" AS source
+      INNER JOIN "KnowledgeIndexProfile" AS profile
+        ON profile."id" = ${KNOWLEDGE_INDEX_PROFILE_ID}
+       AND profile."activeRevisionId" IS NOT NULL
+      WHERE source."id" IN (${Prisma.join([...sourceIds])})
       UNION
-      SELECT generation."profileRevisionId"
+      SELECT membership."sourceId", generation."profileRevisionId"
       FROM "KnowledgeBaseSource" AS membership
       INNER JOIN "KnowledgeBase" AS base
         ON base."id" = membership."knowledgeBaseId"
@@ -336,7 +354,7 @@ async function requiredProfileRevisionIds(
              WHERE active_profile."activeRevisionId" = generation."profileRevisionId"
            )
        )
-      WHERE membership."sourceId" = ${sourceId}
+      WHERE membership."sourceId" IN (${Prisma.join([...sourceIds])})
         AND membership."ownerUserId" = ${ownerUserId}
         AND membership."removedAt" IS NULL
         AND base."archivedAt" IS NULL
@@ -344,8 +362,16 @@ async function requiredProfileRevisionIds(
         AND base."deletionRequestedAt" IS NULL
         AND generation."profileRevisionId" IS NOT NULL
     ) AS required
-    ORDER BY required."profileRevisionId"
-  `;
+    ORDER BY required."sourceId", required."profileRevisionId"
+  `);
+}
+
+async function requiredProfileRevisionIds(
+  tx: Prisma.TransactionClient,
+  sourceId: string,
+  ownerUserId: string
+): Promise<string[]> {
+  const rows = await requiredProfileRevisionRows(tx, [sourceId], ownerUserId);
   return rows.map(({ profileRevisionId }) => profileRevisionId);
 }
 
@@ -435,7 +461,10 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
       }
     }) as SourceDetailRow | null;
     if (!row) return null;
-    const summary = safeSummary(row, userId);
+    const requiredProfiles = row.ownerUserId === userId
+      ? await requiredProfileRevisionRows(client, [row.id], row.ownerUserId)
+      : [];
+    const summary = safeSummary(row, userId, requiredProfiles.length > 0);
     const memberships = safeMemberships(row);
     const membershipIds = new Set(memberships.map(({ id }) => id));
     const owned = row.ownerUserId === userId;
@@ -640,7 +669,9 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
           trashedAt: null
         }
       }) as SourceRow | null;
-      return row ? safeSummary(row, userId) : null;
+      if (!row) return null;
+      const requiredProfiles = await requiredProfileRevisionRows(client, [row.id], userId);
+      return safeSummary(row, userId, requiredProfiles.length > 0);
     },
 
     getDetail,
@@ -706,7 +737,7 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
       const where: Prisma.KnowledgeSourceWhereInput = {
         AND: [visibility, ownership, search, baseScope]
       };
-      const { page, rows, totalItems, totalPages } = await client.$transaction(async (tx) => {
+      const { page, retryableSourceIds, rows, totalItems, totalPages } = await client.$transaction(async (tx) => {
         const totalItems = await tx.knowledgeSource.count({ where });
         const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / input.pageSize);
         const page = Math.min(input.page, Math.max(1, totalPages));
@@ -717,7 +748,17 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
           take: input.pageSize,
           where
         });
-        return { page, rows, totalItems, totalPages };
+        const ownedSourceIds = rows
+          .filter((row) => row.ownerUserId === input.userId)
+          .map(({ id }) => id);
+        const requiredProfiles = await requiredProfileRevisionRows(tx, ownedSourceIds, input.userId);
+        return {
+          page,
+          retryableSourceIds: new Set(requiredProfiles.map(({ sourceId }) => sourceId)),
+          rows,
+          totalItems,
+          totalPages
+        };
       });
       return {
         pagination: {
@@ -727,7 +768,8 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
           totalItems,
           totalPages
         },
-        sources: (rows as SourceRow[]).map((row) => safeSummary(row, input.userId))
+        sources: (rows as SourceRow[]).map((row) =>
+          safeSummary(row, input.userId, retryableSourceIds.has(row.id)))
       };
     },
 

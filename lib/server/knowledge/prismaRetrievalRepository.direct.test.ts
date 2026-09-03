@@ -3,6 +3,87 @@ import { knowledgeRetrievalScopeSql } from "./prismaRetrievalCore";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
 
 describe("Prisma Knowledge canonical direct Source scope", () => {
+  it("proves the immutable projected scope before checking OpenSearch", async () => {
+    const order: string[] = [];
+    const queryRaw = vi.fn(async () => {
+      order.push("scope");
+      return [{
+        acceptedIndexArtifactIds: ["hierarchy-1"],
+        baseName: "Base",
+        bindingOrdinal: 0,
+        eligibleRows: 1,
+        indexGenerationId: "generation-1",
+        knowledgeBaseId: "base-1",
+        projectionComplete: true,
+        targetDimension: 1_024
+      }];
+    });
+    const transaction = vi.fn(async (consume: (tx: unknown) => Promise<unknown>) =>
+      consume({
+        $executeRaw: vi.fn(async () => 1),
+        $queryRaw: queryRaw
+      }));
+    const checkKnowledgeIndex = vi.fn(async () => {
+      order.push("opensearch");
+    });
+    const store = createPrismaKnowledgeRetrievalStore(
+      { $transaction: transaction } as never,
+      undefined,
+      { checkKnowledgeIndex } as never
+    );
+
+    await expect(store.assertSearchReady({
+      bindings: [{
+        baseName: "Base",
+        indexGenerationId: "generation-1",
+        knowledgeBaseId: "base-1",
+        ordinal: 0,
+        targetDimension: 1_024
+      } as never],
+      runId: "run-1",
+      userId: "owner-1"
+    })).resolves.toBeUndefined();
+
+    expect(order).toEqual(["scope", "opensearch"]);
+    expect(checkKnowledgeIndex).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an incomplete projection without touching OpenSearch", async () => {
+    const transaction = vi.fn(async (consume: (tx: unknown) => Promise<unknown>) =>
+      consume({
+        $executeRaw: vi.fn(async () => 1),
+        $queryRaw: vi.fn(async () => [{
+          acceptedIndexArtifactIds: ["hierarchy-1"],
+          baseName: "Base",
+          bindingOrdinal: 0,
+          eligibleRows: 1,
+          indexGenerationId: "generation-1",
+          knowledgeBaseId: "base-1",
+          projectionComplete: false,
+          targetDimension: 1_024
+        }])
+      }));
+    const checkKnowledgeIndex = vi.fn();
+    const store = createPrismaKnowledgeRetrievalStore(
+      { $transaction: transaction } as never,
+      undefined,
+      { checkKnowledgeIndex } as never
+    );
+
+    await expect(store.assertSearchReady({
+      bindings: [{
+        baseName: "Base",
+        indexGenerationId: "generation-1",
+        knowledgeBaseId: "base-1",
+        ordinal: 0,
+        targetDimension: 1_024
+      } as never],
+      runId: "run-1",
+      userId: "owner-1"
+    })).rejects.toThrow("knowledge_search_projection_incomplete");
+    expect(checkKnowledgeIndex).not.toHaveBeenCalled();
+  });
+
   it("builds a dual-read SQL scope that prefers canonical Source rows", () => {
     const query = knowledgeRetrievalScopeSql({
       runId: "run-1",
@@ -17,6 +98,8 @@ describe("Prisma Knowledge canonical direct Source scope", () => {
     expect(sql).toContain("binding.\"scopeKind\" = 'profile'");
     expect(sql).toContain('embedding."embeddingDimension"');
     expect(sql).not.toContain('embedding."embedding"');
+    expect(sql).toContain('hierarchy."checksum" AS "hierarchicalChecksum"');
+    expect(sql).toContain('projection."projectionFingerprint" = encode(sha256');
   });
 
   it("loads one profile execution binding and the persisted Source alias without a Base", async () => {

@@ -69,7 +69,8 @@ import {
 import type { StoredKnowledgeEvidenceDispatch } from "../knowledge/evidenceDispatchRepository";
 import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
-  KNOWLEDGE_INSUFFICIENT_MESSAGE
+  KNOWLEDGE_INSUFFICIENT_MESSAGE,
+  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
 } from "../knowledge/answerGroundingV5";
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
@@ -664,6 +665,9 @@ function createRecoveryMemoryEgressRecorder() {
     runId: string;
     userId: string;
   }> = [];
+  const recoveredTools: Parameters<
+    MemoryToolEgressReceiptService["settleRecoveredToolDispatch"]
+  >[0][] = [];
   let ordinal = 0;
   const service: MemoryToolEgressReceiptService = {
     async beginDispatch(input) {
@@ -680,6 +684,10 @@ function createRecoveryMemoryEgressRecorder() {
       recovered.push(input);
       return true;
     },
+    async settleRecoveredToolDispatch(input) {
+      recoveredTools.push(input);
+      return true;
+    },
     async completeDispatch(receiptId) {
       completed.push(receiptId);
       return true;
@@ -689,7 +697,7 @@ function createRecoveryMemoryEgressRecorder() {
       return true;
     }
   };
-  return { began, blocked, completed, failed, recovered, service };
+  return { began, blocked, completed, failed, recovered, recoveredTools, service };
 }
 
 const recoveryToolName = "mcp_memory_remember_1234567890";
@@ -1181,6 +1189,35 @@ function focusedKnowledgeZeroCandidateResult(): ToolExecutionResult {
   };
 }
 
+function focusedKnowledgeSearchUnavailableResult(): ToolExecutionResult {
+  const complete = focusedKnowledgeRetrievalResult();
+  const preview = complete.rawPreview as Readonly<{
+    knowledgeRetrieval: KnowledgeRetrievalEvidence;
+  }>;
+  const draft: KnowledgeRetrievalEvidence = {
+    ...preview.knowledgeRetrieval,
+    bases: [],
+    candidateCount: 0,
+    failureCode: "knowledge_search_backend_unavailable",
+    operation: "automatic_search",
+    outcome: "search_unavailable",
+    providerText: "pending",
+    query: "knowledge_search_unavailable",
+    results: [],
+    scopeAliases: undefined
+  };
+  const evidence = { ...draft, providerText: knowledgeToolResultText(draft) };
+  return {
+    ...complete,
+    content: knowledgeToolResultContent(evidence),
+    rawPreview: {
+      ...complete.rawPreview,
+      knowledgeRetrieval: evidence
+    },
+    status: "error"
+  };
+}
+
 
 function normalizedMemoryActionRequest(): NormalizedRunRequest {
   const { mcp: _mcp, ...request } = normalizedToolRequest();
@@ -1380,7 +1417,14 @@ function installCheckpointState(
       if (!next) return false;
       currentCheckpoint = next;
     }
-    return recordRunUsageEvents(input);
+    const recorded = await recordRunUsageEvents(input);
+    if (recorded && input.usageAccountedToolCallIds) {
+      const accounted = new Set(input.usageAccountedToolCallIds);
+      calls = calls.map((call) => accounted.has(call.id)
+        ? { ...call, usageAccountedAt: "2026-07-12T09:02:00.000Z" }
+        : call);
+    }
+    return recorded;
   };
   harness.repository.loadAttachments = async () => [];
   const claimToolLoopCall: RunRecoveryRepository["claimToolLoopCall"] = async ({ callId }) => {
@@ -1417,7 +1461,8 @@ function installCheckpointState(
           ...candidate,
           completedAt: "2026-07-12T09:01:00.000Z",
           result,
-          state
+          state,
+          usageAccountedAt: null
         }
       : candidate);
     return "settled";
@@ -2850,11 +2895,149 @@ describe("run recovery", () => {
       assistantMessageId: "assistant-1",
       error: {
         code: "no_retrieval_candidates",
-        message: "No retrieval candidates were found in the ready Knowledge sources."
+        message: "No retrieval candidates were found in the ready Knowledge documents."
       },
       runId
     }]);
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+  });
+
+  it("repairs a running focused Knowledge outage from its receipt and accounts usage once", async () => {
+    const fixture = focusedKnowledgeProviderRecoveryFixture();
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const outage = focusedKnowledgeSearchUnavailableResult();
+    const preflight = vi.fn(async () => ({ kind: "replayed" as const, result: outage }));
+    const execute = vi.fn(async () => focusedKnowledgeRetrievalResult());
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const egress = createRecoveryMemoryEgressRecorder();
+    vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_FOCUSED_OPERATION_NAME,
+        capability: "knowledge",
+        execute,
+        preflight,
+        tool: knowledgeRetrievalTool,
+        tools: []
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      memoryEgress: egress.service,
+      providerDispatchRecoveryRequest: fixture.normalizedRequest,
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream() { return providerResult; } } }
+    });
+    const persistedCall: PersistedToolLoopCall = {
+      arguments: focusedKnowledgeCallArguments(fixture.knowledgeFocusedRequest),
+      completedAt: null,
+      id: "focused-call-running-outage",
+      mcpBinding: null,
+      ordinal: 0,
+      providerCallId: FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID,
+      result: null,
+      roundIndex: 0,
+      startedAt: "2026-07-12T09:00:30.000Z",
+      state: "running",
+      toolName: KNOWLEDGE_FOCUSED_OPERATION_NAME,
+      usageAccountedAt: null
+    };
+    harness.repository.loadFocusedKnowledgeCall = async () => persistedCall;
+    const claim = vi.fn(async () => ({ call: persistedCall, kind: "ambiguous" as const }));
+    const settle = vi.fn(async () => "settled" as const);
+    const record = vi.fn(harness.repository.recordRunUsageEvents);
+    harness.repository.claimAutomaticKnowledgeCall = claim;
+    harness.repository.settleToolLoopCall = settle;
+    harness.repository.recordRunUsageEvents = record;
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledWith(expect.objectContaining({
+      callId: persistedCall.id,
+      state: "error"
+    }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({
+      usageAccountedToolCallIds: [persistedCall.id],
+      usageAttributions: [expect.objectContaining({
+        modelId: "embedding-model",
+        provider: "test",
+        usage: expect.objectContaining({ inputTokens: 2, totalTokens: 2 })
+      })]
+    }));
+    expect(egress.recoveredTools).toEqual([{
+      modelRunToolCallId: persistedCall.id,
+      outcome: "COMPLETED",
+      runId,
+      userId
+    }]);
+    expect(dispatch.lifecycle.prepare).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "knowledge_retrieval_failed" })
+    })]);
+  });
+
+  it("does not account focused Knowledge usage again after its atomic marker", async () => {
+    const fixture = focusedKnowledgeProviderRecoveryFixture();
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const outage = focusedKnowledgeSearchUnavailableResult();
+    const stored = snapshotToolExecutionResult(outage, toolLoopPersistenceLimits.resultBytes);
+    if (!stored) throw new Error("invalid_focused_outage_fixture");
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_FOCUSED_OPERATION_NAME,
+        capability: "knowledge",
+        execute: vi.fn(async () => focusedKnowledgeRetrievalResult()),
+        preflight: vi.fn(async () => ({ kind: "admitted" as const })),
+        tool: knowledgeRetrievalTool,
+        tools: []
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providerDispatchRecoveryRequest: fixture.normalizedRequest,
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream() { return providerResult; } } }
+    });
+    const persistedCall: PersistedToolLoopCall = {
+      arguments: focusedKnowledgeCallArguments(fixture.knowledgeFocusedRequest),
+      completedAt: "2026-07-12T09:01:00.000Z",
+      id: "focused-call-accounted-outage",
+      mcpBinding: null,
+      ordinal: 0,
+      providerCallId: FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID,
+      result: stored,
+      roundIndex: 0,
+      startedAt: "2026-07-12T09:00:30.000Z",
+      state: "error",
+      toolName: KNOWLEDGE_FOCUSED_OPERATION_NAME,
+      usageAccountedAt: "2026-07-12T09:02:00.000Z"
+    };
+    harness.repository.loadFocusedKnowledgeCall = async () => persistedCall;
+    harness.repository.claimAutomaticKnowledgeCall = async () => ({
+      call: persistedCall,
+      kind: "settled"
+    });
+    const record = vi.fn(harness.repository.recordRunUsageEvents);
+    harness.repository.recordRunUsageEvents = record;
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(record).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.prepare).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "knowledge_retrieval_failed" })
+    })]);
   });
 
   it("terminalizes a tombstoned persisted focused scope before retrieval or provider I/O", async () => {
@@ -3194,6 +3377,228 @@ describe("run recovery", () => {
     );
     expect(egress.began.some((receipt) => receipt.destinationKind === "knowledge"))
       .toBe(true);
+  });
+
+  it("replays a settled Knowledge search outage without repeating retrieval or usage", async () => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const execute = vi.fn(async () => focusedKnowledgeRetrievalResult());
+    const preflight = vi.fn(async () => ({ kind: "admitted" as const }));
+    const requests: ProviderRunRequest[] = [];
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight,
+        tool: knowledgeRetrievalTool,
+        tools: [knowledgeRetrievalTool]
+      },
+      memoryEgress: egress.service,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "The provider saw the safe outage result.",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const outage = focusedKnowledgeSearchUnavailableResult();
+    const storedOutage = snapshotToolExecutionResult({
+      ...outage,
+      callId: "knowledge-provider-call-unavailable",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, toolLoopPersistenceLimits.resultBytes);
+    if (!storedOutage) throw new Error("invalid_search_unavailable_recovery_fixture");
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("error"),
+      arguments: { query: "remember this" },
+      mcpBinding: null,
+      providerCallId: "knowledge-provider-call-unavailable",
+      result: storedOutage,
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME,
+      usageAccountedAt: "2026-07-12T09:02:00.000Z"
+    };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [knowledgeCall], phase: "tools_pending" }),
+      knowledgeScope: {
+        bindings: authorization.admitted.bindings,
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan,
+        resolvedSourceCount: 1
+      },
+      normalizedRequest: normalizedKnowledgeRequest()
+    }, [{
+      modelId: "embedding-model",
+      provider: "test",
+      recordedAt: "2026-07-12T09:02:00.000Z",
+      usage: { inputTokens: 2, outputTokens: 0, reasoningTokens: 0 }
+    }]);
+    const settleToolLoopCall = vi.fn(harness.repository.settleToolLoopCall);
+    harness.repository.settleToolLoopCall = settleToolLoopCall;
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(preflight).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(settleToolLoopCall).not.toHaveBeenCalled();
+    expect(egress.recoveredTools).toEqual([{
+      modelRunToolCallId: knowledgeCall.id,
+      outcome: "COMPLETED",
+      runId,
+      userId
+    }]);
+    expect(harness.state.usageAttributions.every((batch) =>
+      batch.find((attribution) => attribution.modelId === "embedding-model")?.usage.inputTokens === 2
+    )).toBe(true);
+    expect(installed.calls()).toEqual([
+      expect.objectContaining({ result: storedOutage, state: "error" })
+    ]);
+    expect(requests).toHaveLength(1);
+    const providerMessages = JSON.stringify(requests[0]?.providerToolMessages);
+    expect(providerMessages).toContain(
+      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+    );
+    expect(providerMessages).not.toContain("knowledge_search_backend_unavailable");
+    expect(harness.state.completed).toMatchObject({
+      finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
+      usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0, totalTokens: 7 }
+    });
+    expect(harness.state.completed?.usageAttributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelId: "embedding-model",
+        provider: "test",
+        usage: expect.objectContaining({ inputTokens: 2, totalTokens: 2 })
+      })
+    ]));
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("repairs a running Knowledge call from its durable outage receipt without retrieval I/O", async () => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const outage = {
+      ...focusedKnowledgeSearchUnavailableResult(),
+      callId: "knowledge-provider-call-crash-window",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const execute = vi.fn(async () => focusedKnowledgeRetrievalResult());
+    const preflight = vi.fn(async () => ({
+      kind: "replayed" as const,
+      result: outage
+    }));
+    const requests: ProviderRunRequest[] = [];
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight,
+        tool: knowledgeRetrievalTool,
+        tools: [knowledgeRetrievalTool]
+      },
+      memoryEgress: egress.service,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "The provider saw the recovered safe outage result.",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("running"),
+      arguments: { query: "remember this" },
+      completedAt: null,
+      mcpBinding: null,
+      providerCallId: "knowledge-provider-call-crash-window",
+      result: null,
+      startedAt: "2026-07-12T09:00:30.000Z",
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [knowledgeCall], phase: "tools_running" }),
+      knowledgeScope: {
+        bindings: authorization.admitted.bindings,
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan,
+        resolvedSourceCount: 1
+      },
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+    const claimToolLoopCall = vi.fn(harness.repository.claimToolLoopCall);
+    const settleToolLoopCall = vi.fn(harness.repository.settleToolLoopCall);
+    harness.repository.claimToolLoopCall = claimToolLoopCall;
+    harness.repository.settleToolLoopCall = settleToolLoopCall;
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(claimToolLoopCall).not.toHaveBeenCalled();
+    expect(settleToolLoopCall).toHaveBeenCalledOnce();
+    expect(settleToolLoopCall).toHaveBeenCalledWith(expect.objectContaining({
+      callId: knowledgeCall.id,
+      state: "error"
+    }));
+    expect(egress.recoveredTools).toEqual([{
+      modelRunToolCallId: knowledgeCall.id,
+      outcome: "COMPLETED",
+      runId,
+      userId
+    }]);
+    expect(harness.state.usageAttributions.every((batch) =>
+      batch.find((attribution) => attribution.modelId === "embedding-model")?.usage.inputTokens === 2
+    )).toBe(true);
+    expect(installed.calls()).toEqual([
+      expect.objectContaining({
+        result: expect.any(Object),
+        state: "error",
+        usageAccountedAt: expect.any(String)
+      })
+    ]);
+    expect(requests).toHaveLength(1);
+    const providerMessages = JSON.stringify(requests[0]?.providerToolMessages);
+    expect(providerMessages).toContain(
+      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+    );
+    expect(providerMessages).not.toContain("knowledge_search_backend_unavailable");
+    expect(harness.state.completed).toMatchObject({
+      finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
+      usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0, totalTokens: 7 }
+    });
+    expect(harness.state.completed?.usageAttributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelId: "embedding-model",
+        provider: "test",
+        usage: expect.objectContaining({ inputTokens: 2, totalTokens: 2 })
+      })
+    ]));
+    expect(harness.state.recoveredErrors).toEqual([]);
   });
 
   it("terminalizes a recovered Knowledge tool loop with zero evidence without exposing provider text", async () => {
@@ -5124,7 +5529,8 @@ describe("run recovery", () => {
       arguments: { query: "first source query" },
       mcpBinding: null,
       result: settledResult,
-      toolName: "search_engine_1"
+      toolName: "search_engine_1",
+      usageAccountedAt: "2026-07-12T09:02:00.000Z"
     };
     const secondCall: PersistedToolLoopCall = {
       ...persistedRecoveryCall(),

@@ -258,5 +258,22 @@ describe("folder actions", () => {
       knowledgePlanSource: "project",
       selectedKnowledgeBaseIds: ["base-policies", "base-release"]
     });
+    expect(state.notices().at(-1)).toMatchObject({
+      kind: "success",
+      text: "Default Knowledge saved: Research"
+    });
+  });
+
+  it("names a failed folder default save without calling it Project settings", async () => {
+    const state = createFolderActionsHarness();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
+
+    await state.actions.saveProjectSettings(state.folder);
+
+    expect(state.folderMutation.completeProjectSave).not.toHaveBeenCalled();
+    expect(state.notices().at(-1)).toEqual({
+      kind: "error",
+      text: "Default Knowledge failed with HTTP 503 (default_knowledge_failed_503)"
+    });
   });
 });

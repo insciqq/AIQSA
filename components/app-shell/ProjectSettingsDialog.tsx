@@ -1,7 +1,7 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import type { FolderSummary } from "@/components/app-shell/types";
+import { UiV2Button, UiV2IconButton } from "@/components/ui-v2";
 import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
-import { X } from "lucide-react";
 import { useState } from "react";
 import { useDialogFocus } from "./useDialogFocus";
 
@@ -32,9 +32,7 @@ export function ProjectSettingsDialog({
 }) {
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const requestCancel = () => {
-    if (saving) {
-      return;
-    }
+    if (saving) return;
     if (JSON.stringify(knowledgeBaseIds) !== JSON.stringify(folder.defaultKnowledgePlan?.baseIds ?? [])) {
       setDiscardConfirmationOpen(true);
       return;
@@ -51,55 +49,55 @@ export function ProjectSettingsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-end justify-center bg-scrim/60 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
+      className="v2-folder-knowledge-scrim"
       role="presentation"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          requestCancel();
-        }
+        if (event.target === event.currentTarget) requestCancel();
       }}
     >
       <div
         ref={dialogRef}
-        className="pop-enter flex max-h-[calc(100dvh-max(.75rem,env(safe-area-inset-top)))] w-full max-w-lg flex-col overflow-hidden rounded-t-panel border border-b-0 border-trace-subtle bg-overlay-surface text-ink shadow-overlay sm:max-h-[calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] sm:rounded-panel sm:border [@media(max-height:32rem)]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))]"
-        role="dialog"
-        aria-modal="true"
-        aria-hidden={discardConfirmationOpen || undefined}
-        aria-label={`Project Settings ${folder.name}`}
         aria-busy={saving || undefined}
+        aria-hidden={discardConfirmationOpen || undefined}
+        aria-label={`Default Knowledge for ${folder.name}`}
+        aria-modal="true"
+        className="v2-folder-knowledge-dialog"
         inert={discardConfirmationOpen || undefined}
+        role="dialog"
       >
-        <header className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-trace-subtle px-4">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink">Project settings</h2>
-            <p className="break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{folder.name}</p>
+        <header className="v2-folder-knowledge-header">
+          <div>
+            <h2>Default Knowledge</h2>
+            <p>{folder.name}</p>
           </div>
-          <button
-            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-            type="button"
-            aria-label="Close project settings"
+          <UiV2IconButton
             disabled={saving}
+            icon="close"
+            label="Close Default Knowledge"
             onClick={requestCancel}
-          >
-            <X className="size-4" aria-hidden="true" />
-          </button>
+          />
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
-          <fieldset className="mt-6 border-t border-trace-subtle pt-5">
-            <legend className="text-xs font-semibold text-ink">Default Knowledge plan</legend>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">
-              Used for future runs in this project unless a chat or explicit next-run plan overrides it. Each selected Base contributes its current ready Sources.
+        <div className="v2-folder-knowledge-body">
+          <fieldset className="v2-folder-knowledge-fieldset">
+            <legend>Default Knowledge plan</legend>
+            <p>
+              Used for future runs in this folder unless a chat or explicit next-run plan overrides it.
+              Each selected base contributes its current ready documents.
             </p>
-            <div className="mt-3 space-y-2">
+            <div className="v2-folder-knowledge-options">
               {knowledgeBaseIds
                 .filter((baseId) => !knowledgeBases.some((base) => base.id === baseId))
                 .map((baseId) => {
                   const order = knowledgeBaseIds.indexOf(baseId) + 1;
                   return (
-                    <label className="flex min-h-touch items-center gap-2 rounded-control bg-control-selected px-3 text-xs text-caution" key={baseId}>
+                    <label
+                      className="v2-folder-knowledge-option"
+                      data-selected="true"
+                      data-unavailable="true"
+                      key={baseId}
+                    >
                       <input
                         checked
-                        className="size-4 shrink-0 accent-proof"
                         disabled={saving}
                         type="checkbox"
                         onChange={() => onKnowledgeBaseIdsChange(knowledgeBaseIds.filter((id) => id !== baseId))}
@@ -112,10 +110,14 @@ export function ProjectSettingsDialog({
                 const checked = knowledgeBaseIds.includes(base.id);
                 const unavailable = base.archived;
                 return (
-                  <label className={`flex min-h-touch items-center gap-2 rounded-control px-3 text-xs ${checked ? "bg-control-selected" : "bg-control-surface"}`} key={base.id}>
+                  <label
+                    className="v2-folder-knowledge-option"
+                    data-selected={checked || undefined}
+                    data-unavailable={unavailable || undefined}
+                    key={base.id}
+                  >
                     <input
                       checked={checked}
-                      className="size-4 shrink-0 accent-proof"
                       disabled={saving || (!checked && unavailable)}
                       type="checkbox"
                       onChange={(event) => onKnowledgeBaseIdsChange(
@@ -124,7 +126,7 @@ export function ProjectSettingsDialog({
                           : knowledgeBaseIds.filter((id) => id !== base.id)
                       )}
                     />
-                    <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${unavailable ? "text-caution" : "text-ink-secondary"}`}>
+                    <span>
                       {base.name}{unavailable ? checked ? " · unavailable, retained" : " · unavailable" : ""}
                       {checked ? ` · order ${knowledgeBaseIds.indexOf(base.id) + 1}` : ""}
                     </span>
@@ -132,49 +134,30 @@ export function ProjectSettingsDialog({
                 );
               })}
               {knowledgeDataState === "loading" && knowledgeBases.length === 0 ? (
-                <p className="text-xs text-ink-muted" role="status">Loading Knowledge bases…</p>
+                <p className="v2-folder-knowledge-state" role="status">Loading Knowledge bases…</p>
               ) : null}
               {knowledgeDataState === "error" ? (
-                <div className="rounded-control border border-critical/30 bg-critical/10 p-3 text-xs text-critical" role="alert">
+                <div className="v2-folder-knowledge-error" role="alert">
                   <p>{knowledgeDataError ?? "Knowledge bases could not be loaded."}</p>
-                  <button
-                    className="mt-2 h-touch rounded-control bg-control-surface px-3 font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
-                    type="button"
-                    disabled={saving}
-                    onClick={onRetryKnowledge}
-                  >
-                    Retry Knowledge
-                  </button>
+                  <UiV2Button disabled={saving} onClick={onRetryKnowledge}>Retry Knowledge</UiV2Button>
                 </div>
               ) : null}
               {knowledgeDataState === "ready" && knowledgeBases.length === 0 && knowledgeBaseIds.length === 0 ? (
-                <p className="text-xs text-ink-muted">No Knowledge bases are available. The project default is Off.</p>
+                <p className="v2-folder-knowledge-state">No Knowledge bases are available. The folder default is Off.</p>
               ) : null}
             </div>
           </fieldset>
         </div>
-        <footer className="flex shrink-0 justify-end gap-2 border-t border-trace-subtle px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:pb-3">
-          <button
-            className="h-touch rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
-            type="button"
-            disabled={saving}
-            onClick={requestCancel}
-          >
-            Cancel
-          </button>
-          <button
-            className="h-touch rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
-            type="button"
-            disabled={saving}
-            onClick={onSave}
-          >
+        <footer className="v2-folder-knowledge-footer">
+          <UiV2Button disabled={saving} onClick={requestCancel}>Cancel</UiV2Button>
+          <UiV2Button busy={saving} tone="primary" onClick={onSave}>
             {saving ? "Saving…" : "Save"}
-          </button>
+          </UiV2Button>
         </footer>
       </div>
       {discardConfirmationOpen ? (
         <DiscardChangesConfirmationDialog
-          label="project settings"
+          label="Default Knowledge"
           onCancel={() => setDiscardConfirmationOpen(false)}
           onConfirm={() => {
             setDiscardConfirmationOpen(false);

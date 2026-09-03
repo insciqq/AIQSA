@@ -224,7 +224,6 @@ export function withLayoutAwareTables(document: ParsedDocument): ParsedDocument 
   }
   const consumed = new Set<number>();
   const replacements: ParsedDocumentBlock[] = [];
-  let ambiguous = false;
   for (const group of groups.values()) {
     for (const rows of rowRuns(visualRows(group))) {
       const indexes = rows.flatMap((row) => row.cells.map((cell) => cell.block.index));
@@ -234,7 +233,6 @@ export function withLayoutAwareTables(document: ParsedDocument): ParsedDocument 
         indexes.forEach((index) => consumed.add(index));
         continue;
       }
-      ambiguous = true;
       for (const row of rows) {
         for (const cell of row.cells) {
           consumed.add(cell.block.index);
@@ -263,10 +261,7 @@ export function withLayoutAwareTables(document: ParsedDocument): ParsedDocument 
     ocrConfidence: document.quality.ocrConfidence,
     pageCount: document.pageCount,
     status: document.status,
-    warnings: [
-      ...document.warnings,
-      ...(ambiguous ? ["table_extraction_degraded" as const] : [])
-    ],
+    warnings: document.warnings,
     workbook: document.workbook
   });
 }

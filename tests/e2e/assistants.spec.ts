@@ -180,10 +180,10 @@ async function openAssistantsLibrary(page: Page): Promise<Locator> {
 }
 
 async function selectAssistantFromPicker(page: Page, assistantId: string): Promise<void> {
-  await page.getByRole("button", { name: "Capabilities" }).click();
+  await page.getByRole("button", { name: "Add" }).click();
   await page
-    .getByRole("menu", { name: "Capabilities" })
-    .getByRole("menuitemcheckbox", { name: /Use an Assistant/ })
+    .getByRole("menu", { name: "Add" })
+    .getByRole("menuitem", { name: /Use an Assistant/ })
     .click();
   const picker = page.getByTestId("assistant-picker");
   await expect(picker).toBeVisible();
@@ -321,13 +321,10 @@ test("requires explicit removal before a governed Assistant control changes", as
     await expect(chip).toContainText(name);
     await expect(page.getByTestId("composer-assistant-removed-notice")).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Capabilities" }).click();
-    const parameters = page
-      .getByRole("menu", { name: "Capabilities" })
-      .getByRole("menuitemcheckbox", { name: /Model parameters/ });
-    await expect(parameters).toBeDisabled();
-    await expect(parameters).toContainText("Managed by the Assistant");
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+    // Model parameters live behind the model chip, which the Assistant locks.
+    const modelTrigger = page.getByTestId("header-model-trigger");
+    await expect(modelTrigger).toBeDisabled();
+    await expect(modelTrigger).toHaveAttribute("title", "Managed by the Assistant");
 
     await chip.getByRole("button", { name: "Remove" }).click();
 
@@ -407,10 +404,10 @@ test("pins an assistant from the Library card and groups it in the quick picker"
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Capabilities" }).click();
+    await page.getByRole("button", { name: "Add" }).click();
     await page
-      .getByRole("menu", { name: "Capabilities" })
-      .getByRole("menuitemcheckbox", { name: /Use an Assistant/ })
+      .getByRole("menu", { name: "Add" })
+      .getByRole("menuitem", { name: /Use an Assistant/ })
       .click();
     const picker = page.getByTestId("assistant-picker");
     await expect(picker).toBeVisible();

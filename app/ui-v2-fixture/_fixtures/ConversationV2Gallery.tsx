@@ -6,7 +6,7 @@ import {
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   ConversationV2,
   type ConversationMessageV2
@@ -18,6 +18,7 @@ export type ConversationGalleryState =
   | "earlier"
   | "empty"
   | "error"
+  | "jump"
   | "loading"
   | "unavailable";
 
@@ -95,6 +96,15 @@ const earlierCurrentMessages: ConversationMessageV2[] = Array.from(
   })
 );
 
+const jumpMessages: ConversationMessageV2[] = [
+  ...earlierCurrentMessages,
+  {
+    content: "Сформулируй подробный критерий остановки для мультиязычной проверки так, чтобы вопрос занял всю разрешённую ширину сообщения и остался читаемым.",
+    id: "question-jump-latest",
+    role: "user"
+  }
+];
+
 const containmentMessages: ConversationMessageV2[] = [
   {
     content: "Покажи сложный технический фрагмент без расширения страницы.",
@@ -136,13 +146,23 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
   const [messages, setMessages] = useState<ConversationMessageV2[]>(
     state === "containment"
       ? containmentMessages
-      : state === "earlier"
-        ? earlierCurrentMessages
-        : state === "empty" || state === "loading" || state === "error" || state === "unavailable"
-          ? []
-          : baseMessages
+      : state === "jump"
+        ? jumpMessages
+        : state === "earlier"
+          ? earlierCurrentMessages
+          : state === "empty" || state === "loading" || state === "error" || state === "unavailable"
+            ? []
+            : baseMessages
   );
   const [hasOlder, setHasOlder] = useState(state === "earlier");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Like an opened chat, the "earlier" thread mounts at its latest message;
+  // the top sentinel then loads the previous page only on a real scroll up.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (state === "earlier" && scroller) scroller.scrollTop = scroller.scrollHeight;
+  }, [state]);
 
   const sidebar = (onClose: () => void) => (
     <NavigationSidebar
@@ -205,13 +225,17 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
               )
             } : undefined}
             hasOlder={hasOlder}
+            jumpToLatestBottomOffset={96}
             loading={state === "loading"}
             messages={messages}
+            scrollRef={scrollRef}
             onLoadEarlier={() => {
               setMessages((current) => [...earlierMessages, ...current]);
               setHasOlder(false);
             }}
             onRetry={() => undefined}
+            onJumpToLatest={() => undefined}
+            showJumpToLatest={state === "jump"}
             unavailable={state === "unavailable"}
           />
         </main>

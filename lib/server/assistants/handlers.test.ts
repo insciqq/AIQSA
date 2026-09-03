@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AuthenticatedSession } from "../auth/requestAuth";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import type { ProviderModelCatalogEntry } from "../../domain/catalog";
+import type { McpRunPlanRecord } from "../mcp/runPlan";
 import {
   createCreateAssistantHandler,
   createDuplicateAssistantHandler,
@@ -152,6 +153,25 @@ function accessEntry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAc
   };
 }
 
+function mcpRecord(overrides: Partial<McpRunPlanRecord> = {}): McpRunPlanRecord {
+  return {
+    credentialSources: [],
+    enabled: true,
+    errorCode: null,
+    externalAccountLabel: null,
+    fingerprint: null,
+    generationId: null,
+    inventory: null,
+    inventoryUpdatedAt: null,
+    namespace: "github",
+    readiness: "queued",
+    revisionId: "mcp-revision-1",
+    serverId: "server-1",
+    serverName: "GitHub",
+    ...overrides
+  };
+}
+
 function fakeRepository(overrides: Partial<AssistantHandlerDeps["repository"]> = {}) {
   return {
     create: vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const })),
@@ -192,7 +212,16 @@ describe("assistant list handler", () => {
   it("projects runner-safe summaries with availability and fingerprint", async () => {
     const deps = handlerDeps({
       listForUser: vi.fn(async () => [
-        accessEntry(),
+        accessEntry({
+          revision: revisionRow({
+            knowledgeSelection: {
+              baseIds: ["hidden-base"],
+              mode: "explicit",
+              sourceIds: ["hidden-source"],
+              version: 1
+            }
+          })
+        }),
         accessEntry({
           id: "assistant-2",
           revision: revisionRow({ id: "revision-2", mcpServerIds: ["hidden-server"], name: "Ops" })
@@ -214,6 +243,8 @@ describe("assistant list handler", () => {
     expect(first).toMatchObject({
       availability: { ok: true },
       fingerprint: {
+        knowledgeLabel: "Knowledge · 2",
+        knowledgeResourceCount: 2,
         mcpServerCount: 0,
         modelLabel: "Luna",
         reasoningEffort: "high",
@@ -264,6 +295,114 @@ describe("assistant list handler", () => {
       availability: { ok: false, reason: "tools_access" }
     });
   });
+
+  it("names failing MCP dependencies only in the owner's projection", async () => {
+    const record = mcpRecord({ enabled: false, readiness: "disabled" });
+    const deps = handlerDeps({
+      listForUser: vi.fn(async () => [
+        accessEntry({
+          id: "owned-assistant",
+          owned: true,
+          revision: revisionRow({ mcpServerIds: [record.serverId] })
+        }),
+        accessEntry({
+          id: "shared-assistant",
+          owned: false,
+          revision: revisionRow({ id: "revision-2", mcpServerIds: [record.serverId] })
+        })
+      ]),
+      loadUserAccessibleMcpServerIds: vi.fn(async () => new Set([record.serverId])),
+      loadUserMcpRunPlanView: vi.fn(async () => ({
+        isGenerationLive: () => false,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map([[record.serverId, record]])
+      }))
+    });
+
+    const response = await createListAssistantsHandler(deps)(
+      new Request("http://test/api/me/assistants")
+    );
+    const body = await response.json() as {
+      assistants: Array<{ availability: Record<string, unknown>; id: string }>;
+    };
+
+    expect(body.assistants[0]?.availability).toEqual({
+      dependencies: [{ kind: "mcp", name: "GitHub" }],
+      ok: false,
+      reason: "tools_access"
+    });
+    expect(body.assistants[1]?.availability).toEqual({
+      ok: false,
+      reason: "tools_access"
+    });
+  });
+
+  it("keeps an unknown MCP startability failure generic for the owner", async () => {
+    const record = mcpRecord({
+      enabled: false,
+      errorCode: "mcp_startability_unknown",
+      readiness: "unavailable"
+    });
+    const deps = handlerDeps({
+      listForUser: vi.fn(async () => [
+        accessEntry({
+          owned: true,
+          revision: revisionRow({ mcpServerIds: [record.serverId] })
+        })
+      ]),
+      loadUserAccessibleMcpServerIds: vi.fn(async () => new Set([record.serverId])),
+      loadUserMcpRunPlanView: vi.fn(async () => ({
+        isGenerationLive: () => false,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map([[record.serverId, record]])
+      }))
+    });
+
+    const response = await createListAssistantsHandler(deps)(
+      new Request("http://test/api/me/assistants")
+    );
+    const body = await response.json() as {
+      assistants: Array<{ availability: Record<string, unknown> }>;
+    };
+
+    expect(body.assistants[0]?.availability).toEqual({
+      dependencies: [{ kind: "mcp", name: "Required MCP tools" }],
+      ok: false,
+      reason: "tools_access"
+    });
+  });
+
+  it("keeps a revoked MCP dependency generic across inconsistent read snapshots", async () => {
+    const record = mcpRecord({ readiness: "ready" });
+    const deps = handlerDeps({
+      listForUser: vi.fn(async () => [
+        accessEntry({
+          owned: true,
+          revision: revisionRow({ mcpServerIds: [record.serverId] })
+        })
+      ]),
+      loadUserAccessibleMcpServerIds: vi.fn(async () => new Set<string>()),
+      loadUserMcpRunPlanView: vi.fn(async () => ({
+        isGenerationLive: () => true,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map([[record.serverId, record]])
+      }))
+    });
+
+    const response = await createListAssistantsHandler(deps)(
+      new Request("http://test/api/me/assistants")
+    );
+    const body = await response.json() as {
+      assistants: Array<{ availability: Record<string, unknown> }>;
+    };
+
+    expect(body.assistants[0]?.availability).toEqual({
+      dependencies: [{ kind: "mcp", name: "Required MCP tools" }],
+      ok: false,
+      reason: "tools_access"
+    });
+    expect(JSON.stringify(body)).not.toContain(record.serverName);
+  });
 });
 
 describe("assistant detail handler", () => {
@@ -273,6 +412,12 @@ describe("assistant detail handler", () => {
         ...accessEntry({
           revision: revisionRow({
             mcpServerIds: ["granted-server", "hidden-server"],
+            knowledgeSelection: {
+              baseIds: ["hidden-base"],
+              mode: "explicit",
+              sourceIds: ["hidden-source"],
+              version: 1
+            },
             providerModelId: "hidden-model",
             searchPlan: {
               mode: "all_selected",
@@ -298,6 +443,13 @@ describe("assistant detail handler", () => {
     const revision = body.assistant.revision as Record<string, unknown>;
 
     expect(revision.systemPrompt).toBe("You review code.");
+    expect(revision.knowledgeSelection).toEqual({
+      baseIds: [],
+      inheritedFrom: "assistant",
+      mode: "inherited",
+      sourceIds: [],
+      version: 1
+    });
     expect(revision.providerModelId).toBeNull();
     expect(revision.mcpServerIds).toEqual(["granted-server"]);
     expect(revision.searchPlan).toEqual({
@@ -311,6 +463,7 @@ describe("assistant detail handler", () => {
     ]);
     expect(body.assistant.publications).toBeUndefined();
     expect(body.assistant.version).toBeUndefined();
+    expect(JSON.stringify(body)).not.toMatch(/hidden-base|hidden-source/u);
   });
 
   it("returns one privacy-neutral not-found for invisible assistants", async () => {
@@ -403,7 +556,9 @@ describe("assistant create handler", () => {
     );
     expect(controlsResponse.status).toBe(400);
     expect(await controlsResponse.json()).toEqual({
-      error: "assistant_run_controls_invalid"
+      error: "assistant_run_controls_invalid",
+      field: "maxOutputTokens",
+      limit: 128_000
     });
 
     const searchResponse = await createCreateAssistantHandler(deps)(
@@ -422,6 +577,56 @@ describe("assistant create handler", () => {
       error: "assistant_tools_not_available"
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("creates an Assistant whose enabled MCP dependency starts on demand", async () => {
+    const record = mcpRecord({ readiness: "idle" });
+    const create = vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const }));
+    const owned = accessEntry({
+      owned: true,
+      revision: revisionRow({ mcpServerIds: [record.serverId], searchPlan: {
+        mode: "all_selected",
+        optionIds: []
+      } })
+    });
+    const deps = handlerDeps({
+      create,
+      getDetail: vi.fn(async () => ({ ...owned, publications: [], revisionCount: 1 })),
+      loadUserAccessibleMcpServerIds: vi.fn(async () => new Set([record.serverId])),
+      loadUserMcpRunPlanView: vi.fn(async () => ({
+        isGenerationLive: () => false,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map([[record.serverId, record]])
+      }))
+    });
+
+    const response = await createCreateAssistantHandler(deps)(
+      new Request("http://test/api/me/assistants", {
+        body: JSON.stringify({
+          avatar,
+          category: null,
+          description: "",
+          developerPrompt: null,
+          knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+          mcpServerIds: [record.serverId],
+          name: "Reviewer",
+          providerModelId: "model-1",
+          runControls: {},
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          skillIds: [],
+          starterPrompts: [],
+          systemPrompt: ""
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      assistant: { availability: { ok: true } }
+    });
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it("preserves ordered Skill ids and maps unavailable dependencies", async () => {
@@ -493,21 +698,31 @@ describe("assistant update handler", () => {
 
   it.each([
     [
+      "a structurally invalid max-output value",
+      { maxOutputTokens: 0 },
+      { error: "assistant_run_controls_invalid", field: "maxOutputTokens" }
+    ],
+    [
       "a max-output value outside the selected model range",
       { maxOutputTokens: 128_001 },
-      "assistant_run_controls_invalid"
+      { error: "assistant_run_controls_invalid", field: "maxOutputTokens", limit: 128_000 }
     ],
     [
       "an unsupported reasoning effort",
       { reasoningEffort: "ultra" },
-      "assistant_run_controls_invalid"
+      { error: "assistant_run_controls_invalid", field: "reasoningEffort" }
+    ],
+    [
+      "a Temperature value above the selected model range",
+      { temperature: 3 },
+      { error: "assistant_run_controls_invalid", field: "temperature", limit: 2 }
     ],
     [
       "reasoning disabled when the model does not offer a none option",
       { reasoningEffort: "none" },
-      "assistant_run_controls_invalid"
+      { error: "assistant_run_controls_invalid", field: "reasoningEffort" }
     ]
-  ])("rejects %s before persistence", async (_label, runControls, error) => {
+  ])("rejects %s before persistence", async (_label, runControls, errorBody) => {
     const revise = vi.fn();
     const response = await createUpdateAssistantHandler(handlerDeps({ revise }))(
       new Request("http://test/api/me/assistants/assistant-1", {
@@ -535,7 +750,7 @@ describe("assistant update handler", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error });
+    expect(await response.json()).toEqual(errorBody);
     expect(revise).not.toHaveBeenCalled();
   });
 

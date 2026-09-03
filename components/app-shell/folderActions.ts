@@ -228,7 +228,7 @@ export function createFolderActions({
       });
 
       if (!response.ok) {
-        throw new Error(await responseErrorMessage(response, `project_settings_failed_${response.status}`));
+        throw new Error(await responseErrorMessage(response, `default_knowledge_failed_${response.status}`));
       }
 
       const body = (await response.json()) as { folder: FolderSummary };
@@ -255,7 +255,7 @@ export function createFolderActions({
       folderMutation.completeProjectSave();
       setNotice({
         kind: "success",
-        text: `Project settings saved: ${body.folder.name}`
+        text: `Default Knowledge saved: ${body.folder.name}`
       });
     } catch (error) {
       setNotice({

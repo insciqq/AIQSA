@@ -17,6 +17,11 @@ export type ComposerModelSelection = {
   controlDefaults: ControlDefaults;
   modelId: string;
   provider: string;
+  /**
+   * Search options the new model can run; selected options outside it are
+   * dropped so an unavailable engine is never kept silently (A6).
+   */
+  searchStrategyIds?: readonly string[];
 };
 
 /**
@@ -34,6 +39,9 @@ export type ComposerAssistantSelection = {
   description: string;
   id: string;
   includedSkills?: { id: string; name: string }[];
+  /** Safe summary copy such as "Knowledge · 2"; never dependency ids/names. */
+  knowledgeLabel?: string | null;
+  knowledgeResourceCount?: number;
   name: string;
   /** Approximate prompt size for the context gauge only; text stays server-side. */
   promptCharacterCount: number;
@@ -199,10 +207,20 @@ function droppedAssistantIdentity(
   if (origin === "assistant" || !state.selectedAssistant) {
     return {};
   }
+  const hiddenAssistantKnowledge = state.knowledgePlanSource === "assistant" &&
+    state.knowledgeSelection.mode === "inherited";
   return {
     assistantManualBackup: null,
     assistantRemovedNotice: origin === "user",
-    ...(state.knowledgePlanSource === "assistant" ? { knowledgePlanSource: "explicit" as const } : {}),
+    ...(hiddenAssistantKnowledge
+      ? {
+          knowledgePlanSource: "off" as const,
+          knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+          selectedKnowledgeBaseIds: []
+        }
+      : state.knowledgePlanSource === "assistant"
+        ? { knowledgePlanSource: "explicit" as const }
+        : {}),
     selectedAssistant: null
   };
 }
@@ -257,7 +275,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       temperature: defaults.temperature
     });
   },
-  applyModelSelection({ controlDefaults, modelId, provider }, origin = "user") {
+  applyModelSelection({ controlDefaults, modelId, provider, searchStrategyIds }, origin = "user") {
     set((state) => ({
       ...droppedAssistantIdentity(state, origin),
       backgroundMode: controlDefaults.backgroundMode,
@@ -266,6 +284,14 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       reasoningMode: controlDefaults.reasoningMode,
       selectedModelId: modelId,
       selectedProvider: provider,
+      ...(searchStrategyIds &&
+        state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
+        ? {
+            selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
+              searchStrategyIds.includes(id)
+            )
+          }
+        : {}),
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
     }));
@@ -323,10 +349,17 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       ? explicitKnowledgeSelection({ baseIds: selection })
       : selection);
     if (!decoded.ok) return;
-    const knowledgeSelection = decoded.plan;
+    // An inherited plan contains no client-authorized ids and is valid only
+    // while its server-owned source remains attached. It must never be sent
+    // back as an explicit browser plan after an override/detachment.
+    const knowledgeSelection = source === "explicit" && decoded.plan.mode === "inherited"
+      ? EMPTY_KNOWLEDGE_SELECTION
+      : decoded.plan;
     set((state) => ({
       ...droppedAssistantIdentity(state, origin),
-      knowledgePlanSource: source,
+      knowledgePlanSource: source === "explicit" && knowledgeSelection.mode === "none"
+        ? "off"
+        : source,
       knowledgeSelection,
       selectedKnowledgeBaseIds: [...knowledgeSelection.baseIds]
     }));

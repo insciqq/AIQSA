@@ -24,7 +24,6 @@ type ArchivedChatsStore = {
   listError: string | null;
   listLoadState: LoadState;
   nextCursor: string | null;
-  open: boolean;
   restoring: boolean;
   summaries: ArchivedChatSummaryWire[];
 };
@@ -36,7 +35,6 @@ const initialState: ArchivedChatsStore = {
   listError: null,
   listLoadState: "idle",
   nextCursor: null,
-  open: false,
   restoring: false,
   summaries: []
 };
@@ -45,6 +43,7 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>(() => initialSta
 
 let listGeneration = 0;
 let detailGeneration = 0;
+let restoreGeneration = 0;
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.message : "chat_lifecycle_failed";
@@ -95,8 +94,7 @@ export async function openArchivedChatPreview(chatId: string): Promise<void> {
   useArchivedChatsStore.setState({
     detail: null,
     detailError: null,
-    detailLoadState: "loading",
-    open: true
+    detailLoadState: "loading"
   });
   try {
     const response = await loadArchivedChat(chatId);
@@ -114,24 +112,6 @@ export async function openArchivedChatPreview(chatId: string): Promise<void> {
     });
     throw error;
   }
-}
-
-export async function openArchivedChats(): Promise<void> {
-  useArchivedChatsStore.setState({ open: true });
-  if (useArchivedChatsStore.getState().listLoadState === "idle") {
-    await refreshArchivedChats();
-  }
-}
-
-export function closeArchivedChats(): void {
-  detailGeneration += 1;
-  useArchivedChatsStore.setState({
-    detail: null,
-    detailError: null,
-    detailLoadState: "idle",
-    open: false,
-    restoring: false
-  });
 }
 
 export function showArchivedChatList(): void {
@@ -194,15 +174,18 @@ export async function restoreArchivedChatSummary(
   chat: Pick<ArchivedChatSummaryWire, "id" | "sourceRevision">
 ): Promise<string | null> {
   if (useArchivedChatsStore.getState().restoring) return null;
+  const generation = ++restoreGeneration;
   useArchivedChatsStore.setState({ listError: null, restoring: true });
   try {
     const response = await restoreChat(chat.id, chat.sourceRevision);
+    if (generation !== restoreGeneration) return null;
     useArchivedChatsStore.setState((state) => ({
       restoring: false,
       summaries: state.summaries.filter((item) => item.id !== chat.id)
     }));
     return response.chat.id;
   } catch (error) {
+    if (generation !== restoreGeneration) return null;
     useArchivedChatsStore.setState({ listError: errorName(error), restoring: false });
     throw error;
   }
@@ -212,9 +195,11 @@ export async function restoreArchivedChat(): Promise<string | null> {
   const current = useArchivedChatsStore.getState();
   const detail = current.detail;
   if (!detail || current.restoring) return null;
+  const generation = ++restoreGeneration;
   useArchivedChatsStore.setState({ detailError: null, restoring: true });
   try {
     const response = await restoreChat(detail.id, detail.sourceRevision);
+    if (generation !== restoreGeneration) return null;
     useArchivedChatsStore.setState((state) => ({
       detail: null,
       detailLoadState: "idle",
@@ -223,6 +208,7 @@ export async function restoreArchivedChat(): Promise<string | null> {
     }));
     return response.chat.id;
   } catch (error) {
+    if (generation !== restoreGeneration) return null;
     useArchivedChatsStore.setState({ detailError: errorName(error), restoring: false });
     throw error;
   }
@@ -231,5 +217,6 @@ export async function restoreArchivedChat(): Promise<string | null> {
 export function deactivateArchivedChats(): void {
   listGeneration += 1;
   detailGeneration += 1;
+  restoreGeneration += 1;
   useArchivedChatsStore.setState(initialState, true);
 }

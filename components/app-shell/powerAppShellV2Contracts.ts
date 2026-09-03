@@ -3,7 +3,10 @@ import type { ComposerContextStats } from "@/components/app-shell/composerContex
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
 import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
-import type { ComposerAssistantSelection } from "@/components/app-shell/composerControlStore";
+import type {
+  ComposerAssistantSelection,
+  ComposerKnowledgePlanSource
+} from "@/components/app-shell/composerControlStore";
 import type {
   ComposerConfigKnowledgeBase,
   ComposerConfigKnowledgeSource
@@ -24,7 +27,8 @@ import type {
   ThreadMessage
 } from "@/components/app-shell/types";
 import type { RefObject } from "react";
-import type { SearchPlanMode } from "@/lib/domain/search";
+import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
+import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 import type { ProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 
@@ -42,6 +46,8 @@ export type ShellSessionView = {
 
 export type ShellWorkspacePaneState = {
   editingChatId: string | null;
+  /** Which surface opened the rename; only it renders the field. */
+  editingChatOrigin: "header" | "row" | null;
   editingChatTitle: string;
   editingFolderId: string | null;
   editingFolderName: string;
@@ -71,14 +77,13 @@ export type ShellWorkspacePaneActions = {
   exportChat(chat: WorkspaceChatSummary, format?: "json" | "markdown"): void;
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
-  openArchivedChats(): void;
   openChatMessage(chatId: string, messageId: string): Promise<boolean>;
   openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
   saveChatTitle(chat: WorkspaceChatSummary): Promise<void> | void;
   saveFolder(folder: FolderSummary): Promise<void> | void;
   shareChat(chat: WorkspaceChatSummary): Promise<void> | void;
-  startChatEdit(chat: WorkspaceChatSummary): void;
+  startChatEdit(chat: WorkspaceChatSummary, origin?: "header" | "row"): void;
   startFolderEdit(folder: FolderSummary): void;
   toggleChatMemorySource(
     chat: WorkspaceChatSummary,
@@ -95,7 +100,6 @@ export type ShellWorkspacePaneView = {
 export type ShellWorkspaceView = {
   archived: {
     onRestored(chatId: string): Promise<void> | void;
-    open: boolean;
   };
   pane: ShellWorkspacePaneView;
   projects: ProjectWorkspaceController;
@@ -116,8 +120,13 @@ export type ShellThreadView = {
   activeChatDetailError: string | null;
   activeChatDetailLoading: boolean;
   activeChatStreaming: boolean;
-  copyVisibleThread(): Promise<void> | void;
+  /** Copies the complete visible branch of the active chat, or of `chat` when given. */
+  copyVisibleThread(chat?: Readonly<{ id: string; title: string }>): Promise<void> | void;
+  cancelMessageEdit(messageId: string): void;
+  changeEditingMessageDraft(value: string): void;
   currentRunId: string | null;
+  editingMessageDraft: string;
+  editingMessageError: string | null;
   editingMessageId: string | null;
   editingMessagePending: boolean;
   events: RunEventView[];
@@ -138,6 +147,8 @@ export type ShellThreadView = {
   loadingOlderMessages: boolean;
   jumpToLatest(): void;
   liveArtifactSummary: ThreadArtifactSummary | null;
+  /** Send → first answer token of the run in flight (client clock); null until the answer starts. */
+  liveWorkDurationMs: number | null;
   olderMessagesError: string | null;
   /**
    * Existing headless force-refresh owner for an ambiguous transport failure:
@@ -147,12 +158,12 @@ export type ShellThreadView = {
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
   showJumpToLatest: boolean;
+  submitMessageEdit(): Promise<void> | void;
   threadScrollRef: RefObject<HTMLDivElement | null>;
   visibleMessages: ThreadMessage[];
 };
 
 export type ShellComposerActions = {
-  cancelMessageEdit(): void;
   changeDraft(value: string): void;
   rejectAttachmentCount(input: {
     attemptedCount: number;
@@ -181,6 +192,7 @@ export type ShellComposerView = {
   composerUsageStats: ChatUsageStats | null;
   assistant: {
     clearRemovedNotice(): void;
+    editById(assistantId: string): void;
     openLibrary(): void;
     openPicker: boolean;
     pickerItems: import("@/lib/contracts/assistants").AssistantSummary[];
@@ -194,11 +206,23 @@ export type ShellComposerView = {
     setPickerOpen(open: boolean): void;
     startFromCurrentSetup(): void;
   };
+  /** Personal chat defaults (Settings › Chat defaults); absent inside a Project. */
+  chatDefaults?: {
+    knowledgePlan: KnowledgeSelection | null;
+    mcpMode: ChatDefaultMcpMode;
+    searchPlan: SearchPlan;
+    setKnowledgePlan(plan: KnowledgeSelection | null): void;
+    setMcpMode(mode: ChatDefaultMcpMode): void;
+    setSearchPlan(plan: SearchPlan): void;
+  };
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;
   draft: string;
   knowledge: {
     bases: readonly ComposerConfigKnowledgeBase[];
+    documentTotal: number | null;
+    override(): void;
+    planSource: ComposerKnowledgePlanSource;
     searchSources?(query: string): Promise<readonly ComposerConfigKnowledgeSource[]>;
     select(selection: KnowledgeSelection): void;
     selection: KnowledgeSelection;
@@ -219,6 +243,7 @@ export type ShellComposerView = {
   notificationSoundEnabled: boolean;
   operationError: string | null;
   operationErrorLive: boolean;
+  operationErrorRetryable?: boolean;
   reasoningEffort: string;
   reasoningMode: string;
   retryCatalog(): void;
@@ -228,6 +253,9 @@ export type ShellComposerView = {
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
+  /** Composer keyboard contract: Enter sends, or Ctrl/⌘+Enter when off. */
+  sendWithEnter: boolean;
+  setSendWithEnter(value: boolean): void;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   stopCurrentRun(): Promise<void> | void;
@@ -268,6 +296,7 @@ export type ShellSettingsView = {
   openKnowledge(): void;
   openLibrary(): void;
   openMemory(): void;
+  openMemorySettingsTab(): void;
   openMcp(): void;
   settings: {
     open: boolean;

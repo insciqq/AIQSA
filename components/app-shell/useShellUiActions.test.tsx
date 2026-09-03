@@ -25,7 +25,7 @@ describe("useShellUiActions", () => {
     resetComposerSessionStoreForTest();
   });
 
-  it("snapshots an unsent draft before entering message edit mode", () => {
+  it("opens a turn-scoped edit while preserving the unsent composer draft", () => {
     const store = useComposerSessionStore.getState();
     store.activateSession(composerSessionKey("chat-a"));
     store.setDraft("Unsent draft");
@@ -42,8 +42,8 @@ describe("useShellUiActions", () => {
     );
 
     expect(selectActiveComposerSession(useComposerSessionStore.getState())).toMatchObject({
-      draft: "Saved question",
-      draftBeforeEdit: "Unsent draft",
+      draft: "Unsent draft",
+      editingDraft: "Saved question",
       editingMessageId: "message-a"
     });
   });

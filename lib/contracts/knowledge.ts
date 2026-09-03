@@ -219,6 +219,7 @@ export type KnowledgeSourceBaseMembership = Readonly<{
 }>;
 
 export type KnowledgeSourceSummary = Readonly<{
+  canReprocess: boolean;
   currentVersion: KnowledgeSourceVersionSummary | null;
   deletionPending: boolean;
   description: string;
@@ -986,6 +987,7 @@ function decodeKnowledgeSourceSummaryValue(
   detail: boolean
 ): KnowledgeSourceSummary | null {
   if (!isRecord(value) || !allowedKeys(value, [
+    "canReprocess",
     "currentVersion",
     "deletionPending",
     "description",
@@ -1014,6 +1016,7 @@ function decodeKnowledgeSourceSummaryValue(
   const replacementState = value.replacement.state;
   const replacementSupport = value.replacement.supportReference;
   if (!currentVersion && value.currentVersion !== null || !readiness ||
+    typeof value.canReprocess !== "boolean" ||
     typeof value.deletionPending !== "boolean" ||
     typeof value.description !== "string" || !nonEmptyString(value.id) ||
     !safeInteger(value.membershipCount) || !nonEmptyString(value.name) ||
@@ -1037,6 +1040,7 @@ function decodeKnowledgeSourceSummaryValue(
     return null;
   }
   return {
+    canReprocess: value.canReprocess,
     currentVersion,
     deletionPending: value.deletionPending,
     description: value.description,

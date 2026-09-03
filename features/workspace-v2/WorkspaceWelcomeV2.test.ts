@@ -4,11 +4,54 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CompactKnowledgePollingV2,
   compactKnowledgeRefreshPendingV2,
-  knowledgeSummaryStatusV2
+  dispatchAssistantUnavailableActionV2,
+  knowledgeSummaryStatusV2,
+  memoryManagerErrorCopy
 } from "./WorkspaceWelcomeV2";
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("Assistant unavailable action routing", () => {
+  it("opens the owned Assistant editor for a fixable saved setup", () => {
+    const onCloseLibrary = vi.fn();
+    const onOpenEditor = vi.fn();
+    const onOpenMcpSettings = vi.fn();
+
+    dispatchAssistantUnavailableActionV2({
+      action: "open-editor",
+      assistantId: "assistant-1",
+      onCloseLibrary,
+      onOpenEditor,
+      onOpenMcpSettings
+    });
+
+    expect(onOpenEditor).toHaveBeenCalledWith("assistant-1");
+    expect(onCloseLibrary).not.toHaveBeenCalled();
+    expect(onOpenMcpSettings).not.toHaveBeenCalled();
+  });
+
+  it("closes Library before opening MCP Settings", () => {
+    const onCloseLibrary = vi.fn();
+    const onOpenEditor = vi.fn();
+    const onOpenMcpSettings = vi.fn();
+
+    dispatchAssistantUnavailableActionV2({
+      action: "mcp-settings",
+      assistantId: "assistant-1",
+      onCloseLibrary,
+      onOpenEditor,
+      onOpenMcpSettings
+    });
+
+    expect(onCloseLibrary).toHaveBeenCalledOnce();
+    expect(onOpenMcpSettings).toHaveBeenCalledOnce();
+    expect(onCloseLibrary.mock.invocationCallOrder[0]).toBeLessThan(
+      onOpenMcpSettings.mock.invocationCallOrder[0]!
+    );
+    expect(onOpenEditor).not.toHaveBeenCalled();
+  });
 });
 
 describe("knowledgeSummaryStatusV2", () => {
@@ -27,6 +70,14 @@ describe("knowledgeSummaryStatusV2", () => {
       readiness: { state: "trashed" }
     })).toBe("trashed");
     expect(knowledgeSummaryStatusV2({ archived: true })).toBe("archived");
+  });
+});
+
+describe("memoryManagerErrorCopy", () => {
+  it("keeps internal Memory failure codes out of the Library", () => {
+    expect(memoryManagerErrorCopy("memory_unavailable")).toMatch(/temporarily unavailable/i);
+    expect(memoryManagerErrorCopy("memory_secret_rejected")).toMatch(/looks like a secret/i);
+    expect(memoryManagerErrorCopy("classifier_internal_code")).not.toContain("classifier_internal_code");
   });
 });
 

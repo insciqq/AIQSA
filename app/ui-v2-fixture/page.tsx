@@ -29,7 +29,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "navigation") {
     const state = fixtureState(
       query.state,
-      ["default", "empty", "error", "loading", "search"] as const,
+      ["default", "destinations", "empty", "error", "loading", "search"] as const,
       "default"
     );
     const { NavigationV2Gallery } = await import("./_fixtures/NavigationV2Gallery");
@@ -38,7 +38,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "conversation") {
     const state = fixtureState(
       query.state,
-      ["basic", "containment", "earlier", "empty", "error", "loading", "unavailable"] as const,
+      ["basic", "containment", "earlier", "empty", "error", "jump", "loading", "unavailable"] as const,
       "basic"
     );
     const { ConversationV2Gallery } = await import("./_fixtures/ConversationV2Gallery");
@@ -51,7 +51,18 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "composer") {
     const state = fixtureState(
       query.state,
-      ["assistant", "attachments", "capabilities", "default", "error", "model", "zero"] as const,
+      [
+        "add",
+        "assistant",
+        "assistant-knowledge",
+        "attachments",
+        "default",
+        "error",
+        "knowledge",
+        "model",
+        "project-knowledge",
+        "zero"
+      ] as const,
       "default"
     );
     const { ComposerV2Gallery } = await import("./_fixtures/ComposerV2Gallery");
@@ -68,6 +79,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "citation-visual",
         "complete",
         "empty",
+        "memory",
         "reasoning"
       ] as const,
       "complete"
@@ -87,20 +99,38 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "library") {
     const state = fixtureState(
       query.state,
-      ["assistants", "dirty", "files", "knowledge", "memory", "memory-disabled"] as const,
+      ["assistants", "dirty", "files", "knowledge", "memory", "memory-disabled", "skills"] as const,
       "assistants"
     );
     const { LibraryV2Gallery } = await import("./_fixtures/LibraryV2Gallery");
     return <LibraryV2Gallery state={state} />;
   }
+  if (query.fixture === "assistants") {
+    const state = fixtureState(
+      query.state,
+      ["advanced", "dirty", "editor", "empty", "error", "history", "list", "loading"] as const,
+      "list"
+    );
+    const { AssistantsV2Gallery } = await import("./_fixtures/AssistantsV2Gallery");
+    return <AssistantsV2Gallery state={state} />;
+  }
   if (query.fixture === "settings") {
     const state = fixtureState(
       query.state,
-      ["appearance", "dirty", "mcp"] as const,
+      ["appearance", "archived", "dirty", "mcp", "memory"] as const,
       "appearance"
     );
     const { SettingsV2Gallery } = await import("./_fixtures/SettingsV2Gallery");
     return <SettingsV2Gallery state={state} />;
+  }
+  if (query.fixture === "projects") {
+    const state = fixtureState(
+      query.state,
+      ["contributor", "empty", "error", "landing", "overview", "setup", "viewer"] as const,
+      "landing"
+    );
+    const { ProjectsV2Gallery } = await import("./_fixtures/ProjectsV2Gallery");
+    return <ProjectsV2Gallery state={state} />;
   }
   notFound();
 }

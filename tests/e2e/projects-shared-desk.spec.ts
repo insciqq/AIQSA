@@ -61,13 +61,18 @@ async function warmProjectRouteModules(page: Page): Promise<void> {
 }
 
 async function createProjectThroughUi(page: Page, projectName: string): Promise<string> {
-  await sharedProjects(page).getByRole("button", { name: "Create project" }).click();
+  await page.getByRole("button", { exact: true, name: "Projects" }).click();
+  await expect(sharedProjects(page)).toBeVisible();
+  await sharedProjects(page).getByRole("button", { name: "New project" }).click();
   const dialog = page.getByRole("dialog", { name: "Create project" });
   await dialog.getByLabel("Name", { exact: true }).fill(projectName);
   await dialog.getByLabel("Description").fill("Two members sharing one live Project workspace.");
   await dialog.getByRole("button", { name: "Create project" }).click();
   await expect(dialog).toBeHidden();
-  await expect(projectRow(page, projectName)).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("project-overview-page").getByRole("heading", {
+    level: 1,
+    name: projectName
+  })).toBeVisible();
 
   await expect.poll(async () => (
     await prisma.project.findFirst({ select: { id: true }, where: { name: projectName } })
@@ -79,7 +84,7 @@ async function createProjectThroughUi(page: Page, projectName: string): Promise<
 }
 
 async function addContributorThroughPicker(page: Page, projectName: string): Promise<void> {
-  await page.getByRole("button", { name: `Open ${projectName} details` }).first().click();
+  await page.getByRole("button", { exact: true, name: `${projectName} details` }).click();
   const settings = page.getByRole("dialog", { name: `${projectName} settings` });
   await settings.getByRole("button", { name: "Members", exact: true }).dispatchEvent("click");
   await settings.getByLabel("Search people").fill(LOCAL_RESTRICTED_MEMBER.email);
@@ -102,9 +107,14 @@ async function addContributorThroughPicker(page: Page, projectName: string): Pro
 }
 
 async function openBlankProject(page: Page, projectName: string): Promise<void> {
+  await page.getByRole("button", { exact: true, name: "Projects" }).click();
+  await expect(sharedProjects(page)).toBeVisible();
   await expect(projectRow(page, projectName)).toBeVisible({ timeout: 30_000 });
   await projectRow(page, projectName).click();
-  await expect(page.getByTestId("project-blank-orientation")).toContainText(projectName);
+  await expect(page.getByTestId("project-overview-page").getByRole("heading", {
+    level: 1,
+    name: projectName
+  })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
 }
 
@@ -192,7 +202,11 @@ async function injectSafePersistedOutputs(
 }
 
 async function revokeContributorThroughUi(page: Page, projectName: string): Promise<void> {
-  await page.getByRole("button", { name: `Open ${projectName} details` }).first().click();
+  const context = page.getByRole("complementary", { name: "Shared project context" });
+  await context.getByTestId("project-context-trigger").click();
+  await page.getByRole("dialog", { name: `${projectName} project context` })
+    .getByRole("button", { name: "Project details" })
+    .click();
   const settings = page.getByRole("dialog", { name: `${projectName} settings` });
   await settings.getByRole("button", { name: "Members", exact: true }).dispatchEvent("click");
   const memberRow = settings.locator(".v2-project-list-row").filter({
@@ -244,7 +258,10 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await contributorPage.evaluate(() => window.dispatchEvent(new Event("focus")));
     await openBlankProject(contributorPage, projectName);
     await ownerPage.bringToFront();
-    await expect(ownerPage.getByTestId("project-blank-orientation")).toContainText(projectName);
+    await expect(ownerPage.getByTestId("project-overview-page").getByRole("heading", {
+      level: 1,
+      name: projectName
+    })).toBeVisible();
     await expect(ownerPage.getByRole("textbox", { name: "Message" })).toBeEnabled();
     await expect(prisma.chat.count({ where: { projectId } })).resolves.toBe(0);
 
@@ -270,16 +287,19 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await expect(toolActivity).toBeVisible({ timeout: 8_000 });
     await toolActivity.locator("summary").click();
     await expect(toolActivity).toContainText("MCP tool");
-    await expect(toolActivity).toContainText("Completed");
+    // Signal tool rows name the settled call ("Ran <tool>") with its duration
+    // instead of a separate "Completed" status label.
+    await expect(toolActivity).toContainText("Ran MCP tool");
     await expect(contributorPage.getByText(privateMarker, { exact: false })).toHaveCount(0);
 
     const contributorAnswer = contributorPage.locator('article[data-role="assistant"]').last();
     await expect(contributorAnswer).toContainText(promptTail, { timeout: 25_000 });
     await expect(projectChatRow(contributorPage, promptHead).getByLabel("Answer in progress"))
       .toHaveCount(0, { timeout: 8_000 });
+    const sourcesToggle = contributorPage.getByTestId("answer-sources-toggle").last();
+    await expect(sourcesToggle).toBeVisible();
+    await sourcesToggle.click();
     const sources = contributorPage.getByTestId("answer-sources").last();
-    await expect(sources).toBeVisible();
-    await sources.locator("summary").click();
     await expect(sources.getByRole("link", { name: "Project Search fixture" }).first()).toBeVisible();
 
     // Continue from the exact client state that admitted the draft chat. No

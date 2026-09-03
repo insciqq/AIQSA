@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { CatalogModel } from "@/components/app-shell/types";
@@ -30,7 +30,7 @@ const items: ComposerAttachmentItemV2[] = [{
   rejection: "unsupported_format",
   status: "rejected"
 }, {
-  detail: "Over 50 MB",
+  detail: "Over 25 MB",
   fileName: "archive.pdf",
   id: "large",
   rejection: "too_large",
@@ -66,7 +66,7 @@ describe("AttachmentTrayV2", () => {
     expect(screen.getByText("Processing…")).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.getByText("Format not supported")).toBeVisible();
-    expect(screen.getByText("Over 50 MB")).toBeVisible();
+    expect(screen.getByText("Over 25 MB")).toBeVisible();
     expect(screen.getByText("Processing failed")).toBeVisible();
     // The privacy disclosure is a quiet tooltip/AT note, not a permanent line.
     const privacyNote = screen.getByRole("note", {
@@ -87,6 +87,79 @@ describe("AttachmentTrayV2", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Limit exceeded — remove some files before sending."
     );
+  });
+
+  it("caps the tray at three complete measured rows and fades only while more rows remain", async () => {
+    render(<AttachmentTrayV2 items={items} />);
+    const list = screen.getByRole("list", { name: "Attached files" });
+    const chips = Array.from(list.children) as HTMLElement[];
+    const rect = (top: number, height: number): DOMRect => ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 300,
+      top,
+      width: 300,
+      x: 0,
+      y: top,
+      toJSON: () => ({})
+    });
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, value: 136 },
+      scrollHeight: { configurable: true, value: 280 },
+      scrollTop: { configurable: true, value: 0, writable: true }
+    });
+    list.getBoundingClientRect = () => rect(0, 136);
+    chips.forEach((chip, index) => {
+      chip.getBoundingClientRect = () => rect(index * 60 - list.scrollTop, 40);
+    });
+
+    fireEvent.resize(window);
+
+    await waitFor(() => {
+      expect(list).toHaveStyle({ "--v2-attachment-list-max-height": "160px" });
+    });
+    expect(list).toHaveAttribute("data-scrollable", "true");
+    expect(list).toHaveAttribute("data-overflow-below", "true");
+
+    list.scrollTop = 144;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(list).not.toHaveAttribute("data-overflow-below"));
+    expect(list).toHaveAttribute("data-scrollable", "true");
+  });
+
+  it("does not mark a three-row list as scrollable when its content fits", async () => {
+    render(<AttachmentTrayV2 items={items.slice(0, 3)} />);
+    const list = screen.getByRole("list", { name: "Attached files" });
+    const chips = Array.from(list.children) as HTMLElement[];
+    const rect = (top: number): DOMRect => ({
+      bottom: top + 40,
+      height: 40,
+      left: 0,
+      right: 300,
+      top,
+      width: 300,
+      x: 0,
+      y: top,
+      toJSON: () => ({})
+    });
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, value: 136 },
+      scrollHeight: { configurable: true, value: 136 },
+      scrollTop: { configurable: true, value: 0, writable: true }
+    });
+    list.getBoundingClientRect = () => rect(0);
+    chips.forEach((chip, index) => {
+      chip.getBoundingClientRect = () => rect(index * 48);
+    });
+
+    fireEvent.resize(window);
+
+    await waitFor(() => {
+      expect(list).toHaveStyle({ "--v2-attachment-list-max-height": "136px" });
+    });
+    expect(list).not.toHaveAttribute("data-scrollable");
+    expect(list).not.toHaveAttribute("data-overflow-below");
   });
 
   it("maps server lifecycle and PDF warnings without exposing error codes", () => {

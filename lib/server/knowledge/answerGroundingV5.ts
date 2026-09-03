@@ -1929,6 +1929,8 @@ export const KNOWLEDGE_PARTIAL_COVERAGE_NOTE =
   "Some requested information could not be verified from the available Knowledge evidence.";
 export const KNOWLEDGE_INSUFFICIENT_MESSAGE =
   "The available Knowledge evidence is insufficient to answer this request.";
+export const KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE =
+  "Knowledge search is temporarily unavailable. Try again later.";
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

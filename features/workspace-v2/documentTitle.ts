@@ -1,3 +1,5 @@
+import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
+
 /**
  * Browser tab title for the v2 shell, per the product/layout contract: the
  * title follows the visible active chat, `New chat` is the blank-workspace
@@ -10,6 +12,6 @@ export function documentTitleV2(input: Readonly<{
   libraryOpen: boolean;
 }>): string {
   if (input.libraryOpen) return "Library · AIQSA";
-  const title = input.activeChatId ? input.activeChatTitle.trim() : "";
-  return `${title || "New chat"} · AIQSA`;
+  const title = input.activeChatId ? chatTitleForDisplay(input.activeChatTitle) : "New chat";
+  return `${title} · AIQSA`;
 }

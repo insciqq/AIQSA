@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -37,8 +37,8 @@ function responsiveMatchMedia(getWidth: () => number) {
     addEventListener: vi.fn(),
     addListener: vi.fn(),
     dispatchEvent: vi.fn(),
-    matches: query.includes("899px")
-      ? getWidth() <= 899
+    matches: query.includes("767px")
+      ? getWidth() <= 767
       : query.includes("1023px")
         ? getWidth() <= 1023
         : false,
@@ -86,11 +86,63 @@ describe("Navigation v2", () => {
 
     expect(screen.getByText("Today")).toBeVisible();
     expect(screen.getByText("Yesterday")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Selected brief" })).toHaveAttribute(
+    expect(screen.getByRole("treeitem", { name: "Selected brief" })).toHaveAttribute(
       "data-selected",
       "true"
     );
     expect(screen.getByLabelText("Answer in progress")).toBeVisible();
+  });
+
+  it("uses one roving Tab stop and opens the focused row menu with Shift+F10", async () => {
+    sidebar();
+    const tree = screen.getByRole("tree", { name: "Personal chats" });
+    const running = within(tree).getByRole("treeitem", { name: "Running answer" });
+    const selected = within(tree).getByRole("treeitem", { name: "Selected brief" });
+    expect(within(tree).getAllByRole("treeitem").filter((item) => item.tabIndex === 0))
+      .toEqual([selected]);
+
+    selected.focus();
+    fireEvent.keyDown(selected, { key: "ArrowUp" });
+    expect(running).toHaveFocus();
+    fireEvent.keyDown(running, { key: "F10", shiftKey: true });
+    expect(screen.getByRole("menu", { name: "Chat actions: Running answer" })).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getByRole("menuitem", { name: "Rename" })).toHaveFocus();
+    });
+  });
+
+  it("offers a bounded skip path from navigation to the enabled composer", () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    render(
+      <>
+        <NavigationSidebar {...sidebarProps({ onClose })} />
+        <div data-testid="composer-v2"><textarea aria-label="Message" /></div>
+      </>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip to message composer" }));
+    act(() => vi.runAllTimers());
+
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("presents a persisted default-title chat as New chat", () => {
+    sidebar({
+      activeChatId: "blank",
+      chats: [{
+        activeRun: false,
+        folderId: null,
+        id: "blank",
+        title: "New Chat",
+        updatedAt: "2026-08-13T08:00:00.000Z"
+      }]
+    });
+
+    expect(document.querySelector('[data-navigation-chat-id="blank"] .v2-chat-row'))
+      .toHaveAttribute("data-selected", "true");
+    expect(screen.queryByText("New Chat")).toBeNull();
   });
 
   it("keeps loading, error, empty, and search-empty states explicit", () => {
@@ -112,16 +164,34 @@ describe("Navigation v2", () => {
   it("gives the sidebar list region to a selected Project", () => {
     sidebar({
       chats: [],
-      onArchivedChats: vi.fn(),
+      drawerDestinations: true,
+      onSettings: vi.fn(),
       projectContextActive: true,
+      projectTitle: <><span aria-hidden="true">I</span><span>Ingest pipeline</span></>,
       projectsSlot: <div>Project chat tree</div>
     });
 
     expect(screen.getByText("Project chat tree")).toBeVisible();
+    expect(screen.getByText("Ingest pipeline")).toBeVisible();
+    expect(screen.getByRole("complementary", { name: "Project navigation" })).toBeVisible();
     expect(screen.queryByText("Start your first chat")).toBeNull();
-    expect(screen.getByRole("button", { name: "Archived chats" })).toBeVisible();
+    // Archived chat management belongs to Settings › Data, not the drawer.
+    expect(screen.queryByRole("button", { name: "Archived chats" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "New chat mode" })).toBeNull();
     expect(screen.queryByText(/Memory off|Normal memory|Exclude from Memory|Resume Memory/)).toBeNull();
+  });
+
+  it("omits the composer skip path when the selected Project cannot start a chat", () => {
+    sidebar({
+      chats: [],
+      projectComposerAvailable: false,
+      projectContextActive: true,
+      projectsSlot: <div>Read-only Project tree</div>
+    });
+
+    expect(screen.getByText("Read-only Project tree")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Skip to message composer" })).toBeNull();
   });
 
   it("routes Normal, Memory-off, and Temporary new-chat intents and marks the current mode", () => {
@@ -186,10 +256,31 @@ describe("Navigation v2", () => {
       vi.advanceTimersByTime(250);
       view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "note" })} />);
       view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "" })} />);
-      expect(screen.getByRole("searchbox", { name: "Filter chats" })).toHaveValue("");
+      const empty = screen.getByRole("searchbox", { name: "Filter chats" });
+      expect(empty).toHaveValue("");
+
+      // Escape in an empty field leaves it (UX audit 2026-09-02 A15).
+      empty.focus();
+      expect(empty).toHaveFocus();
+      fireEvent.keyDown(empty, { key: "Escape" });
+      expect(empty).not.toHaveFocus();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("toggles the sidebar with Ctrl/⌘+Shift+S", () => {
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    fireEvent.keyDown(window, { ctrlKey: true, key: "S", shiftKey: true });
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
   });
 
   it("keeps the filter out of a selected Project's sidebar", () => {
@@ -243,6 +334,8 @@ describe("Navigation v2", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
 
     fireEvent.click(screen.getByRole("button", { name: "Folder actions: Research" }));
+    expect(screen.getByRole("menuitem", { name: "Default Knowledge…" })).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Project settings" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "New subfolder" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Subfolder name in Research" }), {
       target: { value: "Nested draft" }
@@ -252,36 +345,45 @@ describe("Navigation v2", () => {
     expect(onCreateFolder).not.toHaveBeenCalled();
   });
 
-  it("fences archive during a run and names the current Memory action", () => {
+  it("keeps the row menu to five object actions and fences mutations during a run", () => {
     const onArchive = vi.fn();
+    const onDelete = vi.fn();
     const onMemoryMode = vi.fn();
     sidebar({
       chatStateFor: (chat) => chat.id === "today"
         ? { favorite: true, memoryMode: "NORMAL" }
         : { favorite: false, memoryMode: "EXCLUDED" },
       onArchive,
+      onBranches: vi.fn(),
+      onCopyThread: vi.fn(),
+      onDelete,
+      onExport: vi.fn(),
       onMemoryMode
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Actions: Running answer" }));
-    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeDisabled();
-    expect(screen.queryByRole("menuitem", { name: "Memory off" })).toBeNull();
-    const memoryOn = screen.getByRole("menuitem", { name: "Exclude from Memory" });
-    expect(screen.getByRole("menuitem", { name: "Favorite" })).toHaveAttribute(
+    const menu = screen.getByRole("menu", { name: "Chat actions: Running answer" });
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Rename",
+      "Move to…",
+      "Favorite",
+      "Archive",
+      "Delete…"
+    ]);
+    expect(within(menu).getAllByRole("separator")).toHaveLength(1);
+    expect(within(menu).getByRole("menuitem", { name: "Archive" })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", { name: "Delete…" })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", { name: "Favorite" })).toHaveAttribute(
       "aria-current",
       "true"
     );
-    fireEvent.click(memoryOn);
-    expect(onMemoryMode).toHaveBeenCalledWith(chats[0], "EXCLUDED");
-
-    fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
-    const memoryOff = screen.getByRole("menuitem", { name: "Resume Memory for this chat" });
-    expect(screen.getByRole("menuitem", { name: "Favorite" })).not.toHaveAttribute(
-      "aria-current"
-    );
-    fireEvent.click(memoryOff);
-    expect(onMemoryMode).toHaveBeenCalledWith(chats[1], "NORMAL");
+    expect(within(menu).queryByRole("menuitem", { name: "Exclude from Memory" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Branches" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Export" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Share" })).toBeNull();
+    expect(onMemoryMode).not.toHaveBeenCalled();
     expect(onArchive).not.toHaveBeenCalled();
+    expect(onDelete).not.toHaveBeenCalled();
   });
 
   it("shows Delete… only with the capability and routes it to the confirm opener", () => {
@@ -316,7 +418,7 @@ describe("Navigation v2", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
-    const options = screen.getByLabelText("Choose a folder");
+    const options = screen.getByLabelText("Move to…");
     const labels = [...options.querySelectorAll("[role='menuitem']")]
       .map((item) => item.textContent);
     expect(labels).toEqual(["No folder", "Research", "Recall", "Evidence", "Ops"]);
@@ -357,9 +459,152 @@ describe("Navigation v2", () => {
     sidebar({ onSearch, onSelectChat, searchQuery: "brief" });
 
     expect(screen.getByText("Results")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Selected brief" }));
+    fireEvent.click(screen.getByRole("treeitem", { name: "Selected brief" }));
     expect(onSearch).toHaveBeenCalledWith("");
     expect(onSelectChat).toHaveBeenCalledWith(chats[1]);
+  });
+
+  it("keeps the rail with its destinations beside the list and hides it on mobile", () => {
+    const onLibrary = vi.fn();
+    const onSettings = vi.fn();
+    const { rerender } = render(
+      <ReadingRoomShellV2
+        accountLabel="operator@aiqsa.local"
+        adminEntryVisible
+        onLibrary={onLibrary}
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        onSettings={onSettings}
+        sidebar={(close) => <NavigationSidebar {...sidebarProps({ onClose: close })} />}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    expect(within(rail).getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(within(rail).getByRole("button", { name: "Library" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
+    expect(onLibrary).toHaveBeenCalledOnce();
+    expect(onSettings).toHaveBeenCalledOnce();
+    expect(within(rail).queryByRole("button", { name: "Archived chats" })).toBeNull();
+    expect(within(rail).getByRole("link", { name: "Control Center" })).toHaveAttribute("href", "/admin");
+    fireEvent.click(within(rail).getByRole("button", { name: "Account menu" }));
+    expect(screen.getByRole("menu", { name: "Account" })).toHaveTextContent("Sign out");
+    // The sidebar itself no longer carries the footer destinations on desktop.
+    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
+    expect(within(navigation).queryByRole("button", { name: "Library" })).toBeNull();
+    expect(within(navigation).getByText("Chats")).toBeVisible();
+
+    // Collapsing hides only the list: the rail and the reopen control stay.
+    fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(screen.getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+
+    rerender(
+      <ReadingRoomShellV2
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        section="library"
+        sidebar={(close) => <NavigationSidebar {...sidebarProps({ onClose: close })} />}
+      >
+        <main>Library</main>
+      </ReadingRoomShellV2>
+    );
+    expect(screen.getByRole("main").closest(".v2-workspace-shell"))
+      .toHaveAttribute("data-shell-section", "library");
+    expect(within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getByRole("button", { name: "Chats" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("moves the rail destinations into the drawer footer on mobile", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    render(
+      <ReadingRoomShellV2
+        accountLabel="operator@aiqsa.local"
+        onLibrary={vi.fn()}
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        onSettings={vi.fn()}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
+    // Settings is a footer destination too (one tap, UX audit 2026-09-02 B8);
+    // Control Center stays in the account menu, as on the rail.
+    for (const name of ["Projects", "Library", "Settings", "Account menu"]) {
+      expect(within(navigation).getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(within(navigation).queryByRole("button", { name: "Archived chats" })).toBeNull();
+    fireEvent.click(within(navigation).getByRole("button", { name: "Account menu" }));
+    expect(within(navigation).getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
+    expect(within(navigation).getByTestId("account-menu-identity")).toHaveTextContent("operator@aiqsa.local");
+    expect(within(navigation).getByText("AIQSA")).toBeInTheDocument();
+  });
+
+  it("leaves a Project for Library but opens Projects as its own shell section", () => {
+    const onLeaveProject = vi.fn();
+    const onLibrary = vi.fn();
+    const onProjectsSectionChange = vi.fn();
+    render(
+      <ReadingRoomShellV2
+        onLeaveProject={onLeaveProject}
+        onLibrary={onLibrary}
+        onNewChat={vi.fn()}
+        onProjectsSectionChange={onProjectsSectionChange}
+        onSelectChat={vi.fn()}
+        projectsSlot={(
+          <div className="v2-project-navigation">
+            <button type="button">Create project</button>
+          </div>
+        )}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    fireEvent.click(within(rail).getByRole("button", { name: "Library" }));
+    expect(onLeaveProject).toHaveBeenCalledTimes(1);
+    expect(onLibrary).toHaveBeenCalledTimes(1);
+    expect(onLeaveProject.mock.invocationCallOrder[0]).toBeLessThan(onLibrary.mock.invocationCallOrder[0]!);
+
+    fireEvent.click(within(rail).getByRole("button", { name: "Projects" }));
+    expect(onLeaveProject).toHaveBeenCalledTimes(1);
+    expect(onProjectsSectionChange).toHaveBeenLastCalledWith(true);
+    expect(screen.getByRole("complementary", { name: "Project navigation" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Create project" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
+    expect(within(rail).getByRole("button", { name: "Projects" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("accepts a controlled Projects destination when the reading surface returns to chat", () => {
+    const shell = (open: boolean) => (
+      <ReadingRoomShellV2
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        projectsSectionOpen={open}
+        projectsSlot={<div>Project catalog</div>}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const view = render(shell(true));
+
+    expect(screen.getByText("Project catalog")).toBeVisible();
+    expect(screen.getByRole("complementary", { name: "Project navigation" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
+
+    view.rerender(shell(false));
+    expect(screen.queryByText("Project catalog")).toBeNull();
+    expect(screen.getByRole("complementary", { name: "Chat navigation" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "New chat" })).not.toHaveLength(0);
   });
 
   it("restores focus to the opener after collapse", () => {
@@ -385,10 +630,13 @@ describe("Navigation v2", () => {
   });
 
   it("keeps shared-project navigation visible after a desktop destination is selected", () => {
+    const onProjectsSectionChange = vi.fn();
     render(
       <ReadingRoomShellV2
         onNewChat={vi.fn()}
+        onProjectsSectionChange={onProjectsSectionChange}
         onSelectChat={vi.fn()}
+        projectContextActive
         projectsSlot={(onNavigate) => (
           <button type="button" onClick={onNavigate}>Project destination</button>
         )}
@@ -400,7 +648,8 @@ describe("Navigation v2", () => {
     const shell = screen.getByRole("main").closest(".v2-workspace-shell");
     fireEvent.click(screen.getByRole("button", { name: "Project destination" }));
     expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
-    expect(screen.getByRole("complementary", { name: "Chat navigation" })).toBeVisible();
+    expect(screen.getByRole("complementary", { name: "Project navigation" })).toBeVisible();
+    expect(onProjectsSectionChange).toHaveBeenLastCalledWith(false);
   });
 
   it("moves focus into the mobile drawer and keeps its edge Tab cycle contained", () => {
@@ -409,7 +658,7 @@ describe("Navigation v2", () => {
     } as MediaQueryList)));
     render(
       <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
-        <NavigationSidebar {...sidebarProps({ onClose: close })} />
+        <NavigationSidebar {...sidebarProps({ drawerDestinations: true, onClose: close })} />
       )}>
         <main>Conversation</main>
       </ReadingRoomShellV2>
@@ -417,11 +666,14 @@ describe("Navigation v2", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
     const close = screen.getByRole("button", { name: "Close sidebar" });
+    const skip = screen.getByRole("button", { name: "Skip to message composer" });
     expect(close).toHaveFocus();
+    skip.focus();
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    // The drawer footer's account entry is the last control of the cycle.
     expect(screen.getByRole("button", { name: "Account menu" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Tab" });
-    expect(close).toHaveFocus();
+    expect(skip).toHaveFocus();
     fireEvent.click(close);
     expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
   });
@@ -451,13 +703,13 @@ describe("Navigation v2", () => {
 
     let drawer = openDrawer();
     fireEvent.click(drawer.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(drawer.getByRole("menuitem", { name: /Memory off/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Memory off/ }));
     expect(onNewChat).toHaveBeenLastCalledWith("EXCLUDED");
     expect(shell).not.toHaveAttribute("data-mobile-sidebar");
 
     drawer = openDrawer();
     fireEvent.click(drawer.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(drawer.getByRole("menuitem", { name: /Temporary chat/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Temporary chat/ }));
     expect(onNewChat).toHaveBeenLastCalledWith("TEMPORARY");
     expect(shell).not.toHaveAttribute("data-mobile-sidebar");
   });
@@ -500,8 +752,8 @@ describe("Navigation v2", () => {
     expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
   });
 
-  it("defaults 900–1023px to compact and preserves one sidebar owner when expanded", () => {
-    let width = 1023;
+  it("defaults 768–1023px to compact and preserves one sidebar owner when expanded", () => {
+    let width = 768;
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
     render(
       <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
@@ -520,7 +772,7 @@ describe("Navigation v2", () => {
     expect(screen.getByRole("button", { name: "Close sidebar" })).toHaveFocus();
   });
 
-  it("moves focus to the compact opener across <900 and restores the exact desktop source", () => {
+  it("moves focus to the mobile opener below 768px and restores the exact desktop source", () => {
     let width = 1281;
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
     render(
@@ -530,11 +782,11 @@ describe("Navigation v2", () => {
         <main>Conversation</main>
       </ReadingRoomShellV2>
     );
-    const source = screen.getByRole("button", { name: "Selected brief" });
+    const source = screen.getByRole("treeitem", { name: "Selected brief" });
     const opener = screen.getByRole("button", { name: "Open sidebar" });
     source.focus();
 
-    width = 844;
+    width = 767;
     act(() => window.dispatchEvent(new Event("resize")));
     expect(screen.getByRole("main").closest(".v2-workspace-shell"))
       .toHaveAttribute("data-sidebar-composition", "mobile");
@@ -543,6 +795,69 @@ describe("Navigation v2", () => {
     width = 1281;
     act(() => window.dispatchEvent(new Event("resize")));
     expect(source).toHaveFocus();
+  });
+
+  it("settles compact drawers after a destination or scrim is selected", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 820));
+    const onLibrary = vi.fn();
+    const onSettings = vi.fn();
+    render(
+      <ReadingRoomShellV2
+        onLibrary={onLibrary}
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        onSettings={onSettings}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    const openDrawer = () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+      expect(shell).toHaveAttribute("data-sidebar-compact-expanded", "true");
+      expect(screen.getByRole("main").closest(".v2-workspace-content")).toHaveAttribute("inert");
+    };
+
+    openDrawer();
+    const scrim = document.querySelector<HTMLButtonElement>(".v2-navigation-scrim");
+    expect(scrim).not.toBeNull();
+    expect(scrim).toHaveAttribute("tabindex", "-1");
+    fireEvent.click(scrim!);
+    expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
+    expect(screen.getByRole("main").closest(".v2-workspace-content")).not.toHaveAttribute("inert");
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+
+    openDrawer();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+
+    openDrawer();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getByRole("button", { name: "Library" }));
+    expect(onLibrary).toHaveBeenCalledOnce();
+    expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
+
+    openDrawer();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getByRole("button", { name: "Settings" }));
+    expect(onSettings).toHaveBeenCalledOnce();
+    expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
+  });
+
+  it("keeps column-control tooltips on their inward side", () => {
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    expect(screen.getByRole("button", { name: "Close sidebar" }))
+      .toHaveAttribute("data-tooltip-side", "left");
+    fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+    expect(screen.getByRole("button", { name: "Open sidebar" }))
+      .toHaveAttribute("data-tooltip-side", "right");
   });
 
   it("does not steal conversation focus when compact navigation returns to desktop", () => {
@@ -555,7 +870,7 @@ describe("Navigation v2", () => {
         <button type="button">Conversation control</button>
       </ReadingRoomShellV2>
     );
-    const source = screen.getByRole("button", { name: "Selected brief" });
+    const source = screen.getByRole("treeitem", { name: "Selected brief" });
     const conversation = screen.getByRole("button", { name: "Conversation control" });
     source.focus();
 
@@ -566,6 +881,29 @@ describe("Navigation v2", () => {
     act(() => window.dispatchEvent(new Event("resize")));
 
     expect(conversation).toHaveFocus();
+  });
+
+  it("keeps navigation focus when an open compact drawer expands to desktop", () => {
+    let width = 820;
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
+        <NavigationSidebar {...sidebarProps({ onClose: close })} />
+      )}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const close = screen.getByRole("button", { name: "Close sidebar" });
+    expect(close).toHaveFocus();
+    width = 1281;
+    act(() => window.dispatchEvent(new Event("resize")));
+
+    expect(screen.getByRole("main").closest(".v2-workspace-shell"))
+      .toHaveAttribute("data-sidebar-composition", "desktop");
+    expect(close).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Open sidebar" })).not.toHaveFocus();
   });
 
   it("does not install a Ctrl/Cmd+K navigation surface", () => {

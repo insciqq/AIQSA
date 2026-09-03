@@ -443,6 +443,7 @@ function personalClient(input: Readonly<{
   projectSourceBindingVisible?: boolean;
   ragEvidence?: Record<string, unknown> | null;
   sourceDeletionRequested?: boolean;
+  sourceMembershipRemoved?: boolean;
   sourceTrashed?: boolean;
   toolLoopCheckpointRound?: number;
   versionVisible?: boolean;
@@ -499,6 +500,10 @@ function personalClient(input: Readonly<{
     trashedAt: input.baseTrashed ? new Date("2026-08-21T00:00:00.000Z") : null
   });
   const version = defaultVersion();
+  version.source.ownerUserId = input.bindingOwnerUserId ?? "user-1";
+  if (input.sourceMembershipRemoved === false) {
+    Object.assign(version.source.baseMemberships[0]!, { removedAt: null });
+  }
   if (input.sourceDeletionRequested) {
     Object.assign(version.source, {
       deletionRequestedAt: new Date("2026-08-21T00:00:00.000Z")
@@ -662,6 +667,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
         },
         state: "available"
       },
+      librarySourceId: "source-1",
       original: {
         checksum: createHash("sha256").update("12345").digest("hex"),
         fileName: "policy.pdf",
@@ -1164,7 +1170,11 @@ describe("Knowledge citation viewer authorization and projection", () => {
           result: { columns: ["sum Revenue"], rows: [[300]] }
         }
       },
-      original: null
+      original: {
+        fileName: "sales.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        storageKey: "original/sales.xlsx"
+      }
     });
   });
 
@@ -1286,6 +1296,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
       request
     )).resolves.toEqual({
       citation: { handle: "K1", state: "deleted" },
+      librarySourceId: null,
       original: null
     });
     expect(fixture.deletedEvidenceFindFirst).toHaveBeenCalledWith({
@@ -1337,13 +1348,49 @@ describe("Knowledge citation viewer authorization and projection", () => {
       storage(),
       request
     )).resolves.toMatchObject({
-      citation: { source: { statuses: expect.arrayContaining(["trash"]) }, state: "available" }
+      citation: {
+        libraryAvailable: false,
+        source: { statuses: expect.arrayContaining(["trash"]) },
+        state: "available"
+      },
+      librarySourceId: null
     });
     const query = fixture.baseFindFirst.mock.calls[0]?.[0] as {
       where: Record<string, unknown>;
     };
     expect(query.where).not.toHaveProperty("trashedAt");
     expect(JSON.stringify(query.where.OR)).not.toContain("trashedAt");
+  });
+
+  it("offers Library navigation only while a shared personal document remains available there", async () => {
+    const active = personalClient({
+      baseOwnerUserId: "owner-2",
+      bindingOwnerUserId: "owner-2",
+      groupIds: ["group-1"],
+      sourceMembershipRemoved: false
+    });
+    await expect(resolveKnowledgeCitationViewer(
+      active.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { libraryAvailable: true, state: "available" },
+      librarySourceId: "source-1"
+    });
+
+    const removed = personalClient({
+      baseOwnerUserId: "owner-2",
+      bindingOwnerUserId: "owner-2",
+      groupIds: ["group-1"]
+    });
+    await expect(resolveKnowledgeCitationViewer(
+      removed.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { libraryAvailable: false, state: "available" },
+      librarySourceId: null
+    });
   });
 
   it("keeps accepted Project Base evidence readable when the Base moves to Trash", async () => {
@@ -1702,6 +1749,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
       userId: "reader-1"
     })).resolves.toMatchObject({
       original: { storageKey: "original/policy.pdf" },
+      pageCount: 2,
       source: {
         excerpt: "Context before the cited table.",
         source: {

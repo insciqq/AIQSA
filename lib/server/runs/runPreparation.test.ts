@@ -2581,7 +2581,7 @@ describe("run preparation", () => {
 
     expect(result).toMatchObject({
       code: "sources_processing",
-      message: "Selected Knowledge sources are still processing.",
+      message: "Selected Knowledge documents are still processing.",
       ok: false,
       status: 409
     });

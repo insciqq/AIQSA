@@ -4,6 +4,8 @@ import type {
   AdminKnowledgeOperationsAlert
 } from "../../../contracts/adminKnowledge";
 import { reconcileKnowledgeSourcePersistence } from "../../knowledge/sourcePersistence";
+import { readKnowledgeSearchHealth } from "../../knowledge/searchHealth";
+import type { AiqsaOpenSearchTransport } from "../../search/opensearch/transport";
 
 type OperationsClient = Pick<PrismaClient, "$queryRaw">;
 
@@ -61,6 +63,10 @@ function alerts(input: Readonly<{
   oldestQueuedSeconds: number | null;
   pendingDeletionJobs: number;
   retrievalOperations24h: number;
+  searchBackendState: "available" | "unavailable";
+  searchFailedProjections: number;
+  searchPendingProjections: number;
+  searchWorkerState: "healthy" | "missing" | "stale";
 }>): AdminKnowledgeOperationsAlert[] {
   const result: AdminKnowledgeOperationsAlert[] = [];
   if (input.discrepancies > 0) {
@@ -92,16 +98,34 @@ function alerts(input: Readonly<{
       RETRIEVAL_DEGRADED_WARNING_RATIO) {
     result.push({ code: "knowledge_retrieval_degraded", severity: "warning" });
   }
+  if (input.searchBackendState === "unavailable") {
+    result.push({ code: "knowledge_search_backend_unavailable", severity: "critical" });
+  }
+  if (input.searchWorkerState !== "healthy") {
+    result.push({ code: "knowledge_search_worker_unavailable", severity: "critical" });
+  }
+  if (input.searchFailedProjections > 0) {
+    result.push({ code: "knowledge_search_projection_failures", severity: "critical" });
+  }
+  if (input.searchPendingProjections > 0) {
+    result.push({ code: "knowledge_search_projection_backlog", severity: "warning" });
+  }
   return result.sort((left, right) =>
     (left.severity === right.severity
       ? left.code.localeCompare(right.code)
       : left.severity === "critical" ? -1 : 1));
 }
 
-export function createAdminKnowledgeOperationsService(client: OperationsClient) {
+export function createAdminKnowledgeOperationsService(
+  client: OperationsClient,
+  input: Readonly<{
+    now?: Date;
+    search?: Pick<AiqsaOpenSearchTransport, "checkKnowledgeIndex">;
+  }> = {}
+) {
   return {
     async read(): Promise<AdminKnowledgeOperations> {
-      const [rows, reconciliation] = await Promise.all([
+      const [rows, reconciliation, search] = await Promise.all([
         client.$queryRaw<OperationsRow[]>(Prisma.sql`
           WITH artifact_stats AS (
             SELECT
@@ -221,7 +245,8 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
           CROSS JOIN retrieval_stats
           CROSS JOIN grounding_stats
         `),
-        reconcileKnowledgeSourcePersistence(client)
+        reconcileKnowledgeSourcePersistence(client),
+        readKnowledgeSearchHealth(client, input)
       ]);
       const row = rows[0];
       if (!row) throw new Error("knowledge_operations_unavailable");
@@ -307,7 +332,11 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
           failedArtifacts: normalized.failedArtifacts,
           oldestQueuedSeconds: normalized.oldestQueuedSeconds,
           pendingDeletionJobs: normalized.pendingDeletionJobs,
-          retrievalOperations24h: normalized.retrievalOperations24h
+          retrievalOperations24h: normalized.retrievalOperations24h,
+          searchBackendState: search.backendState,
+          searchFailedProjections: search.failedProjections,
+          searchPendingProjections: search.pendingProjections,
+          searchWorkerState: search.workerState
         }),
         checkedAt: row.checkedAt.toISOString(),
         deletion: {
@@ -347,7 +376,8 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
           operations24h: normalized.retrievalOperations24h,
           p50DurationMs24h: normalized.p50RetrievalDurationMs24h,
           p95DurationMs24h: normalized.p95RetrievalDurationMs24h
-        }
+        },
+        search
       };
     }
   };

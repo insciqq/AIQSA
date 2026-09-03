@@ -242,4 +242,37 @@ describe("Prisma-backed settings repository", () => {
       });
     });
   });
+
+  it("persists the chat defaults and Send with Enter, clears the Knowledge default with null, and bounds the MCP mode", async () => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
+      const settingsRepository = createTestSettingsRepository(validationModels);
+      const plan = { baseIds: ["kb-1"], mode: "explicit" as const, sourceIds: [], version: 1 as const };
+
+      await expect(
+        settingsRepository.updateSettings(userId, {
+          defaultKnowledgePlan: plan,
+          defaultMcpMode: "load_all",
+          sendWithEnter: false
+        })
+      ).resolves.toMatchObject({
+        kind: "updated",
+        settings: { defaultKnowledgePlan: plan, defaultMcpMode: "load_all", sendWithEnter: false }
+      });
+      await expect(
+        settingsRepository.updateSettings(userId, { defaultKnowledgePlan: null })
+      ).resolves.toMatchObject({
+        kind: "updated",
+        settings: { defaultKnowledgePlan: null, defaultMcpMode: "load_all", sendWithEnter: false }
+      });
+      await expect(
+        prisma.userSettings.findUniqueOrThrow({
+          select: { defaultKnowledgePlan: true, defaultMcpMode: true, sendWithEnter: true },
+          where: { userId }
+        })
+      ).resolves.toEqual({ defaultKnowledgePlan: null, defaultMcpMode: "load_all", sendWithEnter: false });
+      await expect(
+        prisma.$executeRaw`UPDATE "UserSettings" SET "defaultMcpMode" = 'always' WHERE "userId" = ${userId}`
+      ).rejects.toThrow();
+    });
+  });
 });

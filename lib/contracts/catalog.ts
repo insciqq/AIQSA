@@ -1,4 +1,9 @@
+import {
+  decodeOptionalChatDefaults,
+  type ChatDefaultMcpMode
+} from "./chatDefaults";
 import type { ErrorResponse, SessionErrorCode } from "./http";
+import type { KnowledgeSelection } from "./knowledge";
 import {
   decodeSearchPlan,
   type SearchAdapterKind,
@@ -112,6 +117,10 @@ export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 export type CatalogDefaults = {
   controlValues: Record<string, unknown>;
   hasPersonalModelDefault: boolean;
+  /** Personal chat defaults applied when a new chat starts; absent on older wires. */
+  knowledgePlan?: KnowledgeSelection | null;
+  mcpMode?: ChatDefaultMcpMode;
+  sendWithEnter?: boolean;
   modelId: string;
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
@@ -450,7 +459,13 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
   const decodedSearchPlan = decodeSearchPlan(defaults.searchPlan);
   const decodedOrganizationSearchPlan = decodeSearchPlan(defaults.organizationSearchPlan);
+  const chatDefaults = decodeOptionalChatDefaults({
+    knowledgePlan: defaults.knowledgePlan,
+    mcpMode: defaults.mcpMode,
+    sendWithEnter: defaults.sendWithEnter
+  });
   if (
+    !chatDefaults ||
     models.some((model) => model === null) ||
     providers.some((provider) => provider === null) ||
     searchStrategies.some((strategy) => strategy === null) ||
@@ -483,6 +498,8 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     defaults: {
       controlValues: defaults.controlValues,
       hasPersonalModelDefault: defaults.hasPersonalModelDefault,
+      knowledgePlan: chatDefaults.knowledgePlan,
+      mcpMode: chatDefaults.mcpMode,
       modelId: defaults.modelId,
       modelPreferenceSource: defaults.modelPreferenceSource,
       organizationModelDefault: defaults.organizationModelDefault,
@@ -491,6 +508,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       provider: defaults.provider,
       searchPlan: decodedSearchPlan.plan,
       searchPreferenceSource: defaults.searchPreferenceSource,
+      sendWithEnter: chatDefaults.sendWithEnter,
       showCitations: defaults.showCitations,
       showReasoningBlocks: defaults.showReasoningBlocks
     },

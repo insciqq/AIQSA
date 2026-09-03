@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { EmbeddingAdapterError } from "../providers/embeddings";
+import { OpenSearchTransportError } from "../search/opensearch/transport";
 import type { ProviderRunRequest } from "../providers/types";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
@@ -111,6 +112,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 
 function executor() {
   const store = {
+    assertSearchReady: vi.fn(),
     hybridSearch: vi.fn(),
     invocationOrdinal: vi.fn(),
     loadBindings: vi.fn(),
@@ -132,6 +134,7 @@ function automaticStore(hybridSearch: KnowledgeRetrievalStore["hybridSearch"]) {
   return {
     persistReceipt,
     store: {
+      assertSearchReady: vi.fn(async () => undefined),
       hybridSearch,
       invocationOrdinal: vi.fn(async () => 1),
       loadBindings: vi.fn(async () => [acceptedBinding]),
@@ -260,6 +263,7 @@ describe("Knowledge executor surface", () => {
       budgetReservations: { reserve } as never,
       embeddingRuntime: { resolve: vi.fn() },
       store: {
+        assertSearchReady: vi.fn(async () => undefined),
         budgetState: vi.fn(async () => ({
           evidenceCount: 0,
           invocationOrdinal: 1,
@@ -375,6 +379,7 @@ describe("Knowledge executor surface", () => {
     const runtime = createKnowledgeToolExecutor({
       embeddingRuntime: { resolve },
       store: {
+        assertSearchReady: vi.fn(async () => undefined),
         budgetState: vi.fn(async () => ({
           evidenceCount: 0,
           excludedResources: 1,
@@ -735,6 +740,7 @@ describe("Knowledge executor surface", () => {
         }))
       },
       store: {
+        assertSearchReady: vi.fn(async () => undefined),
         hybridSearch,
         invocationOrdinal: vi.fn(async () => 1),
         loadBindings: vi.fn(async () => [acceptedBinding]),
@@ -764,6 +770,331 @@ describe("Knowledge executor surface", () => {
         results: [expect.objectContaining({ sourceAlias: "S1" })]
       })
     }));
+  });
+
+  it("settles an incomplete projection before embedding without leaking the query", async () => {
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>();
+    const { persistReceipt, store } = automaticStore(hybridSearch);
+    store.assertSearchReady = vi.fn(async () => {
+      throw new Error("knowledge_search_projection_incomplete");
+    });
+    const resolve = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve },
+      store
+    });
+
+    const result = await runtime.execute({
+      arguments: { query: "private incident phrase", sourceAliases: [] },
+      id: "call-projection-unavailable",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-projection-unavailable",
+      request: request(),
+      runId: "run-projection-unavailable",
+      userId: "user-1"
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.content).toEqual([{
+      text: "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.",
+      type: "text"
+    }]);
+    expect(store.assertSearchReady).toHaveBeenCalledWith({
+      bindings: [acceptedBinding],
+      runId: "run-projection-unavailable",
+      userId: "user-1"
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(hybridSearch).not.toHaveBeenCalled();
+    expect(persistReceipt).toHaveBeenCalledOnce();
+    expect(persistReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      evidence: expect.objectContaining({
+        bases: [],
+        candidateCount: 0,
+        embeddingExecutions: [],
+        failureCode: "knowledge_search_projection_unavailable",
+        outcome: "search_unavailable",
+        query: "knowledge_search_unavailable",
+        results: []
+      })
+    }));
+    const persisted = persistReceipt.mock.calls[0]![0].evidence;
+    expect(persisted).not.toHaveProperty("scopeAliases");
+    expect(JSON.stringify(persisted)).not.toContain("private incident phrase");
+    expect(JSON.stringify(persisted)).not.toContain(acceptedBinding.knowledgeBaseId);
+    expect(warn).toHaveBeenCalledWith(JSON.stringify({
+      event: "knowledge_search_unavailable",
+      failureClass: "projection"
+    }));
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("private incident phrase");
+    warn.mockRestore();
+  });
+
+  it("persists a backend outage with incurred embedding usage and replays it without I/O", async () => {
+    let receipt: Parameters<KnowledgeRetrievalStore["persistReceipt"]>[0]["evidence"] | null = null;
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(async () => {
+      throw new OpenSearchTransportError("opensearch_timeout", true);
+    });
+    const automatic = automaticStore(hybridSearch);
+    const persistReceipt = vi.fn<KnowledgeRetrievalStore["persistReceipt"]>(async (input) => {
+      receipt = input.evidence;
+      return input.evidence;
+    });
+    const loadReceipt = vi.fn(async () => receipt);
+    const embed = vi.fn(async () => ({
+      model: "embedding-upstream",
+      requestId: "embedding-request-before-outage",
+      usage: { inputTokens: 2, totalTokens: 2 },
+      vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+    }));
+    const resolve = vi.fn(async () => ({
+      adapter: { embed },
+      configuration: embeddingConfiguration,
+      provider: "openai_compatible",
+      providerModelId: "embedding-model-1"
+    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve },
+      store: {
+        ...automatic.store,
+        loadReceipt,
+        persistReceipt
+      }
+    });
+    const call = {
+      arguments: { query: "Question", sourceAliases: [] },
+      id: "call-backend-unavailable",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const context = {
+      persistedToolCallId: "tool-call-backend-unavailable",
+      request: request(),
+      runId: "run-backend-unavailable",
+      userId: "user-1"
+    };
+
+    const first = await runtime.execute(call, context);
+    const replay = await runtime.execute(call, context);
+
+    expect(first.status).toBe("error");
+    expect(replay).toEqual(first);
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(embed).toHaveBeenCalledOnce();
+    expect(hybridSearch).toHaveBeenCalledOnce();
+    expect(persistReceipt).toHaveBeenCalledOnce();
+    expect(loadReceipt).toHaveBeenCalledTimes(2);
+    expect(receipt).toMatchObject({
+      bases: [],
+      candidateCount: 0,
+      embeddingExecutions: [expect.objectContaining({
+        inputTokens: 2,
+        requestId: "embedding-request-before-outage",
+        status: "complete",
+        totalTokens: 2
+      })],
+      failureCode: "knowledge_search_backend_unavailable",
+      outcome: "search_unavailable",
+      query: "knowledge_search_unavailable",
+      results: []
+    });
+    expect(receipt).not.toHaveProperty("scopeAliases");
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("settles projection drift after embedding with its actual reserved usage", async () => {
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(async () => {
+      throw new Error("knowledge_search_projection_incomplete");
+    });
+    const automatic = automaticStore(hybridSearch);
+    const persistReceipt = vi.fn<KnowledgeRetrievalStore["persistReceipt"]>(async (input) =>
+      input.evidence);
+    const estimate = {
+      candidateCount: 64,
+      costMicros: 0,
+      latencyMs: 1_000,
+      operationSlots: 1,
+      queryEmbeddingCalls: 1,
+      retrievedTokens: 8_192
+    };
+    const record = {
+      leaseToken: "lease-token-search-drift",
+      modelRunId: "run-projection-drift",
+      modelRunToolCallId: "tool-call-projection-drift",
+      operationRequest: {},
+      purgedAt: null,
+      reservation: {
+        estimate,
+        id: "11111111-1111-4111-8111-111111111111",
+        operationOrdinal: 1,
+        state: "reserved"
+      }
+    };
+    const reserve = vi.fn(async () => ({
+      chargeAfter: estimate,
+      chargeBefore: {
+        candidateCount: 0,
+        costMicros: 0,
+        latencyMs: 0,
+        operationSlots: 0,
+        queryEmbeddingCalls: 0,
+        retrievedTokens: 0
+      },
+      kind: "admitted" as const,
+      record,
+      roundIndex: 0
+    }));
+    const claimDispatch = vi.fn(async () => ({
+      kind: "transitioned" as const,
+      record
+    }));
+    const embed = vi.fn(async () => ({
+      model: "embedding-upstream",
+      requestId: "embedding-request-before-projection-drift",
+      usage: { inputTokens: 2, totalTokens: 2 },
+      vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+    }));
+    const runtime = createKnowledgeToolExecutor({
+      budgetReservations: {
+        claimDispatch,
+        markAmbiguous: vi.fn(),
+        release: vi.fn(),
+        reserve,
+        settle: vi.fn()
+      } as never,
+      embeddingRuntime: {
+        resolve: vi.fn(async () => ({
+          adapter: { embed },
+          configuration: embeddingConfiguration,
+          provider: "openai_compatible",
+          providerModelId: "embedding-model-1"
+        }))
+      },
+      store: {
+        ...automatic.store,
+        loadBindings: vi.fn(async () => [{
+          ...acceptedBinding,
+          executionScope: "base" as const,
+          profileRevisionId: "22222222-2222-4222-8222-222222222222"
+        }]),
+        persistReceipt
+      }
+    });
+
+    const result = await runtime.execute({
+      arguments: { query: "Question", sourceAliases: [] },
+      id: "call-projection-drift",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-projection-drift",
+      request: request(),
+      runId: "run-projection-drift",
+      userId: "user-1"
+    });
+
+    expect(result.status).toBe("error");
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(claimDispatch).toHaveBeenCalledOnce();
+    expect(embed).toHaveBeenCalledOnce();
+    expect(persistReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      budgetReservation: expect.objectContaining({
+        actual: expect.objectContaining({
+          candidateCount: 0,
+          queryEmbeddingCalls: 1,
+          retrievedTokens: 0
+        }),
+        leaseToken: "lease-token-search-drift",
+        reservationId: "11111111-1111-4111-8111-111111111111"
+      }),
+      evidence: expect.objectContaining({
+        embeddingExecutions: [expect.objectContaining({
+          requestId: "embedding-request-before-projection-drift",
+          status: "complete"
+        })],
+        failureCode: "knowledge_search_projection_unavailable",
+        outcome: "search_unavailable"
+      })
+    }));
+  });
+
+  it("keeps cancellation authoritative over a concurrent preflight outage", async () => {
+    const controller = new AbortController();
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>();
+    const { persistReceipt, store } = automaticStore(hybridSearch);
+    store.assertSearchReady = vi.fn(async () => {
+      controller.abort();
+      throw new OpenSearchTransportError("opensearch_unavailable");
+    });
+    const resolve = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve },
+      store
+    });
+
+    await expect(runtime.execute({
+      arguments: { query: "Question", sourceAliases: [] },
+      id: "call-cancelled-preflight",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-cancelled-preflight",
+      request: request(),
+      runId: "run-cancelled-preflight",
+      userId: "user-1"
+    }, { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(hybridSearch).not.toHaveBeenCalled();
+    expect(persistReceipt).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("keeps cancellation authoritative over a concurrent search outage", async () => {
+    const controller = new AbortController();
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(async () => {
+      controller.abort();
+      throw new OpenSearchTransportError("opensearch_timeout", true);
+    });
+    const { persistReceipt, store } = automaticStore(hybridSearch);
+    const embed = vi.fn(async () => ({
+      model: "embedding-upstream",
+      requestId: "embedding-request-before-cancel",
+      usage: { inputTokens: 1, totalTokens: 1 },
+      vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: {
+        resolve: vi.fn(async () => ({
+          adapter: { embed },
+          configuration: embeddingConfiguration,
+          provider: "openai_compatible",
+          providerModelId: "embedding-model-1"
+        }))
+      },
+      store
+    });
+
+    await expect(runtime.execute({
+      arguments: { query: "Question", sourceAliases: [] },
+      id: "call-cancelled-search",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-cancelled-search",
+      request: request(),
+      runId: "run-cancelled-search",
+      userId: "user-1"
+    }, { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(embed).toHaveBeenCalledOnce();
+    expect(hybridSearch).toHaveBeenCalledOnce();
+    expect(persistReceipt).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it.each([

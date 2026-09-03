@@ -22,8 +22,10 @@ import {
 } from "@/components/app-shell/powerAppShellData";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
+import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
-import type { SearchPlanMode } from "@/lib/domain/search";
+import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
 
 type PendingControlDefaults = {
   draft: SavedControlDraft;
@@ -451,7 +453,8 @@ export function useRunControlsActions({
     useComposerControlStore.getState().applyModelSelection({
       controlDefaults,
       modelId: model.modelId,
-      provider: model.provider
+      provider: model.provider,
+      searchStrategyIds: model.searchStrategyIds
     });
   }
 
@@ -509,6 +512,8 @@ export function useRunControlsActions({
       description: string;
       id: string;
       includedSkills?: { id: string; name: string }[];
+      knowledgeLabel?: string | null;
+      knowledgeResourceCount?: number;
       name: string;
       promptCharacterCount: number;
       starterPrompts: string[];
@@ -596,6 +601,32 @@ export function useRunControlsActions({
       searchPreferenceSource: "organization"
     });
     void settingsMutationCoordinator.enqueue({ searchPlan: null });
+  }
+
+  /* Settings › Chat defaults: personal defaults for new chats only; the open
+     chat's composer selection is left untouched. */
+  function setDefaultSearchPlan(plan: SearchPlan) {
+    const reconciled = reconcileSearchPlanSelection(
+      plan.optionIds,
+      plan.mode,
+      currentCatalogFromStore()?.searchStrategies ?? []
+    );
+    void persistUserDefaults(
+      { searchPlan: reconciled, searchPreferenceSource: "personal" },
+      { noticeScope: "settings" }
+    );
+  }
+
+  function setDefaultMcpMode(mode: ChatDefaultMcpMode) {
+    void persistUserDefaults({ mcpMode: mode }, { noticeScope: "settings" });
+  }
+
+  function setDefaultKnowledgePlan(plan: KnowledgeSelection | null) {
+    void persistUserDefaults({ knowledgePlan: plan }, { noticeScope: "settings" });
+  }
+
+  function setSendWithEnter(value: boolean) {
+    void persistUserDefaults({ sendWithEnter: value }, { noticeScope: "settings" });
   }
 
   function changeReasoningEffort(value: string) {
@@ -718,6 +749,10 @@ export function useRunControlsActions({
     selectModel,
     selectSearchPlan,
     selectSearchStrategy,
+    setDefaultKnowledgePlan,
+    setDefaultMcpMode,
+    setDefaultSearchPlan,
+    setSendWithEnter,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     useOrganizationModelDefault,

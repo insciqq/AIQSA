@@ -41,7 +41,7 @@ export async function editMessageBranchAction({
     useComposerSessionStore.getState(),
     sourceSessionKey
   );
-  const text = sourceSession.draft.trim();
+  const text = sourceSession.editingDraft.trim();
   const editingMessageId = sourceSession.editingMessageId;
   if (!text || !editingMessageId || activeChatStreaming) {
     return null;

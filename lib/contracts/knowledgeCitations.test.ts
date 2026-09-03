@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeKnowledgeCitationLibraryTargetResponse,
   decodeKnowledgeCitationViewerResponse,
   decodeKnowledgeSourceViewerResponse
 } from "./knowledgeCitations";
@@ -31,6 +32,7 @@ function available() {
     excerpt: "Accepted exact excerpt.",
     excerptTruncated: false,
     headingPath: ["Policy", "Retrieval"],
+    libraryAvailable: true,
     locator: {
       boundingBoxes: [{
         bottom: 40,
@@ -94,6 +96,16 @@ function workbookEvidence() {
 }
 
 describe("Knowledge citation viewer contracts", () => {
+  it("decodes only a bounded citation-to-Library target", () => {
+    expect(decodeKnowledgeCitationLibraryTargetResponse({ sourceId: "source-1" }))
+      .toEqual({ sourceId: "source-1" });
+    expect(decodeKnowledgeCitationLibraryTargetResponse({
+      fileName: "must-not-leak.pdf",
+      sourceId: "source-1"
+    })).toBeNull();
+    expect(decodeKnowledgeCitationLibraryTargetResponse({ sourceId: "" })).toBeNull();
+  });
+
   it("decodes bounded available citation and Source Library projections", () => {
     const citation = { ...available(), handle: "K7" };
     expect(decodeKnowledgeCitationViewerResponse({ citation })).toEqual({ citation });
@@ -160,6 +172,13 @@ describe("Knowledge citation viewer contracts", () => {
   it("rejects malformed locators, handles, source labels, and duplicate states", () => {
     expect(decodeKnowledgeCitationViewerResponse({
       citation: { ...available(), handle: "K0" }
+    })).toBeNull();
+    expect(decodeKnowledgeCitationViewerResponse({
+      citation: {
+        ...available(),
+        handle: "K1",
+        libraryAvailable: "yes"
+      }
     })).toBeNull();
     expect(decodeKnowledgeCitationViewerResponse({
       citation: {

@@ -18,9 +18,10 @@ import {
   type ComposerAttachmentPolicy
 } from "@/components/app-shell/attachmentSelection";
 import {
+  type UiV2IconName,
   UiV2Icon,
   UiV2IconButton,
-  type UiV2IconName
+  UiV2ProviderMark
 } from "@/components/ui-v2";
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
@@ -43,45 +44,108 @@ import {
   allMyKnowledgeSelection,
   EMPTY_KNOWLEDGE_SELECTION,
   explicitKnowledgeSelection,
+  KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES,
   KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH,
   type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
+import { knowledgeAggregateStatus } from "@/lib/domain/knowledgePresentation";
+import { createPortal } from "react-dom";
 import {
   useEffect,
   useId,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type Ref,
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "capabilities" | "knowledge" | "model" | "tools" | null;
+export type ComposerV2Layer = "add" | "knowledge" | "model" | "search" | "tools" | null;
+
+/**
+ * Imperative handle for openers outside the composer (the header model
+ * selector): the composer keeps owning the layer, its dismissal, keyboard
+ * contract, and focus return while the anchor lives anywhere in the document.
+ */
+export type ComposerV2LayerController = Readonly<{
+  close(): void;
+  toggle(layer: Exclude<ComposerV2Layer, null>, anchor: HTMLButtonElement): void;
+}>;
 
 const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
-  capabilities: "Capabilities",
+  add: "Add",
   knowledge: "Knowledge",
   model: "Choose model",
+  search: "Web search",
   tools: "MCP tools"
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
-  capabilities: "Capabilities",
+  add: "Add",
   knowledge: "Knowledge",
   model: "Model",
+  search: "Web search",
   tools: "MCP tools"
 };
 /* Desktop popover widths (see composer.css) used to keep a chip-anchored layer
    inside the composer frame. */
 const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
-  capabilities: 384,
-  knowledge: 384,
-  model: 384,
-  tools: 288
+  add: 300,
+  knowledge: 380,
+  model: 380,
+  search: 330,
+  tools: 340
 };
+const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
+  anthropic: "Anthropic",
+  deepseek: "DeepSeek",
+  google: "Google",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  perplexity: "Perplexity"
+};
+
+function searchEngineShortName(
+  strategy: CatalogSearchStrategy,
+  providerFamily: string | undefined
+): string {
+  const withoutSuffix = strategy.displayName
+    .replace(/\s+web\s+search$/iu, "")
+    .replace(/\s+search$/iu, "")
+    .trim();
+  const normalized = withoutSuffix.toLocaleLowerCase();
+  if (withoutSuffix && normalized !== "search" && normalized !== "web") {
+    return withoutSuffix;
+  }
+  return (providerFamily && SEARCH_PROVIDER_FAMILY_NAMES[providerFamily.toLocaleLowerCase()]) ||
+    strategy.displayName;
+}
+
+function documentCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "document" : "documents"}`;
+}
+
+function resourceCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "resource" : "resources"}`;
+}
+
+function knowledgeBaseReason(base: ComposerConfigKnowledgeBase): string {
+  const status = knowledgeAggregateStatus({
+    attentionDocuments: base.attentionDocumentCount,
+    processingDocuments: base.processingDocumentCount,
+    readyDocuments: base.readyDocumentCount,
+    state: base.readinessState
+  }).label;
+  return `${documentCountLabel(base.documentCount)} · ${
+    status.charAt(0).toLocaleLowerCase() + status.slice(1)
+  }`;
+}
 
 /** Left offset (px, relative to the composer frame) for a chip-anchored layer. */
 function layerAnchorLeft(
@@ -89,12 +153,33 @@ function layerAnchorLeft(
   composer: HTMLElement | null,
   kind: Exclude<ComposerV2Layer, null>
 ): number {
-  if (!composer || kind === "capabilities" || kind === "model") return 0;
+  if (!composer || kind === "add" || kind === "model") return 0;
   const composerBox = composer.getBoundingClientRect();
   const openerBox = opener.getBoundingClientRect();
   const max = Math.max(0, composerBox.width - LAYER_WIDTH_PX[kind]);
   return Math.round(Math.max(0, Math.min(openerBox.left - composerBox.left, max)));
 }
+
+/**
+ * Viewport position of a layer opened from outside the composer: directly
+ * below its anchor, kept inside the viewport horizontally.
+ */
+function externalLayerAnchor(
+  anchor: HTMLElement,
+  kind: Exclude<ComposerV2Layer, null>
+): Readonly<{ left: number; top: number }> {
+  const box = anchor.getBoundingClientRect();
+  const margin = 8;
+  const maxLeft = Math.max(margin, window.innerWidth - LAYER_WIDTH_PX[kind] - margin);
+  return {
+    left: Math.round(Math.min(Math.max(margin, box.left), maxLeft)),
+    top: Math.round(box.bottom + margin)
+  };
+}
+
+/* An anchored popover wants this much room; with less above the composer it
+   flips below when there is more room there (blank chat, UX audit A11). */
+const LAYER_PREFERRED_PX = 480;
 
 const EMPTY_MODELS: readonly CatalogModel[] = [];
 const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
@@ -110,9 +195,12 @@ export type ComposerV2Props = Readonly<{
   contextStats?: ComposerContextStats | null;
   disabledReason?: string | null;
   draft: string;
-  editStatusSlot?: ReactNode;
   hasReadyAttachments?: boolean;
   initialLayer?: ComposerV2Layer;
+  /** Lets an opener outside the composer (the header model selector) toggle a layer. */
+  layerController?: Ref<ComposerV2LayerController | null>;
+  /** "Reasoning medium · Temp 1.0" for the picker's Parameters row. */
+  modelParametersSummary?: string | null;
   onAttachmentCountLimitExceeded?(input: {
     attemptedCount: number;
     currentCount: number;
@@ -120,10 +208,16 @@ export type ComposerV2Props = Readonly<{
   }): void;
   onDraftChange(value: string): void;
   onDismissAssistantRemovedNotice?(): void;
+  /** Observes which layer is open (the header selector mirrors it as aria-expanded). */
+  onLayerChange?(layer: ComposerV2Layer): void;
   onMakeModelDefault?(model: CatalogModel): void;
   onOpenAssistantPicker?(): void;
+  /** Opens the Library's Knowledge section ("Manage in Library ›"). */
+  onOpenKnowledgeLibrary?(): void;
   onOpenMcpSettings?(): void;
   onOpenSkillLibrary?(): void;
+  /** Detaches an inherited Assistant/Project plan before manual selection. */
+  onOverrideKnowledgePlan?(): void;
   onOpenModelParameters?(): void;
   onRemoveAssistant?(): void;
   onRemoveAttachment?(id: string): void;
@@ -140,13 +234,18 @@ export type ComposerV2Props = Readonly<{
   onSelectSkillIds?(skillIds: readonly string[]): void;
   onSend?(): void;
   onStop?(runId: string): void;
+  /** Keyboard contract: Enter sends (default), or inserts a newline while Ctrl/⌘+Enter sends. */
+  sendWithEnter?: boolean;
   /** @deprecated MCP availability is configured in Settings; runs use onSelectMcp. */
   onToggleMcpServer?(serverId: string, enabled: boolean): void;
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
   runId?: string | null;
   selectedAssistant?: (Pick<AssistantSummary, "id" | "name"> & {
     includedSkills?: readonly { id: string; name: string }[];
+    knowledgeLabel?: string | null;
+    knowledgeResourceCount?: number;
   }) | null;
+  knowledgePlanSource?: "assistant" | "chat" | "explicit" | "off" | "project";
   mcpSelection?: McpRunSelection;
   selectedKnowledgeSelection?: KnowledgeSelection;
   /** @deprecated Use selectedKnowledgeSelection. */
@@ -280,6 +379,10 @@ function optionElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>("[data-v2-composer-option]:not(:disabled)"));
 }
 
+/*
+ * One menu row for every composer popover: a radio glyph (single choice),
+ * an icon plus trailing check (multi-select), or a plain action item.
+ */
 function CapabilityRow({
   children,
   disabled = false,
@@ -291,28 +394,38 @@ function CapabilityRow({
 }: Readonly<{
   children: ReactNode;
   disabled?: boolean;
-  icon: UiV2IconName;
-  onClick?(): void;
+  icon?: UiV2IconName;
+  onClick?(event: ReactMouseEvent<HTMLButtonElement>): void;
   reason?: string | null;
   selected?: boolean;
-  selectionRole?: "checkbox" | "radio";
+  selectionRole?: "checkbox" | "item" | "radio";
 }>) {
+  const role = selectionRole === "radio"
+    ? "menuitemradio"
+    : selectionRole === "item" ? "menuitem" : "menuitemcheckbox";
   return (
     <button
       className="v2-composer-capability-row v2-focusable"
       data-v2-composer-option="true"
+      data-selection={selectionRole}
       type="button"
-      role={selectionRole === "radio" ? "menuitemradio" : "menuitemcheckbox"}
-      aria-checked={selected}
+      role={role}
+      aria-checked={selectionRole === "item" ? undefined : selected}
       disabled={disabled}
       onClick={onClick}
     >
-      <UiV2Icon name={icon} />
+      {selectionRole === "radio" ? (
+        <span className="v2-composer-radio" data-checked={selected || undefined} aria-hidden="true" />
+      ) : icon ? (
+        <UiV2Icon name={icon} />
+      ) : (
+        <span aria-hidden="true" />
+      )}
       <span className="v2-composer-capability-copy">
         <span>{children}</span>
         {reason ? <span>{reason}</span> : null}
       </span>
-      {selected ? <UiV2Icon name="check" /> : null}
+      {selectionRole === "checkbox" && selected ? <UiV2Icon name="check" /> : null}
     </button>
   );
 }
@@ -328,17 +441,21 @@ export function ComposerV2({
   contextStats = null,
   disabledReason = null,
   draft,
-  editStatusSlot,
   hasReadyAttachments = false,
   initialLayer = null,
+  layerController,
+  modelParametersSummary = null,
   onAttachmentCountLimitExceeded,
   onDraftChange,
   onDismissAssistantRemovedNotice,
+  onLayerChange,
   onMakeModelDefault,
   onOpenAssistantPicker,
+  onOpenKnowledgeLibrary,
   onOpenMcpSettings,
   onOpenModelParameters,
   onOpenSkillLibrary,
+  onOverrideKnowledgePlan,
   onRemoveAssistant,
   onRemoveAttachment,
   onRejectedFiles,
@@ -356,9 +473,11 @@ export function ComposerV2({
   onUploadFiles,
   runId = null,
   selectedAssistant = null,
+  sendWithEnter = true,
   mcpSelection = { mode: "auto" },
   selectedKnowledgeSelection,
   selectedKnowledgeBaseIds = [],
+  knowledgePlanSource = "off",
   selectedModelId,
   selectedProvider,
   selectedSearchOptionIds = [],
@@ -372,6 +491,12 @@ export function ComposerV2({
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
   const [layerLeft, setLayerLeft] = useState(0);
+  const [externalAnchor, setExternalAnchor] = useState<Readonly<{ left: number; top: number }> | null>(null);
+  const [layerPlacement, setLayerPlacement] = useState<Readonly<{
+    below: boolean;
+    spaceAbove: number;
+    spaceBelow: number;
+  }>>({ below: false, spaceAbove: 0, spaceBelow: 0 });
   const [modelQuery, setModelQuery] = useState("");
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeSourceSearch, setKnowledgeSourceSearch] = useState<Readonly<{
@@ -383,8 +508,8 @@ export function ComposerV2({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
-  const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const knowledgeTriggerRef = useRef<HTMLButtonElement>(null);
+  const searchTriggerRef = useRef<HTMLButtonElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -396,6 +521,12 @@ export function ComposerV2({
   const currentModel = models.find(
     (model) => model.modelId === selectedModelId && model.provider === selectedProvider
   );
+  const currentProvider = providers.find((provider) => provider.id === currentModel?.provider);
+  // The context gauge is not a permanent control (PRD §4.5): it appears only
+  // once the estimate reaches 70% of the safe input budget.
+  const contextGaugeVisible = contextStats
+    ? (composerContextGauge(contextStats).fraction ?? 0) >= 0.7
+    : false;
   const noModels = Boolean(config && models.length === 0);
   const controlsLocked = Boolean(selectedAssistant);
   const bootstrapReason = configError
@@ -436,8 +567,19 @@ export function ComposerV2({
   const selectedSearchSet = new Set(selectedSearchOptionIds);
   const knowledgeSelection = selectedKnowledgeSelection ??
     explicitKnowledgeSelection({ baseIds: selectedKnowledgeBaseIds });
+  const knowledgeInheritedFrom = selectedAssistant || knowledgePlanSource === "assistant"
+    ? "assistant" as const
+    : knowledgePlanSource === "project"
+      ? "project" as const
+      : knowledgeSelection.mode === "inherited"
+        ? knowledgeSelection.inheritedFrom
+        : null;
+  const knowledgeControlsLocked = knowledgeInheritedFrom !== null;
   const selectedKnowledgeSet = new Set(knowledgeSelection.baseIds);
   const selectedKnowledgeSourceSet = new Set(knowledgeSelection.sourceIds);
+  const selectedKnowledgeResourceCount = knowledgeSelection.mode === "inherited"
+    ? selectedAssistant?.knowledgeResourceCount ?? 0
+    : knowledgeSelection.baseIds.length + knowledgeSelection.sourceIds.length;
   const knowledgeById = new Map(
     (config?.knowledgeBases ?? []).map((base) => [base.id, base])
   );
@@ -454,12 +596,25 @@ export function ComposerV2({
     ...knowledgeSelection.baseIds.map((id) => knowledgeById.get(id)?.name ?? "unavailable"),
     ...knowledgeSelection.sourceIds.map((id) => sourceById.get(id)?.name ?? "unavailable")
   ];
-  const visibleKnowledgeBases = (config?.knowledgeBases ?? []).filter((base) =>
+  const matchingKnowledgeBases = (config?.knowledgeBases ?? []).filter((base) =>
     !normalizedKnowledgeQuery || `${base.name} ${base.description}`.toLocaleLowerCase()
       .includes(normalizedKnowledgeQuery));
-  const visibleKnowledgeSources = allKnowledgeSources.filter((source) =>
+  const visibleKnowledgeBases = [...new Map([
+    ...matchingKnowledgeBases,
+    ...(config?.knowledgeBases ?? []).filter((base) => selectedKnowledgeSet.has(base.id))
+  ].map((base) => [base.id, base] as const)).values()];
+  const matchingKnowledgeSources = allKnowledgeSources.filter((source) =>
     !normalizedKnowledgeQuery || `${source.name} ${source.description}`.toLocaleLowerCase()
       .includes(normalizedKnowledgeQuery));
+  const visibleKnowledgeSources = [...new Map([
+    ...(normalizedKnowledgeQuery ? matchingKnowledgeSources : matchingKnowledgeSources.slice(0, 5)),
+    ...allKnowledgeSources.filter((source) => selectedKnowledgeSourceSet.has(source.id))
+  ].map((source) => [source.id, source] as const)).values()];
+  const hiddenKnowledgeDocumentCount = typeof config?.knowledgeDocumentTotal === "number"
+    ? Math.max(0, config.knowledgeDocumentTotal - visibleKnowledgeSources.length)
+    : null;
+  const explicitSelectionAtLimit = selectedKnowledgeResourceCount >=
+    KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES;
   const availableSkills = (config?.skills ?? []).filter((skill) => !skill.archived);
   const selectedSkillSet = new Set(selectedSkillIds);
   const selectedSkillNames = selectedSkillIds.map((id) =>
@@ -551,7 +706,6 @@ export function ComposerV2({
       if (
         layerRef.current?.contains(target) ||
         plusTriggerRef.current?.contains(target) ||
-        modelTriggerRef.current?.contains(target) ||
         openerRef.current?.contains(target)
       ) {
         return;
@@ -573,15 +727,59 @@ export function ComposerV2({
     openerRef.current = opener;
     if (next === "model") setModelQuery("");
     if (next === "knowledge") setKnowledgeQuery("");
-    setLayerLeft(layerAnchorLeft(opener, composerRef.current, next));
+    const external = !composerRef.current?.contains(opener);
+    setExternalAnchor(external ? externalLayerAnchor(opener, next) : null);
+    setLayerLeft(external ? 0 : layerAnchorLeft(opener, composerRef.current, next));
+    // Free room above and below the composer inside its scroll owner (the
+    // reading column; the viewport when there is none).
+    const composerBox = composerRef.current?.getBoundingClientRect();
+    const ownerBox = composerRef.current?.closest(".v2-conversation-scroll")?.getBoundingClientRect();
+    const spaceAbove = composerBox ? Math.max(0, composerBox.top - (ownerBox?.top ?? 0)) : 0;
+    const spaceBelow = composerBox
+      ? Math.max(0, (ownerBox?.bottom ?? window.innerHeight) - composerBox.bottom)
+      : 0;
+    setLayerPlacement({
+      below: !external && spaceAbove < LAYER_PREFERRED_PX && spaceBelow > spaceAbove,
+      spaceAbove: Math.round(spaceAbove),
+      spaceBelow: Math.round(spaceBelow)
+    });
     setLayer(next);
   }
 
   function closeLayer() {
     const opener = openerRef.current;
     setLayer(null);
+    setExternalAnchor(null);
     queueMicrotask(() => opener?.focus());
   }
+
+  // External openers reach the same open/close path through a stable handle;
+  // the latest closures are read at call time.
+  const layerApiRef = useRef({ close: closeLayer, toggle: openLayer });
+  layerApiRef.current = { close: closeLayer, toggle: openLayer };
+  useImperativeHandle(layerController, () => ({
+    close: () => layerApiRef.current.close(),
+    toggle: (next, anchor) => layerApiRef.current.toggle(next, anchor)
+  }), []);
+  const onLayerChangeRef = useRef(onLayerChange);
+  onLayerChangeRef.current = onLayerChange;
+  useEffect(() => {
+    onLayerChangeRef.current?.(layer);
+  }, [layer]);
+  // An externally anchored layer follows its anchor across viewport resizes.
+  const externallyAnchored = externalAnchor !== null;
+  useEffect(() => {
+    if (!layer || !externallyAnchored) return;
+    const kind = layer;
+    const reposition = () => {
+      const opener = openerRef.current;
+      if (opener) setExternalAnchor(externalLayerAnchor(opener, kind));
+    };
+    window.addEventListener("resize", reposition);
+    return () => window.removeEventListener("resize", reposition);
+  }, [externallyAnchored, layer]);
+  const portalLayer = (node: ReactNode) =>
+    externalAnchor && typeof document !== "undefined" ? createPortal(node, document.body) : node;
 
   function handleLayerKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (isImeCompositionEvent(event)) return;
@@ -624,7 +822,11 @@ export function ComposerV2({
   }
 
   function submitFromKeyboard(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    if (isImeCompositionEvent(event) || event.key !== "Enter" || event.shiftKey) return;
+    if (isImeCompositionEvent(event) || event.key !== "Enter") return;
+    // Send with Enter on: Enter sends, Shift+Enter inserts a newline.
+    // Off: Enter inserts a newline and only Ctrl/⌘+Enter sends. IME rules are unchanged.
+    const sends = sendWithEnter ? !event.shiftKey : event.ctrlKey || event.metaKey;
+    if (!sends) return;
     event.preventDefault();
     if (!activeRun && !sendDisabled) onSend?.();
   }
@@ -713,6 +915,7 @@ export function ComposerV2({
 
   function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
     if (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds) return;
+    if (!selectedKnowledgeSet.has(base.id) && explicitSelectionAtLimit) return;
     const next = selectedKnowledgeSet.has(base.id)
       ? knowledgeSelection.baseIds.filter((id) => id !== base.id)
       : [...knowledgeSelection.baseIds, base.id];
@@ -729,6 +932,7 @@ export function ComposerV2({
 
   function toggleKnowledgeSource(source: ComposerConfigKnowledgeSource) {
     if (!onSelectKnowledgeSelection) return;
+    if (!selectedKnowledgeSourceSet.has(source.id) && explicitSelectionAtLimit) return;
     const next = selectedKnowledgeSourceSet.has(source.id)
       ? knowledgeSelection.sourceIds.filter((id) => id !== source.id)
       : [...knowledgeSelection.sourceIds, source.id];
@@ -758,11 +962,55 @@ export function ComposerV2({
   const knowledgeAvailable = Boolean(onSelectKnowledgeSelection || onSelectKnowledgeBaseIds) && (
     (config?.knowledgeBases.length ?? 0) > 0 ||
     (config?.knowledgeSources?.length ?? 0) > 0 ||
+    (config?.knowledgeDocumentTotal ?? 0) > 0 ||
     Boolean(onSearchKnowledgeSources) ||
     (!sharedProject && Boolean(onSelectKnowledgeSelection))
   );
   const knowledgeChipVisible = Boolean(config) && (
-    knowledgeSelection.mode !== "none" || (knowledgeAvailable && !controlsLocked)
+    knowledgeControlsLocked || knowledgeSelection.mode !== "none" ||
+    (knowledgeAvailable && !controlsLocked)
+  );
+  const knownSingleKnowledgeName = selectedKnowledgeResourceCount === 1
+    ? selectedKnowledgeNames[0]
+    : null;
+  const knowledgeChipValue = knowledgeInheritedFrom === "assistant"
+    ? knownSingleKnowledgeName && knownSingleKnowledgeName !== "unavailable"
+      ? `${knownSingleKnowledgeName} from Assistant`
+      : selectedKnowledgeResourceCount > 0
+        ? `${selectedKnowledgeResourceCount} from Assistant`
+        : selectedAssistant?.knowledgeLabel === "All Knowledge" ||
+            knowledgeSelection.mode === "all_my_knowledge"
+          ? "All from Assistant"
+          : knowledgeSelection.mode === "inherited"
+            ? "From Assistant"
+            : "Off from Assistant"
+    : knowledgeInheritedFrom === "project"
+      ? knownSingleKnowledgeName && knownSingleKnowledgeName !== "unavailable"
+        ? `${knownSingleKnowledgeName} from Project`
+        : selectedKnowledgeResourceCount > 0
+          ? `${selectedKnowledgeResourceCount} from Project`
+          : "Project default"
+      : knowledgeSelection.mode === "all_my_knowledge"
+        ? "All"
+        : knownSingleKnowledgeName ?? String(selectedKnowledgeResourceCount);
+  // An engine the current model cannot run leaves the chip inactive and the
+  // menu on Off (UX audit 2026-09-02 A6); the plan itself is dropped by the
+  // model change and rejected at send.
+  const activeSearchStrategy = concreteSearchOptions.find((option) =>
+    selectedSearchSet.has(option.strategyId) && compatibleSearchOptionIds.has(option.strategyId)
+  );
+  const searchActive = Boolean(activeSearchStrategy);
+  const activeSearchEngineName = activeSearchStrategy
+    ? searchEngineShortName(
+        activeSearchStrategy,
+        currentModel?.providerFamily ?? currentProvider?.family
+      )
+    : null;
+  const searchChipLabel = activeSearchStrategy
+    ? `Search: ${activeSearchEngineName}`
+    : "Search";
+  const searchChipVisible = Boolean(config) && (
+    searchActive || (concreteSearchOptions.length > 0 && !controlsLocked)
   );
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   // Transitional states (activating, on-demand idle) are not problems; only
@@ -808,13 +1056,20 @@ export function ComposerV2({
         />
         {selectedAssistant ? (
           <div className="v2-composer-assistant" data-testid="composer-v2-assistant-lock">
-            <UiV2Icon name="lock" />
-            <span>Assistant: <strong>{selectedAssistant.name}</strong></span>
-            {onRemoveAssistant ? (
-              <button className="v2-focusable" type="button" onClick={onRemoveAssistant}>
-                Remove
-              </button>
-            ) : null}
+            <span className="v2-composer-assistant-chip">
+              <UiV2Icon name="assistant" />
+              <span>Assistant: <strong>{selectedAssistant.name}</strong></span>
+              {onRemoveAssistant ? (
+                <UiV2IconButton
+                  icon="close"
+                  label="Remove assistant"
+                  onClick={onRemoveAssistant}
+                />
+              ) : null}
+            </span>
+            <span className="v2-composer-assistant-help">
+              Model, tools and instructions come from the assistant.
+            </span>
           </div>
         ) : null}
         {selectedAssistant && (assistantSkills.length > 0 || selectedSkillNames.length > 0) ? (
@@ -880,8 +1135,6 @@ export function ComposerV2({
           sharedProject={sharedProject}
         />
 
-        {editStatusSlot}
-
         <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
           Message
         </label>
@@ -914,41 +1167,51 @@ export function ComposerV2({
           <UiV2IconButton
             ref={plusTriggerRef}
             icon="plus"
-            label="Capabilities"
-            aria-controls={`${layerId}-capabilities`}
-            aria-expanded={layer === "capabilities"}
+            label="Add"
+            aria-controls={`${layerId}-add`}
+            aria-expanded={layer === "add"}
             aria-haspopup="menu"
             disabled={!config || configError || noModels || activeRun}
-            onClick={(event) => openLayer("capabilities", event.currentTarget)}
+            onClick={(event) => openLayer("add", event.currentTarget)}
           />
 
-          <button
-            ref={modelTriggerRef}
-            className="v2-composer-model-trigger v2-focusable"
-            type="button"
-            aria-controls={`${layerId}-model`}
-            aria-expanded={layer === "model"}
-            aria-haspopup="dialog"
-            disabled={!config || configError || noModels || activeRun || controlsLocked}
-            title={controlsLocked ? "Managed by the Assistant" : "Choose model"}
-            onClick={(event) => openLayer("model", event.currentTarget)}
-          >
-            <strong>{currentModel?.displayName ?? (noModels ? "No models available" : "Choose model")}</strong>
-            {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
-          </button>
-
+          {/* The model is chosen in the header (operator, 2026-09-02); the
+              composer row holds only this message's tools. */}
           <div className="v2-composer-indicators" aria-label="Active capabilities">
-            {config && selectedSearchOptionIds.length > 0 ? (
-              <button
-                className="v2-composer-indicator v2-focusable"
-                type="button"
-                disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
-                aria-label="Turn off Search"
-                onClick={() => onSelectSearchOptionIds?.([])}
-              >
-                <span aria-hidden="true" />Search
-                {!controlsLocked ? <UiV2Icon name="close" /> : null}
-              </button>
+            {searchChipVisible ? (
+              <span className="v2-composer-indicator-group">
+                <button
+                  ref={searchTriggerRef}
+                  className="v2-composer-indicator v2-focusable"
+                  type="button"
+                  data-quiet={searchActive ? undefined : ""}
+                  data-glyph="globe"
+                  disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
+                  aria-controls={`${layerId}-search`}
+                  aria-expanded={layer === "search"}
+                  aria-haspopup="menu"
+                  aria-label={activeSearchEngineName
+                    ? `Choose web search: ${activeSearchEngineName}`
+                    : "Choose web search"}
+                  onClick={(event) => openLayer("search", event.currentTarget)}
+                >
+                  <span aria-hidden="true" />
+                  <UiV2Icon className="v2-composer-indicator-glyph" name="globe" />
+                  <span className="v2-composer-indicator-label">{searchChipLabel}</span>
+                  {controlsLocked ? <UiV2Icon name="lock" /> : searchActive ? null : <UiV2Icon name="chevron-down" />}
+                </button>
+                {searchActive && !controlsLocked ? (
+                  <button
+                    className="v2-composer-indicator-clear v2-focusable"
+                    type="button"
+                    disabled={activeRun || !onSelectSearchOptionIds}
+                    aria-label="Turn off Search"
+                    onClick={() => onSelectSearchOptionIds?.([])}
+                  >
+                    <UiV2Icon name="close" />
+                  </button>
+                ) : null}
+              </span>
             ) : null}
             {knowledgeChipVisible ? (
               <span className="v2-composer-indicator-group">
@@ -956,30 +1219,32 @@ export function ComposerV2({
                   ref={knowledgeTriggerRef}
                   className="v2-composer-indicator v2-focusable"
                   type="button"
-                  data-quiet={knowledgeSelection.mode === "none" ? "" : undefined}
-                  disabled={controlsLocked || activeRun || (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds)}
+                  data-quiet={knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? "" : undefined}
+                  disabled={activeRun || (
+                    !knowledgeControlsLocked && !onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds
+                  )}
                   aria-controls={`${layerId}-knowledge`}
                   aria-expanded={layer === "knowledge"}
                   aria-haspopup="menu"
                   aria-label="Choose Knowledge"
+                  data-glyph="book"
                   onClick={(event) => openLayer("knowledge", event.currentTarget)}
                 >
                   <span aria-hidden="true" />
-                  {knowledgeSelection.mode === "none" ? (
-                    "Knowledge"
-                  ) : (
-                    <>
-                      <span className="v2-composer-indicator-prefix">Knowledge: </span>
-                      {knowledgeSelection.mode === "all_my_knowledge"
-                        ? "All mine"
-                        : selectedKnowledgeNames.length === 1
-                          ? selectedKnowledgeNames[0]
-                          : selectedKnowledgeNames.length}
-                    </>
-                  )}
-                  {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
+                  <UiV2Icon className="v2-composer-indicator-glyph" name="book" />
+                  <span className="v2-composer-indicator-label">
+                    {knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? (
+                      "Knowledge"
+                    ) : (
+                      <>
+                        <span className="v2-composer-indicator-prefix">Knowledge: </span>
+                        {knowledgeChipValue}
+                      </>
+                    )}
+                  </span>
+                  {knowledgeControlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
                 </button>
-                {knowledgeSelection.mode !== "none" && !controlsLocked ? (
+                {knowledgeSelection.mode !== "none" && !knowledgeControlsLocked ? (
                   <button
                     className="v2-composer-indicator-clear v2-focusable"
                     type="button"
@@ -997,6 +1262,8 @@ export function ComposerV2({
                 className="v2-composer-indicator v2-focusable"
                 type="button"
                 data-quiet={mcpSelection.mode === "load_all" ? undefined : ""}
+                data-glyph="tool"
+                data-mcp-mode={mcpSelection.mode}
                 disabled={activeRun || controlsLocked}
                 aria-controls={`${layerId}-tools`}
                 aria-expanded={layer === "tools"}
@@ -1008,9 +1275,13 @@ export function ComposerV2({
                     on demand) and Off stay quiet so the dot never reads as
                     "tools are on" by default. The chip names MCP, not
                     "Tools": Search and Knowledge are tools too. */}
-                <span aria-hidden="true" />MCP: {mcpSelection.mode === "load_all"
-                  ? "Load all"
-                  : mcpSelection.mode === "off" ? "Off" : "Auto"}
+                <span aria-hidden="true" />
+                <UiV2Icon className="v2-composer-indicator-glyph" name="tool" />
+                <span className="v2-composer-indicator-label">
+                  MCP: {mcpSelection.mode === "load_all"
+                    ? "Load all"
+                    : mcpSelection.mode === "off" ? "Off" : "Auto"}
+                </span>
                 <UiV2Icon name="chevron-down" />
               </button>
             ) : null}
@@ -1028,7 +1299,7 @@ export function ComposerV2({
           </div>
 
           <span className="v2-composer-spacer" />
-          {contextStats ? <ContextGaugeV2 stats={contextStats} usage={usageStats} /> : null}
+          {contextStats && contextGaugeVisible ? <ContextGaugeV2 stats={contextStats} usage={usageStats} /> : null}
           <span className="v2-composer-run-action">
             <RunComposerActionV2
               active={activeRun}
@@ -1042,7 +1313,7 @@ export function ComposerV2({
           </span>
         </div>
 
-        {layer ? (
+        {layer ? portalLayer(
           <>
             <button
               className="v2-composer-layer-backdrop"
@@ -1053,13 +1324,23 @@ export function ComposerV2({
             <div
               ref={layerRef}
               className="v2-composer-layer"
+              data-anchor={externalAnchor ? "external" : undefined}
               data-kind={layer}
+              data-placement={!externalAnchor && layerPlacement.below ? "below" : undefined}
               id={`${layerId}-${layer}`}
               role={layer === "model" ? "dialog" : "menu"}
               aria-label={LAYER_LABELS[layer]}
-              style={{ "--v2-composer-layer-left": `${layerLeft}px` } as CSSProperties}
+              style={{
+                "--v2-composer-layer-left": `${externalAnchor?.left ?? layerLeft}px`,
+                "--v2-composer-layer-space-above": `${layerPlacement.spaceAbove}px`,
+                "--v2-composer-layer-space-below": `${layerPlacement.spaceBelow}px`,
+                "--v2-composer-layer-top": `${externalAnchor?.top ?? 0}px`
+              } as CSSProperties}
               onKeyDown={handleLayerKeyDown}
             >
+              {/* The header is the mobile sheet's title and close control; the
+                  desktop popover hides it and closes from Esc, outside click,
+                  or a selection (PRD §4.6). */}
               <header className="v2-composer-layer-header">
                 <strong>{LAYER_TITLES[layer]}</strong>
                 <UiV2IconButton icon="close" label="Close" onClick={closeLayer} />
@@ -1069,60 +1350,119 @@ export function ComposerV2({
                 <ModelLayer
                   config={config}
                   groups={groupedModels}
+                  parametersSummary={modelParametersSummary}
                   query={modelQuery}
                   selectedModelId={selectedModelId}
                   selectedProvider={selectedProvider}
                   onMakeDefault={onMakeModelDefault}
+                  onOpenParameters={onOpenModelParameters && !controlsLocked
+                    ? () => {
+                        onOpenModelParameters();
+                        closeLayer();
+                      }
+                    : undefined}
                   onQuery={setModelQuery}
                   onSelect={(model) => {
                     onSelectModel?.(model);
                     closeLayer();
                   }}
                 />
+              ) : layer === "search" ? (
+                <div className="v2-composer-layer-scroll">
+                  <p className="v2-composer-layer-title">Web search</p>
+                  <CapabilityRow
+                    selected={!searchActive}
+                    disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
+                    reason={controlsLocked ? "Managed by the Assistant" : "No web search this turn"}
+                    selectionRole="radio"
+                    onClick={() => {
+                      onSelectSearchOptionIds?.([]);
+                      closeLayer();
+                    }}
+                  >
+                    Off
+                  </CapabilityRow>
+                  {concreteSearchOptions.length === 0 ? (
+                    <CapabilityRow disabled reason="Not configured by the administrator" selectionRole="radio">
+                      Search
+                    </CapabilityRow>
+                  ) : concreteSearchOptions.map((option) => {
+                    const compatible = compatibleSearchOptionIds.has(option.strategyId);
+                    const selected = compatible && selectedSearchSet.has(option.strategyId);
+                    const reason = controlsLocked
+                      ? "Managed by the Assistant"
+                      : !compatible
+                        ? `Not available for ${currentModel?.displayName ?? "this model"}`
+                        : option.description ?? null;
+                    return (
+                      <CapabilityRow
+                        key={option.strategyId}
+                        selected={selected}
+                        disabled={controlsLocked || activeRun || !onSelectSearchOptionIds || !compatible}
+                        reason={reason}
+                        selectionRole="radio"
+                        onClick={() => {
+                          onSelectSearchOptionIds?.([option.strategyId]);
+                          closeLayer();
+                        }}
+                      >
+                        {option.displayName}
+                      </CapabilityRow>
+                    );
+                  })}
+                  <p className="v2-composer-privacy-note">Applies to your next message.</p>
+                </div>
               ) : layer === "tools" ? (
                 <div className="v2-composer-layer-scroll">
+                  <p className="v2-composer-layer-title">MCP tools</p>
                   {controlsLocked ? (
                     <CapabilityRow
-                      icon="tool"
                       selected
                       disabled
                       reason="Defined by the selected Assistant"
+                      selectionRole="radio"
                     >
                       Assistant tools
                     </CapabilityRow>
                   ) : (
                     <>
                       <CapabilityRow
-                        icon="tool"
                         selected={mcpSelection.mode === "auto"}
                         disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
                         reason={!currentModel?.capabilities.toolCalling
                           ? "The current model cannot use tools; this mode is preserved"
-                          : "Find and load relevant enabled MCP tools when needed"}
+                          : "Small catalog first; matching tools load when the model asks"}
                         selectionRole="radio"
-                        onClick={() => selectMcpMode("auto")}
+                        onClick={() => {
+                          selectMcpMode("auto");
+                          closeLayer();
+                        }}
                       >
                         Auto
                       </CapabilityRow>
                       <CapabilityRow
-                        icon="tool"
                         selected={mcpSelection.mode === "load_all"}
                         disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
                         reason={!currentModel?.capabilities.toolCalling
                           ? "The current model cannot use tools; this mode is preserved"
-                          : "Load every enabled MCP tool into the request immediately"}
+                          : "Every tool from enabled servers, from the first message"}
                         selectionRole="radio"
-                        onClick={() => selectMcpMode("load_all")}
+                        onClick={() => {
+                          selectMcpMode("load_all");
+                          closeLayer();
+                        }}
                       >
                         Load all
                       </CapabilityRow>
                       <CapabilityRow
-                        icon="tool"
                         selected={mcpSelection.mode === "off"}
                         disabled={activeRun || !onSelectMcp}
-                        reason="Do not use MCP tools"
+                        reason="No MCP tools this turn"
                         selectionRole="radio"
-                        onClick={() => selectMcpMode("off")}
+                        onClick={() => {
+                          selectMcpMode("off");
+                          closeLayer();
+                        }}
                       >
                         Off
                       </CapabilityRow>
@@ -1131,35 +1471,70 @@ export function ComposerV2({
                   {!controlsLocked ? (
                     /* What the modes act on: enabling stays a Settings action
                        (FRONTEND.md), so this is disclosure, not selection. */
-                    <p className="v2-composer-layer-note" data-testid="composer-v2-mcp-enabled">
-                      {enabledMcpServers.length === 0
-                        ? "No servers enabled."
-                        : `Enabled: ${enabledMcpServers.map((server) => server.name).join(", ")}${
-                          mcpServersNeedingAttention > 0
-                            ? ` · ${mcpServersNeedingAttention} need${mcpServersNeedingAttention === 1 ? "s" : ""} attention`
-                            : ""
-                        }`}
-                    </p>
+                    <div className="v2-composer-layer-footer">
+                      <div className="v2-composer-layer-footer-row">
+                        <p className="v2-composer-layer-note" data-testid="composer-v2-mcp-enabled">
+                          {enabledMcpServers.length === 0
+                            ? "No servers enabled."
+                            : `Enabled servers · ${enabledMcpServers.length}${
+                              mcpServersNeedingAttention > 0
+                                ? ` · ${mcpServersNeedingAttention} need${mcpServersNeedingAttention === 1 ? "s" : ""} attention`
+                                : ""
+                            }`}
+                        </p>
+                        {onOpenMcpSettings ? (
+                          <button
+                            className="v2-composer-layer-link v2-focusable"
+                            data-v2-composer-option="true"
+                            type="button"
+                            role="menuitem"
+                            aria-label="Manage enabled MCP servers"
+                            onClick={() => {
+                              onOpenMcpSettings();
+                              closeLayer();
+                            }}
+                          >
+                            Manage
+                            <UiV2Icon name="chevron-right" />
+                          </button>
+                        ) : null}
+                      </div>
+                      {enabledMcpServers.length > 0 ? (
+                        <div className="v2-composer-tags" data-testid="composer-v2-mcp-servers">
+                          {enabledMcpServers.map((server) => (
+                            <span className="v2-composer-tag" key={server.id}>{server.name}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
-                  {onOpenMcpSettings ? (
-                    <button
-                      className="v2-composer-text-action v2-focusable"
-                      data-v2-composer-option="true"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        onOpenMcpSettings();
-                        closeLayer();
-                      }}
-                    >
-                      Manage enabled MCP servers…
-                    </button>
-                  ) : null}
-
-                  <p className="v2-composer-privacy-note">Applies to your next message.</p>
                 </div>
               ) : layer === "knowledge" ? (
                 <div className="v2-composer-layer-scroll">
+                  {knowledgeControlsLocked ? (
+                    <div className="v2-composer-knowledge-inherited" role="status">
+                      <UiV2Icon name="lock" />
+                      <span>
+                        <strong>
+                          {knowledgeInheritedFrom === "assistant"
+                            ? `${selectedAssistant?.name ?? "The Assistant"} controls Knowledge.`
+                            : "This Project controls the default Knowledge."}
+                        </strong>{" "}
+                        Its selection is used until you override it for this chat.
+                      </span>
+                      {onOverrideKnowledgePlan ? (
+                        <button
+                          className="v2-composer-layer-link v2-focusable"
+                          data-v2-composer-option="true"
+                          type="button"
+                          role="menuitem"
+                          onClick={onOverrideKnowledgePlan}
+                        >
+                          Override for this chat
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {onSearchKnowledgeSources ||
                     (config?.knowledgeBases.length ?? 0) + (config?.knowledgeSources?.length ?? 0) > 6 ? (
                     <label className="v2-composer-model-search-wrap">
@@ -1168,24 +1543,38 @@ export function ComposerV2({
                         data-v2-knowledge-search
                         aria-label="Search Knowledge resources"
                         maxLength={KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH}
-                        placeholder="Search Bases and Sources…"
+                        placeholder="Search bases and documents…"
                         type="search"
                         value={knowledgeQuery}
                         onChange={(event) => setKnowledgeQuery(event.currentTarget.value)}
                       />
                     </label>
                   ) : null}
+                  <CapabilityRow
+                    selected={knowledgeSelection.mode === "none"}
+                    disabled={knowledgeControlsLocked || activeRun}
+                    reason="Answer without reading documents"
+                    selectionRole="radio"
+                    onClick={() => {
+                      selectKnowledge(EMPTY_KNOWLEDGE_SELECTION);
+                      closeLayer();
+                    }}
+                  >
+                    Off
+                  </CapabilityRow>
                   {!sharedProject && onSelectKnowledgeSelection ? (
                     <CapabilityRow
-                      icon="library"
                       selected={knowledgeSelection.mode === "all_my_knowledge"}
-                      disabled={controlsLocked || activeRun}
-                      reason="Explicitly search all Knowledge currently available to you"
+                      disabled={knowledgeControlsLocked || activeRun}
+                      reason={`Every ready document you own${
+                        typeof config?.knowledgeDocumentTotal === "number"
+                          ? ` · ${config.knowledgeDocumentTotal} ${config.knowledgeDocumentTotal === 1 ? "file" : "files"}`
+                          : ""
+                      }`}
                       selectionRole="radio"
                       onClick={() => {
-                        selectKnowledge(knowledgeSelection.mode === "all_my_knowledge"
-                          ? EMPTY_KNOWLEDGE_SELECTION
-                          : allMyKnowledgeSelection());
+                        selectKnowledge(allMyKnowledgeSelection());
+                        closeLayer();
                       }}
                     >
                       All my knowledge
@@ -1193,27 +1582,46 @@ export function ComposerV2({
                   ) : null}
                   {(config?.knowledgeBases.length ?? 0) === 0 &&
                     (config?.knowledgeSources?.length ?? 0) === 0 &&
-                    knowledgeSelection.mode === "none" ? (
+                    knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? (
                     <CapabilityRow icon="library" disabled reason="No knowledge bases available">
                       Knowledge
                     </CapabilityRow>
+                  ) : null}
+                  {knowledgeSelection.mode === "inherited" ? (
+                    <>
+                      <p className="v2-composer-layer-label">
+                        From {knowledgeSelection.inheritedFrom === "assistant" ? "Assistant" : "Project"}
+                      </p>
+                      <CapabilityRow
+                        icon="book"
+                        selected
+                        disabled
+                        reason={selectedAssistant?.knowledgeLabel ?? (
+                          selectedAssistant?.knowledgeResourceCount
+                            ? resourceCountLabel(selectedAssistant.knowledgeResourceCount)
+                            : "Selection details stay private"
+                        )}
+                      >
+                        Selected Knowledge
+                      </CapabilityRow>
+                    </>
                   ) : null}
                   {visibleKnowledgeBases.length > 0 ? (
                     <p className="v2-composer-layer-label">Bases</p>
                   ) : null}
                   {visibleKnowledgeBases.map((base) => {
                     const selected = selectedKnowledgeSet.has(base.id);
-                    const reason = controlsLocked
-                      ? "Managed by the Assistant"
-                      : base.archived
-                        ? "Access revoked or base archived"
-                        : base.description || "Includes this Base’s current ready Sources";
+                    const atLimit = !selected && explicitSelectionAtLimit;
+                    const reason = atLimit
+                      ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
+                      : knowledgeBaseReason(base);
                     return (
                       <CapabilityRow
                         key={base.id}
                         icon="library"
                         selected={selected}
-                        disabled={controlsLocked || activeRun || (base.archived && !selected)}
+                        disabled={knowledgeControlsLocked || activeRun ||
+                          (base.archived && !selected) || atLimit}
                         reason={reason}
                         onClick={() => toggleKnowledge(base)}
                       >
@@ -1222,24 +1630,28 @@ export function ComposerV2({
                     );
                   })}
                   {visibleKnowledgeSources.length > 0 ? (
-                    <p className="v2-composer-layer-label">Sources</p>
+                    <p className="v2-composer-layer-label">Single documents</p>
                   ) : null}
                   {visibleKnowledgeSources.map((source) => {
                     const selected = selectedKnowledgeSourceSet.has(source.id);
                     const unavailable = source.readiness !== "ready";
-                    const reason = controlsLocked
-                      ? "Managed by the Assistant"
+                    const atLimit = !selected && explicitSelectionAtLimit;
+                    const reason = knowledgeControlsLocked
+                      ? `Managed by the ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}`
+                      : atLimit
+                        ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
                       : unavailable
                         ? source.readiness === "processing"
-                          ? "Still processing; it will be skipped until ready"
-                          : "Needs attention before it can be searched"
-                        : source.description || "Use this Source without selecting its whole Base";
+                          ? "Processing · skipped until ready"
+                          : "Unavailable · not searchable"
+                        : `Ready${source.description ? ` · ${source.description}` : ""}`;
                     return (
                       <CapabilityRow
                         key={`source:${source.id}`}
                         icon="book"
                         selected={selected}
-                        disabled={controlsLocked || activeRun || !onSelectKnowledgeSelection || (unavailable && !selected)}
+                        disabled={knowledgeControlsLocked || activeRun || !onSelectKnowledgeSelection ||
+                          (unavailable && !selected) || atLimit}
                         reason={reason}
                         onClick={() => toggleKnowledgeSource(source)}
                       >
@@ -1247,6 +1659,12 @@ export function ComposerV2({
                       </CapabilityRow>
                     );
                   })}
+                  {!normalizedKnowledgeQuery && hiddenKnowledgeDocumentCount &&
+                  hiddenKnowledgeDocumentCount > 0 ? (
+                    <p className="v2-composer-layer-note">
+                      Type to find any of your other {hiddenKnowledgeDocumentCount} documents.
+                    </p>
+                  ) : null}
                   {knowledgeSelection.baseIds
                     .filter((id) => !knowledgeById.has(id))
                     .map((id) => (
@@ -1254,8 +1672,10 @@ export function ComposerV2({
                         key={id}
                         icon="library"
                         selected
-                        disabled={controlsLocked || activeRun}
-                        reason={controlsLocked ? "Managed by the Assistant" : "Access revoked"}
+                        disabled={knowledgeControlsLocked || activeRun}
+                        reason={knowledgeControlsLocked
+                          ? `Managed by the ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}`
+                          : "Access revoked"}
                         onClick={() => {
                           selectKnowledge(explicitKnowledgeSelection({
                             baseIds: knowledgeSelection.baseIds.filter((candidate) => candidate !== id),
@@ -1273,8 +1693,10 @@ export function ComposerV2({
                         key={`missing-source:${id}`}
                         icon="book"
                         selected
-                        disabled={controlsLocked || activeRun}
-                        reason={controlsLocked ? "Managed by the Assistant" : "Access revoked"}
+                        disabled={knowledgeControlsLocked || activeRun}
+                        reason={knowledgeControlsLocked
+                          ? `Managed by the ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}`
+                          : "Access revoked"}
                         onClick={() => {
                           selectKnowledge(explicitKnowledgeSelection({
                             baseIds: knowledgeSelection.baseIds,
@@ -1282,32 +1704,41 @@ export function ComposerV2({
                           }));
                         }}
                       >
-                        Unavailable Knowledge source
+                        Unavailable Knowledge document
                       </CapabilityRow>
                     ))}
-
+                  <div className="v2-composer-layer-footer">
+                    <div className="v2-composer-layer-footer-row">
+                      <p className="v2-composer-layer-note">
+                        Applies to your next message.
+                      </p>
+                      {onOpenKnowledgeLibrary ? (
+                        <button
+                          className="v2-composer-layer-link v2-focusable"
+                          data-v2-composer-option="true"
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onOpenKnowledgeLibrary();
+                            closeLayer();
+                          }}
+                        >
+                          Manage in Library
+                          <UiV2Icon name="chevron-right" />
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               ) : (
+                /* "+" is Add only (PRD §4.6): files, Knowledge, an Assistant,
+                   Skills. Search, MCP and parameters live behind their chips. */
                 <div className="v2-composer-layer-scroll">
-                  <CapabilityRow
-                    icon="assistant"
-                    disabled={activeRun || !onOpenAssistantPicker}
-                    reason={selectedAssistant
-                      ? `Selected: ${selectedAssistant.name}`
-                      : "Pinned · Recent · Yours · Shared"}
-                    selected={Boolean(selectedAssistant)}
-                    onClick={() => {
-                      onOpenAssistantPicker?.();
-                      closeLayer();
-                    }}
-                  >
-                    Use an Assistant…
-                  </CapabilityRow>
-
                   <CapabilityRow
                     icon="attach"
                     disabled={attachmentSelectionDisabled}
-                    reason={attachmentSelectionDisabled ? "Unavailable" : "XLSX · DOCX · PDF…"}
+                    reason={attachmentSelectionDisabled ? "Unavailable" : "XLSX · DOCX · PDF · images"}
+                    selectionRole="item"
                     onClick={() => {
                       fileInputRef.current?.click();
                       closeLayer();
@@ -1315,89 +1746,49 @@ export function ComposerV2({
                   >
                     Attach files
                   </CapabilityRow>
-
-                  <div className="v2-composer-layer-divider" />
-                  <div data-v2-layer-section="search">
-                  <p className="v2-composer-layer-label">Search</p>
-                  {concreteSearchOptions.length === 0 ? (
-                    <CapabilityRow icon="search" disabled reason="Not configured by the administrator">
-                      Search
-                    </CapabilityRow>
-                  ) : concreteSearchOptions.map((option) => {
-                    const selected = selectedSearchSet.has(option.strategyId);
-                    const compatible = compatibleSearchOptionIds.has(option.strategyId);
-                    const reason = controlsLocked
-                      ? "Managed by the Assistant"
-                      : !compatible
-                        ? "Not available for this model"
-                        : option.description ?? null;
-                    return (
-                      <CapabilityRow
-                        key={option.strategyId}
-                        icon="search"
-                        selected={selected}
-                        disabled={controlsLocked || activeRun || (!compatible && !selected)}
-                        reason={reason}
-                        onClick={() => toggleSearch(option)}
-                      >
-                        {option.displayName}
-                      </CapabilityRow>
-                    );
-                  })}
-                  </div>
-
-                  <p className="v2-composer-layer-label">Skills</p>
-                  {availableSkills.length === 0 ? (
-                    <CapabilityRow icon="book" disabled reason="Create a text-only workflow to use it here">
-                      No Skills available
-                    </CapabilityRow>
-                  ) : availableSkills.map((skill) => {
-                    const selected = selectedSkillSet.has(skill.id);
-                    const atLimit = !selected && selectedSkillIds.length >= SKILL_MAX_SELECTED;
-                    return (
-                      <CapabilityRow
-                        key={skill.id}
-                        icon="book"
-                        selected={selected}
-                        disabled={activeRun || atLimit || !onSelectSkillIds}
-                        reason={atLimit
-                          ? `Select up to ${SKILL_MAX_SELECTED} Skills`
-                          : skill.description || "Reusable text instructions"}
-                        onClick={() => toggleSkill(skill.id)}
-                      >
-                        {skill.name}
-                      </CapabilityRow>
-                    );
-                  })}
-                  {onOpenSkillLibrary ? (
-                    <button
-                      className="v2-composer-text-action v2-focusable"
-                      data-v2-composer-option="true"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        onOpenSkillLibrary();
-                        closeLayer();
-                      }}
-                    >
-                      Manage Skills…
-                    </button>
-                  ) : null}
-
-                  <div className="v2-composer-layer-divider" />
                   <CapabilityRow
-                    icon="sliders"
-                    disabled={controlsLocked || !onOpenModelParameters}
-                    reason={controlsLocked ? "Managed by the Assistant" : "Temperature · reasoning · stream"}
+                    icon="book"
+                    disabled={controlsLocked || activeRun || !knowledgeAvailable}
+                    reason={controlsLocked ? "Managed by the Assistant" : "Base or document for this chat"}
+                    selectionRole="item"
+                    onClick={(event) => {
+                      openLayer("knowledge", knowledgeTriggerRef.current ?? event.currentTarget);
+                    }}
+                  >
+                    Add Knowledge…
+                  </CapabilityRow>
+                  <CapabilityRow
+                    icon="assistant"
+                    disabled={activeRun || !onOpenAssistantPicker}
+                    reason={selectedAssistant
+                      ? `Selected: ${selectedAssistant.name}`
+                      : "Pinned · Recent · Yours · Shared"}
+                    selectionRole="item"
                     onClick={() => {
-                      onOpenModelParameters?.();
+                      onOpenAssistantPicker?.();
                       closeLayer();
                     }}
                   >
-                    Model parameters
+                    Use an Assistant…
+                  </CapabilityRow>
+                  <CapabilityRow
+                    icon="wand"
+                    disabled={activeRun || !onOpenSkillLibrary}
+                    reason={selectedSkillIds.length === 0
+                      ? "Reusable text instructions"
+                      : `${selectedSkillIds.length} selected${selectedSkills.length > 0
+                        ? ` · ${selectedSkills.map((skill) => skill.name).join(", ")}`
+                        : ""}`}
+                    selectionRole="item"
+                    onClick={() => {
+                      onOpenSkillLibrary?.();
+                      closeLayer();
+                    }}
+                  >
+                    Skills…
                   </CapabilityRow>
                   <p className="v2-composer-privacy-note">
-                    {sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."} Unavailable capabilities show a reason.
+                    {sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."}
                   </p>
                 </div>
               )}
@@ -1409,12 +1800,30 @@ export function ComposerV2({
   );
 }
 
+type ModelCapabilityGlyph = Readonly<{ icon: UiV2IconName; label: string }>;
+
+/* Capability glyphs replace text tags in the picker (PRD §4.6); the same
+   labels stay in the row's accessible name and title. */
+function modelCapabilityGlyphs(model: CatalogModel): ModelCapabilityGlyph[] {
+  const glyphs: ModelCapabilityGlyph[] = [];
+  if (model.capabilities.reasoning) glyphs.push({ icon: "memory", label: "Reasoning" });
+  if (model.capabilities.documentInputMode !== "none") glyphs.push({ icon: "file", label: "PDF and documents" });
+  if (model.capabilities.imageInput) glyphs.push({ icon: "image", label: "Images" });
+  if (model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch) {
+    glyphs.push({ icon: "globe", label: "Web search" });
+  }
+  if (model.capabilities.toolCalling) glyphs.push({ icon: "tool", label: "Tools" });
+  return glyphs;
+}
+
 function ModelLayer({
   config,
   groups,
   onMakeDefault,
+  onOpenParameters,
   onQuery,
   onSelect,
+  parametersSummary,
   query,
   selectedModelId,
   selectedProvider
@@ -1422,8 +1831,10 @@ function ModelLayer({
   config: ComposerConfig | null;
   groups: Array<{ models: CatalogModel[]; provider: CatalogProvider }>;
   onMakeDefault?(model: CatalogModel): void;
+  onOpenParameters?(): void;
   onQuery(value: string): void;
   onSelect(model: CatalogModel): void;
+  parametersSummary: string | null;
   query: string;
   selectedModelId: string;
   selectedProvider: string;
@@ -1431,6 +1842,7 @@ function ModelLayer({
   const personalDefault = config?.catalog.defaults.personalModelDefault;
   const organizationDefault = config?.catalog.defaults.organizationModelDefault;
   const hasMatches = groups.some((group) => group.models.length > 0);
+  const modelCount = groups.reduce((count, group) => count + group.models.length, 0);
 
   return (
     <>
@@ -1444,6 +1856,7 @@ function ModelLayer({
           placeholder="Search models…"
           onChange={(event) => onQuery(event.target.value)}
         />
+        <span className="v2-composer-model-count" aria-hidden="true">{modelCount}</span>
       </label>
       <div className="v2-composer-layer-scroll" role="listbox" aria-label="Available models">
         {!hasMatches ? (
@@ -1452,7 +1865,10 @@ function ModelLayer({
           </p>
         ) : groups.map((group) => (
           <section className="v2-composer-model-group" key={group.provider.id || group.provider.name}>
-            <h3>{group.provider.name}<span>{group.models.length}</span></h3>
+            <h3>
+              <UiV2ProviderMark family={group.provider.family ?? null} label={group.provider.name} />
+              <span>{group.provider.name}</span>
+            </h3>
             {group.models.map((model) => {
               const selected = model.modelId === selectedModelId && model.provider === selectedProvider;
               const isPersonalDefault = personalDefault?.modelId === model.modelId &&
@@ -1461,8 +1877,13 @@ function ModelLayer({
                 organizationDefault.provider === model.provider;
               const capabilityLabels = modelCapabilityLabels(model);
               const capabilityTags = capabilityLabels.length > 0 ? capabilityLabels : ["Text"];
+              const glyphs = modelCapabilityGlyphs(model);
               return (
-                <div className="v2-composer-model-row" key={`${model.provider}:${model.modelId}`}>
+                <div
+                  className="v2-composer-model-row"
+                  data-selected={selected || undefined}
+                  key={`${model.provider}:${model.modelId}`}
+                >
                   <button
                     className="v2-composer-model-option v2-focusable"
                     data-model-id={model.modelId}
@@ -1473,21 +1894,18 @@ function ModelLayer({
                     aria-selected={selected}
                     onClick={() => onSelect(model)}
                   >
-                    <span className="v2-composer-model-copy">
-                      <strong>{model.displayName}</strong>
-                      {/* One joined line with a single trailing ellipsis: per-tag
-                          truncation turned narrow rows into unreadable fragments. */}
-                      <span className="v2-composer-model-tags" title={capabilityTags.join(" · ")}>
-                        {capabilityTags.slice(0, 3).join(" · ")}
-                        {capabilityTags.length > 3 ? ` · +${capabilityTags.length - 3}` : ""}
-                      </span>
-                      <span className="v2-composer-model-facts">
-                        {selected ? <em>Current</em> : null}
-                        {isPersonalDefault ? <em>My default</em> : null}
-                        {isOrganizationDefault ? <em>Org default</em> : null}
-                      </span>
+                    <span className="v2-composer-model-name">{model.displayName}</span>
+                    {/* Capabilities read as glyphs; the joined labels stay in
+                        the accessible name and the hover title. */}
+                    <span className="v2-sr-only">{capabilityTags.join(" · ")}</span>
+                    {isOrganizationDefault ? <em className="v2-composer-model-fact">Org default</em> : null}
+                    <span className="v2-composer-model-glyphs" title={capabilityTags.join(" · ")} aria-hidden="true">
+                      {glyphs.map((glyph) => <UiV2Icon key={glyph.icon} name={glyph.icon} title={glyph.label} />)}
                     </span>
-                    {selected ? <UiV2Icon name="check" /> : null}
+                    <span className="v2-composer-model-mark" aria-hidden="true">
+                      {isPersonalDefault ? <UiV2Icon className="v2-composer-model-star" name="star-fill" /> : null}
+                      {selected ? <UiV2Icon className="v2-composer-model-check" name="check" /> : null}
+                    </span>
                   </button>
                   {onMakeDefault && !isPersonalDefault ? (
                     <button
@@ -1496,7 +1914,8 @@ function ModelLayer({
                       aria-label={`Make ${model.displayName} your default model`}
                       onClick={() => onMakeDefault(model)}
                     >
-                      Make default
+                      <span className="v2-composer-model-default-label">Set as default</span>
+                      <UiV2Icon name="star" />
                     </button>
                   ) : null}
                 </div>
@@ -1505,9 +1924,26 @@ function ModelLayer({
           </section>
         ))}
       </div>
-      <p className="v2-composer-model-note">
-        Applies to your next message.
-      </p>
+      <div className="v2-composer-layer-footer">
+        {onOpenParameters ? (
+          <button
+            className="v2-composer-model-parameters v2-focusable"
+            data-testid="composer-v2-model-parameters"
+            type="button"
+            onClick={onOpenParameters}
+          >
+            <UiV2Icon name="sliders" />
+            <span>Parameters</span>
+            {parametersSummary ? (
+              <span className="v2-composer-model-parameters-summary">{parametersSummary}</span>
+            ) : null}
+            <UiV2Icon name="chevron-right" />
+          </button>
+        ) : null}
+        <p className="v2-composer-model-note">
+          Applies to your next message.
+        </p>
+      </div>
     </>
   );
 }

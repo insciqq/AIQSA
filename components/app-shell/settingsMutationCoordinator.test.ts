@@ -10,6 +10,8 @@ import {
 function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
   return {
     defaultControlValues: {},
+    defaultKnowledgePlan: null,
+    defaultMcpMode: "auto",
     defaultSearchPlan: { mode: "all_selected", optionIds: [] },
     hasPersonalModelDefault: true,
     modelPreferenceSource: "personal",
@@ -17,6 +19,7 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     searchPreferenceSource: "personal",
+    sendWithEnter: true,
     showCitations: true,
     showReasoningBlocks: false,
     ...overrides
@@ -249,10 +252,16 @@ describe("settings mutation coordinator", () => {
       personalModelDefault: { modelId: "model-b", provider: "openrouter" }
     });
     await sendSettingsDefaultsPatch({ personalModelDefault: null });
+    await sendSettingsDefaultsPatch({ knowledgePlan: null, mcpMode: "off", sendWithEnter: false });
+    await sendSettingsDefaultsPatch({
+      knowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 }
+    });
 
     expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
       { defaultProviderModelId: "model-b" },
-      { defaultProviderModelId: null }
+      { defaultProviderModelId: null },
+      { defaultKnowledgePlan: null, defaultMcpMode: "off", sendWithEnter: false },
+      { defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 } }
     ]);
   });
 

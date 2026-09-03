@@ -31,6 +31,7 @@ const archivedSummary = {
   defaultProvider: null,
   folderId: null,
   id: "chat-1",
+  lastMessageAt: updatedAt,
   memoryMode: "NORMAL" as const,
   messageCount: 1,
   pinned: false,
@@ -221,7 +222,7 @@ describe("chat lifecycle handlers", () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
     for (const response of responses) expectPrivate(response);
     await expect(responses[0]?.clone().json()).resolves.toMatchObject({
-      chats: [{ archived: true, id: "chat-1" }],
+      chats: [{ archived: true, id: "chat-1", lastMessageAt: updatedAt }],
       nextCursor: "next"
     });
     await expect(responses[1]?.clone().json()).resolves.toMatchObject({
