@@ -210,3 +210,99 @@ describe("remote Workspace runner protocol", () => {
     })).rejects.toThrow("workspace_session_lost");
   }, 30_000);
 });
+
+describe("remote Workspace output batches", () => {
+  const servers: ReturnType<typeof createWorkspaceRunnerServer>[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+      server.closeAllConnections();
+    })));
+  });
+
+  it("keeps a batch alive across a slow sequential export, releases it, and stays single-use", async () => {
+    let now = 1_700_000_000_000;
+    const server = createWorkspaceRunnerServer({
+      now: () => now,
+      runtime: new DeterministicWorkspaceRuntime(deterministicConfig),
+      token
+    });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address() as AddressInfo;
+    const runtime = new RemoteWorkspaceRuntime({
+      ...deterministicConfig,
+      runnerToken: token,
+      runnerUrl: new URL(`http://127.0.0.1:${address.port}`),
+      runtimeMode: "remote"
+    });
+    const sessionId = "0199aabc-12ef-7abc-8abc-0123456789ae";
+    const session = await runtime.ensureSession({
+      cpus: deterministicConfig.cpus,
+      diskMiB: deterministicConfig.diskMiB,
+      imageRef: deterministicConfig.imageRef,
+      internetEnabled: false,
+      memoryMiB: deterministicConfig.memoryMiB,
+      runtimeSandboxId: null,
+      sandboxName: workspaceSandboxName(sessionId),
+      sessionId
+    });
+    const outputDirectory = workspaceRunOutputDirectory("run_batch");
+    for (const name of ["a.txt", "b.txt", "c.txt"]) {
+      await runtime.callBoundTool({
+        arguments: { content: `content ${name}`, path: `${outputDirectory}/${name}` },
+        modelRunId: "run_batch",
+        modelRunToolCallId: `call_${name}`,
+        originalName: "sandbox_fs_write",
+        runtimeSandboxId: session.runtimeSandboxId,
+        sessionId
+      });
+    }
+    const list = () => runtime.collectOutputs({
+      modelRunId: "run_batch",
+      outputDirectory,
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId
+    });
+
+    const outputs = await list();
+    expect(outputs).toHaveLength(3);
+    expect(outputs[0]!.batchId).toMatch(/^[a-f0-9]{32}$/u);
+    // Well past the old absolute five-minute TTL, still inside the inactivity window.
+    now += 6 * 60_000;
+    expect(new TextDecoder().decode(await collect(outputs[0]!.body))).toBe("content a.txt");
+    // Opening a handle refreshed the batch, so a later slow file is still valid.
+    now += 9 * 60_000;
+    expect(new TextDecoder().decode(await collect(outputs[1]!.body))).toBe("content b.txt");
+    // A handle never opened within the inactivity window expires.
+    now += 11 * 60_000;
+    await expect(collect(outputs[2]!.body)).rejects.toThrow("workspace_output_export_failed");
+
+    const reopened = await list();
+    // Every handle is single-use even inside a live batch.
+    expect(new TextDecoder().decode(await collect(reopened[0]!.body))).toBe("content a.txt");
+    const retry = await runtime.collectOutputs({
+      modelRunId: "run_batch",
+      outputDirectory,
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId
+    });
+    await runtime.releaseOutputs({
+      batchId: reopened[0]!.batchId!,
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId
+    });
+    await expect(collect(reopened[1]!.body)).rejects.toThrow("workspace_output_export_failed");
+    // Release is scoped to its own batch; a newer batch keeps working.
+    expect(new TextDecoder().decode(await collect(retry[1]!.body))).toBe("content b.txt");
+
+    // Abandoned batches always die after the absolute safety lifetime.
+    const abandoned = await list();
+    now += 7 * 60 * 60_000;
+    await expect(collect(abandoned[0]!.body)).rejects.toThrow("workspace_output_export_failed");
+  }, 30_000);
+});

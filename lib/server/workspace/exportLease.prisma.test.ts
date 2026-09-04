@@ -41,9 +41,11 @@ async function cleanupFixtures(): Promise<void> {
 }
 
 type Fixture = Readonly<{
+  chatId: string;
   runId: string;
   sessionId: string;
   toolCallId: string;
+  userId: string;
 }>;
 
 async function createFixture(input: Readonly<{
@@ -130,7 +132,7 @@ async function createFixture(input: Readonly<{
       workspaceRunBindingId: run.id
     }
   });
-  return { runId: run.id, sessionId: session.id, toolCallId: toolCall.id };
+  return { chatId: chat.id, runId: run.id, sessionId: session.id, toolCallId: toolCall.id, userId };
 }
 
 async function bindingState(runId: string) {
@@ -336,5 +338,112 @@ describe("Prisma Workspace execution registry", () => {
       lastErrorCode: "workspace_execution_cleanup_failed",
       state: "CLOSED"
     });
+  });
+});
+
+describe("Prisma Workspace export concurrency", () => {
+  const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+
+  afterAll(async () => {
+    await cleanupFixtures();
+    await prisma.$disconnect();
+  });
+
+  it("settles one output row per path when two workers race on the same file", async () => {
+    const fixture = await createFixture();
+    const binding = await repository.binding({ runId: fixture.runId, userId: fixture.userId });
+    expect(binding).not.toBeNull();
+    const output = {
+      byteSize: 12,
+      checksum: "c".repeat(64),
+      mimeType: "text/plain",
+      relativePath: "nested/report.txt"
+    };
+    const settled = await Promise.all([1, 2, 3].map(() => repository.settleOutput({
+      binding: binding!,
+      output,
+      storageKey: `${fixture.userId}/workspace-outputs/${fixture.runId}/race`
+    })));
+    expect(new Set(settled.map((file) => file.attachmentId)).size).toBe(1);
+    await expect(prisma.workspaceRunOutput.count({
+      where: { workspaceRunBindingId: fixture.runId }
+    })).resolves.toBe(1);
+    await expect(prisma.attachment.count({
+      where: { origin: "WORKSPACE_OUTPUT", producerModelRunId: fixture.runId }
+    })).resolves.toBe(1);
+    // The same path with different bytes is a changed output and fails closed.
+    await expect(repository.settleOutput({
+      binding: binding!,
+      output: { ...output, checksum: "d".repeat(64) },
+      storageKey: `${fixture.userId}/workspace-outputs/${fixture.runId}/changed`
+    })).rejects.toThrow("workspace_output_export_failed");
+  });
+
+  it("fences background export recovery against an active run on the same chat", async () => {
+    const fixture = await createFixture();
+    const userMessage = await prisma.message.create({
+      data: {
+        chatId: fixture.chatId,
+        content: textMessageContent("Another turn"),
+        modelId: "fake-qsa",
+        provider: "fake",
+        role: "user",
+        status: "complete"
+      }
+    });
+    const assistantMessage = await prisma.message.create({
+      data: {
+        chatId: fixture.chatId,
+        content: textMessageContent(""),
+        modelId: "fake-qsa",
+        parentMessageId: userMessage.id,
+        provider: "fake",
+        role: "assistant",
+        status: "streaming"
+      }
+    });
+    const activeRun = await prisma.modelRun.create({
+      data: {
+        assistantMessageId: assistantMessage.id,
+        chatId: fixture.chatId,
+        modelId: "fake-qsa",
+        normalizedRequest: {},
+        provider: "fake",
+        status: "streaming",
+        userId: fixture.userId,
+        userMessageId: userMessage.id
+      }
+    });
+    await expect(repository.claimExportForRecovery({
+      leaseMs: 60_000,
+      runId: fixture.runId,
+      sessionId: fixture.sessionId
+    })).resolves.toEqual({ status: "busy" });
+    await expect(bindingState(fixture.runId)).resolves.toMatchObject({ exportState: "PENDING" });
+
+    // The one-active-run invariant lives in the database, not in memory.
+    await expect(prisma.modelRun.create({
+      data: {
+        assistantMessageId: assistantMessage.id,
+        chatId: fixture.chatId,
+        modelId: "fake-qsa",
+        normalizedRequest: {},
+        provider: "fake",
+        status: "streaming",
+        userId: fixture.userId,
+        userMessageId: userMessage.id
+      }
+    })).rejects.toThrow();
+
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: activeRun.id } });
+    await expect(repository.claimExportForRecovery({
+      leaseMs: 60_000,
+      runId: fixture.runId,
+      sessionId: fixture.sessionId
+    })).resolves.toMatchObject({ status: "claimed" });
+    await expect(repository.exportRecoveryCandidates({
+      limit: 10,
+      staleBefore: new Date(Date.now() + 1_000)
+    })).resolves.not.toContainEqual({ runId: fixture.runId, userId: fixture.userId });
   });
 });

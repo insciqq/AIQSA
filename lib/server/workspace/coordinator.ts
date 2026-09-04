@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import {
+  isRetryableWorkspaceExportErrorCode,
   isSafeWorkspaceRelativePath,
   WORKSPACE_EXEC_SESSION_TOOL_NAMES,
   WORKSPACE_MCP_TOOL_ALLOWLIST,
@@ -84,6 +85,10 @@ export type WorkspaceExportClaim =
 
 /** Lease window for one export attempt; renewed before every long step. */
 export const WORKSPACE_EXPORT_LEASE_MS = 120_000;
+/** Background recovery gives up on a binding after this many attempts. */
+export const WORKSPACE_EXPORT_MAX_ATTEMPTS = 20;
+/** Completed runs younger than this are left to their own live finalize. */
+export const WORKSPACE_EXPORT_RECOVERY_GRACE_MS = 30_000;
 
 export type WorkspaceCoordinatorRepository = Readonly<{
   /**
@@ -99,6 +104,25 @@ export type WorkspaceCoordinatorRepository = Readonly<{
     runId: string;
     sessionId: string;
   }>): Promise<WorkspaceExportClaim>;
+  /**
+   * Same atomic claim for background recovery, taken under the session row
+   * lock and only while the chat has no active run, so a retry can never
+   * overlap a new mutating turn on the same sandbox (admission holds the
+   * mirror-image check against a live lease).
+   */
+  claimExportForRecovery(input: Readonly<{
+    leaseMs: number;
+    runId: string;
+    sessionId: string;
+  }>): Promise<WorkspaceExportClaim>;
+  /**
+   * Completed runs whose export is still owed: pending, retryably failed, or
+   * left EXPORTING by a worker whose lease expired. Bounded and oldest-first.
+   */
+  exportRecoveryCandidates(input: Readonly<{
+    limit: number;
+    staleBefore: Date;
+  }>): Promise<readonly Readonly<{ runId: string; userId: string }>[]>;
   generatedFiles(input: Readonly<{ runId: string; userId: string }>): Promise<readonly ThreadGeneratedFile[]>;
   markExportComplete(input: Readonly<{
     runId: string;
@@ -349,23 +373,31 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return rows.map(generatedFile);
     },
     async claimExport({ leaseMs, runId, sessionId }) {
-      const now = new Date();
-      const token = randomUUID().replaceAll("-", "");
-      // One conditional UPDATE is the whole claim: a pending binding, a
-      // retryable failure, or an expired/absent lease may be taken; a live
-      // lease or a settled binding may not.
-      const claimed = await prisma.workspaceRunBinding.updateMany({
-        data: {
-          exportAttemptCount: { increment: 1 },
-          exportLeaseExpiresAt: new Date(now.getTime() + leaseMs),
-          exportLeaseToken: token,
-          exportStartedAt: now,
-          exportState: "EXPORTING",
-          lastExportErrorCode: null
-        },
+      return claimExportWith(prisma, { leaseMs, runId, sessionId });
+    },
+    async claimExportForRecovery({ leaseMs, runId, sessionId }) {
+      return prisma.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<Array<{ chatId: string }>>(Prisma.sql`
+          SELECT "chatId" FROM "WorkspaceSession" WHERE "id" = ${sessionId} FOR UPDATE
+        `);
+        const chatId = locked[0]?.chatId;
+        if (!chatId) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        const active = await tx.modelRun.count({
+          where: { chatId, status: { in: [...ACTIVE_RUN_STATUSES] } }
+        });
+        if (active > 0) return { status: "busy" as const };
+        return claimExportWith(tx, { leaseMs, runId, sessionId });
+      });
+    },
+    async exportRecoveryCandidates({ limit, staleBefore }) {
+      const rows = await prisma.workspaceRunBinding.findMany({
+        orderBy: [{ updatedAt: "asc" }, { modelRunId: "asc" }],
+        select: { modelRun: { select: { userId: true } }, modelRunId: true },
+        take: Math.max(1, Math.min(limit, 100)),
         where: {
-          modelRunId: runId,
-          workspaceSessionId: sessionId,
+          exportAttemptCount: { lt: WORKSPACE_EXPORT_MAX_ATTEMPTS },
+          modelRun: { status: "complete" },
+          updatedAt: { lte: staleBefore },
           OR: [
             { exportState: "PENDING" },
             {
@@ -379,28 +411,13 @@ export function createPrismaWorkspaceCoordinatorRepository(
               exportState: "EXPORTING",
               OR: [
                 { exportLeaseExpiresAt: null },
-                { exportLeaseExpiresAt: { lte: now } }
+                { exportLeaseExpiresAt: { lte: new Date() } }
               ]
             }
           ]
         }
       });
-      if (claimed.count === 1) return { status: "claimed", token };
-      const binding = await prisma.workspaceRunBinding.findUnique({
-        select: { exportState: true, lastExportErrorCode: true, workspaceSessionId: true },
-        where: { modelRunId: runId }
-      });
-      if (!binding || binding.workspaceSessionId !== sessionId) {
-        throw new WorkspaceRuntimeError("workspace_output_export_failed");
-      }
-      if (binding.exportState === "COMPLETE") return { status: "complete" };
-      if (binding.exportState === "FAILED") {
-        return {
-          code: binding.lastExportErrorCode ?? "workspace_output_export_failed",
-          status: "failed"
-        };
-      }
-      return { status: "busy" };
+      return rows.map((row) => ({ runId: row.modelRunId, userId: row.modelRun.userId }));
     },
     async markExportComplete({ runId, sessionId, token }) {
       const updated = await prisma.workspaceRunBinding.updateMany({
@@ -531,7 +548,29 @@ export function createPrismaWorkspaceCoordinatorRepository(
       if (!isSafeWorkspaceRelativePath(output.relativePath)) {
         throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
       }
-      return prisma.$transaction(async (tx) => {
+      const existingOutput = () => prisma.workspaceRunOutput.findUnique({
+        include: {
+          attachment: {
+            select: { byteSize: true, fileName: true, id: true, mimeType: true }
+          }
+        },
+        where: {
+          workspaceRunBindingId_relativePath: {
+            relativePath: output.relativePath,
+            workspaceRunBindingId: binding.runId
+          }
+        }
+      });
+      const reuse = (existing: NonNullable<Awaited<ReturnType<typeof existingOutput>>>) => {
+        // Same path with different bytes means the output changed after it was
+        // settled: fail closed instead of silently replacing a delivered file.
+        if (existing.byteSize !== output.byteSize || existing.checksum !== output.checksum) {
+          throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        }
+        return generatedFile(existing);
+      };
+      try {
+        return await prisma.$transaction(async (tx) => {
         const existing = await tx.workspaceRunOutput.findUnique({
           include: {
             attachment: {
@@ -545,12 +584,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
             }
           }
         });
-        if (existing) {
-          if (existing.byteSize !== output.byteSize || existing.checksum !== output.checksum) {
-            throw new WorkspaceRuntimeError("workspace_output_export_failed");
-          }
-          return generatedFile(existing);
-        }
+        if (existing) return reuse(existing);
         const projectUploader = binding.projectId
           ? await tx.user.findUnique({
               select: { displayName: true },
@@ -601,10 +635,85 @@ export function createPrismaWorkspaceCoordinatorRepository(
           }
         });
         return generatedFile(row);
-      });
+        });
+      } catch (error) {
+        // Two workers settling the same path race on the unique index; the
+        // loser reads the winner's row instead of surfacing a duplicate error.
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
+          throw error;
+        }
+        const winner = await existingOutput();
+        if (!winner) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        return reuse(winner);
+      }
     }
   };
 }
+
+const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
+
+async function claimExportWith(
+  client: Prisma.TransactionClient | PrismaClient,
+  input: Readonly<{ leaseMs: number; runId: string; sessionId: string }>
+): Promise<WorkspaceExportClaim> {
+  const now = new Date();
+  const token = randomUUID().replaceAll("-", "");
+  // One conditional UPDATE is the whole claim: a pending binding, a retryable
+  // failure, or an expired/absent lease may be taken; a live lease or a
+  // settled binding may not.
+  const claimed = await client.workspaceRunBinding.updateMany({
+    data: {
+      exportAttemptCount: { increment: 1 },
+      exportLeaseExpiresAt: new Date(now.getTime() + input.leaseMs),
+      exportLeaseToken: token,
+      exportStartedAt: now,
+      exportState: "EXPORTING",
+      lastExportErrorCode: null
+    },
+    where: {
+      modelRunId: input.runId,
+      workspaceSessionId: input.sessionId,
+      OR: [
+        { exportState: "PENDING" },
+        {
+          exportState: "FAILED",
+          OR: [
+            { lastExportErrorCode: null },
+            { lastExportErrorCode: { notIn: [...WORKSPACE_PERMANENT_EXPORT_ERROR_CODES] } }
+          ]
+        },
+        {
+          exportState: "EXPORTING",
+          OR: [
+            { exportLeaseExpiresAt: null },
+            { exportLeaseExpiresAt: { lte: now } }
+          ]
+        }
+      ]
+    }
+  });
+  if (claimed.count === 1) return { status: "claimed", token };
+  const binding = await client.workspaceRunBinding.findUnique({
+    select: { exportState: true, lastExportErrorCode: true, workspaceSessionId: true },
+    where: { modelRunId: input.runId }
+  });
+  if (!binding || binding.workspaceSessionId !== input.sessionId) {
+    throw new WorkspaceRuntimeError("workspace_output_export_failed");
+  }
+  if (binding.exportState === "COMPLETE") return { status: "complete" };
+  if (binding.exportState === "FAILED") {
+    return {
+      code: binding.lastExportErrorCode ?? "workspace_output_export_failed",
+      status: "failed"
+    };
+  }
+  return { status: "busy" };
+}
+
+export type WorkspaceExportResult =
+  | Readonly<{ files: readonly ThreadGeneratedFile[]; status: "complete" }>
+  | Readonly<{ status: "busy" }>
+  | Readonly<{ code: WorkspaceRuntimeError["code"]; retryable: boolean; status: "failed" }>;
 
 export type WorkspaceSettlementOutcome = "cancelled" | "completed" | "failed" | "timed_out";
 
@@ -625,12 +734,22 @@ export type WorkspaceCoordinator = Readonly<{
     userId: string;
     workspace: NormalizedRunWorkspace;
   }>): Promise<ToolExecutionResult>;
+  /**
+   * Leased, idempotent output export. Never throws for export trouble: the
+   * answer stays complete and the binding records the export state instead.
+   */
   finalize(input: Readonly<{
+    recovery?: boolean;
     runId: string;
     signal?: AbortSignal;
     userId: string;
-    workspace: NormalizedRunWorkspace;
-  }>): Promise<readonly ThreadGeneratedFile[]>;
+    workspace?: NormalizedRunWorkspace;
+  }>): Promise<WorkspaceExportResult>;
+  /** Retries owed exports of completed runs whose chats are idle. */
+  recoverExports(input: Readonly<{ limit?: number; signal?: AbortSignal }>): Promise<Readonly<{
+    attempted: number;
+    completed: number;
+  }>>;
   /**
    * Idempotent terminal settlement for any run outcome: quiesce the run's
    * executions (falling back to a VM stop), then move the session out of
@@ -765,7 +884,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
 
   async function initialize(
     binding: WorkspaceExecutionBinding,
-    workspace: NormalizedRunWorkspace,
+    _workspace: NormalizedRunWorkspace | null,
     signal?: AbortSignal
   ): Promise<WorkspaceExecutionBinding> {
     const ready = initialized.get(binding.runId);
@@ -1187,50 +1306,69 @@ export function createWorkspaceCoordinator(input: Readonly<{
         clearTimeout(timer);
       }
     },
-    async finalize({ runId, signal, userId, workspace }) {
-      const initial = await requireBinding(runId, userId, workspace);
-      const claim = await input.repository.claimExport({
-        leaseMs: WORKSPACE_EXPORT_LEASE_MS,
-        runId,
-        sessionId: initial.sessionId
-      });
+    async finalize({ recovery, runId, signal, userId, workspace }) {
+      const initial = await input.repository.binding({ runId, userId });
+      if (!initial || (workspace && !exactBinding(initial, workspace))) {
+        return { code: "workspace_runtime_incompatible", retryable: false, status: "failed" };
+      }
+      const leaseInput = { leaseMs: WORKSPACE_EXPORT_LEASE_MS, runId, sessionId: initial.sessionId };
+      let claim: WorkspaceExportClaim;
+      try {
+        claim = recovery
+          ? await input.repository.claimExportForRecovery(leaseInput)
+          : await input.repository.claimExport(leaseInput);
+      } catch (error) {
+        return { code: runtimeCode(error), retryable: true, status: "failed" };
+      }
       if (claim.status === "complete") {
-        return input.repository.generatedFiles({ runId, userId });
+        return { files: await input.repository.generatedFiles({ runId, userId }), status: "complete" };
       }
       if (claim.status === "failed") {
-        throw new WorkspaceRuntimeError(
-          claim.code === "workspace_output_limit_exceeded"
+        return {
+          code: claim.code === "workspace_output_limit_exceeded"
             ? "workspace_output_limit_exceeded"
-            : "workspace_output_export_failed"
-        );
+            : "workspace_output_export_failed",
+          retryable: false,
+          status: "failed"
+        };
       }
-      if (claim.status === "busy") {
-        throw new WorkspaceRuntimeError("workspace_output_export_failed");
-      }
+      if (claim.status === "busy") return { status: "busy" };
       const lease = { runId, sessionId: initial.sessionId, token: claim.token };
+      let leaseLost = false;
       const renew = async () => {
+        if (leaseLost) throw new WorkspaceRuntimeError("workspace_output_export_failed");
         if (!(await input.repository.renewExportLease({ ...lease, leaseMs: WORKSPACE_EXPORT_LEASE_MS }))) {
+          leaseLost = true;
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
         }
       };
+      // A worker whose lease was reclaimed stops touching the database; the
+      // owner-guarded terminal updates would refuse it anyway.
+      const heartbeat = new AbortController();
+      const heartbeatTimer = setInterval(() => {
+        void renew().catch(() => heartbeat.abort(new WorkspaceRuntimeError("workspace_output_export_failed")));
+      }, Math.max(1_000, Math.floor(WORKSPACE_EXPORT_LEASE_MS / 3)));
+      heartbeatTimer.unref?.();
+      const exportSignal = signal ? AbortSignal.any([signal, heartbeat.signal]) : heartbeat.signal;
+      let batch: Readonly<{ batchId: string; runtimeSandboxId: string }> | null = null;
       try {
         if (!initial.runtimeSandboxId) {
           if (!(await input.repository.markExportComplete(lease))) {
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
-          return [];
+          return { files: [], status: "complete" };
         }
         // A provider-complete run may be finalized by a fresh app process after
         // the runner itself was restarted. Reconnect and restage originals
         // before collecting output, but never recreate a genuinely lost VM:
         // doing so would silently turn missing deliverables into a success.
-        const binding = await initialize(initial, workspace, signal);
+        const binding = await initialize(initial, workspace ?? null, exportSignal);
         if (!binding.runtimeSandboxId) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
         // Freeze the output set: no process of this run may still be writing
         // between the listing/hash and the upload.
-        const quiescence = await quiesceRun(binding, signal);
+        const quiescence = await quiesceRun(binding, exportSignal);
         if (!quiescence.proven || quiescence.stoppedVm) {
           throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
         }
@@ -1240,8 +1378,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           outputDirectory: binding.outputDirectory,
           runtimeSandboxId: binding.runtimeSandboxId,
           sessionId: binding.sessionId,
-          signal
+          signal: exportSignal
         });
+        const batchId = outputs.find((output) => output.batchId)?.batchId;
+        if (batchId) batch = { batchId, runtimeSandboxId: binding.runtimeSandboxId };
         const total = outputs.reduce((sum, output) => sum + output.byteSize, 0);
         if (
           outputs.length > input.config.outputMaxFiles ||
@@ -1259,7 +1399,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         for (const output of outputs) {
           await renew();
           const storageKey = outputStorageKey(binding, output);
-          if (!(await objectMatches(input.storage, storageKey, output, signal))) {
+          if (!(await objectMatches(input.storage, storageKey, output, exportSignal))) {
             if (!input.storage.putObjectStream) {
               throw new WorkspaceRuntimeError("workspace_output_export_failed");
             }
@@ -1268,13 +1408,14 @@ export function createWorkspaceCoordinator(input: Readonly<{
                 body: output.body,
                 byteSize: output.byteSize,
                 contentType: output.mimeType,
-                signal,
+                signal: exportSignal,
                 storageKey
               });
             } catch (error) {
-              if (!(await objectMatches(input.storage, storageKey, output, signal))) throw error;
+              if (!(await objectMatches(input.storage, storageKey, output, exportSignal))) throw error;
             }
           }
+          await renew();
           files.push(await input.repository.settleOutput({
             binding,
             output: {
@@ -1294,16 +1435,52 @@ export function createWorkspaceCoordinator(input: Readonly<{
           ...activityWindow(),
           sessionId: binding.sessionId
         });
-        return files;
+        return { files, status: "complete" };
       } catch (error) {
-        const code = runtimeCode(error) === "workspace_output_limit_exceeded"
-          ? "workspace_output_limit_exceeded"
+        const code = runtimeCode(error);
+        const recorded = code === "workspace_output_limit_exceeded" ||
+          code === "workspace_session_lost" ||
+          code === "workspace_runtime_incompatible"
+          ? code
           : "workspace_output_export_failed";
-        await input.repository.markExportFailed({ ...lease, code }).catch(() => undefined);
-        throw error instanceof WorkspaceRuntimeError
-          ? error
-          : new WorkspaceRuntimeError("workspace_output_export_failed");
+        if (!leaseLost) {
+          await input.repository.markExportFailed({ ...lease, code: recorded }).catch(() => undefined);
+        }
+        return {
+          code: error instanceof WorkspaceRuntimeError ? error.code : "workspace_output_export_failed",
+          retryable: isRetryableWorkspaceExportErrorCode(recorded),
+          status: "failed"
+        };
+      } finally {
+        clearInterval(heartbeatTimer);
+        if (batch && input.runtime.releaseOutputs) {
+          await input.runtime.releaseOutputs({
+            batchId: batch.batchId,
+            runtimeSandboxId: batch.runtimeSandboxId,
+            sessionId: initial.sessionId
+          }).catch(() => undefined);
+        }
       }
+    },
+    async recoverExports({ limit, signal }) {
+      const candidates = await input.repository.exportRecoveryCandidates({
+        limit: limit ?? 10,
+        staleBefore: new Date(Date.now() - WORKSPACE_EXPORT_RECOVERY_GRACE_MS)
+      });
+      let attempted = 0;
+      let completed = 0;
+      for (const candidate of candidates) {
+        if (signal?.aborted) break;
+        attempted += 1;
+        const result = await this.finalize({
+          recovery: true,
+          runId: candidate.runId,
+          signal,
+          userId: candidate.userId
+        });
+        if (result.status === "complete") completed += 1;
+      }
+      return { attempted, completed };
     },
     async tools({ runId, userId, workspace }) {
       const binding = await requireBinding(runId, userId, workspace);

@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { Readable } from "node:stream";
@@ -16,13 +16,28 @@ import {
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
-const PENDING_OUTPUT_TTL_MS = 5 * 60_000;
+/**
+ * Output handles live in batches. A batch stays valid while the application
+ * keeps opening its handles (inactivity lease, refreshed on every open and
+ * while a stream is active), never expires under an active stream, and is
+ * always discarded after an absolute safety lifetime so abandoned exports
+ * cannot pin guest streams forever. Each handle is still single-use.
+ */
+const PENDING_OUTPUT_INACTIVITY_MS = 10 * 60_000;
+const PENDING_OUTPUT_ABSOLUTE_MAX_MS = 6 * 60 * 60_000;
 const REQUEST_TIMEOUT_MS = 3_700_000;
 
 type PendingOutput = Readonly<{
-  expiresAt: number;
   output: WorkspaceOutputStream;
 }>;
+
+type PendingBatch = {
+  activeStreams: number;
+  readonly createdAt: number;
+  expiresAt: number;
+  readonly handles: Map<string, PendingOutput>;
+  readonly sessionId: string;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -143,16 +158,35 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 }>): Server {
   if (input.token.length < 32) throw new Error("workspace_runner_token_invalid");
   const clock = input.now ?? Date.now;
-  const pendingOutputs = new Map<string, PendingOutput>();
-  const key = (sessionId: string, opaqueFileId: string) => `${sessionId}:${opaqueFileId}`;
+  const batches = new Map<string, PendingBatch>();
+  const discardBatch = (batchId: string, reason: string) => {
+    const batch = batches.get(batchId);
+    if (!batch) return;
+    for (const pending of batch.handles.values()) {
+      void pending.output.body.cancel(reason).catch(() => undefined);
+    }
+    batches.delete(batchId);
+  };
   const prunePending = () => {
     const now = clock();
-    for (const [id, pending] of pendingOutputs) {
-      if (pending.expiresAt <= now) {
-        void pending.output.body.cancel("expired").catch(() => undefined);
-        pendingOutputs.delete(id);
+    for (const [batchId, batch] of batches) {
+      if (batch.activeStreams > 0) continue;
+      if (batch.expiresAt <= now || batch.createdAt + PENDING_OUTPUT_ABSOLUTE_MAX_MS <= now) {
+        discardBatch(batchId, "expired");
       }
     }
+  };
+  const registerBatch = (sessionId: string, outputs: readonly WorkspaceOutputStream[]) => {
+    const now = clock();
+    const batchId = randomBytes(16).toString("hex");
+    batches.set(batchId, {
+      activeStreams: 0,
+      createdAt: now,
+      expiresAt: now + PENDING_OUTPUT_INACTIVITY_MS,
+      handles: new Map(outputs.map((output) => [output.opaqueFileId, { output }])),
+      sessionId
+    });
+    return batchId;
   };
 
   const server = createServer(async (request, response) => {
@@ -331,14 +365,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId
         });
-        for (const output of outputs) {
-          pendingOutputs.set(key(sessionId, output.opaqueFileId), {
-            expiresAt: clock() + PENDING_OUTPUT_TTL_MS,
-            output
-          });
-        }
+        const batchId = registerBatch(sessionId, outputs);
         sendJson(response, 200, {
-          outputs: outputs.map(({ body: _body, ...metadata }) => metadata)
+          batchId,
+          outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId }))
         });
         return;
       }
@@ -346,14 +376,33 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       if (request.method === "GET" && suffix === "/outputs/stream") {
         prunePending();
         const opaqueFileId = url.searchParams.get("opaqueFileId") ?? "";
-        const outputKey = key(sessionId, opaqueFileId);
-        const pending = pendingOutputs.get(outputKey);
-        if (!pending) {
+        const batchId = url.searchParams.get("batchId") ?? "";
+        const batch = batches.get(batchId);
+        const pending = batch?.sessionId === sessionId ? batch.handles.get(opaqueFileId) : undefined;
+        if (!batch || !pending) {
           sendJson(response, 404, { error: "workspace_output_export_failed" });
           return;
         }
-        pendingOutputs.delete(outputKey);
-        await pipeOutput(response, pending);
+        // Single use: the handle is gone before the first byte is written, and
+        // the rest of the batch is kept alive by this activity.
+        batch.handles.delete(opaqueFileId);
+        batch.expiresAt = clock() + PENDING_OUTPUT_INACTIVITY_MS;
+        batch.activeStreams += 1;
+        try {
+          await pipeOutput(response, pending);
+        } finally {
+          batch.activeStreams -= 1;
+          batch.expiresAt = clock() + PENDING_OUTPUT_INACTIVITY_MS;
+          if (batch.handles.size === 0 && batch.activeStreams === 0) batches.delete(batchId);
+        }
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/outputs/release") {
+        const body = await readJson(request);
+        const batchId = requiredString(body.batchId, 64);
+        if (batches.get(batchId)?.sessionId === sessionId) discardBatch(batchId, "released");
+        sendJson(response, 200, { ok: true });
         return;
       }
 
@@ -364,12 +413,9 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId
         });
-        pendingOutputs.set(key(sessionId, output.opaqueFileId), {
-          expiresAt: clock() + PENDING_OUTPUT_TTL_MS,
-          output
-        });
+        const batchId = registerBatch(sessionId, [output]);
         const { body: _body, ...metadata } = output;
-        sendJson(response, 200, metadata);
+        sendJson(response, 200, { ...metadata, batchId });
         return;
       }
 

@@ -59,6 +59,11 @@ export type WorkspaceAttachmentStream = Readonly<{
 }>;
 
 export type WorkspaceOutputStream = Readonly<{
+  /**
+   * Runner output batch this handle belongs to. Opening any handle keeps the
+   * rest of the batch alive; releasing the batch discards unopened handles.
+   */
+  batchId?: string;
   body: ReadableStream<Uint8Array>;
   byteSize: number;
   checksum: string;
@@ -75,6 +80,13 @@ export type WorkspaceOutputStream = Readonly<{
 export type WorkspaceExecutionTermination = Readonly<{
   outcome: "closed" | "unknown";
   runtimeExecSessionId: string;
+}>;
+
+export type WorkspaceOutputReleaseInput = Readonly<{
+  batchId: string;
+  runtimeSandboxId: string;
+  sessionId: string;
+  signal?: AbortSignal;
 }>;
 
 export interface WorkspaceRuntime {
@@ -147,6 +159,8 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceOutputStream[]>;
+  /** Releases every unopened handle of an output batch; idempotent. */
+  releaseOutputs?(input: WorkspaceOutputReleaseInput): Promise<void>;
   createProjectArchive(input: Readonly<{
     runtimeSandboxId: string;
     sessionId: string;

@@ -2677,6 +2677,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               "Workspace execution is unavailable"
             );
           }
+          // Output publication is not on the answer's critical path: a
+          // busy or failed export leaves the binding in a retryable state for
+          // background recovery while the answer itself completes.
           await input.workspace.finalize({
             runId,
             signal,

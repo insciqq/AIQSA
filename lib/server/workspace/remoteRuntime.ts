@@ -10,6 +10,7 @@ import {
   WorkspaceRuntimeError,
   type WorkspaceBoundTool,
   type WorkspaceExecutionTermination,
+  type WorkspaceOutputReleaseInput,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
   type WorkspaceRuntimeHealth,
@@ -60,6 +61,11 @@ async function jsonResponse(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * A genuinely lazy body: the runner handle is opened on the first read, not
+ * when the listing returns. With the default high-water mark the stream would
+ * pull immediately and open every single-use guest stream at listing time.
+ */
 function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   return new ReadableStream<Uint8Array>({
@@ -82,12 +88,14 @@ function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
         controller.error(error);
       }
     }
-  });
+  }, { highWaterMark: 0 });
 }
 
 function outputMetadata(value: unknown): Omit<WorkspaceOutputStream, "body"> | null {
   if (
     !isRecord(value) ||
+    typeof value.batchId !== "string" ||
+    !/^[a-f0-9]{32}$/u.test(value.batchId) ||
     typeof value.byteSize !== "number" ||
     !Number.isSafeInteger(value.byteSize) ||
     value.byteSize <= 0 ||
@@ -342,7 +350,9 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     return {
       ...metadata,
       body: remoteBody(() => this.request(
-        `/v1/sessions/${encodeURIComponent(sessionId)}/outputs/stream?opaqueFileId=${encodeURIComponent(metadata.opaqueFileId)}`,
+        `/v1/sessions/${encodeURIComponent(sessionId)}/outputs/stream` +
+          `?opaqueFileId=${encodeURIComponent(metadata.opaqueFileId)}` +
+          `&batchId=${encodeURIComponent(metadata.batchId ?? "")}`,
         { signal }
       ))
     };
@@ -367,6 +377,14 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     }
     return (metadata as Omit<WorkspaceOutputStream, "body">[])
       .map((entry) => this.output(input.sessionId, entry, input.signal));
+  }
+
+  async releaseOutputs(input: WorkspaceOutputReleaseInput): Promise<void> {
+    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/release`, {
+      body: JSON.stringify({ batchId: input.batchId, runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST",
+      signal: input.signal
+    });
   }
 
   async createProjectArchive(input: Parameters<WorkspaceRuntime["createProjectArchive"]>[0]): Promise<WorkspaceOutputStream> {

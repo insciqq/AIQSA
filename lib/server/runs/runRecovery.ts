@@ -1886,6 +1886,8 @@ async function recoverCheckpointedToolLoop(
           "The saved Workspace runtime is unavailable."
         );
       }
+      // Export trouble never fails the recovered answer; the binding keeps
+      // a retryable state for background export recovery.
       await deps.workspace.finalize({
         runId: run.id,
         signal,
@@ -4435,6 +4437,9 @@ export async function reconcileInstallationRuns(
   input: Readonly<{ now?: Date }> = {}
 ): Promise<void> {
   await sweepBootOrphanedRunsOnce(deps);
+  // Owed Workspace exports of completed runs are retried here, in the app
+  // process that owns object storage, never by the runner or maintenance role.
+  await deps.workspace?.recoverExports({ limit: 10 }).catch(() => undefined);
   if (!deps.repository.findInstallationRecoverableRuns) return;
 
   const now = input.now ?? new Date();
