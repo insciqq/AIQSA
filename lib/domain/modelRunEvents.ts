@@ -126,7 +126,7 @@ export type ModelRunSseEvent =
       type: "done";
       data: {
         runId: string;
-        status: "complete";
+        status: "cancelled" | "complete";
       };
     }
   | {

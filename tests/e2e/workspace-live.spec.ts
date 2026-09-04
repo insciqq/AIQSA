@@ -223,7 +223,7 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
     createdChatIds.push(onlineChatId);
     await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
     const activity = page.getByTestId("tool-activity-disclosure").last();
-    await activity.locator("summary").click();
+    await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Worked in Workspace");
     await expect(activity).toContainText("Ran set -eu && test -s /workspace/inbox/index.json");
     await expect(activity).toContainText("Exported 1 file");

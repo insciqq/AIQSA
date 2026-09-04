@@ -927,7 +927,18 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     }
 
     const run = cancellation.run;
-    if (!activeRunControllerRegistry.abort(run.id) && deps.workspaceCoordinator) {
+    if (activeRunControllerRegistry.abort(run.id)) {
+      // Stop means the run's terminal handling (tool cancellation, Workspace
+      // quiescence and session settlement) is done before the client re-reads
+      // the chat; the wait is bounded so a wedged executor cannot hang Stop.
+      const settled = activeRunControllerRegistry.settled(run.id);
+      if (settled) {
+        await Promise.race([
+          settled,
+          new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref?.())
+        ]);
+      }
+    } else if (deps.workspaceCoordinator) {
       // No local executor will observe the abort, so terminal Workspace
       // settlement (quiesce executions, leave RUNNING) happens here.
       await deps.workspaceCoordinator.settle({

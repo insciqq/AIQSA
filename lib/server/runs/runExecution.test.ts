@@ -2352,7 +2352,9 @@ describe("run execution", () => {
     expect(activeRunControllerRegistry.abort("run-1")).toBe(false);
 
     const events = parseSse(await response.text());
-    expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token"]);
+    // Stop ends the stream with an explicit cancelled frame, never a bare close.
+    expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token", "done"]);
+    expect(events.at(-1)?.data).toEqual({ runId: "run-1", status: "cancelled" });
     expect(repository.assistantTexts).toEqual(["before-abort"]);
     expect(repository.failedRuns).toEqual([]);
     expect(repository.completeRuns).toEqual([]);

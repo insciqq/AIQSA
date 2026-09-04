@@ -9,6 +9,7 @@ import {
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, type Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { presign, s3Send } = vi.hoisted(() => ({ presign: vi.fn(), s3Send: vi.fn() }));
@@ -203,6 +204,38 @@ describe("S3 storage bounded reads", () => {
 
     expect(observedChunkBytes).toEqual([8 * 1_024 * 1_024, 8 * 1_024 * 1_024, 1]);
     expect((s3Send.mock.calls[0]?.[0] as PutObjectCommand).input.ContentLength).toBe(source.byteLength);
+  });
+
+  it("rejects a failing upload body with the source error and aborts the PUT", async () => {
+    const failure = new Error("source_stream_failed");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.error(failure);
+      }
+    });
+    // Like the SDK's node handler: the body is piped with no error listener
+    // and the request only settles through its abort signal.
+    s3Send.mockImplementationOnce(
+      (command: PutObjectCommand, options?: { abortSignal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.abortSignal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("transport aborted", "AbortError")),
+            { once: true }
+          );
+          (command.input.Body as Readable).pipe(new PassThrough());
+        })
+    );
+    const storage = createS3StorageAdapter(s3Env);
+
+    await expect(storage.putObjectStream!({
+      body,
+      byteSize: 4,
+      contentType: "application/octet-stream",
+      storageKey: "owned/faulted.bin"
+    })).rejects.toBe(failure);
+    expect((s3Send.mock.calls[0]?.[1] as { abortSignal?: AbortSignal }).abortSignal?.aborted).toBe(true);
   });
 
   it("requests only maxBytes plus one sentinel byte and accepts the exact boundary", async () => {
