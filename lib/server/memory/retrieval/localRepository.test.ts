@@ -186,6 +186,7 @@ function mockClient(
   row = snapshotRow(),
   options: Readonly<{
     completionRows?: readonly Record<string, unknown>[];
+    coreRows?: readonly Record<string, unknown>[];
     expansionRows?: readonly Record<string, unknown>[];
     failLaneQueries?: boolean;
     laneFailure?: unknown;
@@ -222,6 +223,7 @@ function mockClient(
       nextExpansionRows = null;
       return rows;
     }
+    if (sql.includes('version."coreEligible" = TRUE')) return options.coreRows ?? [];
     if (sql.includes("RECALL_ROUND_RAW_SAFE_TEXT")) return options.expansionRows ?? [];
     if (options.laneFailure !== undefined) throw options.laneFailure;
     if (options.failLaneQueries === true) {
@@ -598,6 +600,7 @@ describe("local Memory retrieval repository", () => {
     const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
       assistantId: null,
       baselinePlan: planMemoryRetrieval({
+        applyResponsePreferences: true,
         currentUserText: query,
         filters: { sourceKinds: ["FACT", "EVENT"] },
         now,
@@ -607,6 +610,7 @@ describe("local Memory retrieval repository", () => {
       now,
       plan: planMemoryRetrieval({
         aggregationRequested: true,
+        applyResponsePreferences: true,
         currentUserText: query,
         filters: { sourceKinds: ["HISTORY"] },
         mode: "PAST_CHAT_SEARCH",
@@ -2236,6 +2240,49 @@ describe("local Memory retrieval repository", () => {
         expect(mocked.laneSql).toHaveLength(1);
       }
     }
+  });
+
+  it.each([false, true])("rejoins response preferences independently of dynamic source filters, history=%s", async (history) => {
+    const safeText = "User normally prefers concise answers.";
+    const row = {
+      ...floorMetadata("preference", "FACT"),
+      category: "preferences", coreEligible: true, coreSalience: "HIGH",
+      deterministicMatch: null, displayText: safeText, entryId: null,
+      itemId: "preference", itemType: "FACT_VERSION", matchedSegmentId: null,
+      matchedSegmentPosition: null, parentChunkId: null, rawScore: 0,
+      safeContentHash: null, safeText, structuredValue: { text: safeText },
+      projectionKind: "FACT_DISPLAY_TEXT", supportingItemId: null
+    };
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: history }), { coreRows: [row] });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      applyResponsePreferences: true,
+      currentUserText: "Explain a lunar eclipse.",
+      filters: { sourceKinds: history ? ["HISTORY"] : [] },
+      now
+    });
+    const result = await repository.retrieve({
+      assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+    });
+    expect(result.core).toMatchObject([{
+      candidate: { itemId: "preference", featureSnapshot: { tier: "CORE" } },
+      expansion: { safeText }
+    }]);
+    const candidates = result.core.map(({ candidate }) => candidate);
+    const expanded = await repository.expand(result.snapshot, plan, candidates);
+    expect(expanded).toMatchObject([{ itemId: "preference", safeText }]);
+    const sql = mocked.laneSql.at(-1)!;
+    expect(sql).toContain('version."coreEligible" = TRUE');
+    expect(sql).toContain('version."sourceMode" = \'EXPLICIT\'');
+    expect(sql).toContain('version."category" = \'preferences\'');
+    expect(sql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
+    expect(sql).toContain('"MemorySuppression"');
+    expect(sql).toContain('FROM "MemoryFeedback"');
+    expect(plan.filters.sourceKinds).toEqual(history ? ["HISTORY"] : []);
+    mocked.setNextExpansionRows([]);
+    expect(await repository.expand(result.snapshot, plan, candidates)).toEqual([]);
+    expect(await repository.expand(result.snapshot,
+      { ...plan, applyResponsePreferences: false }, candidates)).toEqual([]);
   });
 
   it("rejects an empty dynamic-lane plan without response-preference admission", async () => {

@@ -613,7 +613,11 @@ async function resolveFact(
           AND entry."factVersionId" = version."id"
       `;
   const currentAuthority = core
-    ? Prisma.sql`(
+    ? feature?.responsePreferenceCore === true
+      ? Prisma.sql`version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+          AND version."modality" = 'PREFERENCE'::"MemoryFactModality"
+          AND version."category" = 'preferences' AND version."coreEligible" = TRUE`
+      : Prisma.sql`(
         fact."pinned"
         OR version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
         OR version."coreEligible"

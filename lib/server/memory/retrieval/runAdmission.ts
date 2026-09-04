@@ -497,6 +497,7 @@ function deterministicBaseReadPlan(
     ...(input.expected.settings.referenceChatHistory ? ["HISTORY" as const] : [])
   ];
   return planMemoryRetrieval({
+    applyResponsePreferences: input.expected.settings.useMemoryFacts,
     currentUserText: originalSanitizedQuery,
     filters: { sourceKinds },
     now: input.now,
@@ -524,6 +525,7 @@ function deterministicBroadFallbackReadPlans(
   }
   const baseline = input.expected.settings.useMemoryFacts
     ? planMemoryRetrieval({
+        applyResponsePreferences: true,
         currentUserText: originalSanitizedQuery,
         filters: { sourceKinds: ["FACT", "EVENT"] },
         now: input.now,
@@ -535,6 +537,7 @@ function deterministicBroadFallbackReadPlans(
     baseline,
     enriched: planMemoryRetrieval({
       aggregationRequested: true,
+      applyResponsePreferences: input.expected.settings.useMemoryFacts,
       currentUserText: originalSanitizedQuery,
       filters: { sourceKinds: ["HISTORY"] },
       mode: "PAST_CHAT_SEARCH",
@@ -903,6 +906,7 @@ function attemptItems(
         retrievalMode: plan.mode,
         temporalIntent: plan.temporalIntent,
         tier: packed.tier,
+        ...(packed.tier === "CORE" ? { responsePreferenceCore: true } : {}),
         validFrom: packed.validFrom,
         validTo: packed.validTo
       },
@@ -1970,7 +1974,8 @@ function applyMemoryQueryScopeResolution(input: Readonly<{
 export function applyMemoryRelevance(
   candidates: readonly MemoryRelevanceCandidate[],
   result: MemoryRunRerankResult | null,
-  plan?: MemoryRetrievalPlan
+  plan?: MemoryRetrievalPlan,
+  core: readonly MemoryCoreCandidate[] = []
 ): readonly MemoryRankedCandidate[] {
   const decisionByHandle = exactMemoryRerankDecisionMap(candidates, result);
   if (!decisionByHandle) {
@@ -1990,8 +1995,17 @@ export function applyMemoryRelevance(
     result.relevanceScoreFloor !== undefined
     ? result.relevanceScoreFloor
     : MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR;
+  const responsePreferences = new Set(plan?.applyResponsePreferences
+    ? core.filter(isEligibleMemoryResponsePreferenceCore).map(({ candidate }) =>
+        `${candidate.itemType}:${candidate.itemId}`)
+    : []);
   return candidates.filter((entry) => {
     if (relevanceScoreFloor === null) return true;
+    // Topic scores may order admitted preferences, but cannot revoke their
+    // query-independent role. The final authoritative rejoin still applies.
+    if (responsePreferences.has(
+      `${entry.candidate.itemType}:${entry.candidate.itemId}`
+    )) return true;
     const decision = decisionByHandle.get(entry.handle)!;
     if (decision.relevanceScore >= relevanceScoreFloor) return true;
     const matches = entry.candidate.featureSnapshot.deterministicMatches ?? [];
@@ -3004,7 +3018,10 @@ export function createMemoryRunRetrievalService(
       const dynamicAllowed = factsRequested || historyRequested;
       const dynamicLaneResults = dynamicAllowed ? local.laneResults : [];
       const fused = fuseMemoryRetrievalCandidates(plan, dynamicLaneResults, input.now);
-      const coreKeys = new Set(local.core.map(({ candidate }) =>
+      const eligibleCore = preferencesRequested
+        ? local.core.filter(isEligibleMemoryResponsePreferenceCore)
+        : [];
+      const coreKeys = new Set(eligibleCore.map(({ candidate }) =>
         `${candidate.itemType}:${candidate.itemId}`));
       const dynamicFused = fused.filter((candidate) =>
         !coreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
@@ -3152,9 +3169,6 @@ export function createMemoryRunRetrievalService(
       }
       // The exact direct query was locally redacted before control. Every
       // later utility receives that same safe original or a sanitized rewrite.
-      const eligibleCore = preferencesRequested
-        ? local.core.filter(isEligibleMemoryResponsePreferenceCore)
-        : [];
       const relevanceInput = memoryRelevanceCandidates(
         [...eligibleCore.map(({ candidate }) => candidate), ...dynamicCandidates],
         [...eligibleCore.map(({ expansion }) => expansion), ...navigationExpanded],
@@ -3229,7 +3243,7 @@ export function createMemoryRunRetrievalService(
         ]);
       }
       const relevance = atomicMemoryRerankResult(relevanceInput, initialRelevance);
-      const relevant = applyMemoryRelevance(relevanceInput, relevance, plan);
+      const relevant = applyMemoryRelevance(relevanceInput, relevance, plan, eligibleCore);
       const rejoinCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
         ? selectMemoryAggregationRawCandidates(dynamicFused, relevant)
         : relevant;

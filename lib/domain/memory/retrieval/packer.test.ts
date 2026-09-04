@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { estimateApproxTokens } from "../../contextBudget";
 import { planMemoryRetrieval } from "./planner";
 import {
   attachMemoryQueryScopeConstraints,
@@ -168,7 +169,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v38");
+    expect(pack.packerVersion).toBe("memory-context-packer-v39");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -854,6 +855,28 @@ describe("Personal Memory context pack", () => {
     expect(arbitraryFact.omissionCounts.core_contract_invalid).toBe(1);
   });
 
+  it.each<Partial<MemoryCandidateMetadata>>([
+    { sourceMode: "AUTOMATIC", sourceAuthority: "DIRECT_AUTOMATIC" },
+    { sourceAuthority: "SYNTHESIS", modality: "PATTERN" },
+    { modality: "STATE", pinned: true },
+    { coreEligible: false },
+    { current: false, historical: true, lifecycleState: "SUPERSEDED" },
+    { lifecycleState: null },
+    { scopeType: "CHAT" },
+    { sensitivityClass: "SECRET" }
+  ])("rejects ineligible preference metadata: %j", (overrides) => {
+    const preference = core("ineligible");
+    const pack = packMemoryPersonalContext({
+      core: [{ ...preference, candidate: {
+        ...preference.candidate,
+        metadata: { ...preference.candidate.metadata, ...overrides }
+      } }],
+      expanded: [], plan, ranked: []
+    });
+    expect(pack.items).toEqual([]);
+    expect(pack.omissionCounts.core_contract_invalid).toBe(1);
+  });
+
   it("deduplicates only by identity/logical key, never fuzzy text", () => {
     const sameWords = "prefers concise answers";
     const pack = packMemoryPersonalContext({
@@ -875,6 +898,71 @@ describe("Personal Memory context pack", () => {
     });
     expect(pack.coreTokens).toBeLessThanOrEqual(512);
     expect(pack.items.length).toBeLessThan(20);
+  });
+
+  it("charges only serialized core evidence to the core allowance, including Unicode", () => {
+    const pack = packMemoryPersonalContext({
+      core: [core("preference", "Обычно отвечай кратко 🌒")],
+      expanded: [],
+      plan: { ...aggregationPlan, applyResponsePreferences: true },
+      questionDirectedTemporalFallback: true,
+      ranked: []
+    });
+    const payload = (pack.text ?? "").split("\n")
+      .filter((line) => line.startsWith('{"claim_state"')).join("\n");
+    expect(pack.items).toMatchObject([{ tier: "CORE", itemId: "preference" }]);
+    expect(pack.coreTokens).toBe(estimateApproxTokens(payload));
+    expect(pack.coreTokens).toBeLessThanOrEqual(512);
+    expect(pack.approxTokens - pack.coreTokens).toBeGreaterThan(512);
+    expect(pack.omissionCounts.core_token_budget).toBeUndefined();
+    expect(pack.approxTokens).toBe(estimateApproxTokens(pack.text!));
+    expect(pack.approxTokens).toBeLessThanOrEqual(pack.targetTokens);
+    for (const delta of [0, -1]) {
+      const bounded = packMemoryPersonalContext({
+        core: [core("preference", "Обычно отвечай кратко 🌒")],
+        expanded: [],
+        maximumTokens: pack.approxTokens + delta,
+        plan: { ...aggregationPlan, applyResponsePreferences: true },
+        questionDirectedTemporalFallback: true,
+        ranked: []
+      });
+      expect(bounded.items.length).toBe(delta === 0 ? 1 : 0);
+      expect(bounded.approxTokens).toBeLessThanOrEqual(pack.approxTokens + delta);
+    }
+  });
+
+  it("enforces the cumulative core payload allowance and keeps metadata in the count", () => {
+    const pack = packMemoryPersonalContext({
+      core: Array.from({ length: 4 }, (_, index) => core(`core-${index}`, "Кратко 🌒")),
+      expanded: [], plan, ranked: []
+    });
+    const payloads = renderedEvidence(pack).map((evidence) => JSON.stringify(evidence));
+    expect(pack.items.length).toBeGreaterThan(0);
+    expect(pack.items.length).toBeLessThan(4);
+    expect(pack.coreTokens).toBe(estimateApproxTokens(payloads.join("\n")));
+    expect(pack.coreTokens).toBeLessThanOrEqual(512);
+    expect(pack.coreTokens).toBeGreaterThan(
+      estimateApproxTokens(pack.items.map(({ rawSafeText }) => rawSafeText).join("\n"))
+    );
+    expect(pack.omissionCounts.core_token_budget).toBe(4 - pack.items.length);
+  });
+
+  it.each([0, 1, 100, 512])("omits core safely when the whole envelope cannot fit %i tokens", (limit) => {
+    for (const limits of [
+      { maximumTokens: limit },
+      { targetTokens: limit, hardCapTokens: limit }
+    ]) {
+      const pack = packMemoryPersonalContext({
+        core: [core("core", "Be concise.")],
+        expanded: [],
+        plan: { ...aggregationPlan, applyResponsePreferences: true },
+        questionDirectedTemporalFallback: true,
+        ranked: [], ...limits
+      });
+      expect(pack.items).toEqual([]);
+      expect(pack.text).toBeNull();
+      expect(pack.approxTokens).toBe(0);
+    }
   });
 
   it("honors core and fact caps inside the preparing-attempt item bound", () => {

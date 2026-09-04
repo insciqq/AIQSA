@@ -5864,7 +5864,8 @@ function validBaselinePlan(
   ]);
   const facts = kinds.includes("FACT") || kinds.includes("EVENT");
   return validPlan(baseline) && !baseline.aggregationRequested &&
-    !baseline.applyResponsePreferences && !baseline.includePatterns &&
+    (!baseline.applyResponsePreferences || facts && snapshot.useMemoryFacts) &&
+    !baseline.includePatterns &&
     !baseline.profileRequested && !baseline.recencyRequested &&
     baseline.mode === (facts ? "TARGETED_CURRENT" : "PAST_CHAT_SEARCH") &&
     baseline.temporalIntent === "ANY" &&
@@ -6151,7 +6152,11 @@ export function createPrismaLocalMemoryRetrievalRepository(
           !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate) ||
           !validRankedHistoryEvidenceView(candidate))
       ) throw new Error("memory_expansion_contract_invalid");
-      const factIds = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION")
+      const coreIds = candidates.filter((candidate) =>
+        candidate.itemType === "FACT_VERSION" && candidate.featureSnapshot.tier === "CORE")
+        .map((candidate) => candidate.itemId);
+      const factIds = candidates.filter((candidate) =>
+        candidate.itemType === "FACT_VERSION" && candidate.featureSnapshot.tier !== "CORE")
         .map((candidate) => candidate.itemId);
       const digestChunkIds = candidates.filter(usesDigestOnlyProjection)
         .map((candidate) => candidate.itemId);
@@ -6170,6 +6175,19 @@ export function createPrismaLocalMemoryRetrievalRepository(
       }
       if (candidates.length === 0) return [];
       const queries: Promise<ExpandedRow[]>[] = [];
+      if (coreIds.length > 0 && plan.applyResponsePreferences && snapshot.useMemoryFacts) {
+        // Core retains its own narrow source authority even when the dynamic
+        // plan is history-only or empty. Re-read it instead of reusing the
+        // initial projection or broadening dynamic fact filters.
+        queries.push(canonicalRead<ExpandedRow>(Prisma.sql`
+          WITH eligible AS MATERIALIZED (${coreSql(snapshot)})
+          SELECT eligible."itemId", eligible."itemType", eligible."safeText",
+            'FACT_DISPLAY_TEXT'::text AS "projectionKind", NULL::text AS "sourceChatId",
+            NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
+            NULL::timestamp AS "occurredTo"
+          FROM eligible WHERE eligible."itemId" IN (${valuesSql(coreIds)})
+        `));
+      }
       if (factIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         currentFactExpansionSql(snapshot, plan, factIds)));
       if (digestChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(

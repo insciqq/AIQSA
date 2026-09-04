@@ -15,6 +15,7 @@ import {
   planMemoryRetrieval
 } from "../../../domain/memory/retrieval";
 import type { NormalizedRunRequest } from "../../providers/types";
+import { buildOpenAIResponsesRequest } from "../../providers/openaiResponsesRequest";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../../providers/memoryActionAnswer";
 import {
   validateMemoryPreparingAttemptResult,
@@ -302,7 +303,7 @@ function repository(options: Readonly<{
       ? options.aggregationCandidates
       : _input.vector && options.hybridCandidates ? options.hybridCandidates : candidates;
     return ({
-    core: options.core ?? [],
+    core: _input.plan.applyResponsePreferences ? options.core ?? [] : [],
     laneResults: [...new Set(selectedCandidates.map(({ lane }) => lane))].map((lane) => ({
       candidates: selectedCandidates.filter((candidate) => candidate.lane === lane),
       lane
@@ -558,6 +559,165 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
+  it.each([false, true].flatMap((history) => [false, true].flatMap((speculative) =>
+    [false, true].map((decay) => ({ history, speculative, decay })))))(
+    "delivers unrelated saved response preferences in production: %j",
+    async ({ history, speculative, decay }) => {
+      const preference = responsePreferenceCore();
+      const local = repository({
+        core: [preference],
+        decayEnabled: decay,
+        speculativeBaseline: speculative,
+        speculativeDense: speculative
+      });
+      local.state.referenceChatHistory = history;
+      const { readUtilityPolicy: _legacy, ...options } = retrievalOptions([]);
+      const queryResolver = { resolve: vi.fn() };
+      vi.mocked(options.utilities.rerank).mockImplementation(async ({ candidates }) => ({
+        bindingId: "preference-rerank",
+        decisions: candidates.map(({ handle }) => ({
+          applicable: false, current: true, handle,
+          reasonCode: "NOT_RELEVANT", relevanceScore: 0
+        })),
+        relevanceScoreFloor: 0.01,
+        status: "READY"
+      }));
+      const input = runInput("Explain how a lunar eclipse works in detail.");
+      input.expected = {
+        ...input.expected,
+        settings: {
+          ...input.expected.settings,
+          decayEnabled: decay,
+          decayPolicyVersion: decay ? MEMORY_DECAY_POLICY_VERSION : null,
+          referenceChatHistory: history
+        }
+      };
+      const result = await createMemoryRunRetrievalService(local.value, {
+        ...options, queryResolver
+      }).retrieve(input);
+
+      expect(result.outcome).toBe("USED");
+      expect(result.items).toMatchObject([{
+        exactItemId: preference.candidate.itemId,
+        exactSafeText: preference.expansion.safeText,
+        featureSnapshot: { tier: "CORE", includePatterns: false }
+      }]);
+      expect(result.preparedContext?.text).toContain(preference.expansion.safeText);
+      expect(result.budgetSnapshot).toMatchObject({
+        controlProviderCalls: 0,
+        memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
+        queryResolverProviderCalls: 0,
+        speculativeHybridUsed: speculative,
+        plan: { applyResponsePreferences: true }
+      });
+      expect(local.expand).toHaveBeenCalledWith(
+        expect.any(Object), expect.objectContaining({ applyResponsePreferences: true }),
+        [expect.objectContaining({ itemId: preference.candidate.itemId })]
+      );
+      expect(options.control.decide).not.toHaveBeenCalled();
+      expect(queryResolver.resolve).not.toHaveBeenCalled();
+      expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
+      expect(input.normalizedRequest.content).toEqual(
+        textMessageContent("Explain how a lunar eclipse works in detail.")
+      );
+      const providerRequest = buildOpenAIResponsesRequest({
+        ...input.normalizedRequest,
+        attachments: [],
+        personalContext: {
+          ...result.preparedContext!,
+          itemCount: result.items!.length,
+          memoryGeneration: input.expected.memoryGeneration,
+          memoryRevision: input.expected.memoryRevision,
+          mode: "prefetched"
+        }
+      });
+      expect(providerRequest.instructions).toContain(preference.expansion.safeText);
+      expect(providerRequest.instructions).toContain("current user message and active-chat context override conflicting Memory");
+      expect(providerRequest.instructions).toContain("Saved response preferences are user-memory defaults");
+      expect(JSON.stringify(providerRequest.input)).toContain("Explain how a lunar eclipse works in detail.");
+    }
+  );
+
+  it.each([false, true])("rejoins core-only lexical fallback evidence, revoked=%s", async (revoked) => {
+    const local = repository({ core: [responsePreferenceCore()] });
+    const { readUtilityPolicy: _legacy, ...options } = retrievalOptions([]);
+    vi.mocked(options.utilities.embedQuery).mockResolvedValue({
+      reason: "memory_query_embedding_unavailable", status: "UNAVAILABLE"
+    });
+    if (revoked) local.expand.mockResolvedValue([]);
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Describe a lunar eclipse."));
+    expect(local.expand).toHaveBeenCalledOnce();
+    if (revoked) {
+      expect(result.items ?? []).toEqual([]);
+      expect(result.preparedContext ?? null).toBeNull();
+    } else {
+      expect(result.items).toMatchObject([{
+        exactItemId: "core-version", featureSnapshot: { tier: "CORE" }
+      }]);
+      expect(result.preparedContext?.text).toContain("User prefers concise answers");
+    }
+    expect(result.budgetSnapshot).toMatchObject({ broadLexicalFallbackUsed: true });
+  });
+
+  it("deduplicates a saved preference also returned by a dynamic lane", async () => {
+    const preference = responsePreferenceCore();
+    const local = repository({
+      core: [preference],
+      candidates: [{
+        ...factLaneCandidate(preference.candidate.itemId, 0.8),
+        metadata: preference.candidate.metadata
+      }]
+    });
+    const { readUtilityPolicy: _legacy, ...options } = retrievalOptions(["c0"]);
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Describe a lunar eclipse."));
+    expect(result.items).toMatchObject([{
+      exactItemId: preference.candidate.itemId, featureSnapshot: { tier: "CORE" }
+    }]);
+  });
+
+  it("never enables saved preferences through history when fact use is disabled", async () => {
+    const local = repository({ core: [responsePreferenceCore()] });
+    local.state.useMemoryFacts = false;
+    const input = runInput("Describe a lunar eclipse.");
+    input.expected = {
+      ...input.expected, settings: { ...input.expected.settings, useMemoryFacts: false }
+    };
+    const { readUtilityPolicy: _legacy, ...options } = retrievalOptions(["c0"]);
+    const result = await createMemoryRunRetrievalService(local.value, options).retrieve(input);
+    expect(result.items ?? []).toEqual([]);
+    expect(local.retrieve.mock.calls.every(([{ plan }]) =>
+      !plan.applyResponsePreferences)).toBe(true);
+  });
+
+  it.each([false, true])("preserves dynamic evidence without eligible core, history=%s", async (history) => {
+    const candidates = [factLaneCandidate("fact", 0.9),
+      ...(history ? [laneCandidate("history")] : [])];
+    const run = async (core: readonly MemoryCoreCandidate[]) => {
+      const local = repository({ candidates, core });
+      local.state.referenceChatHistory = history;
+      const input = runInput("Compare the details.");
+      input.expected = {
+        ...input.expected, settings: { ...input.expected.settings, referenceChatHistory: history }
+      };
+      const { readUtilityPolicy: _legacy, ...options } = retrievalOptions(["c0", "c1"]);
+      return createMemoryRunRetrievalService(local.value, options).retrieve(input);
+    };
+    const baseline = await run([]);
+    const invalidCore = core("fact");
+    const withInvalidCore = await run([{
+      ...invalidCore, expansion: { ...invalidCore.expansion, safeText: "relevant text fact" }
+    }]);
+    expect(withInvalidCore.items).toEqual(baseline.items);
+    expect(withInvalidCore.preparedContext).toEqual(baseline.preparedContext);
+    expect(withInvalidCore.budgetSnapshot).toMatchObject({
+      budgetProfile: history ? "COMPLEX" : "SIMPLE",
+      hardCapTokens: history ? 32_000 : 10_000,
+      targetTokens: history ? 24_000 : 6_000
+    });
+  });
+
   it("runs production ordinary reads without control or resolver calls", async () => {
     const local = repository({
       candidates: [laneCandidate("deterministic-read")]
