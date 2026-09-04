@@ -288,7 +288,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     chatId = await activeChatId(page);
     await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
     const activity = page.getByTestId("tool-activity-disclosure").last();
-    await activity.locator("summary").click();
+    await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Worked in Workspace");
     await expect(activity).toContainText("Prepared 2 attachments");
     await expect(activity).toContainText("Read inbox/index.json");

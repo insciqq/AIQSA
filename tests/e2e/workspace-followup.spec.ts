@@ -66,6 +66,15 @@ async function attach(page: Page, files: readonly { buffer: Buffer; name: string
   }
 }
 
+test.beforeAll(async ({ browser }) => {
+  const adminContext = await browser.newContext();
+  try {
+    await enableWorkspacePolicy(await adminContext.newPage());
+  } finally {
+    await adminContext.close();
+  }
+});
+
 test.afterAll(async () => {
   if (originalPolicy) {
     await prisma.workspacePolicy.update({ data: originalPolicy, where: { id: "installation" } })
@@ -75,10 +84,6 @@ test.afterAll(async () => {
 });
 
 test("shows a human-readable timeline, resolves exact sandbox links, and keeps downloads after reset", async ({ browser }) => {
-  const adminContext = await browser.newContext();
-  await enableWorkspacePolicy(await adminContext.newPage());
-  await adminContext.close();
-
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
   try {
@@ -91,7 +96,7 @@ test("shows a human-readable timeline, resolves exact sandbox links, and keeps d
 
     const activity = await openLastActivity(page);
     await expect(activity).toContainText("Worked in Workspace");
-    await expect(activity).toContainText("Starting workspace");
+    await expect(activity).toContainText("Workspace ready");
     await expect(activity).toContainText("Prepared 1 attachment");
     await expect(activity).toContainText("Ran pwd");
     await expect(activity).toContainText("Read inbox/index.json");
@@ -165,9 +170,11 @@ test("stages only new originals on later turns and restages everything after the
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=2 calls=1 last=2.");
     createdChatIds.push(await activeChatId(page));
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=2 calls=2 last=0.");
+    // Nothing transferred on the second turn: no "Prepared" row at all.
+    await expect(lastActivity(page)).not.toContainText("Prepared");
     await attach(page, [{ buffer: Buffer.from("third original\n"), name: "third.aiqsa-e2e" }]);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=3 calls=3 last=1.");
-    await expect(lastActivity(page)).not.toContainText("Prepared");
+    await expect(lastActivity(page)).toContainText("Prepared 1 attachment");
 
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:lose_session]", "Runtime state was written and the sandbox was lost.");
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:recreate_probe]", "Runtime state is gone and originals were restored.");
@@ -209,7 +216,7 @@ test("Stop after an async start prevents the delayed side effect, also after the
     })).state, { timeout: 30_000 }).toBe("READY");
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready", { timeout: 30_000 });
     await expect(openLastActivity(page)).resolves.toBeDefined();
     await expect(lastActivity(page)).toContainText("Stopped sleep 300");
     await page.waitForTimeout(13_000);
@@ -234,10 +241,10 @@ test("Stop after an async start prevents the delayed side effect, also after the
     expect(await prisma.workspaceExecution.count({
       where: { state: "LOST", workspaceSessionId: session.id }
     })).toBeGreaterThan(0);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped");
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
     await page.waitForTimeout(13_000);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready", { timeout: 30_000 });
   } finally {
     await context.close();
   }

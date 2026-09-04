@@ -2,6 +2,7 @@ import { prisma } from "@/lib/server/prisma";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
 import { getWorkspaceConfig } from "./config";
 import { createWorkspaceRuntime } from "./defaultRuntime";
+import type { WorkspaceRuntime } from "./runtime";
 import { createWorkspaceAvailabilityService } from "./availability";
 import { createWorkspaceHealthService } from "./health";
 import { createPrismaWorkspacePolicyRepository } from "./policyRepository";
@@ -17,8 +18,17 @@ import {
 import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { createWorkspaceLifecycleService } from "./lifecycle";
 
+const globalForWorkspace = globalThis as unknown as {
+  __aiqsaWorkspaceRuntime?: WorkspaceRuntime;
+};
+
 export const workspaceConfig = getWorkspaceConfig();
-export const workspaceRuntime = createWorkspaceRuntime(workspaceConfig);
+// One runtime per process: route bundles and the instrumentation bundle
+// (recovery scheduler, maintenance) must see the same runtime state, or the
+// deterministic runtime would report a session it created elsewhere as lost.
+export const workspaceRuntime: WorkspaceRuntime =
+  globalForWorkspace.__aiqsaWorkspaceRuntime ?? createWorkspaceRuntime(workspaceConfig);
+globalForWorkspace.__aiqsaWorkspaceRuntime = workspaceRuntime;
 export const workspaceHealthService = createWorkspaceHealthService({ runtime: workspaceRuntime });
 export const workspacePolicyRepository = createPrismaWorkspacePolicyRepository(prisma);
 export const workspaceAvailabilityService = createWorkspaceAvailabilityService({

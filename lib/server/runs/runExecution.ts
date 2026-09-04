@@ -171,9 +171,13 @@ import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 
 const globalForRuns = globalThis as unknown as {
   __aiqsaActiveRunControllers?: Map<string, AbortController>;
+  __aiqsaRunSettlements?: Map<string, Promise<void>>;
 };
 const activeRunControllers = globalForRuns.__aiqsaActiveRunControllers ?? new Map<string, AbortController>();
 globalForRuns.__aiqsaActiveRunControllers = activeRunControllers;
+// Shared with the cancel route's bundle for the same reason as the controllers.
+const runSettlements = globalForRuns.__aiqsaRunSettlements ?? new Map<string, Promise<void>>();
+globalForRuns.__aiqsaRunSettlements = runSettlements;
 
 export type ActiveRunControllerRegistry = Readonly<{
   abort(runId: string): boolean;
@@ -183,6 +187,12 @@ export type ActiveRunControllerRegistry = Readonly<{
     release(): void;
     signal: AbortSignal;
   }> | null;
+  /**
+   * Resolves once the run executing in this process finished its terminal
+   * handling (tool cancellation, Workspace settlement). Null when no such run
+   * is executing here.
+   */
+  settled(runId: string): Promise<void> | null;
 }>;
 
 export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.freeze({
@@ -203,6 +213,9 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
   },
   ids(): readonly string[] {
     return [...activeRunControllers.keys()];
+  },
+  settled(runId: string): Promise<void> | null {
+    return runSettlements.get(runId) ?? null;
   },
   register(runId: string) {
     if (activeRunControllers.has(runId)) return null;
@@ -654,6 +667,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const egressReceiptRequired = serverExternalToolMode || hostedSearchMode ||
     input.prepared.providerRequest.personalContext !== undefined;
   activeRunControllers.set(runId, abortController);
+  let resolveSettled: () => void = () => undefined;
+  runSettlements.set(runId, new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  }));
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -2776,6 +2793,29 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           await settleWorkspace("cancelled");
           await tokenBuffer.flush().catch(() => undefined);
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
+          // A consumer still attached after Stop receives the settled
+          // projection and an explicit cancelled terminal frame instead of a
+          // bare stream end it would have to treat as a lost connection.
+          try {
+            const chatUpdate = await input.repository.getChatUpdateForRun({
+              assistantMessageId: input.created.assistantMessageId,
+              chatId: normalizedRequest.chatId,
+              userId: input.userId,
+              userMessageId: input.created.userMessageId
+            });
+            if (chatUpdate) {
+              emitTransient(controller, encoder, {
+                data: serializeChatUpdate(chatUpdate),
+                type: "chat_update"
+              });
+            }
+          } catch {
+            // The browser reconciles through its post-cancel detail refresh.
+          }
+          emitTransient(controller, encoder, {
+            data: { runId, status: "cancelled" },
+            type: "done"
+          });
           return;
         }
 
@@ -2857,6 +2897,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);
         }
+        runSettlements.delete(runId);
+        resolveSettled();
 
         try {
           controller.close();

@@ -22,7 +22,22 @@ export async function loginWithPassword(
 }
 
 export async function selectFakeModel(page: Page): Promise<void> {
-  await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
+  // The header trigger may be clicked before the shell finished hydrating on
+  // a cold dev server; retry the picker instead of failing on the first miss.
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      await page.keyboard.press("Escape").catch(() => undefined);
+      await page.waitForTimeout(1_000);
+    }
+  }
+  if (lastError) throw lastError;
   await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
 }
 
@@ -30,6 +45,7 @@ export async function startNewChat(page: Page): Promise<void> {
   await page.getByRole("complementary", { name: "Chat navigation" })
     .getByRole("button", { name: "New chat", exact: true })
     .click();
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
 }
 
 export async function turnWorkspaceOn(page: Page): Promise<void> {
@@ -104,7 +120,7 @@ export function lastActivity(page: Page) {
 
 export async function openLastActivity(page: Page) {
   const activity = lastActivity(page);
-  if (!(await activity.getAttribute("open"))) await activity.locator("summary").click();
+  if (await activity.getAttribute("open") === null) await activity.locator(":scope > summary").click();
   await expect(activity).toHaveAttribute("open", "");
   return activity;
 }

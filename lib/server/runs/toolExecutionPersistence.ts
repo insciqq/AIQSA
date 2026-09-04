@@ -88,7 +88,7 @@ function parseStoredEvent(value: unknown): ModelRunSseEvent | null {
         ? value as unknown as ModelRunSseEvent
         : null;
     case "done":
-      return typeof data.runId === "string" && data.status === "complete"
+      return typeof data.runId === "string" && (data.status === "complete" || data.status === "cancelled")
         ? value as unknown as ModelRunSseEvent
         : null;
     case "error":

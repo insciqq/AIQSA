@@ -687,9 +687,13 @@ const S3_UPLOAD_STREAM_CHUNK_BYTES = 8 * 1_024 * 1_024;
 
 function createBoundedS3UploadBody(input: StoredObjectStreamInput): Readonly<{
   body: Readable;
+  failure(): unknown;
   observedBytes(): number;
+  signal: AbortSignal;
 }> {
   let observedBytes = 0;
+  let failure: unknown = null;
+  const abort = new AbortController();
   const source = input.body as unknown as AsyncIterable<Uint8Array>;
 
   async function* chunks(): AsyncGenerator<Buffer> {
@@ -712,9 +716,20 @@ function createBoundedS3UploadBody(input: StoredObjectStreamInput): Readonly<{
     }
   }
 
+  const body = Readable.from(chunks());
+  // The SDK pipes the body without an error listener: a source that fails
+  // mid-transfer would otherwise raise an unhandled 'error' event and leave
+  // the PUT open until a socket timeout. Abort the request and surface the
+  // source failure instead.
+  body.on("error", (error) => {
+    failure = error;
+    abort.abort(error);
+  });
   return {
-    body: Readable.from(chunks()),
-    observedBytes: () => observedBytes
+    body,
+    failure: () => failure,
+    observedBytes: () => observedBytes,
+    signal: abort.signal
   };
 }
 
@@ -731,11 +746,16 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
     secretAccessKey: env.S3_SECRET_ACCESS_KEY
   };
   const region = env.S3_REGION || "us-east-1";
+  // Uploads carry an explicit ContentLength and are verified by size and
+  // SHA-256 after the fact; the SDK's default streaming CRC trailer adds a
+  // hasher whose digest promise rejects unobserved when the body fails
+  // mid-transfer (an unhandled rejection per faulted Workspace export).
   const client = new S3Client({
     credentials,
     endpoint,
     forcePathStyle: true,
-    region
+    region,
+    requestChecksumCalculation: "WHEN_REQUIRED"
   });
 
   const publicEndpoint = publicS3Endpoint(env.S3_PUBLIC_ENDPOINT);
@@ -905,6 +925,7 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
         throw new RangeError("invalid_stored_object_stream_size");
       }
       const upload = createBoundedS3UploadBody(input);
+      const abortSignal = input.signal ? AbortSignal.any([input.signal, upload.signal]) : upload.signal;
       try {
         const command = new PutObjectCommand({
           Body: upload.body,
@@ -913,10 +934,11 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
           ContentType: input.contentType,
           Key: input.storageKey
         });
-        if (input.signal) await client.send(command, { abortSignal: input.signal });
-        else await client.send(command);
+        await client.send(command, { abortSignal });
         if (upload.observedBytes() !== input.byteSize) throw new Error("stored_object_size_mismatch");
       } catch (error) {
+        const failure = upload.failure();
+        if (failure) throw failure;
         if (input.signal?.aborted) throw abortReason(input.signal);
         throw error;
       }
