@@ -121,7 +121,7 @@ import {
 } from "./deadline";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v55";
+  "memory-run-retrieval-admission-v56";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v19";
 
@@ -488,7 +488,8 @@ function memoryControlReuseScopeHash(
 
 function deterministicBaseReadPlan(
   input: MemoryRunRetrievalInput,
-  originalSanitizedQuery: string
+  originalSanitizedQuery: string,
+  includePatterns = false
 ): MemoryRetrievalPlan {
   const sourceKinds = [
     ...(input.expected.settings.useMemoryFacts
@@ -500,6 +501,7 @@ function deterministicBaseReadPlan(
     applyResponsePreferences: input.expected.settings.useMemoryFacts,
     currentUserText: originalSanitizedQuery,
     filters: { sourceKinds },
+    includePatterns: input.expected.settings.useMemoryFacts && includePatterns,
     now: input.now,
     temporalIntent: "ANY",
     timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
@@ -512,7 +514,8 @@ function deterministicBaseReadPlan(
  * quantity, language keyword, or benchmark category participates. */
 function deterministicBroadFallbackReadPlans(
   input: MemoryRunRetrievalInput,
-  originalSanitizedQuery: string
+  originalSanitizedQuery: string,
+  includePatterns = false
 ): Readonly<{
   baseline: MemoryRetrievalPlan | null;
   enriched: MemoryRetrievalPlan;
@@ -520,7 +523,7 @@ function deterministicBroadFallbackReadPlans(
   if (!input.expected.settings.referenceChatHistory) {
     return {
       baseline: null,
-      enriched: deterministicBaseReadPlan(input, originalSanitizedQuery)
+      enriched: deterministicBaseReadPlan(input, originalSanitizedQuery, includePatterns)
     };
   }
   const baseline = input.expected.settings.useMemoryFacts
@@ -528,6 +531,7 @@ function deterministicBroadFallbackReadPlans(
         applyResponsePreferences: true,
         currentUserText: originalSanitizedQuery,
         filters: { sourceKinds: ["FACT", "EVENT"] },
+        includePatterns,
         now: input.now,
         temporalIntent: "ANY",
         timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
@@ -851,18 +855,20 @@ function attemptItems(
   pack: MemoryContextPack,
   core: readonly MemoryCoreCandidate[],
   dynamic: readonly MemoryRankedCandidate[],
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  factPlan: MemoryRetrievalPlan
 ): readonly MemoryPreparingItemInput[] {
   const candidates = candidateMap(core, dynamic);
   return pack.items.map((packed): MemoryPreparingItemInput => {
     const candidate = candidates.get(`${packed.itemType}:${packed.itemId}`);
     if (!candidate) throw new Error("memory_retrieval_pack_identity_invalid");
+    const itemPlan = packed.evidenceType === "pattern" ? factPlan : plan;
     const base = {
       exactItemId: packed.itemId,
       exactSafeText: packed.exactSafeText,
       featureSnapshot: {
         ...candidate.featureSnapshot,
-        aggregationRequested: plan.aggregationRequested,
+        aggregationRequested: itemPlan.aggregationRequested,
         derived: packed.derived,
         documentTime: packed.documentTime,
         eventTimeEnd: packed.eventTimeEnd,
@@ -899,12 +905,12 @@ function attemptItems(
         ...(candidate.historyEvidenceView
           ? { historyEvidenceView: candidate.historyEvidenceView }
           : {}),
-        includePatterns: plan.includePatterns,
+        includePatterns: packed.tier !== "CORE" && itemPlan.includePatterns,
         lifecycleState: candidate.metadata.lifecycleState,
         matchedSegmentId: candidate.matchedSegmentId ?? null,
         matchedSegmentPosition: candidate.matchedSegmentPosition ?? null,
-        retrievalMode: plan.mode,
-        temporalIntent: plan.temporalIntent,
+        retrievalMode: itemPlan.mode,
+        temporalIntent: itemPlan.temporalIntent,
         tier: packed.tier,
         ...(packed.tier === "CORE" ? { responsePreferenceCore: true } : {}),
         validFrom: packed.validFrom,
@@ -2506,7 +2512,8 @@ export function createMemoryRunRetrievalService(
       }
       const baselineReadPlan = deterministicBaseReadPlan(
         input,
-        provisionalPlan.originalSanitizedQuery
+        provisionalPlan.originalSanitizedQuery,
+        deterministicRead
       );
       const executeQueryResolver = async (
         sources: readonly MemoryQueryResolverSource[],
@@ -2784,10 +2791,13 @@ export function createMemoryRunRetrievalService(
       let plannerFallbackReason: string | null = null;
       let broadPlannerFallback = false;
       let broadFallbackBaselinePlan: MemoryRetrievalPlan | null = null;
+      const includePatternsInFallback = deterministicRead &&
+        !(control.status === "READY" && control.intent.patternExclusionRequested);
       if (deterministicRead) {
         const deterministic = deterministicBroadFallbackReadPlans(
           input,
-          provisionalPlan.originalSanitizedQuery
+          provisionalPlan.originalSanitizedQuery,
+          includePatternsInFallback
         );
         plan = deterministic.enriched;
         broadFallbackBaselinePlan = deterministic.baseline;
@@ -2796,7 +2806,8 @@ export function createMemoryRunRetrievalService(
         plannerFallbackReason = control.reason;
         const fallback = deterministicBroadFallbackReadPlans(
           input,
-          provisionalPlan.originalSanitizedQuery
+          provisionalPlan.originalSanitizedQuery,
+          includePatternsInFallback
         );
         plan = fallback.enriched;
         broadFallbackBaselinePlan = fallback.baseline;
@@ -2807,7 +2818,8 @@ export function createMemoryRunRetrievalService(
         plannerFallbackReason = "memory_plan_query_missing";
         const fallback = deterministicBroadFallbackReadPlans(
           input,
-          provisionalPlan.originalSanitizedQuery
+          provisionalPlan.originalSanitizedQuery,
+          includePatternsInFallback
         );
         plan = fallback.enriched;
         broadFallbackBaselinePlan = fallback.baseline;
@@ -2867,7 +2879,8 @@ export function createMemoryRunRetrievalService(
           plannerFallbackReason = "memory_plan_invalid";
           const fallback = deterministicBroadFallbackReadPlans(
             input,
-            provisionalPlan.originalSanitizedQuery
+            provisionalPlan.originalSanitizedQuery,
+            includePatternsInFallback
           );
           plan = fallback.enriched;
           broadFallbackBaselinePlan = fallback.baseline;
@@ -2905,6 +2918,10 @@ export function createMemoryRunRetrievalService(
         enriched: plan,
         hardExclusionReasons: Object.freeze(hardExclusionReasons)
       });
+      // Only the deterministic mixed read carries a separate current-fact
+      // policy through its history envelope. Genuine history/aggregation and
+      // profile operations cannot inherit PATTERN authority from a baseline.
+      const factPlan = broadPlannerFallback ? plans.baseline ?? plan : plan;
       const admittedSourceKinds = [...new Set([
         ...(plans.baseline?.filters.sourceKinds ?? []),
         ...plan.filters.sourceKinds
@@ -2921,7 +2938,8 @@ export function createMemoryRunRetrievalService(
       let speculativeBaselineUsed = false;
       let speculativeHybridUsed = false;
       try {
-        const speculationUsable = broadPlannerFallback || plan === baselineReadPlan;
+        const speculationUsable = (broadPlannerFallback || plan === baselineReadPlan) &&
+          baselineReadPlan.includePatterns === factPlan.includePatterns;
         // The fast hedge intentionally omits broad digest navigation. It may
         // replace the enriched plan only while dense original-query evidence
         // is available; otherwise the existing bounded broad lexical plan is
@@ -3482,6 +3500,7 @@ export function createMemoryRunRetrievalService(
         const basePack = packMemoryPersonalContext({
           core: selectedCore,
           expanded: dynamicExpanded,
+          factPlan,
           maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
           plan,
           questionDirectedTemporalFallback: broadPlannerFallback,
@@ -3611,6 +3630,9 @@ export function createMemoryRunRetrievalService(
         packedTokens: preparedTokens,
         packerVersion: pack.packerVersion,
         plan: planEvidence(plan),
+        ...(pack.items.some(({ evidenceType }) => evidenceType === "pattern")
+          ? { factPlan: planEvidence(factPlan) }
+          : {}),
         plannerFallbackReason,
         broadLexicalFallbackUsed,
         speculativeBaselineUsed,
@@ -3653,7 +3675,7 @@ export function createMemoryRunRetrievalService(
           commonEvidence
         );
       }
-      const items = attemptItems(pack, selectedCore, selectedDynamic, plan);
+      const items = attemptItems(pack, selectedCore, selectedDynamic, plan, factPlan);
       return {
         budgetSnapshot: {
           admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,

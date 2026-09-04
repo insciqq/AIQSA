@@ -16,6 +16,7 @@ import {
 } from "../../../domain/memory/retrieval";
 import type { NormalizedRunRequest } from "../../providers/types";
 import { buildOpenAIResponsesRequest } from "../../providers/openaiResponsesRequest";
+import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../../providers/memoryActionAnswer";
 import {
   validateMemoryPreparingAttemptResult,
@@ -52,6 +53,7 @@ import type {
   MemoryQueryResolverService
 } from "./queryResolver";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } from "./vector";
+import { memorySha256 } from "../persistence/lexical";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
 const currentControlContract = Object.freeze({
@@ -162,6 +164,58 @@ function profileFactLaneCandidate(id: string, rawScore: number): MemoryLaneCandi
     entryId: null,
     lane: "FACT_PROFILE"
   };
+}
+
+function patternLaneCandidate(id = "pattern-version"): MemoryLaneCandidate {
+  const candidate = factLaneCandidate(id, 0.8);
+  return { ...candidate, metadata: {
+    ...candidate.metadata,
+    category: "patterns", directness: "INFERRED", modality: "PATTERN",
+    sourceAuthority: "SYNTHESIS", sourceMode: "AUTOMATIC", synthesisDepth: 1
+  } };
+}
+
+function patternExpansion(id = "pattern-version"): MemoryExpandedCandidate {
+  return {
+    itemId: id, itemType: "FACT_VERSION", occurredFrom: null, occurredTo: null,
+    projectionKind: "FACT_DISPLAY_TEXT", sourceChatId: null, supportingItemId: null,
+    safeText: "The user tends to prepare a written checklist before a workshop.",
+    patternSupportingEvidence: Array.from({ length: 3 }, (_, index) => ({
+      itemId: `support-version-${index}`,
+      observedAt: new Date(`2026-08-${10 + index}T10:00:00.000Z`),
+      safeText: `I wrote a checklist for workshop ${index + 1}.`,
+      sourceAuthority: "EXPLICIT", sourceChatId: null,
+      sourceRootHash: memorySha256(`explicit:support-version-${index}`)
+    }))
+  };
+}
+
+function patternFreezeTransaction(expansion: MemoryExpandedCandidate, supportCount = 3) {
+  const structuredValue = { kind: "text", value: expansion.safeText };
+  const row = {
+    coreEligible: false, coreSalience: "NONE", createdByEventId: "pattern-event",
+    currentVersionId: expansion.itemId, displayText: expansion.safeText,
+    expectedAt: null, expiresAt: null, factCanonicalKey: `prop:v2:${"a".repeat(64)}`,
+    factCategory: "patterns", factId: "pattern-fact", factState: "ACTIVE",
+    identityKind: "PROPOSITION", languageCode: "en", modality: "PATTERN",
+    mergedIntoVersionId: null, movedFromVersionId: null, observedAt: now,
+    occurredAt: null, pinned: false, scopeAssistantId: null, scopeChatId: null,
+    scopeFolderId: null, scopeId: "global-scope", scopeState: "ACTIVE",
+    scopeTargetIdSnapshot: null, scopeType: "GLOBAL_USER",
+    searchSafeContentHash: memorySha256({ displayText: expansion.safeText, structuredValue }),
+    sensitivityClass: "NORMAL", sourceMode: "AUTOMATIC", structuredValue,
+    supersedesVersionId: null, systemFrom: now, systemTo: null,
+    validFrom: null, validTo: null, versionState: "ACTIVE"
+  };
+  const relations = expansion.patternSupportingEvidence!.slice(0, supportCount).map((support) => ({
+    pipelineVersion: "memory-synthesis-v2",
+    sourceEligibilityHash: memorySha256(support.itemId),
+    targetDisplayText: support.safeText, targetObservedAt: support.observedAt,
+    targetSourceMode: "EXPLICIT", targetVersionId: support.itemId
+  }));
+  const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+    .mockResolvedValueOnce([row]).mockResolvedValueOnce(relations);
+  return { $queryRaw } as unknown as Prisma.TransactionClient;
 }
 
 function rankedHistory(
@@ -278,6 +332,7 @@ function repository(options: Readonly<{
   decayEnabled?: boolean;
   directUserTextsById?: Readonly<Record<string, readonly string[]>>;
   expansionTextById?: Readonly<Record<string, string>>;
+  expandedById?: Readonly<Record<string, MemoryExpandedCandidate>>;
   hybridCandidates?: readonly MemoryLaneCandidate[];
   lexicalEvidence?: readonly MemoryLexicalLaneEvidence[];
   lexicalFailures?: readonly MemoryRetrievalLane[];
@@ -297,11 +352,16 @@ function repository(options: Readonly<{
     decayPolicyVersion: options.decayEnabled ? MEMORY_DECAY_POLICY_VERSION : null
   };
   const candidates = options.candidates ?? [];
-  const retrieve = vi.fn(async (_input: { plan: MemoryRetrievalPlan; vector?: unknown }) => {
-    const selectedCandidates = _input.plan.aggregationRequested &&
+  const retrieve = vi.fn(async (_input: {
+    baselinePlan?: MemoryRetrievalPlan; plan: MemoryRetrievalPlan; vector?: unknown
+  }) => {
+    const sourceCandidates = _input.plan.aggregationRequested &&
       options.aggregationCandidates
       ? options.aggregationCandidates
       : _input.vector && options.hybridCandidates ? options.hybridCandidates : candidates;
+    const selectedCandidates = sourceCandidates.filter((candidate) =>
+      candidate.metadata.modality !== "PATTERN" ||
+      _input.plan.includePatterns || _input.baselinePlan?.includePatterns);
     return ({
     core: _input.plan.applyResponsePreferences ? options.core ?? [] : [],
     laneResults: [...new Set(selectedCandidates.map(({ lane }) => lane))].map((lane) => ({
@@ -350,6 +410,8 @@ function repository(options: Readonly<{
     _plan: MemoryRetrievalPlan,
     ranked: readonly MemoryRankedCandidate[]
   ) => ranked.map((candidate): MemoryExpandedCandidate => {
+    const explicitExpansion = options.expandedById?.[candidate.itemId];
+    if (explicitExpansion) return explicitExpansion;
     const coreExpansion = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
     if (coreExpansion) return coreExpansion;
     if (candidate.itemType === "RECALL_CHUNK") {
@@ -559,6 +621,172 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
+  it.each([false, true].flatMap((history) => ["direct", "speculative", "lexical"].map((route) =>
+    ({ history, route }))))(
+    "delivers an existing supported pattern through production fact authority: %j",
+    async ({ history, route }) => {
+      const speculative = route === "speculative";
+      const pattern = patternLaneCandidate();
+      const expansion = patternExpansion();
+      const local = repository({
+        candidates: [{ ...pattern, lane: "FACT_LEXICAL_UNICODE" }],
+        hybridCandidates: [pattern], expandedById: { [pattern.itemId]: expansion },
+        speculativeBaseline: speculative, speculativeDense: speculative
+      });
+      local.state.referenceChatHistory = history;
+      const input = runInput("How should I prepare for tomorrow's workshop?");
+      input.expected = { ...input.expected,
+        settings: { ...input.expected.settings, referenceChatHistory: history } };
+      const { readUtilityPolicy: _legacy, ...options } = retrievalOptions(["c0"]);
+      if (route === "lexical") vi.mocked(options.utilities.embedQuery).mockResolvedValue({
+        reason: "memory_query_embedding_unavailable", status: "UNAVAILABLE"
+      });
+      const queryResolver = { resolve: vi.fn() };
+      const result = await createMemoryRunRetrievalService(local.value, {
+        ...options, queryResolver
+      }).retrieve(input);
+      // Complete local fact coverage stays healthy; the history variant
+      // deliberately injects a missing signal without a complete history lane.
+      const degraded = route === "lexical" && history;
+      expect(result.outcome).toBe(degraded ? "DEGRADED" : "USED");
+      if (degraded) expect(result.degradationCode).toBe("memory_query_embedding_unavailable");
+      expect(result.items).toMatchObject([{
+        exactItemId: pattern.itemId,
+        featureSnapshot: {
+          aggregationRequested: false, evidenceType: "pattern", includePatterns: true,
+          retrievalMode: "TARGETED_CURRENT", sourceAuthority: "derived_pattern",
+          tier: "DYNAMIC", patternSupportingEvidence: expansion.patternSupportingEvidence!.map(
+            (support) => ({ factVersionId: support.itemId, sourceRootHash: support.sourceRootHash })
+          )
+        }
+      }]);
+      expect(result.preparedContext?.text).toContain(expansion.safeText);
+      expect(result.preparedContext?.text).toContain('"derived":true');
+      for (const support of expansion.patternSupportingEvidence!) {
+        expect(result.preparedContext?.text).toContain(support.safeText);
+      }
+      expect(local.expand).toHaveBeenLastCalledWith(
+        expect.any(Object), expect.objectContaining({ includePatterns: true, mode: "TARGETED_CURRENT" }),
+        [expect.objectContaining({ itemId: pattern.itemId })]
+      );
+      expect(result.budgetSnapshot).toMatchObject({
+        memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
+        plan: { includePatterns: !history, mode: history ? "PAST_CHAT_SEARCH" : "TARGETED_CURRENT" }
+      });
+      expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
+      expect(options.control.decide).not.toHaveBeenCalled();
+      expect(queryResolver.resolve).not.toHaveBeenCalled();
+      const authority = {
+        assistantId: null, chatId: input.chatId, folderId: null,
+        indexGenerationId: "generation-1", userId: input.userId
+      };
+      const frozen = await resolvePreparingMemoryItem(
+        patternFreezeTransaction(expansion), authority, result.querySnapshot!, result.items![0]!
+      );
+      expect(frozen.sourceSnapshot).toMatchObject({
+        patternSupportingEvidence: expect.arrayContaining(
+          expansion.patternSupportingEvidence!.map(({ itemId }) => expect.objectContaining({
+            factVersionId: itemId, sourceAuthority: "user_saved"
+          }))
+        )
+      });
+      const providerRequest = buildOpenAIResponsesRequest({
+        ...input.normalizedRequest, attachments: [], personalContext: {
+          ...result.preparedContext!, itemCount: 1, memoryGeneration: 2,
+          memoryRevision: 4, mode: "prefetched"
+        }
+      });
+      expect(providerRequest.instructions).toContain(expansion.safeText);
+      expect(providerRequest.instructions).toContain("newer contradictory user_saved");
+      for (const support of expansion.patternSupportingEvidence!) {
+        expect(providerRequest.instructions).toContain(support.safeText);
+      }
+      await expect(resolvePreparingMemoryItem(
+        patternFreezeTransaction(expansion, 2), authority, result.querySnapshot!, result.items![0]!
+      )).rejects.toThrow("memory_attempt_item_stale");
+      const acceptedItem = result.items![0]!;
+      expect(() => validateMemoryPreparingAttemptResult({
+        ...result, items: [{ ...acceptedItem, featureSnapshot: {
+          ...acceptedItem.featureSnapshot, retrievalMode: "PAST_CHAT_SEARCH"
+        } }]
+      })).toThrow("memory_attempt_item_pattern_authority_invalid");
+      expect(() => validateMemoryPreparingAttemptResult({
+        ...result, budgetSnapshot: { ...result.budgetSnapshot,
+          factPlan: { ...result.budgetSnapshot.factPlan as object, includePatterns: false }
+        }
+      })).toThrow("memory_attempt_item_pattern_authority_invalid");
+    }
+  );
+
+  it("honors an admitted typed pattern exclusion through the production action entry point", async () => {
+    const pattern = patternLaneCandidate();
+    const direct = factLaneCandidate("direct-fact", 0.9);
+    const local = repository({
+      candidates: [pattern, direct].map((candidate) => ({ ...candidate, lane: "FACT_LEXICAL_UNICODE" })),
+      hybridCandidates: [pattern, direct],
+      expandedById: { [pattern.itemId]: patternExpansion() },
+      speculativeBaseline: true, speculativeDense: true
+    });
+    const { readUtilityPolicy: _legacy, ...options } = intentOptions({
+      memoryUseful: true, patternExclusionRequested: true
+    });
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("/memory search only directly stated workshop details, then answer."));
+    expect(options.control.decide).toHaveBeenCalledOnce();
+    expect(result.items).toMatchObject([{ exactItemId: "direct-fact" }]);
+    expect(result.preparedContext?.text).not.toContain(patternExpansion().safeText);
+    expect(result.budgetSnapshot).toMatchObject({ memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1" });
+    expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
+      candidates: [expect.objectContaining({ text: "relevant text direct-fact" })]
+    }));
+  });
+
+  it.each([false, true])("keeps patterns topical and preserves direct facts, relevant=%s", async (relevant) => {
+    const pattern = patternLaneCandidate();
+    const local = repository({
+      candidates: [factLaneCandidate("direct-fact", 0.9), pattern],
+      expandedById: { [pattern.itemId]: patternExpansion() }
+    });
+    const { readUtilityPolicy: _legacy, ...options } = retrievalOptions([]);
+    vi.mocked(options.utilities.rerank).mockImplementation(async ({ candidates }) => ({
+      bindingId: "pattern-relevance", status: "READY", relevanceScoreFloor: 0.01,
+      decisions: candidates.map(({ handle, text }) => ({
+        applicable: true, current: true, handle, reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: text.includes("checklist") && !relevant ? 0 : 0.9
+      }))
+    }));
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("How should I prepare for tomorrow's workshop?"));
+    expect(result.items?.map(({ exactItemId }) => exactItemId)).toEqual(
+      relevant ? ["direct-fact", pattern.itemId] : ["direct-fact"]
+    );
+  });
+
+  it("removes a pattern whose support is lost during the final rejoin without removing direct facts", async () => {
+    const pattern = patternLaneCandidate();
+    const local = repository({
+      candidates: [factLaneCandidate("direct-fact", 0.9), pattern],
+      expandedById: { [pattern.itemId]: patternExpansion() }
+    });
+    const expand = local.expand.getMockImplementation()!;
+    let expansionCalls = 0;
+    local.expand.mockImplementation(async (...args) => {
+      const expanded = await expand(...args);
+      expansionCalls += 1;
+      return expansionCalls === 1 ? expanded : expanded.map((item) =>
+        item.itemId === pattern.itemId ? { ...item,
+          patternSupportingEvidence: item.patternSupportingEvidence!.slice(0, 2) } : item
+      );
+    });
+    const { readUtilityPolicy: _legacy, ...options } = retrievalOptions(["c0", "c1"]);
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("How should I prepare for tomorrow's workshop?"));
+    expect(expansionCalls).toBe(2);
+    expect(result.items).toMatchObject([{ exactItemId: "direct-fact" }]);
+    expect(result.budgetSnapshot).toMatchObject({ omissionCounts: { pattern_support_missing: 1 } });
+    expect(result.preparedContext?.text).not.toContain(patternExpansion().safeText);
+  });
+
   it.each([false, true].flatMap((history) => [false, true].flatMap((speculative) =>
     [false, true].map((decay) => ({ history, speculative, decay })))))(
     "delivers unrelated saved response preferences in production: %j",

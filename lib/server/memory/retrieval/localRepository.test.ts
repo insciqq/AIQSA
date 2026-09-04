@@ -603,6 +603,7 @@ describe("local Memory retrieval repository", () => {
         applyResponsePreferences: true,
         currentUserText: query,
         filters: { sourceKinds: ["FACT", "EVENT"] },
+        includePatterns: true,
         now,
         temporalIntent: "ANY"
       }),
@@ -628,6 +629,11 @@ describe("local Memory retrieval repository", () => {
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemoryFactVersion" AS version');
     expect(sql).toContain('INNER JOIN "MemoryRecallChunk" AS chunk');
+    expect(sql).toContain('version."synthesisGeneration" = settings."memoryGeneration"');
+    expect(sql).toContain('settings."synthesisEnabledAt" IS NOT NULL');
+    expect(sql).not.toContain('settings."synthesisEnabled" = TRUE');
+    expect(sql).toContain('relation."executionId" IS NOT NULL');
+    expect(sql).toContain('COUNT(DISTINCT source_root."rootKey")');
   });
 
   it("recovers planner-excluded families through bounded original-query lanes", () => {
