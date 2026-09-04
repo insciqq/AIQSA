@@ -38,6 +38,7 @@ import {
 } from "./toolCatalog";
 import {
   WorkspaceRuntimeError,
+  type WorkspaceExecutionTermination,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
   type WorkspaceRuntimeHealth,
@@ -166,6 +167,25 @@ function boundedMcpResult(value: unknown, maximum: number): WorkspaceToolResult 
     status: record.isError === true ? "error" : "complete",
     truncated: bounded.truncated
   };
+}
+
+function execPollReportsDone(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if ((value as { isError?: unknown }).isError === true) return false;
+  const content = (value as { content?: unknown }).content;
+  if (!Array.isArray(content)) return false;
+  for (const item of content) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const text = (item as { text?: unknown }).text;
+    if (typeof text !== "string") continue;
+    try {
+      const parsed = JSON.parse(text) as { data?: { done?: unknown } };
+      if (parsed.data?.done === true) return true;
+    } catch {
+      // Ignore non-JSON content.
+    }
+  }
+  return false;
 }
 
 function execSessionIdFrom(value: unknown): string | null {
@@ -552,7 +572,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       ? input.arguments.execSessionId
       : null;
     if (EXEC_SESSION_TOOL_SET.has(input.originalName)) {
-      if (!execSessionId || session.execOwners.get(execSessionId) !== input.modelRunId) {
+      // The process-local owner map is a cache; the application's durable
+      // registry is the authority and may legitimately address an execution
+      // this runner process never started (after a restart).
+      const cachedOwner = execSessionId ? session.execOwners.get(execSessionId) : undefined;
+      if (!execSessionId || (cachedOwner !== undefined && cachedOwner !== input.modelRunId)) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
     }
@@ -594,7 +618,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         const id = execSessionIdFrom(result);
         if (!id) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         session.execOwners.set(id, input.modelRunId);
-      } else if (input.originalName === "sandbox_exec_close" && execSessionId) {
+        return { ...boundedMcpResult(result, this.config.toolOutputMaxBytes), execSessionId: id };
+      }
+      if (input.originalName === "sandbox_exec_close" && execSessionId) {
         session.execOwners.delete(execSessionId);
       }
       return boundedMcpResult(result, this.config.toolOutputMaxBytes);
@@ -612,44 +638,69 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     const active = session.activeCalls.get(input.modelRunToolCallId);
     if (active?.modelRunId === input.modelRunId) active.controller.abort();
-    await this.quiesceRunExecSessions(session, input.modelRunId);
+    // Best effort only: the application's terminal settlement proves
+    // quiescence through the durable registry and falls back to a VM stop.
+    await this.terminateExecutionIds(session, this.cachedExecutionIds(session, input.modelRunId))
+      .catch(() => undefined);
   }
 
-  private async quiesceRunExecSessions(session: LocalSession, modelRunId: string): Promise<void> {
-    const ids = [...session.execOwners.entries()]
+  private cachedExecutionIds(session: LocalSession, modelRunId: string): string[] {
+    return [...session.execOwners.entries()]
       .filter(([, ownerRunId]) => ownerRunId === modelRunId)
       .map(([id]) => id);
-    if (ids.length === 0) return;
+  }
+
+  /**
+   * TERM every execution, wait one bounded grace period, then KILL and close
+   * whatever is still alive. An execution counts as closed only when the
+   * official server confirmed the kill, the close, or a finished poll;
+   * anything else (including an unknown session after an MCP restart) is
+   * reported as unknown so the caller stops the VM instead of guessing.
+   */
+  private async terminateExecutionIds(
+    session: LocalSession,
+    ids: readonly string[]
+  ): Promise<readonly WorkspaceExecutionTermination[]> {
+    if (ids.length === 0) return [];
     const mcp = await this.mcp(session);
+    const call = (name: WorkspaceMcpToolName, args: Record<string, unknown>) =>
+      mcp.client.callTool({ arguments: args, name }, undefined, { timeout: 5_000 })
+        .then((result) => result.isError !== true ? result : null)
+        .catch(() => null);
     for (const execSessionId of ids) {
-      await mcp.client.callTool({
-        arguments: { execSessionId, signal: "term" },
-        name: "sandbox_exec_signal"
-      }, undefined, { timeout: 5_000 }).catch(() => undefined);
+      await call("sandbox_exec_signal", { execSessionId, signal: "term" });
     }
-    if (ids.length > 0) await delay(1_000);
+    await delay(1_000);
+    const results: WorkspaceExecutionTermination[] = [];
     for (const execSessionId of ids) {
-      const killed = await mcp.client.callTool({
-        arguments: { execSessionId, signal: "kill" },
-        name: "sandbox_exec_signal"
-      }, undefined, { timeout: 5_000 }).catch(() => null);
-      const closed = await mcp.client.callTool({
-        arguments: { execSessionId },
-        name: "sandbox_exec_close"
-      }, undefined, { timeout: 5_000 }).catch(() => null);
-      if (
-        (!killed || killed.isError === true) &&
-        (!closed || closed.isError === true)
-      ) {
-        throw new WorkspaceRuntimeError("workspace_output_export_failed");
-      }
-      session.execOwners.delete(execSessionId);
+      const polled = await call("sandbox_exec_poll", { execSessionId, limit: 1 });
+      const done = execPollReportsDone(polled);
+      const killed = done ? null : await call("sandbox_exec_signal", { execSessionId, signal: "kill" });
+      const closed = await call("sandbox_exec_close", { execSessionId });
+      const proven = done || killed !== null || closed !== null;
+      if (proven) session.execOwners.delete(execSessionId);
+      results.push({ outcome: proven ? "closed" : "unknown", runtimeExecSessionId: execSessionId });
     }
+    return results;
+  }
+
+  async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    return this.terminateExecutionIds(
+      session,
+      input.executions.map((execution) => execution.runtimeExecSessionId)
+    );
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
-    await this.quiesceRunExecSessions(session, input.modelRunId);
+    const quiesced = await this.terminateExecutionIds(
+      session,
+      this.cachedExecutionIds(session, input.modelRunId)
+    ).catch(() => null);
+    if (!quiesced || quiesced.some((result) => result.outcome === "unknown")) {
+      throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+    }
     const fs = session.sandbox.fs();
     const files: Array<{ byteSize: number; path: string; relativePath: string }> = [];
     const outputPrefix = `${input.outputDirectory.replace(/\/+$/u, "")}/`;

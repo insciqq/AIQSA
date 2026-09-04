@@ -1,9 +1,10 @@
 import type { WorkspaceMcpToolName } from "@/lib/domain/workspace";
-import { workspaceAttachmentPath } from "@/lib/domain/workspace";
+import { isWorkspaceRuntimeExecSessionId, workspaceAttachmentPath } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import {
   WorkspaceRuntimeError,
   type WorkspaceBoundTool,
+  type WorkspaceExecutionTermination,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
   type WorkspaceRuntimeHealth,
@@ -23,6 +24,7 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   switch (code) {
     case "workspace_attachment_unavailable":
     case "workspace_archive_limit_exceeded":
+    case "workspace_execution_cleanup_failed":
     case "workspace_output_export_failed":
     case "workspace_output_limit_exceeded":
     case "workspace_runtime_incompatible":
@@ -129,6 +131,9 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       } as RequestInit);
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError) throw error;
+      // A caller-initiated abort is a cancellation, never a runner outage:
+      // reporting it as unavailable would falsely fail the session.
+      if (init.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     }
   }
@@ -251,10 +256,44 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         signal: input.signal
       }
     );
-    if (!isRecord(value) || !Array.isArray(value.content) || (value.status !== "complete" && value.status !== "error")) {
+    if (
+      !isRecord(value) ||
+      !Array.isArray(value.content) ||
+      (value.status !== "complete" && value.status !== "error") ||
+      (value.execSessionId !== undefined && !isWorkspaceRuntimeExecSessionId(value.execSessionId))
+    ) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     return value as WorkspaceToolResult;
+  }
+
+  async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
+    const value = await this.json(
+      `/v1/sessions/${encodeURIComponent(input.sessionId)}/executions/terminate`,
+      {
+        body: JSON.stringify({
+          executions: input.executions,
+          runtimeSandboxId: input.runtimeSandboxId
+        }),
+        method: "POST",
+        signal: input.signal
+      }
+    );
+    if (!isRecord(value) || !Array.isArray(value.results) || value.results.length > 256) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    return value.results.map((result): WorkspaceExecutionTermination => {
+      const outcome = isRecord(result) && result.outcome === "closed"
+        ? "closed"
+        : isRecord(result) && result.outcome === "unknown"
+          ? "unknown"
+          : null;
+      const runtimeExecSessionId = isRecord(result) ? result.runtimeExecSessionId : null;
+      if (!outcome || !isWorkspaceRuntimeExecSessionId(runtimeExecSessionId)) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      return { outcome, runtimeExecSessionId };
+    });
   }
 
   async cancelToolCall(input: Parameters<WorkspaceRuntime["cancelToolCall"]>[0]): Promise<void> {

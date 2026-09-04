@@ -276,6 +276,28 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         return;
       }
 
+      if (request.method === "POST" && suffix === "/executions/terminate") {
+        const body = await readJson(request);
+        if (!Array.isArray(body.executions) || body.executions.length > 256) {
+          throw new Error("field_invalid");
+        }
+        const executions = body.executions.map((execution) => {
+          if (!isRecord(execution)) throw new Error("field_invalid");
+          return {
+            modelRunId: requiredString(execution.modelRunId, 128),
+            runtimeExecSessionId: requiredString(execution.runtimeExecSessionId, 256)
+          };
+        });
+        sendJson(response, 200, {
+          results: await input.runtime.terminateExecutions({
+            executions,
+            runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
+            sessionId
+          })
+        });
+        return;
+      }
+
       const abortMatch = /^\/tool-calls\/([^/]+)\/abort$/u.exec(suffix);
       if (request.method === "POST" && abortMatch) {
         const body = await readJson(request);

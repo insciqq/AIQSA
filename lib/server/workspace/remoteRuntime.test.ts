@@ -108,6 +108,42 @@ describe("remote Workspace runner protocol", () => {
       runtimeSandboxId: session.runtimeSandboxId,
       sessionId
     });
+    const started = await runtime.callBoundTool({
+      arguments: { command: "sleep 30" },
+      modelRunId: "run_http_1",
+      modelRunToolCallId: "call_http_start",
+      originalName: "sandbox_exec_start",
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId
+    });
+    expect(started.execSessionId).toMatch(/^[a-f0-9]{32}$/u);
+    await expect(runtime.terminateExecutions({
+      executions: [
+        { modelRunId: "run_http_1", runtimeExecSessionId: started.execSessionId! },
+        { modelRunId: "run_http_1", runtimeExecSessionId: "unknown-exec" }
+      ],
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([
+      { outcome: "closed", runtimeExecSessionId: started.execSessionId },
+      { outcome: "unknown", runtimeExecSessionId: "unknown-exec" }
+    ]);
+    const oversized = await fetch(
+      new URL(`/v1/sessions/${sessionId}/executions/terminate`, runnerUrl),
+      {
+        body: JSON.stringify({
+          executions: Array.from({ length: 257 }, (_, index) => ({
+            modelRunId: "run_http_1",
+            runtimeExecSessionId: `exec-${index}`
+          })),
+          runtimeSandboxId: session.runtimeSandboxId
+        }),
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        method: "POST"
+      }
+    );
+    expect(oversized.status).toBe(400);
+
     const staged = await runtime.callBoundTool({
       arguments: { path: sandboxPath },
       modelRunId: "run_http_1",

@@ -443,6 +443,12 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       session.faults.add(argument === "export-list-once" ? "export_list_once" : "export_stream_once");
       return shellResult("armed\n");
     }
+    if (name === "forget-executions") {
+      // Models an MCP child restart: the guest processes keep running but the
+      // runner no longer knows their execution sessions.
+      session.execs.clear();
+      return shellResult("forgotten\n");
+    }
     if (name === "lose-session") {
       // Simulates a microVM whose disk disappeared: every later call for the
       // old runtime identity reports the session as lost.
@@ -601,7 +607,10 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
           exec.timer.unref?.();
         }
         session.execs.set(execSessionId, exec);
-        return toolResult({ execSessionId, sandbox: session.sandboxName, stopSandboxOnExit: null });
+        return {
+          ...toolResult({ execSessionId, sandbox: session.sandboxName, stopSandboxOnExit: null }),
+          execSessionId
+        };
       }
       case "sandbox_exec_poll": {
         const execSessionId = stringArgument(args.execSessionId);
@@ -640,6 +649,17 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         return toolResult({ closed: true, execSessionId });
       }
     }
+  }
+
+  async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    return input.executions.map(({ runtimeExecSessionId }) => {
+      const exec = session.execs.get(runtimeExecSessionId);
+      if (!exec) return { outcome: "unknown" as const, runtimeExecSessionId };
+      terminateExec(exec, 137);
+      exec.closed = true;
+      return { outcome: "closed" as const, runtimeExecSessionId };
+    });
   }
 
   async cancelToolCall(input: Parameters<WorkspaceRuntime["cancelToolCall"]>[0]): Promise<void> {

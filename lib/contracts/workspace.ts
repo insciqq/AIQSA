@@ -26,6 +26,7 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
   "workspace_attachment_unavailable",
   "workspace_output_limit_exceeded",
   "workspace_output_export_failed",
+  "workspace_execution_cleanup_failed",
   "workspace_reset_conflict",
   "workspace_archive_limit_exceeded",
   "workspace_not_started"

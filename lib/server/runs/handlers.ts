@@ -927,7 +927,15 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     }
 
     const run = cancellation.run;
-    activeRunControllerRegistry.abort(run.id);
+    if (!activeRunControllerRegistry.abort(run.id) && deps.workspaceCoordinator) {
+      // No local executor will observe the abort, so terminal Workspace
+      // settlement (quiesce executions, leave RUNNING) happens here.
+      await deps.workspaceCoordinator.settle({
+        outcome: "cancelled",
+        runId: run.id,
+        userId: auth.userId
+      }).catch(() => undefined);
+    }
 
     if (run.providerResponseId) {
       try {

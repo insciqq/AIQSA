@@ -14,6 +14,7 @@ import {
   createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator
 } from "./coordinator";
+import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { createWorkspaceLifecycleService } from "./lifecycle";
 
 export const workspaceConfig = getWorkspaceConfig();
@@ -39,6 +40,7 @@ export const workspaceAdmissionService = createWorkspaceAdmissionService({
 export function workspaceCoordinatorForStorage(storage: StorageAdapter) {
   return createWorkspaceCoordinator({
     config: workspaceConfig,
+    registry: createPrismaWorkspaceExecutionRegistry(prisma),
     repository: createPrismaWorkspaceCoordinatorRepository(prisma),
     runtime: workspaceRuntime,
     storage
