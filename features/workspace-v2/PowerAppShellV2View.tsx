@@ -46,6 +46,9 @@ import {
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
+import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
+import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
+import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import {
@@ -844,6 +847,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       runId: source.runId ?? null
     });
     const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null);
+    const workspaceActivity = presentWorkspaceActivityV2(events, source.workspaceActivity ?? null);
+    // Model-written `sandbox:` links resolve only against this run's own
+    // settled generated files; anything else renders as inert text.
+    const generatedFiles = artifact?.generatedFiles ?? [];
+    const resolveHref: MarkdownHrefResolver = (href) => {
+      const resolution = resolveWorkspaceOutputLink({ generatedFiles, href, runId: source.runId ?? null });
+      if (!resolution) return null;
+      return resolution.kind === "download"
+        ? { download: resolution.file.fileName, href: attachmentDownloadHref(resolution.file.attachmentId) }
+        : "text";
+    };
     // A live run shows only its factual status and streamed content. A settled
     // answer adds only direct user outputs; it never grows a receipt row or
     // post-hoc execution surface.
@@ -878,7 +892,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
-        actionsSlot={settled ? <AnswerOutputsV2 artifact={artifact} /> : null}
+        actionsSlot={settled
+          ? <AnswerOutputsV2 artifact={artifact} workspaceOutputStatus={workspaceActivity?.outputStatus ?? null} />
+          : null}
         anchorId={source.id}
         artifact={artifact}
         content={messageText(source)}
@@ -899,6 +915,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           () => thread.handleRegenerateMessage(source.id)
         )}
         presentation={presentation}
+        resolveHref={resolveHref}
         renderCitation={knowledgeReference
           ? (handle, key) => knowledgeHandles.has(handle) ? (
               <KnowledgeCitationControl
@@ -913,6 +930,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           : null}
         toolActivity={toolActivity}
         workDurationMs={workDurationMs}
+        workspaceActivity={workspaceActivity}
       />
     );
   };

@@ -576,6 +576,8 @@ function promptWithWorkspaceContract(
     `Put user-downloadable files only in ${workspace.normalized.outputDirectory}.`,
     "After changes, run appropriate tests or checks.",
     "Do not claim that a file was created or a check passed until a tool verified it.",
+    "Use sandbox_shell for pipelines, redirects, &&, ||, globbing and heredocs; sandbox_exec runs one program directly without shell parsing.",
+    "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically.",
     ...(files.length > 0 ? ["Current message attachments:", ...files] : [])
   ].join("\n");
   return {

@@ -185,6 +185,13 @@ export function describeToolCallV2(
   if (webSearchToolNames.has(toolName.toLowerCase())) {
     return running ? "Searching the web" : "Searched the web";
   }
+  // Workspace steps are owned by the activity timeline; the generic row must
+  // never expose a raw sandbox tool identifier.
+  if (call.serverName === "Workspace") {
+    return phase === "failed"
+      ? "Workspace step failed"
+      : running ? "Working in Workspace" : "Worked in Workspace";
+  }
   const human = humanizeToolName(toolName);
   if (call.serverName && human) {
     return `${running ? "Using" : "Used"} ${call.serverName}: ${human}`;

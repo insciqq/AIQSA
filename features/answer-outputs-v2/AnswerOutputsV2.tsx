@@ -26,7 +26,8 @@ import type {
   ThreadKnowledgeCitation,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
-import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
+import type { ThreadGeneratedFile, ThreadWorkspaceOutputStatus } from "@/lib/contracts/workspace";
+import { workspaceOutputStatusCopyV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import {
   MEMORY_STATEMENT_MAX_LENGTH,
   isSafeMemorySourceActionHref,
@@ -509,9 +510,12 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
  * rest of the anatomy.
  */
 export function AnswerOutputsV2({
-  artifact
+  artifact,
+  workspaceOutputStatus = null
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
+  /** Export state of the run's Workspace outputs; shown above the generated files. */
+  workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
 }>) {
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
   const hasMemoryStatus = artifact?.memoryStatus === "LIMITED" ||
@@ -521,21 +525,35 @@ export function AnswerOutputsV2({
     artifact.knowledgeState.scope === "partial_sources_ready"
   ));
   const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
+  const outputStatusCopy = workspaceOutputStatusCopyV2(
+    workspaceOutputStatus ?? undefined,
+    artifact?.generatedFiles?.length ?? 0
+  );
 
-  if (!artifact || (
+  if ((!artifact || (
     !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles
-  )) {
+  )) && !outputStatusCopy) {
     return null;
   }
 
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
-      {artifact.memoryStatus ? <MemoryStatusV2 status={artifact.memoryStatus} /> : null}
-      {artifact.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
-      {hasGeneratedFiles ? (
-        <GeneratedFilesV2 files={artifact.generatedFiles ?? []} />
+      {artifact?.memoryStatus ? <MemoryStatusV2 status={artifact.memoryStatus} /> : null}
+      {artifact?.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
+      {outputStatusCopy ? (
+        <p
+          className="v2-workspace-output-status"
+          data-state={workspaceOutputStatus?.state}
+          data-testid="workspace-output-status"
+          role="status"
+        >
+          {outputStatusCopy}
+        </p>
       ) : null}
-      {artifact.groundingDisplay?.provider === "gemini" ? (
+      {hasGeneratedFiles ? (
+        <GeneratedFilesV2 files={artifact?.generatedFiles ?? []} />
+      ) : null}
+      {artifact?.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
       ) : null}
     </div>
