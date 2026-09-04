@@ -281,7 +281,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
   });
 }
 
-function pinModel(input: Readonly<{
+export function pinModel(input: Readonly<{
   catalog: unknown;
   connectionId: string;
   upstreamModelId: string;
@@ -325,13 +325,13 @@ async function sessionToken(): Promise<string> {
   return match[1];
 }
 
-function textFromContent(value: unknown): string {
+export function textFromContent(value: unknown): string {
   if (!isRecord(value) || !Array.isArray(value.blocks)) return "";
   return value.blocks.flatMap((block) => isRecord(block) && block.type === "text" &&
     typeof block.text === "string" ? [block.text] : []).join("\n").trim();
 }
 
-function parseSse(value: string): readonly Readonly<{
+export function parseSse(value: string): readonly Readonly<{
   data: Record<string, unknown>;
   type: string;
 }>[] {
@@ -416,7 +416,7 @@ function createApiClient(input: Readonly<{
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
-function controlDefaults(model: CatalogModel, stage: "answer" | "judge") {
+export function controlDefaults(model: CatalogModel, stage: "answer" | "judge") {
   const controls = model.parameterControls;
   const result: Record<string, unknown> = {};
   const background = isRecord(controls.background) ? controls.background : null;
@@ -1090,7 +1090,7 @@ async function loadPinnedBundle() {
   });
 }
 
-async function admittedModelPin(input: Readonly<{
+export async function admittedModelPin(input: Readonly<{
   model: CatalogModel;
   prisma: PrismaClient;
   userId: string;

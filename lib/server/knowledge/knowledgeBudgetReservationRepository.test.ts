@@ -563,8 +563,8 @@ describe("Knowledge budget reservation Prisma repository", () => {
     expect(harness.create).toHaveBeenCalledTimes(2);
   });
 
-  it("reserves broad retrieval against an exact immutable Base snapshot", async () => {
-    const knowledgeBaseId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  it.each([4, 8])("reserves ordinary retrieval against an exact UUIDv%i Base snapshot", async (version) => {
+    const knowledgeBaseId = `aaaaaaaa-aaaa-${version}aaa-8aaa-aaaaaaaaaaaa`;
     const knowledgeBaseSnapshotId = `kbs_${"b".repeat(40)}`;
     const harness = repositoryHarness({
       bases: [{ knowledgeBaseId, knowledgeBaseSnapshotId, ordinal: 0 }]
@@ -575,9 +575,9 @@ describe("Knowledge budget reservation Prisma repository", () => {
       idempotencyKey: "run:one:operation:one",
       modelRunToolCallId: CALL_ID,
       operationRequest: {
-        focused,
         operation: "automatic_search",
         profileRevisionId: PROFILE_ID,
+        query: "Find policy sources",
         scope: {
           bindings: [{ bindingOrdinal: 0, knowledgeBaseId, knowledgeBaseSnapshotId }],
           kind: "base_snapshots"
@@ -591,11 +591,49 @@ describe("Knowledge budget reservation Prisma repository", () => {
       kind: "admitted",
       record: {
         operationRequest: {
-          scope: { kind: "base_snapshots" },
+          query: "Find policy sources",
+          scope: {
+            bindings: [{ bindingOrdinal: 0, knowledgeBaseId, knowledgeBaseSnapshotId }],
+            kind: "base_snapshots"
+          },
           version: 3
         }
       }
     });
+  });
+
+  it.each(["base", "snapshot", "ordinal"])("rejects a UUIDv8 Base scope with a mismatched %s", async (mismatch) => {
+    const knowledgeBaseId = "aaaaaaaa-aaaa-8aaa-8aaa-aaaaaaaaaaaa";
+    const knowledgeBaseSnapshotId = `kbs_${"b".repeat(40)}`;
+    const harness = repositoryHarness({
+      bases: [{ knowledgeBaseId, knowledgeBaseSnapshotId, ordinal: 0 }]
+    });
+
+    await expect(harness.repository.reserve({
+      estimate,
+      idempotencyKey: "run:one:operation:one",
+      modelRunToolCallId: CALL_ID,
+      operationRequest: {
+        operation: "automatic_search",
+        profileRevisionId: PROFILE_ID,
+        query: "Find policy sources",
+        scope: {
+          bindings: [{
+            bindingOrdinal: mismatch === "ordinal" ? 1 : 0,
+            knowledgeBaseId: mismatch === "base"
+              ? "cccccccc-cccc-8ccc-8ccc-cccccccccccc" : knowledgeBaseId,
+            knowledgeBaseSnapshotId: mismatch === "snapshot"
+              ? `kbs_${"c".repeat(40)}` : knowledgeBaseSnapshotId
+          }],
+          kind: "base_snapshots"
+        },
+        sourceAliases: []
+      },
+      originalQuerySha256: "a".repeat(64),
+      runId: RUN_ID,
+      userId: "owner-one"
+    })).resolves.toEqual({ kind: "conflict", reason: "scope_mismatch" });
+    expect(harness.create).not.toHaveBeenCalled();
   });
 
   it("expires stale pre-dispatch work and makes stale dispatched work ambiguous", async () => {

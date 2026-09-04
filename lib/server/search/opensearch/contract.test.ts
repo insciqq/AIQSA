@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   KNOWLEDGE_SEARCH_INDEX_DEFINITION,
+  KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
   knowledgeSearchDocumentId,
   knowledgeSearchProjectionFingerprint,
   mergeKnowledgeBm25Variants
@@ -26,6 +27,7 @@ describe("Knowledge OpenSearch contract", () => {
       },
       settings: {
         index: {
+          max_terms_count: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
           number_of_replicas: 0,
           number_of_shards: 1,
           similarity: { default: { b: 0.75, k1: 1.2, type: "BM25" } }

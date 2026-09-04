@@ -509,6 +509,55 @@ describe("Knowledge run admission", () => {
     );
   });
 
+  it("keyset-pages a large whole-Base admission without changing its Source set", async () => {
+    const client = store({
+      sourceSummary: {
+        normalizedTextByteSize: 4_000,
+        passageCount: 3,
+        sourceCount: 1_000
+      }
+    });
+    const extra = readySource();
+    client.knowledgeSource.findMany.mockResolvedValueOnce([{
+      ...extra,
+      currentVersion: {
+        ...extra.currentVersion,
+        artifacts: [{
+          ...extra.currentVersion.artifacts[0],
+          id: "artifact-1001"
+        }],
+        id: "source-version-1001"
+      },
+      id: "source-z-extra",
+      name: "Source 1001"
+    }]);
+
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    expect(admitted.resolvedSourceCount).toBe(1_001);
+    expect(admitted.sources).toHaveLength(1_001);
+    expect(admitted.sources?.at(-1)).toMatchObject({
+      sourceArtifactId: "artifact-1001",
+      sourceId: "source-z-extra",
+      sourceVersionId: "source-version-1001"
+    });
+    expect(client.knowledgeSource.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: { id: "asc" },
+        take: 1_000,
+        where: expect.objectContaining({ id: { gt: "source-1000" } })
+      })
+    );
+  });
+
   it("blocks an accepted Base snapshot after its personal ACL is revoked", async () => {
     const client = store({
       sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }

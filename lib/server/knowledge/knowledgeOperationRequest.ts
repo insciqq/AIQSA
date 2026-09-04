@@ -20,7 +20,7 @@ export const KNOWLEDGE_OPERATION_REQUEST_VERSION = 3 as const;
 export const KNOWLEDGE_OPERATION_REQUEST_MAX_SOURCES = 1_024;
 export const KNOWLEDGE_OPERATION_REQUEST_MAX_BINDINGS = 128;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const BASE_SNAPSHOT_ID = /^kbs_[0-9a-f]{40}$/u;
 const SOURCE_ALIAS = /^[BS][1-9]\d{0,2}$/u;

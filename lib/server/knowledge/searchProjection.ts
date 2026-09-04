@@ -17,9 +17,10 @@ import {
 
 const PROJECTION_LEASE_MS = 5 * 60 * 1_000;
 const PROJECTION_MAX_ATTEMPTS = 5;
-const PROJECTION_BATCH_SIZE = Math.min(100, KNOWLEDGE_SEARCH_BULK_MAX_DOCUMENTS);
-const PROJECTION_REBUILD_CLAIM_BATCH_SIZE = 128;
+const PROJECTION_BATCH_SIZE = KNOWLEDGE_SEARCH_BULK_MAX_DOCUMENTS;
+const PROJECTION_REBUILD_CLAIM_BATCH_SIZE = 256;
 const PROJECTION_SEED_BATCH_SIZE = 1_000;
+const PROJECTION_RESET_BATCH_SIZE = 5_000;
 
 type ProjectionClaim = Readonly<{
   attemptCount: number;
@@ -148,8 +149,7 @@ async function seedKnowledgeSearchProjections(client: PrismaClient): Promise<num
       indexArtifactId: true,
       mappingVersion: true,
       projectionFingerprint: true
-    },
-    where: { indexArtifactId: { in: latest.map(({ id }) => id) } }
+    }
   })).map((projection) => [projection.indexArtifactId, projection]));
   const missing = [];
   const stale = [];
@@ -254,44 +254,46 @@ async function claimKnowledgeSearchProjectionBatch(
   return Object.freeze(rows.map((row) => Object.freeze({ ...row, claimToken })));
 }
 
-async function projectionDocuments(
-  client: PrismaClient,
-  claim: ProjectionClaim
-): Promise<readonly KnowledgeSearchDocument[]> {
-  const hierarchy = await client.knowledgeHierarchicalIndexArtifact.findUnique({
+const projectionHierarchySelect = {
+  checksum: true,
+  passageCount: true,
+  passageIndexes: {
+    orderBy: { ordinal: "asc" as const },
     select: {
-      checksum: true,
-      passageCount: true,
-      passageIndexes: {
-        orderBy: { ordinal: "asc" },
+      contentHash: true,
+      contextPrefix: true,
+      documentContext: true,
+      headingPath: true,
+      id: true,
+      layoutKind: true,
+      text: true
+    }
+  },
+  sourceArtifact: {
+    select: {
+      sourceVersion: {
         select: {
-          contentHash: true,
-          contextPrefix: true,
-          documentContext: true,
-          headingPath: true,
           id: true,
-          layoutKind: true,
-          text: true
-        }
-      },
-      sourceArtifact: {
-        select: {
-          sourceVersion: {
-            select: {
-              id: true,
-              ownerUserId: true,
-              source: {
-                select: { deletionRequestedAt: true, trashedAt: true }
-              }
-            }
-          },
-          state: true
+          ownerUserId: true,
+          source: {
+            select: { deletionRequestedAt: true, trashedAt: true }
+          }
         }
       },
       state: true
-    },
-    where: { id: claim.indexArtifactId }
-  });
+    }
+  },
+  state: true
+} satisfies Prisma.KnowledgeHierarchicalIndexArtifactSelect;
+
+type ProjectionHierarchy = Prisma.KnowledgeHierarchicalIndexArtifactGetPayload<{
+  select: typeof projectionHierarchySelect;
+}>;
+
+function documentsFromHierarchy(
+  hierarchy: ProjectionHierarchy | null,
+  claim: ProjectionClaim
+): readonly KnowledgeSearchDocument[] {
   if (!hierarchy || hierarchy.state !== "ready" || !hierarchy.checksum ||
     hierarchy.sourceArtifact.state !== "ready" ||
     hierarchy.sourceArtifact.sourceVersion.source.trashedAt !== null ||
@@ -316,6 +318,35 @@ async function projectionDocuments(
     sourceVersionId: hierarchy.sourceArtifact.sourceVersion.id,
     tableContext: passageTableContext(passage.documentContext)
   })));
+}
+
+async function projectionDocuments(
+  client: PrismaClient,
+  claim: ProjectionClaim
+): Promise<readonly KnowledgeSearchDocument[]> {
+  const hierarchy = await client.knowledgeHierarchicalIndexArtifact.findUnique({
+    select: projectionHierarchySelect,
+    where: { id: claim.indexArtifactId }
+  });
+  return documentsFromHierarchy(hierarchy, claim);
+}
+
+async function projectionDocumentsForClaims(
+  client: PrismaClient,
+  claims: readonly ProjectionClaim[]
+): Promise<ReadonlyMap<string, readonly KnowledgeSearchDocument[]>> {
+  const hierarchies = await client.knowledgeHierarchicalIndexArtifact.findMany({
+    select: { id: true, ...projectionHierarchySelect },
+    where: { id: { in: claims.map(({ indexArtifactId }) => indexArtifactId) } }
+  });
+  const byId = new Map(hierarchies.map((hierarchy) => [hierarchy.id, hierarchy]));
+  if (byId.size !== claims.length) {
+    throw new Error("knowledge_search_projection_source_invalid");
+  }
+  return new Map(claims.map((claim) => [
+    claim.indexArtifactId,
+    documentsFromHierarchy(byId.get(claim.indexArtifactId) ?? null, claim)
+  ]));
 }
 
 async function settleProjectionFailure(
@@ -360,6 +391,41 @@ async function settleProjectionSuccess(
     }
   });
   if (settled.count !== 1) throw new Error("knowledge_search_projection_lease_lost");
+}
+
+async function settleProjectionSuccesses(
+  client: PrismaClient,
+  successes: readonly Readonly<{
+    claim: ProjectionClaim;
+    indexedPassageCount: number;
+  }>[],
+  now = new Date()
+): Promise<void> {
+  if (successes.length === 0) return;
+  const rows = successes.map(({ claim, indexedPassageCount }) => Prisma.sql`
+    (${claim.id}::uuid, ${claim.claimToken}::varchar(128),
+      ${claim.projectionFingerprint}::char(64),
+      ${indexedPassageCount}::integer)
+  `);
+  const settled = await client.$executeRaw(Prisma.sql`
+    UPDATE "KnowledgeSearchProjection" AS projection
+    SET "claimToken" = NULL,
+        "indexedPassageCount" = expected."indexedPassageCount",
+        "lastErrorCode" = NULL,
+        "leaseExpiresAt" = NULL,
+        "readyAt" = ${now},
+        "state" = 'READY'::"KnowledgeSearchProjectionState",
+        "updatedAt" = ${now}
+    FROM (VALUES ${Prisma.join(rows)})
+      AS expected("id", "claimToken", "projectionFingerprint", "indexedPassageCount")
+    WHERE projection."id" = expected."id"
+      AND projection."claimToken" = expected."claimToken"
+      AND projection."projectionFingerprint" = expected."projectionFingerprint"
+      AND projection."state" = 'BUILDING'::"KnowledgeSearchProjectionState"
+  `);
+  if (settled !== successes.length) {
+    throw new Error("knowledge_search_projection_lease_lost");
+  }
 }
 
 async function projectClaim(input: Readonly<{
@@ -445,8 +511,13 @@ async function projectRebuildClaims(input: Readonly<{
     await bulkProjectionDocuments(input.search, documents);
   };
   try {
+    const documentsByArtifact = await projectionDocumentsForClaims(
+      input.client,
+      input.claims
+    );
     for (const claim of input.claims) {
-      const documents = await projectionDocuments(input.client, claim);
+      const documents = documentsByArtifact.get(claim.indexArtifactId);
+      if (!documents) throw new Error("knowledge_search_projection_source_invalid");
       for (const document of documents) {
         buffered.push(document);
         if (buffered.length === PROJECTION_BATCH_SIZE) await flush();
@@ -459,6 +530,10 @@ async function projectRebuildClaims(input: Readonly<{
     )).map((entry) => [entry.indexArtifactId, entry.count]));
     let failed = 0;
     let projected = 0;
+    const successes: Array<Readonly<{
+      claim: ProjectionClaim;
+      indexedPassageCount: number;
+    }>> = [];
     for (const claim of input.claims) {
       const indexedPassageCount = indexed.get(claim.indexArtifactId) ?? 0;
       if (indexedPassageCount !== claim.expectedPassageCount) {
@@ -471,13 +546,10 @@ async function projectRebuildClaims(input: Readonly<{
         );
       } else {
         projected += 1;
-        await settleProjectionSuccess(
-          input.client,
-          claim,
-          indexedPassageCount
-        );
+        successes.push({ claim, indexedPassageCount });
       }
     }
+    await settleProjectionSuccesses(input.client, successes);
     return Object.freeze({ failed, projected });
   } catch (error) {
     for (const claim of input.claims) {
@@ -524,14 +596,23 @@ export async function resetKnowledgeSearchProjections(
 ): Promise<KnowledgeSearchProjectionReset> {
   const expected = await expectedKnowledgeSearchHierarchies(client);
   const expectedIds = expected.map(({ id }) => id);
-  const removed = await client.knowledgeSearchProjection.deleteMany({
-    where: expectedIds.length > 0
-      ? { indexArtifactId: { notIn: expectedIds } }
-      : {}
+  const expectedIdSet = new Set(expectedIds);
+  const existing = await client.knowledgeSearchProjection.findMany({
+    select: { id: true, indexArtifactId: true }
   });
-  const reset = expectedIds.length === 0
-    ? { count: 0 }
-    : await client.knowledgeSearchProjection.updateMany({
+  const staleIds = existing
+    .filter(({ indexArtifactId }) => !expectedIdSet.has(indexArtifactId))
+    .map(({ id }) => id);
+  let removed = 0;
+  for (let offset = 0; offset < staleIds.length; offset += PROJECTION_RESET_BATCH_SIZE) {
+    const result = await client.knowledgeSearchProjection.deleteMany({
+      where: { id: { in: staleIds.slice(offset, offset + PROJECTION_RESET_BATCH_SIZE) } }
+    });
+    removed += result.count;
+  }
+  let reset = 0;
+  for (let offset = 0; offset < expectedIds.length; offset += PROJECTION_RESET_BATCH_SIZE) {
+    const result = await client.knowledgeSearchProjection.updateMany({
       data: {
         attemptCount: 0,
         claimToken: null,
@@ -543,9 +624,15 @@ export async function resetKnowledgeSearchProjections(
         startedAt: null,
         state: "PENDING"
       },
-      where: { indexArtifactId: { in: expectedIds } }
+      where: {
+        indexArtifactId: {
+          in: expectedIds.slice(offset, offset + PROJECTION_RESET_BATCH_SIZE)
+        }
+      }
     });
-  return Object.freeze({ removed: removed.count, reset: reset.count });
+    reset += result.count;
+  }
+  return Object.freeze({ removed, reset });
 }
 
 export async function inspectKnowledgeSearchIntegrity(input: Readonly<{

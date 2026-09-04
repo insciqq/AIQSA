@@ -49,7 +49,8 @@ import {
   knowledgeToolResultText
 } from "./toolResult";
 import {
-  executeKnowledgeRetrievalCore
+  executeKnowledgeRetrievalCore,
+  knowledgeRetrievalRuntimeSettingsSql
 } from "./prismaRetrievalCore";
 import { KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS } from "./hierarchicalIndex";
 import {
@@ -126,6 +127,7 @@ function boundedRetrievalCoreClient(
   client: Pick<RetrievalPrisma, "$transaction">
 ): Parameters<typeof executeKnowledgeRetrievalCore>[0] {
   return {
+    transactionLocalRetrievalSettings: true,
     async $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> {
       try {
         return await client.$transaction(async (tx) => {
@@ -134,6 +136,7 @@ function boundedRetrievalCoreClient(
             ${String(KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS)},
             true
           )`;
+          await tx.$executeRaw(knowledgeRetrievalRuntimeSettingsSql());
           return tx.$queryRaw<T>(query);
         }, {
           maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,

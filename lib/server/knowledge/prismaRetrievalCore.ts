@@ -6,6 +6,7 @@ import {
   type KnowledgeCanonicalSourceProvenance
 } from "./canonicalSourceCandidates";
 import { decodeKnowledgeDocumentContext } from "./documentContext";
+import { knowledgeBroadLexicalQuerySql } from "./lexicalQuerySql";
 import {
   KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS,
   knowledgeExactNormalizedValue,
@@ -78,7 +79,23 @@ const KNOWLEDGE_LINEAR_CONTEXT_MAX = 2;
 
 type RetrievalCoreClient = Readonly<{
   $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+  transactionLocalRetrievalSettings?: true;
 }>;
+
+/** Install before planning: set_config CTEs make otherwise parallel-safe
+ * lexical ranking serial. Settings still expire with the bounded transaction. */
+export function knowledgeRetrievalRuntimeSettingsSql(): Prisma.Sql {
+  return Prisma.sql`SELECT
+    -- Ranking runs in PostgreSQL's native text/vector functions. Avoid LLVM
+    -- compilation of the surrounding short-lived scope/union expression tree.
+    set_config('jit', 'off', true),
+    set_config('hnsw.iterative_scan', 'strict_order', true),
+    set_config('hnsw.ef_search', ${String(KNOWLEDGE_VECTOR_ANN_EF_SEARCH)}, true),
+    set_config('hnsw.max_scan_tuples', ${String(KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES)}, true),
+    set_config('pg_trgm.word_similarity_threshold',
+      ${String(Math.max(0, KNOWLEDGE_METADATA_RELEVANCE_FLOOR - 0.000_001))}, true)
+  `;
+}
 
 /** Ready compatible hierarchical index versions for retrieval reads. Each
  * artifact contributes exactly one index (highest ready compatible version)
@@ -301,6 +318,21 @@ function retrievalBindingsSql(input: Readonly<{
 
 function scopedPassagesSql(): Prisma.Sql {
   return Prisma.sql`
+    WITH scoped_index_artifacts AS MATERIALIZED (${scopedIndexArtifactsSql()})
+    ${sharedScopedPassagesSql()}
+  `;
+}
+
+/**
+ * Narrow scope projection used before retrieval. Scope attestation does not
+ * need passage text or layout metadata, and routing it through
+ * `scopedPassagesSql` forces the database to assemble every retrieval row
+ * before it can return the accepted hierarchy ids. Keep the same canonical
+ * Source selection and ready/version checks while stopping at the immutable
+ * hierarchy artifact boundary.
+ */
+function scopedIndexArtifactsSql(): Prisma.Sql {
+  return Prisma.sql`
     WITH binding_sources AS MATERIALIZED (
       SELECT
         binding."baseName",
@@ -347,25 +379,18 @@ function scopedPassagesSql(): Prisma.Sql {
         AND source_binding."sourceArtifactId" IS NOT NULL
         AND source_binding."sourceId" = ANY(binding."selectedSourceIds")
     ),
-    source_provenance AS MATERIALIZED (
-      SELECT
-        source_binding."sourceId",
-        source_binding."sourceVersionId",
-        source_binding."artifactId",
-        array_agg(source_binding."bindingOrdinal" ORDER BY source_binding."bindingOrdinal")
-          AS "contributingBindingOrdinals"
-      FROM binding_sources AS source_binding
-      GROUP BY
-        source_binding."sourceId",
-        source_binding."sourceVersionId",
-        source_binding."artifactId"
-    ),
     canonical_binding_sources AS MATERIALIZED (
       SELECT DISTINCT ON (
         source_binding."sourceId",
         source_binding."sourceVersionId",
         source_binding."artifactId"
-      ) source_binding.*
+      ) source_binding.*,
+        array_agg(source_binding."bindingOrdinal") OVER (
+          PARTITION BY source_binding."sourceId", source_binding."sourceVersionId",
+            source_binding."artifactId"
+          ORDER BY source_binding."bindingOrdinal"
+          ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+        ) AS "contributingBindingOrdinals"
       FROM binding_sources AS source_binding
       ORDER BY
         source_binding."sourceId",
@@ -377,16 +402,58 @@ function scopedPassagesSql(): Prisma.Sql {
     SELECT
       source_binding."baseName",
       source_binding."bindingOrdinal",
+      source_binding."contributingBindingOrdinals",
       source_binding."knowledgeBaseId",
       source_binding."indexGenerationId",
       source_binding."targetDimension",
-      provenance."contributingBindingOrdinals",
       source_binding."sourceId" AS "documentId",
       source_binding."sourceVersionId" AS "documentVersionId",
-      version."versionNumber" AS "documentVersionNumber",
-      version."fileName",
+      source_detail."versionNumber" AS "documentVersionNumber",
+      source_detail."fileName",
       source_binding."artifactId" AS "sourceArtifactId",
-      hierarchy."id" AS "indexArtifactId",
+      hierarchy."id" AS "indexArtifactId"
+    FROM canonical_binding_sources AS source_binding
+    INNER JOIN LATERAL (
+      SELECT version."versionNumber", version."fileName"
+      FROM "KnowledgeSourceVersion" AS version
+      INNER JOIN "KnowledgeSourceIndexArtifact" AS source_artifact
+        ON source_artifact."id" = source_binding."artifactId"
+       AND source_artifact."sourceVersionId" = source_binding."sourceVersionId"
+       AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
+      WHERE version."id" = source_binding."sourceVersionId"
+        AND version."sourceId" = source_binding."sourceId"
+        AND version."ownerUserId" = source_binding."ownerUserId"
+      LIMIT 1
+    ) AS source_detail ON TRUE
+    INNER JOIN LATERAL (
+      SELECT candidate_hierarchy."id"
+      FROM "KnowledgeHierarchicalIndexArtifact" AS candidate_hierarchy
+      WHERE candidate_hierarchy."sourceArtifactId" = source_binding."artifactId"
+        AND candidate_hierarchy."sourceVersionId" = source_binding."sourceVersionId"
+        AND candidate_hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
+        AND candidate_hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
+      ORDER BY candidate_hierarchy."schemaVersion" DESC
+      LIMIT 1
+    ) AS hierarchy ON TRUE
+  `;
+}
+
+/** Hydrate passage payloads from the one shared canonical artifact map. */
+function sharedScopedPassagesSql(scopeName = "scoped_index_artifacts"): Prisma.Sql {
+  return Prisma.sql`
+    SELECT
+      artifact."baseName",
+      artifact."bindingOrdinal",
+      artifact."knowledgeBaseId",
+      artifact."indexGenerationId",
+      artifact."targetDimension",
+      artifact."contributingBindingOrdinals",
+      artifact."documentId",
+      artifact."documentVersionId",
+      artifact."documentVersionNumber",
+      artifact."fileName",
+      artifact."sourceArtifactId",
+      artifact."indexArtifactId",
       passage."id" AS "chunkId",
       passage."ordinal" AS "chunkIndex",
       passage."sectionId",
@@ -394,9 +461,6 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."headingPath",
       passage."documentContext",
       CASE
-        -- Structured layout identity for current builds; the marker branches
-        -- below are decode-only compatibility for legacy rows whose layout
-        -- was encoded in the retired English contextPrefix markers.
         WHEN passage."layoutKind" IS NOT NULL THEN passage."layoutKind"
         WHEN passage."documentContext"->'locator'->>'kind' = 'field_ambiguous'
           THEN 'field_ambiguous'::text
@@ -416,31 +480,9 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."sourceName",
       passage."text",
       embedding."embeddingDimension"
-    FROM canonical_binding_sources AS source_binding
-    INNER JOIN source_provenance AS provenance
-      ON provenance."sourceId" = source_binding."sourceId"
-     AND provenance."sourceVersionId" = source_binding."sourceVersionId"
-     AND provenance."artifactId" = source_binding."artifactId"
-    INNER JOIN "KnowledgeSourceVersion" AS version
-      ON version."id" = source_binding."sourceVersionId"
-     AND version."sourceId" = source_binding."sourceId"
-     AND version."ownerUserId" = source_binding."ownerUserId"
-    INNER JOIN "KnowledgeSourceIndexArtifact" AS source_artifact
-      ON source_artifact."id" = source_binding."artifactId"
-     AND source_artifact."sourceVersionId" = source_binding."sourceVersionId"
-     AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
-    INNER JOIN LATERAL (
-      SELECT candidate_hierarchy."id"
-      FROM "KnowledgeHierarchicalIndexArtifact" AS candidate_hierarchy
-      WHERE candidate_hierarchy."sourceArtifactId" = source_artifact."id"
-        AND candidate_hierarchy."sourceVersionId" = source_artifact."sourceVersionId"
-        AND candidate_hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-        AND candidate_hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
-      ORDER BY candidate_hierarchy."schemaVersion" DESC
-      LIMIT 1
-    ) AS hierarchy ON TRUE
+    FROM ${Prisma.raw(scopeName)} AS artifact
     INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
-      ON passage."indexArtifactId" = hierarchy."id"
+      ON passage."indexArtifactId" = artifact."indexArtifactId"
     LEFT JOIN "KnowledgeArtifactPassageEmbedding" AS embedding
       ON embedding."indexArtifactId" = passage."indexArtifactId"
      AND embedding."passageId" = passage."id"
@@ -454,11 +496,19 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
   userId: string;
 }>): Prisma.Sql {
   const bindings = retrievalBindingsSql(input);
-  const scopedPassages = scopedPassagesSql();
+  const scopedIndexArtifacts = scopedIndexArtifactsSql();
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
-    scoped_passages AS MATERIALIZED (${scopedPassages})
+    scoped_index_artifacts AS NOT MATERIALIZED (${scopedIndexArtifacts}),
+    embedding_counts AS MATERIALIZED (
+      SELECT
+        embedding."indexArtifactId",
+        embedding."embeddingDimension",
+        count(*)::integer AS "eligibleRows"
+      FROM "KnowledgeArtifactPassageEmbedding" AS embedding
+      GROUP BY embedding."indexArtifactId", embedding."embeddingDimension"
+    )
     SELECT
       binding."ordinal" AS "bindingOrdinal",
       binding."knowledgeBaseId",
@@ -466,8 +516,8 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
       binding."targetDimension",
       binding."baseName",
       COALESCE(
-        array_agg(DISTINCT passage."indexArtifactId" ORDER BY passage."indexArtifactId")
-          FILTER (WHERE passage."indexArtifactId" IS NOT NULL),
+        array_agg(DISTINCT artifact."indexArtifactId" ORDER BY artifact."indexArtifactId")
+          FILTER (WHERE artifact."indexArtifactId" IS NOT NULL),
         ARRAY[]::text[]
       ) AS "acceptedIndexArtifactIds",
       COALESCE(
@@ -481,17 +531,19 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
             AND projection."projectionFingerprint" ~ '^[0-9a-f]{64}$',
             false
           )
-        ) FILTER (WHERE passage."indexArtifactId" IS NOT NULL),
+        ) FILTER (WHERE artifact."indexArtifactId" IS NOT NULL),
         true
       ) AS "projectionComplete",
-      count(passage."chunkId") FILTER (
-        WHERE passage."embeddingDimension" = binding."targetDimension"
-      )::integer AS "eligibleRows"
+      COALESCE(sum(embedding_count."eligibleRows") FILTER (
+        WHERE embedding_count."embeddingDimension" = binding."targetDimension"
+      ), 0)::integer AS "eligibleRows"
     FROM bindings AS binding
-    LEFT JOIN scoped_passages AS passage
-      ON passage."bindingOrdinal" = binding."ordinal"
+    LEFT JOIN scoped_index_artifacts AS artifact
+      ON artifact."bindingOrdinal" = binding."ordinal"
+    LEFT JOIN embedding_counts AS embedding_count
+      ON embedding_count."indexArtifactId" = artifact."indexArtifactId"
     LEFT JOIN "KnowledgeSearchProjection" AS projection
-      ON projection."indexArtifactId" = passage."indexArtifactId"
+      ON projection."indexArtifactId" = artifact."indexArtifactId"
     GROUP BY
       binding."ordinal",
       binding."knowledgeBaseId",
@@ -563,26 +615,54 @@ function knowledgeVectorLaneSql(input: Readonly<{
   candidateLimit: number;
   relaxRelevanceFloors?: boolean;
   runId: string;
+  sharedScope?: boolean;
   sourceIds?: readonly string[];
   userId: string;
   vector: QueryVector;
 }>): Prisma.Sql {
   const bindings = retrievalBindingsSql(input);
   const scopedPassages = scopedPassagesSql();
+  const scopedPassagesCte = input.sharedScope
+    ? Prisma.empty
+    : Prisma.sql`
+      bindings AS MATERIALIZED (${bindings}),
+      scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
+    `;
   const globalDistance = vectorDistanceExpression(input.vector, "embedding");
   const acceptedIndexArtifactIds = input.acceptedIndexArtifactIds.length > 0
-    ? Prisma.sql`ARRAY[${Prisma.join(input.acceptedIndexArtifactIds)}]::text[]`
+    // A whole retained Base can contain well over PostgreSQL's practical
+    // per-statement parameter budget. Bind the immutable scope as one native
+    // array instead of expanding every hierarchy id into its own parameter.
+    ? Prisma.sql`${input.acceptedIndexArtifactIds}::text[]`
     : Prisma.sql`ARRAY[]::text[]`;
-  // When a hosted reranker is configured, the global absolute dense floor
-  // must not drop candidates before reranking; the per-lane limit still
-  // bounds the scan.
+  const acceptedScope = input.sharedScope
+    ? Prisma.sql`
+      SELECT COALESCE(
+        jsonb_object_agg(artifact."indexArtifactId", true),
+        '{}'::jsonb
+      ) AS "indexArtifactMap"
+      FROM scoped_index_artifacts AS artifact
+      WHERE artifact."bindingOrdinal" = ${input.vector.bindingOrdinal}
+    `
+    : Prisma.sql`
+      SELECT COALESCE(
+        jsonb_object_agg(accepted."indexArtifactId", true),
+        '{}'::jsonb
+      ) AS "indexArtifactMap"
+      FROM unnest(${acceptedIndexArtifactIds}) AS accepted("indexArtifactId")
+    `;
+  // The distance ceiling is monotone in the nearest-first order, so applying
+  // it after the scoped top-K preserves the same eligible prefix. Applying
+  // it inside iterative ANN instead can scan the whole index trying to fill
+  // K slots when fewer than K passages satisfy the relevance floor.
+  // A hosted reranker still receives the complete bounded nearest pool.
   const denseFloor = input.relaxRelevanceFloors
     ? Prisma.empty
-    : Prisma.sql`AND ${globalDistance} <= ${1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR}`;
+    : Prisma.sql`WHERE hit."vectorDistance" <= ${1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR}`;
   return Prisma.sql`
     WITH
-    bindings AS MATERIALIZED (${bindings}),
-    scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
+    ${scopedPassagesCte}
+    accepted_scope AS MATERIALIZED (${acceptedScope}),
     vector_hits AS (
       SELECT
         embedding."indexArtifactId",
@@ -590,8 +670,11 @@ function knowledgeVectorLaneSql(input: Readonly<{
         ${globalDistance} AS "vectorDistance"
       FROM "KnowledgeArtifactPassageEmbedding" AS embedding
       WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
-        AND embedding."indexArtifactId" = ANY(${acceptedIndexArtifactIds})
-        ${denseFloor}
+        AND COALESCE(
+          (SELECT scope."indexArtifactMap" FROM accepted_scope AS scope)
+            ? embedding."indexArtifactId",
+          false
+        )
       ORDER BY ${globalDistance}
       LIMIT ${input.candidateLimit}
     ),
@@ -599,10 +682,11 @@ function knowledgeVectorLaneSql(input: Readonly<{
       SELECT hit.*,
         row_number() OVER (ORDER BY hit."vectorDistance")::integer AS "laneRank"
       FROM vector_hits AS hit
+      ${denseFloor}
     )
     SELECT
-      binding."baseName",
-      binding."ordinal" AS "bindingOrdinal",
+      passage."baseName",
+      passage."bindingOrdinal",
       passage."contributingBindingOrdinals",
       passage."chunkId",
       passage."chunkIndex",
@@ -614,7 +698,7 @@ function knowledgeVectorLaneSql(input: Readonly<{
       passage."fileName",
       passage."headingPath",
       passage."layoutKind",
-      binding."knowledgeBaseId",
+      passage."knowledgeBaseId",
       passage."page",
       passage."sectionId",
       passage."sourceArtifactId",
@@ -627,10 +711,8 @@ function knowledgeVectorLaneSql(input: Readonly<{
       ranked."vectorDistance"::double precision AS "vectorDistance",
       'ann'::text AS "vectorMode"
     FROM ranked
-    INNER JOIN bindings AS binding
-      ON binding."ordinal" = ${input.vector.bindingOrdinal}
     INNER JOIN scoped_passages AS passage
-      ON passage."bindingOrdinal" = binding."ordinal"
+      ON passage."bindingOrdinal" = ${input.vector.bindingOrdinal}
      AND passage."indexArtifactId" = ranked."indexArtifactId"
      AND passage."chunkId" = ranked."chunkId"
     ORDER BY ranked."laneRank"
@@ -681,7 +763,10 @@ function combinedLexicalRank(alias: string, hasDistinctAnchor: boolean): Prisma.
     : modelRank;
 }
 
-function combinedLexicalMatch(alias: string, hasDistinctAnchor: boolean): Prisma.Sql {
+function combinedLexicalMatch(
+  alias: string,
+  hasDistinctAnchor: boolean
+): Prisma.Sql {
   const modelMatch = lexicalMatch(alias, MODEL_LEXICAL_QUERY_COLUMNS);
   return hasDistinctAnchor
     ? Prisma.sql`(${modelMatch} OR ${lexicalMatch(alias, ANCHOR_LEXICAL_QUERY_COLUMNS)})`
@@ -689,17 +774,31 @@ function combinedLexicalMatch(alias: string, hasDistinctAnchor: boolean): Prisma
 }
 
 function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
+  acceptedScopes: readonly ScopeRow[];
   anchorQuery?: string;
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   query: string;
   relaxRelevanceFloors?: boolean;
   runId: string;
+  sharedScope?: boolean;
   sourceIds?: readonly string[];
+  transactionLocalRetrievalSettings?: true;
   userId: string;
 }>): Prisma.Sql {
   const bindings = retrievalBindingsSql(input);
-  const scopedPassages = scopedPassagesSql();
+  const scopedIndexArtifacts = scopedIndexArtifactsSql();
+  const scopedPassages = sharedScopedPassagesSql();
+  const scopeCtes = input.sharedScope
+    ? Prisma.sql`
+      scoped_chunks AS NOT MATERIALIZED (SELECT * FROM scoped_passages),
+    `
+    : Prisma.sql`
+      bindings AS MATERIALIZED (${bindings}),
+      scoped_index_artifacts AS MATERIALIZED (${scopedIndexArtifacts}),
+      scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
+      scoped_chunks AS NOT MATERIALIZED (SELECT * FROM scoped_passages),
+    `;
   const literalQuery = input.anchorQuery ?? input.query;
   const hasDistinctAnchor = literalQuery !== input.query;
   const normalizedQuery = knowledgeExactNormalizedValue(input.query);
@@ -711,75 +810,131 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
   const sectionMatch = combinedLexicalMatch("section", hasDistinctAnchor);
   const documentRank = combinedLexicalRank("document_index", hasDistinctAnchor);
   const documentMatch = combinedLexicalMatch("document_index", hasDistinctAnchor);
+  const lexicalMatches = (kind: "section" | "document") => {
+    const ordinals = input.acceptedScopes
+      .filter((scope) => scope.acceptedIndexArtifactIds.length > 0)
+      .map((scope) => scope.bindingOrdinal);
+    if (ordinals.length === 0) return Prisma.sql`
+      SELECT NULL::integer AS "bindingOrdinal", NULL::text AS "chunkId",
+        NULL::text AS lane, NULL::double precision AS "rawScore",
+        NULL::text AS "exactKind" WHERE false
+    `;
+    const row = Prisma.raw(kind === "section" ? "section" : "document_index");
+    const table = Prisma.raw(kind === "section"
+      ? '"KnowledgeArtifactSectionIndex"' : '"KnowledgeArtifactDocumentIndex"');
+    return Prisma.join(ordinals.map((ordinal) => Prisma.sql`(
+      SELECT ${ordinal}::integer AS "bindingOrdinal",
+        passage."id" AS "chunkId",
+        ${kind === "section" ? "section_lexical" : "document_lexical"}::text AS lane,
+        ${kind === "section" ? sectionRank : documentRank}::double precision AS "rawScore",
+        NULL::text AS "exactKind"
+      FROM ${table} AS ${row}
+      INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
+        ON passage."indexArtifactId" = ${row}."indexArtifactId"
+       AND ${kind === "section"
+         ? Prisma.sql`passage."sectionId" = section."id"
+           AND passage."ordinal" = section."passageStart"`
+         : Prisma.sql`passage."ordinal" = 0`}
+      CROSS JOIN query_terms
+      WHERE COALESCE((
+        SELECT scope."indexArtifactMap" FROM accepted_scope_maps AS scope
+        WHERE scope."bindingOrdinal" = ${ordinal}
+      ) ? ${row}."indexArtifactId", false)
+        AND ${kind === "section" ? sectionMatch : documentMatch}
+      ORDER BY "rawScore" DESC, passage."id"
+      LIMIT ${input.candidateLimit}
+    )`), " UNION ALL ");
+  };
+  const laneRows = Prisma.sql`
+      SELECT * FROM section_matches
+      UNION ALL SELECT * FROM document_matches
+      UNION ALL SELECT * FROM metadata_matches
+      UNION ALL SELECT * FROM exact_raw
+    `;
+  // `%>` uses pg_trgm's GIN operator class whereas a bare
+  // `word_similarity(...) >= floor` predicate scans every scoped metadata
+  // entry. Keep the exact floor below as the authority and make this indexed
+  // prefilter a strict superset so boundary-equal rows remain eligible.
+  const metadataIndexThreshold = Math.max(0, KNOWLEDGE_METADATA_RELEVANCE_FLOOR - 0.000_001);
   return Prisma.sql`
     WITH
-    bindings AS MATERIALIZED (${bindings}),
-    scoped_chunks AS NOT MATERIALIZED (${scopedPassages}),
-    query_terms AS (
+    ${scopeCtes}
+    metadata_runtime_settings AS MATERIALIZED (
+      ${input.transactionLocalRetrievalSettings ? Prisma.sql`SELECT 1` : Prisma.sql`SELECT set_config(
+        'pg_trgm.word_similarity_threshold',
+        ${String(metadataIndexThreshold)},
+        true
+      )`}
+    ),
+    model_broad_query AS MATERIALIZED (${knowledgeBroadLexicalQuerySql(input.query)}),
+    anchor_broad_query AS MATERIALIZED (
+      ${hasDistinctAnchor
+        ? knowledgeBroadLexicalQuerySql(literalQuery)
+        : Prisma.sql`SELECT query FROM model_broad_query`}
+    ),
+    query_terms AS NOT MATERIALIZED (
       SELECT
         websearch_to_tsquery('simple'::regconfig, ${input.query}) AS "modelSimpleStrictQuery",
-        to_tsquery('simple'::regconfig,
-          replace(plainto_tsquery('simple'::regconfig, ${input.query})::text, ' & ', ' | ')
-        ) AS "modelSimpleQuery",
+        (SELECT query FROM model_broad_query) AS "modelSimpleQuery",
         websearch_to_tsquery('simple'::regconfig, ${literalQuery}) AS "anchorSimpleStrictQuery",
-        to_tsquery('simple'::regconfig,
-          replace(plainto_tsquery('simple'::regconfig, ${literalQuery})::text, ' & ', ' | ')
-        ) AS "anchorSimpleQuery"
+        (SELECT query FROM anchor_broad_query) AS "anchorSimpleQuery"
     ),
     exact_query_values AS MATERIALIZED (
       SELECT query_value."normalizedValue", query_value."queryOrdinal"::integer
       FROM unnest(${exactValuesSql}) WITH ORDINALITY
         AS query_value("normalizedValue", "queryOrdinal")
     ),
-    section_raw AS (
-      SELECT chunk.*, 'section_lexical'::text AS lane,
-        ${sectionRank}::double precision AS "rawScore",
-        NULL::text AS "exactKind"
-      FROM scoped_chunks AS chunk
-      INNER JOIN "KnowledgeArtifactSectionIndex" AS section
-        ON section."indexArtifactId" = chunk."indexArtifactId"
-       AND section."id" = chunk."sectionId"
-       AND section."passageStart" = chunk."chunkIndex"
-      CROSS JOIN query_terms
-      WHERE ${sectionMatch}
+    accepted_scope_maps AS MATERIALIZED (
+      SELECT
+        artifact."bindingOrdinal",
+        jsonb_object_agg(artifact."indexArtifactId", true) AS "indexArtifactMap"
+      FROM scoped_index_artifacts AS artifact
+      GROUP BY artifact."bindingOrdinal"
     ),
-    document_raw AS (
-      SELECT chunk.*, 'document_lexical'::text AS lane,
-        ${documentRank}::double precision AS "rawScore",
-        NULL::text AS "exactKind"
-      FROM scoped_chunks AS chunk
-      INNER JOIN "KnowledgeArtifactDocumentIndex" AS document_index
-        ON document_index."indexArtifactId" = chunk."indexArtifactId"
-       AND chunk."chunkIndex" = 0
-      CROSS JOIN query_terms
-      WHERE ${documentMatch}
+    section_matches AS MATERIALIZED (
+      ${lexicalMatches("section")}
     ),
-    metadata_raw AS (
-      SELECT chunk.*, 'metadata'::text AS lane,
-        word_similarity(${normalizedQuery}, entry."normalizedValue")::double precision AS "rawScore",
-        entry."kind"::text AS "exactKind"
-      FROM scoped_chunks AS chunk
-      INNER JOIN "KnowledgeArtifactExactEntry" AS entry
-        ON entry."indexArtifactId" = chunk."indexArtifactId"
-       AND entry."passageId" IS NULL
-       AND chunk."chunkIndex" = 0
-      WHERE entry."kind" IN (
-        'filename'::"KnowledgeExactEntryKind",
-        'heading'::"KnowledgeExactEntryKind",
-        'tag'::"KnowledgeExactEntryKind",
-        'title'::"KnowledgeExactEntryKind"
-      )
-        AND word_similarity(${normalizedQuery}, entry."normalizedValue") >=
-          ${KNOWLEDGE_METADATA_RELEVANCE_FLOOR}
+    document_matches AS MATERIALIZED (
+      ${lexicalMatches("document")}
     ),
-    exact_matches AS MATERIALIZED (
-      SELECT DISTINCT ON (
-        chunk."bindingOrdinal",
-        chunk."chunkId",
-        query_value."normalizedValue"
-      )
-        chunk."bindingOrdinal",
-        chunk."chunkId",
+    metadata_matches AS MATERIALIZED (
+      SELECT hit.*
+      FROM accepted_scope_maps AS scope
+      CROSS JOIN LATERAL (
+        SELECT
+          scope."bindingOrdinal",
+          passage."id" AS "chunkId",
+          'metadata'::text AS lane,
+          word_similarity(
+            ${normalizedQuery},
+            entry."normalizedValue"
+          )::double precision AS "rawScore",
+          entry."kind"::text AS "exactKind"
+        FROM "KnowledgeArtifactExactEntry" AS entry
+        INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
+          ON passage."indexArtifactId" = entry."indexArtifactId"
+         AND passage."ordinal" = 0
+        CROSS JOIN metadata_runtime_settings
+        WHERE scope."indexArtifactMap" ? entry."indexArtifactId"
+          AND entry."passageId" IS NULL
+          AND entry."kind" IN (
+            'filename'::"KnowledgeExactEntryKind",
+            'heading'::"KnowledgeExactEntryKind",
+            'tag'::"KnowledgeExactEntryKind",
+            'title'::"KnowledgeExactEntryKind"
+          )
+          AND entry."normalizedValue" %> ${normalizedQuery}
+          AND word_similarity(${normalizedQuery}, entry."normalizedValue") >=
+            ${KNOWLEDGE_METADATA_RELEVANCE_FLOOR}
+        ORDER BY "rawScore" DESC, passage."id", entry."kind"::text
+        LIMIT ${input.candidateLimit}
+      ) AS hit
+    ),
+    exact_entry_matches AS MATERIALIZED (
+      SELECT
+        entry."indexArtifactId",
+        entry."passageId",
+        entry."sectionId",
         query_value."normalizedValue",
         query_value."queryOrdinal",
         entry."kind"::text AS "exactKind",
@@ -794,29 +949,48 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
           WHEN 'number'::"KnowledgeExactEntryKind" THEN 6
           ELSE 7
         END AS "kindPriority"
-      FROM scoped_chunks AS chunk
-      INNER JOIN "KnowledgeArtifactExactEntry" AS entry
-        ON entry."indexArtifactId" = chunk."indexArtifactId"
+      FROM "KnowledgeArtifactExactEntry" AS entry
+      INNER JOIN exact_query_values AS query_value
+        ON query_value."normalizedValue" = entry."normalizedValue"
+    ),
+    exact_matches AS MATERIALIZED (
+      SELECT DISTINCT ON (
+        scope."bindingOrdinal",
+        passage."id",
+        entry."normalizedValue"
+      )
+        scope."bindingOrdinal",
+        passage."id" AS "chunkId",
+        entry."normalizedValue",
+        entry."queryOrdinal",
+        entry."exactKind",
+        entry."entryOrdinal",
+        entry."kindPriority"
+      FROM accepted_scope_maps AS scope
+      INNER JOIN exact_entry_matches AS entry
+        ON scope."indexArtifactMap" ? entry."indexArtifactId"
       LEFT JOIN "KnowledgeArtifactSectionIndex" AS exact_section
         ON exact_section."indexArtifactId" = entry."indexArtifactId"
        AND exact_section."id" = entry."sectionId"
-      INNER JOIN exact_query_values AS query_value
-        ON query_value."normalizedValue" = entry."normalizedValue"
-      WHERE
-        entry."passageId" = chunk."chunkId"
-        OR entry."passageId" IS NULL
-          AND entry."sectionId" IS NOT NULL
-          AND exact_section."passageStart" = chunk."chunkIndex"
-        OR entry."passageId" IS NULL
-          AND entry."sectionId" IS NULL
-          AND chunk."chunkIndex" = 0
+      INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
+        ON passage."indexArtifactId" = entry."indexArtifactId"
+       AND (
+         entry."passageId" = passage."id"
+         OR entry."passageId" IS NULL
+           AND entry."sectionId" IS NOT NULL
+           AND passage."sectionId" = entry."sectionId"
+           AND passage."ordinal" = exact_section."passageStart"
+         OR entry."passageId" IS NULL
+           AND entry."sectionId" IS NULL
+           AND passage."ordinal" = 0
+       )
       ORDER BY
-        chunk."bindingOrdinal",
-        chunk."chunkId",
-        query_value."normalizedValue",
-        "kindPriority",
-        query_value."queryOrdinal",
-        entry."ordinal"
+        scope."bindingOrdinal",
+        passage."id",
+        entry."normalizedValue",
+        entry."kindPriority",
+        entry."queryOrdinal",
+        entry."entryOrdinal"
     ),
     exact_match_frequencies AS MATERIALIZED (
       SELECT exact_match.*,
@@ -843,19 +1017,16 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       GROUP BY exact_match."bindingOrdinal", exact_match."chunkId"
     ),
     exact_raw AS (
-      SELECT chunk.*, 'exact'::text AS lane,
+      SELECT
+        exact_score."bindingOrdinal",
+        exact_score."chunkId",
+        'exact'::text AS lane,
         exact_score."rawScore",
         exact_score."exactKind"
-      FROM scoped_chunks AS chunk
-      INNER JOIN exact_scores AS exact_score
-        ON exact_score."bindingOrdinal" = chunk."bindingOrdinal"
-       AND exact_score."chunkId" = chunk."chunkId"
+      FROM exact_scores AS exact_score
     ),
     lane_rows AS (
-      SELECT * FROM section_raw
-      UNION ALL SELECT * FROM document_raw
-      UNION ALL SELECT * FROM metadata_raw
-      UNION ALL SELECT * FROM exact_raw
+      ${laneRows}
     ),
     eligible_lane_rows AS (
       SELECT *
@@ -878,25 +1049,25 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       FROM eligible_lane_rows
     )
     SELECT
-      ranked."baseName",
+      chunk."baseName",
       ranked."bindingOrdinal",
-      ranked."contributingBindingOrdinals",
+      chunk."contributingBindingOrdinals",
       ranked."chunkId",
-      ranked."chunkIndex",
-      ranked."contentHash",
-      ranked."documentId",
-      ranked."documentVersionId",
-      ranked."documentVersionNumber",
-      ranked."documentContext",
-      ranked."fileName",
-      ranked."headingPath",
-      ranked."layoutKind",
-      ranked."knowledgeBaseId",
-      ranked."page",
-      ranked."sectionId",
-      ranked."sourceArtifactId",
-      ranked."sourceName",
-      ranked."text",
+      chunk."chunkIndex",
+      chunk."contentHash",
+      chunk."documentId",
+      chunk."documentVersionId",
+      chunk."documentVersionNumber",
+      chunk."documentContext",
+      chunk."fileName",
+      chunk."headingPath",
+      chunk."layoutKind",
+      chunk."knowledgeBaseId",
+      chunk."page",
+      chunk."sectionId",
+      chunk."sourceArtifactId",
+      chunk."sourceName",
+      chunk."text",
       ranked.lane,
       ranked."laneRank",
       ranked."rawScore",
@@ -904,6 +1075,9 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       NULL::double precision AS "vectorDistance",
       NULL::text AS "vectorMode"
     FROM ranked
+    INNER JOIN scoped_chunks AS chunk
+      ON chunk."bindingOrdinal" = ranked."bindingOrdinal"
+     AND chunk."chunkId" = ranked."chunkId"
     WHERE ranked."laneRank" <= ${input.candidateLimit}
     ORDER BY ranked."bindingOrdinal", ranked.lane, ranked."laneRank"
   `;
@@ -924,12 +1098,17 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
   resultLimit: number;
   runId: string;
   sourceIds?: readonly string[];
+  transactionLocalRetrievalSettings?: true;
   userId: string;
   vectors: readonly QueryVector[];
 }>): Prisma.Sql {
   const bindings = retrievalBindingsSql(input);
-  const scopedPassages = scopedPassagesSql();
-  const lexicalQuery = knowledgeMultiLaneLexicalSearchSql(input);
+  const scopedIndexArtifacts = scopedIndexArtifactsSql();
+  const scopedPassages = sharedScopedPassagesSql();
+  const lexicalQuery = knowledgeMultiLaneLexicalSearchSql({
+    ...input,
+    sharedScope: true
+  });
   const acceptedScopesJson = JSON.stringify(input.acceptedScopes);
   const acceptedScopesByOrdinal = new Map(input.acceptedScopes.map((scope) => [
     scope.bindingOrdinal,
@@ -945,6 +1124,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
         candidateLimit: input.candidateLimit,
         ...(input.relaxRelevanceFloors ? { relaxRelevanceFloors: true } : {}),
         runId: input.runId,
+        sharedScope: true,
         ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
         userId: input.userId,
         vector
@@ -955,19 +1135,20 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
         CROSS JOIN LATERAL (${query}) AS vector_candidate
       `;
     }), " UNION ALL ");
+  const neighborCandidates = Prisma.sql`
+      SELECT neighbor.*
+      FROM ranked_neighbor_candidates AS neighbor
+      WHERE neighbor."laneRank" <= ${KNOWLEDGE_SIGNAL_RANK_MAX}
+    `;
   return Prisma.sql`
     WITH
     runtime_settings AS MATERIALIZED (
-      SELECT
-        set_config('hnsw.iterative_scan', 'strict_order', true),
-        set_config('hnsw.ef_search', ${String(KNOWLEDGE_VECTOR_ANN_EF_SEARCH)}, true),
-        set_config(
-          'hnsw.max_scan_tuples',
-          ${String(KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES)},
-          true
-        )
+      ${input.transactionLocalRetrievalSettings
+        ? Prisma.sql`SELECT 1`
+        : knowledgeRetrievalRuntimeSettingsSql()}
     ),
     bindings AS MATERIALIZED (${bindings}),
+    scoped_index_artifacts AS MATERIALIZED (${scopedIndexArtifacts}),
     scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
     lexical_candidates AS MATERIALIZED (${lexicalQuery}),
     vector_candidate_union AS MATERIALIZED (${vectorQueryUnion}),
@@ -1011,6 +1192,17 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
       ORDER BY score."fusedScore" DESC, score."bindingOrdinal", score."chunkId"
       LIMIT ${input.candidateLimit}
     ),
+    neighbor_artifacts AS MATERIALIZED (
+      SELECT artifact.*
+      FROM scoped_index_artifacts AS artifact
+      WHERE artifact."indexArtifactId" IN (
+        SELECT passage."indexArtifactId"
+        FROM anchors AS anchor
+        INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
+          ON passage."id" = anchor."chunkId"
+      )
+    ),
+    neighbor_passages AS MATERIALIZED (${sharedScopedPassagesSql("neighbor_artifacts")}),
     ranked_neighbor_candidates AS (
       SELECT
         neighbor."baseName",
@@ -1046,10 +1238,10 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
         NULL::double precision AS "vectorDistance",
         NULL::text AS "vectorMode"
       FROM anchors AS anchor
-      INNER JOIN scoped_passages AS source
+      INNER JOIN neighbor_passages AS source
         ON source."bindingOrdinal" = anchor."bindingOrdinal"
        AND source."chunkId" = anchor."chunkId"
-      INNER JOIN scoped_passages AS neighbor
+      INNER JOIN neighbor_passages AS neighbor
         ON neighbor."bindingOrdinal" = source."bindingOrdinal"
        AND neighbor."indexArtifactId" = source."indexArtifactId"
        AND neighbor."documentId" = source."documentId"
@@ -1080,9 +1272,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
        )
     ),
     neighbor_candidates AS MATERIALIZED (
-      SELECT neighbor.*
-      FROM ranked_neighbor_candidates AS neighbor
-      WHERE neighbor."laneRank" <= ${KNOWLEDGE_SIGNAL_RANK_MAX}
+      ${neighborCandidates}
     ),
     all_candidates AS (
       SELECT * FROM primary_candidates
@@ -1113,7 +1303,7 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
     throw new Error("knowledge_bm25_hits_invalid");
   }
   const bindings = retrievalBindingsSql(input);
-  const scopedPassages = scopedPassagesSql();
+  const scopedIndexArtifacts = scopedIndexArtifactsSql();
   const hits = Prisma.join(input.hits.map((hit) => Prisma.sql`(
     ${hit.indexArtifactId},
     ${hit.passageId},
@@ -1125,7 +1315,7 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
-    scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
+    scoped_index_artifacts AS MATERIALIZED (${scopedIndexArtifacts}),
     bm25_hits(
       "indexArtifactId",
       "chunkId",
@@ -1134,6 +1324,14 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
       "laneRank",
       "rawScore"
     ) AS MATERIALIZED (VALUES ${hits}),
+    hit_artifacts AS MATERIALIZED (
+      SELECT artifact.*
+      FROM scoped_index_artifacts AS artifact
+      WHERE artifact."indexArtifactId" IN (
+        SELECT hit."indexArtifactId" FROM bm25_hits AS hit
+      )
+    ),
+    scoped_passages AS MATERIALIZED (${sharedScopedPassagesSql("hit_artifacts")}),
     matched AS MATERIALIZED (
       SELECT
         chunk."baseName",
@@ -1721,6 +1919,8 @@ export async function executeKnowledgeRetrievalCore(
       resultLimit: input.resultLimit,
       runId: input.runId,
       ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+      ...(client.transactionLocalRetrievalSettings
+        ? { transactionLocalRetrievalSettings: true as const } : {}),
       userId: input.userId,
       vectors: input.vectors
     })

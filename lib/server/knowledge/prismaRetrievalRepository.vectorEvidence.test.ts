@@ -4,7 +4,8 @@ import type { KnowledgeOperationKind } from "./knowledgeBudget";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
 
-vi.mock("./prismaRetrievalCore", () => ({
+vi.mock(import("./prismaRetrievalCore"), async (importOriginal) => ({
+  ...await importOriginal(),
   executeKnowledgeRetrievalCore: vi.fn()
 }));
 
@@ -181,12 +182,14 @@ describe("Prisma Knowledge vector evidence projection", () => {
       maxWait: 5_000,
       timeout: 35_000
     });
-    expect(executeRaw).toHaveBeenCalledOnce();
+    expect(executeRaw).toHaveBeenCalledTimes(2);
     const [timeoutStrings, ...timeoutValues] = executeRaw.mock.calls[0]!;
     expect(Array.from(timeoutStrings as TemplateStringsArray).join("?"))
       .toContain("statement_timeout");
     expect(timeoutValues).toContain("30000");
     expect(executeRaw.mock.invocationCallOrder[0])
+      .toBeLessThan(queryRaw.mock.invocationCallOrder[0]!);
+    expect(executeRaw.mock.invocationCallOrder[1])
       .toBeLessThan(queryRaw.mock.invocationCallOrder[0]!);
   });
 });

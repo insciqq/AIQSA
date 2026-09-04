@@ -42,6 +42,7 @@ describe("retrieval checkpoint contract", () => {
     expect(decodeKnowledgeRetrievalCheckpointHeader({
       manifestFingerprint: fingerprint,
       queryCount: 3_453,
+      querySetContentSha256: "c".repeat(64),
       runId: "t2ragbench-convfinqa-C-2026-08-29T01-00-00-000Z",
       schedule: {
         concurrency: 1,
@@ -53,6 +54,7 @@ describe("retrieval checkpoint contract", () => {
     expect(() => decodeKnowledgeRetrievalCheckpointHeader({
       manifestFingerprint: fingerprint,
       queryCount: 3_453,
+      querySetContentSha256: "c".repeat(64),
       runId: "run",
       schedule: { concurrency: 0, queryStartIntervalMs: 0, rateLimitCooldownMs: 0 },
       schemaVersion: KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION

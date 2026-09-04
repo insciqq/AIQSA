@@ -39,35 +39,40 @@ function clientFixture() {
     update: vi.fn(),
     updateMany: vi.fn(async () => ({ count: 1 }))
   };
-  const knowledgeHierarchicalIndexArtifact = {
-    findMany: vi.fn(async () => [{
-      checksum,
-      id: "hierarchy-1",
-      passageCount: 1,
-      sourceArtifactId: "source-artifact-1"
-    }]),
-    findUnique: vi.fn(async () => ({
-      checksum,
-      passageCount: 1,
-      passageIndexes: [{
-        contentHash: "b".repeat(64),
-        contextPrefix: "",
-        documentContext: null,
-        headingPath: ["Annual report"],
-        id: "passage-1",
-        layoutKind: "body",
-        text: "Canonical PostgreSQL passage."
-      }],
-      sourceArtifact: {
-        sourceVersion: {
-          id: "source-version-1",
-          ownerUserId: "owner-1",
-          source: { deletionRequestedAt: null, trashedAt: null }
-        },
-        state: "ready"
+  const hierarchy = {
+    checksum,
+    id: "hierarchy-1",
+    passageCount: 1,
+    passageIndexes: [{
+      contentHash: "b".repeat(64),
+      contextPrefix: "",
+      documentContext: null,
+      headingPath: ["Annual report"],
+      id: "passage-1",
+      layoutKind: "body",
+      text: "Canonical PostgreSQL passage."
+    }],
+    sourceArtifact: {
+      sourceVersion: {
+        id: "source-version-1",
+        ownerUserId: "owner-1",
+        source: { deletionRequestedAt: null, trashedAt: null }
       },
       state: "ready"
-    }))
+    },
+    state: "ready"
+  } as const;
+  const knowledgeHierarchicalIndexArtifact = {
+    findMany: vi.fn(async (input?: { where?: { id?: unknown } }) =>
+      input?.where?.id
+        ? [hierarchy]
+        : [{
+            checksum,
+            id: "hierarchy-1",
+            passageCount: 1,
+            sourceArtifactId: "source-artifact-1"
+          }]),
+    findUnique: vi.fn(async () => hierarchy)
   };
   const queryRaw = vi.fn(async () => [{
     attemptCount: 1,
@@ -77,6 +82,7 @@ function clientFixture() {
     projectionFingerprint
   }]);
   const client = {
+    $executeRaw: vi.fn(async () => 1),
     $queryRaw: queryRaw,
     knowledgeHierarchicalIndexArtifact,
     knowledgeSearchProjection
@@ -184,9 +190,7 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
       reset: 1
     });
 
-    expect(knowledgeSearchProjection.deleteMany).toHaveBeenCalledWith({
-      where: { indexArtifactId: { notIn: ["hierarchy-1"] } }
-    });
+    expect(knowledgeSearchProjection.deleteMany).not.toHaveBeenCalled();
     expect(knowledgeSearchProjection.updateMany).toHaveBeenCalledWith({
       data: {
         attemptCount: 0,

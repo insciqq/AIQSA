@@ -44,6 +44,14 @@ export class KnowledgeHierarchicalIndexPersistenceError extends Error {
 export const KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS = 10_000;
 export const KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS = 300_000;
 export const KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE = 250;
+export const KNOWLEDGE_HIERARCHICAL_INDEX_SOURCE_BATCH_SIZE = 100;
+
+export type KnowledgeHierarchicalIndexTruncationDiagnostic = Readonly<{
+  candidateCount: number;
+  retainedCount: number;
+  sourceArtifactId: string;
+  sourceVersionId: string;
+}>;
 
 async function lockSourceArtifact(
   tx: HierarchicalIndexWriteClient,
@@ -279,6 +287,9 @@ export async function buildAndPersistKnowledgeHierarchicalIndex(
     chunks: readonly KnowledgeChunkPlanEntry[];
     document: StoredKnowledgeNormalizedDocument | null;
     now: Date;
+    onExactIndexTruncated?: (
+      diagnostic: KnowledgeHierarchicalIndexTruncationDiagnostic
+    ) => void;
     sourceArtifactId: string;
     sourceVersionId: string;
   }>
@@ -300,16 +311,70 @@ export async function buildAndPersistKnowledgeHierarchicalIndex(
     tags: source.tags
   });
   if (plan.exactIndex.truncated) {
-    console.warn(JSON.stringify({
+    const diagnostic = Object.freeze({
       candidateCount: plan.exactIndex.candidateCount,
-      event: "knowledge_hierarchical_exact_index_truncated",
-      reasonCode: "exact_index_truncated",
       retainedCount: plan.exactIndex.retainedCount,
       sourceArtifactId: source.sourceArtifactId,
       sourceVersionId: source.sourceVersionId
+    });
+    if (input.onExactIndexTruncated) input.onExactIndexTruncated(diagnostic);
+    else console.warn(JSON.stringify({
+      ...diagnostic,
+      event: "knowledge_hierarchical_exact_index_truncated",
+      reasonCode: "exact_index_truncated"
     }));
   }
   return persistPlan(tx, { now: input.now, plan, sourceVersionId: source.sourceVersionId });
+}
+
+export type KnowledgeHierarchicalIndexBatchInput = Readonly<{
+  chunks: readonly KnowledgeChunkPlanEntry[];
+  document: StoredKnowledgeNormalizedDocument | null;
+  now: Date;
+  onExactIndexTruncated?: (
+    diagnostic: KnowledgeHierarchicalIndexTruncationDiagnostic
+  ) => void;
+  sourceArtifactId: string;
+  sourceVersionId: string;
+}>;
+
+/**
+ * Bounded transaction-local batch form. It deliberately delegates every
+ * Source to the canonical lock, derivation, validation, and persistence path;
+ * callers amortize transaction setup without acquiring a second persistence
+ * implementation or weakening per-artifact settlement checks.
+ */
+export async function buildAndPersistKnowledgeHierarchicalIndexBatch(
+  tx: HierarchicalIndexWriteClient,
+  inputs: readonly KnowledgeHierarchicalIndexBatchInput[]
+): Promise<Readonly<{ created: number; reused: number }>> {
+  if (inputs.length < 1 ||
+    inputs.length > KNOWLEDGE_HIERARCHICAL_INDEX_SOURCE_BATCH_SIZE) {
+    throw new KnowledgeHierarchicalIndexPersistenceError(
+      "knowledge_hierarchical_index_settlement_failed"
+    );
+  }
+  const artifactIds = new Set<string>();
+  const sourceVersionIds = new Set<string>();
+  for (const input of inputs) {
+    if (artifactIds.has(input.sourceArtifactId) ||
+      sourceVersionIds.has(input.sourceVersionId) ||
+      !Number.isFinite(input.now.getTime())) {
+      throw new KnowledgeHierarchicalIndexPersistenceError(
+        "knowledge_hierarchical_index_settlement_failed"
+      );
+    }
+    artifactIds.add(input.sourceArtifactId);
+    sourceVersionIds.add(input.sourceVersionId);
+  }
+  let created = 0;
+  let reused = 0;
+  for (const input of inputs) {
+    const result = await buildAndPersistKnowledgeHierarchicalIndex(tx, input);
+    if (result === "created") created += 1;
+    else reused += 1;
+  }
+  return Object.freeze({ created, reused });
 }
 
 export function createPrismaKnowledgeHierarchicalIndexRepository(
