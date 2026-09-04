@@ -9,11 +9,12 @@ import {
   isInstalled
 } from "microsandbox";
 import {
-  WORKSPACE_MCP_TOOL_ALLOWLIST,
+  type WorkspaceMcpToolName,
   workspaceAttachmentPath,
   workspaceRunOutputDirectory,
   workspaceSandboxName,
-  type WorkspaceMcpToolName
+  WORKSPACE_INBOX_INDEX_VERSION,
+  WORKSPACE_MCP_TOOL_ALLOWLIST
 } from "@/lib/domain/workspace";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { ensureBundledMicrosandboxRuntime } from "@/lib/server/workspace/microsandboxInstall";
@@ -233,8 +234,14 @@ try {
         byteSize: attachment.bytes.byteLength,
         checksum: sha256(attachment.bytes),
         mimeType: attachment.mime,
-        originalName: attachment.name
-      }))
+        originalName: attachment.name,
+        sandboxPath: workspaceAttachmentPath({
+          attachmentId: attachment.id,
+          messageId,
+          originalName: attachment.name
+        })
+      })),
+      version: WORKSPACE_INBOX_INDEX_VERSION
     },
     manifests: [{
       body: {
@@ -381,19 +388,33 @@ try {
     runtimeSandboxId: onlineRuntimeId,
     sessionId: onlineSessionId
   });
+  // Cancellation terminates and closes the run's executions, so the official
+  // exec id is gone afterwards; a poll that still answers must report done.
   let cancelled = false;
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const polled = await call(onlineSessionId, onlineRuntimeId, longRunId, "sandbox_exec_poll", {
-      execSessionId
+    toolCallSequence += 1;
+    const polled = await runtime.callBoundTool({
+      arguments: { execSessionId },
+      modelRunId: longRunId,
+      modelRunToolCallId: `${longRunId}-poll-${toolCallSequence}`,
+      originalName: "sandbox_exec_poll",
+      runtimeSandboxId: onlineRuntimeId,
+      sessionId: onlineSessionId
     });
-    if (polled.done === true) {
+    const text = polled.content[0]?.text ?? "";
+    if (polled.status !== "complete") {
+      assert.match(text, /exec session not found/u);
+      cancelled = true;
+      break;
+    }
+    const parsed = JSON.parse(text) as { data?: { done?: unknown } };
+    if (parsed.data?.done === true) {
       cancelled = true;
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   assert.equal(cancelled, true, "long command was not cancelled");
-  await call(onlineSessionId, onlineRuntimeId, longRunId, "sandbox_exec_close", { execSessionId });
 
   // Registry-driven termination: the application addresses executions by
   // their official id, and an id the server no longer knows is `unknown`.
