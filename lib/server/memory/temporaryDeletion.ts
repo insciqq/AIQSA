@@ -1,7 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { decodeMemoryPreparingBaseSnapshot } from "../runs/preparingRun";
 import type { StorageAdapter } from "../uploads/storage";
+import type { WorkspaceRuntime } from "../workspace/runtime";
 import { MemoryCoordinatorError } from "./coordinator/errors";
 import type {
   MemoryDeletionClaim,
@@ -28,6 +30,12 @@ type TemporaryObjectDisposition = Readonly<{
 type TemporaryDeletionSnapshot = Readonly<{
   attachments: readonly TemporaryAttachment[];
   chatExists: boolean;
+  workspaceSession: Readonly<{
+    cleanupClaimToken: string | null;
+    id: string;
+    runtimeSandboxId: string | null;
+    sandboxName: string;
+  }> | null;
 }>;
 
 function json(value: unknown): Prisma.InputJsonValue {
@@ -229,7 +237,9 @@ async function prepareDeletionSnapshot(
       WHERE "id" = ${claim.targetId} AND "userId" = ${claim.userId}
       FOR UPDATE
     `);
-    if (!chat) return { attachments: [], chatExists: false };
+    if (!chat) {
+      return { attachments: [], chatExists: false, workspaceSession: null };
+    }
     if (
       chat.memoryMode !== "TEMPORARY" ||
       chat.temporaryRetentionPolicyVersion !==
@@ -242,6 +252,44 @@ async function prepareDeletionSnapshot(
 
     await assertNoReusableMemorySource(tx, claim);
     await settleOverdueRuns(tx, claim, now);
+    const workspaceSession = await tx.workspaceSession.findUnique({
+      select: { id: true, runtimeSandboxId: true, sandboxName: true },
+      where: { chatId: claim.targetId }
+    });
+    const cleanupClaimToken = workspaceSession?.runtimeSandboxId
+      ? randomUUID()
+      : null;
+    if (workspaceSession) {
+      await tx.workspaceSession.update({
+        data: { lastErrorCode: null, state: "DELETING" },
+        where: { id: workspaceSession.id }
+      });
+      await tx.workspaceCleanupJob.upsert({
+        create: {
+          attemptCount: cleanupClaimToken ? 1 : 0,
+          claimedAt: cleanupClaimToken ? now : null,
+          claimToken: cleanupClaimToken,
+          lastAttemptAt: cleanupClaimToken ? now : null,
+          nextAttemptAt: now,
+          runtimeSandboxId: workspaceSession.runtimeSandboxId,
+          sandboxName: workspaceSession.sandboxName,
+          state: cleanupClaimToken ? "RUNNING" : "PENDING",
+          workspaceSessionId: workspaceSession.id
+        },
+        update: {
+          ...(cleanupClaimToken ? { attemptCount: { increment: 1 } } : {}),
+          claimedAt: cleanupClaimToken ? now : null,
+          claimToken: cleanupClaimToken,
+          lastAttemptAt: cleanupClaimToken ? now : null,
+          lastErrorCode: null,
+          nextAttemptAt: now,
+          runtimeSandboxId: workspaceSession.runtimeSandboxId,
+          sandboxName: workspaceSession.sandboxName,
+          state: cleanupClaimToken ? "RUNNING" : "PENDING"
+        },
+        where: { workspaceSessionId: workspaceSession.id }
+      });
+    }
     const attachments = await tx.attachment.findMany({
       orderBy: { id: "asc" },
       select: { id: true, storageKey: true, userId: true },
@@ -255,9 +303,71 @@ async function prepareDeletionSnapshot(
     }
     return {
       attachments: attachments.map(({ id, storageKey }) => ({ id, storageKey })),
-      chatExists: true
+      chatExists: true,
+      workspaceSession: workspaceSession
+        ? { ...workspaceSession, cleanupClaimToken }
+        : null
     };
   });
+}
+
+async function removeTemporaryWorkspace(
+  client: PrismaClient,
+  runtime: WorkspaceRuntime | undefined,
+  snapshot: TemporaryDeletionSnapshot,
+  signal: AbortSignal,
+  now: Date
+): Promise<void> {
+  const session = snapshot.workspaceSession;
+  if (!session?.runtimeSandboxId) return;
+  if (!runtime || !session.cleanupClaimToken) {
+    throw new MemoryCoordinatorError(
+      "memory_temporary_workspace_runtime_unavailable",
+      true
+    );
+  }
+  try {
+    throwIfAborted(signal);
+    await runtime.removeSession({
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId: session.id,
+      signal
+    });
+    const settled = await client.workspaceSession.updateMany({
+      data: {
+        lastErrorCode: null,
+        runtimeSandboxId: null,
+        state: "DELETING",
+        stoppedAt: now
+      },
+      where: {
+        id: session.id,
+        runtimeSandboxId: session.runtimeSandboxId,
+        state: "DELETING"
+      }
+    });
+    if (settled.count !== 1) {
+      throw new Error("workspace_cleanup_fence_changed");
+    }
+  } catch {
+    await client.workspaceCleanupJob.updateMany({
+      data: {
+        claimedAt: null,
+        claimToken: null,
+        lastErrorCode: "workspace_remove_failed",
+        nextAttemptAt: new Date(now.getTime() + 30_000),
+        state: "FAILED"
+      },
+      where: {
+        claimToken: session.cleanupClaimToken,
+        workspaceSessionId: session.id
+      }
+    }).catch(() => undefined);
+    throw new MemoryCoordinatorError(
+      "memory_temporary_workspace_cleanup_failed",
+      true
+    );
+  }
 }
 
 async function deleteExclusiveObjects(
@@ -472,6 +582,27 @@ async function applyAggregateDeletion(
       where: { id: { in: runIds }, userId: claim.userId }
     });
   }
+  const currentWorkspaceSession = await tx.workspaceSession.findUnique({
+    select: { id: true, runtimeSandboxId: true },
+    where: { chatId: claim.targetId }
+  });
+  if (snapshot.workspaceSession) {
+    if (
+      currentWorkspaceSession?.id !== snapshot.workspaceSession.id ||
+      currentWorkspaceSession.runtimeSandboxId !== null
+    ) {
+      throw new MemoryCoordinatorError(
+        "memory_temporary_workspace_cleanup_pending",
+        true
+      );
+    }
+    await tx.workspaceCleanupJob.deleteMany({
+      where: { workspaceSessionId: currentWorkspaceSession.id }
+    });
+    await tx.workspaceSession.delete({ where: { id: currentWorkspaceSession.id } });
+  } else if (currentWorkspaceSession) {
+    throw new MemoryCoordinatorError("memory_temporary_aggregate_changed", true);
+  }
   const deleted = await tx.chat.deleteMany({
     where: {
       id: claim.targetId,
@@ -508,13 +639,21 @@ async function applyAggregateDeletion(
 
 export function createPrismaTemporaryChatDeletionHandler(
   storage: Pick<StorageAdapter, "deleteObject">,
-  client: PrismaClient
+  client: PrismaClient,
+  workspaceRuntime?: WorkspaceRuntime
 ): MemoryDeletionHandler {
   return Object.freeze({
     async execute(claim, context) {
       assertClaimShape(claim);
       const now = context.now();
       const snapshot = await prepareDeletionSnapshot(client, claim, now);
+      await removeTemporaryWorkspace(
+        client,
+        workspaceRuntime,
+        snapshot,
+        context.signal,
+        now
+      );
       const dispositions = snapshot.chatExists
         ? await deleteExclusiveObjects(
             client,

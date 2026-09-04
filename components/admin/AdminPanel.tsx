@@ -26,6 +26,7 @@ import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/AdminUsersSection";
+import { AdminWorkspaceSection } from "@/components/admin/AdminWorkspaceSection";
 import {
   AdminResourceDetailPane,
   AdminResourceIndexPane,
@@ -203,6 +204,8 @@ function AdminSectionContent({
       return accessRules.sectionProps ? <AdminAccessRulesSection {...accessRules.sectionProps} /> : null;
     case "usage":
       return <AdminUsageSection catalog={dashboard.catalog} usage={dashboard.usage} />;
+    case "workspace":
+      return <AdminWorkspaceSection />;
     case "safety":
       return (
         <AdminSafetySection

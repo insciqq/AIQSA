@@ -9,6 +9,7 @@ import {
   Search,
   ServerCog,
   ShieldAlert,
+  SquareTerminal,
   Users,
   Wrench,
   type LucideIcon
@@ -26,7 +27,8 @@ export type AdminSectionId =
   | "search"
   | "safety"
   | "usage"
-  | "users";
+  | "users"
+  | "workspace";
 
 export type AdminSectionMove = "first" | "last" | "next" | "previous";
 export type AdminSectionGroupId = "ai-setup" | "infrastructure" | "operations" | "safety" | "team-access";
@@ -119,6 +121,13 @@ export const adminSections = [
     group: "infrastructure",
     id: "mcp",
     label: "MCP servers"
+  },
+  {
+    Icon: SquareTerminal,
+    description: "Control isolated per-chat workspaces, public network policy, and runtime readiness.",
+    group: "infrastructure",
+    id: "workspace",
+    label: "Workspace"
   },
   {
     Icon: Mail,

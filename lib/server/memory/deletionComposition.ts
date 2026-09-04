@@ -21,6 +21,7 @@ import type {
 } from "../chats/permanentDeletion/service";
 import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
+import { workspaceRuntime } from "../workspace/defaultServices";
 
 export type MemoryDeletionAdmissionPolicy = Readonly<{
   accountMemoryDeletion: Readonly<{ enabled: boolean }>;
@@ -132,7 +133,11 @@ export function createMemoryDeletionComposition(input: Readonly<{
 }
 
 const defaultPermanentChatDeletionHandler =
-  createPrismaPermanentChatDeletionHandler(createS3StorageAdapter(), prisma);
+  createPrismaPermanentChatDeletionHandler(
+    createS3StorageAdapter(),
+    prisma,
+    workspaceRuntime
+  );
 const defaultSourcePurgeHandler = createSourcePurgeDeletionHandler({
   history: memoryHistorySourceDeletionHandler,
   permanentChat: defaultPermanentChatDeletionHandler

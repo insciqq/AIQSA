@@ -203,40 +203,40 @@ test.afterEach(async ({ page }) => {
 
 test("creates an assistant through the Library editor", async ({ page }) => {
   const name = `${assistantNamePrefix} ${Date.now()}`;
+  const modelId = await fakeProviderModelId(page);
 
   await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await library.getByRole("button", { name: "New Assistant" }).click();
+  await library.getByRole("button", { exact: true, name: "New assistant" }).first().click();
 
-  const editorSurface = page.getByTestId("assistant-library");
-  const editor = editorSurface.getByTestId("assistant-editor");
+  const editor = library.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
   await expect(editor.getByText("Draft", { exact: true })).toBeVisible();
   const save = editor.getByTestId("assistant-editor-save");
   await expect(save).toHaveText("Create assistant");
   await expect(save).toBeDisabled();
 
-  await editor.getByLabel("Name", { exact: true }).fill(name);
-  await editor.getByLabel("Model", { exact: true }).selectOption({ label: "Fake QSA" });
-  await editor.getByLabel("System prompt").fill("You are terse.");
-  await editor.getByRole("button", { name: "Starter prompts" }).click();
+  await editor.getByLabel("Name Required", { exact: true }).fill(name);
+  await editor.getByLabel("Model", { exact: true }).selectOption(modelId);
+  await editor.getByLabel("Assistant instructions").fill("You are terse.");
+  await editor.getByText("Starter prompts", { exact: true }).click();
   await editor.getByRole("button", { name: "Add starter" }).click();
   await editor.getByLabel("Starter prompt 1", { exact: true }).fill("Say hello");
 
   await expect(save).toBeEnabled();
   await save.click();
 
-  await expect(editorSurface.getByTestId("assistant-library-notice")).toContainText(
-    "Assistant created. It stays private until you share it."
+  await expect(editor.getByRole("status")).toContainText(
+    "Assistant created. It is private until you share it"
   );
-  await expect(editor.getByText("Revision 1", { exact: true })).toBeVisible();
+  await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toBeVisible();
   await expect(editor.getByRole("heading", { name })).toBeVisible();
-  await expect(save).toHaveText("Save revision");
+  await expect(save).toHaveText("Save changes");
   await expect(editor.getByRole("button", { name: "Use in chat" })).toBeVisible();
 
-  await editor.getByRole("button", { name: "Back to assistants" }).click();
-  await expect(editorSurface).toHaveCount(0);
+  await library.getByRole("button", { exact: true, name: "Assistants" }).click();
+  await expect(editor).toHaveCount(0);
   await expect(library.getByRole("heading", { name })).toBeVisible();
   await library.getByRole("button", { name: "Back to chat" }).click();
   await expect(library).toHaveCount(0);
@@ -362,21 +362,19 @@ test("keeps accepted answers on their historical revision after a revise", async
 
     const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
-    await card.getByRole("button", { name: `More actions for ${name}` }).click();
-    await card.getByRole("menuitem", { name: "Edit" }).click();
+    await card.getByRole("button", { exact: true, name: "Edit" }).click();
 
-    const editorSurface = page.getByTestId("assistant-library");
-    const editor = editorSurface.getByTestId("assistant-editor");
-    await expect(editor.getByText("Revision 1", { exact: true })).toBeVisible();
-    const nameField = editor.getByLabel("Name", { exact: true });
+    const editor = library.getByTestId("assistant-editor");
+    await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toBeVisible();
+    const nameField = editor.getByLabel("Name Required", { exact: true });
     await expect(nameField).toHaveValue(name);
     await nameField.fill(revisedName);
     await editor.getByTestId("assistant-editor-save").click();
-    await expect(editorSurface.getByTestId("assistant-library-notice")).toContainText("Saved revision 2");
-    await expect(editor.getByText("Revision 2", { exact: true })).toBeVisible();
+    await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved revision 2");
+    await expect(editor.getByRole("button", { exact: true, name: "Revision 2" })).toBeVisible();
 
-    await editor.getByRole("button", { name: "Back to assistants" }).click();
-    await expect(editorSurface).toHaveCount(0);
+    await library.getByRole("button", { exact: true, name: "Assistants" }).click();
+    await expect(editor).toHaveCount(0);
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
 
@@ -399,8 +397,12 @@ test("pins an assistant from the Library card and groups it in the quick picker"
   try {
     const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
-    await card.getByRole("button", { name: `Pin ${name}` }).click();
-    await expect(card.getByRole("button", { name: `Unpin ${name}` })).toBeVisible();
+    await card.getByRole("button", { name: `More actions for ${name}` }).click();
+    await card.getByRole("menuitem", { exact: true, name: "Pin" }).click();
+    await expect(card.locator(".v2-assistant-pin")).toBeVisible();
+    await card.getByRole("button", { name: `More actions for ${name}` }).click();
+    await expect(card.getByRole("menuitem", { exact: true, name: "Unpin" })).toBeVisible();
+    await page.keyboard.press("Escape");
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
 
@@ -433,16 +435,15 @@ test("keeps the Library one-task and reachable at 390x844", async ({ page }) => 
   await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
 
-  await library.getByRole("button", { name: "New Assistant" }).click();
-  const editorSurface = page.getByTestId("assistant-library");
-  const editor = editorSurface.getByTestId("assistant-editor");
+  await library.getByRole("button", { exact: true, name: "New assistant" }).first().click();
+  const editor = library.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
-  await expect(editor.getByRole("button", { name: "Back to assistants" })).toBeInViewport();
+  await expect(library.getByRole("button", { exact: true, name: "Assistants" })).toBeInViewport();
   await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
-  await editor.getByRole("button", { name: "Back to assistants" }).click();
-  await expect(editorSurface).toHaveCount(0);
+  await library.getByRole("button", { exact: true, name: "Assistants" }).click();
+  await expect(editor).toHaveCount(0);
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
   await library.getByRole("button", { name: "Back to chat" }).click();
   await expect(library).toHaveCount(0);

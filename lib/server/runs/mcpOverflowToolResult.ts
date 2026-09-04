@@ -21,7 +21,7 @@ export function mcpResponseOverflowCode(error: unknown): McpFatalResponseErrorCo
 export function mcpResponseOverflowToolExecutionResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Search" | "Tool" = "Tool"
+  label: "Search" | "Tool" | "Workspace" = "Tool"
 ): ToolExecutionResult | null {
   const code = mcpResponseOverflowCode(error);
   if (!code || !(error instanceof McpClientSessionError)) return null;

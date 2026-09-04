@@ -25,6 +25,8 @@ import { createPrismaTemporaryChatDeletionHandler } from
 import { resetMemoryLexicalProjection } from
   "../lib/server/memory/searchProjection/repository";
 import { prisma } from "../lib/server/prisma";
+import { reconcileWorkspaceAfterRestore } from
+  "../lib/server/workspace/cleanup";
 
 const providerCredentialNames = [
   "ANTHROPIC_API_KEY",
@@ -124,6 +126,7 @@ async function main(): Promise<void> {
   // OpenSearch is excluded from backup authority. Replace restored historical
   // projection work with a PostgreSQL snapshot before any deletion replay can
   // append newer, ordered purge duties.
+  await reconcileWorkspaceAfterRestore(prisma, now);
   await resetMemoryLexicalProjection(prisma, { mode: "RESTORE", now });
   await reopenIncompleteCompletedDeletions(now);
   const coordinator = new MemoryCoordinator({

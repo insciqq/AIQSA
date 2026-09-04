@@ -45,7 +45,14 @@ const summary = {
   projectId: null,
   sourceRevision: 4,
   title: "Archived source",
-  updatedAt
+  updatedAt,
+  workspace: {
+    available: false,
+    enabled: false,
+    internetEnabled: null,
+    sessionState: null,
+    unavailableReason: "installation_disabled"
+  }
 } as const;
 
 const detail = {

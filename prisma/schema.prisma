@@ -119,6 +119,35 @@ enum AttachmentStatus {
   failed
 }
 
+enum AttachmentOrigin {
+  USER_UPLOAD
+  WORKSPACE_OUTPUT
+  WORKSPACE_EXPORT
+}
+
+enum WorkspaceSessionState {
+  PENDING
+  CREATING
+  READY
+  RUNNING
+  STOPPED
+  FAILED
+  DELETING
+}
+
+enum WorkspaceExportState {
+  PENDING
+  EXPORTING
+  COMPLETE
+  FAILED
+}
+
+enum WorkspaceCleanupState {
+  PENDING
+  RUNNING
+  FAILED
+}
+
 enum McpOAuthConnectionState {
   ready
   reauthorization_required
@@ -754,6 +783,7 @@ model User {
   smtpConfigurationEdits              SmtpControl[]                      @relation("SmtpControlUpdater")
   systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
   usageEvents                         UsageEvent[]
+  workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
 }
 
 model SmtpControl {
@@ -2573,6 +2603,7 @@ model Chat {
   temporaryRetentionDeadline      DateTime?
   pinned                          Boolean              @default(false)
   archived                        Boolean              @default(false)
+  workspaceEnabled                Boolean              @default(false)
   totalInputTokens                Int                  @default(0)
   totalOutputTokens               Int                  @default(0)
   totalReasoningTokens            Int                  @default(0)
@@ -2591,6 +2622,7 @@ model Chat {
   projectFolder                   ProjectFolder?       @relation(fields: [projectId, projectFolderId], references: [projectId, id], onDelete: Restrict, onUpdate: Restrict)
   sharedSnapshots                 SharedChatSnapshot[]
   user                            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceSession                WorkspaceSession?
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -2600,6 +2632,63 @@ model Chat {
   @@index([projectFolderId])
   @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
+}
+
+model WorkspacePolicy {
+  id              String   @id
+  enabled         Boolean  @default(false)
+  internetEnabled Boolean  @default(true)
+  version         Int      @default(1)
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       User?    @relation("WorkspacePolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+model WorkspaceSession {
+  id               String                @id @default(uuid())
+  chatId           String                @unique
+  sandboxName      String                @unique
+  runtimeSandboxId String?
+  imageRef         String
+  state            WorkspaceSessionState @default(PENDING)
+  internetEnabled  Boolean
+  policyRevision   Int
+  version          Int                   @default(1)
+  lastErrorCode    String?               @db.VarChar(64)
+  lastActiveAt     DateTime              @default(now())
+  stoppedAt        DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  chat             Chat                  @relation(fields: [chatId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  cleanupJob       WorkspaceCleanupJob?
+  runBindings      WorkspaceRunBinding[]
+
+  @@index([state, expiresAt])
+  @@index([state, lastActiveAt])
+}
+
+model WorkspaceCleanupJob {
+  id                 String                @id @default(uuid())
+  workspaceSessionId String                @unique
+  sandboxName        String
+  runtimeSandboxId   String?
+  state              WorkspaceCleanupState @default(PENDING)
+  claimToken         String?
+  claimedAt          DateTime?
+  attemptCount       Int                   @default(0)
+  nextAttemptAt      DateTime              @default(now())
+  lastAttemptAt      DateTime?
+  lastErrorCode      String?               @db.VarChar(64)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  workspaceSession   WorkspaceSession      @relation(fields: [workspaceSessionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([nextAttemptAt, claimedAt, createdAt])
+  @@index([state, nextAttemptAt])
 }
 
 model Message {
@@ -2643,56 +2732,58 @@ model Message {
 }
 
 model ModelRun {
-  id                          String                              @id @default(uuid())
-  chatId                      String
-  userId                      String
-  userMessageId               String
-  assistantMessageId          String?
-  assistantId                 String?
-  assistantRevisionId         String?
-  provider                    String
-  modelId                     String
-  status                      ModelRunStatus
-  normalizedRequest           Json?
-  providerResponseId          String?
-  inputTokens                 Int                                 @default(0)
-  cachedInputTokens           Int                                 @default(0)
-  cacheWriteInputTokens       Int                                 @default(0)
-  outputTokens                Int                                 @default(0)
-  reasoningTokens             Int                                 @default(0)
-  totalTokens                 Int                                 @default(0)
-  estimatedCostMicros         Int                                 @default(0)
-  errorPayload                Json?
-  toolLoopState               Json?
-  answerStartedAt             DateTime?
-  createdAt                   DateTime                            @default(now())
-  updatedAt                   DateTime                            @updatedAt
-  assistantMessage            Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
-  branchSourceMessages        Message[]                           @relation("BranchSourceModelRun")
+  id                           String                              @id @default(uuid())
+  chatId                       String
+  userId                       String
+  userMessageId                String
+  assistantMessageId           String?
+  assistantId                  String?
+  assistantRevisionId          String?
+  provider                     String
+  modelId                      String
+  status                       ModelRunStatus
+  normalizedRequest            Json?
+  providerResponseId           String?
+  inputTokens                  Int                                 @default(0)
+  cachedInputTokens            Int                                 @default(0)
+  cacheWriteInputTokens        Int                                 @default(0)
+  outputTokens                 Int                                 @default(0)
+  reasoningTokens              Int                                 @default(0)
+  totalTokens                  Int                                 @default(0)
+  estimatedCostMicros          Int                                 @default(0)
+  errorPayload                 Json?
+  toolLoopState                Json?
+  answerStartedAt              DateTime?
+  createdAt                    DateTime                            @default(now())
+  updatedAt                    DateTime                            @updatedAt
+  assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  branchSourceMessages         Message[]                           @relation("BranchSourceModelRun")
   /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
-  assistantRevision           AssistantRevision?                  @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
-  chat                        Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  events                      ModelRunEvent[]
-  mcpRunBindings              McpRunBinding[]
-  knowledgeRunBindings        KnowledgeRunBinding[]
-  knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
-  knowledgeRunSourceBindings  KnowledgeRunSourceBinding[]
-  knowledgeRunScope           KnowledgeRunScope?
-  knowledgeRetrievalSession   KnowledgeRetrievalSession?
-  knowledgeRuns               KnowledgeRun[]
-  knowledgeBudgetReservations KnowledgeBudgetReservation[]
-  knowledgeProviderAttempts   KnowledgeProviderAttempt[]
-  knowledgeDispatchManifests  KnowledgeEvidenceDispatchManifest[]
-  memoryHistoryRuns           MemoryHistoryRun[]
-  memoryToolEvents            MemoryToolEvent[]
-  memoryToolEgressReceipts    MemoryToolEgressReceipt[]
-  providerRunBindings         ProviderRunBinding[]
-  projectRunBinding           ProjectRunBinding?
-  searchRuns                  SearchRun[]
-  skillRunBindings            ModelRunSkillBinding[]
-  toolCalls                   ModelRunToolCall[]
-  userMessage                 Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
-  usageEvents                 UsageEvent[]
+  assistantRevision            AssistantRevision?                  @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
+  chat                         Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  events                       ModelRunEvent[]
+  mcpRunBindings               McpRunBinding[]
+  knowledgeRunBindings         KnowledgeRunBinding[]
+  knowledgeRunProfileBindings  KnowledgeRunProfileBinding[]
+  knowledgeRunSourceBindings   KnowledgeRunSourceBinding[]
+  knowledgeRunScope            KnowledgeRunScope?
+  knowledgeRetrievalSession    KnowledgeRetrievalSession?
+  knowledgeRuns                KnowledgeRun[]
+  knowledgeBudgetReservations  KnowledgeBudgetReservation[]
+  knowledgeProviderAttempts    KnowledgeProviderAttempt[]
+  knowledgeDispatchManifests   KnowledgeEvidenceDispatchManifest[]
+  memoryHistoryRuns            MemoryHistoryRun[]
+  memoryToolEvents             MemoryToolEvent[]
+  memoryToolEgressReceipts     MemoryToolEgressReceipt[]
+  providerRunBindings          ProviderRunBinding[]
+  projectRunBinding            ProjectRunBinding?
+  searchRuns                   SearchRun[]
+  skillRunBindings             ModelRunSkillBinding[]
+  toolCalls                    ModelRunToolCall[]
+  userMessage                  Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  usageEvents                  UsageEvent[]
+  workspaceRunBinding          WorkspaceRunBinding?
+  workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
 
   @@unique([userId, id])
   @@unique([userId, chatId, id])
@@ -3018,6 +3109,7 @@ model ModelRunToolCall {
   id                         String                      @id @default(uuid())
   modelRunId                 String
   mcpRunBindingId            String?
+  workspaceRunBindingId      String?
   roundIndex                 Int
   ordinal                    Int
   providerCallId             String
@@ -3032,6 +3124,7 @@ model ModelRunToolCall {
   updatedAt                  DateTime                    @updatedAt
   mcpRunBinding              McpRunBinding?              @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
   modelRun                   ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  workspaceRunBinding        WorkspaceRunBinding?        @relation(fields: [workspaceRunBindingId], references: [modelRunId], onDelete: SetNull, onUpdate: Restrict)
   knowledgeRun               KnowledgeRun?
   knowledgeBudgetReservation KnowledgeBudgetReservation?
   memoryHistoryRun           MemoryHistoryRun?
@@ -3042,6 +3135,7 @@ model ModelRunToolCall {
   @@unique([modelRunId, roundIndex, ordinal])
   @@unique([modelRunId, id])
   @@index([mcpRunBindingId])
+  @@index([workspaceRunBindingId])
   @@index([modelRunId, state])
   @@index([updatedAt, id])
 }
@@ -3455,6 +3549,8 @@ model Attachment {
   storageKey          String
   checksum            String?
   status              AttachmentStatus         @default(ready)
+  origin              AttachmentOrigin         @default(USER_UPLOAD)
+  producerModelRunId  String?
   processingErrorCode String?                  @db.VarChar(64)
   byteSize            Int
   extractedText       String?
@@ -3463,16 +3559,59 @@ model Attachment {
   updatedAt           DateTime                 @default(now()) @updatedAt
   chat                Chat?                    @relation(fields: [chatId], references: [id], onDelete: SetNull)
   processingJob       AttachmentProcessingJob?
+  producerModelRun    ModelRun?                @relation("WorkspaceProducedAttachment", fields: [producerModelRunId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   project             Project?                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
   uploader            User?                    @relation("ProjectAttachmentUploader", fields: [uploaderUserId], references: [id], onDelete: SetNull)
   user                User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceRunOutput  WorkspaceRunOutput?
 
   @@unique([id, userId])
   @@index([userId, createdAt])
   @@index([projectId, createdAt])
+  @@index([producerModelRunId])
   @@index([uploaderUserId])
   @@index([messageId])
   @@index([storageKey])
+}
+
+model WorkspaceRunBinding {
+  modelRunId          String               @id
+  workspaceSessionId  String
+  imageRef            String
+  internetEnabled     Boolean
+  policyRevision      Int
+  runtimeVersion      String
+  mcpVersion          String
+  toolCatalogHash     String               @db.Char(64)
+  toolDefinitions     Json
+  outputDirectory     String               @db.VarChar(255)
+  exportState         WorkspaceExportState @default(PENDING)
+  exportAttemptCount  Int                  @default(0)
+  lastExportErrorCode String?              @db.VarChar(64)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  modelRun            ModelRun             @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  workspaceSession    WorkspaceSession     @relation(fields: [workspaceSessionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  outputs             WorkspaceRunOutput[]
+  toolCalls           ModelRunToolCall[]
+
+  @@index([workspaceSessionId, createdAt])
+  @@index([exportState, updatedAt])
+}
+
+model WorkspaceRunOutput {
+  id                    String              @id @default(uuid())
+  workspaceRunBindingId String
+  attachmentId          String              @unique
+  relativePath          String              @db.VarChar(512)
+  checksum              String              @db.Char(64)
+  byteSize              Int
+  createdAt             DateTime            @default(now())
+  workspaceRunBinding   WorkspaceRunBinding @relation(fields: [workspaceRunBindingId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict)
+  attachment            Attachment          @relation(fields: [attachmentId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([workspaceRunBindingId, relativePath])
+  @@index([workspaceRunBindingId, createdAt])
 }
 
 model AttachmentProcessingJob {

@@ -16,7 +16,7 @@ export type CreatedAttachment = {
   metadata: unknown;
   mimeType: string;
   processingErrorCode: null;
-  status: "processing";
+  status: "processing" | "ready";
   storageKey: string;
   updatedAt?: Date | string;
 };
@@ -59,6 +59,7 @@ export type UploadHandlerDeps = {
   resolveAuth: RequestAuthResolver;
   storage?: StorageAdapter;
   uploadPermitGate?: UploadPermitGate;
+  workspaceScopeAvailable?: () => Promise<boolean>;
 };
 
 function safeFileName(fileName: string): string {
@@ -118,6 +119,11 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       }
 
       const requestedProjectId = form.get("projectId");
+      const requestedScope = form.get("scope");
+      const scope = requestedScope === "workspace" ? "workspace" as const : "attachment" as const;
+      if (requestedScope !== null && requestedScope !== "" && requestedScope !== "workspace") {
+        return Response.json({ error: "unsupported_type" }, { status: 400 });
+      }
       const projectId = typeof requestedProjectId === "string" && requestedProjectId.trim().length > 0
         ? requestedProjectId.trim()
         : null;
@@ -137,7 +143,8 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         byteSize: file.size,
         fileName: file.name,
         maxBytes,
-        mimeType: file.type
+        mimeType: file.type,
+        scope
       });
 
       if (!initialValidation.ok) {
@@ -146,6 +153,17 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           { status: initialValidation.code === "file_too_large" ? 413 : 400 }
         );
       }
+      if (initialValidation.kind === "file") {
+        let workspaceAvailable = false;
+        try {
+          workspaceAvailable = await deps.workspaceScopeAvailable?.() === true;
+        } catch {
+          workspaceAvailable = false;
+        }
+        if (!workspaceAvailable) {
+          return Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 });
+        }
+      }
 
       const buffer = Buffer.from(await file.arrayBuffer());
       const validation = validateUpload({
@@ -153,7 +171,8 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         bytes: buffer,
         fileName: file.name,
         maxBytes,
-        mimeType: file.type
+        mimeType: file.type,
+        scope
       });
 
       if (!validation.ok) {
@@ -170,6 +189,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       });
 
       let attachment: CreatedAttachment;
+      const status = validation.kind === "file" ? "ready" as const : "processing" as const;
       try {
         attachment = await deps.createAttachment({
           byteSize: buffer.byteLength,
@@ -180,7 +200,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           metadata: {},
           mimeType: validation.mimeType,
           processingErrorCode: null,
-          status: "processing",
+          status,
           storageKey,
           ...(target.projectId ? { projectId: target.projectId } : {}),
           ...(target.uploaderDisplayName ? { uploaderDisplayName: target.uploaderDisplayName } : {}),
@@ -211,11 +231,13 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         throw error;
       }
 
-      try {
-        deps.kickProcessing?.();
-      } catch {
-        // The persisted job is authoritative; the coordinator interval or a
-        // later process restart will reconcile it if this wake-up fails.
+      if (attachment.status === "processing") {
+        try {
+          deps.kickProcessing?.();
+        } catch {
+          // The persisted job is authoritative; the coordinator interval or a
+          // later process restart will reconcile it if this wake-up fails.
+        }
       }
 
       return Response.json({

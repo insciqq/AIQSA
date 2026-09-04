@@ -3,9 +3,10 @@ import { prisma } from "../prisma";
 import { createPrismaProjectRepository } from "./prismaRepository";
 import { createPrismaProjectContentRepository } from "./contentRepository";
 import { createPrismaProjectMemoryRepository } from "./memoryRepository";
+import { workspaceRuntime } from "../workspace/defaultServices";
 
 export const defaultProjectHandlerDeps = {
-  repository: createPrismaProjectRepository(prisma),
+  repository: createPrismaProjectRepository(prisma, { workspaceRuntime }),
   resolveAuth: resolveRequestAuth
 };
 

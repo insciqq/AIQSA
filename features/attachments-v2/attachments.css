@@ -185,11 +185,21 @@
   gap: 0.3125rem;
 }
 
-.v2-sent-attachments li span {
+.v2-sent-attachments li a {
   max-width: 18rem;
   overflow: hidden;
+  color: inherit;
   text-overflow: ellipsis;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.16em;
   white-space: nowrap;
+}
+
+.v2-sent-attachments li a:hover,
+.v2-sent-attachments li a:focus-visible {
+  color: var(--v2-color-text);
+  text-decoration-color: currentcolor;
 }
 
 .v2-conversation-turn[data-role="user"] .v2-sent-attachments {

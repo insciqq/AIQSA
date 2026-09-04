@@ -177,11 +177,13 @@ const preparingSystemConfiguration = Object.freeze({
   adapterKind: "openai_responses_compatible",
   answerSelectable: true,
   capabilities: {
+    forcedToolCalling: true,
     nativePdfInput: false,
     nativeSearch: false,
     pdf: false,
     reasoning: false,
     streaming: false,
+    structuredOutput: true,
     toolCalling: true,
     vision: false
   },
@@ -412,6 +414,12 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
       credentialVersionId,
       evidence: {
         detail: "ok",
+        forcedToolCall: {
+          adapterKind: preparingSystemConfiguration.adapterKind,
+          probeVersion: 1,
+          upstreamModelId: preparingSystemConfiguration.upstreamModelId,
+          verified: true
+        },
         structuredOutput: {
           adapterKind: preparingSystemConfiguration.adapterKind,
           probeVersion: 2,
@@ -1717,23 +1725,22 @@ describe("PREPARING run orchestration", () => {
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
         }
       };
-      let releaseLock!: () => void;
       let reportLocked!: () => void;
       const locked = new Promise<void>((resolve) => {
         reportLocked = resolve;
-      });
-      const release = new Promise<void>((resolve) => {
-        releaseLock = resolve;
       });
       const blocker = prisma.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(
           'LOCK TABLE "UserMemorySettings" IN ACCESS EXCLUSIVE MODE'
         );
         reportLocked();
-        await release;
+        // Keep the lock beyond the 2.5 s admission-transaction budget using
+        // PostgreSQL's clock. A JavaScript release timer can be delayed by a
+        // saturated full-suite worker and turn this deadline assertion into
+        // a test of event-loop scheduling instead of the database contract.
+        await tx.$queryRaw(Prisma.sql`SELECT 1 AS "slept" FROM pg_sleep(3)`);
       }, { timeout: 10_000 });
       await locked;
-      const releaseTimer = setTimeout(releaseLock, 3_000);
       try {
         const startedAt = Date.now();
         const created = await createPrismaRunRepository(prisma, {
@@ -1793,8 +1800,6 @@ describe("PREPARING run orchestration", () => {
           retrievalAttemptId: attempt.id
         });
       } finally {
-        clearTimeout(releaseTimer);
-        releaseLock();
         await blocker;
       }
     });
@@ -2652,7 +2657,7 @@ describe("PREPARING run orchestration", () => {
             kind: "UNRESTRICTED"
           }]
         },
-        plannerFallbackReason: "memory_action_intent_unavailable"
+        plannerFallbackReason: null
       });
       expect(attempt.budgetSnapshot).not.toHaveProperty("degradationCode");
       expect(binding).toMatchObject({

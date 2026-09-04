@@ -111,7 +111,25 @@ export function humanizeErrorCode(code: string): string {
     unsupported_attachment_type: "Attachment is not supported by this model",
     unsupported_search_strategy: "Search is not supported for this model",
     upload_malformed: "Upload response was malformed",
-    workspace_malformed: "Workspace response was malformed"
+    workspace_archive_in_progress: "A Workspace archive is already being prepared. Try again shortly",
+    workspace_archive_limit_exceeded: "This Workspace is too large to archive. Remove files and try again",
+    workspace_attachment_unavailable: "A Workspace attachment is unavailable. Re-upload it and try again",
+    workspace_busy: "Another Workspace operation is still running. Stop it or wait, then try again",
+    workspace_disabled: "Workspace is disabled by the administrator. Turn it off to continue in normal chat",
+    workspace_intent_invalid: "Workspace settings were not accepted. Refresh the chat and try again",
+    workspace_lifecycle_action_failed: "The Workspace action could not be completed. Try again",
+    workspace_malformed: "Workspace response was malformed",
+    workspace_model_tools_required: "Choose a model with tool support to use Workspace",
+    workspace_not_started: "Workspace has not started yet",
+    workspace_output_export_failed: "Generated files could not be saved. Check the Workspace output and try again",
+    workspace_output_limit_exceeded: "Workspace generated files exceed the output limit. Remove files and try again",
+    workspace_reset_conflict: "Stop the active response before resetting Workspace",
+    workspace_runtime_incompatible: "Workspace runtime is incompatible with this installation. Ask an administrator to check it",
+    workspace_runtime_unavailable: "Workspace runtime is unavailable. Turn Workspace off or try again later",
+    workspace_session_create_failed: "Workspace could not be created. Try again",
+    workspace_session_lost: "The previous Workspace was lost. A clean environment will be created from original attachments",
+    workspace_tool_cancelled: "The Workspace command was stopped",
+    workspace_tool_timeout: "The Workspace command exceeded its time limit and was stopped"
   };
 
   return `${labels[raw] ?? raw.replace(/_/g, " ")} (${raw})`;

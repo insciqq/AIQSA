@@ -26,8 +26,10 @@ export function pdfProcessingForAttachment(
 
 export function attachmentWarningsForModel(
   attachments: readonly ComposerAttachment[],
-  model: CatalogModel | undefined
+  model: CatalogModel | undefined,
+  workspaceEnabled = false
 ): ComposerAttachmentWarning[] {
+  if (workspaceEnabled) return [];
   const warnings: ComposerAttachmentWarning[] = [];
 
   for (const attachment of attachments) {
@@ -75,16 +77,26 @@ export function attachmentWarningsForModel(
 
 export function firstBlockingAttachmentWarning(
   attachments: readonly ComposerAttachment[],
-  model: CatalogModel | undefined
+  model: CatalogModel | undefined,
+  workspaceEnabled = false
 ): ComposerAttachmentWarning | null {
-  return attachmentWarningsForModel(attachments, model).find((warning) => warning.blocking) ?? null;
+  return attachmentWarningsForModel(attachments, model, workspaceEnabled)
+    .find((warning) => warning.blocking) ?? null;
 }
 
 export function attachmentBlocksSend(
   attachment: ComposerAttachment,
-  model: CatalogModel | undefined
+  model: CatalogModel | undefined,
+  workspaceEnabled = false
 ): boolean {
   const status = attachment.status ?? "ready";
+  if (workspaceEnabled) {
+    // Upload settlement happens before an attachment enters the composer.
+    // Parser work is optional for Workspace; storage-integrity failures are not.
+    return status === "failed" && directPdfStorageFailureCodes.has(
+      attachment.processingErrorCode ?? ""
+    );
+  }
   const directPdf = attachment.kind === "pdf" &&
     model?.capabilities.documentInputMode === "native_pdf";
 
@@ -97,8 +109,12 @@ export function attachmentBlocksSend(
 }
 
 export function attachmentPolicyForModel(
-  model: CatalogModel | undefined
+  model: CatalogModel | undefined,
+  workspaceFilesAvailable = false
 ): ComposerAttachmentPolicy {
+  if (workspaceFilesAvailable) {
+    return { documents: true, files: true, images: true, pdfs: true };
+  }
   return {
     documents: Boolean(model),
     images: Boolean(model?.capabilities.imageInput),
@@ -110,9 +126,14 @@ export function attachmentPolicyForModel(
 
 export function modelSupportsAttachment(
   model: CatalogModel | undefined,
-  attachment: ComposerAttachment
+  attachment: ComposerAttachment,
+  workspaceEnabled = false
 ): boolean {
-  const policy = attachmentPolicyForModel(model);
+  const policy = attachmentPolicyForModel(model, workspaceEnabled);
+
+  if (attachment.kind === "file") {
+    return Boolean(policy.files);
+  }
 
   if (attachment.kind === "image") {
     return policy.images;
@@ -123,7 +144,8 @@ export function modelSupportsAttachment(
 
 export function partitionAttachmentsForModel(
   attachments: readonly ComposerAttachment[],
-  model: CatalogModel | undefined
+  model: CatalogModel | undefined,
+  workspaceEnabled = false
 ): {
   supported: ComposerAttachment[];
   unsupported: ComposerAttachment[];
@@ -132,7 +154,7 @@ export function partitionAttachmentsForModel(
   const unsupported: ComposerAttachment[] = [];
 
   for (const attachment of attachments) {
-    (modelSupportsAttachment(model, attachment) ? supported : unsupported).push(
+    (modelSupportsAttachment(model, attachment, workspaceEnabled) ? supported : unsupported).push(
       attachment
     );
   }

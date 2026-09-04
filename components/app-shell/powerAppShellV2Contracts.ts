@@ -30,6 +30,11 @@ import type { RefObject } from "react";
 import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
+import type {
+  ChatWorkspaceState,
+  ThreadGeneratedFile,
+  WorkspaceUnavailableReason
+} from "@/lib/contracts/workspace";
 import type { ProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 
 export type ShellSessionView = {
@@ -269,6 +274,19 @@ export type ShellComposerView = {
   useOrganizationModelDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
+  workspace: {
+    archive(): Promise<ThreadGeneratedFile | null>;
+    available: boolean;
+    busy: boolean;
+    commandRunning: boolean;
+    enabled: boolean;
+    internetEnabled: boolean | null;
+    loading: boolean;
+    reset(): Promise<boolean>;
+    sessionState: ChatWorkspaceState["sessionState"];
+    setEnabled(value: boolean, reason?: "file_selection" | "user"): Promise<boolean>;
+    unavailableReason?: WorkspaceUnavailableReason;
+  };
 };
 
 export type ShellBranchesView = {

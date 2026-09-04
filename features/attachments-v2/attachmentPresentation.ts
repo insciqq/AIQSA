@@ -56,16 +56,21 @@ function failureDetail(attachment: ComposerAttachment): string {
 export function attachmentItemsForV2(
   attachments: readonly ComposerAttachment[],
   warnings: readonly ComposerAttachmentWarning[] = [],
-  model?: CatalogModel
+  model?: CatalogModel,
+  workspaceEnabled = false
 ): ComposerAttachmentItemV2[] {
   const warningById = new Map(warnings.map((warning) => [warning.attachmentId, warning]));
   return attachments.map((attachment) => {
     const status = attachment.status ?? "ready";
     const warning = warningById.get(attachment.id);
-    const blocksSend = attachmentBlocksSend(attachment, model);
+    const blocksSend = attachmentBlocksSend(attachment, model, workspaceEnabled);
     const directPdf = attachment.kind === "pdf" &&
       model?.capabilities.documentInputMode === "native_pdf";
-    const detail = status === "failed" && directPdf && !blocksSend
+    const detail = workspaceEnabled && status === "failed" && !blocksSend
+      ? "Parser processing failed. Workspace can use the stored original file."
+      : workspaceEnabled && status === "processing" && !blocksSend
+        ? "Workspace can use the stored original while parsing continues."
+        : status === "failed" && directPdf && !blocksSend
       ? "Local text extraction failed. The original PDF will be sent directly to the selected provider."
       : status === "processing" && directPdf && !blocksSend
         ? "The original PDF can be sent directly while local text extraction continues."

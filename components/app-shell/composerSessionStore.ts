@@ -52,6 +52,9 @@ export type ComposerSessionSnapshot = {
   } | null;
   pendingUploadGenerations: number[];
   revision: number;
+  /** Chat-scoped execution intent. For blank sessions this is committed with
+   * the first send; saved-chat sessions mirror the canonical chat flag. */
+  workspaceEnabled: boolean;
 };
 
 export type ComposerEditToken = ComposerPendingEdit & {
@@ -63,6 +66,7 @@ export type ComposerSendToken = {
   draft: string;
   generation: number;
   sourceKey: ComposerSessionKey;
+  workspaceEnabled: boolean;
 };
 
 export type ComposerSendOutcome = "cancelled" | "failed" | "succeeded";
@@ -80,6 +84,7 @@ export type ComposerSessionPatch = Partial<
     | "editingError"
     | "editingMessageId"
     | "operationError"
+    | "workspaceEnabled"
   >
 >;
 
@@ -144,7 +149,8 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   pendingEdit: null,
   pendingSend: null,
   pendingUploadGenerations: emptyUploadGenerations,
-  revision: 0
+  revision: 0,
+  workspaceEnabled: false
 }) as ComposerSessionSnapshot;
 
 function newSession(): ComposerSessionSnapshot {
@@ -262,6 +268,8 @@ function patchedSession(
   const errorPatched = hasOwn(patch, "operationError");
   const errorChanged = errorPatched && patch.operationError !== current.operationError;
   const retryabilityChanged = errorPatched && current.operationErrorRetryable;
+  const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
+    patch.workspaceEnabled !== current.workspaceEnabled;
 
   if (
     !attachmentsChanged &&
@@ -270,7 +278,8 @@ function patchedSession(
     !editingErrorChanged &&
     !editingMessageChanged &&
     !errorChanged &&
-    !retryabilityChanged
+    !retryabilityChanged &&
+    !workspaceChanged
   ) {
     return current;
   }
@@ -283,10 +292,11 @@ function patchedSession(
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
+    ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged ? 1 : 0)
+    revision: current.revision + (attachmentsChanged || draftChanged || workspaceChanged ? 1 : 0)
   };
 }
 
@@ -406,7 +416,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       attachments: [...session.attachments],
       draft: session.draft,
       generation,
-      sourceKey: key
+      sourceKey: key,
+      workspaceEnabled: session.workspaceEnabled
     };
     set({
       sendGenerationCounter: generation,

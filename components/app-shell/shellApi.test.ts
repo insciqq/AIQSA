@@ -192,7 +192,13 @@ describe("chat wire mapping", () => {
     pinned: false,
     title: "Mapped chat",
     updatedAt: "2026-07-12T00:01:00.000Z",
-    usageStats: null
+    usageStats: null,
+    workspace: {
+      available: true,
+      enabled: true,
+      internetEnabled: true,
+      sessionState: "ready"
+    }
   };
 
   it("keeps workspace summaries message-free", () => {
@@ -208,7 +214,8 @@ describe("chat wire mapping", () => {
       pinned: false,
       projectId: null,
       title: "Mapped chat",
-      updatedAt: "2026-07-12T00:01:00.000Z"
+      updatedAt: "2026-07-12T00:01:00.000Z",
+      workspace: detail.workspace
     });
   });
 

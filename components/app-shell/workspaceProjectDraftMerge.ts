@@ -13,6 +13,10 @@ function validPendingProjectDraft(
   );
 }
 
+function validPendingPersonalDraft(chat: WorkspaceChatSummary): boolean {
+  return Boolean(chat.pendingPersonalDraft && !chat.projectId);
+}
+
 function sortProjectChats(chats: readonly ProjectChatSummaryWire[]): ProjectChatSummaryWire[] {
   return [...chats].sort((left, right) =>
     Number(left.archived) - Number(right.archived) ||
@@ -22,9 +26,9 @@ function sortProjectChats(chats: readonly ProjectChatSummaryWire[]): ProjectChat
 }
 
 /**
- * Reconciles server-owned chat summaries while retaining only valid local
- * Project first-send reservations. A persisted row with the same id always
- * promotes the draft and clears its local reservation marker.
+ * Reconciles server-owned chat summaries while retaining valid local
+ * first-send reservations. A persisted row with the same id always promotes
+ * the draft and clears its local reservation marker.
  */
 export function mergeWorkspaceProjectDrafts(input: Readonly<{
   currentChats: readonly WorkspaceChatSummary[];
@@ -41,9 +45,12 @@ export function mergeWorkspaceProjectDrafts(input: Readonly<{
     : input.incomingChats.filter((chat) => chat.projectId === input.projectId);
   const incomingIds = new Set(incoming.map((chat) => chat.id));
   const currentById = new Map(input.currentChats.map((chat) => [chat.id, chat]));
-  const pending = input.currentChats.filter((chat) =>
-    validPendingProjectDraft(chat, input.projectId) && !incomingIds.has(chat.id)
-  );
+  const pending = input.currentChats.filter((chat) => {
+    if (incomingIds.has(chat.id)) return false;
+    return input.projectId === undefined
+      ? validPendingProjectDraft(chat) || validPendingPersonalDraft(chat)
+      : validPendingProjectDraft(chat, input.projectId);
+  });
   const outsideScope = input.projectId === undefined
     ? []
     : input.currentChats.filter((chat) => chat.projectId !== input.projectId);
@@ -53,6 +60,7 @@ export function mergeWorkspaceProjectDrafts(input: Readonly<{
     ...incoming.map((chat) => ({
       ...currentById.get(chat.id),
       ...chat,
+      pendingPersonalDraft: undefined,
       pendingProjectDraft: undefined
     }))
   ]);

@@ -7,6 +7,95 @@
   line-height: 1.45;
 }
 
+.v2-generated-files {
+  display: grid;
+  gap: 0.375rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-generated-files h3 {
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.v2-generated-files ul {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-generated-files li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface2);
+}
+
+.v2-generated-file-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+}
+
+.v2-generated-file-copy strong {
+  overflow: hidden;
+  color: var(--v2-color-text);
+  font-size: 0.78125rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-generated-file-copy small {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+}
+
+.v2-generated-file-download {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0 0.5rem;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-accent);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.v2-generated-file-download:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-generated-file-download .v2-icon {
+  width: 0.8125rem;
+  height: 0.8125rem;
+}
+
+@media (max-width: 30rem) {
+  .v2-generated-files li {
+    grid-template-columns: 1rem minmax(0, 1fr);
+  }
+
+  .v2-generated-file-download {
+    grid-column: 2;
+    width: fit-content;
+    padding-left: 0;
+  }
+}
+
 /* Accepted Assistant identity heads the answer (F6): avatar + name, quiet
    secondary ink, never a revision or raw model id. */
 .v2-answer-identity {

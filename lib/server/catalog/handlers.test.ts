@@ -349,7 +349,7 @@ describe("catalog handler", () => {
       searchPreferenceSource: "organization"
     });
     expect(inherited.models.find((model) => model.modelId === "fake-qsa")?.searchStrategyIds)
-      .toEqual(["search-disabled"]);
+      .toEqual(["search-disabled", "perplexity-tool-search"]);
 
     const personalOff = buildCurrentUserCatalog({
       ...base,

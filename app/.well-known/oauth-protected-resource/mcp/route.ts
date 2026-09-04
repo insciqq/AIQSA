@@ -2,6 +2,7 @@ import { defaultInboundMcpOAuthConfiguration } from "@/lib/server/memoryMcp/oaut
 import { inboundMcpProtectedResourceMetadata } from "@/lib/server/memoryMcp/oauth/service";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export function GET(): Response {
   return Response.json(

@@ -1060,19 +1060,22 @@ describe("Memory lexical history index persistence", () => {
 
       const lexical = await prisma.$queryRaw<Array<{
         id: string;
-        itemType: "RECALL_CHUNK" | "RECALL_ROUND";
+        itemType: "RECALL_CHUNK" | "RECALL_ROUND_SEGMENT";
       }>>(Prisma.sql`
         SELECT entry."id", entry."itemType"::text AS "itemType"
         FROM "MemorySearchEntry" AS entry
         WHERE entry."userId" = ${userId}
           AND entry."indexGenerationId" = ${generation.id}
-          AND entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
+          AND entry."itemType" IN (
+            'RECALL_CHUNK'::"MemorySearchItemType",
+            'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+          )
           AND entry."searchVectorSimple" @@ plainto_tsquery('simple', 'кофе')
       `);
       expect(lexical).toHaveLength(2);
       expect(lexical).toEqual(expect.arrayContaining([
         { id: entries[0]!.id, itemType: "RECALL_CHUNK" },
-        { id: expect.any(String), itemType: "RECALL_ROUND" }
+        { id: expect.any(String), itemType: "RECALL_ROUND_SEGMENT" }
       ]));
 
       await prisma.$transaction(async (tx) => {

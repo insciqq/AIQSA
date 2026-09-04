@@ -2,6 +2,8 @@
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
+import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import {
   MEMORY_UI_LOCALE,
   formatMemoryUiCopy,
@@ -24,6 +26,7 @@ import type {
   ThreadKnowledgeCitation,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
+import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import {
   MEMORY_STATEMENT_MAX_LENGTH,
   isSafeMemorySourceActionHref,
@@ -517,8 +520,11 @@ export function AnswerOutputsV2({
     artifact.knowledgeState.answer === "insufficient_evidence" ||
     artifact.knowledgeState.scope === "partial_sources_ready"
   ));
+  const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
 
-  if (!artifact || (!hasSuggestions && !hasMemoryStatus && !hasKnowledgeState)) {
+  if (!artifact || (
+    !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles
+  )) {
     return null;
   }
 
@@ -526,10 +532,54 @@ export function AnswerOutputsV2({
     <div className="v2-answer-outputs" data-testid="answer-outputs">
       {artifact.memoryStatus ? <MemoryStatusV2 status={artifact.memoryStatus} /> : null}
       {artifact.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
+      {hasGeneratedFiles ? (
+        <GeneratedFilesV2 files={artifact.generatedFiles ?? []} />
+      ) : null}
       {artifact.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
       ) : null}
     </div>
+  );
+}
+
+function generatedFileType(file: ThreadGeneratedFile): string {
+  const extension = file.fileName.split(".").at(-1)?.toLocaleUpperCase();
+  if (extension && extension !== file.fileName.toLocaleUpperCase() && extension.length <= 8) {
+    return extension === "GZ" && file.fileName.toLocaleLowerCase().endsWith(".tar.gz")
+      ? "TAR.GZ"
+      : extension;
+  }
+  const subtype = file.mimeType.split("/", 2)[1]?.split(";", 1)[0];
+  return subtype && subtype.length <= 20 ? subtype.toLocaleUpperCase() : "FILE";
+}
+
+export function GeneratedFilesV2({ files }: Readonly<{
+  files: readonly ThreadGeneratedFile[];
+}>) {
+  if (files.length === 0) return null;
+  return (
+    <section className="v2-generated-files" aria-label="Generated files">
+      <h3>Generated files</h3>
+      <ul>
+        {files.map((file) => (
+          <li key={file.attachmentId}>
+            <UiV2Icon name="file" />
+            <span className="v2-generated-file-copy">
+              <strong title={file.relativePath}>{file.fileName}</strong>
+              <small>{generatedFileType(file)} · {formatAttachmentBytes(file.byteSize)}</small>
+            </span>
+            <a
+              className="v2-generated-file-download v2-focusable"
+              download={file.fileName}
+              href={attachmentDownloadHref(file.attachmentId)}
+            >
+              <UiV2Icon name="download" />
+              Download
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

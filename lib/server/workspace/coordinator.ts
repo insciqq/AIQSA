@@ -1,0 +1,961 @@
+import { createHash } from "node:crypto";
+import type { Prisma, PrismaClient } from "@prisma/client";
+import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
+import {
+  isSafeWorkspaceRelativePath,
+  WORKSPACE_MCP_TOOL_ALLOWLIST,
+  workspaceAttachmentPath,
+  workspaceMessageManifestPath,
+  workspaceToolIsAllowed
+} from "@/lib/domain/workspace";
+import { uploadFormatForExtension, type UploadKind } from "@/lib/domain/uploadFormats";
+import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
+import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
+import type { ModelToolCall, RunTool, ToolExecutionResult } from "@/lib/server/tools/types";
+import {
+  getStoredObjectStream,
+  type StorageAdapter
+} from "@/lib/server/uploads/storage";
+import { resolveProjectAccess } from "@/lib/server/projects/access";
+import type { WorkspaceConfig } from "./config";
+import type {
+  WorkspaceAttachmentStream,
+  WorkspaceBoundTool,
+  WorkspaceOutputStream,
+  WorkspaceRuntime,
+  WorkspaceToolResult
+} from "./runtime";
+import { WorkspaceRuntimeError } from "./runtime";
+import { workspaceRunTools } from "./admission";
+import {
+  namespacedWorkspaceToolName,
+  workspaceToolNameFromNamespaced
+} from "./toolCatalog";
+
+type WorkspaceAttachmentRecord = Readonly<{
+  attachmentId: string;
+  byteSize: number;
+  checksum: string;
+  fileName: string;
+  kind: "document" | "file" | "image" | "pdf";
+  messageId: string;
+  mimeType: string;
+  storageKey: string;
+}>;
+
+export type WorkspaceExecutionBinding = Readonly<{
+  assistantMessageId: string;
+  chatId: string;
+  imageRef: string;
+  internetEnabled: boolean;
+  mcpVersion: string;
+  outputDirectory: string;
+  policyRevision: number;
+  projectId: string | null;
+  runId: string;
+  runtimeSandboxId: string | null;
+  runtimeVersion: string;
+  sandboxName: string;
+  sessionId: string;
+  sessionState: string;
+  toolCatalogHash: string;
+  toolDefinitions: readonly WorkspaceBoundTool[];
+  userId: string;
+}>;
+
+export type WorkspaceCoordinatorRepository = Readonly<{
+  attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
+  binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
+  generatedFiles(input: Readonly<{ runId: string; userId: string }>): Promise<readonly ThreadGeneratedFile[]>;
+  markExportComplete(input: Readonly<{ runId: string; sessionId: string }>): Promise<boolean>;
+  markExportFailed(input: Readonly<{ code: string; runId: string; sessionId: string }>): Promise<void>;
+  markExporting(input: Readonly<{ runId: string; sessionId: string }>): Promise<"complete" | "exporting">;
+  markSessionFailed(input: Readonly<{ code: string; sessionId: string }>): Promise<void>;
+  markSessionLost(input: Readonly<{
+    runtimeSandboxId: string;
+    sessionId: string;
+  }>): Promise<boolean>;
+  markSessionRunning(input: Readonly<{
+    expiresAt: Date;
+    lastActiveAt: Date;
+    runtimeSandboxId: string;
+    sessionId: string;
+  }>): Promise<boolean>;
+  markSessionStarting(input: Readonly<{
+    expiresAt: Date;
+    lastActiveAt: Date;
+    sessionId: string;
+  }>): Promise<boolean>;
+  markSessionReady(input: Readonly<{
+    expiresAt: Date;
+    lastActiveAt: Date;
+    sessionId: string;
+  }>): Promise<void>;
+  settleOutput(input: Readonly<{
+    binding: WorkspaceExecutionBinding;
+    output: Omit<WorkspaceOutputStream, "body" | "opaqueFileId">;
+    storageKey: string;
+  }>): Promise<ThreadGeneratedFile>;
+}>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toolDefinitions(value: unknown): WorkspaceBoundTool[] | null {
+  if (!Array.isArray(value) || value.length !== WORKSPACE_MCP_TOOL_ALLOWLIST.length) return null;
+  const tools = value.map((entry): WorkspaceBoundTool | null => {
+    if (
+      !isRecord(entry) ||
+      typeof entry.description !== "string" ||
+      !entry.description.trim() ||
+      entry.description.length > 4_096 ||
+      !isRecord(entry.inputSchema) ||
+      typeof entry.namespacedName !== "string" ||
+      !entry.namespacedName.trim() ||
+      entry.namespacedName.length > 256 ||
+      typeof entry.originalName !== "string" ||
+      !workspaceToolIsAllowed(entry.originalName) ||
+      entry.namespacedName !== namespacedWorkspaceToolName(entry.originalName)
+    ) return null;
+    return entry as WorkspaceBoundTool;
+  });
+  if (tools.some((tool) => tool === null)) return null;
+  const parsed = tools as WorkspaceBoundTool[];
+  const originalNames = new Set(parsed.map((tool) => tool.originalName));
+  return originalNames.size === WORKSPACE_MCP_TOOL_ALLOWLIST.length &&
+    WORKSPACE_MCP_TOOL_ALLOWLIST.every((name) => originalNames.has(name))
+    ? parsed
+    : null;
+}
+
+function outputKind(fileName: string): UploadKind {
+  return uploadFormatForExtension(fileName, "workspace")?.kind ?? "file";
+}
+
+function generatedFile(row: Readonly<{
+  attachment: { byteSize: number; fileName: string; id: string; mimeType: string };
+  relativePath: string;
+}>): ThreadGeneratedFile {
+  return {
+    attachmentId: row.attachment.id,
+    byteSize: row.attachment.byteSize,
+    fileName: row.attachment.fileName,
+    mimeType: row.attachment.mimeType,
+    relativePath: row.relativePath
+  };
+}
+
+export function createPrismaWorkspaceCoordinatorRepository(
+  prisma: PrismaClient
+): WorkspaceCoordinatorRepository {
+  async function loadBinding(
+    runId: string,
+    userId: string
+  ): Promise<WorkspaceExecutionBinding | null> {
+    const run = await prisma.modelRun.findUnique({
+      select: {
+        assistantMessageId: true,
+        chat: { select: { projectId: true, userId: true } },
+        chatId: true,
+        id: true,
+        userId: true,
+        workspaceRunBinding: {
+          select: {
+            imageRef: true,
+            internetEnabled: true,
+            mcpVersion: true,
+            outputDirectory: true,
+            policyRevision: true,
+            runtimeVersion: true,
+            toolCatalogHash: true,
+            toolDefinitions: true,
+            workspaceSession: {
+              select: {
+                id: true,
+                runtimeSandboxId: true,
+                sandboxName: true,
+                state: true
+              }
+            }
+          }
+        }
+      },
+      where: { id: runId }
+    });
+    if (!run || run.userId !== userId || !run.assistantMessageId || !run.workspaceRunBinding) {
+      return null;
+    }
+    if (run.chat.projectId) {
+      const access = await resolveProjectAccess(prisma, {
+        minimumRole: "CONTRIBUTOR",
+        projectId: run.chat.projectId,
+        requireActive: true,
+        userId
+      });
+      if (!access) return null;
+    } else if (run.chat.userId !== userId) {
+      return null;
+    }
+    const definitions = toolDefinitions(run.workspaceRunBinding.toolDefinitions);
+    if (
+      !definitions ||
+      hashCanonicalMcpValue(definitions) !== run.workspaceRunBinding.toolCatalogHash
+    ) return null;
+    const session = run.workspaceRunBinding.workspaceSession;
+    return {
+      assistantMessageId: run.assistantMessageId,
+      chatId: run.chatId,
+      imageRef: run.workspaceRunBinding.imageRef,
+      internetEnabled: run.workspaceRunBinding.internetEnabled,
+      mcpVersion: run.workspaceRunBinding.mcpVersion,
+      outputDirectory: run.workspaceRunBinding.outputDirectory,
+      policyRevision: run.workspaceRunBinding.policyRevision,
+      projectId: run.chat.projectId,
+      runId: run.id,
+      runtimeSandboxId: session.runtimeSandboxId,
+      runtimeVersion: run.workspaceRunBinding.runtimeVersion,
+      sandboxName: session.sandboxName,
+      sessionId: session.id,
+      sessionState: session.state,
+      toolCatalogHash: run.workspaceRunBinding.toolCatalogHash,
+      toolDefinitions: definitions,
+      userId: run.userId
+    };
+  }
+
+  return {
+    async binding({ runId, userId }) {
+      return loadBinding(runId, userId);
+    },
+    async attachments(binding) {
+      const rows = await prisma.attachment.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: {
+          byteSize: true,
+          checksum: true,
+          fileName: true,
+          id: true,
+          kind: true,
+          messageId: true,
+          mimeType: true,
+          storageKey: true
+        },
+        where: {
+          chatId: binding.chatId,
+          checksum: { not: null },
+          messageId: { not: null },
+          origin: "USER_UPLOAD",
+          ...(binding.projectId
+            ? { projectId: binding.projectId }
+            : { projectId: null, userId: binding.userId })
+        }
+      });
+      return rows.flatMap((row) =>
+        row.checksum && row.messageId &&
+        (row.kind === "document" || row.kind === "file" || row.kind === "image" || row.kind === "pdf")
+          ? [{
+              attachmentId: row.id,
+              byteSize: row.byteSize,
+              checksum: row.checksum,
+              fileName: row.fileName,
+              kind: row.kind,
+              messageId: row.messageId,
+              mimeType: row.mimeType,
+              storageKey: row.storageKey
+            }]
+          : []
+      );
+    },
+    async generatedFiles({ runId, userId }) {
+      const binding = await loadBinding(runId, userId);
+      if (!binding) return [];
+      const rows = await prisma.workspaceRunOutput.findMany({
+        orderBy: [{ relativePath: "asc" }, { id: "asc" }],
+        select: {
+          attachment: {
+            select: { byteSize: true, fileName: true, id: true, mimeType: true }
+          },
+          relativePath: true
+        },
+        where: { workspaceRunBindingId: runId }
+      });
+      return rows.map(generatedFile);
+    },
+    async markExportComplete({ runId, sessionId }) {
+      const updated = await prisma.workspaceRunBinding.updateMany({
+        data: { exportState: "COMPLETE", lastExportErrorCode: null },
+        where: {
+          modelRunId: runId,
+          workspaceSessionId: sessionId,
+          exportState: { in: ["PENDING", "EXPORTING", "FAILED"] }
+        }
+      });
+      return updated.count === 1;
+    },
+    async markExportFailed({ code, runId, sessionId }) {
+      await prisma.workspaceRunBinding.updateMany({
+        data: { exportState: "FAILED", lastExportErrorCode: code.slice(0, 64) },
+        where: { modelRunId: runId, workspaceSessionId: sessionId }
+      });
+    },
+    async markExporting({ runId, sessionId }) {
+      return prisma.$transaction(async (tx) => {
+        const binding = await tx.workspaceRunBinding.findUnique({
+          select: { exportState: true },
+          where: { modelRunId: runId }
+        });
+        if (!binding) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        if (binding.exportState === "COMPLETE") return "complete" as const;
+        await tx.workspaceRunBinding.update({
+          data: {
+            exportAttemptCount: { increment: 1 },
+            exportState: "EXPORTING",
+            lastExportErrorCode: null
+          },
+          where: { modelRunId: runId, workspaceSessionId: sessionId }
+        });
+        return "exporting" as const;
+      });
+    },
+    async markSessionFailed({ code, sessionId }) {
+      await prisma.workspaceSession.updateMany({
+        data: { lastErrorCode: code.slice(0, 64), state: "FAILED" },
+        where: { id: sessionId, state: { not: "DELETING" } }
+      });
+    },
+    async markSessionLost({ runtimeSandboxId, sessionId }) {
+      const updated = await prisma.workspaceSession.updateMany({
+        data: {
+          lastErrorCode: "workspace_session_lost",
+          runtimeSandboxId: null,
+          state: "FAILED",
+          version: { increment: 1 }
+        },
+        where: {
+          id: sessionId,
+          runtimeSandboxId,
+          state: { not: "DELETING" }
+        }
+      });
+      return updated.count === 1;
+    },
+    async markSessionRunning({ expiresAt, lastActiveAt, runtimeSandboxId, sessionId }) {
+      const updated = await prisma.workspaceSession.updateMany({
+        data: {
+          expiresAt,
+          lastActiveAt,
+          lastErrorCode: null,
+          runtimeSandboxId,
+          state: "RUNNING",
+          stoppedAt: null
+        },
+        where: {
+          id: sessionId,
+          OR: [
+            { runtimeSandboxId: null },
+            { runtimeSandboxId }
+          ],
+          state: { not: "DELETING" }
+        }
+      });
+      return updated.count === 1;
+    },
+    async markSessionStarting({ expiresAt, lastActiveAt, sessionId }) {
+      const updated = await prisma.workspaceSession.updateMany({
+        data: {
+          expiresAt,
+          lastActiveAt,
+          lastErrorCode: null,
+          state: "CREATING",
+          stoppedAt: null
+        },
+        where: { id: sessionId, state: { not: "DELETING" } }
+      });
+      return updated.count === 1;
+    },
+    async markSessionReady({ expiresAt, lastActiveAt, sessionId }) {
+      await prisma.workspaceSession.updateMany({
+        data: { expiresAt, lastActiveAt, state: "READY", stoppedAt: null },
+        where: { id: sessionId, state: { in: ["CREATING", "RUNNING", "READY"] } }
+      });
+    },
+    async settleOutput({ binding, output, storageKey }) {
+      if (!isSafeWorkspaceRelativePath(output.relativePath)) {
+        throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
+      }
+      return prisma.$transaction(async (tx) => {
+        const existing = await tx.workspaceRunOutput.findUnique({
+          include: {
+            attachment: {
+              select: { byteSize: true, fileName: true, id: true, mimeType: true }
+            }
+          },
+          where: {
+            workspaceRunBindingId_relativePath: {
+              relativePath: output.relativePath,
+              workspaceRunBindingId: binding.runId
+            }
+          }
+        });
+        if (existing) {
+          if (existing.byteSize !== output.byteSize || existing.checksum !== output.checksum) {
+            throw new WorkspaceRuntimeError("workspace_output_export_failed");
+          }
+          return generatedFile(existing);
+        }
+        const projectUploader = binding.projectId
+          ? await tx.user.findUnique({
+              select: { displayName: true },
+              where: { id: binding.userId }
+            })
+          : null;
+        if (binding.projectId && !projectUploader) {
+          throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        }
+        const fileName = output.relativePath.split("/").at(-1)!;
+        const attachment = await tx.attachment.create({
+          data: {
+            byteSize: output.byteSize,
+            chatId: binding.chatId,
+            checksum: output.checksum,
+            extractedText: null,
+            fileName,
+            kind: outputKind(fileName),
+            messageId: binding.assistantMessageId,
+            metadata: {} satisfies Prisma.InputJsonValue,
+            mimeType: output.mimeType,
+            origin: "WORKSPACE_OUTPUT",
+            processingErrorCode: null,
+            producerModelRunId: binding.runId,
+            ...(binding.projectId
+              ? {
+                  projectId: binding.projectId,
+                  uploaderDisplayName: projectUploader!.displayName,
+                  uploaderUserId: binding.userId
+                }
+              : { userId: binding.userId }),
+            status: "ready",
+            storageKey
+          }
+        });
+        const row = await tx.workspaceRunOutput.create({
+          data: {
+            attachmentId: attachment.id,
+            byteSize: output.byteSize,
+            checksum: output.checksum,
+            relativePath: output.relativePath,
+            workspaceRunBindingId: binding.runId
+          },
+          include: {
+            attachment: {
+              select: { byteSize: true, fileName: true, id: true, mimeType: true }
+            }
+          }
+        });
+        return generatedFile(row);
+      });
+    }
+  };
+}
+
+export type WorkspaceCoordinator = Readonly<{
+  accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
+  cancel(input: Readonly<{
+    modelRunId: string;
+    modelRunToolCallId: string;
+    userId: string;
+  }>): Promise<void>;
+  execute(input: Readonly<{
+    call: ModelToolCall;
+    modelRunToolCallId: string;
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<ToolExecutionResult>;
+  finalize(input: Readonly<{
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<readonly ThreadGeneratedFile[]>;
+  tools(input: Readonly<{
+    runId: string;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<readonly RunTool[]>;
+}>;
+
+function runtimeCode(error: unknown): WorkspaceRuntimeError["code"] {
+  return error instanceof WorkspaceRuntimeError
+    ? error.code
+    : "workspace_runtime_unavailable";
+}
+
+function exactBinding(
+  binding: WorkspaceExecutionBinding,
+  workspace: NormalizedRunWorkspace
+): boolean {
+  return binding.imageRef === workspace.imageRef &&
+    binding.internetEnabled === workspace.internetEnabled &&
+    binding.mcpVersion === workspace.mcpVersion &&
+    binding.outputDirectory === workspace.outputDirectory &&
+    binding.runtimeVersion === workspace.runtimeVersion &&
+    binding.sessionId === workspace.sessionId &&
+    binding.toolCatalogHash === workspace.toolCatalogHash;
+}
+
+function outputStorageKey(binding: WorkspaceExecutionBinding, output: WorkspaceOutputStream): string {
+  const pathHash = createHash("sha256").update(output.relativePath).digest("hex");
+  const owner = binding.projectId ? `projects/${binding.projectId}` : binding.userId;
+  return `${owner}/workspace-outputs/${binding.runId}/${pathHash}-${output.checksum}`;
+}
+
+async function objectMatches(
+  storage: StorageAdapter,
+  storageKey: string,
+  output: WorkspaceOutputStream,
+  signal?: AbortSignal
+): Promise<boolean> {
+  if (!storage.inspectObject) return false;
+  try {
+    const inspected = await storage.inspectObject(storageKey, {
+      maxBytes: output.byteSize,
+      sampleBytes: 1,
+      signal
+    });
+    return inspected.byteSize === output.byteSize && inspected.checksum === output.checksum;
+  } catch {
+    return false;
+  }
+}
+
+function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): ToolExecutionResult {
+  const content: ToolExecutionResult["content"] = [];
+  for (const entry of result.content) {
+    if (entry.type === "text" && typeof entry.text === "string") {
+      content.push({ text: entry.text, type: "text" });
+    } else if (entry.type === "json") {
+      content.push({ type: "json", value: entry.value });
+    }
+  }
+  return {
+    callId: call.id,
+    content,
+    name: call.name,
+    rawPreview: {
+      ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+      ...(result.originalByteCount === undefined
+        ? {}
+        : { originalByteCount: result.originalByteCount }),
+      truncated: result.truncated === true
+    },
+    status: result.status
+  };
+}
+
+export function createWorkspaceCoordinator(input: Readonly<{
+  config: WorkspaceConfig;
+  repository: WorkspaceCoordinatorRepository;
+  runtime: WorkspaceRuntime;
+  storage: StorageAdapter;
+}>): WorkspaceCoordinator {
+  const initializing = new Map<string, Promise<WorkspaceExecutionBinding>>();
+  const initialized = new Map<string, WorkspaceExecutionBinding>();
+
+  function activityWindow(): Readonly<{ expiresAt: Date; lastActiveAt: Date }> {
+    const lastActiveAt = new Date();
+    return {
+      expiresAt: new Date(lastActiveAt.getTime() + input.config.retentionSeconds * 1_000),
+      lastActiveAt
+    };
+  }
+
+  async function requireBinding(
+    runId: string,
+    userId: string,
+    workspace: NormalizedRunWorkspace
+  ): Promise<WorkspaceExecutionBinding> {
+    const binding = await input.repository.binding({ runId, userId });
+    if (!binding || !exactBinding(binding, workspace)) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    return binding;
+  }
+
+  async function initialize(
+    binding: WorkspaceExecutionBinding,
+    workspace: NormalizedRunWorkspace,
+    signal?: AbortSignal
+  ): Promise<WorkspaceExecutionBinding> {
+    const ready = initialized.get(binding.runId);
+    if (
+      ready &&
+      ready.runtimeSandboxId !== null &&
+      ready.runtimeSandboxId === binding.runtimeSandboxId
+    ) {
+      return ready;
+    }
+    const pending = initializing.get(binding.runId);
+    if (pending) return pending;
+    const operation = (async () => {
+      if (!(await input.repository.markSessionStarting({
+        ...activityWindow(),
+        sessionId: binding.sessionId
+      }))) {
+        throw new WorkspaceRuntimeError("workspace_session_lost");
+      }
+      try {
+        const session = await input.runtime.ensureSession({
+          cpus: input.config.cpus,
+          diskMiB: input.config.diskMiB,
+          imageRef: binding.imageRef,
+          internetEnabled: binding.internetEnabled,
+          memoryMiB: input.config.memoryMiB,
+          runtimeSandboxId: binding.runtimeSandboxId,
+          sandboxName: binding.sandboxName,
+          sessionId: binding.sessionId,
+          signal
+        });
+        if (!(await input.repository.markSessionRunning({
+          ...activityWindow(),
+          runtimeSandboxId: session.runtimeSandboxId,
+          sessionId: binding.sessionId
+        }))) {
+          throw new WorkspaceRuntimeError("workspace_session_lost");
+        }
+        const attachments = await input.repository.attachments(binding);
+        const streams: WorkspaceAttachmentStream[] = [];
+        for (const attachment of attachments) {
+          let object;
+          try {
+            object = await getStoredObjectStream(input.storage, attachment.storageKey, {
+              maxBytes: attachment.byteSize,
+              signal
+            });
+          } catch {
+            throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+          }
+          if (object.byteSize !== attachment.byteSize) {
+            throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+          }
+          streams.push({
+            attachmentId: attachment.attachmentId,
+            body: object.body,
+            byteSize: attachment.byteSize,
+            checksum: attachment.checksum,
+            kind: attachment.kind,
+            messageId: attachment.messageId,
+            mimeType: attachment.mimeType,
+            originalName: attachment.fileName,
+            sandboxPath: workspaceAttachmentPath({
+              attachmentId: attachment.attachmentId,
+              messageId: attachment.messageId,
+              originalName: attachment.fileName
+            })
+          });
+        }
+        const byMessage = new Map<string, WorkspaceAttachmentStream[]>();
+        for (const attachment of streams) {
+          const values = byMessage.get(attachment.messageId) ?? [];
+          values.push(attachment);
+          byMessage.set(attachment.messageId, values);
+        }
+        const project = (attachment: WorkspaceAttachmentStream) => ({
+          attachmentId: attachment.attachmentId,
+          byteSize: attachment.byteSize,
+          checksum: attachment.checksum,
+          kind: attachment.kind,
+          mimeType: attachment.mimeType,
+          originalName: attachment.originalName,
+          sandboxPath: attachment.sandboxPath
+        });
+        await input.runtime.stageAttachments({
+          attachments: streams,
+          inboxIndex: {
+            attachments: streams.map(project),
+            manifests: [...byMessage.keys()].sort().map((messageId) => ({
+              messageId,
+              path: workspaceMessageManifestPath(messageId)
+            })),
+            version: 1
+          },
+          manifests: [...byMessage.entries()].map(([messageId, values]) => ({
+            body: { attachments: values.map(project), messageId, version: 1 },
+            messageId
+          })),
+          outputDirectory: binding.outputDirectory,
+          runtimeSandboxId: session.runtimeSandboxId,
+          sessionId: binding.sessionId,
+          signal
+        });
+        const catalog = await input.runtime.loadBoundTools({
+          runtimeSandboxId: session.runtimeSandboxId,
+          sessionId: binding.sessionId,
+          signal
+        });
+        if (
+          catalog.hash !== binding.toolCatalogHash ||
+          catalog.mcpVersion !== binding.mcpVersion ||
+          catalog.runtimeVersion !== binding.runtimeVersion ||
+          hashCanonicalMcpValue(catalog.tools) !== hashCanonicalMcpValue(binding.toolDefinitions)
+        ) {
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        }
+        const readyBinding = {
+          ...binding,
+          runtimeSandboxId: session.runtimeSandboxId,
+          sessionState: "RUNNING"
+        };
+        initialized.set(binding.runId, readyBinding);
+        return readyBinding;
+      } catch (error) {
+        initialized.delete(binding.runId);
+        if (
+          error instanceof WorkspaceRuntimeError &&
+          error.code === "workspace_session_lost" &&
+          binding.runtimeSandboxId
+        ) {
+          await input.repository.markSessionLost({
+            runtimeSandboxId: binding.runtimeSandboxId,
+            sessionId: binding.sessionId
+          }).catch(() => false);
+        }
+        await input.repository.markSessionFailed({
+          code: runtimeCode(error),
+          sessionId: binding.sessionId
+        }).catch(() => undefined);
+        throw error;
+      }
+    })().finally(() => initializing.delete(binding.runId));
+    initializing.set(binding.runId, operation);
+    return operation;
+  }
+
+  async function initializeWithLostSessionRecovery(
+    binding: WorkspaceExecutionBinding,
+    workspace: NormalizedRunWorkspace,
+    signal?: AbortSignal
+  ): Promise<Readonly<{ binding: WorkspaceExecutionBinding; recreated: boolean }>> {
+    try {
+      return { binding: await initialize(binding, workspace, signal), recreated: false };
+    } catch (error) {
+      if (
+        !(error instanceof WorkspaceRuntimeError) ||
+        error.code !== "workspace_session_lost" ||
+        !binding.runtimeSandboxId
+      ) {
+        throw error;
+      }
+      const fresh = await requireBinding(binding.runId, binding.userId, workspace);
+      if (fresh.runtimeSandboxId !== null) throw error;
+      return { binding: await initialize(fresh, workspace, signal), recreated: true };
+    }
+  }
+
+  return {
+    accepts({ name, workspace }) {
+      return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
+    },
+    async cancel({ modelRunId, modelRunToolCallId, userId }) {
+      const binding = await input.repository.binding({ runId: modelRunId, userId });
+      if (!binding?.runtimeSandboxId) return;
+      await input.runtime.cancelToolCall({
+        modelRunId,
+        modelRunToolCallId,
+        runtimeSandboxId: binding.runtimeSandboxId,
+        sessionId: binding.sessionId
+      });
+    },
+    async execute({ call, modelRunToolCallId, runId, signal, userId, workspace }) {
+      const initial = await requireBinding(runId, userId, workspace);
+      let initializedBinding = await initializeWithLostSessionRecovery(
+        initial,
+        workspace,
+        signal
+      );
+      let binding = initializedBinding.binding;
+      const definition = binding.toolDefinitions.find((tool) => tool.namespacedName === call.name);
+      if (!definition || !binding.runtimeSandboxId) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      const timeout = new AbortController();
+      const timer = setTimeout(
+        () => timeout.abort(new WorkspaceRuntimeError("workspace_tool_timeout")),
+        workspace.syncToolTimeoutSeconds * 1_000
+      );
+      const combined = signal
+        ? AbortSignal.any([signal, timeout.signal])
+        : timeout.signal;
+      try {
+        const dispatch = (active: WorkspaceExecutionBinding) =>
+          input.runtime.callBoundTool({
+            arguments: call.arguments,
+            modelRunId: active.runId,
+            modelRunToolCallId,
+            originalName: definition.originalName,
+            runtimeSandboxId: active.runtimeSandboxId!,
+            sessionId: active.sessionId,
+            signal: combined
+          });
+        let result: WorkspaceToolResult;
+        try {
+          result = await dispatch(binding);
+        } catch (error) {
+          if (
+            !(error instanceof WorkspaceRuntimeError) ||
+            error.code !== "workspace_session_lost" ||
+            !binding.runtimeSandboxId
+          ) {
+            throw error;
+          }
+          initialized.delete(binding.runId);
+          if (!(await input.repository.markSessionLost({
+            runtimeSandboxId: binding.runtimeSandboxId,
+            sessionId: binding.sessionId
+          }))) {
+            throw error;
+          }
+          const fresh = await requireBinding(runId, userId, workspace);
+          initializedBinding = await initializeWithLostSessionRecovery(
+            fresh,
+            workspace,
+            combined
+          );
+          binding = initializedBinding.binding;
+          result = await dispatch(binding);
+          initializedBinding = { binding, recreated: true };
+        }
+        const projected = resultFromRuntime(call, result);
+        return initializedBinding.recreated
+          ? {
+              ...projected,
+              content: [{
+                text: "Workspace storage was unavailable and a clean workspace was recreated from the original attachments.",
+                type: "text"
+              }, ...projected.content]
+            }
+          : projected;
+      } catch (error) {
+        if (combined.aborted) {
+          if (binding.runtimeSandboxId) {
+            await input.runtime.cancelToolCall({
+              modelRunId: binding.runId,
+              modelRunToolCallId,
+              runtimeSandboxId: binding.runtimeSandboxId,
+              sessionId: binding.sessionId
+            }).catch(() => undefined);
+          }
+          if (timeout.signal.aborted) {
+            throw new WorkspaceRuntimeError("workspace_tool_timeout");
+          }
+          throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    async finalize({ runId, signal, userId, workspace }) {
+      const initial = await requireBinding(runId, userId, workspace);
+      const state = await input.repository.markExporting({
+        runId,
+        sessionId: initial.sessionId
+      });
+      if (state === "complete") {
+        return input.repository.generatedFiles({ runId, userId });
+      }
+      try {
+        if (!initial.runtimeSandboxId) {
+          if (!(await input.repository.markExportComplete({ runId, sessionId: initial.sessionId }))) {
+            throw new WorkspaceRuntimeError("workspace_output_export_failed");
+          }
+          return [];
+        }
+        // A provider-complete run may be finalized by a fresh app process after
+        // the runner itself was restarted. Reconnect and restage originals
+        // before collecting output, but never recreate a genuinely lost VM:
+        // doing so would silently turn missing deliverables into a success.
+        const binding = await initialize(initial, workspace, signal);
+        if (!binding.runtimeSandboxId) {
+          throw new WorkspaceRuntimeError("workspace_session_lost");
+        }
+        const outputs = await input.runtime.collectOutputs({
+          modelRunId: runId,
+          outputDirectory: binding.outputDirectory,
+          runtimeSandboxId: binding.runtimeSandboxId,
+          sessionId: binding.sessionId,
+          signal
+        });
+        const total = outputs.reduce((sum, output) => sum + output.byteSize, 0);
+        if (
+          outputs.length > input.config.outputMaxFiles ||
+          total > input.config.outputTotalMaxBytes ||
+          outputs.some((output) =>
+            output.byteSize < 1 ||
+            output.byteSize > input.config.outputFileMaxBytes ||
+            !/^[a-f0-9]{64}$/u.test(output.checksum) ||
+            !isSafeWorkspaceRelativePath(output.relativePath)
+          )
+        ) {
+          throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
+        }
+        const files: ThreadGeneratedFile[] = [];
+        for (const output of outputs) {
+          const storageKey = outputStorageKey(binding, output);
+          if (!(await objectMatches(input.storage, storageKey, output, signal))) {
+            if (!input.storage.putObjectStream) {
+              throw new WorkspaceRuntimeError("workspace_output_export_failed");
+            }
+            try {
+              await input.storage.putObjectStream({
+                body: output.body,
+                byteSize: output.byteSize,
+                contentType: output.mimeType,
+                signal,
+                storageKey
+              });
+            } catch (error) {
+              if (!(await objectMatches(input.storage, storageKey, output, signal))) throw error;
+            }
+          }
+          files.push(await input.repository.settleOutput({
+            binding,
+            output: {
+              byteSize: output.byteSize,
+              checksum: output.checksum,
+              mimeType: output.mimeType,
+              relativePath: output.relativePath
+            },
+            storageKey
+          }));
+        }
+        if (!(await input.repository.markExportComplete({ runId, sessionId: binding.sessionId }))) {
+          throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        }
+        await input.repository.markSessionReady({
+          ...activityWindow(),
+          sessionId: binding.sessionId
+        });
+        return files;
+      } catch (error) {
+        const code = runtimeCode(error) === "workspace_output_limit_exceeded"
+          ? "workspace_output_limit_exceeded"
+          : "workspace_output_export_failed";
+        await input.repository.markExportFailed({
+          code,
+          runId,
+          sessionId: initial.sessionId
+        }).catch(() => undefined);
+        throw error instanceof WorkspaceRuntimeError
+          ? error
+          : new WorkspaceRuntimeError("workspace_output_export_failed");
+      }
+    },
+    async tools({ runId, userId, workspace }) {
+      const binding = await requireBinding(runId, userId, workspace);
+      return workspaceRunTools(binding.toolDefinitions);
+    }
+  };
+}

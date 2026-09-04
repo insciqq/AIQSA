@@ -6,6 +6,8 @@ const encryptionKey = process.env.AIQSA_ENCRYPTION_KEY?.trim() ||
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const outputDir = process.env.AIQSA_PLAYWRIGHT_OUTPUT_DIR?.trim() ||
   "test-results/playwright";
+const workspaceDeterministicRuntime =
+  process.env.AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME?.trim() || "1";
 
 export default defineConfig({
   forbidOnly: true,
@@ -38,6 +40,9 @@ export default defineConfig({
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: fakeProviderTokenDelayMs,
       AIQSA_LOCAL_DEV_PROFILE_DISABLED: "1",
       AIQSA_TEST_MODE: "1",
+      AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: workspaceDeterministicRuntime,
+      AIQSA_WORKSPACE_RUNNER_TOKEN: process.env.AIQSA_WORKSPACE_RUNNER_TOKEN?.trim() || "",
+      AIQSA_WORKSPACE_RUNNER_URL: process.env.AIQSA_WORKSPACE_RUNNER_URL?.trim() || "",
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_BASE_URL: "",
       OPENAI_API_KEY: "",

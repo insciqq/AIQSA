@@ -1,6 +1,10 @@
 "use client";
 
-import { unsupportedAttachmentMessage } from "@/components/app-shell/attachmentCapabilities";
+import {
+  attachmentPolicyForModel,
+  unsupportedAttachmentMessage
+} from "@/components/app-shell/attachmentCapabilities";
+import { partitionAttachmentSelection } from "@/components/app-shell/attachmentSelection";
 import {
   attachmentCountSelectionLimitMessage,
   withAttachmentLimitFeedbackMessage,
@@ -79,6 +83,7 @@ import {
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
 import {
+  chatSummaryFromApi,
   sessionExpiredLoginHref,
   shellFetch,
   subscribeToSessionExpired
@@ -153,6 +158,14 @@ import type {
   KnowledgeBaseSummary,
   KnowledgeSourceListResponse
 } from "@/lib/contracts/knowledge";
+import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
+import type { RunEventView } from "@/lib/contracts/runs";
+import {
+  archiveChatWorkspace,
+  loadWorkspaceAvailability,
+  resetChatWorkspace,
+  updateChatWorkspaceEnabled
+} from "@/components/app-shell/workspaceClient";
 
 export {
   runCatalogLoadDeduped,
@@ -174,6 +187,30 @@ export function effectiveComposerDisabledHint(input: Readonly<{
   projectHint: string | null;
 }>): string | null {
   return input.projectContext ? input.projectHint : input.personalHint;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** A generic active model run is not enough to claim command execution. The
+ * existing safe live tool events delimit the real Workspace tool phase. */
+export function workspaceCommandRunning(events: readonly RunEventView[]): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.type !== "artifact") continue;
+    const data = record(event.data);
+    const payload = record(data?.payload);
+    if (data?.artifactType === "summary" && payload?.stage === "model") return false;
+    if (
+      data?.artifactType === "tool_call" &&
+      payload?.status === "requested" &&
+      payload?.serverName === "Workspace"
+    ) return true;
+  }
+  return false;
 }
 
 function personalComposerKnowledgeBase(
@@ -388,6 +425,9 @@ export function PowerAppShellV2({
   const uploading = composerSession.pendingUploadGenerations.length > 0;
   const [notice, setNotice] = useState<Notice | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<Notice | null>(null);
+  const [workspaceInstallation, setWorkspaceInstallation] =
+    useState<ChatWorkspaceState | null>(null);
+  const [workspaceCapabilityBusy, setWorkspaceCapabilityBusy] = useState(false);
   // The composer owns an unfiltered, first-page snapshot. Reusing the
   // Library's mutable query/page state would make its "All" total and recent
   // documents silently change after browsing the Library.
@@ -422,6 +462,28 @@ export function PowerAppShellV2({
       void refreshMcpSettings(true).catch(() => undefined);
     }
   }, [openMcpSettings]);
+
+  useEffect(() => {
+    let current = true;
+    void loadWorkspaceAvailability()
+      .then((workspace) => {
+        if (current) setWorkspaceInstallation(workspace);
+      })
+      .catch(() => {
+        if (current) {
+          setWorkspaceInstallation({
+            available: false,
+            enabled: false,
+            internetEnabled: null,
+            sessionState: null,
+            unavailableReason: "runtime_unavailable"
+          });
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [accountId]);
   const activeChatIdRef = useRef<string | null>(null);
   const activeStreamAbortRef = useRef<Map<string, AbortController>>(new Map());
   const memorySourceMutationIdsRef = useRef(new Set<string>());
@@ -438,6 +500,7 @@ export function PowerAppShellV2({
   const projectRunContextRef = useRef(false);
   const personalComposerControlsRef = useRef<ComposerControlSnapshot | null>(null);
   const workspaceRefreshPromiseRef = useRef<Promise<ChatDetail | null> | null>(null);
+  const workspaceCapabilityMutationRef = useRef(false);
   const sessionExpiredHandledRef = useRef(false);
 
   useEffect(() => subscribeToSessionExpired(() => {
@@ -579,13 +642,22 @@ export function PowerAppShellV2({
       previousContext !== undefined && previousContext !== contextFingerprint;
 
     reconcileCurrentComposerAttachments(activeComposerSessionKey, currentModel, {
-      clearResolvedLimitFeedback
+      clearResolvedLimitFeedback,
+      workspaceEnabled: activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled
     });
     attachmentLimitContextsRef.current.set(
       activeComposerSessionKey,
       contextFingerprint
     );
-  }, [activeComposerSessionKey, attachments, catalog?.attachmentLimits, currentModel, uploading]);
+  }, [
+    activeChat?.workspace?.enabled,
+    activeComposerSessionKey,
+    attachments,
+    catalog?.attachmentLimits,
+    composerSession.workspaceEnabled,
+    currentModel,
+    uploading
+  ]);
 
   const {
     containerRef: threadScrollRef,
@@ -689,6 +761,7 @@ export function PowerAppShellV2({
     activatePersonalChatById,
     applyChatUpdate,
     createChat,
+    createPersonalChatForSend,
     deleteChat,
     exportChat,
     loadCompleteActiveBranch,
@@ -1013,16 +1086,27 @@ export function PowerAppShellV2({
       projectDeepLinkRef.current = { key, phase: "waiting" };
     }
     const request = projectDeepLinkRef.current;
-    if (!request || request.phase === "handled" || request.phase === "opening" || request.phase === "selecting") {
+    if (!request || request.phase === "handled" || request.phase === "opening") {
       return;
+    }
+    // Selecting a Project updates selectedProjectId before its detail and
+    // workspace requests settle. Let that render advance the deep link back
+    // to "waiting" so the later workspace render can open the target chat;
+    // mutating the ref only from the completed promise would not itself cause
+    // another render.
+    if (request.phase === "selecting") {
+      if (projectWorkspace.selectedProjectId !== projectId) return;
+      request.phase = "waiting";
     }
     if (projectWorkspace.selectedProjectId !== projectId) {
       request.phase = "selecting";
       void selectProject(projectId).then((selected) => {
-        request.phase = selected ? "waiting" : "handled";
-        if (!selected) {
-          setNotice({ kind: "error", text: "That Project chat is unavailable." });
+        if (selected) {
+          if (request.phase === "selecting") request.phase = "waiting";
+          return;
         }
+        request.phase = "handled";
+        setNotice({ kind: "error", text: "That Project chat is unavailable." });
       });
       return;
     }
@@ -1122,6 +1206,9 @@ export function PowerAppShellV2({
   ): Promise<WorkspaceChatSummary | null> => {
     if (projectWorkspace.selectedProjectId && !activeChatId) {
       return projectWorkspace.actions.createChatForSend(folderId, sourceSessionKey);
+    }
+    if (!activeChatId && sourceSessionKey) {
+      return createPersonalChatForSend(folderId ?? null, sourceSessionKey);
     }
     return createChat(folderId, sourceSessionKey);
   });
@@ -1549,6 +1636,116 @@ export function PowerAppShellV2({
               : null
     : null;
 
+  const workspaceEnabled = activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled;
+  const workspaceModelSupportsTools = effectiveCurrentModel?.capabilities.toolCalling === true;
+  const workspaceAvailable = workspaceInstallation?.available === true &&
+    workspaceModelSupportsTools;
+  const workspaceUnavailableReason = workspaceInstallation?.available === true
+    ? workspaceModelSupportsTools ? undefined : "model_tools_required" as const
+    : workspaceInstallation?.unavailableReason;
+  const workspaceInternetEnabled = activeChat?.workspace?.internetEnabled ??
+    workspaceInstallation?.internetEnabled ?? null;
+  const workspaceSessionState = activeChat?.workspace?.sessionState ??
+    (workspaceEnabled ? "not_started" as const : null);
+
+  async function setWorkspaceEnabled(
+    value: boolean,
+    reason: "file_selection" | "user" = "user"
+  ): Promise<boolean> {
+    if (workspaceCapabilityMutationRef.current || activeChatStreaming) return false;
+    if (value && !workspaceAvailable) {
+      setNotice({
+        kind: "error",
+        text: workspaceUnavailableReason === "model_tools_required"
+          ? "Workspace requires a model with tool support."
+          : workspaceUnavailableReason === "installation_disabled"
+            ? "Workspace is disabled by the administrator."
+            : "Workspace runtime is unavailable."
+      });
+      return false;
+    }
+
+    workspaceCapabilityMutationRef.current = true;
+    setWorkspaceCapabilityBusy(true);
+    const sessionKey = useComposerSessionStore.getState().activeSessionKey;
+    try {
+      if (activeChat && !activeChat.pendingProjectDraft && !activeChat.pendingPersonalDraft) {
+        const wire = await updateChatWorkspaceEnabled(activeChat.id, value);
+        const summary = chatSummaryFromApi(wire);
+        useWorkspaceStore.getState().upsertChat(summary);
+        useComposerSessionStore.getState().updateSession(sessionKey, {
+          workspaceEnabled: summary.workspace?.enabled ?? value
+        });
+        if (activeChat.projectId) void projectWorkspace.actions.refresh();
+      } else {
+        useComposerSessionStore.getState().updateSession(sessionKey, {
+          workspaceEnabled: value
+        });
+      }
+      if (reason === "file_selection" && value) {
+        setNotice({
+          autoDismiss: true,
+          kind: "success",
+          text: "Workspace was enabled so every selected file can be used."
+        });
+      }
+      return true;
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+      return false;
+    } finally {
+      workspaceCapabilityMutationRef.current = false;
+      setWorkspaceCapabilityBusy(false);
+    }
+  }
+
+  async function uploadComposerFiles(files: FileList | readonly File[]): Promise<void> {
+    const selected = Array.from(files);
+    const ordinaryPolicy = attachmentPolicyForModel(effectiveCurrentModel);
+    const requiresWorkspace = partitionAttachmentSelection(selected, ordinaryPolicy).rejected.length > 0;
+    if (requiresWorkspace && !workspaceEnabled) {
+      if (!(await setWorkspaceEnabled(true, "file_selection"))) return;
+    }
+    await uploadFiles(selected);
+  }
+
+  async function resetWorkspace(): Promise<boolean> {
+    if (!activeChat || workspaceCapabilityMutationRef.current || activeChatStreaming) return false;
+    workspaceCapabilityMutationRef.current = true;
+    setWorkspaceCapabilityBusy(true);
+    try {
+      const state = await resetChatWorkspace(activeChat.id);
+      useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
+        chat.id === activeChat.id ? { ...chat, workspace: state } : chat
+      ));
+      setNotice({ kind: "success", text: "Workspace reset. The next tool call starts clean." });
+      return true;
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+      return false;
+    } finally {
+      workspaceCapabilityMutationRef.current = false;
+      setWorkspaceCapabilityBusy(false);
+    }
+  }
+
+  async function archiveWorkspace() {
+    if (!activeChat || workspaceCapabilityMutationRef.current || activeChatStreaming) return null;
+    workspaceCapabilityMutationRef.current = true;
+    setWorkspaceCapabilityBusy(true);
+    try {
+      const file = await archiveChatWorkspace(activeChat.id);
+      setNotice({ kind: "success", text: "Workspace archive is ready to download." });
+      return file;
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+      return null;
+    } finally {
+      workspaceCapabilityMutationRef.current = false;
+      setWorkspaceCapabilityBusy(false);
+    }
+  }
+
   const composerView = {
     attachments,
     backgroundMode,
@@ -1697,8 +1894,21 @@ export function PowerAppShellV2({
     toggleReasoningBlockVisibility,
     useOrganizationSearchDefault,
     useOrganizationModelDefault,
-    uploadFiles,
-    uploading
+    uploadFiles: uploadComposerFiles,
+    uploading,
+    workspace: {
+      archive: archiveWorkspace,
+      available: workspaceAvailable,
+      busy: workspaceCapabilityBusy,
+      commandRunning: workspaceCommandRunning(activeRunSurface.events),
+      enabled: workspaceEnabled,
+      internetEnabled: workspaceInternetEnabled,
+      loading: workspaceInstallation === null,
+      reset: resetWorkspace,
+      sessionState: workspaceSessionState,
+      setEnabled: setWorkspaceEnabled,
+      ...(workspaceUnavailableReason ? { unavailableReason: workspaceUnavailableReason } : {})
+    }
   } satisfies ShellComposerView;
 
   const branchesView = {

@@ -5,6 +5,7 @@ import {
 } from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "../../domain/workspace";
 import { projectThreadSearchSources } from "../../domain/searchSources";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import {
@@ -61,6 +62,13 @@ import type {
 } from "./lifecycleHandlers";
 import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
+import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
+import type {
+  WorkspaceAvailabilityService,
+  WorkspaceAvailabilitySnapshot
+} from "../workspace/availability";
+import { workspaceModelSupportsTools } from "../workspace/availability";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
@@ -139,7 +147,17 @@ const assistantRunDetailSelect = {
       toolName: true
     }
   },
-  updatedAt: true
+  updatedAt: true,
+  workspaceProducedAttachments: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      byteSize: true,
+      fileName: true,
+      id: true,
+      mimeType: true,
+      workspaceRunOutput: { select: { relativePath: true } }
+    }
+  }
 } satisfies Prisma.ModelRunSelect;
 
 const hydratedMessageSelect = {
@@ -196,8 +214,12 @@ const chatSummarySelect = {
   defaultKnowledgePlan: true,
   defaultProviderModel: {
     select: {
+      activeConfig: true,
+      activeVersion: true,
       connectionId: true,
-      id: true
+      enabled: true,
+      id: true,
+      modelClass: true
     }
   },
   folderId: true,
@@ -206,7 +228,14 @@ const chatSummarySelect = {
   projectFolderId: true,
   projectId: true,
   title: true,
-  updatedAt: true
+  updatedAt: true,
+  workspaceEnabled: true,
+  workspaceSession: {
+    select: {
+      internetEnabled: true,
+      state: true
+    }
+  }
 } satisfies Prisma.ChatSelect;
 
 const archivedChatSummarySelect = {
@@ -254,6 +283,13 @@ type ArtifactSummaryRun = {
   status?: string;
   toolCalls?: readonly object[];
   updatedAt?: Date;
+  workspaceProducedAttachments?: readonly {
+    byteSize: number;
+    fileName: string;
+    id: string;
+    mimeType: string;
+    workspaceRunOutput: { relativePath: string } | null;
+  }[];
 };
 
 /**
@@ -658,13 +694,29 @@ function serializeHydratedMessage(
   };
 }
 
+function chatWorkspaceProjection(input: Readonly<{
+  availability: WorkspaceAvailabilityService;
+  chat: ChatSummaryRow;
+  modelSupportsTools?: boolean;
+  snapshot: WorkspaceAvailabilitySnapshot;
+}>) {
+  return input.availability.project(input.snapshot, {
+    enabled: input.chat.workspaceEnabled,
+    modelSupportsTools: input.modelSupportsTools ??
+      workspaceModelSupportsTools(input.chat.defaultProviderModel),
+    session: input.chat.workspaceSession
+  });
+}
+
 function serializeChatDetail(input: {
+  availability: WorkspaceAvailabilityService;
   chat: ChatSummaryRow;
   contextInputTokens: number;
   hasOlder: boolean;
   lightweightMessages: LightweightMessageRow[];
   messages: HydratedMessagePath;
   projectDefaultAuthority?: ProjectChatDefaultAuthority;
+  workspaceSnapshot: WorkspaceAvailabilitySnapshot;
 }): ChatDetailRecord {
   const chat = input.chat;
   const projectDefaults = input.projectDefaultAuthority
@@ -717,6 +769,17 @@ function serializeChatDetail(input: {
     usageStats: summarizeChatUsageStats({
       activeLeafMessageId: chat.activeLeafMessageId,
       messages: input.lightweightMessages
+    }),
+    workspace: chatWorkspaceProjection({
+      availability: input.availability,
+      chat,
+      ...(projectDefaults ? {
+        modelSupportsTools: projectDefaults.defaultModelId !== null &&
+          input.projectDefaultAuthority!.toolCallingModelIds.has(
+            projectDefaults.defaultModelId
+          )
+      } : {}),
+      snapshot: input.workspaceSnapshot
     })
   };
 }
@@ -735,7 +798,11 @@ function serializeAssistantIdentity(modelRun: {
   };
 }
 
-function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
+function serializeChatSummary(
+  chat: ChatSummaryRow,
+  availability: WorkspaceAvailabilityService,
+  workspaceSnapshot: WorkspaceAvailabilitySnapshot
+): ChatSummaryRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
@@ -748,18 +815,25 @@ function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
     pinned: chat.pinned,
     projectId: chat.projectId,
     title: chat.title,
-    updatedAt: chat.updatedAt
+    updatedAt: chat.updatedAt,
+    workspace: chatWorkspaceProjection({
+      availability,
+      chat,
+      snapshot: workspaceSnapshot
+    })
   };
 }
 
 function serializeArchivedChatSummary(
-  chat: ArchivedChatSummaryRow
+  chat: ArchivedChatSummaryRow,
+  availability: WorkspaceAvailabilityService,
+  workspaceSnapshot: WorkspaceAvailabilitySnapshot
 ): ArchivedChatSummaryRecord {
   if (chat.memoryMode === "TEMPORARY" || !chat.archived) {
     throw new Error("archived_chat_lifecycle_integrity_invalid");
   }
   return {
-    ...serializeChatSummary(chat),
+    ...serializeChatSummary(chat, availability, workspaceSnapshot),
     archived: true,
     lastMessageAt: chat.messages[0]?.createdAt ?? null,
     memoryMode: chat.memoryMode,
@@ -768,11 +842,13 @@ function serializeArchivedChatSummary(
 }
 
 function serializeArchivedChatDetail(input: {
+  availability: WorkspaceAvailabilityService;
   chat: ArchivedChatSummaryRow;
   contextInputTokens: number;
   hasOlder: boolean;
   lightweightMessages: LightweightMessageRow[];
   messages: HydratedMessagePath;
+  workspaceSnapshot: WorkspaceAvailabilitySnapshot;
 }): ArchivedChatDetailRecord {
   if (input.chat.memoryMode === "TEMPORARY" || !input.chat.archived) {
     throw new Error("archived_chat_lifecycle_integrity_invalid");
@@ -861,6 +937,15 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
         toolName: "search"
       });
     });
+  }
+
+  if (isRecord(normalizedRequest.workspace) && normalizedRequest.workspace.enabled === true) {
+    for (const name of WORKSPACE_MCP_TOOL_ALLOWLIST) {
+      descriptors.set(namespacedWorkspaceToolName(name), {
+        serverName: "Workspace",
+        toolName: name
+      });
+    }
   }
 
   descriptors.set("find_tools", { serverName: "Auto tools", toolName: "find_tools" });
@@ -1093,6 +1178,17 @@ export function summarizeMessageRunArtifacts(
     ),
     ...searchPayloads.flatMap(sourceValuesFromSearchPayload)
   ]);
+  const generatedFiles = (run.workspaceProducedAttachments ?? []).flatMap((attachment) =>
+    attachment.workspaceRunOutput
+      ? [{
+          attachmentId: attachment.id,
+          byteSize: attachment.byteSize,
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          relativePath: attachment.workspaceRunOutput.relativePath
+        }]
+      : []
+  );
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1139,6 +1235,7 @@ export function summarizeMessageRunArtifacts(
 
   if (
     citations.length === 0 &&
+    generatedFiles.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1153,6 +1250,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(generatedFiles.length > 0 ? { generatedFiles } : {}),
     ...(knowledgeState ? { knowledgeState } : {}),
     knowledgeCitations,
     ...(memoryAction ? { memoryAction } : {}),
@@ -1254,11 +1352,14 @@ export function createPrismaChatRepository(
       tx: Prisma.TransactionClient,
       userId: string
     ) => Promise<boolean>;
+    workspaceAvailability?: WorkspaceAvailabilityService;
   }> = {}
 ): ChatRepository & ChatLifecycleRepository {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   const resumeSuppressionPreflight = options.resumeSuppressionPreflight ??
     defaultResumeSuppressionPreflight;
+  const workspaceAvailability = options.workspaceAvailability ??
+    defaultWorkspaceAvailabilityService;
   return {
     archiveChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
@@ -1360,7 +1461,8 @@ export function createPrismaChatRepository(
         };
       });
     },
-    createChat: async ({ folderId, memoryMode, title, userId }) => {
+    createChat: async ({ folderId, memoryMode, title, userId, workspaceEnabled }) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       const defaults = await loadChatCreationDefaults(prismaClient, userId);
       if (!defaults) return null;
 
@@ -1380,12 +1482,13 @@ export function createPrismaChatRepository(
             folderId: resolvedFolderId,
             ...(memoryMode ? { memoryMode } : {}),
             title: title?.trim() || defaultChatTitle,
-            userId
+            userId,
+            ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
           },
           select: chatSummarySelect
         });
 
-        return serializeChatSummary(chat);
+        return serializeChatSummary(chat, workspaceAvailability, workspaceSnapshot);
       });
     },
     createFolder: async ({ name, parentId, userId }) => {
@@ -1481,6 +1584,7 @@ export function createPrismaChatRepository(
         return result.count === 1;
       }),
     getArchivedChat: async ({ chatId, userId }) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       return prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
           select: archivedChatSummarySelect,
@@ -1505,11 +1609,13 @@ export function createPrismaChatRepository(
           approximateActiveBranchInputTokens(tx, activeMessages)
         ]);
         return serializeArchivedChatDetail({
+          availability: workspaceAvailability,
           chat,
           contextInputTokens,
           hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
           lightweightMessages,
-          messages
+          messages,
+          workspaceSnapshot
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
@@ -1578,6 +1684,7 @@ export function createPrismaChatRepository(
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
     getChat: async ({ chatId, userId }) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       return prismaClient.$transaction(async (tx) => {
         const access = await resolveChatAccess(tx, { chatId, userId });
         if (!access) return null;
@@ -1604,12 +1711,14 @@ export function createPrismaChatRepository(
           ? await loadProjectChatDefaultAuthority(tx, access.project.projectId)
           : undefined;
         return serializeChatDetail({
+          availability: workspaceAvailability,
           chat,
           contextInputTokens,
           hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
           lightweightMessages,
           messages,
-          ...(projectDefaultAuthority ? { projectDefaultAuthority } : {})
+          ...(projectDefaultAuthority ? { projectDefaultAuthority } : {}),
+          workspaceSnapshot
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
@@ -1873,6 +1982,7 @@ export function createPrismaChatRepository(
       }
     },
     listArchivedChats: async ({ cursor: cursorValue, userId }) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       const cursor = cursorValue ? decodeArchivedChatCursor(cursorValue) : null;
       if (cursorValue && !cursor) return { kind: "cursor_invalid" as const };
       const rows = await prismaClient.chat.findMany({
@@ -1899,7 +2009,8 @@ export function createPrismaChatRepository(
       const page = rows.slice(0, ARCHIVED_CHAT_PAGE_SIZE);
       const boundary = page.at(-1);
       return {
-        chats: page.map(serializeArchivedChatSummary),
+        chats: page.map((chat) =>
+          serializeArchivedChatSummary(chat, workspaceAvailability, workspaceSnapshot)),
         kind: "ok" as const,
         nextCursor: hasMore && boundary
           ? encodeArchivedChatCursor({
@@ -1911,6 +2022,7 @@ export function createPrismaChatRepository(
       };
     },
     listWorkspace: async (userId) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       const user = await prismaClient.user.findUnique({
         select: {
           id: true
@@ -1967,7 +2079,8 @@ export function createPrismaChatRepository(
       ]);
 
       return {
-        chats: chats.map(serializeChatSummary),
+        chats: chats.map((chat) =>
+          serializeChatSummary(chat, workspaceAvailability, workspaceSnapshot)),
         folders: folders.map((folder) => ({
           ...folder,
           defaultKnowledgePlan: storedKnowledgeDefault(folder.defaultKnowledgePlan)
@@ -2078,8 +2191,10 @@ export function createPrismaChatRepository(
       folderId,
       pinned,
       title,
-      userId
+      userId,
+      workspaceEnabled
     }) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       const access = await resolveChatAccess(prismaClient, {
         chatId,
         minimumProjectRole: "CONTRIBUTOR",
@@ -2139,7 +2254,7 @@ export function createPrismaChatRepository(
             });
             if (!message) return null;
           }
-          if (activeLeafMessageId !== undefined) {
+          if (activeLeafMessageId !== undefined || workspaceEnabled !== undefined) {
             const activeRun = await tx.modelRun.findFirst({
               select: { id: true },
               where: {
@@ -2157,12 +2272,13 @@ export function createPrismaChatRepository(
                 : {}),
               ...(folderId !== undefined ? { projectFolderId: folderId } : {}),
               ...(pinned !== undefined ? { pinned } : {}),
-              ...(title ? { title: title.trim().slice(0, 80) } : {})
+              ...(title ? { title: title.trim().slice(0, 80) } : {}),
+              ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
             },
             select: chatSummarySelect,
             where: { id: chatId }
           });
-          return serializeChatSummary(updated);
+          return serializeChatSummary(updated, workspaceAvailability, workspaceSnapshot);
         });
       }
       return prismaClient.$transaction(async (tx) => {
@@ -2207,7 +2323,7 @@ export function createPrismaChatRepository(
           }
         }
 
-        if (activeLeafMessageId !== undefined) {
+        if (activeLeafMessageId !== undefined || workspaceEnabled !== undefined) {
           const activeRun = await tx.modelRun.findFirst({
             select: {
               id: true
@@ -2247,7 +2363,7 @@ export function createPrismaChatRepository(
         }
 
         const hasMetadataUpdate = defaultKnowledgePlan !== undefined ||
-          pinned !== undefined || Boolean(title);
+          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
               data: {
@@ -2255,7 +2371,8 @@ export function createPrismaChatRepository(
                   ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
                   : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
-                ...(title ? { title: title.trim().slice(0, 80) } : {})
+                ...(title ? { title: title.trim().slice(0, 80) } : {}),
+                ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
               },
               select: chatSummarySelect,
               where: { id: chatId }
@@ -2265,7 +2382,7 @@ export function createPrismaChatRepository(
               where: { id: chatId }
             });
 
-        return serializeChatSummary(updated);
+        return serializeChatSummary(updated, workspaceAvailability, workspaceSnapshot);
       });
     }
   };

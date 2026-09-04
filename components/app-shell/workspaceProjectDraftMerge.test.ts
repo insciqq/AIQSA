@@ -38,6 +38,39 @@ function projectChat(input: Partial<ProjectChatSummaryWire> & Pick<ProjectChatSu
 }
 
 describe("Project draft workspace reconciliation", () => {
+  it("preserves a personal first-send reservation and promotes its persisted row", () => {
+    const draft = summary({
+      folderId: "folder-1",
+      id: "personal-draft-1",
+      pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" },
+      projectId: null,
+      title: "Local personal draft"
+    });
+
+    const retained = mergeWorkspaceProjectDrafts({
+      currentChats: [draft],
+      incomingChats: []
+    });
+    expect(retained.chats).toEqual([draft]);
+
+    const promoted = mergeWorkspaceProjectDrafts({
+      currentChats: [draft],
+      incomingChats: [{
+        ...draft,
+        messageCount: 2,
+        pendingPersonalDraft: undefined,
+        title: "Persisted personal chat"
+      }]
+    });
+    expect(promoted.chats).toHaveLength(1);
+    expect(promoted.chats[0]).toMatchObject({
+      id: draft.id,
+      messageCount: 2,
+      pendingPersonalDraft: undefined,
+      title: "Persisted personal chat"
+    });
+  });
+
   it("preserves a valid local draft across a global workspace refresh", () => {
     const draft = summary({
       id: "draft-1",

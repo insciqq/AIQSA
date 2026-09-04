@@ -25,6 +25,10 @@ import type {
   WorkspaceChatSummaryWire,
   WorkspaceChatsResponseWire
 } from "../../contracts/chats";
+import {
+  UNAVAILABLE_CHAT_WORKSPACE_STATE,
+  type ChatWorkspaceState
+} from "../../contracts/workspace";
 import { decodeKnowledgeSelection, type KnowledgePlan } from "../../contracts/knowledge";
 
 export type {
@@ -65,6 +69,7 @@ export type ChatSummaryRecord = {
   projectId?: string | null;
   title: string;
   updatedAt: Date | string;
+  workspace?: ChatWorkspaceState;
 };
 
 export type ChatDetailRecord = ChatSummaryRecord & {
@@ -120,6 +125,7 @@ export type ChatRepository = {
     memoryMode?: "EXCLUDED";
     title?: string | null;
     userId: string;
+    workspaceEnabled?: boolean;
   }): Promise<ChatSummaryRecord | null>;
   createFolder(input: { name: string; parentId?: string | null; userId: string }): Promise<FolderRecord | null>;
   deleteFolder(input: { folderId: string; userId: string }): Promise<boolean>;
@@ -149,6 +155,7 @@ export type ChatRepository = {
     pinned?: boolean;
     title?: string | null;
     userId: string;
+    workspaceEnabled?: boolean;
   }): Promise<ChatSummaryRecord | null>;
 };
 
@@ -209,6 +216,15 @@ function pinnedValue(body: { pinned?: unknown } | null): boolean | undefined {
   }
 
   return typeof body.pinned === "boolean" ? body.pinned : undefined;
+}
+
+function workspaceEnabledValue(
+  body: { workspaceEnabled?: unknown } | null
+): { ok: true; value: boolean | undefined } | { ok: false } {
+  if (!body || !("workspaceEnabled" in body)) return { ok: true, value: undefined };
+  return typeof body.workspaceEnabled === "boolean"
+    ? { ok: true, value: body.workspaceEnabled }
+    : { ok: false };
 }
 
 function knowledgeDefaultValue(
@@ -277,7 +293,8 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     pinned: chat.pinned,
     projectId: chat.projectId ?? null,
     title: chat.title,
-    updatedAt: iso(chat.updatedAt)
+    updatedAt: iso(chat.updatedAt),
+    workspace: chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
   };
 }
 
@@ -475,14 +492,19 @@ export function createCreateChatHandler(deps: ChatHandlerDeps) {
       return bodyError;
     }
     const memoryMode = initialMemoryModeValue(body);
+    const workspaceEnabled = workspaceEnabledValue(body);
     if (memoryMode === null) {
       return chatRouteErrorJson({ error: "chat_memory_mode_invalid" }, { status: 400 });
+    }
+    if (!workspaceEnabled.ok) {
+      return chatRouteErrorJson({ error: "workspace_state_invalid" }, { status: 400 });
     }
     const chat = await deps.repository.createChat({
       folderId: body && "folderId" in body ? folderValue(body) : null,
       ...(memoryMode ? { memoryMode } : {}),
       title: textValue(body?.title),
-      userId: result.session.userId
+      userId: result.session.userId,
+      workspaceEnabled: workspaceEnabled.value
     });
 
     if (!chat) {
@@ -509,6 +531,10 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
       return bodyError;
     }
     const defaultKnowledgePlan = knowledgeDefaultValue(body);
+    const workspaceEnabled = workspaceEnabledValue(body);
+    if (!workspaceEnabled.ok) {
+      return chatRouteErrorJson({ error: "workspace_state_invalid" }, { status: 400 });
+    }
     if (!defaultKnowledgePlan.ok) {
       return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
     }
@@ -521,7 +547,8 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
         folderId: folderValue(body),
         pinned: pinnedValue(body),
         title: textValue(body?.title),
-        userId: result.session.userId
+        userId: result.session.userId,
+        workspaceEnabled: workspaceEnabled.value
       });
     } catch (error) {
       if (isActiveRunConflictError(error)) {

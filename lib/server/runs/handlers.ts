@@ -20,6 +20,7 @@ import type {
 } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDispatchLifecycle";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
@@ -44,7 +45,8 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
-  SkillRunConflictError
+  SkillRunConflictError,
+  WorkspaceRunConflictError
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
@@ -85,6 +87,8 @@ export type RunHandlerDeps = {
   searchProviders?: Record<string, ProviderSearchAdapter>;
   skills?: RunPreparationDeps["skills"];
   storage?: StorageAdapter;
+  workspace?: RunPreparationDeps["workspace"];
+  workspaceCoordinator?: WorkspaceCoordinator;
 };
 
 const activeRunGateWindowMs = activeRunStaleMs;
@@ -103,6 +107,32 @@ function projectDraftFromBody(body: Record<string, unknown> | null):
     (folderId !== null && !uuidPattern.test(String(folderId))) ||
     Object.keys(draft).some((key) => key !== "folderId" && key !== "projectId")) return "invalid";
   return { folderId: folderId === null ? null : String(folderId), projectId: String(draft.projectId) };
+}
+
+function personalDraftFromBody(body: Record<string, unknown> | null):
+  | Readonly<{
+      folderId: string | null;
+      memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+    }>
+  | "invalid"
+  | null {
+  if (!body || body.personalDraft === undefined) return null;
+  const value = body.personalDraft;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "invalid";
+  const draft = value as Record<string, unknown>;
+  const folderId = draft.folderId ?? null;
+  const memoryMode = draft.memoryMode;
+  if (
+    (folderId !== null && !uuidPattern.test(String(folderId))) ||
+    !["EXCLUDED", "NORMAL", "TEMPORARY"].includes(String(memoryMode)) ||
+    Object.keys(draft).some((key) => key !== "folderId" && key !== "memoryMode")
+  ) {
+    return "invalid";
+  }
+  return {
+    folderId: folderId === null ? null : String(folderId),
+    memoryMode: memoryMode as "EXCLUDED" | "NORMAL" | "TEMPORARY"
+  };
 }
 
 async function readJson(
@@ -158,6 +188,7 @@ function recoveryDeps(
     | "repository"
     | "searchProviders"
     | "storage"
+    | "workspaceCoordinator"
   >
 ) {
   return {
@@ -175,7 +206,8 @@ function recoveryDeps(
     registry: activeRunControllerRegistry,
     repository: deps.repository,
     ...(deps.searchProviders ? { searchProviders: deps.searchProviders } : {}),
-    ...(deps.storage ? { storage: deps.storage } : {})
+    ...(deps.storage ? { storage: deps.storage } : {}),
+    ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
   };
 }
 
@@ -225,6 +257,11 @@ function isMemoryPreparingRunConflictError(
 ): error is MemoryPreparingRunConflictError {
   return error instanceof MemoryPreparingRunConflictError ||
     (error instanceof Error && error.name === "MemoryPreparingRunConflictError");
+}
+
+function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConflictError {
+  return error instanceof WorkspaceRunConflictError ||
+    (error instanceof Error && error.name === "WorkspaceRunConflictError");
 }
 
 function createPreparingMemoryMaterializer(
@@ -403,11 +440,44 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
     const params = await context.params;
     let chat = await deps.repository.findOwnedChat(params.chatId, auth.userId);
+    let personalChat: Readonly<{
+      defaultProviderModelId: string | null;
+      folderId: string | null;
+      memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+    }> | null = null;
     let projectChat: Readonly<{ folderId: string | null }> | null = null;
     const projectDraft = projectDraftFromBody(body);
-    if (projectDraft === "invalid" ||
-      (projectDraft && !chat && !uuidPattern.test(params.chatId))) {
+    const personalDraft = personalDraftFromBody(body);
+    const personalTemporaryPayload = body?.chatMode === "TEMPORARY";
+    if (
+      projectDraft === "invalid" ||
+      personalDraft === "invalid" ||
+      (projectDraft && personalDraft) ||
+      (personalDraft && (personalDraft.memoryMode === "TEMPORARY") !== personalTemporaryPayload) ||
+      ((projectDraft || personalDraft) && !chat && !uuidPattern.test(params.chatId))
+    ) {
+      if (personalDraft) {
+        return Response.json({ error: "personal_draft_invalid" }, { status: 400 });
+      }
       return Response.json({ error: "project_draft_invalid" }, { status: 400 });
+    }
+    if (!chat && personalDraft) {
+      if (!deps.repository.loadPersonalFirstSend || body?.expectedActiveLeafId !== null) {
+        return Response.json({ error: "personal_draft_invalid" }, { status: 400 });
+      }
+      chat = await deps.repository.loadPersonalFirstSend({
+        chatId: params.chatId,
+        folderId: personalDraft.folderId,
+        memoryMode: personalDraft.memoryMode,
+        userId: auth.userId
+      });
+      if (chat) {
+        personalChat = {
+          defaultProviderModelId: chat.defaultModelId || null,
+          folderId: personalDraft.folderId,
+          memoryMode: personalDraft.memoryMode
+        };
+      }
     }
     if (!chat && projectDraft) {
       if (!deps.repository.loadProjectFirstSend || body?.expectedActiveLeafId !== null) {
@@ -422,7 +492,21 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       if (chat) projectChat = { folderId: projectDraft.folderId };
     }
     if (!chat) {
-      return Response.json({ error: projectDraft ? "project_not_found" : "chat_not_found" }, { status: 404 });
+      return Response.json({
+        error: projectDraft
+          ? "project_not_found"
+          : personalDraft
+            ? "chat_not_created"
+            : "chat_not_found"
+      }, { status: 404 });
+    }
+    if (chat && personalDraft && !personalChat) {
+      const matchingMode = personalDraft.memoryMode === "TEMPORARY"
+        ? chat.memoryMode === "NORMAL" || chat.memoryMode === "TEMPORARY"
+        : chat.memoryMode === personalDraft.memoryMode;
+      if (chat.project || chat.folderId !== personalDraft.folderId || !matchingMode) {
+        return Response.json({ error: "personal_draft_conflict" }, { status: 409 });
+      }
     }
     if (chat && projectDraft && !projectChat) {
       const matchesPersistedProjectChat = chat.id === params.chatId &&
@@ -451,6 +535,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           activeLeafMessageId: expectedActiveLeaf.value
         },
         ...(projectChat ? { draftProjectChat: true } : {}),
+        ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send"
       },
       userId: auth.userId
@@ -483,6 +568,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
+        ...(preparedData.workspaceAdmissionPlan
+          ? { workspaceAdmissionPlan: preparedData.workspaceAdmissionPlan }
+          : {}),
+        workspaceEnabled: preparedData.normalizedRequest.workspace?.enabled === true,
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         ...(preparedData.project ? { project: preparedData.project } : {}),
         modelId: preparedData.normalizedRequest.modelId,
@@ -492,6 +581,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           preparation.toolBridge
         ),
         normalizedRequest: preparedData.normalizedRequest,
+        ...(personalChat ? { personalChat } : {}),
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
         ...(projectChat ? { projectChat } : {}),
@@ -539,6 +629,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         }, { status: 409 });
       }
 
+      if (isWorkspaceRunConflictError(error)) {
+        return Response.json({ error: error.code }, { status: 409 });
+      }
+
       throw error;
     }
     preparedData = applyPreparingMaterialization(preparedData, created);
@@ -565,6 +659,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(runtime?.structuredOutputAdapter
         ? { structuredOutputAdapter: runtime.structuredOutputAdapter }
         : {}),
+      ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
@@ -641,6 +736,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
+        ...(preparedData.workspaceAdmissionPlan
+          ? { workspaceAdmissionPlan: preparedData.workspaceAdmissionPlan }
+          : {}),
+        workspaceEnabled: preparedData.normalizedRequest.workspace?.enabled === true,
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         ...(preparedData.project ? { project: preparedData.project } : {}),
         modelId: preparedData.normalizedRequest.modelId,
@@ -694,6 +793,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         }, { status: 409 });
       }
 
+      if (isWorkspaceRunConflictError(error)) {
+        return Response.json({ error: error.code }, { status: 409 });
+      }
+
       throw error;
     }
     preparedData = applyPreparingMaterialization(preparedData, created);
@@ -720,6 +823,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(runtime?.structuredOutputAdapter
         ? { structuredOutputAdapter: runtime.structuredOutputAdapter }
         : {}),
+      ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });

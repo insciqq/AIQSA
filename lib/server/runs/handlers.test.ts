@@ -1074,6 +1074,84 @@ describe("model run route handlers", () => {
     expect(state.created?.projectChat).toBeUndefined();
   });
 
+  it("carries a new personal chat reservation into the atomic first-send admission", async () => {
+    const chatId = "30000000-0000-4000-8000-000000000003";
+    const folderId = "20000000-0000-4000-8000-000000000002";
+    const { repository, state } = createMemoryRepository();
+    repository.findOwnedChat = async () => null;
+    repository.loadPersonalFirstSend = async (input) => input.chatId === chatId
+      ? {
+          activeLeafMessageId: null,
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          folderId,
+          id: chatId,
+          memoryMode: "NORMAL",
+          messageCount: 0,
+          projectMemory: null,
+          title: "New Chat",
+          workspaceEnabled: false
+        }
+      : null;
+
+    const response = await createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    })(new Request(`http://app.local/api/chats/${chatId}/messages`, {
+      body: JSON.stringify({
+        expectedActiveLeafId: null,
+        modelId: "fake-qsa",
+        personalDraft: { folderId, memoryMode: "NORMAL" },
+        provider: "fake",
+        text: "Atomic first personal question"
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId } });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(state.created).toMatchObject({
+      chatId,
+      expectedActiveLeafId: null,
+      personalChat: {
+        defaultProviderModelId: "fake-qsa",
+        folderId,
+        memoryMode: "NORMAL"
+      }
+    });
+  });
+
+  it("rejects a personal Temporary reservation without its reviewed retention payload", async () => {
+    const chatId = "30000000-0000-4000-8000-000000000003";
+    const { repository, state } = createMemoryRepository();
+    repository.findOwnedChat = async () => null;
+    const loadPersonalFirstSend = vi.fn();
+    repository.loadPersonalFirstSend = loadPersonalFirstSend;
+
+    const response = await createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    })(new Request(`http://app.local/api/chats/${chatId}/messages`, {
+      body: JSON.stringify({
+        expectedActiveLeafId: null,
+        modelId: "fake-qsa",
+        personalDraft: { folderId: null, memoryMode: "TEMPORARY" },
+        provider: "fake",
+        text: "Unreviewed Temporary send"
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId } });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "personal_draft_invalid" });
+    expect(loadPersonalFirstSend).not.toHaveBeenCalled();
+    expect(state.created).toBeNull();
+  });
+
   it("rejects a stale Project draft whose persisted folder does not match", async () => {
     const projectId = "10000000-0000-4000-8000-000000000001";
     const folderId = "20000000-0000-4000-8000-000000000002";

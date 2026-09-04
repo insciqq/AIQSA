@@ -348,6 +348,17 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.workspacePolicy.upsert({
+    create: {
+      enabled: false,
+      id: "installation",
+      internetEnabled: true
+    },
+    // Workspace is deliberately disabled on first install. Adoption repairs a
+    // missing singleton but never overwrites the administrator-owned policy.
+    update: {},
+    where: { id: "installation" }
+  });
 
   return catalog;
 }

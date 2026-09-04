@@ -111,6 +111,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     usageStats: null
   };
   const temporary = chatSummary("chat-temporary", "Temporary lifecycle");
+  let temporaryChatId: string | null = null;
   let archived = false;
   let memoryMode: "EXCLUDED" | "NORMAL" = "NORMAL";
   let sourceRevision = 1;
@@ -133,7 +134,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     if (request.method() === "GET") {
       await route.fulfill({
         contentType: "application/json",
-        json: chatId === temporary.id
+        json: chatId === temporaryChatId
           ? {
               allowedActions: [],
               archived: false,
@@ -245,18 +246,8 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
       }
     });
   });
-  await page.route("**/api/chats", async (route: Route) => {
-    if (route.request().method() !== "POST") {
-      await route.fallback();
-      return;
-    }
-    await route.fulfill({
-      contentType: "application/json",
-      json: { chat: temporary },
-      status: 201
-    });
-  });
-  await page.route("**/api/chats/chat-temporary/messages", async (route: Route) => {
+  await page.route("**/api/chats/*/messages", async (route: Route) => {
+    temporaryChatId = new URL(route.request().url()).pathname.split("/").at(-2)!;
     const body = route.request().postDataJSON() as Record<string, unknown>;
     temporaryAdmissions.push(body);
     const user = message("user-temporary", "user", "Temporary draft marker", null);
@@ -277,6 +268,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
         sse("chat_update", {
           chat: {
             ...temporary,
+            id: temporaryChatId,
             activeLeafMessageId: assistant.id,
             contextStats: { approximateActiveBranchInputTokens: 4 },
             messageCount: 2,
@@ -293,9 +285,9 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
 
   await signInWithLocalToken(page);
   const workspace = page.getByRole("complementary", { name: "Chat navigation" });
-  await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
+  await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
-  await workspace.getByRole("button", { exact: true, name: "Retained lifecycle" }).click();
+  await workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" }).click();
   const headerMenuTrigger = page.getByTestId("header-more-trigger");
 
   // The complete header menu names the consequence of each state-specific action.
@@ -332,7 +324,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   await headerMenuTrigger.click();
   await page.getByTestId("header-more-menu")
     .getByRole("menuitem", { name: "Archive" }).click();
-  await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toHaveCount(0);
+  await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toHaveCount(0);
 
   await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
   const settingsDialog = page.getByRole("dialog", { name: "Settings" });
@@ -343,8 +335,8 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   await expect(archivedPanel.getByRole("heading", { name: "Retained lifecycle" })).toBeVisible();
   await expect(archivedPanel).toContainText("Retained answer");
   await archivedPanel.getByRole("button", { name: "Restore Retained lifecycle" }).click();
-  await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
   await settingsDialog.getByRole("button", { name: "Close settings" }).click();
+  await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
   const selectNewChatMode = async (itemName: RegExp) => {
     await workspace.getByRole("button", { name: "New chat mode" }).click();

@@ -3,6 +3,7 @@ import {
   PrismaClient,
   type ProjectRole as PrismaProjectRole
 } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import {
   DEFAULT_PROJECT_POLICY,
   EMPTY_PROJECT_DEFAULTS,
@@ -62,6 +63,7 @@ import {
   eligibleProjectKnowledgeBase
 } from "./chatDefaults";
 import { notifyProjectEvent } from "./events";
+import type { WorkspaceRuntime } from "../workspace/runtime";
 
 export type ProjectRepositoryResult<Value> =
   | Readonly<{ kind: "conflict"; reason: string }>
@@ -1528,7 +1530,10 @@ async function publishProjectResult<Value>(
   return result;
 }
 
-export function createPrismaProjectRepository(prisma: PrismaClient) {
+export function createPrismaProjectRepository(
+  prisma: PrismaClient,
+  options: Readonly<{ workspaceRuntime?: WorkspaceRuntime }> = {}
+) {
   async function eligibleProjectModels(
     db: PrismaClient | Prisma.TransactionClient,
     preferredModelId?: string
@@ -3314,6 +3319,148 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<{ id: string }>> {
       try {
+        const now = new Date();
+        const prepared = await prisma.$transaction(async (tx) => {
+          await lockProject(tx, input.projectId);
+          const access = await resolveProjectAccess(tx, {
+            allowDeleting: true,
+            minimumRole: "OWNER",
+            projectId: input.projectId,
+            userId: input.userId
+          });
+          if (!access) return { kind: "not_found" as const };
+          if (access.status !== "DELETING") {
+            await tx.project.update({
+              data: { deletionRequestedAt: now, status: "DELETING" },
+              where: { id: input.projectId }
+            });
+            await tx.projectAuditEvent.create({
+              data: audit({
+                actorDisplayName: input.actorDisplayName,
+                actorUserId: input.userId,
+                eventType: "deletion_requested",
+                projectId: input.projectId
+              })
+            });
+          }
+          await tx.sharedChatSnapshot.updateMany({
+            data: { revokedAt: now },
+            where: { projectId: input.projectId, revokedAt: null }
+          });
+          const activeRuns = await tx.modelRun.count({
+            where: {
+              chat: { projectId: input.projectId },
+              status: { in: ["preparing", "queued", "streaming", "in_progress"] }
+            }
+          });
+          if (activeRuns > 0) {
+            return {
+              kind: "conflict" as const,
+              reason: "project_active_run"
+            };
+          }
+          const sessions = await tx.workspaceSession.findMany({
+            orderBy: { id: "asc" },
+            select: {
+              id: true,
+              runtimeSandboxId: true,
+              sandboxName: true
+            },
+            where: { chat: { projectId: input.projectId } }
+          });
+          const claimedSessions = [] as Array<{
+            claimToken: string | null;
+            id: string;
+            runtimeSandboxId: string | null;
+            sandboxName: string;
+          }>;
+          for (const session of sessions) {
+            const claimToken = session.runtimeSandboxId ? randomUUID() : null;
+            await tx.workspaceSession.update({
+              data: { lastErrorCode: null, state: "DELETING" },
+              where: { id: session.id }
+            });
+            await tx.workspaceCleanupJob.upsert({
+              create: {
+                attemptCount: claimToken ? 1 : 0,
+                claimedAt: claimToken ? now : null,
+                claimToken,
+                lastAttemptAt: claimToken ? now : null,
+                nextAttemptAt: now,
+                runtimeSandboxId: session.runtimeSandboxId,
+                sandboxName: session.sandboxName,
+                state: claimToken ? "RUNNING" : "PENDING",
+                workspaceSessionId: session.id
+              },
+              update: {
+                ...(claimToken ? { attemptCount: { increment: 1 } } : {}),
+                claimedAt: claimToken ? now : null,
+                claimToken,
+                lastAttemptAt: claimToken ? now : null,
+                lastErrorCode: null,
+                nextAttemptAt: now,
+                runtimeSandboxId: session.runtimeSandboxId,
+                sandboxName: session.sandboxName,
+                state: claimToken ? "RUNNING" : "PENDING"
+              },
+              where: { workspaceSessionId: session.id }
+            });
+            claimedSessions.push({ ...session, claimToken });
+          }
+          return { kind: "ok" as const, sessions: claimedSessions };
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        if (prepared.kind !== "ok") return prepared;
+
+        for (const session of prepared.sessions) {
+          if (!session.runtimeSandboxId) continue;
+          if (!options.workspaceRuntime || !session.claimToken) {
+            return {
+              kind: "conflict",
+              reason: "project_workspace_cleanup_unavailable"
+            };
+          }
+          try {
+            await options.workspaceRuntime.removeSession({
+              runtimeSandboxId: session.runtimeSandboxId,
+              sessionId: session.id
+            });
+            const settled = await prisma.workspaceSession.updateMany({
+              data: {
+                lastErrorCode: null,
+                runtimeSandboxId: null,
+                state: "DELETING",
+                stoppedAt: now
+              },
+              where: {
+                id: session.id,
+                runtimeSandboxId: session.runtimeSandboxId,
+                state: "DELETING"
+              }
+            });
+            if (settled.count !== 1) {
+              throw new Error("workspace_cleanup_fence_changed");
+            }
+          } catch {
+            await prisma.workspaceCleanupJob.updateMany({
+              data: {
+                claimedAt: null,
+                claimToken: null,
+                lastErrorCode: "workspace_remove_failed",
+                nextAttemptAt: new Date(now.getTime() + 30_000),
+                state: "FAILED"
+              },
+              where: {
+                claimToken: session.claimToken,
+                workspaceSessionId: session.id
+              }
+            }).catch(() => undefined);
+            return {
+              kind: "conflict",
+              reason: "project_workspace_cleanup_failed"
+            };
+          }
+        }
+
         return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
@@ -3323,22 +3470,27 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             userId: input.userId
           });
           if (!access) return { kind: "not_found" as const };
-          await tx.project.update({
-            data: { deletionRequestedAt: new Date(), status: "DELETING" },
-            where: { id: input.projectId }
+          const activeRuns = await tx.modelRun.count({
+            where: {
+              chat: { projectId: input.projectId },
+              status: { in: ["preparing", "queued", "streaming", "in_progress"] }
+            }
           });
-          await tx.projectAuditEvent.create({
-            data: audit({
-              actorDisplayName: input.actorDisplayName,
-              actorUserId: input.userId,
-              eventType: "deletion_requested",
-              projectId: input.projectId
-            })
+          if (activeRuns > 0) {
+            return { kind: "conflict" as const, reason: "project_active_run" };
+          }
+          const pendingWorkspace = await tx.workspaceSession.count({
+            where: {
+              chat: { projectId: input.projectId },
+              runtimeSandboxId: { not: null }
+            }
           });
-          await tx.sharedChatSnapshot.updateMany({
-            data: { revokedAt: new Date() },
-            where: { projectId: input.projectId, revokedAt: null }
-          });
+          if (pendingWorkspace > 0) {
+            return {
+              kind: "conflict" as const,
+              reason: "project_workspace_cleanup_pending"
+            };
+          }
           const attachments = await tx.attachment.findMany({
             select: { storageKey: true },
             where: { projectId: input.projectId }
@@ -3359,6 +3511,27 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             data: { currentVersionId: null, state: "FORGOTTEN" },
             where: { projectId: input.projectId }
           });
+          // Workspace output attachments restrict deletion of their producer
+          // ModelRun. Queue object removal first, then remove relational
+          // attachments and runs explicitly so the fenced WorkspaceSession can
+          // be settled before Chat rows cascade with the Project.
+          await tx.attachment.deleteMany({ where: { projectId: input.projectId } });
+          await tx.modelRun.deleteMany({
+            where: { chat: { projectId: input.projectId } }
+          });
+          const workspaceSessions = await tx.workspaceSession.findMany({
+            select: { id: true },
+            where: { chat: { projectId: input.projectId } }
+          });
+          if (workspaceSessions.length > 0) {
+            const workspaceSessionIds = workspaceSessions.map(({ id }) => id);
+            await tx.workspaceCleanupJob.deleteMany({
+              where: { workspaceSessionId: { in: workspaceSessionIds } }
+            });
+            await tx.workspaceSession.deleteMany({
+              where: { id: { in: workspaceSessionIds } }
+            });
+          }
           await tx.project.delete({ where: { id: input.projectId } });
           return { kind: "ok" as const, value: { id: input.projectId } };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));

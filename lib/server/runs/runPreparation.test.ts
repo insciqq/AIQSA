@@ -430,7 +430,7 @@ function runAttachment(input: {
   checksum?: string | null;
   extractedText?: string | null;
   id: string;
-  kind: "document" | "image" | "pdf";
+  kind: "document" | "file" | "image" | "pdf";
   metadata?: unknown;
   mimeType: string;
   storageKey: string;
@@ -444,7 +444,7 @@ function runAttachment(input: {
           ? "Extracted PDF fallback"
           : null
         : input.extractedText,
-    fileName: `${input.id}.${input.kind === "pdf" ? "pdf" : input.kind === "image" ? "png" : "txt"}`,
+    fileName: `${input.id}.${input.kind === "pdf" ? "pdf" : input.kind === "image" ? "png" : input.kind === "file" ? "opaque" : "txt"}`,
     id: input.id,
     kind: input.kind,
     metadata: input.metadata ?? {},
@@ -3342,6 +3342,27 @@ describe("run preparation", () => {
         successBody({
           content: {
             blocks: [{ attachmentId: "pdf-1", type: "attachment" }]
+          }
+        })
+      )
+    });
+    await expectFailure({
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
+      expected: { code: "unsupported_attachment_type", status: 400 },
+      harness: {
+        attachments: [
+          runAttachment({
+            id: "opaque-1",
+            kind: "file",
+            mimeType: "application/x-aiqsa-opaque",
+            storageKey: "private/opaque-1"
+          })
+        ]
+      },
+      request: sendInput(
+        successBody({
+          content: {
+            blocks: [{ attachmentId: "opaque-1", type: "attachment" }]
           }
         })
       )

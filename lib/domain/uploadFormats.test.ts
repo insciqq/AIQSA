@@ -3,6 +3,7 @@ import {
   KNOWLEDGE_UPLOAD_ACCEPT,
   UPLOAD_FORMAT_REGISTRY,
   normalizedUploadFileExtension,
+  isSafeUploadFileName,
   uploadAcceptFor,
   uploadFormatFor
 } from "./uploadFormats";
@@ -17,7 +18,7 @@ describe("canonical upload format registry", () => {
     expect(knowledgeFormats.every((format) => format.parser !== null)).toBe(true);
     expect(knowledgeFormats.some((format) => format.id === "gif")).toBe(false);
     expect(UPLOAD_FORMAT_REGISTRY.find((format) => format.id === "gif")?.scopes)
-      .toEqual(["attachment"]);
+      .toEqual(["attachment", "workspace"]);
   });
 
   it("derives browser filters from the same extensions and canonical MIME types", () => {
@@ -30,6 +31,7 @@ describe("canonical upload format registry", () => {
     }
     expect(KNOWLEDGE_UPLOAD_ACCEPT).not.toContain(".gif");
     expect(uploadAcceptFor({ kinds: [], scope: "attachment" })).toBe("");
+    expect(uploadAcceptFor({ scope: "workspace" })).toBe("");
   });
 
   it("uses extension plus bounded MIME evidence and treats empty/octet-stream MIME as hints", () => {
@@ -40,6 +42,7 @@ describe("canonical upload format registry", () => {
     expect(uploadFormatFor("scan.pdf", "text/plain", "knowledge")).toBeUndefined();
     expect(uploadFormatFor("animation.gif", "image/gif", "knowledge")).toBeUndefined();
     expect(uploadFormatFor("animation.gif", "image/gif", "attachment")?.id).toBe("gif");
+    expect(uploadFormatFor("book.epub", "application/epub+zip", "workspace")?.id).toBe("epub");
   });
 
   it("rejects path-like, missing, and overlong basenames consistently", () => {
@@ -47,5 +50,7 @@ describe("canonical upload format registry", () => {
     expect(normalizedUploadFileExtension("paper")).toBeUndefined();
     expect(normalizedUploadFileExtension("paper\0.pdf")).toBeUndefined();
     expect(normalizedUploadFileExtension(`${"a".repeat(252)}.pdf`)).toBeUndefined();
+    expect(isSafeUploadFileName("opaque-without-extension")).toBe(true);
+    expect(isSafeUploadFileName("../opaque.bin")).toBe(false);
   });
 });

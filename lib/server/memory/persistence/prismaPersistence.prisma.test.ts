@@ -1794,8 +1794,12 @@ describe("Prisma Memory persistence", () => {
         targetMemoryRevision: 1
       });
       expect(counts).toEqual([1, 2, 2, 2, 2]);
-      expect(activeSearchEntries).toHaveLength(1);
-      expect(activeSearchEntries[0]?.factVersionId).toBe(currentFact.currentVersionId);
+      expect(activeSearchEntries).toHaveLength(2);
+      expect(activeSearchEntries.map(({ factVersionId }) => factVersionId))
+        .toEqual(expect.arrayContaining([
+          original.versionId,
+          currentFact.currentVersionId
+        ]));
       expect(currentFact.currentVersionId).toBe(
         applied[0]?.status === "fulfilled" ? applied[0].value.versionId : "unreachable"
       );

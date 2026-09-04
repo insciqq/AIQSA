@@ -34,6 +34,10 @@ import type { AssistantSummary } from "@/lib/contracts/assistants";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { ChatUsageStats } from "@/lib/contracts/chats";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
+import type {
+  ChatWorkspaceState,
+  WorkspaceUnavailableReason
+} from "@/lib/contracts/workspace";
 import { SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import type {
   ComposerConfig,
@@ -261,7 +265,47 @@ export type ComposerV2Props = Readonly<{
   stopping?: boolean;
   uploading?: boolean;
   usageStats?: ChatUsageStats | null;
+  workspace?: Readonly<{
+    available: boolean;
+    busy: boolean;
+    commandRunning?: boolean;
+    enabled: boolean;
+    internetEnabled: boolean | null;
+    loading: boolean;
+    onToggle(value: boolean): void;
+    sessionState: ChatWorkspaceState["sessionState"];
+    unavailableReason?: WorkspaceUnavailableReason;
+  }>;
 }>;
+
+export function workspaceStatusCopy(
+  state: ChatWorkspaceState["sessionState"],
+  commandRunning: boolean
+): string {
+  if (commandRunning || state === "running") return "Running a command…";
+  switch (state) {
+    case "creating": return "Creating workspace…";
+    case "ready": return "Workspace ready";
+    case "stopped": return "Workspace stopped";
+    case "failed": return "Workspace unavailable";
+    case "not_started":
+    case null:
+    default:
+      return "Workspace has not started";
+  }
+}
+
+function workspaceUnavailableCopy(reason: WorkspaceUnavailableReason | undefined): string {
+  switch (reason) {
+    case "model_tools_required":
+      return "Workspace requires a model with tool support.";
+    case "installation_disabled":
+      return "Workspace is disabled by the administrator.";
+    case "runtime_unavailable":
+    default:
+      return "Workspace runtime is unavailable.";
+  }
+}
 
 function ContextGaugeV2({
   stats,
@@ -487,7 +531,8 @@ export function ComposerV2({
   sending = false,
   stopping = false,
   uploading = false,
-  usageStats = null
+  usageStats = null,
+  workspace
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
   const [layerLeft, setLayerLeft] = useState(0);
@@ -555,7 +600,17 @@ export function ComposerV2({
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
   const attachmentSelectionDisabled = Boolean(
-    !onUploadFiles || !attachmentAccept || inputDisabled || activeRun || uploading
+    !onUploadFiles || (!attachmentAccept && !attachmentPolicy.files) ||
+      inputDisabled || activeRun || uploading
+  );
+  const workspaceToggleReason = workspace?.loading
+    ? "Checking Workspace availability…"
+    : workspace && !workspace.available
+      ? workspaceUnavailableCopy(workspace.unavailableReason)
+      : null;
+  const workspaceToggleDisabled = Boolean(
+    !workspace || workspace.loading || workspace.busy || activeRun ||
+      (!workspace.enabled && !workspace.available)
   );
 
   const concreteSearchOptions = config?.catalog.searchStrategies.filter(
@@ -1045,7 +1100,7 @@ export function ComposerV2({
           ref={fileInputRef}
           className="v2-sr-only"
           type="file"
-          accept={attachmentAccept}
+          accept={attachmentAccept || undefined}
           aria-label="Attach files"
           disabled={attachmentSelectionDisabled}
           multiple
@@ -1178,6 +1233,53 @@ export function ComposerV2({
           {/* The model is chosen in the header (operator, 2026-09-02); the
               composer row holds only this message's tools. */}
           <div className="v2-composer-indicators" aria-label="Active capabilities">
+            {workspace ? (
+              <button
+                aria-label={workspace.enabled
+                  ? `Turn off Workspace. ${workspaceStatusCopy(
+                      workspace.sessionState,
+                      Boolean(workspace.commandRunning)
+                    )}${workspaceToggleReason ? `. ${workspaceToggleReason}` : ""}`
+                  : `Turn on Workspace${workspaceToggleReason ? `. ${workspaceToggleReason}` : ""}`}
+                aria-pressed={workspace.enabled}
+                className="v2-composer-indicator v2-composer-workspace-toggle v2-focusable"
+                data-glyph="tool"
+                data-quiet={workspace.enabled ? undefined : ""}
+                data-workspace-state={workspace.sessionState ?? "off"}
+                disabled={workspaceToggleDisabled}
+                title={workspaceToggleReason ?? (workspace.enabled
+                  ? "Turn off Workspace for future messages. Existing files are preserved."
+                  : "Turn on a private workspace for this chat.")}
+                type="button"
+                onClick={() => workspace.onToggle(!workspace.enabled)}
+              >
+                <span aria-hidden="true" />
+                <UiV2Icon className="v2-composer-indicator-glyph" name="tool" />
+                <span className="v2-composer-indicator-label">
+                  Workspace: {workspace.busy ? "Saving…" : workspace.enabled ? "On" : "Off"}
+                </span>
+              </button>
+            ) : null}
+            {workspace?.enabled ? (
+              <span
+                className="v2-composer-workspace-state"
+                data-state={workspace.commandRunning ? "running" : workspace.sessionState ?? "not_started"}
+                role="status"
+              >
+                <span aria-hidden="true" />
+                {workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}
+              </span>
+            ) : null}
+            {workspace?.enabled && workspace.internetEnabled !== null ? (
+              <span
+                aria-label={`Internet in Workspace is ${workspace.internetEnabled ? "enabled" : "disabled"}`}
+                className="v2-composer-workspace-internet"
+                title="This setting is managed by the administrator and applies to this environment."
+              >
+                <UiV2Icon name="globe" />
+                Internet: {workspace.internetEnabled ? "On" : "Off"}
+              </span>
+            ) : null}
             {searchChipVisible ? (
               <span className="v2-composer-indicator-group">
                 <button

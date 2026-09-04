@@ -14,10 +14,15 @@ import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { installationToolBudgetPolicy } from "@/lib/server/runs/toolBudgets";
 import { defaultSkillRepository } from "@/lib/server/skills/defaultSkills";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
+import {
+  workspaceAdmissionService,
+  workspaceCoordinatorForStorage
+} from "@/lib/server/workspace/defaultServices";
 
 export const runtime = "nodejs";
 
 const repository = createPrismaRunRepository();
+const storage = createS3StorageAdapter();
 
 export const POST = createRegenerateModelRunHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
@@ -35,5 +40,7 @@ export const POST = createRegenerateModelRunHandler({
   resolveAuth: resolveRequestAuth,
   runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
-  storage: createS3StorageAdapter()
+  storage,
+  workspace: workspaceAdmissionService,
+  workspaceCoordinator: workspaceCoordinatorForStorage(storage)
 });

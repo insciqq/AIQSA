@@ -14,7 +14,7 @@ export type UploadedAttachmentWire = {
   extractedText?: string | null;
   fileName: string;
   id: string;
-  kind: "document" | "image" | "pdf";
+  kind: "document" | "file" | "image" | "pdf";
   metadata?: unknown;
   mimeType?: string;
   processing?: PdfProcessingWire;
@@ -56,6 +56,9 @@ export type UploadErrorResponseWire =
     }
   | {
       error: "upload_busy";
+    }
+  | {
+      error: "workspace_runtime_unavailable";
     }
   | {
       error: Exclude<PdfUploadErrorCode, "pdf_page_limit_exceeded">;
@@ -183,7 +186,10 @@ export function decodeUploadAttachmentResponse(value: unknown): UploadAttachment
     attachment.id.length === 0 ||
     typeof attachment.fileName !== "string" ||
     attachment.fileName.length === 0 ||
-    (attachment.kind !== "document" && attachment.kind !== "image" && attachment.kind !== "pdf") ||
+    (attachment.kind !== "document" &&
+      attachment.kind !== "file" &&
+      attachment.kind !== "image" &&
+      attachment.kind !== "pdf") ||
     (attachment.byteSize !== undefined &&
       (typeof attachment.byteSize !== "number" ||
         !Number.isFinite(attachment.byteSize) ||
@@ -249,7 +255,8 @@ export function decodeUploadErrorResponse(value: unknown): UploadErrorResponseWi
       value.error !== "pdf_invalid" &&
       value.error !== "pdf_page_limit_exceeded" &&
       value.error !== "pdf_password_required" &&
-      value.error !== "upload_busy")
+      value.error !== "upload_busy" &&
+      value.error !== "workspace_runtime_unavailable")
   ) {
     return null;
   }
@@ -271,7 +278,7 @@ export function decodeUploadErrorResponse(value: unknown): UploadErrorResponseWi
     };
   }
 
-  if (value.error === "upload_busy") {
+  if (value.error === "upload_busy" || value.error === "workspace_runtime_unavailable") {
     return { error: value.error };
   }
 

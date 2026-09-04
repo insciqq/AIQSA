@@ -1,5 +1,5 @@
-export type UploadFormatScope = "attachment" | "knowledge";
-export type UploadKind = "document" | "image" | "pdf";
+export type UploadFormatScope = "attachment" | "knowledge" | "workspace";
+export type UploadKind = "document" | "file" | "image" | "pdf";
 export type InlineDocumentFormat = "csv" | "json" | "markdown" | "text";
 export type StructuredDocumentFormat = "csv" | "ods" | "xls" | "xlsx";
 export type SidecarParserEngine = "docling" | "tika";
@@ -46,9 +46,9 @@ export type UploadFormatDefinition = Readonly<{
   scopes: readonly UploadFormatScope[];
 }>;
 
-const bothScopes = Object.freeze(["attachment", "knowledge"] as const);
-const knowledgeOnly = Object.freeze(["knowledge"] as const);
-const attachmentOnly = Object.freeze(["attachment"] as const);
+const bothScopes = Object.freeze(["attachment", "knowledge", "workspace"] as const);
+const knowledgeOnly = Object.freeze(["knowledge", "workspace"] as const);
+const attachmentOnly = Object.freeze(["attachment", "workspace"] as const);
 
 /**
  * Canonical upload-format inventory. Browser filters, server admission, content
@@ -331,15 +331,19 @@ export function normalizedUploadMimeType(value: string): string | undefined {
 }
 
 export function normalizedUploadFileExtension(fileName: string): string | undefined {
-  if (
-    !fileName ||
-    new TextEncoder().encode(fileName).byteLength > 255 ||
-    /[\0/\\\r\n]/u.test(fileName)
-  ) {
-    return undefined;
-  }
+  if (!isSafeUploadFileName(fileName)) return undefined;
   const dot = fileName.lastIndexOf(".");
   return dot > 0 ? fileName.slice(dot).toLowerCase() : undefined;
+}
+
+export function isSafeUploadFileName(fileName: string): boolean {
+  return Boolean(
+    fileName &&
+    fileName !== "." &&
+    fileName !== ".." &&
+    new TextEncoder().encode(fileName).byteLength <= 255 &&
+    !/[\u0000-\u001f\u007f/\\]/u.test(fileName)
+  );
 }
 
 export function uploadFormatFor(
@@ -347,11 +351,7 @@ export function uploadFormatFor(
   mimeType: string,
   scope: UploadFormatScope
 ): UploadFormatDefinition | undefined {
-  const extension = normalizedUploadFileExtension(fileName);
-  if (!extension) return undefined;
-  const format = UPLOAD_FORMAT_REGISTRY.find((candidate) =>
-    candidate.scopes.includes(scope) && candidate.extensions.includes(extension)
-  );
+  const format = uploadFormatForExtension(fileName, scope);
   if (!format) return undefined;
 
   const normalizedMime = normalizedUploadMimeType(mimeType);
@@ -359,10 +359,25 @@ export function uploadFormatFor(
   return format.mimeTypes.includes(normalizedMime) ? format : undefined;
 }
 
+export function uploadFormatForExtension(
+  fileName: string,
+  scope: UploadFormatScope
+): UploadFormatDefinition | undefined {
+  const extension = normalizedUploadFileExtension(fileName);
+  if (!extension) return undefined;
+  return UPLOAD_FORMAT_REGISTRY.find((candidate) =>
+    candidate.scopes.includes(scope) && candidate.extensions.includes(extension)
+  );
+}
+
 export function uploadAcceptFor(input: Readonly<{
   kinds?: readonly UploadKind[];
   scope: UploadFormatScope;
 }>): string {
+  // An empty accept attribute intentionally means "any file". Server-side
+  // Workspace admission still applies size, name, ownership, and content
+  // validation for every known parser/native format.
+  if (input.scope === "workspace") return "";
   const kinds = new Set(input.kinds ?? ["document", "image", "pdf"]);
   const formats = UPLOAD_FORMAT_REGISTRY.filter((format) =>
     format.scopes.includes(input.scope) && kinds.has(format.kind)

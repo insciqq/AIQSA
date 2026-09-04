@@ -529,6 +529,10 @@ function bootstrapFoundationDigest(database: string): string {
       'system_model_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, "providerModelId", "reasoningEffort", version, "updatedByUserId") ORDER BY id)
         FROM "SystemModelPolicy"
+      ), '[]'::jsonb),
+      'workspace_policy', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, enabled, "internetEnabled", version, "updatedByUserId") ORDER BY id)
+        FROM "WorkspacePolicy"
       ), '[]'::jsonb)
     )::text);`,
   );

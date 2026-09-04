@@ -281,10 +281,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expectWithinViewport(page, skillLibrary);
   await expectNoHorizontalOverflow(page);
-  await expect(skillLibrary.getByText(/Skills are text-only/u)).toBeVisible();
+  await expect(skillLibrary.getByText(/1 selected · up to/u)).toBeVisible();
   await expect(skillLibrary.getByRole("button", { name: "Remove Incident brief" }))
     .toHaveAttribute("aria-pressed", "true");
-  await expect(skillLibrary.getByRole("button", { name: "New Skill" })).toBeFocused();
+  await expect(skillLibrary.getByRole("button", { name: "Close Skills" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(skillLibrary).toBeHidden();
   await expect(skillsIndicator).toBeFocused();

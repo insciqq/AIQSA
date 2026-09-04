@@ -299,6 +299,7 @@ describe("Prisma Knowledge citation viewer after permanent deletion", () => {
         userId: ownerUserId
       })).resolves.toEqual({
         citation: { handle: "K1", state: "deleted" },
+        librarySourceId: null,
         original: null
       });
       await expect(resolveKnowledgeCitationViewer(prisma, unavailableViewerStorage, {

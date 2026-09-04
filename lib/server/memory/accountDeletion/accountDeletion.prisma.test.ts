@@ -19,7 +19,8 @@ import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical"
 import { createPrismaMemoryFeedbackRepository } from "../review/feedbackRepository";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
 import {
-  createPrismaMemoryLexicalProjectionStore
+  createPrismaMemoryLexicalProjectionStore,
+  resetMemoryLexicalProjection
 } from "../searchProjection/repository";
 import { runMemoryLexicalProjectionPass } from "../searchProjection/worker";
 import {
@@ -288,6 +289,27 @@ async function drainAccountMemoryProjection(userId: string, now: Date) {
     throw new Error("account_memory_projection_drain_incomplete");
   }
   return search;
+}
+
+async function quiesceUnrelatedProjectionEvents(
+  userId: string,
+  now: Date
+): Promise<void> {
+  await prisma.memoryLexicalProjectionEvent.updateMany({
+    data: {
+      completedAt: now,
+      errorCode: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "SUCCEEDED",
+      updatedAt: now
+    },
+    where: {
+      state: { not: "SUCCEEDED" },
+      userId: { not: userId }
+    }
+  });
 }
 
 async function createOwner(status: "active" | "disabled" = "active"): Promise<string> {
@@ -1169,6 +1191,7 @@ describe("Prisma account Memory deletion", () => {
     const coordinator = coordinatorFor(coordinatorRegistry, () => new Date(clock));
     const kick = vi.fn();
     let admissionEnabled = true;
+    let projectionQueueQuiesced = false;
     const hook = createAccountMemoryDeletionHook({
       admissionEnabled: () => admissionEnabled,
       kick
@@ -1283,6 +1306,11 @@ describe("Prisma account Memory deletion", () => {
         where: { id: admitted.id }
       })).resolves.toMatchObject({ state: "SUCCEEDED" });
 
+      // The stateful lane shares one disposable queue. Isolate this account's
+      // terminal purge without discarding other suites' canonical rows; test
+      // teardown reconstructs all unrelated derived work.
+      await quiesceUnrelatedProjectionEvents(userId, clock);
+      projectionQueueQuiesced = true;
       const projection = await drainAccountMemoryProjection(userId, clock);
       expect(projection.purgedUsers).toHaveLength(1);
       await expect(prisma.$transaction((tx) =>
@@ -1305,6 +1333,12 @@ describe("Prisma account Memory deletion", () => {
       coordinator.stop();
       await cleanupOwner(userId);
       await cleanupProvider(provider);
+      if (projectionQueueQuiesced) {
+        await resetMemoryLexicalProjection(prisma, {
+          mode: "RESTORE",
+          now: new Date(clock.getTime() + 1)
+        });
+      }
     }
   });
 

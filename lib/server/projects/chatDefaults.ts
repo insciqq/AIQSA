@@ -4,6 +4,7 @@ import {
   explicitKnowledgeSelection,
   type KnowledgePlan
 } from "../../contracts/knowledge";
+import { workspaceModelSupportsTools } from "../workspace/availability";
 
 type ProjectChatDefaultClient =
   | Pick<PrismaClient, "projectKnowledgeBaseBinding" | "projectModelBinding">
@@ -174,6 +175,7 @@ export type ProjectChatDefaultAuthority = Readonly<{
   knowledgeBaseIds: ReadonlySet<string>;
   knowledgeSourceIds: ReadonlySet<string>;
   modelProviders: ReadonlyMap<string, string>;
+  toolCallingModelIds: ReadonlySet<string>;
 }>;
 
 /** Load only currently runnable Project authority. Stored chat defaults are
@@ -215,6 +217,11 @@ export async function loadProjectChatDefaultAuthority(
         row.providerModel.id,
         row.providerModel.connectionId
       ])
+    ),
+    toolCallingModelIds: new Set(
+      models.filter((row) =>
+        activeProjectModel(row) && workspaceModelSupportsTools(row.providerModel)
+      ).map((row) => row.providerModel.id)
     )
   };
 }

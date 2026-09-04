@@ -98,6 +98,10 @@ async function uploadFailureMessage(response: Response): Promise<string> {
     return "Upload capacity is busy. Try again shortly.";
   }
 
+  if (decoded?.error === "workspace_runtime_unavailable") {
+    return "Workspace is unavailable. Turn it off or try again later.";
+  }
+
   if (decoded?.error === "file_too_large" || response.status === 413) {
     return "File exceeds the configured upload size limit.";
   }
@@ -222,8 +226,10 @@ export function useRunLifecycleActions({
   }
 
   async function uploadFiles(files: FileList | readonly File[]) {
-    const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
-    const generation = useComposerSessionStore.getState().beginUpload(sourceSessionKey);
+    const initialStore = useComposerSessionStore.getState();
+    const sourceSessionKey = initialStore.activeSessionKey;
+    const workspaceEnabled = selectComposerSession(initialStore, sourceSessionKey).workspaceEnabled;
+    const generation = initialStore.beginUpload(sourceSessionKey);
     if (generation === null) {
       return;
     }
@@ -234,6 +240,7 @@ export function useRunLifecycleActions({
         try {
           const formData = new FormData();
           formData.append("file", file);
+          if (workspaceEnabled) formData.append("scope", "workspace");
           const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
             projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
           if (projectId) formData.append("projectId", projectId);

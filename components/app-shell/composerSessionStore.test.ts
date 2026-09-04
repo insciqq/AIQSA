@@ -47,6 +47,7 @@ describe("composer session store", () => {
     store.activateSession(folder);
     store.setDraft("Folder draft");
     store.setAttachments([attachment("folder")]);
+    store.updateSession(folder, { workspaceEnabled: true });
     store.activateSession(chatA);
     store.setDraft("Draft A");
     store.startEdit("message-a", "Edit A");
@@ -56,7 +57,8 @@ describe("composer session store", () => {
     expect(session(root)).toMatchObject({ draft: "Root draft" });
     expect(session(folder)).toMatchObject({
       attachments: [attachment("folder")],
-      draft: "Folder draft"
+      draft: "Folder draft",
+      workspaceEnabled: true
     });
     expect(session(chatA)).toMatchObject({
       draft: "Draft A",
@@ -235,8 +237,27 @@ describe("composer session store", () => {
       pendingEdit: null,
       pendingSend: null,
       pendingUploadGenerations: [],
-      revision: 0
+      revision: 0,
+      workspaceEnabled: false
     });
+  });
+
+  it("snapshots and transfers blank Workspace intent with the accepted send", () => {
+    const source = projectComposerSessionKey("project-one");
+    const target = composerSessionKey("created-chat");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(source);
+    store.setDraft("Inspect the repository");
+    expect(store.updateSession(source, { workspaceEnabled: true })).toBe(true);
+
+    const send = store.beginSend(source)!;
+    expect(send).toMatchObject({
+      draft: "Inspect the repository",
+      sourceKey: source,
+      workspaceEnabled: true
+    });
+    expect(store.transferSession(source, target)).toBe(true);
+    expect(session(target).workspaceEnabled).toBe(true);
   });
 
   it("does not restore a failed send once a durable run id exists", () => {

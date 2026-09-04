@@ -3,6 +3,7 @@ import {
   summarizeMessageRunArtifacts,
   summarizeMessageRunToolActivity
 } from "./prismaRepository";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 
 describe("summarizeMessageRunArtifacts", () => {
   it("projects only the friendly Memory availability state", () => {
@@ -424,5 +425,24 @@ describe("summarizeMessageRunToolActivity", () => {
         toolName: "mcp_private_internal_tool_0123456789"
       }]
     })?.calls[0]?.toolName).toBe("MCP tool");
+  });
+
+  it("projects canonical Workspace tools with a safe user-facing owner", () => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: null,
+      normalizedRequest: { workspace: { enabled: true } },
+      status: "complete",
+      toolCalls: [{
+        completedAt: null,
+        ordinal: 0,
+        roundIndex: 1,
+        startedAt: null,
+        state: "complete",
+        toolName: namespacedWorkspaceToolName("sandbox_fs_read")
+      }]
+    })?.calls[0]).toMatchObject({
+      serverName: "Workspace",
+      toolName: "sandbox_fs_read"
+    });
   });
 });

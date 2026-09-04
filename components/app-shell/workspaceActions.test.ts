@@ -1028,6 +1028,40 @@ describe("workspace actions", () => {
     expect(state.setSelectedProvider).not.toHaveBeenCalled();
   });
 
+  it("reserves a personal chat locally for atomic first-send admission", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    const sourceKey = composerSessionKey(null, "folder-1");
+    state.actions.activateBlankWorkspace("folder-1");
+    useComposerControlStore.setState({
+      selectedModelId: "gpt-5.5",
+      selectedProvider: "openai"
+    });
+    useComposerSessionStore.getState().updateSession(sourceKey, {
+      draft: "Atomic first send",
+      workspaceEnabled: true
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const created = await state.actions.createPersonalChatForSend("folder-1", sourceKey);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(created).toMatchObject({
+      defaultModelId: "gpt-5.5",
+      defaultProvider: "openai",
+      folderId: "folder-1",
+      memoryMode: "NORMAL",
+      pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" },
+      projectId: null
+    });
+    expect(created?.id).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(useWorkspaceStore.getState().activeChatId).toBe(created?.id);
+    expect(state.session(composerSessionKey(created!.id))).toMatchObject({
+      draft: "Atomic first send",
+      workspaceEnabled: true
+    });
+  });
+
   it("marks a chat created from a Temporary draft pending and keeps it out of navigation", async () => {
     const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
     useWorkspaceStore.getState().applyNavigationPage({
@@ -1086,7 +1120,8 @@ describe("workspace actions", () => {
     });
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       folderId: "folder-1",
-      memoryMode: "EXCLUDED"
+      memoryMode: "EXCLUDED",
+      workspaceEnabled: false
     });
     expect(state.session(composerSessionKey(created.id)).draft).toBe("Memory-off first send");
     expect(state.session(composerSessionKey(null, "folder-1")).draft).toBe("");

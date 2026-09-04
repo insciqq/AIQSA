@@ -114,6 +114,27 @@ async function enqueue(
   return row.sequence;
 }
 
+async function quiesceUnrelatedProjectionEvents(
+  userIds: readonly string[],
+  now: Date
+): Promise<void> {
+  await prisma.memoryLexicalProjectionEvent.updateMany({
+    data: {
+      completedAt: now,
+      errorCode: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "SUCCEEDED",
+      updatedAt: now
+    },
+    where: {
+      state: { not: "SUCCEEDED" },
+      userId: { notIn: [...userIds] }
+    }
+  });
+}
+
 describe("Memory lexical projection PostgreSQL repository", () => {
   it("advances a ready projection through a document-stable revision fence", async () => {
     const fixture = await createFixture();
@@ -239,6 +260,13 @@ describe("Memory lexical projection PostgreSQL repository", () => {
       const firstSequence = await enqueue(first, randomUUID());
       const blockedSequence = await enqueue(first, randomUUID());
       const independentSequence = await enqueue(second, randomUUID());
+      // Stateful files intentionally share one disposable database. Quiesce
+      // unrelated derived work for this focused ordering assertion; the
+      // finally block reconstructs it from canonical rows.
+      await quiesceUnrelatedProjectionEvents(
+        [first.userId, second.userId],
+        initialNow
+      );
       const claimed = await claimMemoryLexicalProjectionEvents(prisma, {
         leaseMs: 60_000,
         limit: 3,
@@ -287,6 +315,10 @@ describe("Memory lexical projection PostgreSQL repository", () => {
     } finally {
       await cleanupFixture(first);
       await cleanupFixture(second);
+      await resetMemoryLexicalProjection(prisma, {
+        mode: "RESTORE",
+        now: new Date(initialNow.getTime() + 10_000)
+      });
     }
   });
 
@@ -366,6 +398,22 @@ describe("Memory lexical projection PostgreSQL repository", () => {
         where: { sequence: purgeSequence }
       });
 
+      const [eventsReset, statesReset, syncRows] = await Promise.all([
+        prisma.memoryLexicalProjectionEvent.count(),
+        prisma.memoryLexicalProjectionState.count(),
+        prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+          SELECT COUNT(*)::integer AS "count"
+          FROM "MemorySearchEntry" AS entry
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM "MemoryLexicalProjectionEvent" AS purge
+            WHERE purge."userId" = entry."userId"
+              AND purge."operation" =
+                'PURGE_USER'::"MemoryLexicalProjectionOperation"
+          )
+        `)
+      ]);
+
       await expect(resetMemoryLexicalProjection(prisma, {
         mode: "REBUILD",
         now
@@ -373,7 +421,11 @@ describe("Memory lexical projection PostgreSQL repository", () => {
       await expect(resetMemoryLexicalProjection(prisma, {
         mode: "RESTORE",
         now
-      })).resolves.toEqual({ eventsReset: 2, statesReset: 1, syncEventsCreated: 1 });
+      })).resolves.toEqual({
+        eventsReset,
+        statesReset,
+        syncEventsCreated: syncRows[0]?.count ?? 0
+      });
 
       const canonicalEvents = await prisma.memoryLexicalProjectionEvent.findMany({
         orderBy: { sequence: "asc" },
