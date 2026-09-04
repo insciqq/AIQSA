@@ -242,6 +242,18 @@ async function insertAcceptedWorkspaceRunBinding(
     ) {
       throw new WorkspaceRunConflictError("workspace_busy");
     }
+    // Session-operation fence: background export recovery claims its lease
+    // under this same row lock only while the chat has no active run, and a
+    // new run must not mutate the sandbox while such a lease streams outputs.
+    await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "id" = ${existing.id} FOR UPDATE`;
+    const liveExports = await tx.workspaceRunBinding.count({
+      where: {
+        exportLeaseExpiresAt: { gt: new Date() },
+        exportState: "EXPORTING",
+        workspaceSessionId: existing.id
+      }
+    });
+    if (liveExports > 0) throw new WorkspaceRunConflictError("workspace_busy");
     await tx.workspaceSession.update({
       data: { expiresAt, lastActiveAt: new Date() },
       where: { id: existing.id }

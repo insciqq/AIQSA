@@ -168,6 +168,12 @@ function fixture() {
         ? { status: "complete" as const }
         : { status: "claimed" as const, token: "lease_token_1" };
     },
+    async claimExportForRecovery() {
+      return exportComplete
+        ? { status: "complete" as const }
+        : { status: "claimed" as const, token: "lease_token_recovery" };
+    },
+    async exportRecoveryCandidates() { return []; },
     async markExportComplete() { exportComplete = true; return true; },
     async markExportFailed() { return true; },
     async renewExportLease() { return true; },
@@ -343,10 +349,13 @@ describe("Workspace coordinator", () => {
       workspace: value.workspace
     });
     expect(first).toEqual(second);
-    expect(first).toEqual([expect.objectContaining({
-      fileName: "result.txt",
-      relativePath: "nested/result.txt"
-    })]);
+    expect(first).toEqual({
+      files: [expect.objectContaining({
+        fileName: "result.txt",
+        relativePath: "nested/result.txt"
+      })],
+      status: "complete"
+    });
     expect(value.runtime.ensureSession).toHaveBeenCalledTimes(1);
     expect(value.runtime.stageAttachments).toHaveBeenCalledTimes(1);
     expect(value.runtime.collectOutputs).toHaveBeenCalledTimes(1);
@@ -394,7 +403,7 @@ describe("Workspace coordinator", () => {
       runId: value.runId,
       userId: "user_1",
       workspace: value.workspace
-    })).rejects.toThrow("workspace_session_lost");
+    })).resolves.toEqual({ code: "workspace_session_lost", retryable: false, status: "failed" });
     expect(value.runtime.ensureSession).toHaveBeenCalledTimes(1);
     expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
   });
@@ -414,7 +423,7 @@ describe("Workspace coordinator", () => {
       runId: value.runId,
       userId: "user_1",
       workspace: value.workspace
-    })).rejects.toThrow("workspace_output_limit_exceeded");
+    })).resolves.toEqual({ code: "workspace_output_limit_exceeded", retryable: false, status: "failed" });
     expect(value.storage.objects.size).toBe(1);
   });
 });
@@ -647,7 +656,7 @@ describe("Workspace coordinator settlement", () => {
       runId: value.runId,
       userId: "user_1",
       workspace: value.workspace
-    })).rejects.toThrow("workspace_execution_cleanup_failed");
+    })).resolves.toEqual({ code: "workspace_execution_cleanup_failed", retryable: true, status: "failed" });
     expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
     expect(value.runtime.stopSession).toHaveBeenCalledTimes(1);
   });
@@ -741,5 +750,119 @@ describe("Workspace coordinator incremental staging", () => {
       workspace: failing.workspace
     })).resolves.toMatchObject({ status: "complete" });
     expect(failingReads).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Workspace coordinator export settlement", () => {
+  function outputStream(content: string, relativePath: string, batchId = "f".repeat(32)) {
+    return {
+      batchId,
+      body: body(content),
+      byteSize: Buffer.byteLength(content),
+      checksum: createHash("sha256").update(content).digest("hex"),
+      mimeType: "text/plain",
+      opaqueFileId: createHash("sha256").update(relativePath).digest("hex"),
+      relativePath
+    };
+  }
+
+  it("reports a busy lease without throwing and releases the runner batch after export", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    vi.spyOn(value.repository, "claimExport").mockResolvedValueOnce({ status: "busy" });
+    await expect(value.coordinator.finalize({
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    })).resolves.toEqual({ status: "busy" });
+    expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
+
+    const release = vi.fn(async () => undefined);
+    (value.runtime as { releaseOutputs?: typeof release }).releaseOutputs = release;
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("one", "one.txt")]);
+    await expect(value.coordinator.finalize({
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    })).resolves.toMatchObject({ status: "complete" });
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({
+      batchId: "f".repeat(32),
+      runtimeSandboxId: "runtime_1"
+    }));
+  });
+
+  it("keeps settled files, records a retryable failure, and finishes the rest on retry", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    const faulty = {
+      ...outputStream("two", "two.txt"),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("tw"));
+          controller.error(new WorkspaceRuntimeError("workspace_output_export_failed"));
+        }
+      })
+    };
+    vi.mocked(value.runtime.collectOutputs)
+      .mockResolvedValueOnce([outputStream("one", "one.txt"), faulty])
+      .mockResolvedValueOnce([outputStream("one", "one.txt"), outputStream("two", "two.txt")]);
+
+    const first = await value.coordinator.finalize({
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    });
+    expect(first).toEqual({ code: "workspace_output_export_failed", retryable: true, status: "failed" });
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({
+      code: "workspace_output_export_failed",
+      token: "lease_token_1"
+    }));
+    expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" }))
+      .toEqual([expect.objectContaining({ relativePath: "one.txt" })]);
+
+    const second = await value.coordinator.finalize({
+      recovery: true,
+      runId: value.runId,
+      userId: "user_1"
+    });
+    expect(second).toMatchObject({ status: "complete" });
+    expect((second as { files: unknown[] }).files).toHaveLength(2);
+    expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toHaveLength(2);
+    expect([...value.storage.objects.keys()].filter((key) => key.includes("workspace-outputs"))).toHaveLength(2);
+  });
+
+  it("stops every database transition once its lease is lost", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    vi.spyOn(value.repository, "renewExportLease").mockResolvedValue(false);
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    const completed = vi.spyOn(value.repository, "markExportComplete");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("one", "one.txt")]);
+    await expect(value.coordinator.finalize({
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    })).resolves.toEqual({ code: "workspace_output_export_failed", retryable: true, status: "failed" });
+    expect(failed).not.toHaveBeenCalled();
+    expect(completed).not.toHaveBeenCalled();
+    expect(value.storage.objects.size).toBe(1);
+  });
+
+  it("retries owed exports of idle chats through the recovery claim", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    vi.spyOn(value.repository, "exportRecoveryCandidates").mockResolvedValueOnce([
+      { runId: value.runId, userId: "user_1" }
+    ]);
+    const recoveryClaim = vi.spyOn(value.repository, "claimExportForRecovery");
+    const liveClaim = vi.spyOn(value.repository, "claimExport");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("one", "one.txt")]);
+    await expect(value.coordinator.recoverExports({ limit: 5 })).resolves.toEqual({
+      attempted: 1,
+      completed: 1
+    });
+    expect(recoveryClaim).toHaveBeenCalledTimes(1);
+    expect(liveClaim).not.toHaveBeenCalled();
   });
 });
