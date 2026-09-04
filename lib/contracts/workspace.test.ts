@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   decodeChatWorkspaceState,
   decodeThreadGeneratedFile,
+  decodeThreadWorkspaceActivity,
+  decodeThreadWorkspaceActivityEntry,
   decodeWorkspacePolicyResponse,
   isWorkspaceErrorCode
 } from "./workspace";
@@ -96,5 +98,42 @@ describe("workspace browser contracts", () => {
     expect(decodeWorkspacePolicyResponse({
       workspace: { enabled: true, internetEnabled: true, runtime: { state: "broken" }, version: 1 }
     })).toBeNull();
+  });
+});
+
+describe("workspace activity contract", () => {
+  it("decodes exact bounded entries and rejects additive or oversized data", () => {
+    const entry = {
+      command: { cwd: "project", exitCode: 0, preview: "npm test", stdoutPreview: "ok" },
+      durationMs: 1200,
+      id: "call:abc123",
+      kind: "command",
+      phase: "succeeded",
+      startedAt: "2026-09-04T10:00:00.000Z"
+    };
+    expect(decodeThreadWorkspaceActivityEntry(entry)).toEqual(entry);
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, runtimeSandboxId: "leak" })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, command: { ...entry.command, arguments: {} } })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, kind: "sandbox_exec" })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({
+      ...entry,
+      command: { ...entry.command, stdoutPreview: "x".repeat(8 * 1_024 + 1) }
+    })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, errorCode: "raw_failure" })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({
+      file: { byteSize: 12, displayPath: "project/a.txt" },
+      id: "call:def",
+      kind: "file_write",
+      phase: "succeeded"
+    })).not.toBeNull();
+    expect(decodeThreadWorkspaceActivity({
+      entries: [entry],
+      outputStatus: { errorCode: "workspace_output_export_failed", state: "retrying" }
+    })).toEqual({
+      entries: [entry],
+      outputStatus: { errorCode: "workspace_output_export_failed", state: "retrying" }
+    });
+    expect(decodeThreadWorkspaceActivity({ entries: [entry], outputStatus: { state: "unknown" } })).toBeNull();
+    expect(decodeThreadWorkspaceActivity({ entries: "nope" })).toBeNull();
   });
 });

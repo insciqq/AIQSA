@@ -20,6 +20,7 @@ import type {
   ThreadArtifactSummary,
   ThreadAssistantIdentity,
   ThreadToolActivity,
+  ThreadWorkspaceActivity,
   UpdateChatRequestWire,
   UpdateFolderRequestWire,
   WorkspaceChatSummaryWire,
@@ -54,6 +55,7 @@ export type ChatMessageRecord = {
   role: string;
   status: string;
   toolActivity?: ThreadToolActivity | null;
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 };
 
 export type ChatSummaryRecord = {
@@ -276,7 +278,8 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     provider: message.provider,
     role: message.role,
     status: message.status,
-    toolActivity: message.toolActivity ?? null
+    toolActivity: message.toolActivity ?? null,
+    workspaceActivity: message.workspaceActivity ?? null
   };
 }
 

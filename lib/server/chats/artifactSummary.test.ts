@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   summarizeMessageRunArtifacts,
-  summarizeMessageRunToolActivity
+  summarizeMessageRunToolActivity,
+  summarizeMessageRunWorkspaceActivity
 } from "./prismaRepository";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 
@@ -444,5 +445,52 @@ describe("summarizeMessageRunToolActivity", () => {
       serverName: "Workspace",
       toolName: "sandbox_fs_read"
     });
+  });
+});
+
+describe("summarizeMessageRunWorkspaceActivity", () => {
+  const entry = (id: string, phase: string, extra: Record<string, unknown> = {}) => ({
+    artifactType: "workspace_activity",
+    payload: { command: { preview: "npm test" }, id, kind: "command", phase, ...extra }
+  });
+
+  it("folds persisted entries, settles running steps from the run outcome, and projects export state", () => {
+    expect(summarizeMessageRunWorkspaceActivity({
+      events: [
+        { payload: { artifactType: "reasoning", payload: { text: "ignored" } } },
+        { payload: entry("call:one", "running") },
+        { payload: entry("call:one", "succeeded", { command: { exitCode: 0, preview: "npm test" } }) },
+        { payload: entry("call:two", "running") },
+        { payload: { artifactType: "workspace_activity", payload: { id: "bad", kind: "sandbox_exec", phase: "running" } } }
+      ],
+      status: "cancelled",
+      workspaceRunBinding: { exportState: "FAILED", lastExportErrorCode: "workspace_output_export_failed" }
+    })).toEqual({
+      entries: [
+        { command: { exitCode: 0, preview: "npm test" }, id: "call:one", kind: "command", phase: "succeeded" },
+        { command: { preview: "npm test" }, id: "call:two", kind: "command", phase: "cancelled" }
+      ],
+      outputStatus: { errorCode: "workspace_output_export_failed", state: "retrying" }
+    });
+    expect(summarizeMessageRunWorkspaceActivity({
+      events: [],
+      status: "complete",
+      workspaceRunBinding: { exportState: "FAILED", lastExportErrorCode: "workspace_output_limit_exceeded" }
+    })).toEqual({
+      entries: [],
+      outputStatus: { errorCode: "workspace_output_limit_exceeded", state: "failed" }
+    });
+    expect(summarizeMessageRunWorkspaceActivity({
+      events: [],
+      status: "streaming",
+      workspaceRunBinding: { exportState: "PENDING", lastExportErrorCode: null }
+    })).toBeNull();
+    expect(summarizeMessageRunWorkspaceActivity({
+      events: [],
+      status: "complete",
+      workspaceRunBinding: { exportState: "COMPLETE", lastExportErrorCode: null }
+    })).toEqual({ entries: [], outputStatus: { state: "complete" } });
+    expect(summarizeMessageRunWorkspaceActivity({ events: [], status: "complete", workspaceRunBinding: null }))
+      .toBeNull();
   });
 });
