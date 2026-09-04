@@ -122,7 +122,7 @@ describe("workspace activity projection", () => {
       callId: "toolcall-7",
       execOutputs,
       originalName: "sandbox_exec_start",
-      result: { ...official({ execSessionId: "exec-abc" }), execSessionId: "exec-abc" },
+      result: official({ execSessionId: "exec-abc" }),
       runId: "run-1"
     }, "settled");
     expect(started).toEqual({

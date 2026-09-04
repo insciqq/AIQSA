@@ -224,12 +224,49 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
     await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
     const activity = page.getByTestId("tool-activity-disclosure").last();
     await activity.locator("summary").click();
-    await expect(activity).toContainText("Used Workspace: sandbox shell");
+    await expect(activity).toContainText("Worked in Workspace");
+    await expect(activity).toContainText("Ran set -eu && test -s /workspace/inbox/index.json");
+    await expect(activity).toContainText("Exported 1 file");
+    expect(await activity.textContent()).not.toMatch(/sandbox_|mcp_workspace|Used Workspace/u);
     await sendAndExpect(
       page,
       "[AIQSA_WORKSPACE_E2E:live_quiesce_probe]",
       "Workspace finalization stopped the long-running command."
     );
+
+    // Incremental staging on a real guest: unchanged originals keep their mtimes across turns.
+    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_staging_probe]", "Inbox mtimes:");
+    const firstMtimes = await page.locator('article[data-role="assistant"]').last().textContent();
+    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_staging_probe]", "Inbox mtimes:");
+    const secondMtimes = await page.locator('article[data-role="assistant"]').last().textContent();
+    expect(firstMtimes).toMatch(/Inbox mtimes: \/workspace\/inbox\/messages\/\S+ \d+/u);
+    expect(secondMtimes).toBe(firstMtimes);
+
+    // Stop after a real exec_start: the delayed marker must never appear and no
+    // registered execution may stay open.
+    const stopComposer = page.getByRole("textbox", { name: "Message" });
+    await stopComposer.fill("[AIQSA_WORKSPACE_E2E:live_async_stop]");
+    await stopComposer.press("Enter");
+    const stopButton = page.getByRole("button", { name: "Stop answer" });
+    await expect(stopButton).toBeEnabled({ timeout: 30_000 });
+    const liveActivity = page.getByTestId("tool-activity-disclosure").last();
+    await expect(liveActivity).toContainText("Running sleep 300", { timeout: 120_000 });
+    await expect(liveActivity).toContainText("Running sleep 12; echo late");
+    await stopButton.click();
+    await expect(stopButton).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
+    await expect(page.locator(".v2-composer-workspace-state")).not.toContainText("Running a command", { timeout: 30_000 });
+    await page.waitForTimeout(13_000);
+    const stoppedSession = await prisma.workspaceSession.findUniqueOrThrow({
+      select: { id: true, state: true },
+      where: { chatId: onlineChatId }
+    });
+    expect(["READY", "STOPPED"]).toContain(stoppedSession.state);
+    await expect.poll(async () => prisma.workspaceExecution.count({
+      where: { state: { in: ["ACTIVE", "TERMINATING"] }, workspaceSessionId: stoppedSession.id }
+    })).toBe(0);
+    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_marker_probe]", "Late marker absent after Stop.");
+    await expect(page.getByTestId("tool-activity-disclosure").last()).toContainText("Stopped sleep 300");
 
     const output = await generatedArchive(page, onlineChatId);
     const outputFiles = tarContents(output.bytes).files;

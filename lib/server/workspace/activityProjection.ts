@@ -274,9 +274,14 @@ function commandEntry(
     ? payload.exitCode
     : typeof rawExit === "number" && Number.isSafeInteger(rawExit) ? rawExit : null;
   const failed = input.result.status === "error" || (exitCode !== null && exitCode !== 0);
+  // A rejected call carries its actionable message in the official error
+  // envelope; the reader sees it where stderr would be.
+  const errorMessage = data && isRecord(data.error) && typeof data.error.message === "string"
+    ? data.error.message
+    : "";
   const output = boundedOutputPreview({
     failed,
-    stderr: payload && typeof payload.stderr === "string" ? payload.stderr : "",
+    stderr: payload && typeof payload.stderr === "string" ? payload.stderr : errorMessage,
     stdout: payload && typeof payload.stdout === "string" ? payload.stdout : ""
   });
   const truncated = output.truncated || input.result.rawPreview?.truncated === true;
@@ -334,7 +339,6 @@ function fileEntry(
 
 function execSessionIdOf(input: WorkspaceActivityProjectionInput): string | null {
   if (typeof input.arguments.execSessionId === "string") return input.arguments.execSessionId;
-  if (input.result?.execSessionId) return input.result.execSessionId;
   const data = input.result ? resultData(input.result) : null;
   const payload = data && isRecord(data.data) ? data.data : null;
   return payload && typeof payload.execSessionId === "string" ? payload.execSessionId : null;

@@ -395,6 +395,40 @@ try {
   assert.equal(cancelled, true, "long command was not cancelled");
   await call(onlineSessionId, onlineRuntimeId, longRunId, "sandbox_exec_close", { execSessionId });
 
+  // Registry-driven termination: the application addresses executions by
+  // their official id, and an id the server no longer knows is `unknown`.
+  const quiesceRunId = `${prefix}-quiesce`;
+  const quiesced = await call(onlineSessionId, onlineRuntimeId, quiesceRunId, "sandbox_exec_start", {
+    command: "sleep 12; echo late > /workspace/project/after-stop.txt",
+    shell: true
+  });
+  const quiesceId = String(quiesced.execSessionId ?? "");
+  const terminations = await runtime.terminateExecutions({
+    executions: [
+      { modelRunId: quiesceRunId, runtimeExecSessionId: quiesceId },
+      { modelRunId: quiesceRunId, runtimeExecSessionId: "never-started" }
+    ],
+    runtimeSandboxId: onlineRuntimeId,
+    sessionId: onlineSessionId
+  });
+  assert.deepEqual(terminations.map((entry) => entry.outcome), ["closed", "unknown"]);
+  await new Promise((resolve) => setTimeout(resolve, 13_000));
+  const marker = await call(onlineSessionId, onlineRuntimeId, quiesceRunId, "sandbox_fs_exists", {
+    path: "/workspace/project/after-stop.txt"
+  });
+  assert.equal(marker.exists, false, "terminated execution still wrote its marker");
+
+  // Incremental staging: the guest index lists intact originals only.
+  const stagedListing = await runtime.listStagedAttachments({
+    runtimeSandboxId: onlineRuntimeId,
+    sessionId: onlineSessionId
+  });
+  assert.equal(stagedListing.length, 3);
+  assert.equal(
+    stagedListing.every((entry) => entry.checksum.length === 64 && entry.byteSize > 0),
+    true
+  );
+
   const offline = await runtime.ensureSession({
     cpus: config.cpus,
     diskMiB: config.diskMiB,

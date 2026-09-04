@@ -993,16 +993,6 @@ export function createWorkspaceCoordinator(input: Readonly<{
         const attachments = await input.repository.attachments(binding);
         const prepareStartedAt = new Date();
         const prepareOrdinal = nextLifecycleOrdinal(binding.runId);
-        if (attachments.length > 0) {
-          await lifecycle({
-            count: attachments.length,
-            kind: "attachments_prepare",
-            ordinal: prepareOrdinal,
-            phase: "running",
-            runId: binding.runId,
-            startedAt: prepareStartedAt
-          });
-        }
         const entries = attachments.map((attachment) => ({
           attachmentId: attachment.attachmentId,
           byteSize: attachment.byteSize,
@@ -1059,6 +1049,18 @@ export function createWorkspaceCoordinator(input: Readonly<{
             sandboxPath: entry.sandboxPath
           });
         }
+        // Only originals that actually transfer are "prepared"; an unchanged
+        // inbox produces no row at all.
+        if (streams.length > 0) {
+          await lifecycle({
+            count: streams.length,
+            kind: "attachments_prepare",
+            ordinal: prepareOrdinal,
+            phase: "running",
+            runId: binding.runId,
+            startedAt: prepareStartedAt
+          });
+        }
         const byMessage = new Map<string, typeof entries>();
         for (const entry of entries) {
           const values = byMessage.get(entry.messageId) ?? [];
@@ -1099,9 +1101,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
           binding.runId,
           new Map(entries.map((entry) => [entry.sandboxPath, entry.originalName]))
         );
-        if (attachments.length > 0) {
+        if (streams.length > 0) {
           await lifecycle({
-            count: attachments.length,
+            count: streams.length,
             durationMs: Date.now() - prepareStartedAt.getTime(),
             kind: "attachments_prepare",
             ordinal: prepareOrdinal,
