@@ -15,31 +15,15 @@ import {
 import {
   isMcpOAuthAuthorizing,
   markMcpOAuthAuthorizing,
+  observeMcpSettings,
   refreshMcpSettings,
   useMcpSettingsStore
 } from "./mcpSettingsStore";
 import {
   mcpReadinessPresentation,
+  mcpOperationalPresentation,
   type McpReadinessPresentation
 } from "./mcpReadiness";
-
-/*
- * Settings › MCP & tools as ordinary Settings rows (PRD §4.9, UX audit
- * 2026-09-02 A13): one status line for the whole catalog with a quiet
- * Refresh action, then one row per server — 24px monogram · name ·
- * description · one status line (availability · readiness · tool count) ·
- * the switch on the right. A server that still needs personal values shows
- * "Complete setup" instead of the switch, an OAuth server that is not yet
- * connected shows "Connect to enable". The external account, personal
- * configuration and tool names fold underneath; "How tools use data" is a
- * footnote at the end. The behaviour (enable/disable, OAuth, personal
- * values, readiness) is unchanged.
- */
-
-function readableCode(code: string): string {
-  const label = code.replace(/^mcp_/u, "").replaceAll("_", " ");
-  return `${label.charAt(0).toUpperCase()}${label.slice(1)} (${code})`;
-}
 
 function errorText(error: unknown, server: UserMcpServer): string {
   if (!(error instanceof McpSettingsApiError)) {
@@ -240,6 +224,7 @@ function ServerRow({
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
   const readiness = mcpReadinessPresentation(server.readiness);
+  const operational = mcpOperationalPresentation(server);
   // The catalog count is informational: tool names appear once the runtime
   // reported them, so the fold below lists the exact tools only then.
   const toolCount = server.tools.length || server.knownToolCount;
@@ -288,36 +273,25 @@ function ServerRow({
           {server.description ? <p className="v2-settings-server-description">{server.description}</p> : null}
           <p aria-live="polite" className="v2-settings-server-status" role="status">
             <span
-              className="v2-settings-server-availability"
-              data-resource-availability={server.enabled ? "enabled" : "disabled"}
+              className="v2-settings-server-readiness"
+              data-tone={readinessTone(operational.kind)}
             >
-              {server.enabled ? "Enabled" : "Disabled"}
+              {operational.kind === "ready" ? <UiV2Icon name="check" />
+                : operational.kind === "progress" ? <Spinner /> : null}
+              {operational.label}
             </span>
-            {server.enabled ? (
+            {readiness.kind === "attention" ? (
               <>
                 <span aria-hidden="true"> · </span>
                 <span className="v2-settings-server-readiness" data-tone={readinessTone(readiness.kind)}>
-                  {readiness.kind === "ready"
-                    ? <UiV2Icon name="check" />
-                    : readiness.kind === "progress"
-                      ? <Spinner />
-                      : <UiV2Icon name="alert" />}
                   {readiness.label}
                 </span>
-                {server.errorCode ? (
-                  <>
-                    <span aria-hidden="true"> · </span>
-                    <span className="v2-settings-server-error-code">{readableCode(server.errorCode)}</span>
-                  </>
-                ) : null}
-                {toolCount > 0 ? (
-                  <>
-                    <span aria-hidden="true"> · </span>
-                    <span>{toolCountLabel(toolCount)}</span>
-                  </>
-                ) : null}
               </>
             ) : null}
+            {toolCount > 0 ? <>
+              <span aria-hidden="true"> · </span>
+              <span>{toolCountLabel(toolCount)}</span>
+            </> : null}
           </p>
         </div>
         <div className="v2-settings-server-action">
@@ -343,13 +317,16 @@ function ServerRow({
               onStart={startAuthorization}
             />
           ) : (
-            <UiV2Switch
-              aria-busy={busy === "toggle" || undefined}
-              checked={server.enabled}
-              disabled={busy !== null}
-              label={server.name}
-              onChange={toggle}
-            />
+            <div className="v2-settings-server-preference">
+              <span className="v2-settings-field-note">Use in chats</span>
+              <UiV2Switch
+                aria-busy={busy === "toggle" || undefined}
+                checked={server.enabled}
+                disabled={busy !== null}
+                label={`Use ${server.name} in chats`}
+                onChange={toggle}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -471,9 +448,7 @@ export function McpSettingsSection({
     .reduce((total, server) => total + (server.tools.length || server.knownToolCount), 0);
   const dirty = Object.values(edits).some((serverEdits) => Object.keys(serverEdits).length > 0);
 
-  useEffect(() => {
-    void refreshMcpSettings().catch(() => undefined);
-  }, []);
+  useEffect(() => observeMcpSettings(), []);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -555,7 +530,7 @@ export function McpSettingsSection({
       ) : loadState === "error" && servers.length === 0 ? (
         <div className="v2-settings-mcp-state" data-tone="danger">
           <p role="alert">MCP settings could not be loaded.</p>
-          <span className="v2-settings-field-note">{error ? readableCode(error) : "Try again."}</span>
+          <span className="v2-settings-field-note">Try again.</span>
           <UiV2Button onClick={() => void refreshMcpSettings(true).catch(() => undefined)}>Retry</UiV2Button>
         </div>
       ) : servers.length === 0 ? (
@@ -581,6 +556,10 @@ export function McpSettingsSection({
           ))}
         </div>
       )}
+
+      {error && servers.length > 0 ? (
+        <p className="v2-settings-field-note" role="status">Status could not be refreshed. Try again.</p>
+      ) : null}
 
       {/* Footnote: how a chat consumes the enabled catalog (A13). */}
       <details className="v2-settings-footnote">

@@ -41,6 +41,8 @@ Ordinary Knowledge creation asks for a name, optional description, and optional 
 
 Knowledge answer state is explicit and concise. Zero ready selected Sources show processing without implying that retrieval ran; a ready subset shows a short limitation alongside the answer. Exactly zero candidates, model-declared insufficient evidence, retrieval failure, answer-provider failure, and status/citation-contract failure remain distinct. Technical failure is never phrased as “the documents contain no answer,” and client projections contain no raw query, Source text, internal identifiers, scores, or provider details.
 
+Ordinary MCP Settings may display `Active` only from fresh server-owned evidence that the accepted runtime responds to the MCP protocol. `Use in chats` is an independent permission, and an enabled on-demand server may be inactive. Opening Settings does not wake idle servers. Runtime status is informational; exact run admission and dispatch remain authoritative. Internal infrastructure failures and repair details stay in administrator surfaces, while ordinary Settings retain concise operational states and actionable setup or account-connection controls.
+
 ## Responsive And Interaction Contract
 
 Composition follows available space and input capability, not device names. The current shell changes from normal-flow sidebar to collapsed layout and then a scrim-backed drawer at its owned breakpoints; source CSS/tests own exact values. Width never creates a second store, draft, selection, or navigation tree. Composer and overlays respect dynamic viewport, safe areas, software keyboards, and one deliberate local scroll owner.

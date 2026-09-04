@@ -1,6 +1,7 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type {
   McpReadiness,
+  McpOperationalStatus,
   McpSlotValue,
   McpValidationIssue,
   UserMcpCatalogResponse,
@@ -41,8 +42,9 @@ function userServer(value: unknown): UserMcpServer | null {
       ["disconnected", "disconnecting", "ready", "reauthorization_required"].includes(String(value.oauthState))
     ) ||
     !(value.accountLabel === null || typeof value.accountLabel === "string") ||
-    !(value.errorCode === null || typeof value.errorCode === "string") ||
+    !["active", "checking", "inactive"].includes(String(value.operationalStatus)) ||
     !Array.isArray(value.fields) || !Array.isArray(value.tools)) return null;
+  if (value.operationalStatus === "active" && (!value.enabled || value.readiness !== "ready")) return null;
 
   const fields = value.fields.flatMap((candidate) => {
     if (!isRecord(candidate) || typeof candidate.slotKey !== "string" ||
@@ -84,13 +86,13 @@ function userServer(value: unknown): UserMcpServer | null {
     accountLabel: value.accountLabel,
     description: value.description,
     enabled: value.enabled,
-    errorCode: value.errorCode,
     fields,
     id: value.id,
     knownToolCount: value.knownToolCount,
     name: value.name,
     oauthAvailable: value.oauthAvailable,
     oauthState: value.oauthState as UserMcpServer["oauthState"],
+    operationalStatus: value.operationalStatus as McpOperationalStatus,
     readiness: value.readiness as McpReadiness,
     tools
   };

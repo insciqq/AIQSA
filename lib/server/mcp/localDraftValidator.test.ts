@@ -44,6 +44,7 @@ function session(): McpRuntimeSession {
       unsupportedContentTypes: []
     })),
     close: vi.fn(async () => undefined),
+    ping: vi.fn(async () => undefined),
     listTools: vi.fn(async () => [{
       definitionHash: "b".repeat(64),
       description: "Runs the example operation",

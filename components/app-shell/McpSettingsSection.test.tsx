@@ -17,7 +17,7 @@ function userServer(id: string, name: string): UserMcpServer {
     accountLabel: null,
     description: `${name} team integration`,
     enabled: false,
-    errorCode: null,
+    operationalStatus: "inactive" as const,
     fields: id === "mem0" ? [{
       configured: false,
       label: "API key",
@@ -85,28 +85,19 @@ describe("McpSettingsSection", () => {
     const card = heading.closest("article");
     expect(card).not.toBeNull();
     const initial = within(card!);
-    const disabledStatus = initial.getByText("Disabled", {
-      selector: "[data-resource-availability]"
-    });
-    const control = initial.getByRole("switch", { name: "Todoist" });
-    expect(disabledStatus.closest("button")).toBeNull();
-    expect(disabledStatus).toHaveAttribute("data-resource-availability", "disabled");
+    expect(initial.getByText("Inactive")).toBeVisible();
+    const control = initial.getByRole("switch", { name: "Use Todoist in chats" });
     expect(control).toHaveAttribute("aria-checked", "false");
-
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(true));
-    expect(within(card!).getByText("Enabled", {
-      selector: "[data-resource-availability]"
-    })).toHaveAttribute("data-resource-availability", "enabled");
-    expect(within(card!).getByRole("switch", { name: "Todoist" })).toHaveAttribute("aria-checked", "true");
-    expect(within(card!).getByText("Ready")).toHaveAttribute("data-tone", "ok");
-
-    fireEvent.click(within(card!).getByRole("switch", { name: "Todoist" }));
+    expect(within(card!).getByRole("switch", { name: "Use Todoist in chats" })).toHaveAttribute("aria-checked", "true");
+    // Persisted ready alone does not make a dormant server active.
+    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(within(card!).getByText("Use in chats")).toBeVisible();
+    fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(false));
-    expect(within(card!).getByText("Disabled", {
-      selector: "[data-resource-availability]"
-    })).toBeVisible();
-    expect(within(card!).getByRole("switch", { name: "Todoist" })).toHaveAttribute("aria-checked", "false");
+    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(control).toHaveAttribute("aria-checked", "false");
   });
 
   it("lets a user independently enable multiple granted MCPs and save a write-only value", async () => {
@@ -138,8 +129,8 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
     await waitFor(() => expect(servers[0]?.fields[0]?.source).toBe("personal"));
 
-    fireEvent.click(await screen.findByRole("switch", { name: "Mem0" }));
-    fireEvent.click(screen.getByRole("switch", { name: "Todoist" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Use Mem0 in chats" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Use Todoist in chats" }));
     await waitFor(() => expect(servers.every((server) => server.enabled)).toBe(true));
 
     const patchBodies = fetchMock.mock.calls
@@ -189,7 +180,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     const connectToEnable = screen.getByRole("link", { name: "Connect Notion to enable" });
-    expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
+    expect(screen.getByText("Inactive")).toBeVisible();
     expect(connectToEnable).toHaveAttribute("data-tone", "primary");
     expect(connectToEnable).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
     connectToEnable.addEventListener("click", (event) => event.preventDefault());
@@ -253,7 +244,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
-    fireEvent.click(screen.getByRole("switch", { name: "Notion" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Use Notion in chats" }));
 
     expect(await screen.findByText("Connect Notion to an external account before enabling it.")).toBeVisible();
     const reconnect = screen.getByRole("link", { name: "Reconnect" });
@@ -269,7 +260,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
-    expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
+    expect(screen.getByText("Inactive")).toBeVisible();
     expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveAttribute("data-tone", "primary");
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
@@ -290,7 +281,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: `Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}` });
     fireEvent.click(screen.getByRole("switch", {
-      name: `Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}`
+      name: `Use Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} in chats`
     }));
 
     expect(screen.getByText(
@@ -319,7 +310,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
-    fireEvent.click(screen.getByRole("switch", { name: "Candidate" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Use Candidate in chats" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
@@ -346,45 +337,37 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
-    fireEvent.click(screen.getByRole("switch", { name: "Candidate" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Use Candidate in chats" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
   });
 
-  it("shows queued readiness as progress and idle readiness as on-demand availability", async () => {
-    const authorizing = {
-      ...userServer("authorizing", "Authorizing server"),
-      enabled: true,
-      readiness: "authorizing" as const
-    };
-    const queued = {
-      ...userServer("queued", "Queued server"),
-      enabled: true,
-      readiness: "queued" as const
-    };
-    const idle = {
-      ...userServer("idle", "Idle server"),
-      enabled: true,
-      readiness: "idle" as const
-    };
-    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [authorizing, queued, idle] })));
-
+  it("shows only server-owned operational labels and keeps idle tools informational", async () => {
+    const servers: UserMcpServer[] = [
+      { ...userServer("live", "Live server"), enabled: true, readiness: "ready", operationalStatus: "active" },
+      { ...userServer("renewing", "Renewing server"), enabled: true, readiness: "ready", operationalStatus: "checking" },
+      { ...userServer("idle", "Idle server"), enabled: true, readiness: "idle", operationalStatus: "inactive" }
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
     render(<McpSettingsSection />);
-    await screen.findByRole("heading", { name: "Authorizing server" });
+    await screen.findByRole("heading", { name: "Idle server" });
+    expect(screen.getByText("Active")).toHaveAttribute("data-tone", "ok");
+    expect(screen.getByText("Checking").querySelector(".v2-spinner")).not.toBeNull();
+    const idle = screen.getByText("Inactive");
+    expect(idle).toHaveAttribute("data-tone", "neutral");
+    expect(idle.closest("p")).toHaveTextContent("Inactive · 1 tool");
+    expect(idle.closest("p")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getAllByText("Use in chats")).toHaveLength(3);
+  });
 
-    const authorizingReadiness = screen.getByText("Authorizing");
-    const queuedReadiness = screen.getByText("Activating");
-    const idleReadiness = screen.getByText("Available on demand");
-    // Progress states show the spinner; ready states the check with the "ok" tone.
-    expect(authorizingReadiness.querySelector(".v2-spinner")).not.toBeNull();
-    expect(queuedReadiness.querySelector(".v2-spinner")).not.toBeNull();
-    expect(idleReadiness.querySelector(".v2-spinner")).toBeNull();
-    expect(idleReadiness).toHaveAttribute("data-tone", "ok");
-    // The status line reads as one sentence: availability · readiness · tools.
-    expect(idleReadiness.closest("p")).toHaveTextContent("Enabled · Available on demand · 1 tool");
-    expect(screen.queryByText("Queued")).not.toBeInTheDocument();
-    expect(screen.queryByText("Needs setup")).not.toBeInTheDocument();
+  it("omits internal failure details from ordinary settings", async () => {
+    const server = { ...userServer("missing", "Unavailable server"), enabled: true,
+      readiness: "unavailable", errorCode: "mcp_artifact_missing", artifact: "private-image" };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
+    const { container } = render(<McpSettingsSection />);
+    await screen.findByText("Inactive");
+    expect(container).not.toHaveTextContent(/mcp_artifact_missing|private-image|ToolHive|rebuild|container/i);
   });
 
   it("keeps enabled availability visible beside authorization readiness", async () => {
@@ -401,9 +384,8 @@ describe("McpSettingsSection", () => {
     const heading = await screen.findByRole("heading", { name: "Notion" });
     const card = heading.closest<HTMLElement>("article");
     expect(card).not.toBeNull();
-    expect(within(card!).getByText("Enabled", {
-      selector: "[data-resource-availability]"
-    })).toBeVisible();
+    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(within(card!).getByRole("switch", { name: "Use Notion in chats" })).toHaveAttribute("aria-checked", "true");
     expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     expect(within(card!).getByRole("link", { name: "Connect" })).toBeVisible();
   });

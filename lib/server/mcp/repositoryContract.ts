@@ -17,6 +17,13 @@ export type McpRepositoryError =
 
 export type McpRepositoryResult<T> = { kind: "ok"; value: T } | McpRepositoryError;
 
+/** Private catalog state; the handler adds current process-owned health. */
+export type McpUserServerState = Omit<UserMcpServer, "operationalStatus"> & {
+  /** Internal admission diagnostics; never serialized to the user catalog. */
+  errorCode: string | null;
+  runtimeGenerationId: string | null;
+};
+
 export type McpRepository = {
   activateDraft(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   createServer(input: {
@@ -29,7 +36,7 @@ export type McpRepository = {
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   deleteServer(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   listAdminServers(): Promise<AdminMcpServer[]>;
-  listUserServers(userId: string): Promise<UserMcpServer[]>;
+  listUserServers(userId: string): Promise<McpUserServerState[]>;
   rebuildRevision(input: {
     oneTimeValues: Record<string, McpSlotValue>;
     replaceDraft: boolean;
@@ -72,5 +79,5 @@ export type McpRepository = {
     serverId: string;
     userId: string;
     values?: Record<string, McpSlotValue | null>;
-  }): Promise<McpRepositoryResult<UserMcpServer>>;
+  }): Promise<McpRepositoryResult<McpUserServerState>>;
 };

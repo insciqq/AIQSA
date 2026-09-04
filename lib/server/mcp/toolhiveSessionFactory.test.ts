@@ -13,6 +13,7 @@ function session(): McpRuntimeSession {
     close: vi.fn(async () => undefined),
     fatalResponseErrorCode: vi.fn(() => null),
     isClosed: vi.fn(() => false),
+    ping: vi.fn(async () => undefined),
     listTools: vi.fn(async () => [])
   };
 }

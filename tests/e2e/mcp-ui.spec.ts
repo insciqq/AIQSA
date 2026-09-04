@@ -9,7 +9,7 @@ type FakeMcpServer = {
   accountLabel: string | null;
   description: string;
   enabled: boolean;
-  errorCode: string | null;
+  operationalStatus: "active" | "checking" | "inactive";
   fields: Array<Record<string, unknown>>;
   id: string;
   knownToolCount: number;
@@ -77,7 +77,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
       accountLabel: null,
       description: "Personal team memory",
       enabled: false,
-      errorCode: null,
+      operationalStatus: "inactive",
       fields: [{
         configured: false,
         label: "Mem0 API key",
@@ -99,7 +99,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
       accountLabel: null,
       description: "Team task management",
       enabled: false,
-      errorCode: null,
+      operationalStatus: "inactive",
       fields: [],
       id: "todoist",
       knownToolCount: 1,
@@ -113,7 +113,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
       accountLabel: null,
       description: "Hosted workspace tools",
       enabled: false,
-      errorCode: null,
+      operationalStatus: "inactive",
       fields: [],
       id: "notion",
       knownToolCount: 1,
@@ -137,6 +137,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
           servers = servers.map((server) => server.id === "todoist"
             ? {
                 ...server,
+                operationalStatus: "active",
                 readiness: "ready",
                 tools: [{ description: `${server.name} test tool`, name: `${server.id}_tool` }]
               }
@@ -162,6 +163,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
           fields: configured
             ? server.fields.map((field) => ({ ...field, configured: true, source: "personal" }))
             : server.fields,
+          operationalStatus: enabled ? activating ? "checking" : ready ? "active" : "inactive" : "inactive",
           readiness: enabled ? activating ? "queued" : ready ? "ready" : "needs_setup" : "disabled",
           tools: ready && !activating
             ? [{ description: `${server.name} test tool`, name: `${server.id}_tool` }]
@@ -204,7 +206,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   let settings = page.getByTestId("settings-v2");
   await expect(settings.getByRole("heading", { level: 2, name: "MCP & tools" })).toBeVisible();
-  await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(3);
+  await expect(settings.getByText("Inactive", { exact: true })).toHaveCount(3);
   await settings.getByRole("button", { name: "Complete setup for Mem0" }).click();
   await expect(settings.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
 
@@ -217,19 +219,19 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   // Rows toggle with a switch (UX audit 2026-09-02 A13); the switch appears
   // for Mem0 only after its personal value is saved.
-  await settings.getByRole("switch", { name: "Mem0" }).click();
-  await settings.getByRole("switch", { name: "Todoist" }).click();
-  await expect(settings.getByText("Activating", { exact: true })).toBeVisible();
+  await settings.getByRole("switch", { name: "Use Mem0 in chats" }).click();
+  await settings.getByRole("switch", { name: "Use Todoist in chats" }).click();
+  await expect(settings.getByText("Checking", { exact: true })).toBeVisible();
 
   await settings.getByRole("button", { name: "Close settings" }).click();
   await toolsTrigger.click();
   tools = page.getByRole("menu", { name: "MCP tools" });
   await tools.getByRole("menuitem", { name: /Manage enabled MCP servers/u }).click();
   settings = page.getByTestId("settings-v2");
-  await expect(settings.getByText("Ready", { exact: true })).toHaveCount(2);
-  await expect(settings.locator('[data-resource-availability="enabled"]')).toHaveCount(2);
-  await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(1);
-  await expect(settings.getByRole("switch", { name: "Mem0" })).toHaveAttribute("aria-checked", "true");
+  await expect(settings.getByText("Active", { exact: true })).toHaveCount(2);
+  await expect(settings.getByRole("switch", { checked: true })).toHaveCount(2);
+  await expect(settings.getByText("Inactive", { exact: true })).toHaveCount(1);
+  await expect(settings.getByRole("switch", { name: "Use Mem0 in chats" })).toHaveAttribute("aria-checked", "true");
   await expect(settings.getByText("2 of 3 servers enabled · 2 tools")).toBeVisible();
   await expect(settings.getByText("How tools use data").locator("xpath=..")).not.toHaveAttribute("open", "");
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
@@ -295,6 +297,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
         accountLabel: "Team workspace",
         enabled: true,
         oauthState: "ready",
+        operationalStatus: "active",
         readiness: "ready",
         tools: [{ description: "Notion test tool", name: "notion_tool" }]
       }
@@ -307,7 +310,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
-  await expectTouchSafe(settings.getByRole("switch", { name: "Mem0" }));
+  await expectTouchSafe(settings.getByRole("switch", { name: "Use Mem0 in chats" }));
   await expectTouchSafe(settings.getByRole("button", { name: "Close settings" }));
 
   await page.setViewportSize({ height: 390, width: 844 });

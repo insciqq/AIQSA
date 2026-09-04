@@ -21,7 +21,7 @@ import {
   type McpResponseWireLimits
 } from "./responseLimits";
 
-type SessionOperation = "call_tool" | "close" | "initialize" | "list_tools" | "session";
+type SessionOperation = "call_tool" | "close" | "initialize" | "list_tools" | "ping" | "session";
 
 export type McpClientSessionErrorCode =
   | "mcp_call_arguments_invalid"
@@ -42,6 +42,7 @@ export type McpClientSessionErrorCode =
   | "mcp_inventory_tool_limit"
   | "mcp_inventory_response_too_large"
   | "mcp_list_tools_failed"
+  | "mcp_ping_failed"
   | "mcp_response_too_large"
   | "mcp_request_cancelled"
   | "mcp_request_timeout"
@@ -74,6 +75,7 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_inventory_tool_limit: "The MCP tool inventory exceeds the configured tool limit.",
   mcp_inventory_response_too_large: "The MCP tool inventory response exceeds the configured byte limit.",
   mcp_list_tools_failed: "The MCP tool inventory could not be loaded.",
+  mcp_ping_failed: "The MCP server did not respond.",
   mcp_response_too_large: "The MCP response exceeds the configured byte limit.",
   mcp_request_cancelled: "The MCP request was cancelled.",
   mcp_request_timeout: "The MCP request timed out.",
@@ -648,7 +650,7 @@ export class McpClientSession {
     return fatalFailure;
   }
 
-  private requireReady(operation: "call_tool" | "list_tools"): void {
+  private requireReady(operation: "call_tool" | "list_tools" | "ping"): void {
     if (this.state === "closed") {
       const fatalFailure = this.consumeUnscopedFatalFailure();
       if (fatalFailure) {
@@ -717,6 +719,17 @@ export class McpClientSession {
       // The SDK transport is already locally aborted; close stays idempotent.
     } finally {
       this.responseGuard.close();
+    }
+  }
+
+  async ping(options?: McpClientRequestOptions): Promise<void> {
+    this.requireReady("ping");
+    const sdkOptions = requestOptions("ping", this.defaultRequestTimeoutMs, options);
+    try {
+      await this.guardedRequest("ping", sdkOptions.timeout,
+        () => this.client.request({ method: "ping" }, sdkOptions));
+    } catch (error) {
+      throw requestFailure(error, "ping", options?.signal, "mcp_ping_failed");
     }
   }
 
