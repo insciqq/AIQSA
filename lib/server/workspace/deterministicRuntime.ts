@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
+  WORKSPACE_INBOX_INDEX_MAX_BYTES,
   WORKSPACE_INBOX_INDEX_PATH,
   WORKSPACE_PROJECT_DIRECTORY,
   WORKSPACE_ROOT,
+  decodeWorkspaceInboxIndexAttachments,
   isSafeWorkspaceRelativePath,
   workspaceMessageManifestPath,
   workspaceToolIsAllowed
@@ -406,6 +408,20 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
     return session;
+  }
+
+  async listStagedAttachments(input: Parameters<WorkspaceRuntime["listStagedAttachments"]>[0]) {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const raw = session.files.get(WORKSPACE_INBOX_INDEX_PATH);
+    if (!raw || raw.byteLength > WORKSPACE_INBOX_INDEX_MAX_BYTES) return [];
+    let entries;
+    try {
+      entries = decodeWorkspaceInboxIndexAttachments(JSON.parse(new TextDecoder().decode(raw)));
+    } catch {
+      return [];
+    }
+    if (!entries) return [];
+    return entries.filter((entry) => session.files.get(entry.sandboxPath)?.byteLength === entry.byteSize);
   }
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {

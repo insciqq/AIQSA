@@ -805,55 +805,83 @@ export function createWorkspaceCoordinator(input: Readonly<{
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
         const attachments = await input.repository.attachments(binding);
+        const entries = attachments.map((attachment) => ({
+          attachmentId: attachment.attachmentId,
+          byteSize: attachment.byteSize,
+          checksum: attachment.checksum,
+          kind: attachment.kind,
+          messageId: attachment.messageId,
+          mimeType: attachment.mimeType,
+          originalName: attachment.fileName,
+          sandboxPath: workspaceAttachmentPath({
+            attachmentId: attachment.attachmentId,
+            messageId: attachment.messageId,
+            originalName: attachment.fileName
+          }),
+          storageKey: attachment.storageKey
+        }));
+        // Incremental staging: the guest index says which originals already
+        // exist as intact files; only missing or changed ones are read from
+        // private storage and written again. A fresh or recreated sandbox
+        // has no index and receives everything.
+        const staged = await input.runtime.listStagedAttachments({
+          runtimeSandboxId: session.runtimeSandboxId,
+          sessionId: binding.sessionId,
+          signal
+        }).catch(() => []);
         const streams: WorkspaceAttachmentStream[] = [];
-        for (const attachment of attachments) {
+        for (const entry of entries) {
+          const present = staged.some((candidate) =>
+            candidate.attachmentId === entry.attachmentId &&
+            candidate.byteSize === entry.byteSize &&
+            candidate.checksum === entry.checksum &&
+            candidate.sandboxPath === entry.sandboxPath);
+          if (present) continue;
           let object;
           try {
-            object = await getStoredObjectStream(input.storage, attachment.storageKey, {
-              maxBytes: attachment.byteSize,
+            object = await getStoredObjectStream(input.storage, entry.storageKey, {
+              maxBytes: entry.byteSize,
               signal
             });
           } catch {
             throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
           }
-          if (object.byteSize !== attachment.byteSize) {
+          if (object.byteSize !== entry.byteSize) {
             throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
           }
           streams.push({
-            attachmentId: attachment.attachmentId,
+            attachmentId: entry.attachmentId,
             body: object.body,
-            byteSize: attachment.byteSize,
-            checksum: attachment.checksum,
-            kind: attachment.kind,
-            messageId: attachment.messageId,
-            mimeType: attachment.mimeType,
-            originalName: attachment.fileName,
-            sandboxPath: workspaceAttachmentPath({
-              attachmentId: attachment.attachmentId,
-              messageId: attachment.messageId,
-              originalName: attachment.fileName
-            })
+            byteSize: entry.byteSize,
+            checksum: entry.checksum,
+            kind: entry.kind,
+            messageId: entry.messageId,
+            mimeType: entry.mimeType,
+            originalName: entry.originalName,
+            sandboxPath: entry.sandboxPath
           });
         }
-        const byMessage = new Map<string, WorkspaceAttachmentStream[]>();
-        for (const attachment of streams) {
-          const values = byMessage.get(attachment.messageId) ?? [];
-          values.push(attachment);
-          byMessage.set(attachment.messageId, values);
+        const byMessage = new Map<string, typeof entries>();
+        for (const entry of entries) {
+          const values = byMessage.get(entry.messageId) ?? [];
+          values.push(entry);
+          byMessage.set(entry.messageId, values);
         }
-        const project = (attachment: WorkspaceAttachmentStream) => ({
-          attachmentId: attachment.attachmentId,
-          byteSize: attachment.byteSize,
-          checksum: attachment.checksum,
-          kind: attachment.kind,
-          mimeType: attachment.mimeType,
-          originalName: attachment.originalName,
-          sandboxPath: attachment.sandboxPath
+        const project = (entry: (typeof entries)[number]) => ({
+          attachmentId: entry.attachmentId,
+          byteSize: entry.byteSize,
+          checksum: entry.checksum,
+          kind: entry.kind,
+          mimeType: entry.mimeType,
+          originalName: entry.originalName,
+          sandboxPath: entry.sandboxPath
         });
+        // The index, every message manifest, and the current run's output
+        // directory are always rewritten so the guest view stays complete.
         await input.runtime.stageAttachments({
           attachments: streams,
           inboxIndex: {
-            attachments: streams.map(project),
+            attachments: entries.map(project),
             manifests: [...byMessage.keys()].sort().map((messageId) => ({
               messageId,
               path: workspaceMessageManifestPath(messageId)

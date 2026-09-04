@@ -1,4 +1,7 @@
-import type { WorkspaceMcpToolName } from "@/lib/domain/workspace";
+import type {
+  WorkspaceMcpToolName,
+  WorkspaceStagedAttachmentEntry
+} from "@/lib/domain/workspace";
 
 export type WorkspaceRuntimeHealth = Readonly<{
   imageReady?: boolean;
@@ -87,6 +90,16 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceRuntimeSession>;
+  /**
+   * Originals already present in the guest inbox according to its index,
+   * verified against real regular files. Any read/parse problem yields an
+   * empty list so the caller restages everything instead of failing.
+   */
+  listStagedAttachments(input: Readonly<{
+    runtimeSandboxId: string;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<readonly WorkspaceStagedAttachmentEntry[]>;
   stageAttachments(input: Readonly<{
     attachments: readonly WorkspaceAttachmentStream[];
     inboxIndex: unknown;

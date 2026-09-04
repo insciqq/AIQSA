@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   WORKSPACE_MCP_TOOL_ALLOWLIST,
+  workspaceAttachmentPath,
   workspaceRunOutputDirectory
 } from "@/lib/domain/workspace";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
@@ -219,6 +220,7 @@ function fixture() {
       state: "ready" as const
     })),
     health: vi.fn(async () => ({ state: "ready" as const })),
+    listStagedAttachments: vi.fn(async () => []),
     loadBoundTools: vi.fn(async () => ({
       hash: workspace.toolCatalogHash,
       mcpVersion: workspace.mcpVersion,
@@ -648,5 +650,96 @@ describe("Workspace coordinator settlement", () => {
     })).rejects.toThrow("workspace_execution_cleanup_failed");
     expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
     expect(value.runtime.stopSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Workspace coordinator incremental staging", () => {
+  it("reads and writes only originals the guest index does not already hold", async () => {
+    const value = fixture();
+    const secondBytes = Buffer.from("second input", "utf8");
+    await value.storage.putObject({
+      body: secondBytes,
+      contentType: "application/octet-stream",
+      storageKey: "user_1/second"
+    });
+    const first = (await value.repository.attachments(value.workspace as never))[0]!;
+    const second = {
+      attachmentId: "attachment_2",
+      byteSize: secondBytes.byteLength,
+      checksum: createHash("sha256").update(secondBytes).digest("hex"),
+      fileName: "second.bin",
+      kind: "file" as const,
+      messageId: "message_2",
+      mimeType: "application/octet-stream",
+      storageKey: "user_1/second"
+    };
+    vi.spyOn(value.repository, "attachments").mockResolvedValue([first, second]);
+    const reads = vi.spyOn(value.storage, "getObjectStream");
+    vi.mocked(value.runtime.listStagedAttachments).mockResolvedValueOnce([{
+      attachmentId: first.attachmentId,
+      byteSize: first.byteSize,
+      checksum: first.checksum,
+      sandboxPath: workspaceAttachmentPath({
+        attachmentId: first.attachmentId,
+        messageId: first.messageId,
+        originalName: first.fileName
+      })
+    }]);
+
+    await expect(value.coordinator.execute({
+      call: { arguments: { command: "pwd" }, id: "call_incremental", name: value.shellToolName },
+      modelRunToolCallId: "stored_incremental",
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    })).resolves.toMatchObject({ status: "complete" });
+
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledWith("user_1/second", expect.anything());
+    expect(value.runtime.stageAttachments).toHaveBeenCalledTimes(1);
+    const staged = vi.mocked(value.runtime.stageAttachments).mock.calls[0]![0];
+    expect(staged.attachments.map((attachment) => attachment.attachmentId)).toEqual(["attachment_2"]);
+    expect(staged.inboxIndex).toMatchObject({
+      attachments: [
+        expect.objectContaining({ attachmentId: "attachment_1" }),
+        expect.objectContaining({ attachmentId: "attachment_2" })
+      ],
+      version: 1
+    });
+    expect(staged.manifests.map((manifest) => manifest.messageId).sort()).toEqual(["message_1", "message_2"]);
+    expect(staged.outputDirectory).toBe(value.workspace.outputDirectory);
+  });
+
+  it("restages everything when the staged listing fails or a checksum changed", async () => {
+    const value = fixture();
+    const reads = vi.spyOn(value.storage, "getObjectStream");
+    vi.mocked(value.runtime.listStagedAttachments).mockResolvedValueOnce([{
+      attachmentId: "attachment_1",
+      byteSize: 11,
+      checksum: "e".repeat(64),
+      sandboxPath: "/workspace/inbox/messages/message_1/attachment_1--input.bin"
+    }]);
+    await value.coordinator.execute({
+      call: { arguments: { command: "pwd" }, id: "call_changed", name: value.shellToolName },
+      modelRunToolCallId: "stored_changed",
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    });
+    expect(reads).toHaveBeenCalledTimes(1);
+
+    const failing = fixture();
+    const failingReads = vi.spyOn(failing.storage, "getObjectStream");
+    vi.mocked(failing.runtime.listStagedAttachments).mockRejectedValueOnce(
+      new WorkspaceRuntimeError("workspace_runtime_unavailable")
+    );
+    await expect(failing.coordinator.execute({
+      call: { arguments: { command: "pwd" }, id: "call_failed_list", name: failing.shellToolName },
+      modelRunToolCallId: "stored_failed_list",
+      runId: failing.runId,
+      userId: "user_1",
+      workspace: failing.workspace
+    })).resolves.toMatchObject({ status: "complete" });
+    expect(failingReads).toHaveBeenCalledTimes(1);
   });
 });

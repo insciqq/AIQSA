@@ -1,5 +1,10 @@
 import type { WorkspaceMcpToolName } from "@/lib/domain/workspace";
-import { isWorkspaceRuntimeExecSessionId, workspaceAttachmentPath } from "@/lib/domain/workspace";
+import {
+  WORKSPACE_INBOX_INDEX_MAX_ENTRIES,
+  decodeWorkspaceStagedAttachmentEntry,
+  isWorkspaceRuntimeExecSessionId,
+  workspaceAttachmentPath
+} from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import {
   WorkspaceRuntimeError,
@@ -189,6 +194,26 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     return value as WorkspaceRuntimeSession;
+  }
+
+  async listStagedAttachments(input: Parameters<WorkspaceRuntime["listStagedAttachments"]>[0]) {
+    const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/stage/list`, {
+      body: JSON.stringify({ runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST",
+      signal: input.signal
+    });
+    if (
+      !isRecord(value) ||
+      !Array.isArray(value.staged) ||
+      value.staged.length > WORKSPACE_INBOX_INDEX_MAX_ENTRIES
+    ) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    return value.staged.map((entry) => {
+      const decoded = decodeWorkspaceStagedAttachmentEntry(entry);
+      if (!decoded) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      return decoded;
+    });
   }
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {

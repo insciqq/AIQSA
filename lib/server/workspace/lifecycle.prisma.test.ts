@@ -60,6 +60,7 @@ describe("Prisma Workspace lifecycle", () => {
       callBoundTool: vi.fn(async () => { throw new Error("unused"); }),
       cancelToolCall: vi.fn(async () => undefined),
       collectOutputs: vi.fn(async () => []),
+      listStagedAttachments: vi.fn(async () => []),
       terminateExecutions: vi.fn(async () => []),
       createProjectArchive: vi.fn(async () => ({
         body: stream(archive),
