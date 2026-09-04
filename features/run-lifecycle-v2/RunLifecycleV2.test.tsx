@@ -366,3 +366,53 @@ describe("Run lifecycle v2", () => {
     await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toBeEmptyDOMElement());
   });
 });
+
+describe("Run lifecycle v2 Workspace timeline", () => {
+  it("labels the fold as Workspace work, hides raw sandbox steps, and keeps the failed card open", () => {
+    render(
+      <RunAnswerV2
+        content="Done."
+        presentation={presentation({ kind: "complete" })}
+        toolActivity={{
+          calls: [
+            { durationMs: 1_000, round: 1, serverName: "Workspace", status: "complete", toolName: "sandbox_fs_read" },
+            { durationMs: 900, round: 1, serverName: "Knowledge", status: "complete", toolName: "search_knowledge" }
+          ]
+        }}
+        workDurationMs={42_000}
+        workspaceActivity={{
+          entries: [
+            { file: { displayPath: "package.json" }, id: "read", kind: "file_read", phase: "succeeded" },
+            { command: { exitCode: 1, preview: "npm test", stderrPreview: "boom" }, id: "test", kind: "command", phase: "failed" }
+          ]
+        }}
+      />
+    );
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByText("Worked in Workspace for 42s")).toBeVisible();
+    expect(screen.getByText("Read package.json")).toBeVisible();
+    expect(screen.getByText("npm test failed")).toBeVisible();
+    expect(screen.getByText("Searched Knowledge")).toBeVisible();
+    expect(disclosure.textContent).not.toMatch(/sandbox_fs_read|Used Workspace/u);
+  });
+
+  it("shows the current Workspace step as the live status", () => {
+    render(
+      <RunAnswerV2
+        content=""
+        presentation={presentation({ activity: { kind: "tool", label: "Using tools…" }, kind: "activity" })}
+        workspaceActivity={{
+          entries: [
+            { id: "start", kind: "workspace_start", phase: "succeeded" },
+            { command: { preview: "npm test" }, id: "test", kind: "command", phase: "running" }
+          ]
+        }}
+      />
+    );
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure).toHaveAttribute("open");
+    expect(disclosure).toHaveTextContent("Running npm test…");
+    expect(screen.getByText("Workspace ready")).toBeVisible();
+  });
+});
