@@ -62,6 +62,34 @@
           ]
         }
       ]
+    },
+    "bright-stackoverflow-50m": {
+      "family": "BRIGHT",
+      "dataset": "Stack Overflow",
+      "querySplit": "stackoverflow",
+      "resultLabel": "BRIGHT / Stack Overflow / documents",
+      "expectedCorpusDocumentCount": 107081,
+      "expectedExcludedQueryCount": 0,
+      "expectedQueryCount": 117,
+      "licenseNote": "CC-BY-4.0 per the upstream xlangai/BRIGHT dataset card. AIQSA uses the documents/stackoverflow corpus and examples/stackoverflow queries, not long_documents/gold_ids_long.",
+      "sources": [
+        {
+          "datasetId": "xlangai/BRIGHT",
+          "revision": "3066d29c9651a576c8aba4832d249807b181ecae",
+          "files": [
+            {
+              "path": "documents/stackoverflow-00000-of-00001.parquet",
+              "sha256": "d54559692f925666c3c6b1d33a696a64ef324cf5aaeff9d6f4d11fba5cd5ac8b",
+              "bytes": 39493317
+            },
+            {
+              "path": "examples/stackoverflow-00000-of-00001.parquet",
+              "sha256": "97d417ba449ef70c9c9ae2937e9df106654a2554ce1533b090cb64b998a077e1",
+              "bytes": 250458
+            }
+          ]
+        }
+      ]
     }
   }
 }

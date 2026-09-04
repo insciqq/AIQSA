@@ -166,6 +166,18 @@ describe("Prisma retrieval core canonical Source identity", () => {
 
     expect(lexicalSearch).toHaveBeenCalledOnce();
     expect(client.$queryRaw).toHaveBeenCalledTimes(3);
+    const focusedQuery = client.$queryRaw.mock.calls[1]![0] as {
+      strings: readonly string[];
+      values: readonly unknown[];
+    };
+    expect(sqlText(focusedQuery)).toContain(
+      'jsonb_object_agg(artifact."indexArtifactId", true)'
+    );
+    expect(sqlText(focusedQuery)).toContain(
+      'SELECT scope."indexArtifactMap" FROM accepted_scope AS scope'
+    );
+    expect(focusedQuery.values.some((value) =>
+      typeof value === "string" && value.includes(indexArtifactId))).toBe(true);
     expect(sqlText(client.$queryRaw.mock.calls[2]![0])).toContain(
       'chunk."indexArtifactId" = hit."indexArtifactId"'
     );
@@ -286,6 +298,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const queryText = sqlText(query);
     expect(queryText).toContain("exact_query_values AS MATERIALIZED");
     expect(queryText).toContain("exact_match_frequencies AS MATERIALIZED");
+    expect(queryText).toContain("metadata_runtime_settings AS MATERIALIZED");
+    expect(queryText).toContain('entry."normalizedValue" %>');
     expect(queryText).toContain('PARTITION BY exact_match."bindingOrdinal", exact_match."normalizedValue"');
     expect(queryText).toContain('sum(1.0 / exact_match."matchFrequency")');
     expect(queryText).toContain("KnowledgeArtifactExactEntry");
@@ -326,12 +340,16 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(candidateSql).toContain(
       'FROM "KnowledgeArtifactPassageEmbedding" AS embedding'
     );
-    expect(candidateSql).toContain('embedding."indexArtifactId" = ANY(');
+    expect(candidateSql).toContain(
+      'SELECT scope."indexArtifactMap" FROM accepted_scope AS scope'
+    );
+    expect(candidateSql).toContain(
+      'jsonb_object_agg(artifact."indexArtifactId", true)'
+    );
     expect(candidateSql).not.toContain("FROM scoped_passages AS scoped");
-    expect(candidateQuery.values).toEqual(expect.arrayContaining([
-      "hierarchy-allowed-1",
-      "hierarchy-allowed-2"
-    ]));
+    expect(candidateQuery.values.some((value) => typeof value === "string" &&
+      value.includes("hierarchy-allowed-1") &&
+      value.includes("hierarchy-allowed-2"))).toBe(true);
   });
 
   it("filters a weak nearest neighbor before fusion and returns an empty ranking", async () => {

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeChunkPlanEntry } from "./chunking";
 import {
   buildAndPersistKnowledgeHierarchicalIndex,
+  buildAndPersistKnowledgeHierarchicalIndexBatch,
   createPrismaKnowledgeHierarchicalIndexRepository,
+  KNOWLEDGE_HIERARCHICAL_INDEX_SOURCE_BATCH_SIZE,
   KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
   KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS,
   KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE
@@ -34,6 +36,32 @@ function overflowChunks(): KnowledgeChunkPlanEntry[] {
 }
 
 describe("Knowledge hierarchical index persistence diagnostics", () => {
+  it("rejects invalid Source batches before touching persistence", async () => {
+    const tx = { $queryRaw: vi.fn() };
+    const input = {
+      chunks: [overflowChunks()[0]!],
+      document: null,
+      now: new Date("2026-09-04T13:00:00.000Z"),
+      sourceArtifactId: "artifact-batch",
+      sourceVersionId: "version-batch"
+    };
+
+    await expect(buildAndPersistKnowledgeHierarchicalIndexBatch(tx as never, []))
+      .rejects.toThrow("knowledge_hierarchical_index_settlement_failed");
+    await expect(buildAndPersistKnowledgeHierarchicalIndexBatch(
+      tx as never,
+      Array.from(
+        { length: KNOWLEDGE_HIERARCHICAL_INDEX_SOURCE_BATCH_SIZE + 1 },
+        () => input
+      )
+    )).rejects.toThrow("knowledge_hierarchical_index_settlement_failed");
+    await expect(buildAndPersistKnowledgeHierarchicalIndexBatch(
+      tx as never,
+      [input, input]
+    )).rejects.toThrow("knowledge_hierarchical_index_settlement_failed");
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it("emits only bounded counts and artifact identity when exact entries are truncated", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const createExactEntries = vi.fn(async (_input: { data: unknown[] }) => ({
@@ -96,6 +124,24 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
     expect(serialized).not.toContain("Private");
     expect(serialized).not.toContain("SAFE-");
     expect(serialized).not.toContain("private-tag");
+
+    warn.mockClear();
+    const onExactIndexTruncated = vi.fn();
+    await expect(buildAndPersistKnowledgeHierarchicalIndex(tx as never, {
+      chunks: overflowChunks(),
+      document: null,
+      now: new Date("2026-08-26T07:00:00.000Z"),
+      onExactIndexTruncated,
+      sourceArtifactId: "artifact-overflow",
+      sourceVersionId: "version-overflow"
+    })).resolves.toBe("created");
+    expect(onExactIndexTruncated).toHaveBeenCalledWith({
+      candidateCount: expect.any(Number),
+      retainedCount: 10_000,
+      sourceArtifactId: "artifact-overflow",
+      sourceVersionId: "version-overflow"
+    });
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 

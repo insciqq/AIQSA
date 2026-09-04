@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  KNOWLEDGE_SEARCH_BULK_MAX_BYTES,
   KNOWLEDGE_SEARCH_INDEX_DEFINITION,
-  KNOWLEDGE_SEARCH_INDEX_NAME
+  KNOWLEDGE_SEARCH_INDEX_NAME,
+  KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
+  KNOWLEDGE_SEARCH_QUERY_MAX_BYTES
 } from "./contract";
 import {
   AiqsaOpenSearchTransport,
@@ -40,6 +43,7 @@ describe("AIQSA OpenSearch transport", () => {
           mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
           settings: {
             index: {
+              max_terms_count: String(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS),
               number_of_replicas: "0",
               number_of_shards: "1",
               similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } }
@@ -69,6 +73,7 @@ describe("AIQSA OpenSearch transport", () => {
           mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
           settings: {
             index: {
+              max_terms_count: String(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS),
               number_of_replicas: "0",
               number_of_shards: "1",
               similarity: { default: { b: "0.9", k1: "1.2", type: "BM25" } }
@@ -80,6 +85,49 @@ describe("AIQSA OpenSearch transport", () => {
 
     await expect(transport().ensureKnowledgeIndex()).rejects.toMatchObject({
       code: "opensearch_index_incompatible"
+    });
+  });
+
+  it("raises an existing index from the default terms-query ceiling", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: {
+            index: {
+              max_terms_count: "65536",
+              number_of_replicas: "0",
+              number_of_shards: "1",
+              similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } }
+            }
+          }
+        }
+      }))
+      .mockResolvedValueOnce(jsonResponse({ acknowledged: true }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: {
+            index: {
+              max_terms_count: String(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS),
+              number_of_replicas: "0",
+              number_of_shards: "1",
+              similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } }
+            }
+          }
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().ensureKnowledgeIndex()).resolves.toBeUndefined();
+
+    expect(fetch.mock.calls[3]![0].toString()).toBe(
+      `http://search.example.test:9200/${KNOWLEDGE_SEARCH_INDEX_NAME}/_settings`
+    );
+    expect(JSON.parse(fetch.mock.calls[3]![1].body)).toEqual({
+      index: { max_terms_count: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS }
     });
   });
 
@@ -95,6 +143,7 @@ describe("AIQSA OpenSearch transport", () => {
           mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
           settings: {
             index: {
+              max_terms_count: String(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS),
               number_of_replicas: "0",
               number_of_shards: "1",
               similarity: { default: { b: "0.75", k1: "1.2", type: "BM25" } }
@@ -301,6 +350,47 @@ describe("AIQSA OpenSearch transport", () => {
       "source_version_id"
     ]);
     expect(query).not.toHaveProperty("fields");
+  });
+
+  it("accepts one 120,000-artifact search even when two variants exceed the bulk cap", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(jsonResponse({
+      responses: [
+        { _shards: { failed: 0 }, hits: { hits: [] } },
+        { _shards: { failed: 0 }, hits: { hits: [] } }
+      ]
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const indexArtifactIds = Array.from(
+      { length: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS },
+      (_, index) => `artifact-${String(index).padStart(35, "0")}`
+    );
+
+    await expect(transport().searchKnowledgePassages({
+      indexArtifactIds,
+      ownerUserId: "owner-1",
+      queryVariants: ["first query", "second query"]
+    })).resolves.toMatchObject({ variants: [[], []] });
+
+    const body = String(fetch.mock.calls[0]![1].body);
+    expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(
+      KNOWLEDGE_SEARCH_BULK_MAX_BYTES
+    );
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(
+      KNOWLEDGE_SEARCH_QUERY_MAX_BYTES
+    );
+    expect(body).toContain(indexArtifactIds.at(-1));
+  });
+
+  it("rejects a search above the 120,000-artifact scope before dispatch", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().searchKnowledgePassages({
+      indexArtifactIds: new Array(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS + 1).fill("artifact"),
+      ownerUserId: "owner-1",
+      queryVariants: ["query"]
+    })).rejects.toMatchObject({ code: "opensearch_scope_too_large" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects partial shard results and never returns them as a degraded candidate set", async () => {

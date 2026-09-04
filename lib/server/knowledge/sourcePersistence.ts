@@ -48,14 +48,10 @@ type SnapshotBaseRow = Readonly<{
 }>;
 
 type SnapshotMembershipRow = Readonly<{
+  artifactId: string | null;
   currentVersionId: string | null;
   ownerUserId: string;
   sourceId: string;
-}>;
-
-type SnapshotArtifactRow = Readonly<{
-  artifactId: string;
-  sourceVersionId: string;
 }>;
 
 type ExistingSnapshotRow = Readonly<{
@@ -935,40 +931,26 @@ export async function materializeKnowledgeBaseSnapshot(
     SELECT
       membership."sourceId",
       membership."ownerUserId",
-      source."currentVersionId"
+      source."currentVersionId",
+      artifact."id" AS "artifactId"
     FROM "KnowledgeBaseSource" AS membership
     INNER JOIN "KnowledgeSource" AS source
       ON source."id" = membership."sourceId"
      AND source."ownerUserId" = membership."ownerUserId"
      AND source."trashedAt" IS NULL
      AND source."deletionRequestedAt" IS NULL
+    LEFT JOIN "KnowledgeSourceIndexArtifact" AS artifact
+      ON artifact."sourceVersionId" = source."currentVersionId"
+     AND artifact."profileRevisionId" = ${base.profileRevisionId}
+     AND artifact."state" = 'ready'
     WHERE membership."knowledgeBaseId" = ${input.knowledgeBaseId}
       AND membership."removedAt" IS NULL
     ORDER BY membership."sourceId"
     FOR SHARE OF membership, source
   `);
-  const versionIds = memberships.flatMap((membership) =>
-    membership.currentVersionId ? [membership.currentVersionId] : []
-  );
-  const artifacts = versionIds.length === 0
-    ? []
-    : await tx.$queryRaw<SnapshotArtifactRow[]>(Prisma.sql`
-        SELECT
-          artifact."id" AS "artifactId",
-          artifact."sourceVersionId"
-        FROM "KnowledgeSourceIndexArtifact" AS artifact
-        WHERE artifact."sourceVersionId" IN (${Prisma.join(versionIds)})
-          AND artifact."profileRevisionId" = ${base.profileRevisionId}
-          AND artifact."state" = 'ready'
-        ORDER BY artifact."sourceVersionId", artifact."id"
-        FOR SHARE OF artifact
-      `);
-  const artifactByVersion = new Map(
-    artifacts.map((artifact) => [artifact.sourceVersionId, artifact.artifactId])
-  );
   const readySources = memberships.flatMap((membership) => {
     const versionId = membership.currentVersionId;
-    const readyArtifactId = versionId ? artifactByVersion.get(versionId) : undefined;
+    const readyArtifactId = membership.artifactId;
     return versionId && readyArtifactId
       ? [{
           artifactId: readyArtifactId,
@@ -985,7 +967,7 @@ export async function materializeKnowledgeBaseSnapshot(
     sourceRevision: base.sourceRevision,
     sources: memberships.map((membership) => ({
       artifactId: membership.currentVersionId
-        ? artifactByVersion.get(membership.currentVersionId) ?? null
+        ? membership.artifactId
         : null,
       sourceId: membership.sourceId,
       sourceVersionId: membership.currentVersionId
@@ -1006,18 +988,72 @@ export async function materializeKnowledgeBaseSnapshot(
     )
     ON CONFLICT DO NOTHING
   `);
-  for (const [ordinal, source] of readySources.entries()) {
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "KnowledgeBaseSnapshotSource" (
-        "snapshotId", "knowledgeBaseId", "ownerUserId", "sourceId",
-        "sourceVersionId", "artifactId", "ordinal", "createdAt"
-      ) VALUES (
-        ${canonicalSnapshotId}, ${input.knowledgeBaseId}, ${source.ownerUserId},
-        ${source.sourceId}, ${source.sourceVersionId}, ${source.artifactId},
-        ${ordinal}, CURRENT_TIMESTAMP
-      )
-      ON CONFLICT ("snapshotId", "sourceId") DO NOTHING
-    `);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "KnowledgeBaseSnapshotSource" (
+      "snapshotId", "knowledgeBaseId", "ownerUserId", "sourceId",
+      "sourceVersionId", "artifactId", "ordinal", "createdAt"
+    )
+    SELECT
+      ${canonicalSnapshotId}, ${input.knowledgeBaseId}, membership."ownerUserId",
+      membership."sourceId", source."currentVersionId", artifact."id",
+      (row_number() OVER (ORDER BY membership."sourceId") - 1)::integer,
+      CURRENT_TIMESTAMP
+    FROM "KnowledgeBaseSource" AS membership
+    INNER JOIN "KnowledgeSource" AS source
+      ON source."id" = membership."sourceId"
+     AND source."ownerUserId" = membership."ownerUserId"
+     AND source."trashedAt" IS NULL
+     AND source."deletionRequestedAt" IS NULL
+    INNER JOIN "KnowledgeSourceIndexArtifact" AS artifact
+      ON artifact."sourceVersionId" = source."currentVersionId"
+     AND artifact."profileRevisionId" = ${base.profileRevisionId}
+     AND artifact."state" = 'ready'
+    WHERE membership."knowledgeBaseId" = ${input.knowledgeBaseId}
+      AND membership."removedAt" IS NULL
+    ON CONFLICT ("snapshotId", "sourceId") DO NOTHING
+  `);
+  const snapshotSources = await tx.$queryRaw<Array<{
+    exactCount: number;
+    totalCount: number;
+  }>>(Prisma.sql`
+    WITH expected AS (
+      SELECT
+        membership."ownerUserId",
+        membership."sourceId",
+        source."currentVersionId" AS "sourceVersionId",
+        artifact."id" AS "artifactId",
+        (row_number() OVER (ORDER BY membership."sourceId") - 1)::integer AS ordinal
+      FROM "KnowledgeBaseSource" AS membership
+      INNER JOIN "KnowledgeSource" AS source
+        ON source."id" = membership."sourceId"
+       AND source."ownerUserId" = membership."ownerUserId"
+       AND source."trashedAt" IS NULL
+       AND source."deletionRequestedAt" IS NULL
+      INNER JOIN "KnowledgeSourceIndexArtifact" AS artifact
+        ON artifact."sourceVersionId" = source."currentVersionId"
+       AND artifact."profileRevisionId" = ${base.profileRevisionId}
+       AND artifact."state" = 'ready'
+      WHERE membership."knowledgeBaseId" = ${input.knowledgeBaseId}
+        AND membership."removedAt" IS NULL
+    )
+    SELECT
+      (SELECT count(*)::integer
+       FROM "KnowledgeBaseSnapshotSource"
+       WHERE "snapshotId" = ${canonicalSnapshotId}) AS "totalCount",
+      (SELECT count(*)::integer
+       FROM expected
+       INNER JOIN "KnowledgeBaseSnapshotSource" AS snapshot_source
+         ON snapshot_source."snapshotId" = ${canonicalSnapshotId}
+        AND snapshot_source."knowledgeBaseId" = ${input.knowledgeBaseId}
+        AND snapshot_source."ownerUserId" = expected."ownerUserId"
+        AND snapshot_source."sourceId" = expected."sourceId"
+        AND snapshot_source."sourceVersionId" = expected."sourceVersionId"
+        AND snapshot_source."artifactId" = expected."artifactId"
+        AND snapshot_source."ordinal" = expected.ordinal) AS "exactCount"
+  `);
+  if (snapshotSources[0]?.totalCount !== readySources.length ||
+    snapshotSources[0]?.exactCount !== readySources.length) {
+    throw new KnowledgeSourceSnapshotConflictError();
   }
   const snapshots = await tx.$queryRaw<ExistingSnapshotRow[]>(Prisma.sql`
     SELECT

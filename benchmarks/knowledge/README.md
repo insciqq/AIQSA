@@ -35,6 +35,314 @@ of an accepted `search_knowledge` call — with no answer generation:
 MIRACL is intentionally excluded; no MIRACL adapter, subset, or derivative
 exists here.
 
+## BRIGHT Stack Overflow 50M corpus preflight
+
+`bright-stackoverflow-50m` is the corpus-scale lane for exercising AIQSA
+Knowledge with more than 50 million source tokens. It uses the full pinned
+BRIGHT `documents/stackoverflow` passage corpus: one Parquet file containing
+107,081 rows, not 107,081 downloaded files. Every row remains one logical
+Knowledge Source so Base admission, lifecycle, ACL, indexing, and retrieval
+are tested at the real Source cardinality. Local conversion writes 108
+deterministic 1,000-row JSONL shards to avoid filesystem and upload-session
+overhead.
+
+Download and verify all pinned public artifacts, then prepare the ignored
+dataset-only state:
+
+```bash
+./benchmarks/knowledge/download.sh
+npm run benchmark:knowledge:bright:prepare -- --token-workers 2
+```
+
+The preparation command is provider- and database-free. It verifies both
+Parquet SHA-256 pins, exact schemas, 107,081 unique document IDs, 117 unique
+query IDs, all qrel references, and the frozen GPT-2 tokenizer asset. It writes
+only beneath `benchmarks/knowledge/.data/`. Repeating the same command verifies
+every receipt and returns `bright_stackoverflow_dataset_already_prepared`;
+corruption or any pinned manifest drift fails closed. The frozen raw corpus
+census is 75,455,855 GPT-2 tokens (75,350,370 after uniform NUL/U+FFFD hygiene),
+so the 50M label does not rely on a rounded upstream average.
+
+Before provider or database work, run the ordinary normalized-document,
+chunking, hierarchical-index, and embedding-request planning path for the
+embedding model selected by the target profile:
+
+```bash
+npm run benchmark:knowledge:bright:census -- \
+  --embedding-model qwen/qwen3-embedding-8b
+```
+
+This census makes no network, provider, or database request. For the built-in
+Qwen profile it records the pinned Qwen tokenizer count, normalized object and
+passage counts, and both per-Source and cross-Source provider-request plans in
+an ignored fingerprinted report. A custom installation must pass its exact
+active profile's `upstreamModelId` instead; the report is not an active-profile
+attestation by itself.
+
+The BRIGHT importer uses the isolated benchmark Compose identity described
+below, but its named PostgreSQL, MinIO, and OpenSearch volumes are retained
+across ordinary `down`/`up` cycles. Initial import requires an active
+Knowledge profile.
+
+For a previously imported BRIGHT corpus, start only the CLI stand:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml up -d benchmark-runner
+```
+
+The runner does not start Next or background ingestion reconciliation. It
+reuses the same named database/object/search volumes and publishes no port.
+Do not start `app` or the search worker for a retained retrieval-only run;
+use them explicitly for Admin/HTTP workflows or pending projection work.
+Run migration deployment after a code update, then the preflight below;
+never rerun ingestion simply because the stand was stopped. PostgreSQL is
+bounded to three CPUs/3 GiB and the runner to two CPUs/2 GiB. The PostgreSQL
+loopback port is 15447, outside Windows' usual dynamic high-port range.
+
+On a new empty stand only, the held import canary is:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npm run benchmark:knowledge:bright:stage -- \
+  --confirm-target RETAINED --document-limit 1 --batch-size 1
+```
+
+The default `sources` phase validates and writes the ordinary encoded
+normalized document to MinIO plus deterministic Source/version/artifact/Base
+rows to PostgreSQL. Run the complete retained phase with `--document-limit
+107081 --batch-size 500`; after an interruption, repeat the exact range and
+controls with `--resume`.
+
+The provider-free `hierarchy` phase then runs the product chunker and canonical
+hierarchical-index persistence into PostgreSQL without requesting an
+embedding. Its transaction batch is capped at 100 Sources. A single worker can
+process the complete range with:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npm run benchmark:knowledge:bright:stage -- \
+  --confirm-target RETAINED --phase hierarchy --document-limit 107081 \
+  --batch-size 100 --storage-concurrency 4
+```
+
+For a faster local run, execute four instances with the same command and the
+following non-overlapping range pairs: `--start-ordinal 0 --document-limit
+26771`, `--start-ordinal 26771 --document-limit 26770`, `--start-ordinal 53541
+--document-limit 26770`, and `--start-ordinal 80311 --document-limit 26770`.
+Resume each interrupted range independently by appending `--resume`; never
+change a range boundary when reusing its checkpoint.
+
+Neither phase calls an embedding, reranking, answer, or judge provider:
+artifacts remain fenced in `pending/embedding` after hierarchy construction
+until a separately acknowledged execution step releases them. Ignored atomic
+checkpoints plus exact database/object receipts are the resume authority.
+Repeating a completed exact range is idempotent. Any dataset, profile,
+tokenizer, chunking, vector-space, object, or row mismatch fails closed instead
+of silently mixing runs. Embedding vectors will be written to pgvector only
+after a separately authorized OpenRouter canary; the later OpenSearch step is
+the derived lexical/BM25 projection, not the vector store.
+
+Inspect the first deterministic cross-Source embedding batch without making a
+provider request:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npm run benchmark:knowledge:bright:embed -- \
+  --confirm-target RETAINED --inspect-only
+```
+
+After reviewing that inspection, one paid OpenRouter canary additionally
+requires the independent `OPENROUTER_CANARY` acknowledgement:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB \
+  -e AIQSA_BRIGHT_EMBEDDING_ACK=OPENROUTER_CANARY benchmark-runner \
+  npm run benchmark:knowledge:bright:embed -- \
+  --confirm-target RETAINED --confirm-paid CANARY
+```
+
+The command atomically reserves the batch before dispatch, spools the
+checksum-bound response before database settlement, and removes the private
+spool only after vectors and the usage receipt commit. Repeating the command
+then verifies the settled batch and makes zero provider requests. Full-corpus
+execution has a separate `OPENROUTER_FULL_50M_USD_0_75` environment
+acknowledgement and `--confirm-paid FULL_0_75_USD`; its adaptive scheduler can
+ramp only as high as the explicitly selected `--concurrency 1..16` and the
+same command with `--resume` never repeats a settled provider batch.
+
+BRIGHT evaluator-only fields (`reasoning`, `gold_ids`, `gold_ids_long`,
+`gold_answer`, and `excluded_ids`) are kept in a separate ignored evaluator
+file. Runtime input contains only the official query. This lane is an AIQSA
+product-path benchmark on BRIGHT, not an official BRIGHT leaderboard result.
+
+Before any paid retrieval, verify the retained Base, snapshot, exact vector
+counts, OpenSearch projection, all 117 query contracts, and the ordinary
+107,081-Source whole-Base admission path:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npx tsx benchmarks/knowledge/retrieve.ts \
+  --suite bright-stackoverflow-50m --config A --preflight-only
+```
+
+The first retrieval call must be a non-scoreable canary. Disabling reranking
+isolates the single query-embedding plus ordinary hybrid product retrieval;
+remove that diagnostic flag for a second canary through the configured
+reranker. Both paid forms require the BRIGHT-specific confirmation and keep
+query text and payloads out of console/results:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npx tsx benchmarks/knowledge/retrieve.ts \
+  --confirm-paid BRIGHT_RETRIEVAL --suite bright-stackoverflow-50m --config A \
+  --query-id 0 --concurrency 1 --diagnostic-disable-reranker
+```
+
+After that isolated diagnostic, a five-question canary through the configured
+product reranker (or the explicitly recorded absent role) is:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npx tsx benchmarks/knowledge/retrieve.ts \
+  --confirm-paid BRIGHT_RETRIEVAL --suite bright-stackoverflow-50m --config A \
+  --query-limit 5 --concurrency 1 --output results/bright-stackoverflow-50m-A-canary
+```
+
+Append `--resume` with the same selection/output to continue it. Canary
+checkpoints pin the selected query set as well as the complete corpus/profile
+manifest; a different selection fails before provider calls. Canary output is
+`smoke-summary.json`, never a scoreable `summary.json`. A completed canary may
+be replayed to verify that all settled outcomes are reused without provider
+calls. Keep retrieval concurrency at one until measured; the document
+embedding concurrency of sixteen is not a retrieval-concurrency recommendation.
+
+A complete scoreable run uses a stable ignored output directory. Every query
+settles one atomic content-free checkpoint, so an interruption resumes only
+the missing queries. The resume command must retain the exact manifest and
+scheduling controls:
+
+```bash
+# Initial run after successful canaries and explicit provider authorization.
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npx tsx benchmarks/knowledge/retrieve.ts \
+  --confirm-paid BRIGHT_RETRIEVAL --suite bright-stackoverflow-50m --config A \
+  --concurrency 1 --query-start-interval-ms 30000 \
+  --output results/bright-stackoverflow-50m-A-live
+
+# Exact continuation; settled query embeddings and outcomes are reused.
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
+  npx tsx benchmarks/knowledge/retrieve.ts \
+  --confirm-paid BRIGHT_RETRIEVAL --suite bright-stackoverflow-50m --config A \
+  --concurrency 1 --query-start-interval-ms 30000 \
+  --output results/bright-stackoverflow-50m-A-live --resume
+```
+
+The scoreable summary freezes the focused-request version and counts, qrel and
+exclusion fingerprint, product limits/profile/model/reranker identities, and
+reports nDCG@10, MRR@10, Success/Recall@5, @10, and @16 plus p50/p95/p99,
+usage, timeout, retry, and classified-fallback aggregates. A query-ID or limit
+run is always diagnostic and never writes a scoreable summary.
+Existing resumed checkpoints contain settled outcomes but no failed-attempt
+ledger. Their aggregate therefore has `attemptAccountingComplete: false` and
+`null` whole-query failure/retry/timeout counts; these must not be interpreted
+as zero failures or complete reliability measurements.
+
+### BRIGHT end-to-end answer diagnostic
+
+`benchmark:knowledge:bright:answer` runs the first 1–10 official questions
+(five by default) through ordinary authenticated chat with the whole retained
+Base. The answer model chooses its own Knowledge searches and uses the normal
+grounding pipeline. A separate, no-Knowledge judge chat compares the final
+answer with `gold_answer` and the evidence actually dispatched to the answer
+model. Reference answers never enter the answer request. This is a small
+answer-quality diagnostic, not an official BRIGHT retrieval score; it reports
+`pass/partial/fail` separately from source support. Judge output is an aid to
+manual inspection, not ground truth.
+
+The exact installation default answer model and System Model judge must both
+be available in the retained benchmark owner's ordinary catalog. Configure
+their credential assignment explicitly when a connection requires it; the
+runner does not grant access, change policies, or substitute another model.
+It creates a normal auth session, revokes it on exit, and keeps
+each answer/judge in a separate Memory-excluded chat. It neither reimports the
+corpus nor clears those diagnostic chats.
+
+Start the bounded HTTP sibling without bootstrap/seeding, then check readiness
+without provider calls:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml --profile answer up -d --no-deps benchmark-web
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-web \
+  npm run benchmark:knowledge:bright:answer -- --query-limit 5 --preflight-only \
+  --output results/bright-answer-five
+```
+
+The retained PostgreSQL/MinIO/OpenSearch services must already be running and
+migrations current. `benchmark-web` has a two-CPU/3-GiB limit and runs the
+ordinary app, including its background coordinators. Stop just this sibling
+when returning to a retrieval-only stand; never delete retained volumes.
+Run the CLI with the workspace owner's numeric UID/GID (`exec -T --user
+1000:1000` on the supplied local stand) so private exports stay owner-readable.
+Preflight also exercises the ordinary tool operation's ID/snapshot decoder;
+an incompatible retained import fails before any answer or judge call.
+
+After explicit authorization for answer, embedding, reranker, grounding, and
+judge provider work, settle one question first, then continue the same five:
+
+```bash
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-web \
+  npm run benchmark:knowledge:bright:answer -- --query-limit 5 --batch-size 1 \
+  --confirm-paid BRIGHT_ANSWER_JUDGE --output results/bright-answer-five
+
+docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-web \
+  npm run benchmark:knowledge:bright:answer -- --query-limit 5 --resume \
+  --confirm-paid BRIGHT_ANSWER_JUDGE --output results/bright-answer-five
+```
+
+Concurrency is fixed at one; no full-run flag exists. The manifest freezes
+dataset, selected queries/evaluator, Source snapshot, profile, model execution
+hashes, reranker, controls, policies, and executable source fingerprint. A
+changed pin requires a new output directory. Each stage is reserved before
+HTTP dispatch and checkpointed independently. A resumed submitted request is
+reconciled against its exact owned chat, never automatically resent. A failed
+or ambiguous chat stage stops new scheduling and preserves the available trace.
+Completed answers containing tool errors remain explicit diagnostic failures.
+
+Unlike aggregate-only retrieval results, this explicitly requested diagnostic
+has a **private content-bearing export** beneath ignored `results/` only:
+directories are `0700`, JSON files `0600`, with checksum envelopes and a
+single-writer lock. Per-question `001/` etc. contain the request, normalized
+SSE timeline, answer trace, evaluator input, judge trace, judgment, and outcome;
+`summary.json` has aggregate correctness and grounding counts. JSON checkpoint
+payloads are under `value`. The trace includes admitted instructions, Knowledge
+queries/results, exact delivered excerpts, accepted grounding requests/results,
+timings, usage, and classified failures. It is not a raw network capture:
+credentials, headers, opaque continuation, hidden reasoning, unpersisted
+pre-rerank candidates, and rejected unpersisted provider payloads are omitted.
+Do not commit, publish, or attach these exports without separate review.
+
+`report.json` brings each question, reference, answer, judgment, and technical
+diagnosis together. It distinguishes failed tool calls from persisted retrieval
+receipts: a completed chat with a pre-retrieval failure is not a healthy
+zero-result search. Rebuild this derived report offline, including after a code
+change, without changing paid checkpoints or contacting any service:
+
+```bash
+npm run benchmark:knowledge:bright:report -- --output results/bright-answer-five
+```
+
 ## OpenRAG answer reliability
 
 `openRagAnswerRunner.ts` is the answer/judge and frozen-evidence harness for
@@ -467,9 +775,9 @@ runner asserts a zero OCR count (empty PDF-processing ledger and no
 ./benchmarks/knowledge/download.sh
 ```
 
-2. Start the isolated overlay stack (compose project
+2. Start the isolated, retained-by-default overlay stack (compose project
 `aiqsa-knowledge-benchmark-second`; loopback-only app `3147`, PostgreSQL
-`55447`, MinIO `19110`/`19111`; its own container, network, volume, and
+`15447`, MinIO `19110`/`19111`; its own container, network, volume, and
 database identities — it never shares state with the default development
 installation):
 
@@ -477,12 +785,19 @@ installation):
 docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml up -d app knowledge-search-worker
 ```
 
-Then configure the installation Knowledge profile (the embedding model used
+Normal stop/start cycles reuse the exact named benchmark volumes. Then
+configure the installation Knowledge profile (the embedding model used
 for indexing and queries) and, when desired, the Knowledge reranking model on
 this disposable stack through the ordinary Admin path. Knowledge base creation
 fails closed with `knowledge_temporarily_unavailable` until an index profile is
 active. Retrieval remains deterministic when the reranker role is empty and
 records fallback metrics when a configured reranker is unavailable.
+
+The benchmark overlay gives PostgreSQL 512 MiB of shared memory because exact
+full-corpus attestations can use parallel plans that exceed Docker's 64 MiB
+default. Override it only when the host requires a different bounded value with
+`AIQSA_KNOWLEDGE_BENCHMARK_POSTGRES_SHM_SIZE`; recreating the PostgreSQL
+container keeps the named data volume intact.
 
 OpenSearch is not corpus authority and is not restored from a benchmark backup.
 After a PostgreSQL logical restore, rebuild only the derived projection with
@@ -498,11 +813,11 @@ embedding traffic against disposable state; ingestion resumes from
 
 ```bash
 AIQSA_KNOWLEDGE_BENCHMARK_ACK=DISPOSABLE_PAID_KB \
-AIQSA_KNOWLEDGE_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@127.0.0.1:55447/aiqsa_knowledge_benchmark?schema=public' \
+AIQSA_KNOWLEDGE_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@127.0.0.1:15447/aiqsa_knowledge_benchmark?schema=public' \
 npx tsx benchmarks/knowledge/ingest.ts --confirm-paid DISPOSABLE --suite rusbeir-rus-scifact
 
 AIQSA_KNOWLEDGE_BENCHMARK_ACK=DISPOSABLE_PAID_KB \
-AIQSA_KNOWLEDGE_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@127.0.0.1:55447/aiqsa_knowledge_benchmark?schema=public' \
+AIQSA_KNOWLEDGE_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@127.0.0.1:15447/aiqsa_knowledge_benchmark?schema=public' \
 npx tsx benchmarks/knowledge/ingest.ts --confirm-paid DISPOSABLE --suite t2ragbench-convfinqa
 ```
 
@@ -552,9 +867,9 @@ npx tsx benchmarks/knowledge/retrieve.ts --confirm-paid DISPOSABLE \
   --output results/t2ragbench-convfinqa-C-live --resume
 ```
 
-`--resume` is accepted only for a full scoreable suite with explicit output.
-It refuses changed manifests, concurrency/pacing, corrupted outcomes, and a run
-that already has `summary.json`.
+`--resume` requires explicit output and the same query selection. It refuses
+changed manifests, selected-query fingerprints, concurrency/pacing, corrupted
+outcomes, and a scoreable run that already has `summary.json`.
 
 For iterative failure diagnosis, repeat `--query-id` to run only those exact
 public query ids together in one non-scoreable batch. Duplicate ids and mixing
@@ -579,8 +894,9 @@ npx tsx benchmarks/knowledge/evaluate.ts \
   --baseline A --candidate C
 ```
 
-Stop the stack with the same two compose files; add `--volumes` only when the
-benchmark database and object store are intentionally disposable:
+Stop the stack with the same two compose files. This preserves PostgreSQL,
+MinIO, and OpenSearch state; add `--volumes` only for an explicitly intended
+full benchmark-state purge:
 
 ```bash
 docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml down

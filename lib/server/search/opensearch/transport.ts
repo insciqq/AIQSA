@@ -10,6 +10,7 @@ import {
   KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
   KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT,
   KNOWLEDGE_SEARCH_MAX_QUERY_VARIANTS,
+  KNOWLEDGE_SEARCH_QUERY_MAX_BYTES,
   knowledgeSearchDocumentId,
   type KnowledgeBm25VariantHit,
   type KnowledgeSearchDocument
@@ -29,6 +30,7 @@ const WRITE_TIMEOUT_MS = 30_000;
 const SMALL_RESPONSE_MAX_BYTES = 1024 * 1024;
 const BULK_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 const KNOWLEDGE_INTEGRITY_PAGE_SIZE = 1_000;
+const KNOWLEDGE_INTEGRITY_MAX_ARTIFACTS = 250_000;
 const KNOWLEDGE_REBUILD_COUNT_MAX_ARTIFACTS = 256;
 
 export type AiqsaOpenSearchNamespace = "knowledge" | "memory";
@@ -71,7 +73,7 @@ function exactPropertyMapping(value: unknown): boolean {
   });
 }
 
-function exactKnowledgeIndexSettings(value: unknown): boolean {
+function compatibleKnowledgeIndexSettings(value: unknown): boolean {
   if (!record(value) || !record(value.index)) return false;
   const index = value.index;
   if (!record(index.similarity) || !record(index.similarity.default)) return false;
@@ -85,6 +87,12 @@ function exactKnowledgeIndexSettings(value: unknown): boolean {
       KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.similarity.default.k1 &&
     Number(similarity.b) ===
       KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.similarity.default.b;
+}
+
+function exactKnowledgeIndexSettings(value: unknown): boolean {
+  return compatibleKnowledgeIndexSettings(value) && record(value) &&
+    record(value.index) && Number(value.index.max_terms_count) ===
+      KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.max_terms_count;
 }
 
 function singleField(fields: unknown, key: string): string | null {
@@ -214,10 +222,45 @@ export class AiqsaOpenSearchTransport {
       path: KNOWLEDGE_SEARCH_INDEX_NAME,
       timeoutMs: HEALTH_TIMEOUT_MS
     });
-    if (!record(definition.body) || !record(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME]) ||
-      !exactPropertyMapping(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME].mappings) ||
-      !exactKnowledgeIndexSettings(definition.body[KNOWLEDGE_SEARCH_INDEX_NAME].settings)) {
+    const current = record(definition.body)
+      ? definition.body[KNOWLEDGE_SEARCH_INDEX_NAME]
+      : null;
+    if (!record(current) || !exactPropertyMapping(current.mappings) ||
+      !compatibleKnowledgeIndexSettings(current.settings)) {
       throw new OpenSearchTransportError("opensearch_index_incompatible");
+    }
+    if (!exactKnowledgeIndexSettings(current.settings)) {
+      const update = await this.#request({
+        body: JSON.stringify({
+          index: {
+            max_terms_count:
+              KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.max_terms_count
+          }
+        }),
+        indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
+        maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
+        method: "PUT",
+        path: `${KNOWLEDGE_SEARCH_INDEX_NAME}/_settings`,
+        timeoutMs: WRITE_TIMEOUT_MS
+      });
+      if (!record(update.body) || update.body.acknowledged !== true) {
+        throw new OpenSearchTransportError("opensearch_response_invalid");
+      }
+      const settled = await this.#request({
+        indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
+        maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
+        method: "GET",
+        path: KNOWLEDGE_SEARCH_INDEX_NAME,
+        timeoutMs: HEALTH_TIMEOUT_MS
+      });
+      const settledDefinition = record(settled.body)
+        ? settled.body[KNOWLEDGE_SEARCH_INDEX_NAME]
+        : null;
+      if (!record(settledDefinition) ||
+        !exactPropertyMapping(settledDefinition.mappings) ||
+        !exactKnowledgeIndexSettings(settledDefinition.settings)) {
+        throw new OpenSearchTransportError("opensearch_index_incompatible");
+      }
     }
   }
 
@@ -405,7 +448,7 @@ export class AiqsaOpenSearchTransport {
     let currentMappingDocumentCount: number | null = null;
     const staleMappingDocumentCount = Number(staleResponse.body.count);
     const maximumPages = Math.ceil(
-      KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS / KNOWLEDGE_INTEGRITY_PAGE_SIZE
+      KNOWLEDGE_INTEGRITY_MAX_ARTIFACTS / KNOWLEDGE_INTEGRITY_PAGE_SIZE
     ) + 1;
     for (let page = 0; page < maximumPages; page += 1) {
       const response = await this.#request({
@@ -450,7 +493,7 @@ export class AiqsaOpenSearchTransport {
         KNOWLEDGE_INTEGRITY_PAGE_SIZE
       );
       artifactCounts.push(...decoded.counts);
-      if (artifactCounts.length > KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS) {
+      if (artifactCounts.length > KNOWLEDGE_INTEGRITY_MAX_ARTIFACTS) {
         throw new OpenSearchTransportError("opensearch_scope_too_large");
       }
       if (decoded.counts.length < KNOWLEDGE_INTEGRITY_PAGE_SIZE) break;
@@ -557,7 +600,7 @@ export class AiqsaOpenSearchTransport {
       })
     ]);
     const body = `${lines.join("\n")}\n`;
-    if (Buffer.byteLength(body, "utf8") > KNOWLEDGE_SEARCH_BULK_MAX_BYTES) {
+    if (Buffer.byteLength(body, "utf8") > KNOWLEDGE_SEARCH_QUERY_MAX_BYTES) {
       throw new OpenSearchTransportError("opensearch_scope_too_large");
     }
     const opaqueId = `aiqsa-knowledge-${randomUUID()}`;

@@ -1,10 +1,11 @@
 import {
+  isKnowledgeBenchmarkOfficialId,
   type KnowledgeBenchmarkQuery,
   type KnowledgeQueryOutcome,
   type KnowledgeUsageTotals
 } from "./contract";
 
-export const KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION = 2 as const;
+export const KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION = 3 as const;
 
 export type KnowledgeBenchmarkRerankerDiagnostic = Readonly<{
   fallbackReason: string | null;
@@ -34,6 +35,7 @@ export type KnowledgeBenchmarkSchedule = Readonly<{
 export type KnowledgeRetrievalCheckpointHeader = Readonly<{
   manifestFingerprint: string;
   queryCount: number;
+  querySetContentSha256: string;
   runId: string;
   schedule: KnowledgeBenchmarkSchedule;
   schemaVersion: typeof KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION;
@@ -56,6 +58,7 @@ const outcomeKeys = Object.freeze([
 const headerKeys = Object.freeze([
   "manifestFingerprint",
   "queryCount",
+  "querySetContentSha256",
   "runId",
   "schedule",
   "schemaVersion"
@@ -78,7 +81,6 @@ const checkpointFileKeys = Object.freeze([
   "outcome",
   "schemaVersion"
 ] as const);
-const officialIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/u;
 const failureCodePattern = /^[a-z][a-z0-9_]{0,127}$/u;
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const runIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u;
@@ -142,6 +144,8 @@ export function decodeKnowledgeRetrievalCheckpointHeader(
     value.schemaVersion !== KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION ||
     typeof value.manifestFingerprint !== "string" ||
     !sha256Pattern.test(value.manifestFingerprint) ||
+    typeof value.querySetContentSha256 !== "string" ||
+    !sha256Pattern.test(value.querySetContentSha256) ||
     typeof value.runId !== "string" || !runIdPattern.test(value.runId)) {
     throw new Error(code);
   }
@@ -153,6 +157,7 @@ export function decodeKnowledgeRetrievalCheckpointHeader(
   return Object.freeze({
     manifestFingerprint: value.manifestFingerprint,
     queryCount,
+    querySetContentSha256: value.querySetContentSha256,
     runId: value.runId,
     schedule,
     schemaVersion: KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION
@@ -169,7 +174,7 @@ function sameRelevant(
   const expectedEntries = Object.entries(expected).sort(([left], [right]) =>
     left < right ? -1 : left > right ? 1 : 0);
   if (entries.length !== expectedEntries.length || entries.some(
-    ([id, gain], index) => !officialIdPattern.test(id) ||
+    ([id, gain], index) => !isKnowledgeBenchmarkOfficialId(id) ||
       typeof gain !== "number" || !Number.isFinite(gain) || gain < 0 ||
       id !== expectedEntries[index]?.[0] || gain !== expectedEntries[index]?.[1]
   )) return null;
@@ -244,7 +249,7 @@ export function decodeKnowledgeRetrievalCheckpointOutcome(
     !Array.isArray(value.rankedDocumentIds) ||
     value.rankedDocumentIds.length > 10_000 ||
     value.rankedDocumentIds.some((id) =>
-      typeof id !== "string" || !officialIdPattern.test(id)) ||
+      !isKnowledgeBenchmarkOfficialId(id)) ||
     new Set(value.rankedDocumentIds).size !== value.rankedDocumentIds.length) {
     throw new Error(code);
   }

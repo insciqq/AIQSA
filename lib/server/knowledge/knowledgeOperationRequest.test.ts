@@ -156,4 +156,71 @@ describe("Knowledge operation request", () => {
       resolvedSourceIds: [SOURCE_ID]
     })).toBeNull();
   });
+
+  it.each([6, 7, 8])("accepts UUIDv%i resource identities for ordinary V3 retrieval", (version) => {
+    const resourceId = `00000000-0000-${version}000-8000-000000000004`;
+    const { resolvedSourceIds: _resolvedSourceIds, ...v3Envelope } =
+      envelope("automatic_search");
+    const value = {
+      ...v3Envelope,
+      query: "Find policy sources",
+      version: KNOWLEDGE_OPERATION_REQUEST_VERSION
+    };
+    const broad = createKnowledgeOperationRequestV3({
+      ...value,
+      scope: {
+        bindings: [{
+          bindingOrdinal: 0,
+          knowledgeBaseId: resourceId,
+          knowledgeBaseSnapshotId: `kbs_${"b".repeat(40)}`
+        }],
+        kind: "base_snapshots"
+      }
+    });
+    expect(broad.scope).toMatchObject({
+      bindings: [{ knowledgeBaseId: resourceId }], kind: "base_snapshots"
+    });
+
+    const narrowed = createKnowledgeOperationRequestV3({
+      ...value,
+      phaseOrdinal: 1,
+      scope: { kind: "sources", sourceIds: [resourceId] },
+      sourceAliases: ["S1"]
+    });
+    expect(knowledgeOperationTargetSourceIds(narrowed)).toEqual([resourceId]);
+  });
+
+  it.each([
+    "00000000-0000-0000-8000-000000000004",
+    "00000000-0000-9000-8000-000000000004",
+    "00000000-0000-f000-8000-000000000004",
+    "00000000-0000-8000-7000-000000000004",
+    "00000000-0000-8000-c000-000000000004",
+    "00000000-0000-8000-8000-00000000000z"
+  ])("rejects invalid resource UUID %s in both V3 scopes", (resourceId) => {
+    const { resolvedSourceIds: _resolvedSourceIds, ...v3Envelope } =
+      envelope("automatic_search");
+    const value = {
+      ...v3Envelope,
+      query: "Find policy sources",
+      version: KNOWLEDGE_OPERATION_REQUEST_VERSION
+    };
+    expect(decodeKnowledgeOperationRequestV3({
+      ...value,
+      scope: {
+        bindings: [{
+          bindingOrdinal: 0,
+          knowledgeBaseId: resourceId,
+          knowledgeBaseSnapshotId: `kbs_${"b".repeat(40)}`
+        }],
+        kind: "base_snapshots"
+      }
+    })).toBeNull();
+    expect(decodeKnowledgeOperationRequestV3({
+      ...value,
+      phaseOrdinal: 1,
+      scope: { kind: "sources", sourceIds: [resourceId] },
+      sourceAliases: ["S1"]
+    })).toBeNull();
+  });
 });

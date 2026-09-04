@@ -6,11 +6,12 @@ export const KNOWLEDGE_SEARCH_INDEX_NAME = "aiqsa-knowledge-passages-v1" as cons
 export const KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION = 1 as const;
 export const KNOWLEDGE_SEARCH_MAPPING_VERSION = 1 as const;
 export const KNOWLEDGE_SEARCH_ANALYZER_PROFILE = "standard_v1" as const;
-export const KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS = 60_000;
+export const KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS = 120_000;
 export const KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT = 64;
 export const KNOWLEDGE_SEARCH_MAX_QUERY_VARIANTS = 2;
 export const KNOWLEDGE_SEARCH_BULK_MAX_DOCUMENTS = 500;
 export const KNOWLEDGE_SEARCH_BULK_MAX_BYTES = 5 * 1024 * 1024;
+export const KNOWLEDGE_SEARCH_QUERY_MAX_BYTES = 16 * 1024 * 1024;
 
 export const KNOWLEDGE_SEARCH_FIELD_WEIGHTS = Object.freeze({
   body: 1,
@@ -37,6 +38,7 @@ export const KNOWLEDGE_SEARCH_INDEX_DEFINITION = Object.freeze({
   },
   settings: {
     index: {
+      max_terms_count: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
       number_of_replicas: 0,
       number_of_shards: 1,
       similarity: {

@@ -4,13 +4,15 @@ import type { ParsedDocumentBlock } from "../parsing";
 import {
   approximateKnowledgeTokenCount,
   chunkKnowledgeDocument,
+  createKnowledgeEmbeddingBatchAccumulator,
   KNOWLEDGE_CHUNK_MAX_CHARS,
   KNOWLEDGE_CHUNK_MAX_TOKENS,
   KNOWLEDGE_CHUNK_MAX_UTF8_BYTES,
   KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS,
   KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES,
   KNOWLEDGE_EMBEDDING_BATCH_SIZE,
-  knowledgeEmbeddingBatches
+  knowledgeEmbeddingBatches,
+  knowledgeEmbeddingInputBatches
 } from "./chunking";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
 import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "./tokenizer/knowledgeTokenCounter";
@@ -1673,6 +1675,42 @@ describe("Knowledge chunk profiles", () => {
     ]);
   });
 
+  it("batches tagged inputs across Source boundaries with ordinary provider limits", () => {
+    const [entry] = chunkKnowledgeDocument({
+      document: document([block(0, "shared product batching")]),
+      maxChunks: 1,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+    const inputs = Array.from({ length: KNOWLEDGE_EMBEDDING_BATCH_SIZE + 1 },
+      (_value, index) => ({
+        embeddingText: entry!.embeddingText,
+        sourceId: `source-${index}`
+      }));
+
+    const batches = knowledgeEmbeddingInputBatches(
+      inputs,
+      KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    );
+
+    expect(batches.map((batch) => batch.inputs.length)).toEqual([
+      KNOWLEDGE_EMBEDDING_BATCH_SIZE,
+      1
+    ]);
+    expect(batches.flatMap((batch) => batch.inputs.map(({ sourceId }) => sourceId)))
+      .toEqual(inputs.map(({ sourceId }) => sourceId));
+
+    const accumulator = createKnowledgeEmbeddingBatchAccumulator(
+      KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    );
+    const streamed = inputs.flatMap((input) => accumulator.push(input) ?? []);
+    const remainder = accumulator.finish();
+    if (remainder) streamed.push(...remainder);
+    expect(streamed).toEqual(inputs);
+  });
+
   it("conservatively estimates hostile multilingual and no-space inputs", () => {
     expect(approximateKnowledgeTokenCount(`https://example.test/${"a".repeat(1_200)}`))
       .toBeGreaterThan(KNOWLEDGE_CHUNK_MAX_TOKENS);
@@ -1681,6 +1719,44 @@ describe("Knowledge chunk profiles", () => {
     expect(approximateKnowledgeTokenCount("Ж".repeat(900)))
       .toBeGreaterThan(KNOWLEDGE_CHUNK_MAX_TOKENS);
     expect(approximateKnowledgeTokenCount("слово ".repeat(100))).toBeGreaterThan(100);
+  });
+
+  it("keeps a measured BPE-safe endpoint when a shorter semantic break costs more", () => {
+    const nonMonotonicCounter = {
+      countTokens: (text: string) => text.endsWith("trigger")
+        ? KNOWLEDGE_CHUNK_MAX_TOKENS + 1
+        : Math.ceil(text.length / 2),
+      identity: { assetSha256: null, name: "test-non-monotonic", version: 1 }
+    };
+    const text = `${"a".repeat(690)} trigger ${"b".repeat(400)}`;
+
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, text)], "x"),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: nonMonotonicCounter
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) =>
+      nonMonotonicCounter.countTokens(chunk.embeddingText) <=
+        KNOWLEDGE_CHUNK_MAX_TOKENS
+    )).toBe(true);
+
+    const trimSensitiveCounter = {
+      ...nonMonotonicCounter,
+      countTokens: (value: string) => value.endsWith("trigger")
+        ? KNOWLEDGE_CHUNK_MAX_TOKENS + 1
+        : Math.ceil((value.length - 1) / 2)
+    };
+    const trimSensitiveText = `${"a".repeat(789)} trigger ${"b".repeat(400)}`;
+    expect(chunkKnowledgeDocument({
+      document: document([block(0, trimSensitiveText)], "x"),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: trimSensitiveCounter
+    }).every((chunk) => trimSensitiveCounter.countTokens(chunk.embeddingText) <=
+      KNOWLEDGE_CHUNK_MAX_TOKENS)).toBe(true);
   });
 
   it("splits indivisible hostile text against the full prefixed embedding input", () => {

@@ -1370,6 +1370,7 @@ function fitCurrentEmbeddingSegments(
       }
     }
     if (acceptedEnd <= start) throw new KnowledgeChunkingError("chunking_failed");
+    const fittedEnd = acceptedEnd;
     if (acceptedEnd < segment.text.length) {
       const minimumBreak = start + Math.floor((acceptedEnd - start) * 0.6);
       for (let index = acceptedEnd; index > minimumBreak; index -= 1) {
@@ -1379,7 +1380,28 @@ function fitCurrentEmbeddingSegments(
         }
       }
     }
-    const text = segment.text.slice(start, acceptedEnd).trim();
+    let text = segment.text.slice(start, acceptedEnd).trim();
+    // BPE token counts are not monotonic under suffix removal: backing up to
+    // a semantic whitespace can break a merge and make the shorter candidate
+    // exceed the budget. The binary-search endpoint itself was measured and
+    // accepted, so retain it when the preferred semantic break is not safe.
+    if (text && !currentEmbeddingInputFits(prefix, text)) {
+      acceptedEnd = fittedEnd;
+      text = segment.text.slice(start, acceptedEnd).trim();
+    }
+    // The measured endpoint may itself end in whitespace whose removal also
+    // breaks a BPE merge. Walk backward only on this exceptional path until a
+    // code-point-safe, trimmed candidate is measured inside the hard budget.
+    // This preserves fail-closed sizing without assuming tokenizer monotonicity.
+    while (text && !currentEmbeddingInputFits(prefix, text) &&
+      acceptedEnd > start + 1) {
+      acceptedEnd -= 1;
+      if (/[\uDC00-\uDFFF]/u.test(segment.text[acceptedEnd] ?? "") &&
+        /[\uD800-\uDBFF]/u.test(segment.text[acceptedEnd - 1] ?? "")) {
+        acceptedEnd -= 1;
+      }
+      text = segment.text.slice(start, acceptedEnd).trim();
+    }
     if (!text || !currentEmbeddingInputFits(prefix, text)) {
       throw new KnowledgeChunkingError("chunking_failed");
     }
@@ -1559,69 +1581,135 @@ export function chunkKnowledgeDocument(input: Readonly<{
   }
 }
 
+export type KnowledgeEmbeddingInput = Readonly<{
+  embeddingText: string;
+}>;
+
+export type KnowledgeEmbeddingInputBatch<T extends KnowledgeEmbeddingInput> = Readonly<{
+  batchIndex: number;
+  inputs: readonly T[];
+}>;
+
+export type KnowledgeEmbeddingBatchAccumulator<T extends KnowledgeEmbeddingInput> =
+  Readonly<{
+    finish(): readonly T[] | null;
+    /** Returns the preceding complete batch when `input` starts a new one. */
+    push(input: T): readonly T[] | null;
+  }>;
+
+/** Bounded streaming form used when a corpus cannot retain every chunk. */
+export function createKnowledgeEmbeddingBatchAccumulator<
+  T extends KnowledgeEmbeddingInput
+>(
+  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  tokenCounter?: KnowledgeTokenCounter
+): KnowledgeEmbeddingBatchAccumulator<T> {
+  const currentSizing = profileVersion >=
+    KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
+  const neutralFormat = profileVersion >=
+    KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION;
+  if (!Number.isSafeInteger(profileVersion) || profileVersion < 1 ||
+    profileVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
+    (neutralFormat && !tokenCounter)) {
+    throw new KnowledgeChunkingError("chunking_failed");
+  }
+  let current: T[] = [];
+  let currentTokens = 0;
+  let currentBytes = 0;
+  // Exact JSON array size: two brackets, one comma between inputs, and each
+  // independently serialized string.
+  let currentRequestBytes = 2;
+
+  const take = (): readonly T[] | null => {
+    if (current.length === 0) return null;
+    const batch = Object.freeze(current);
+    current = [];
+    currentTokens = 0;
+    currentBytes = 0;
+    currentRequestBytes = 2;
+    return batch;
+  };
+
+  return Object.freeze({
+    finish: take,
+    push: (input: T) => {
+      if (!currentSizing) {
+        const completed = current.length >= KNOWLEDGE_EMBEDDING_BATCH_SIZE
+          ? take()
+          : null;
+        current.push(input);
+        return completed;
+      }
+      const tokens = neutralFormat
+        ? Math.max(1, tokenCounter!.countTokens(input.embeddingText))
+        : approximateKnowledgeTokenCount(input.embeddingText);
+      const bytes = Buffer.byteLength(input.embeddingText, "utf8");
+      const serializedBytes = Buffer.byteLength(
+        JSON.stringify(input.embeddingText),
+        "utf8"
+      );
+      if (!input.embeddingText.trim() || input.embeddingText.length >
+        Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) ||
+        tokens > KNOWLEDGE_CHUNK_MAX_TOKENS || bytes > KNOWLEDGE_CHUNK_MAX_UTF8_BYTES ||
+        serializedBytes + 2 > MAX_EMBEDDING_REQUEST_BYTES) {
+        throw new KnowledgeChunkingError("chunking_failed");
+      }
+      const candidateRequestBytes = currentRequestBytes +
+        (current.length > 0 ? 1 : 0) + serializedBytes;
+      const exceedsBatch = current.length >= Math.min(
+        KNOWLEDGE_EMBEDDING_BATCH_SIZE,
+        MAX_EMBEDDING_BATCH_INPUTS
+      ) || currentTokens + tokens > KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS ||
+        currentBytes + bytes > KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES ||
+        candidateRequestBytes > MAX_EMBEDDING_REQUEST_BYTES;
+      const completed = exceedsBatch ? take() : null;
+      current.push(input);
+      currentTokens += tokens;
+      currentBytes += bytes;
+      currentRequestBytes += (current.length > 1 ? 1 : 0) + serializedBytes;
+      return completed;
+    }
+  });
+}
+
+/**
+ * Validates and batches embedding inputs independently of Source boundaries.
+ * Ordinary single-Source ingestion delegates to this primitive below; bulk
+ * preparation can tag inputs with Source/chunk identity and obtain the exact
+ * same provider-request limits without rewriting chunk text or storage rules.
+ */
+export function knowledgeEmbeddingInputBatches<T extends KnowledgeEmbeddingInput>(
+  inputs: readonly T[],
+  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  tokenCounter?: KnowledgeTokenCounter
+): Array<KnowledgeEmbeddingInputBatch<T>> {
+  const batches: Array<KnowledgeEmbeddingInputBatch<T>> = [];
+  const accumulator = createKnowledgeEmbeddingBatchAccumulator<T>(
+    profileVersion,
+    tokenCounter
+  );
+  const append = (batch: readonly T[] | null) => {
+    if (batch) {
+      batches.push(Object.freeze({
+        batchIndex: batches.length,
+        inputs: batch
+      }));
+    }
+  };
+  for (const input of inputs) append(accumulator.push(input));
+  append(accumulator.finish());
+  return batches;
+}
+
 export function knowledgeEmbeddingBatches(
   chunks: readonly KnowledgeChunkPlanEntry[],
   profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   tokenCounter?: KnowledgeTokenCounter
 ): Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> {
-  if (profileVersion < KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION) {
-    const legacyBatches: Array<Readonly<{
-      batchIndex: number;
-      chunks: readonly KnowledgeChunkPlanEntry[];
-    }>> = [];
-    for (let offset = 0; offset < chunks.length; offset += KNOWLEDGE_EMBEDDING_BATCH_SIZE) {
-      legacyBatches.push(Object.freeze({
-        batchIndex: Math.floor(offset / KNOWLEDGE_EMBEDDING_BATCH_SIZE),
-        chunks: Object.freeze(chunks.slice(offset, offset + KNOWLEDGE_EMBEDDING_BATCH_SIZE))
-      }));
-    }
-    return legacyBatches;
-  }
-  const neutralFormat = profileVersion >=
-    KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION;
-  if (profileVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
-    (neutralFormat && !tokenCounter)) {
-    throw new KnowledgeChunkingError("chunking_failed");
-  }
-  activeTokenCounter = neutralFormat ? tokenCounter ?? null : null;
-  try {
-  const batches: Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> = [];
-  let current: KnowledgeChunkPlanEntry[] = [];
-  let currentTokens = 0;
-  let currentBytes = 0;
-  const flush = () => {
-    if (current.length === 0) return;
-    batches.push(Object.freeze({
-      batchIndex: batches.length,
-      chunks: Object.freeze(current)
-    }));
-    current = [];
-    currentTokens = 0;
-    currentBytes = 0;
-  };
-  for (const chunk of chunks) {
-    const tokens = sizedTokenCount(chunk.embeddingText);
-    const bytes = Buffer.byteLength(chunk.embeddingText, "utf8");
-    if (!chunk.embeddingText.trim() || chunk.embeddingText.length >
-      Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) ||
-      tokens > KNOWLEDGE_CHUNK_MAX_TOKENS || bytes > KNOWLEDGE_CHUNK_MAX_UTF8_BYTES) {
-      throw new KnowledgeChunkingError("chunking_failed");
-    }
-    const exceedsBatch = current.length >= Math.min(
-      KNOWLEDGE_EMBEDDING_BATCH_SIZE,
-      MAX_EMBEDDING_BATCH_INPUTS
-    ) || currentTokens + tokens > KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS ||
-      currentBytes + bytes > KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES ||
-      Buffer.byteLength(JSON.stringify([...current, chunk].map((item) => item.embeddingText)),
-        "utf8") > MAX_EMBEDDING_REQUEST_BYTES;
-    if (exceedsBatch) flush();
-    current.push(chunk);
-    currentTokens += tokens;
-    currentBytes += bytes;
-  }
-  flush();
-  return batches;
-  } finally {
-    activeTokenCounter = null;
-  }
+  return knowledgeEmbeddingInputBatches(chunks, profileVersion, tokenCounter).map(
+    (batch) => Object.freeze({
+      batchIndex: batch.batchIndex,
+      chunks: batch.inputs
+    })
+  );
 }

@@ -12,7 +12,7 @@ import { resolve, sep } from "node:path";
 export const KNOWLEDGE_BENCHMARK_ACK_ENV = "AIQSA_KNOWLEDGE_BENCHMARK_ACK";
 export const KNOWLEDGE_BENCHMARK_ACK_VALUE = "DISPOSABLE_PAID_KB";
 export const KNOWLEDGE_BENCHMARK_APP_PORT = 3147;
-export const KNOWLEDGE_BENCHMARK_POSTGRES_PORT = 55447;
+export const KNOWLEDGE_BENCHMARK_POSTGRES_PORT = 15447;
 export const KNOWLEDGE_BENCHMARK_MAX_CONCURRENCY = 16;
 /** Version of the deterministic benchmark document formatter below. Part of
  * every frozen run manifest and cache key. */
@@ -31,7 +31,8 @@ export const KNOWLEDGE_BENCHMARK_SUMMARY_SCHEMA_VERSION = 1;
 
 export const KNOWLEDGE_BENCHMARK_SUITE_IDS = [
   "rusbeir-rus-scifact",
-  "t2ragbench-convfinqa"
+  "t2ragbench-convfinqa",
+  "bright-stackoverflow-50m"
 ] as const;
 export type KnowledgeSuiteId = (typeof KNOWLEDGE_BENCHMARK_SUITE_IDS)[number];
 
@@ -44,7 +45,7 @@ const configLabelSet = new Set<string>(KNOWLEDGE_BENCHMARK_CONFIG_LABELS);
 const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const revisionPattern = /^[0-9a-f]{40}$/u;
 const sha256Pattern = /^[0-9a-f]{64}$/u;
-const officialIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/u;
+const uploadSafeOfficialIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -237,6 +238,9 @@ export type KnowledgeBenchmarkDocument = Readonly<{
 }>;
 
 export type KnowledgeBenchmarkQuery = Readonly<{
+  /** Dataset-declared documents removed from the returned order before
+   * metrics. Omitted by suites whose protocol has no exclusion list. */
+  excludedDocumentIds?: readonly string[];
   officialId: string;
   /** Official relevant document ids with graded gains (qrels score, or 1 for
    * the ConvFinQA context mapping). */
@@ -250,15 +254,20 @@ export type KnowledgeBenchmarkQuery = Readonly<{
 export function knowledgeBenchmarkUploadClientId(
   document: KnowledgeBenchmarkDocument
 ): string {
-  if (!officialIdPattern.test(document.officialId)) {
+  if (!uploadSafeOfficialIdPattern.test(document.officialId)) {
     throw new Error("knowledge_benchmark_upload_client_id_invalid");
   }
   return document.officialId;
 }
 
+export function isKnowledgeBenchmarkOfficialId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 512 &&
+    !/[\u0000\r\n]/u.test(value) && Buffer.byteLength(value, "utf8") <= 1_024;
+}
+
 function officialId(value: unknown, code: string): string {
   const id = requiredString(value, code);
-  if (!officialIdPattern.test(id)) throw new Error(code);
+  if (!isKnowledgeBenchmarkOfficialId(id)) throw new Error(code);
   return id;
 }
 
@@ -266,8 +275,12 @@ export function knowledgeBenchmarkFileName(
   suiteId: KnowledgeSuiteId,
   documentId: string
 ): string {
-  const prefix = suiteId === "rusbeir-rus-scifact" ? "scifact" : "convfinqa";
-  if (!officialIdPattern.test(documentId)) {
+  const prefix = suiteId === "rusbeir-rus-scifact"
+    ? "scifact"
+    : suiteId === "t2ragbench-convfinqa"
+      ? "convfinqa"
+      : "bright-stackoverflow";
+  if (!uploadSafeOfficialIdPattern.test(documentId)) {
     throw new Error("knowledge_benchmark_document_id_invalid");
   }
   return `${prefix}-${documentId}.md`;
@@ -599,8 +612,35 @@ export function knowledgeQuerySetContentSha256(
     hash.update("\u0000", "utf8");
     hash.update(canonicalJson(query.relevant), "utf8");
     hash.update("\u0000", "utf8");
+    if (query.excludedDocumentIds !== undefined) {
+      const excluded = [...query.excludedDocumentIds].sort();
+      if (new Set(excluded).size !== excluded.length ||
+        excluded.some((id) => !isKnowledgeBenchmarkOfficialId(id) ||
+          Object.hasOwn(query.relevant, id))) {
+        throw new Error("knowledge_benchmark_query_set_invalid");
+      }
+      hash.update(canonicalJson(excluded), "utf8");
+      hash.update("\u0000", "utf8");
+    }
   }
   return hash.digest("hex");
+}
+
+/** Applies an upstream evaluation exclusion only after product retrieval so
+ * evaluator-only labels cannot influence candidate generation or ranking. */
+export function excludeKnowledgeBenchmarkDocuments(
+  rankedDocumentIds: readonly string[],
+  excludedDocumentIds: readonly string[] | undefined
+): readonly string[] {
+  if (excludedDocumentIds === undefined || excludedDocumentIds.length === 0) {
+    return Object.freeze([...rankedDocumentIds]);
+  }
+  if (new Set(excludedDocumentIds).size !== excludedDocumentIds.length ||
+    excludedDocumentIds.some((id) => !isKnowledgeBenchmarkOfficialId(id))) {
+    throw new Error("knowledge_benchmark_excluded_documents_invalid");
+  }
+  const excluded = new Set(excludedDocumentIds);
+  return Object.freeze(rankedDocumentIds.filter((id) => !excluded.has(id)));
 }
 
 /** Deterministic content hash of a normalized corpus, independent of input
@@ -630,6 +670,12 @@ export type KnowledgeCandidateLimits = Readonly<{
   vector: number;
 }>;
 
+export type KnowledgeQueryPreparation = Readonly<{
+  boundedQueryCount: number;
+  focusedRequestVersion: number | null;
+  normalizedQueryCount: number;
+}>;
+
 export type KnowledgeFrozenRunManifest = Readonly<{
   candidateLimits: KnowledgeCandidateLimits;
   chunkingProfile: string;
@@ -645,6 +691,7 @@ export type KnowledgeFrozenRunManifest = Readonly<{
   indexProfile: string;
   queryCount: number;
   queryInstructionVersion: string;
+  queryPreparation: KnowledgeQueryPreparation;
   querySetContentSha256: string;
   querySplit: string;
   rankingProfile: string;
@@ -715,6 +762,19 @@ export function decodeKnowledgeFrozenRunManifest(
     Number(value.excludedQueryCount) < 0) {
     throw new Error(frozenManifestCode);
   }
+  if (!isRecord(value.queryPreparation) ||
+    !Number.isSafeInteger(value.queryPreparation.boundedQueryCount) ||
+    Number(value.queryPreparation.boundedQueryCount) < 0 ||
+    Number(value.queryPreparation.boundedQueryCount) > Number(value.queryCount) ||
+    !Number.isSafeInteger(value.queryPreparation.normalizedQueryCount) ||
+    Number(value.queryPreparation.normalizedQueryCount) < 0 ||
+    Number(value.queryPreparation.normalizedQueryCount) > Number(value.queryCount) ||
+    value.queryPreparation.focusedRequestVersion !== null && (
+      !Number.isSafeInteger(value.queryPreparation.focusedRequestVersion) ||
+      Number(value.queryPreparation.focusedRequestVersion) < 1
+    )) {
+    throw new Error(frozenManifestCode);
+  }
   const rerankerModelId = value.rerankerModelId;
   if (rerankerModelId !== null && (typeof rerankerModelId !== "string" ||
     rerankerModelId.length === 0)) {
@@ -740,6 +800,13 @@ export function decodeKnowledgeFrozenRunManifest(
       value.queryInstructionVersion,
       frozenManifestCode
     ),
+    queryPreparation: Object.freeze({
+      boundedQueryCount: Number(value.queryPreparation.boundedQueryCount),
+      focusedRequestVersion: value.queryPreparation.focusedRequestVersion === null
+        ? null
+        : Number(value.queryPreparation.focusedRequestVersion),
+      normalizedQueryCount: Number(value.queryPreparation.normalizedQueryCount)
+    }),
     querySetContentSha256,
     querySplit: requiredString(value.querySplit, frozenManifestCode),
     rankingProfile: requiredString(value.rankingProfile, frozenManifestCode),
@@ -764,6 +831,7 @@ export function knowledgeDatasetFingerprint(
     docFormatVersion: manifest.docFormatVersion,
     excludedQueryCount: manifest.excludedQueryCount,
     queryCount: manifest.queryCount,
+    queryPreparation: manifest.queryPreparation,
     querySetContentSha256: manifest.querySetContentSha256,
     querySplit: manifest.querySplit,
     suiteId: manifest.suiteId

@@ -21,6 +21,7 @@ import {
   decodeRusScifactCorpus,
   decodeRusScifactQueries,
   exactRelevantDocumentHit,
+  excludeKnowledgeBenchmarkDocuments,
   expandRankedDocuments,
   knowledgeBenchmarkUploadClientId,
   knowledgeCorpusContentSha256,
@@ -84,6 +85,21 @@ function manifestFixture(): Record<string, unknown> {
           files: [{ bytes: 10, path: "data/x.jsonl", sha256: hex64 }],
           revision: hex40
         }]
+      },
+      "bright-stackoverflow-50m": {
+        dataset: "Stack Overflow",
+        expectedCorpusDocumentCount: 2,
+        expectedExcludedQueryCount: 0,
+        expectedQueryCount: 1,
+        family: "BRIGHT",
+        licenseNote: "synthetic",
+        querySplit: "stackoverflow",
+        resultLabel: "BRIGHT / Stack Overflow / documents",
+        sources: [{
+          datasetId: "example/bright",
+          files: [{ bytes: 10, path: "documents/x.parquet", sha256: hex64 }],
+          revision: hex40
+        }]
       }
     }
   };
@@ -106,6 +122,11 @@ function frozenManifestFixture(
     indexProfile: "index-v1",
     queryCount: 1,
     queryInstructionVersion: "qi-v1",
+    queryPreparation: {
+      boundedQueryCount: 0,
+      focusedRequestVersion: null,
+      normalizedQueryCount: 0
+    },
     querySetContentSha256: hex64,
     querySplit: "test",
     rankingProfile: "weighted_rrf_v2:v=2:k=60",
@@ -166,6 +187,8 @@ describe("dataset manifest", () => {
       .toBe(2);
     expect(manifest.suites["t2ragbench-convfinqa"].expectedExcludedQueryCount)
       .toBe(1);
+    expect(manifest.suites["bright-stackoverflow-50m"].querySplit)
+      .toBe("stackoverflow");
   });
 
   it("refuses PIN_ME checksum placeholders", () => {
@@ -188,7 +211,7 @@ describe("dataset manifest", () => {
       .toThrow(/revision_unpinned/u);
   });
 
-  it("refuses a manifest missing one of the two suites", () => {
+  it("refuses a manifest missing one of the required suites", () => {
     const fixture = manifestFixture();
     delete (fixture.suites as Record<string, unknown>)["t2ragbench-convfinqa"];
     expect(() => decodeKnowledgeBenchmarkManifest(fixture))
@@ -776,6 +799,26 @@ describe("runner utilities", () => {
       .toThrow("knowledge_benchmark_query_selection_ambiguous");
   });
 
+  it("freezes and applies dataset exclusions only after a ranked result exists", () => {
+    const query: KnowledgeBenchmarkQuery = {
+      excludedDocumentIds: ["docs/excluded/file.txt"],
+      officialId: "q1",
+      relevant: { "docs/relevant/file.txt": 1 },
+      text: "question"
+    };
+    expect(knowledgeQuerySetContentSha256([query])).not.toBe(
+      knowledgeQuerySetContentSha256([{ ...query, excludedDocumentIds: [] }])
+    );
+    expect(excludeKnowledgeBenchmarkDocuments([
+      "docs/excluded/file.txt",
+      "docs/relevant/file.txt"
+    ], query.excludedDocumentIds)).toEqual(["docs/relevant/file.txt"]);
+    expect(() => knowledgeQuerySetContentSha256([{
+      ...query,
+      excludedDocumentIds: ["docs/relevant/file.txt"]
+    }])).toThrow("knowledge_benchmark_query_set_invalid");
+  });
+
   it("preserves order under bounded concurrency and fails closed", async () => {
     const seen: number[] = [];
     const result = await mapConcurrentOrdered([3, 1, 2], 2, async (item) => {
@@ -845,8 +888,8 @@ describe("runner utilities", () => {
 
   it("only accepts the isolated benchmark database identities", () => {
     const loopback = "postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-" +
-      "dev-password@127.0.0.1:55447/aiqsa_knowledge_benchmark?schema=public";
-    expect(assertKnowledgeBenchmarkDatabaseUrl(loopback).port).toBe("55447");
+      "dev-password@127.0.0.1:15447/aiqsa_knowledge_benchmark?schema=public";
+    expect(assertKnowledgeBenchmarkDatabaseUrl(loopback).port).toBe("15447");
     const container = "postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-" +
       "dev-password@postgres:5432/aiqsa_knowledge_benchmark?schema=public";
     expect(() => assertKnowledgeBenchmarkDatabaseUrl(container))
@@ -856,7 +899,7 @@ describe("runner utilities", () => {
     }).hostname).toBe("postgres");
     expect(() => assertKnowledgeBenchmarkDatabaseUrl(
       "postgresql://aiqsa_dev:aiqsa-knowledge-benchmark-dev-password" +
-        "@127.0.0.1:55447/aiqsa_dev?schema=public"
+        "@127.0.0.1:15447/aiqsa_dev?schema=public"
     )).toThrow("knowledge_benchmark_database_url_not_isolated");
   });
 
