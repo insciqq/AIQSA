@@ -19,6 +19,18 @@ export async function loginWithPassword(
   await page.getByLabel("Password", { exact: true }).fill(user.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
+  await disableMemoryRecall(page);
+}
+
+/**
+ * Workspace turns run on the 8k fake model; recalled past chats from earlier
+ * specs in the same database would otherwise push a multi-round tool loop
+ * over the context budget. Memory is not under test here.
+ */
+export async function disableMemoryRecall(page: Page): Promise<void> {
+  await page.request.patch("/api/me/memory/settings", {
+    data: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false }
+  }).catch(() => undefined);
 }
 
 export async function selectFakeModel(page: Page): Promise<void> {

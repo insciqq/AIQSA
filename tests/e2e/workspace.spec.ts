@@ -8,6 +8,7 @@ import {
 } from "../../prisma/local-seed-fixtures";
 import { selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
+import { disableMemoryRecall } from "./support/workspace";
 
 const prisma = new PrismaClient();
 const RESULT_ZIP = Buffer.from(
@@ -43,6 +44,7 @@ async function loginWithPassword(
   await page.getByLabel("Password", { exact: true }).fill(user.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
+  await disableMemoryRecall(page);
 }
 
 async function selectFakeModel(page: Page): Promise<void> {

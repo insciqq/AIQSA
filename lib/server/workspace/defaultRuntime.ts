@@ -29,8 +29,11 @@ class UnavailableWorkspaceRuntime implements WorkspaceRuntime {
   async removeSession(): Promise<never> { return this.unavailable(); }
 }
 
-export function createWorkspaceRuntime(config: WorkspaceConfig): WorkspaceRuntime {
-  if (config.runtimeMode === "deterministic") return new DeterministicWorkspaceRuntime(config);
+export function createWorkspaceRuntime(
+  config: WorkspaceConfig,
+  options: Readonly<{ sharedState?: boolean }> = {}
+): WorkspaceRuntime {
+  if (config.runtimeMode === "deterministic") return new DeterministicWorkspaceRuntime(config, options);
   if (config.runtimeMode === "remote") return new RemoteWorkspaceRuntime(config);
   return new UnavailableWorkspaceRuntime();
 }

@@ -18,17 +18,12 @@ import {
 import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { createWorkspaceLifecycleService } from "./lifecycle";
 
-const globalForWorkspace = globalThis as unknown as {
-  __aiqsaWorkspaceRuntime?: WorkspaceRuntime;
-};
-
 export const workspaceConfig = getWorkspaceConfig();
-// One runtime per process: route bundles and the instrumentation bundle
-// (recovery scheduler, maintenance) must see the same runtime state, or the
-// deterministic runtime would report a session it created elsewhere as lost.
-export const workspaceRuntime: WorkspaceRuntime =
-  globalForWorkspace.__aiqsaWorkspaceRuntime ?? createWorkspaceRuntime(workspaceConfig);
-globalForWorkspace.__aiqsaWorkspaceRuntime = workspaceRuntime;
+// Each server bundle (route handlers, the instrumentation scheduler) builds
+// its own runtime instance: an instance shared across bundles would throw
+// errors from a foreign copy of `WorkspaceRuntimeError`, defeating every
+// `instanceof` check. Process-wide state lives inside the runtime instead.
+export const workspaceRuntime: WorkspaceRuntime = createWorkspaceRuntime(workspaceConfig, { sharedState: true });
 export const workspaceHealthService = createWorkspaceHealthService({ runtime: workspaceRuntime });
 export const workspacePolicyRepository = createPrismaWorkspacePolicyRepository(prisma);
 export const workspaceAvailabilityService = createWorkspaceAvailabilityService({
