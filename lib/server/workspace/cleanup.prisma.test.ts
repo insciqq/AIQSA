@@ -261,7 +261,9 @@ describe("Prisma Workspace maintenance", () => {
         state: "PENDING"
       });
 
-      await expect(reconcileWorkspaceAfterRestore(prisma, now)).resolves.toBe(3);
+      // The restore reconciler is global; sessions left by other lanes in the
+      // shared disposable database count too, so only the fixture rows are exact.
+      await expect(reconcileWorkspaceAfterRestore(prisma, now)).resolves.toBeGreaterThanOrEqual(3);
       await expect(prisma.workspaceSession.findMany({
         orderBy: { id: "asc" },
         select: {

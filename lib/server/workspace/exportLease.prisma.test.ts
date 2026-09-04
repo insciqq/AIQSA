@@ -3,11 +3,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
-import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
+import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import { prisma } from "@/lib/server/prisma";
 import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
 import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
+import { namespacedWorkspaceToolName } from "./toolCatalog";
 
 const config = getWorkspaceConfig({
   AIQSA_TEST_MODE: "1",
@@ -29,6 +31,10 @@ async function cleanupFixtures(): Promise<void> {
     where: { userId: { in: userIds } }
   });
   const chatIds = chats.map(({ id }) => id);
+  // Produced outputs restrict run deletion; the output rows cascade from the attachments.
+  await prisma.attachment.deleteMany({
+    where: { origin: "WORKSPACE_OUTPUT", producerModelRun: { userId: { in: userIds } } }
+  });
   await prisma.modelRun.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.chat.updateMany({
     data: { activeLeafMessageId: null },
@@ -47,6 +53,14 @@ type Fixture = Readonly<{
   toolCallId: string;
   userId: string;
 }>;
+
+// A binding is only loadable with the full allowlisted catalog and its hash.
+const FIXTURE_TOOL_DEFINITIONS = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName) => ({
+  description: `Fixture ${originalName}`,
+  inputSchema: { type: "object" },
+  namespacedName: namespacedWorkspaceToolName(originalName),
+  originalName
+}));
 
 async function createFixture(input: Readonly<{
   exportState?: "EXPORTING" | "FAILED" | "PENDING";
@@ -115,8 +129,8 @@ async function createFixture(input: Readonly<{
       outputDirectory: workspaceRunOutputDirectory(run.id),
       policyRevision: 1,
       runtimeVersion: "0.6.16",
-      toolCatalogHash: "a".repeat(64),
-      toolDefinitions: [{ name: "fixture" }],
+      toolCatalogHash: hashCanonicalMcpValue(FIXTURE_TOOL_DEFINITIONS),
+      toolDefinitions: FIXTURE_TOOL_DEFINITIONS,
       workspaceSessionId: session.id
     }
   });
