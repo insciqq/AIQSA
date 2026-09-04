@@ -130,3 +130,24 @@ export function isSafeWorkspaceRelativePath(value: string): boolean {
 export function workspaceToolIsAllowed(value: string): value is WorkspaceMcpToolName {
   return (WORKSPACE_MCP_TOOL_ALLOWLIST as readonly string[]).includes(value);
 }
+
+/**
+ * Output export failures that no retry can repair: the run's output set is
+ * invalid, or the guest disk that held it is gone. Everything else (storage,
+ * runner, or network trouble) is retried by export recovery.
+ */
+export const WORKSPACE_PERMANENT_EXPORT_ERROR_CODES = Object.freeze([
+  "workspace_output_limit_exceeded",
+  "workspace_runtime_incompatible",
+  "workspace_session_lost"
+] as const);
+
+export function isRetryableWorkspaceExportErrorCode(code: string | null | undefined): boolean {
+  return !code || !(WORKSPACE_PERMANENT_EXPORT_ERROR_CODES as readonly string[]).includes(code);
+}
+
+const RUNTIME_EXEC_SESSION_ID_PATTERN = /^[^\u0000-\u001f\u007f]{1,256}$/u;
+
+export function isWorkspaceRuntimeExecSessionId(value: unknown): value is string {
+  return typeof value === "string" && RUNTIME_EXEC_SESSION_ID_PATTERN.test(value);
+}

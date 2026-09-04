@@ -111,9 +111,14 @@ function fixture() {
     },
     async binding() { return binding(); },
     async generatedFiles() { return files; },
+    async claimExport() {
+      return exportComplete
+        ? { status: "complete" as const }
+        : { status: "claimed" as const, token: "lease_token_1" };
+    },
     async markExportComplete() { exportComplete = true; return true; },
-    async markExportFailed() {},
-    async markExporting() { return exportComplete ? "complete" : "exporting"; },
+    async markExportFailed() { return true; },
+    async renewExportLease() { return true; },
     async markSessionFailed() {},
     async markSessionLost(input) {
       if (runtimeSandboxId !== input.runtimeSandboxId) return false;
