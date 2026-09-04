@@ -827,7 +827,7 @@ describe("Workspace coordinator export settlement", () => {
       userId: "user_1"
     });
     expect(second).toMatchObject({ status: "complete" });
-    expect((second as { files: unknown[] }).files).toHaveLength(2);
+    expect(second.status === "complete" ? second.files : []).toHaveLength(2);
     expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toHaveLength(2);
     expect([...value.storage.objects.keys()].filter((key) => key.includes("workspace-outputs"))).toHaveLength(2);
   });

@@ -566,3 +566,50 @@ describe("deterministic Workspace staged index", () => {
     })).resolves.toEqual([]);
   });
 });
+
+describe("deterministic Workspace VM stop after forgotten executions", () => {
+  it("ends a forgotten delayed execution when the VM stops", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = new DeterministicWorkspaceRuntime(config);
+      const sessionId = "0199aabc-12ef-7abc-8abc-0123456789b6";
+      const created = await runtime.ensureSession({
+        cpus: 2,
+        diskMiB: 10_240,
+        imageRef: config.imageRef,
+        internetEnabled: false,
+        memoryMiB: 4_096,
+        runtimeSandboxId: null,
+        sandboxName: workspaceSandboxName(sessionId),
+        sessionId
+      });
+      const call = (originalName: "sandbox_exec_start" | "sandbox_shell" | "sandbox_fs_exists", args: Record<string, unknown>, id: string) =>
+        runtime.callBoundTool({
+          arguments: args,
+          modelRunId: "run_forgotten",
+          modelRunToolCallId: id,
+          originalName,
+          runtimeSandboxId: created.runtimeSandboxId,
+          sessionId
+        });
+      await call("sandbox_exec_start", { command: "sleep 12 && echo late > /workspace/project/after-stop.txt" }, "start");
+      await call("sandbox_shell", { command: "aiqsa-test forget-executions" }, "forget");
+      await runtime.stopSession({ runtimeSandboxId: created.runtimeSandboxId, sessionId });
+      await runtime.ensureSession({
+        cpus: 2,
+        diskMiB: 10_240,
+        imageRef: config.imageRef,
+        internetEnabled: false,
+        memoryMiB: 4_096,
+        runtimeSandboxId: created.runtimeSandboxId,
+        sandboxName: workspaceSandboxName(sessionId),
+        sessionId
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(call("sandbox_fs_exists", { path: "/workspace/project/after-stop.txt" }, "exists"))
+        .resolves.toMatchObject({ content: [{ text: expect.stringContaining("\"exists\":false") }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

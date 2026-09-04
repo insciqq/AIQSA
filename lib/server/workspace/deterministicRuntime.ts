@@ -46,6 +46,8 @@ export type DeterministicWorkspaceMetrics = Readonly<{
 }>;
 
 type DeterministicSession = {
+  /** Every process ever started in this VM; a VM stop ends all of them, forgotten or not. */
+  allExecs: Set<DeterministicExec>;
   directories: Set<string>;
   execs: Map<string, DeterministicExec>;
   faults: Set<DeterministicFault>;
@@ -364,6 +366,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         .update(`deterministic\0${input.sessionId}\0${input.sandboxName}\0${generation}`)
         .digest("hex");
       session = {
+        allExecs: new Set(),
         directories: new Set([
           `${WORKSPACE_ROOT}/inbox`,
           `${WORKSPACE_ROOT}/inbox/messages`,
@@ -468,7 +471,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     if (name === "lose-session") {
       // Simulates a microVM whose disk disappeared: every later call for the
       // old runtime identity reports the session as lost.
-      for (const exec of session.execs.values()) terminateExec(exec, 137);
+      for (const exec of session.allExecs) terminateExec(exec, 137);
       this.sessions.delete(sessionId);
       return shellResult("lost\n");
     }
@@ -623,6 +626,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
           exec.timer.unref?.();
         }
         session.execs.set(execSessionId, exec);
+        session.allExecs.add(exec);
         return {
           ...toolResult({ execSessionId, sandbox: session.sandboxName, stopSandboxOnExit: null }),
           execSessionId
@@ -761,8 +765,9 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     if (input.runtimeSandboxId && input.runtimeSandboxId !== session.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
-    // Stopping the VM ends every guest process while the disk survives.
-    for (const exec of session.execs.values()) terminateExec(exec, 137);
+    // Stopping the VM ends every guest process while the disk survives, even
+    // ones the runner no longer tracks.
+    for (const exec of session.allExecs) terminateExec(exec, 137);
     session.state = "stopped";
   }
 
@@ -772,7 +777,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     if (input.runtimeSandboxId && input.runtimeSandboxId !== session.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
-    for (const exec of session.execs.values()) terminateExec(exec, 137);
+    for (const exec of session.allExecs) terminateExec(exec, 137);
     this.sessions.delete(input.sessionId);
   }
 }

@@ -4,7 +4,8 @@ import type {
   ChatUsageStats,
   ThreadArtifactSummary,
   ThreadAssistantIdentity,
-  ThreadToolActivity
+  ThreadToolActivity,
+  ThreadWorkspaceActivity
 } from "../../contracts/chats";
 import type { ChatWorkspaceState } from "../../contracts/workspace";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
@@ -194,6 +195,7 @@ export type RunChatUpdateRecord = {
     role: string;
     status: string;
     toolActivity?: ThreadToolActivity | null;
+    workspaceActivity?: ThreadWorkspaceActivity | null;
   }[];
 };
 

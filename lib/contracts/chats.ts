@@ -59,6 +59,7 @@ export function boundedChatBranchPreview(value: string): string {
 export type {
   ThreadSearchSource
 };
+export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;

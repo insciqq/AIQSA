@@ -289,9 +289,13 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
     const activity = page.getByTestId("tool-activity-disclosure").last();
     await activity.locator("summary").click();
-    await expect(activity.getByRole("listitem")).toHaveCount(4);
-    await expect(activity).toContainText("Used Workspace: sandbox fs read");
-    await expect(activity).toContainText("Used Workspace: sandbox fs write");
+    await expect(activity).toContainText("Worked in Workspace");
+    await expect(activity).toContainText("Prepared 2 attachments");
+    await expect(activity).toContainText("Read inbox/index.json");
+    await expect(activity).toContainText(/Read inbox\/(?:opaque-input\.aiqsa-e2e|processing-evidence\.pdf)/u);
+    await expect(activity).toContainText("Wrote project/persisted.txt");
+    await expect(activity).toContainText("Exported 1 file");
+    expect(await activity.textContent()).not.toMatch(/sandbox_|Used Workspace/u);
 
     const first = await assertGeneratedZip(page);
     expect(first.checksum).toBe(sha256(RESULT_ZIP));
