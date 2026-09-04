@@ -311,12 +311,41 @@ async function readRequestBody(stream: ReadableStream<Uint8Array>, maximum: numb
   return output;
 }
 
+type DeterministicState = Readonly<{
+  generations: Map<string, number>;
+  sessions: Map<string, DeterministicSession>;
+}>;
+
+function createDeterministicState(): DeterministicState {
+  return { generations: new Map(), sessions: new Map() };
+}
+
+const globalForDeterministic = globalThis as unknown as {
+  __aiqsaDeterministicWorkspaceState?: DeterministicState;
+};
+
+function sharedDeterministicState(): DeterministicState {
+  globalForDeterministic.__aiqsaDeterministicWorkspaceState ??= createDeterministicState();
+  return globalForDeterministic.__aiqsaDeterministicWorkspaceState;
+}
+
 export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   private catalogPromise: Promise<WorkspaceToolCatalog> | null = null;
-  private readonly generations = new Map<string, number>();
-  private readonly sessions = new Map<string, DeterministicSession>();
+  private readonly generations: Map<string, number>;
+  private readonly sessions: Map<string, DeterministicSession>;
 
-  constructor(private readonly config: WorkspaceConfig) {}
+  constructor(
+    private readonly config: WorkspaceConfig,
+    options: Readonly<{ sharedState?: boolean }> = {}
+  ) {
+    // The app's route bundles and its instrumentation bundle each construct
+    // their own runtime; the simulated guests must still be one set per
+    // process so recovery and maintenance sweeps see the sessions the run
+    // routes created. Tests keep isolated state per instance.
+    const state = options.sharedState ? sharedDeterministicState() : createDeterministicState();
+    this.generations = state.generations;
+    this.sessions = state.sessions;
+  }
 
   /** Content-free staging/write counters for the session, for focused tests. */
   metrics(sessionId: string): DeterministicWorkspaceMetrics | null {
