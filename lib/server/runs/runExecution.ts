@@ -144,6 +144,7 @@ import type {
   RunRepository,
   RunUsageAttribution
 } from "./runRepositoryContract";
+import { UNAVAILABLE_CHAT_WORKSPACE_STATE } from "../../contracts/workspace";
 import { runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
 import {
   parsePersistedToolExecutionResult,
@@ -162,6 +163,9 @@ import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 
 const globalForRuns = globalThis as unknown as {
   __aiqsaActiveRunControllers?: Map<string, AbortController>;
@@ -316,6 +320,7 @@ export type RunExecutionInput = Readonly<{
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   toolBridge?: ProviderToolBridge;
   userId: string;
+  workspace?: WorkspaceCoordinator;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -366,7 +371,8 @@ function serializeChatUpdate(
       ...(update.chat.projectId !== undefined ? { projectId: update.chat.projectId } : {}),
       title: update.chat.title,
       updatedAt: iso(update.chat.updatedAt),
-      usageStats: update.chat.usageStats ?? null
+      usageStats: update.chat.usageStats ?? null,
+      workspace: update.chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
     },
     messages: update.messages.map((message) => ({
       artifactSummary: message.artifactSummary ?? null,
@@ -512,7 +518,7 @@ function hasReportedUsage(usage: ModelRunUsage | undefined): usage is ModelRunUs
 function toolExecutionErrorResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Knowledge" | "Search" | "Tool" = "Tool"
+  label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool"
 ): ToolExecutionResult {
   const overflowResult = label === "Knowledge"
     ? null
@@ -648,7 +654,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const signal = abortController.signal;
+      const workspaceTurnController = normalizedRequest.workspace
+        ? new AbortController()
+        : null;
+      const workspaceTurnTimer = workspaceTurnController && normalizedRequest.workspace
+        ? setTimeout(
+            () => workspaceTurnController.abort(
+              new WorkspaceRuntimeError("workspace_tool_timeout")
+            ),
+            normalizedRequest.workspace.turnTimeoutSeconds * 1_000
+          )
+        : null;
+      const signal = workspaceTurnController
+        ? AbortSignal.any([abortController.signal, workspaceTurnController.signal])
+        : abortController.signal;
       const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
         ...(input.prepared.project
@@ -1685,6 +1704,22 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           : [];
         const isKnowledgeCall = (name: string) =>
           knowledgeTools.length > 0 && input.knowledgeExecutor?.accepts(name) === true;
+        const workspace = normalizedRequest.workspace;
+        if (workspace && !input.workspace) {
+          throw new RunPipelineError(
+            "workspace_runtime_unavailable",
+            "Workspace execution is unavailable"
+          );
+        }
+        const workspaceTools = clientToolsEnabled && workspace && input.workspace
+          ? await input.workspace.tools({
+              runId,
+              userId: input.userId,
+              workspace
+            })
+          : [];
+        const isWorkspaceCall = (name: string) =>
+          Boolean(workspace && input.workspace?.accepts({ name, workspace }));
         let activeMcpSnapshot = normalizedRequest.mcp;
         let activeMcpDiscovery = normalizedRequest.mcpDiscovery;
         const materializeMcpTools = input.mcp?.materialize;
@@ -1702,7 +1737,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
-          ...(clientToolsEnabled ? mcpRunTools(activeMcpSnapshot) : [])
+          ...(clientToolsEnabled ? mcpRunTools(activeMcpSnapshot) : []),
+          ...workspaceTools
         ];
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
@@ -1723,7 +1759,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
           return result;
         };
-        const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
+        const hasMcpTools = tools.some((tool) =>
+          tool.capability === "mcp" || tool.capability === "workspace"
+        );
         let mcpRuntime = input.mcpRuntime ?? null;
         const runtime = () => {
           mcpRuntime ??= getDefaultMcpRuntimeCoordinator();
@@ -1961,6 +1999,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                           toolName: call.name,
                           version: 1
                         }
+                      : isWorkspaceCall(call.name)
+                        ? {
+                            internetEnabled: workspace!.internetEnabled,
+                            kind: "workspace",
+                            sessionId: workspace!.sessionId,
+                            toolCatalogHash: workspace!.toolCatalogHash,
+                            toolName: call.name,
+                            version: 1
+                          }
                       : (() => {
                           const mcpRoute = resolveMcpRunTool(activeMcpSnapshot, call.name);
                           return {
@@ -1975,6 +2022,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       ? currentKnowledgeDispatchAllowed()
                       : isSearchCall(call.name)
                       ? currentSearchDispatchAllowed()
+                      : isWorkspaceCall(call.name)
+                        ? Promise.resolve(claim.call.workspaceBindingId === runId)
                       : (() => {
                           const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                           const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -2096,6 +2145,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       ])
                     }
                   );
+                } else if (workspace && isWorkspaceCall(call.name)) {
+                  if (claim.call.workspaceBindingId !== runId) {
+                    throw new Error("workspace_run_binding_unavailable");
+                  }
+                  result = await input.workspace!.execute({
+                    call,
+                    modelRunToolCallId: claim.call.id,
+                    runId,
+                    signal: context.signal,
+                    userId: input.userId,
+                    workspace
+                  });
                 } else {
                   const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                   const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -2147,7 +2208,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     error,
                     isKnowledgeCall(call.name)
                       ? "Knowledge"
-                      : isSearchCall(call.name) ? "Search" : "Tool"
+                      : isSearchCall(call.name)
+                        ? "Search"
+                        : isWorkspaceCall(call.name) ? "Workspace" : "Tool"
                   );
                 }
               }
@@ -2221,7 +2284,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
-                  !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name)) {
+                  !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
+                  !isWorkspaceCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2233,7 +2297,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   ordinal,
                   providerCallId: call.id,
                   ...(route ? { runtimeGenerationFingerprint: route.fingerprint } : {}),
-                  toolName: call.name
+                  toolName: call.name,
+                  ...(isWorkspaceCall(call.name) ? { workspace: true as const } : {})
                 };
               }),
               providerContinuation: toolLoopJson(
@@ -2326,11 +2391,16 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
+                  : isWorkspaceCall(call.name)
+                    ? "Workspace"
                 : call.name.includes("memory")
                     ? "Memory"
                     : call.name.startsWith("search_engine_")
                       ? "Web search"
                       : undefined;
+              const workspaceToolName = isWorkspaceCall(call.name)
+                ? workspaceToolNameFromNamespaced(call.name)
+                : null;
               await emit(
                 controller,
                 encoder,
@@ -2341,7 +2411,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   ...(route ? {
                     serverName: route.tool.serverName,
                     toolName: route.originalName
-                  } : builtInServer ? { serverName: builtInServer } : {})
+                  } : builtInServer ? {
+                      serverName: builtInServer,
+                      ...(workspaceToolName ? { toolName: workspaceToolName } : {})
+                    } : {})
                 })
               );
             }
@@ -2490,7 +2563,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           normalizedRequest.knowledgePlan.mode !== "none";
         const hasClientTools = hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
-          normalizedRequest.mcpDiscovery !== undefined;
+          normalizedRequest.mcpDiscovery !== undefined ||
+          normalizedRequest.workspace !== undefined;
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(
           input.prepared.providerRequest
         );
@@ -2581,6 +2655,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         await tokenBuffer.flush();
         throwIfAborted(signal);
         await assertProjectRunAccessCurrent(true);
+        if (normalizedRequest.workspace) {
+          if (!input.workspace) {
+            throw new RunPipelineError(
+              "workspace_runtime_unavailable",
+              "Workspace execution is unavailable"
+            );
+          }
+          await input.workspace.finalize({
+            runId,
+            signal,
+            userId: input.userId,
+            workspace: normalizedRequest.workspace
+          });
+        }
         const persistedProviderResult = groundedLiveOnly
           ? {
               ...attributedProviderResult,
@@ -2651,14 +2739,24 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           type: "done"
         });
       } catch (error) {
-        if (abortController.signal.aborted || isAbortError(error)) {
+        const workspaceTurnTimedOut = workspaceTurnController?.signal.aborted === true &&
+          !abortController.signal.aborted;
+        if (abortController.signal.aborted || isAbortError(error) && !workspaceTurnTimedOut) {
           await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
           await tokenBuffer.flush().catch(() => undefined);
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
         }
 
-        let failure = error;
+        if (workspaceTurnTimedOut) {
+          await input.repository.cancelPendingToolLoopCalls({
+            runId,
+            userId: input.userId
+          }).catch(() => undefined);
+        }
+        let failure = workspaceTurnTimedOut
+          ? workspaceTurnController.signal.reason
+          : error;
         const originalStreamSafetyReport = providerStreamSafetyReport(error);
         try {
           await tokenBuffer.flush();
@@ -2684,6 +2782,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           (groundedKnowledgeAnswer
             ? focusedKnowledgeFailureCode(failure)
             : pipelineError?.code ??
+              (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
               (deadlineExceeded ? "provider_request_timed_out" : "provider_stream_failed"));
         const payload = safetyCode
           ? {
@@ -2721,6 +2820,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           });
         }
       } finally {
+        if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);
         if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);

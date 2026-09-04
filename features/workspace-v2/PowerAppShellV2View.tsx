@@ -2,6 +2,7 @@
 
 import {
   ChatDeleteConfirmationDialog,
+  ConfirmationDialog,
   FolderDeleteConfirmationDialog,
   MemoryResumeConfirmationDialog,
   MessageDeleteConfirmationDialog
@@ -116,6 +117,7 @@ import {
 } from "@/features/projects-v2/ProjectWorkspaceSurfacesV2";
 import { attachmentItemsForV2 } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
+import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 import type {
@@ -123,7 +125,11 @@ import type {
   ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import { RunSetupV2 } from "./RunSetupV2";
-import { WorkspaceHeaderV2, type WorkspaceHeaderModelSelectorV2 } from "./WorkspaceHeaderV2";
+import {
+  WorkspaceHeaderV2,
+  type HeaderOverflowActionV2,
+  type WorkspaceHeaderModelSelectorV2
+} from "./WorkspaceHeaderV2";
 import { LibrarySurfaceV2 } from "./WorkspaceWelcomeV2";
 import {
   useEffect,
@@ -302,6 +308,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
+  const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
@@ -389,6 +396,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     ) {
       setProjectsSurfaceOpen(false);
     }
+    if (session.activeChatId !== previousChatId) setWorkspaceResetOpen(false);
   }, [projectsSurfaceOpen, session.activeChatId]);
 
   useEffect(() => {
@@ -517,10 +525,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
-      attachmentWarningsForModel(composer.attachments, composer.currentModel),
-      composer.currentModel
+      attachmentWarningsForModel(
+        composer.attachments,
+        composer.currentModel,
+        composer.workspace.enabled
+      ),
+      composer.currentModel,
+      composer.workspace.enabled
     ),
-    [composer.attachments, composer.currentModel]
+    [composer.attachments, composer.currentModel, composer.workspace.enabled]
   );
   const attachmentUsage = useMemo(
     () => calculateAttachmentLimitUsage(
@@ -573,7 +586,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       assistantRemovedNotice={composer.assistant.removedNotice}
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
-      attachmentPolicy={attachmentPolicyForModel(composer.currentModel)}
+      attachmentPolicy={attachmentPolicyForModel(
+        composer.currentModel,
+        composer.workspace.available
+      )}
       config={config}
       configError={Boolean(composer.catalogError)}
       contextStats={session.activeChatId ? composer.composerContextStats : null}
@@ -641,6 +657,19 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       sharedProject={projectContext}
       uploading={composer.uploading}
       usageStats={composer.composerUsageStats}
+      workspace={{
+        available: composer.workspace.available,
+        busy: composer.workspace.busy,
+        commandRunning: composer.workspace.commandRunning,
+        enabled: composer.workspace.enabled,
+        internetEnabled: composer.workspace.internetEnabled,
+        loading: composer.workspace.loading,
+        onToggle: (value) => void composer.workspace.setEnabled(value),
+        sessionState: composer.workspace.sessionState,
+        ...(composer.workspace.unavailableReason
+          ? { unavailableReason: composer.workspace.unavailableReason }
+          : {})
+      }}
     />
   );
   const composerOperationError = (
@@ -939,6 +968,38 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const deleteActiveChatPermanently = permanentChatDeletionAvailable
     ? withActiveChat((full) => void workspace.pane.actions.deleteChatPermanently(full))
     : null;
+  const workspaceStarted = composer.workspace.sessionState !== null &&
+    composer.workspace.sessionState !== "not_started";
+  const workspaceLifecycleDisabled = thread.activeChatStreaming ||
+    composer.workspace.busy || Boolean(projectMutationReason);
+  const workspaceMenuActions: HeaderOverflowActionV2[] = session.activeChatId ? [
+    {
+      disabled: workspaceLifecycleDisabled || !workspaceStarted,
+      icon: "download",
+      label: "Download workspace",
+      onSelect: () => {
+        void composer.workspace.archive().then((file) => {
+          if (!file) return;
+          const link = document.createElement("a");
+          link.href = attachmentDownloadHref(file.attachmentId);
+          link.download = file.fileName;
+          document.body.append(link);
+          link.click();
+          link.remove();
+        });
+      }
+    },
+    {
+      disabled: workspaceLifecycleDisabled || !workspaceStarted,
+      icon: "tool",
+      label: "Reset workspace…",
+      onSelect: () => setWorkspaceResetOpen(true)
+    },
+    {
+      disabled: true,
+      label: "Shared by this chat; branch changes do not roll it back"
+    }
+  ] : [];
 
   return (
     <main className="v2-live-root" data-testid="app-shell">
@@ -1193,6 +1254,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               shareDisabled={temporarySession || Boolean(projectMutationReason) || Boolean(projectContext && (
                 !activeProject || !activeProject.publicSharingEnabled || !activeProject.capabilities.archiveChats
               ))}
+              supplementalActions={workspaceMenuActions}
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
@@ -1508,6 +1570,26 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onCancel={overlays.confirmations.cancelMessage}
           onConfirm={overlays.confirmations.confirmMessage}
         />
+      ) : null}
+      {workspaceResetOpen ? (
+        <ConfirmationDialog
+          busy={composer.workspace.busy}
+          cancelLabel="Keep workspace"
+          confirmLabel="Reset workspace"
+          dialogLabel="Reset workspace"
+          icon="resume"
+          onCancel={() => setWorkspaceResetOpen(false)}
+          onConfirm={() => {
+            void composer.workspace.reset().then((reset) => {
+              if (reset) setWorkspaceResetOpen(false);
+            });
+          }}
+          testId="reset-workspace-confirmation"
+          title="Reset this workspace?"
+          tone="warning"
+        >
+          Unsaved changes and installed dependencies inside this workspace will be lost. Messages, original attachments, and already exported files stay available.
+        </ConfirmationDialog>
       ) : null}
       <PermanentChatDeletionSurface />
     </main>

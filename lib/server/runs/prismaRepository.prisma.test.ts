@@ -459,6 +459,75 @@ describe("Prisma-backed run repository", () => {
     await prisma.$disconnect();
   });
 
+  it("creates a personal chat, messages, and run in one first-send transaction", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chatId = randomUUID();
+      const repository = createPrismaRunRepository(prisma);
+      const input = {
+        ...createRunInput({
+          chatId,
+          question: "Atomic personal first send",
+          userId
+        }),
+        personalChat: {
+          // This fixture user has no model grant, so the same catalog-aware
+          // first-send lookup used by the route resolves no persisted default.
+          // The accepted request still updates the chat default atomically.
+          defaultProviderModelId: null,
+          folderId: null,
+          memoryMode: "NORMAL" as const
+        }
+      };
+
+      const created = await repository.createRun(input);
+
+      await expect(prisma.chat.findUnique({
+        select: {
+          _count: { select: { messages: true, modelRuns: true } },
+          activeLeafMessageId: true,
+          defaultProviderModelId: true,
+          title: true,
+          workspaceEnabled: true
+        },
+        where: { id: chatId }
+      })).resolves.toEqual({
+        _count: { messages: 2, modelRuns: 1 },
+        activeLeafMessageId: created.assistantMessageId,
+        defaultProviderModelId: providerTemplateIds.fakeModel,
+        title: "Atomic personal first send",
+        workspaceEnabled: false
+      });
+    });
+  });
+
+  it("rolls back a reserved personal chat when first-send attachment admission conflicts", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chatId = randomUUID();
+      const missingAttachmentId = randomUUID();
+      const repository = createPrismaRunRepository(prisma);
+      const input = {
+        ...createRunInput({
+          attachmentIds: [missingAttachmentId],
+          chatId,
+          question: "This entire graph must roll back",
+          userId
+        }),
+        personalChat: {
+          defaultProviderModelId: null,
+          folderId: null,
+          memoryMode: "NORMAL" as const
+        }
+      };
+
+      await expect(repository.createRun(input)).rejects.toBeInstanceOf(
+        AttachmentLinkConflictError
+      );
+      await expect(prisma.chat.findUnique({ where: { id: chatId } })).resolves.toBeNull();
+      await expect(prisma.message.count({ where: { chatId } })).resolves.toBe(0);
+      await expect(prisma.modelRun.count({ where: { chatId } })).resolves.toBe(0);
+    });
+  });
+
   it("loads server-only attachment integrity and processing metadata", async () => {
     await withRunUser(async ({ userId }) => {
       const storageKey = `${userId}/direct-pdf-${randomUUID()}`;
@@ -799,6 +868,9 @@ describe("Prisma-backed run repository", () => {
           _count: { modelRuns: 1 }
         });
       } finally {
+        await prisma.modelRun.deleteMany({
+          where: { chat: { projectId } }
+        });
         await projectRepository.delete({
           actorDisplayName: "Run Repository Test User",
           projectId,
@@ -2770,7 +2842,7 @@ describe("Prisma-backed run repository", () => {
       });
       const titles = new Map(stored.map((chat) => [chat.id, chat.title]));
 
-      expect(titles.get(newChat.id)).toBe("Explain transaction isolation");
+      expect(titles.get(newChat.id)).toBe("Explain");
       expect(titles.get(alternatePlaceholderChat.id)).toBe("Alternate placeholder gets a local title");
       expect(titles.get(namedChat.id)).toBe("Operator title");
     });

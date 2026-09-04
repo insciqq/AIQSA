@@ -1,5 +1,8 @@
 import {
   uploadFormatFor,
+  uploadFormatForExtension,
+  isSafeUploadFileName,
+  normalizedUploadMimeType,
   type UploadContentEvidence,
   type UploadFormatDefinition,
   type UploadFormatScope,
@@ -236,11 +239,23 @@ export function validateUpload(input: UploadValidationInput): UploadValidationRe
   if (!input.fileName || input.byteSize <= 0) {
     return { code: "file_required", ok: false };
   }
+  if (!isSafeUploadFileName(input.fileName)) return { code: "unsupported_type", ok: false };
   if (input.byteSize > input.maxBytes) {
     return { code: "file_too_large", ok: false };
   }
 
-  const format = uploadFormatFor(input.fileName, input.mimeType, input.scope ?? "attachment");
+  const scope = input.scope ?? "attachment";
+  const format = uploadFormatFor(input.fileName, input.mimeType, scope);
+  if (!format && scope === "workspace") {
+    if (uploadFormatForExtension(input.fileName, scope)) {
+      return { code: "unsupported_type", ok: false };
+    }
+    return {
+      kind: "file",
+      mimeType: normalizedUploadMimeType(input.mimeType) ?? "application/octet-stream",
+      ok: true
+    };
+  }
   if (!format || (input.bytes && !uploadContentMatchesFormat(format, input.bytes))) {
     return { code: "unsupported_type", ok: false };
   }
@@ -253,9 +268,23 @@ export function validateUpload(input: UploadValidationInput): UploadValidationRe
 }
 
 export function validateUploadInspection(input: UploadInspectionInput): UploadValidationResult {
-  if (!input.fileName || input.byteSize <= 0) return { code: "file_required", ok: false };
+  if (!input.fileName || input.byteSize <= 0) {
+    return { code: "file_required", ok: false };
+  }
+  if (!isSafeUploadFileName(input.fileName)) return { code: "unsupported_type", ok: false };
   if (input.byteSize > input.maxBytes) return { code: "file_too_large", ok: false };
-  const format = uploadFormatFor(input.fileName, input.mimeType, input.scope ?? "attachment");
+  const scope = input.scope ?? "attachment";
+  const format = uploadFormatFor(input.fileName, input.mimeType, scope);
+  if (!format && scope === "workspace") {
+    if (uploadFormatForExtension(input.fileName, scope)) {
+      return { code: "unsupported_type", ok: false };
+    }
+    return {
+      kind: "file",
+      mimeType: normalizedUploadMimeType(input.mimeType) ?? "application/octet-stream",
+      ok: true
+    };
+  }
   if (!format || !uploadInspectionMatchesFormat(format, input)) {
     return { code: "unsupported_type", ok: false };
   }

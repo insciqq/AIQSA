@@ -132,6 +132,42 @@ function geminiFunctionTool(tool: RunTool): SerializedProviderTool {
   };
 }
 
+/** Test-only fake-provider bridge. The fake provider is exposed solely under
+ * AIQSA_TEST_MODE, but it still traverses the production persistence/router
+ * pipeline so browser tests exercise real first-party tool calls. */
+export const fakeProviderToolBridge: ProviderToolBridge = {
+  appendToolResult(_request, result) {
+    return {
+      callId: result.callId,
+      content: result.content,
+      name: result.name,
+      status: result.status,
+      type: "fake_tool_result"
+    };
+  },
+  parseToolCalls() {
+    return [];
+  },
+  provider: "fake",
+  serializeAssistantToolCalls({ calls }) {
+    return [{ calls, type: "fake_assistant_tool_calls" }];
+  },
+  serializeTool(tool) {
+    return {
+      provider: "fake",
+      tool: {
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        name: tool.name,
+        type: "function"
+      }
+    };
+  },
+  supportsToolCalling(input) {
+    return input.provider === "fake";
+  }
+};
+
 export const openAIResponsesToolBridge: ProviderToolBridge = {
   appendToolResult(_request, result) {
     return {
@@ -425,6 +461,7 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
 export const providerToolBridges = {
   anthropic: anthropicMessagesToolBridge,
   deepseek: deepSeekResponsesToolBridge,
+  fake: fakeProviderToolBridge,
   gemini: geminiInteractionsToolBridge,
   openai: openAIResponsesToolBridge,
   openrouter: openRouterChatToolBridge

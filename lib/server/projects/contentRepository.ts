@@ -15,6 +15,8 @@ import {
 import { projectChatSelect, projectChatWire } from "./chatProjection";
 import { notifyProjectEvent } from "./events";
 import type { ProjectRepositoryResult } from "./prismaRepository";
+import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
+import type { WorkspaceAvailabilityService } from "../workspace/availability";
 
 function folderWire(folder: { id: string; name: string; parentId: string | null; sortOrder: number }): ProjectFolderWire {
   return folder;
@@ -58,9 +60,15 @@ async function publishProjectResult<Value>(
   return result;
 }
 
-export function createPrismaProjectContentRepository(prisma: PrismaClient) {
+export function createPrismaProjectContentRepository(
+  prisma: PrismaClient,
+  options: Readonly<{ workspaceAvailability?: WorkspaceAvailabilityService }> = {}
+) {
+  const workspaceAvailability = options.workspaceAvailability ??
+    defaultWorkspaceAvailabilityService;
   return {
     async listWorkspace(userId: string, projectId: string): Promise<ProjectWorkspaceResponseWire | null> {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       const access = await resolveProjectAccess(prisma, { projectId, userId });
       if (!access) return null;
       const [chats, folders, authority] = await prisma.$transaction(async (tx) => Promise.all([
@@ -77,7 +85,10 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
         loadProjectChatDefaultAuthority(tx, projectId)
       ]), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
       return {
-        chats: chats.map((chat) => projectChatWire(chat, authority)),
+        chats: chats.map((chat) => projectChatWire(chat, authority, {
+          availability: workspaceAvailability,
+          snapshot: workspaceSnapshot
+        })),
         folders: folders.map(folderWire)
       };
     },
@@ -88,7 +99,9 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       projectId: string;
       title?: string | null;
       userId: string;
+      workspaceEnabled?: boolean;
     }): Promise<ProjectRepositoryResult<ProjectChatSummaryWire>> {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       try {
         return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
@@ -130,7 +143,10 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
               projectFolderId: input.folderId ?? null,
               projectId: input.projectId,
               title: input.title?.trim().slice(0, 80) || defaultChatTitle,
-              userId: null
+              userId: null,
+              ...(input.workspaceEnabled === undefined
+                ? {}
+                : { workspaceEnabled: input.workspaceEnabled })
             },
             select: projectChatSelect
           });
@@ -143,7 +159,13 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
               projectId: input.projectId
             })
           });
-          return { kind: "ok" as const, value: projectChatWire(chat, authority) };
+          return {
+            kind: "ok" as const,
+            value: projectChatWire(chat, authority, {
+              availability: workspaceAvailability,
+              snapshot: workspaceSnapshot
+            })
+          };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_chat_create_conflict" };
@@ -330,6 +352,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       projectId: string;
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectChatSummaryWire>> {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       try {
         return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
@@ -369,7 +392,13 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             })
           });
           const authority = await loadProjectChatDefaultAuthority(tx, input.projectId);
-          return { kind: "ok" as const, value: projectChatWire(chat, authority) };
+          return {
+            kind: "ok" as const,
+            value: projectChatWire(chat, authority, {
+              availability: workspaceAvailability,
+              snapshot: workspaceSnapshot
+            })
+          };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (error instanceof ActiveRunConflictError) {

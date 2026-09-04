@@ -70,6 +70,7 @@ type MessageRunControlSnapshot = {
   searchOptions: Catalog["searchStrategies"];
   skillIds: string[];
   toolsOverride: { tools: "none" } | Record<string, never>;
+  workspaceEnabled: boolean;
 };
 
 type MessageRunActionsInput = {
@@ -232,7 +233,11 @@ export function useMessageRunActions({
           : {})
       })),
       skillIds: selectedSkills.map((skill) => skill.id),
-      toolsOverride: toolsOverride(model)
+      toolsOverride: toolsOverride(model),
+      workspaceEnabled: activeChat?.workspace?.enabled ?? selectComposerSession(
+        useComposerSessionStore.getState(),
+        useComposerSessionStore.getState().activeSessionKey
+      ).workspaceEnabled
     };
   }
 
@@ -297,7 +302,8 @@ export function useMessageRunActions({
       // never an expanded client copy of the governed controls.
       return {
         assistantId: snapshot.assistantId,
-        ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {})
+        ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
+        workspace: { enabled: snapshot.workspaceEnabled }
       };
     }
 
@@ -327,7 +333,8 @@ export function useMessageRunActions({
         : {}),
       ...(timeZone ? { timeZone } : {}),
       ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
-      ...snapshot.toolsOverride
+      ...snapshot.toolsOverride,
+      workspace: { enabled: snapshot.workspaceEnabled }
     };
   }
 
@@ -608,7 +615,11 @@ export function useMessageRunActions({
       });
     }
     const blockingAttachment = sourceSession.attachments.find(
-      (attachment) => attachmentBlocksSend(attachment, modelForSend)
+      (attachment) => attachmentBlocksSend(
+        attachment,
+        modelForSend,
+        runControlSnapshot.workspaceEnabled
+      )
     );
     if (blockingAttachment) {
       setNotice({
@@ -625,7 +636,8 @@ export function useMessageRunActions({
     }
     const blockingAttachmentWarning = firstBlockingAttachmentWarning(
       sourceSession.attachments,
-      modelForSend
+      modelForSend,
+      runControlSnapshot.workspaceEnabled
     );
     if (blockingAttachmentWarning) {
       setNotice({
@@ -669,7 +681,11 @@ export function useMessageRunActions({
     }
 
     const sendToken = useComposerSessionStore.getState().beginSend(sourceSessionKey, {
-      attachmentBlocksSend: (attachment) => attachmentBlocksSend(attachment, modelForSend)
+      attachmentBlocksSend: (attachment) => attachmentBlocksSend(
+        attachment,
+        modelForSend,
+        runControlSnapshot.workspaceEnabled
+      )
     });
     if (!sendToken) {
       return;
@@ -724,6 +740,7 @@ export function useMessageRunActions({
         parentLeafForSend = chat.activeLeafMessageId;
       }
       const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
+      const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
       startedFromBlankWorkspace = startedFromBlankWorkspace || Boolean(projectDraftForSend);
       const sendControlPayload = runControlPayload(
         runControlSnapshot,
@@ -826,6 +843,7 @@ export function useMessageRunActions({
                 blocks: contentBlocks
               },
               expectedActiveLeafId: parentLeafForSend,
+              ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
               ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
               ...sendControlPayload
@@ -836,12 +854,14 @@ export function useMessageRunActions({
             method: "POST",
             signal
           });
-          if (response.ok && projectDraftForSend) {
+          if (response.ok && (projectDraftForSend || personalDraftForSend)) {
             useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
-              chat.id === chatIdForSend &&
-              chat.pendingProjectDraft?.projectId === projectDraftForSend.projectId &&
-              chat.pendingProjectDraft.folderId === projectDraftForSend.folderId
-                ? { ...chat, pendingProjectDraft: undefined }
+              chat.id === chatIdForSend
+                ? {
+                    ...chat,
+                    ...(personalDraftForSend ? { pendingPersonalDraft: undefined } : {}),
+                    ...(projectDraftForSend ? { pendingProjectDraft: undefined } : {})
+                  }
                 : chat
             ));
           }
@@ -986,6 +1006,7 @@ export function useMessageRunActions({
         parentLeafForSend = chat.activeLeafMessageId;
       }
       const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
+      const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
       const starterControlPayload = runControlPayload(
         runControlSnapshot,
         Boolean(currentChatSummary?.projectId)
@@ -1075,6 +1096,7 @@ export function useMessageRunActions({
             body: JSON.stringify({
               content: { blocks: contentBlocks },
               expectedActiveLeafId: parentLeafForSend,
+              ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
               ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
               ...starterControlPayload
@@ -1083,12 +1105,14 @@ export function useMessageRunActions({
             method: "POST",
             signal
           });
-          if (response.ok && projectDraftForSend) {
+          if (response.ok && (projectDraftForSend || personalDraftForSend)) {
             useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
-              chat.id === chatIdForSend &&
-              chat.pendingProjectDraft?.projectId === projectDraftForSend.projectId &&
-              chat.pendingProjectDraft.folderId === projectDraftForSend.folderId
-                ? { ...chat, pendingProjectDraft: undefined }
+              chat.id === chatIdForSend
+                ? {
+                    ...chat,
+                    ...(personalDraftForSend ? { pendingPersonalDraft: undefined } : {}),
+                    ...(projectDraftForSend ? { pendingProjectDraft: undefined } : {})
+                  }
                 : chat
             ));
           }

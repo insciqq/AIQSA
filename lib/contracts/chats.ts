@@ -24,6 +24,12 @@ import {
   type MemoryAnswerSource,
   type MemoryChatMode
 } from "./memoryClient";
+import {
+  decodeChatWorkspaceState,
+  decodeThreadGeneratedFile,
+  type ChatWorkspaceState,
+  type ThreadGeneratedFile
+} from "./workspace";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -80,6 +86,7 @@ export type ThreadAssistantIdentity = {
 
 export type ThreadArtifactSummary = {
   citations: ThreadCitation[];
+  generatedFiles?: ThreadGeneratedFile[];
   groundingDisplay?: ThreadGroundingDisplay | null;
   knowledgeState?: ThreadKnowledgeAnswerState;
   knowledgeCitations?: ThreadKnowledgeCitation[];
@@ -163,11 +170,20 @@ export type WorkspaceChatSummary = {
   /** Local-only first-send reservation. The server creates this Project chat
    * atomically with its first message/run and never serializes this field. */
   pendingProjectDraft?: Readonly<{ folderId: string | null; projectId: string }>;
+  /** Local-only personal first-send reservation. The server creates the chat
+   * atomically with its first message/run and never serializes this field. */
+  pendingPersonalDraft?: Readonly<{
+    folderId: string | null;
+    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+  }>;
   pinned?: boolean;
   projectId?: string | null;
   temporaryRetentionDeadline?: string | null;
   title: string;
   updatedAt: string;
+  /** Required on server wires; optional only for unsaved local drafts and
+   * previously cached in-memory objects created before Workspace existed. */
+  workspace?: ChatWorkspaceState;
 };
 
 export type ChatUsageStats = {
@@ -228,11 +244,14 @@ export type WorkspaceChatSummaryWire = Omit<
   | "pendingInitialMemoryMode"
   | "pinned"
   | "temporaryRetentionDeadline"
+  | "workspace"
 > & {
   defaultModelId: string | null;
   defaultProvider: string | null;
   pinned: boolean;
   projectId?: string | null;
+  /** Present on current responses; optional only for stale caches/fixtures. */
+  workspace?: ChatWorkspaceState;
 };
 
 export type ChatDetailWire = WorkspaceChatSummaryWire & {
@@ -343,6 +362,7 @@ export type CreateChatRequestWire = {
   folderId?: string | null;
   memoryMode?: "EXCLUDED";
   title?: string | null;
+  workspaceEnabled?: boolean;
 };
 
 export type UpdateChatRequestWire = {
@@ -351,6 +371,7 @@ export type UpdateChatRequestWire = {
   folderId?: string | null;
   pinned?: boolean;
   title?: string | null;
+  workspaceEnabled?: boolean;
 };
 
 export type ChatRouteServerErrorCode =
@@ -366,6 +387,7 @@ export type ChatRouteServerErrorCode =
   | "chat_not_found"
   | "chat_revision_stale"
   | "knowledge_plan_invalid"
+  | "workspace_state_invalid"
   | "workspace_not_found";
 
 export type ChatRouteErrorResponse = ErrorResponse<ChatRouteServerErrorCode>;
@@ -675,6 +697,22 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     if (!groundingDisplay) return null;
   }
 
+  let generatedFiles: ThreadGeneratedFile[] | undefined;
+  if (value.generatedFiles !== undefined) {
+    if (!Array.isArray(value.generatedFiles) || value.generatedFiles.length > 25) return null;
+    const decoded = value.generatedFiles.map(decodeThreadGeneratedFile);
+    if (decoded.some((file) => file === null)) return null;
+    generatedFiles = decoded.filter(
+      (file): file is ThreadGeneratedFile => file !== null
+    );
+    if (
+      new Set(generatedFiles.map((file) => file.attachmentId)).size !== generatedFiles.length ||
+      new Set(generatedFiles.map((file) => file.relativePath)).size !== generatedFiles.length
+    ) {
+      return null;
+    }
+  }
+
   let knowledgeCitations: ThreadKnowledgeCitation[] | undefined;
   if (value.knowledgeCitations !== undefined) {
     if (!Array.isArray(value.knowledgeCitations) || value.knowledgeCitations.length > 24) {
@@ -739,6 +777,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
     ),
+    ...(generatedFiles !== undefined ? { generatedFiles } : {}),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
     ...(knowledgeState ? { knowledgeState } : {}),
     ...(knowledgeCitations !== undefined ? { knowledgeCitations } : {}),
@@ -966,6 +1005,9 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   const projectId = value.projectId === undefined ? null : nullableId(value.projectId);
   const title = requiredString(value.title);
   const updatedAt = requiredString(value.updatedAt);
+  const workspace = value.workspace === undefined
+    ? undefined
+    : decodeChatWorkspaceState(value.workspace);
   if (
     activeLeafMessageId === undefined ||
     !id ||
@@ -977,7 +1019,8 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     projectId === undefined ||
     typeof value.pinned !== "boolean" ||
     !title ||
-    !updatedAt
+    !updatedAt ||
+    workspace === null
   ) {
     return null;
   }
@@ -994,7 +1037,8 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     pinned: value.pinned,
     projectId,
     title,
-    updatedAt
+    updatedAt,
+    ...(workspace ? { workspace } : {})
   };
 }
 
@@ -1331,7 +1375,8 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "projectId",
       "sourceRevision",
       "title",
-      "updatedAt"
+      "updatedAt",
+      ...(Object.hasOwn(value, "workspace") ? ["workspace"] : [])
     ])
   ) return null;
   if (value.projectId !== null) return null;
@@ -1397,7 +1442,8 @@ export function decodeArchivedChatDetailResponse(
     "sourceRevision",
     "title",
     "updatedAt",
-    "usageStats"
+    "usageStats",
+    ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;
   if (value.chat.projectId !== null) return null;
   const memoryMode = retainedMemoryMode(value.chat.memoryMode);

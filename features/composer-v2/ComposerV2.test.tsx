@@ -731,6 +731,74 @@ describe("Composer v2", () => {
     expect(onUploadFiles).toHaveBeenNthCalledWith(3, [pastedFile]);
   });
 
+  it("exposes Workspace state, network policy, and its keyboard-operable toggle", () => {
+    const onToggle = vi.fn();
+    render(<ComposerV2 {...props({
+      workspace: {
+        available: true,
+        busy: false,
+        enabled: true,
+        internetEnabled: false,
+        loading: false,
+        onToggle,
+        sessionState: "ready"
+      }
+    })} />);
+
+    const toggle = screen.getByRole("button", { name: /Turn off Workspace.*Workspace ready/u });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Workspace ready");
+    expect(screen.getByLabelText("Internet in Workspace is disabled")).toHaveTextContent(
+      "Internet: Off"
+    );
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledWith(false);
+  });
+
+  it("explains an unavailable Workspace and accepts opaque files when available", () => {
+    const unavailable = props({
+      workspace: {
+        available: false,
+        busy: false,
+        enabled: false,
+        internetEnabled: null,
+        loading: false,
+        onToggle: vi.fn(),
+        sessionState: null,
+        unavailableReason: "model_tools_required"
+      }
+    });
+    const { rerender } = render(<ComposerV2 {...unavailable} />);
+
+    const toggle = screen.getByRole("button", {
+      name: /Turn on Workspace.*requires a model with tool support/u
+    });
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("title", "Workspace requires a model with tool support.");
+
+    const onUploadFiles = vi.fn();
+    const opaque = new File(["opaque"], "dataset.custom", {
+      type: "application/x-custom"
+    });
+    rerender(<ComposerV2 {...props({
+      attachmentPolicy: { documents: true, files: true, images: true, pdfs: true },
+      onUploadFiles,
+      workspace: {
+        available: true,
+        busy: false,
+        enabled: true,
+        internetEnabled: true,
+        loading: false,
+        onToggle: vi.fn(),
+        sessionState: "not_started"
+      }
+    })} />);
+    const input = screen.getByLabelText("Attach files") as HTMLInputElement;
+    expect(input.accept).toBe("");
+    fireEvent.change(input, { target: { files: [opaque] } });
+    expect(onUploadFiles).toHaveBeenCalledWith([opaque]);
+  });
+
   it("keeps draft editing available while a blocking row explains disabled Send", () => {
     const onSend = vi.fn();
     const failed = [{

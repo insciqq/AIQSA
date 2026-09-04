@@ -4,6 +4,10 @@ import {
   EMPTY_KNOWLEDGE_SELECTION,
   type KnowledgePlan
 } from "./knowledge";
+import {
+  decodeChatWorkspaceState,
+  type ChatWorkspaceState
+} from "./workspace";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import type { KnowledgePlan as StoredKnowledgePlan } from "./knowledge";
 import {
@@ -418,6 +422,8 @@ export type ProjectChatSummaryWire = Readonly<{
   projectId: string;
   title: string;
   updatedAt: string;
+  /** Present on current server responses; optional only for stale local caches. */
+  workspace?: ChatWorkspaceState;
 }>;
 
 export type ProjectWorkspaceResponseWire = Readonly<{
@@ -732,6 +738,10 @@ export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null
     typeof value.id !== "string" || !finiteRevision(value.messageCount) ||
     typeof value.pinned !== "boolean" || typeof value.projectId !== "string" ||
     typeof value.title !== "string" || typeof value.updatedAt !== "string") return null;
+  const workspace = value.workspace === undefined
+    ? undefined
+    : decodeChatWorkspaceState(value.workspace);
+  if (workspace === null) return null;
   const knowledge = value.defaultKnowledgePlan === null
     ? { ok: true as const, plan: null }
     : decodeKnowledgePlan(value.defaultKnowledgePlan);
@@ -752,7 +762,8 @@ export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null
     pinned: value.pinned,
     projectId: value.projectId,
     title: value.title,
-    updatedAt: value.updatedAt
+    updatedAt: value.updatedAt,
+    ...(workspace ? { workspace } : {})
   };
 }
 

@@ -6,6 +6,7 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { titleFromMessageContent } from "../chats/titlePolicy";
+import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import {
   ProviderAdmissionError,
   loadProviderAdmissionPlan,
@@ -107,6 +108,7 @@ import {
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   SkillRunConflictError,
+  WorkspaceRunConflictError,
   type PreparingRunAdmissionInput,
   type PreparingRunAdmissionResult,
   type PreparingRunFinalizationInput,
@@ -114,6 +116,11 @@ import {
   type PreparingRunRecoveryResult,
   type ProjectRunAdmission
 } from "./runRepositoryContract";
+import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
+import {
+  WORKSPACE_POLICY_ID,
+  workspaceRunOutputDirectory
+} from "../../domain/workspace";
 import { resolveProjectAccess } from "../projects/access";
 import { notifyProjectEvent } from "../projects/events";
 import {
@@ -130,6 +137,7 @@ import {
   RunTransactionDeadlineError
 } from "./prismaRepositoryBindings";
 import {
+  activeModelRunStatuses,
   activeMessageStatuses,
   isRecord,
   json,
@@ -145,9 +153,139 @@ const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 1_200;
 const MEMORY_PREPARING_FINALIZATION_RESERVE_MS = 1_000;
 const MEMORY_PREPARING_MAX_ATTEMPTS = 3;
 
+function assertWorkspaceAdmissionShape(
+  input: PreparingRunAdmissionInput,
+  plan: WorkspaceRunAdmissionPlan
+): void {
+  const workspace = input.normalizedRequest.workspace;
+  if (
+    !workspace?.enabled ||
+    plan.chatId !== input.chatId ||
+    plan.normalized.sessionId !== plan.sessionId ||
+    plan.normalized.outputDirectory !== workspaceRunOutputDirectory(plan.runId) ||
+    JSON.stringify(plan.normalized) !== JSON.stringify(workspace) ||
+    plan.toolDefinitions.length === 0 ||
+    new Set(plan.toolDefinitions.map((tool) => tool.namespacedName)).size !==
+      plan.toolDefinitions.length ||
+    plan.toolDefinitions.some((tool) =>
+      tool.namespacedName.length > 256 ||
+      !tool.namespacedName.trim() ||
+      !tool.description.trim()
+    )
+  ) {
+    throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+  }
+}
+
+async function insertAcceptedWorkspaceRunBinding(
+  tx: Prisma.TransactionClient,
+  input: PreparingRunAdmissionInput,
+  ids: Readonly<{
+    assistantMessageId: string;
+    runId: string;
+    userMessageId: string;
+  }>
+): Promise<void> {
+  const plan = input.workspaceAdmissionPlan;
+  if (!plan) {
+    if (input.normalizedRequest.workspace || input.workspaceEnabled === true) {
+      throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+    }
+    if (input.workspaceEnabled !== undefined) {
+      await tx.chat.update({
+        data: { workspaceEnabled: false },
+        where: { id: input.chatId }
+      });
+    }
+    return;
+  }
+  assertWorkspaceAdmissionShape(input, plan);
+  if (
+    plan.runId !== ids.runId ||
+    plan.userMessageId !== ids.userMessageId ||
+    plan.assistantMessageId !== ids.assistantMessageId
+  ) {
+    throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+  }
+  const policy = await tx.workspacePolicy.findUnique({
+    select: { enabled: true, version: true },
+    where: { id: WORKSPACE_POLICY_ID }
+  });
+  if (!policy?.enabled || policy.version !== plan.policyRevision) {
+    throw new WorkspaceRunConflictError("workspace_disabled");
+  }
+  const active = await tx.modelRun.count({
+    where: {
+      chatId: input.chatId,
+      id: { not: ids.runId },
+      status: { in: activeModelRunStatuses },
+      workspaceRunBinding: { isNot: null }
+    }
+  });
+  if (active > 0) throw new WorkspaceRunConflictError("workspace_busy");
+
+  const expiresAt = new Date(plan.expiresAt);
+  if (!Number.isFinite(expiresAt.getTime())) {
+    throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+  }
+  const existing = await tx.workspaceSession.findUnique({
+    where: { chatId: input.chatId }
+  });
+  if (existing) {
+    if (
+      existing.id !== plan.sessionId ||
+      existing.sandboxName !== plan.sandboxName ||
+      existing.imageRef !== plan.normalized.imageRef ||
+      existing.internetEnabled !== plan.normalized.internetEnabled ||
+      existing.state === "CREATING" ||
+      existing.state === "DELETING"
+    ) {
+      throw new WorkspaceRunConflictError("workspace_busy");
+    }
+    await tx.workspaceSession.update({
+      data: { expiresAt, lastActiveAt: new Date() },
+      where: { id: existing.id }
+    });
+  } else {
+    await tx.workspaceSession.create({
+      data: {
+        chatId: input.chatId,
+        expiresAt,
+        id: plan.sessionId,
+        imageRef: plan.normalized.imageRef,
+        internetEnabled: plan.normalized.internetEnabled,
+        policyRevision: plan.policyRevision,
+        sandboxName: plan.sandboxName,
+        state: "PENDING"
+      }
+    });
+  }
+  await tx.workspaceRunBinding.create({
+    data: {
+      imageRef: plan.normalized.imageRef,
+      internetEnabled: plan.normalized.internetEnabled,
+      mcpVersion: plan.normalized.mcpVersion,
+      modelRunId: ids.runId,
+      outputDirectory: plan.normalized.outputDirectory,
+      policyRevision: plan.policyRevision,
+      runtimeVersion: plan.normalized.runtimeVersion,
+      toolCatalogHash: plan.normalized.toolCatalogHash,
+      toolDefinitions: json(plan.toolDefinitions),
+      workspaceSessionId: plan.sessionId
+    }
+  });
+  await tx.chat.update({
+    data: { workspaceEnabled: true },
+    where: { id: input.chatId }
+  });
+}
+
 function attachmentLinkReadinessWhere(
   input: PreparingRunAdmissionInput
 ): Prisma.AttachmentWhereInput {
+  if (input.normalizedRequest.workspace?.enabled === true) {
+    return {};
+  }
   if (!input.normalizedRequest.modelCapabilities.nativePdfInput) {
     return { status: "ready" };
   }
@@ -593,6 +731,13 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
     input.normalizedRequest.memoryActionTools !== undefined ||
     input.normalizedRequest.memoryHistoryTool !== undefined ||
     (input.admissionKind === "REGENERATE" && initialMode !== undefined) ||
+    (input.admissionKind === "NORMAL_SEND" && input.personalChat !== undefined && (
+      input.expectedActiveLeafId !== null ||
+      input.project !== undefined ||
+      input.projectChat !== undefined ||
+      (input.personalChat.memoryMode === "TEMPORARY") !==
+        (initialMode?.chatMode === "TEMPORARY")
+    )) ||
     (input.admissionKind === "NORMAL_SEND" &&
       memoryPreparingHash(input.normalizedRequest.content) !== memoryPreparingHash(input.content))
   ) {
@@ -688,7 +833,8 @@ export async function admitProjectRunWithClient(
             projectFolderId: firstProjectSend.folderId,
             projectId: project.projectId,
             title: "New Chat",
-            userId: null
+            userId: null,
+            workspaceEnabled: input.workspaceEnabled === true
           }
         });
         await tx.projectAuditEvent.create({
@@ -736,6 +882,9 @@ export async function admitProjectRunWithClient(
             authorUserId: input.userId,
             chatId: input.chatId,
             content: json(input.content),
+            ...(input.workspaceAdmissionPlan
+              ? { id: input.workspaceAdmissionPlan.userMessageId }
+              : {}),
             modelId: input.modelId,
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
@@ -747,6 +896,9 @@ export async function admitProjectRunWithClient(
           data: {
             chatId: input.chatId,
             content: json(textMessageContent("")),
+            ...(input.workspaceAdmissionPlan
+              ? { id: input.workspaceAdmissionPlan.assistantMessageId }
+              : {}),
             modelId: input.modelId,
             parentMessageId: userMessage.id,
             provider: input.provider,
@@ -796,6 +948,9 @@ export async function admitProjectRunWithClient(
           data: {
             chatId: input.chatId,
             content: json(textMessageContent("")),
+            ...(input.workspaceAdmissionPlan
+              ? { id: input.workspaceAdmissionPlan.assistantMessageId }
+              : {}),
             modelId: input.modelId,
             parentMessageId: input.userMessageId,
             provider: input.provider,
@@ -845,6 +1000,7 @@ export async function admitProjectRunWithClient(
             ? { assistantId: input.assistant.assistantId, assistantRevisionId: input.assistant.revisionId }
             : {}),
           chatId: input.chatId,
+          ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
           modelId: input.modelId,
           normalizedRequest: json(input.normalizedRequest),
           provider: input.provider,
@@ -852,6 +1008,11 @@ export async function admitProjectRunWithClient(
           userId: input.userId,
           userMessageId
         }
+      });
+      await insertAcceptedWorkspaceRunBinding(tx, input, {
+        assistantMessageId,
+        runId: run.id,
+        userMessageId
       });
       await insertAcceptedKnowledgeRunBindings(tx, {
         plan: input.knowledgeAdmissionPlan,
@@ -941,6 +1102,39 @@ export async function admitPreparingRunWithClient(
   return mapActiveRunConflict(() =>
     repeatableReadTransaction(prismaClient, async (tx) => {
       const admissionNow = new Date();
+      if (input.admissionKind === "NORMAL_SEND" && input.personalChat) {
+        const defaults = await loadChatCreationDefaults(tx, input.userId);
+        if (
+          !defaults ||
+          defaults.defaultProviderModelId !== input.personalChat.defaultProviderModelId ||
+          (input.personalChat.folderId && !(await tx.folder.findFirst({
+            select: { id: true },
+            where: { id: input.personalChat.folderId, userId: input.userId }
+          })))
+        ) {
+          throw new ActiveLeafConflictError();
+        }
+        try {
+          await tx.chat.create({
+            data: {
+              defaultProviderModelId: input.personalChat.defaultProviderModelId,
+              folderId: input.personalChat.folderId,
+              id: input.chatId,
+              memoryMode: input.personalChat.memoryMode === "TEMPORARY"
+                ? "NORMAL"
+                : input.personalChat.memoryMode,
+              title: "New Chat",
+              userId: input.userId,
+              workspaceEnabled: input.workspaceEnabled === true
+            }
+          });
+        } catch (error) {
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+            throw new ActiveLeafConflictError();
+          }
+          throw error;
+        }
+      }
       const lockedChats = await tx.$queryRaw<LockedMemorySourceChat[]>(Prisma.sql`
         SELECT
           "id", "userId", "activeLeafMessageId", "archived", "folderId",
@@ -1069,6 +1263,9 @@ export async function admitPreparingRunWithClient(
           data: {
             chatId: input.chatId,
             content: json(input.content),
+            ...(input.workspaceAdmissionPlan
+              ? { id: input.workspaceAdmissionPlan.userMessageId }
+              : {}),
             modelId: input.modelId,
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
@@ -1080,6 +1277,9 @@ export async function admitPreparingRunWithClient(
           data: {
             chatId: input.chatId,
             content: json(textMessageContent("")),
+            ...(input.workspaceAdmissionPlan
+              ? { id: input.workspaceAdmissionPlan.assistantMessageId }
+              : {}),
             modelId: input.modelId,
             parentMessageId: userMessage.id,
             provider: input.provider,
@@ -1225,6 +1425,9 @@ export async function admitPreparingRunWithClient(
           data: {
             chatId: input.chatId,
             content: json(textMessageContent("")),
+            ...(input.workspaceAdmissionPlan
+              ? { id: input.workspaceAdmissionPlan.assistantMessageId }
+              : {}),
             modelId: input.modelId,
             parentMessageId: input.userMessageId,
             provider: input.provider,
@@ -1258,12 +1461,19 @@ export async function admitPreparingRunWithClient(
               }
             : {}),
           chatId: input.chatId,
+          ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
           modelId: input.modelId,
           provider: input.provider,
           status: "preparing",
           userId: input.userId,
           userMessageId
         }
+      });
+
+      await insertAcceptedWorkspaceRunBinding(tx, input, {
+        assistantMessageId,
+        runId: run.id,
+        userMessageId
       });
 
       await insertAcceptedKnowledgeRunBindings(tx, {

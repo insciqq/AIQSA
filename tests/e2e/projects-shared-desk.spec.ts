@@ -40,6 +40,15 @@ function projectChatRow(page: Page, chatTitle: string) {
   return sharedProjects(page).locator(".v2-project-chat-row").filter({ hasText: chatTitle });
 }
 
+async function openProjectsLanding(page: Page): Promise<void> {
+  const trigger = page.getByRole("button", { exact: true, name: "Projects" });
+  await expect(async () => {
+    if (!(await sharedProjects(page).isVisible())) await trigger.click();
+    await expect(trigger).toHaveAttribute("aria-current", "page");
+    await expect(sharedProjects(page)).toBeVisible();
+  }).toPass({ timeout: 30_000 });
+}
+
 async function warmProjectRouteModules(page: Page): Promise<void> {
   // Next dev otherwise cold-compiles every Project route concurrently when
   // the first workspace opens. Sequential privacy-neutral 404s keep this
@@ -61,8 +70,7 @@ async function warmProjectRouteModules(page: Page): Promise<void> {
 }
 
 async function createProjectThroughUi(page: Page, projectName: string): Promise<string> {
-  await page.getByRole("button", { exact: true, name: "Projects" }).click();
-  await expect(sharedProjects(page)).toBeVisible();
+  await openProjectsLanding(page);
   await sharedProjects(page).getByRole("button", { name: "New project" }).click();
   const dialog = page.getByRole("dialog", { name: "Create project" });
   await dialog.getByLabel("Name", { exact: true }).fill(projectName);
@@ -107,8 +115,7 @@ async function addContributorThroughPicker(page: Page, projectName: string): Pro
 }
 
 async function openBlankProject(page: Page, projectName: string): Promise<void> {
-  await page.getByRole("button", { exact: true, name: "Projects" }).click();
-  await expect(sharedProjects(page)).toBeVisible();
+  await openProjectsLanding(page);
   await expect(projectRow(page, projectName)).toBeVisible({ timeout: 30_000 });
   await projectRow(page, projectName).click();
   await expect(page.getByTestId("project-overview-page").getByRole("heading", {
@@ -306,6 +313,8 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     // workspace refresh or Project re-selection is allowed between the two
     // sends; terminal run streaming alone must clear the draft admission.
     await ownerPage.bringToFront();
+    await expect(ownerPage.getByRole("button", { name: "Stop answer" }))
+      .toHaveCount(0, { timeout: 15_000 });
     await ownerPage.getByRole("textbox", { name: "Message" }).fill(sameClientFollowUp);
     await ownerPage.getByRole("textbox", { name: "Message" }).press("Enter");
     await expect(ownerPage.locator('article[data-role="assistant"]').last())
@@ -316,6 +325,8 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await contributorPage.bringToFront();
     await expect(contributorPage.locator('article[data-role="assistant"]').last())
       .toContainText(`Fake answer: ${sameClientFollowUp}`, { timeout: 8_000 });
+    await expect(contributorPage.getByRole("button", { name: "Stop answer" }))
+      .toHaveCount(0, { timeout: 15_000 });
     await contributorPage.getByRole("textbox", { name: "Message" }).fill(followUp);
     await contributorPage.getByRole("textbox", { name: "Message" }).press("Enter");
     await expect(ownerPage.getByRole("article", {

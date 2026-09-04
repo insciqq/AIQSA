@@ -465,6 +465,52 @@ describe("message run actions", () => {
     await submit;
   });
 
+  it("sends and clears the personal first-send reservation after admission", async () => {
+    let markStreamStarted!: () => void;
+    let resolveStream!: () => void;
+    const streamStarted = new Promise<void>((resolve) => {
+      markStreamStarted = resolve;
+    });
+    const pending = {
+      ...chat(),
+      folderId: "folder-1",
+      memoryMode: "NORMAL" as const,
+      pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" as const }
+    };
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: pending,
+      attachments: [],
+      consumeRunStream: async () => {
+        markStreamStarted();
+        await new Promise<void>((resolve) => {
+          resolveStream = resolve;
+        });
+        return {
+          failed: false,
+          receivedChatUpdate: false,
+          runId: "run-personal-1",
+          terminalStatus: "complete"
+        };
+      },
+      draft: "First personal question"
+    });
+
+    const submit = actions.submitComposer();
+    await streamStarted;
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      expectedActiveLeafId: null,
+      personalDraft: { folderId: "folder-1", memoryMode: "NORMAL" }
+    });
+    expect(useWorkspaceStore.getState().chats.find((candidate) => candidate.id === pending.id)
+      ?.pendingPersonalDraft).toBeUndefined();
+    resolveStream();
+    await submit;
+  });
+
   it("sends a Project follow-up from the same client state without stale draft metadata", async () => {
     const pending = {
       ...chat(),
@@ -904,7 +950,8 @@ describe("message run actions", () => {
         blocks: [{ text: "Question for the assistant", type: "text" }]
       },
       expectedActiveLeafId: null,
-      skillIds: ["skill-actions"]
+      skillIds: ["skill-actions"],
+      workspace: { enabled: false }
     });
   });
 
@@ -1975,7 +2022,8 @@ describe("message run actions", () => {
       },
       searchPreferenceSource: "personal",
       timeZone: expect.any(String),
-      tools: "none"
+      tools: "none",
+      workspace: { enabled: false }
     });
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
@@ -2936,7 +2984,8 @@ describe("message run actions", () => {
         optionIds: []
       },
       searchPreferenceSource: "personal",
-      timeZone: expect.any(String)
+      timeZone: expect.any(String),
+      workspace: { enabled: false }
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
       activeLeafId: "assistant-persisted",

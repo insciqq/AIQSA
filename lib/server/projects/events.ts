@@ -6,6 +6,7 @@ import {
   loadProjectChatDefaultAuthority
 } from "./chatDefaults";
 import { projectChatSelect, projectChatWire } from "./chatProjection";
+import { workspaceAvailabilityService } from "../workspace/defaultServices";
 
 /**
  * Project events are intentionally content-free invalidations.  The database
@@ -266,16 +267,20 @@ export async function safeProjectEventDeliveries(
   }
   const chatIds = [...new Set(chatIdByIndex.values())];
   if (chatIds.length === 0) return bases;
-  const [chats, authority] = await Promise.all([
+  const [chats, authority, workspaceSnapshot] = await Promise.all([
     prisma.chat.findMany({
       select: projectChatSelect,
       where: { id: { in: chatIds }, permanentDeletionAt: null, projectId }
     }),
-    loadProjectChatDefaultAuthority(prisma, projectId)
+    loadProjectChatDefaultAuthority(prisma, projectId),
+    workspaceAvailabilityService.snapshot()
   ]);
   const projected = new Map(chats.filter((chat) => chat.projectId).map((chat) => [
     chat.id,
-    projectChatWire(chat, authority)
+    projectChatWire(chat, authority, {
+      availability: workspaceAvailabilityService,
+      snapshot: workspaceSnapshot
+    })
   ]));
   return bases.map((base, index) => {
     const chatId = chatIdByIndex.get(index);

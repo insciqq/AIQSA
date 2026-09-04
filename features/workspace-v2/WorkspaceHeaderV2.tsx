@@ -227,6 +227,7 @@ export function WorkspaceHeaderV2({
   onRenameStart,
   onShare,
   shareDisabled,
+  supplementalActions = [],
   temporaryMemory,
   title
 }: Readonly<{
@@ -277,6 +278,7 @@ export function WorkspaceHeaderV2({
   onRenameStart(): void;
   onShare(): void;
   shareDisabled: boolean;
+  supplementalActions?: readonly HeaderOverflowActionV2[];
   temporaryMemory: TemporaryChatHeaderMemoryV2 | null;
   title: string;
 }>) {
@@ -306,7 +308,8 @@ export function WorkspaceHeaderV2({
     onShare,
     renameDisabled,
     shareDisabled,
-    surface: "header"
+    surface: "header",
+    supplementalActions
   });
 
   return (

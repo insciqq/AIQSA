@@ -32,7 +32,13 @@ const nextConfig = {
     turbopackFileSystemCacheForDev: false
   },
   output: "standalone",
-  serverExternalPackages: ["@napi-rs/canvas", "pdf-lib", "unpdf"],
+  serverExternalPackages: [
+    "@napi-rs/canvas",
+    "microsandbox",
+    "microsandbox-mcp",
+    "pdf-lib",
+    "unpdf"
+  ],
   async headers() {
     return [
       {

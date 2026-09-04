@@ -43,6 +43,20 @@ export function createMemoryStorageAdapter(): StorageAdapter & {
       throwIfAborted(options?.signal);
       return object;
     },
+    async getObjectStream(storageKey, options) {
+      const object = await this.getObject(storageKey, options);
+      return {
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(object.body);
+            controller.close();
+          }
+        }),
+        byteSize: object.body.byteLength,
+        contentType: object.contentType,
+        storageKey
+      };
+    },
     async inspectObject(storageKey, options) {
       const limit = maxBytes(options?.maxBytes);
       throwIfAborted(options?.signal);

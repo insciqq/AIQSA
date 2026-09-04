@@ -6,6 +6,13 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import {
+  WORKSPACE_INBOX_INDEX_PATH,
+  WORKSPACE_PROJECT_DIRECTORY,
+  isWorkspaceOpaqueId,
+  workspaceRunOutputDirectory
+} from "../../domain/workspace";
+import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "../workspace/config";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import {
@@ -208,6 +215,7 @@ type ToolLoopCallRecord = {
     runtimeGenerationFingerprint: string;
     runtimeGenerationId: string | null;
   } | null;
+  workspaceRunBindingId: string | null;
   ordinal: number;
   providerCallId: string;
   result: Prisma.JsonValue | null;
@@ -248,7 +256,8 @@ function persistedToolLoopCall(call: ToolLoopCallRecord): PersistedToolLoopCall 
     startedAt: call.startedAt?.toISOString() ?? null,
     state: call.state,
     toolName: call.toolName,
-    usageAccountedAt: call.usageAccountedAt?.toISOString() ?? null
+    usageAccountedAt: call.usageAccountedAt?.toISOString() ?? null,
+    workspaceBindingId: call.workspaceRunBindingId
   };
 }
 
@@ -451,7 +460,8 @@ const normalizedRequestKeys = new Set([
   "searchPlan",
   "skills",
   "toolBudgets",
-  "toolMode"
+  "toolMode",
+  "workspace"
 ]);
 
 function onlyKnownKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
@@ -524,6 +534,44 @@ function validCapabilities(value: unknown): boolean {
       value[key].some((entry) => typeof entry !== "string"))) return false;
   }
   return true;
+}
+
+function validWorkspace(value: unknown, runId: string): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !onlyKnownKeys(value, new Set([
+    "enabled",
+    "imageRef",
+    "inboxIndexPath",
+    "internetEnabled",
+    "mcpVersion",
+    "maxToolCalls",
+    "maxToolRounds",
+    "messageManifestPath",
+    "outputDirectory",
+    "projectDirectory",
+    "runtimeVersion",
+    "sessionId",
+    "syncToolTimeoutSeconds",
+    "toolCatalogHash",
+    "turnTimeoutSeconds"
+  ])) || value.enabled !== true || typeof value.internetEnabled !== "boolean" ||
+    value.inboxIndexPath !== WORKSPACE_INBOX_INDEX_PATH ||
+    value.projectDirectory !== WORKSPACE_PROJECT_DIRECTORY ||
+    value.outputDirectory !== workspaceRunOutputDirectory(runId) ||
+    value.mcpVersion !== WORKSPACE_MCP_VERSION ||
+    value.runtimeVersion !== WORKSPACE_RUNTIME_VERSION ||
+    !nonBlank(value.imageRef, 512) || !nonBlank(value.sessionId, 128) ||
+    !isWorkspaceOpaqueId(value.sessionId) ||
+    !/^[a-f0-9]{64}$/u.test(String(value.toolCatalogHash))) return false;
+  const manifestMatch = /^\/workspace\/inbox\/messages\/([^/]+)\/manifest\.json$/u
+    .exec(String(value.messageManifestPath));
+  if (!manifestMatch?.[1] || !isWorkspaceOpaqueId(manifestMatch[1])) return false;
+  return [
+    "maxToolCalls",
+    "maxToolRounds",
+    "syncToolTimeoutSeconds",
+    "turnTimeoutSeconds"
+  ].every((key) => Number.isSafeInteger(value[key]) && Number(value[key]) > 0);
 }
 
 function validContext(value: unknown): boolean {
@@ -721,7 +769,7 @@ function validMcpSnapshot(value: unknown): boolean {
 
 function decodeProviderDispatchRecoveryRequest(
   value: unknown,
-  identity: Readonly<{ chatId: string; modelId: string; provider: string }>
+  identity: Readonly<{ chatId: string; modelId: string; provider: string; runId: string }>
 ): NormalizedRunRequest | null {
   if (!isRecord(value) || !onlyKnownKeys(value, normalizedRequestKeys) ||
     value.chatId !== identity.chatId || value.modelId !== identity.modelId ||
@@ -735,7 +783,7 @@ function decodeProviderDispatchRecoveryRequest(
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
     value.knowledgeEvidencePackingVersion !== undefined &&
       value.knowledgeEvidencePackingVersion !== 2 ||
-    !validCapabilities(value.modelCapabilities) ||
+    !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&
       !nonBlank(value.reasoningEffort, 32) ||
@@ -1300,7 +1348,10 @@ export function createPrismaRunToolLoopOperations(
           userId: input.userId
         }))) return null;
       }
-      const request = decodeProviderDispatchRecoveryRequest(run.normalizedRequest, run);
+      const request = decodeProviderDispatchRecoveryRequest(run.normalizedRequest, {
+        ...run,
+        runId: input.runId
+      });
       if (!request) {
         throw new Error("provider_dispatch_recovery_request_invalid_in_storage");
       }
@@ -1501,6 +1552,7 @@ export function createPrismaRunToolLoopOperations(
         providerCallId: string;
         runtimeGenerationFingerprint: string | null;
         toolName: string;
+        workspace: boolean;
       }> = [];
       for (const [index, call] of input.calls.entries()) {
         const argumentsValue = toolLoopArguments(call.arguments);
@@ -1509,7 +1561,9 @@ export function createPrismaRunToolLoopOperations(
           call.providerCallId.length > toolLoopPersistenceLimits.providerCallIdLength ||
           providerCallIds.has(call.providerCallId) || !call.toolName.trim() ||
           call.toolName.length > toolLoopPersistenceLimits.toolNameLength ||
-          (runtimeFingerprint !== null && !/^[a-f0-9]{64}$/u.test(runtimeFingerprint))) {
+          (runtimeFingerprint !== null && !/^[a-f0-9]{64}$/u.test(runtimeFingerprint)) ||
+          (call.workspace !== undefined && call.workspace !== true) ||
+          (call.workspace === true && runtimeFingerprint !== null)) {
           return { kind: "conflict" as const };
         }
         providerCallIds.add(call.providerCallId);
@@ -1518,7 +1572,8 @@ export function createPrismaRunToolLoopOperations(
           ordinal: call.ordinal,
           providerCallId: call.providerCallId,
           runtimeGenerationFingerprint: runtimeFingerprint,
-          toolName: call.toolName
+          toolName: call.toolName,
+          workspace: call.workspace === true
         });
       }
       return prismaClient.$transaction(async (tx) => {
@@ -1555,6 +1610,7 @@ export function createPrismaRunToolLoopOperations(
               call.providerCallId === expected.providerCallId && call.toolName === expected.toolName &&
               (call.mcpRunBinding?.runtimeGenerationFingerprint ?? null) ===
                 expected.runtimeGenerationFingerprint &&
+              (call.workspaceRunBindingId === input.runId) === expected.workspace &&
               canonicalJson(argumentsValue!) === canonicalJson(expected.arguments as Record<string, ToolLoopJsonValue>));
           });
           return sameContinuation && sameCalls
@@ -1581,6 +1637,24 @@ export function createPrismaRunToolLoopOperations(
         if (bindingsByFingerprint.size !== fingerprints.length) {
           return { kind: "conflict" as const };
         }
+        const workspaceCalls = preparedCalls.filter((call) => call.workspace);
+        if (workspaceCalls.length > 0) {
+          const workspaceBinding = await tx.workspaceRunBinding.findUnique({
+            select: { toolDefinitions: true },
+            where: { modelRunId: input.runId }
+          });
+          const definitions = workspaceBinding && Array.isArray(workspaceBinding.toolDefinitions)
+            ? workspaceBinding.toolDefinitions
+            : null;
+          const boundNames = new Set(definitions?.flatMap((definition) =>
+            isRecord(definition) && typeof definition.namespacedName === "string"
+              ? [definition.namespacedName]
+              : []
+          ) ?? []);
+          if (!definitions || workspaceCalls.some((call) => !boundNames.has(call.toolName))) {
+            return { kind: "conflict" as const };
+          }
+        }
 
         for (const call of preparedCalls) {
           await tx.modelRunToolCall.create({
@@ -1594,7 +1668,8 @@ export function createPrismaRunToolLoopOperations(
               providerCallId: call.providerCallId,
               roundIndex: input.roundIndex,
               state: "pending",
-              toolName: call.toolName
+              toolName: call.toolName,
+              workspaceRunBindingId: call.workspace ? input.runId : null
             }
           });
         }

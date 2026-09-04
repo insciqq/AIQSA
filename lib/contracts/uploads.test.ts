@@ -302,6 +302,9 @@ describe("upload wire decoders", () => {
       limit: 26_048_576
     });
     expect(decodeUploadErrorResponse({ error: "upload_busy" })).toEqual({ error: "upload_busy" });
+    expect(decodeUploadErrorResponse({ error: "workspace_runtime_unavailable" })).toEqual({
+      error: "workspace_runtime_unavailable"
+    });
     expect(
       decodeUploadErrorResponse({
         error: "pdf_page_limit_exceeded",

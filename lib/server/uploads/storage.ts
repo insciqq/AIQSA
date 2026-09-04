@@ -50,6 +50,13 @@ export type StoredObjectStreamInput = Readonly<{
   storageKey: string;
 }>;
 
+export type StoredObjectReadStream = Readonly<{
+  body: ReadableStream<Uint8Array>;
+  byteSize: number;
+  contentType: string;
+  storageKey: string;
+}>;
+
 export type StoredMultipartPart = Readonly<{
   etag: string;
   partNumber: number;
@@ -101,6 +108,10 @@ export function isStoredObjectTooLargeError(error: unknown): error is StoredObje
 export type StorageAdapter = {
   deleteObject(storageKey: string): Promise<void>;
   getObject(storageKey: string, options?: StoredObjectReadOptions): Promise<StoredObjectInput>;
+  getObjectStream?(
+    storageKey: string,
+    options?: StoredObjectReadOptions
+  ): Promise<StoredObjectReadStream>;
   inspectObject?(
     storageKey: string,
     options?: StoredObjectInspectionOptions
@@ -140,6 +151,95 @@ function assertWithinLimit(actualBytes: number, maxBytes: number | undefined): v
   }
 }
 
+function byteStream(value: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(value);
+      controller.close();
+    }
+  });
+}
+
+function boundedExactWebStream(
+  source: ReadableStream<Uint8Array>,
+  input: Readonly<{
+    byteSize: number;
+    maxBytes?: number;
+    signal?: AbortSignal;
+  }>
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  let observedBytes = 0;
+  let settled = false;
+  const abort = () => void reader.cancel(abortReason(input.signal!)).catch(() => undefined);
+  input.signal?.addEventListener("abort", abort, { once: true });
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    input.signal?.removeEventListener("abort", abort);
+  };
+  return new ReadableStream<Uint8Array>({
+    async cancel(reason) {
+      finish();
+      await reader.cancel(reason).catch(() => undefined);
+    },
+    async pull(controller) {
+      try {
+        throwIfAborted(input.signal);
+        const next = await reader.read();
+        throwIfAborted(input.signal);
+        if (next.done) {
+          finish();
+          if (observedBytes !== input.byteSize) {
+            controller.error(new Error("stored_object_size_mismatch"));
+          } else {
+            controller.close();
+          }
+          reader.releaseLock();
+          return;
+        }
+        observedBytes += next.value.byteLength;
+        if (
+          observedBytes > input.byteSize ||
+          (input.maxBytes !== undefined && observedBytes > input.maxBytes)
+        ) {
+          const maximum = Math.min(input.byteSize, input.maxBytes ?? input.byteSize);
+          const error = new StoredObjectTooLargeError({
+            maxBytes: maximum,
+            observedBytes
+          });
+          finish();
+          await reader.cancel(error).catch(() => undefined);
+          controller.error(error);
+          reader.releaseLock();
+          return;
+        }
+        controller.enqueue(next.value);
+      } catch (error) {
+        finish();
+        await reader.cancel(error).catch(() => undefined);
+        controller.error(input.signal?.aborted ? abortReason(input.signal) : error);
+        reader.releaseLock();
+      }
+    }
+  });
+}
+
+export async function getStoredObjectStream(
+  storage: StorageAdapter,
+  storageKey: string,
+  options: StoredObjectReadOptions = {}
+): Promise<StoredObjectReadStream> {
+  if (storage.getObjectStream) return storage.getObjectStream(storageKey, options);
+  const object = await storage.getObject(storageKey, options);
+  return {
+    body: byteStream(object.body),
+    byteSize: object.body.byteLength,
+    contentType: object.contentType,
+    storageKey: object.storageKey
+  };
+}
+
 export function createFileSystemStorageAdapter(root: string): StorageAdapter {
   return {
     async deleteObject(storageKey) {
@@ -168,6 +268,26 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
 
       return {
         body: await streamToBuffer(stream, { maxBytes, signal }),
+        contentType: "application/octet-stream",
+        storageKey
+      };
+    },
+    async getObjectStream(storageKey, options) {
+      const maxBytes = normalizedMaxBytes(options?.maxBytes);
+      const signal = options?.signal;
+      throwIfAborted(signal);
+      const path = join(root, storageKey);
+      const metadata = await stat(path);
+      throwIfAborted(signal);
+      assertWithinLimit(metadata.size, maxBytes);
+      const source = Readable.toWeb(createReadStream(path, { signal })) as ReadableStream<Uint8Array>;
+      return {
+        body: boundedExactWebStream(source, {
+          byteSize: metadata.size,
+          maxBytes,
+          signal
+        }),
+        byteSize: metadata.size,
         contentType: "application/octet-stream",
         storageKey
       };
@@ -530,6 +650,20 @@ function s3BodyToStream(body: unknown): CancellableStoredObjectBody {
   throw new Error("unsupported_stored_object_body");
 }
 
+function s3BodyToWebStream(body: unknown): ReadableStream<Uint8Array> {
+  if (body instanceof Uint8Array) return byteStream(body);
+  if (typeof body === "object" && body !== null && "transformToWebStream" in body) {
+    return (body as { transformToWebStream(): ReadableStream<Uint8Array> })
+      .transformToWebStream();
+  }
+  if (typeof body === "object" && body !== null && Symbol.asyncIterator in body) {
+    return Readable.toWeb(
+      Readable.from(body as AsyncIterable<Uint8Array>)
+    ) as ReadableStream<Uint8Array>;
+  }
+  throw new Error("unsupported_stored_object_body");
+}
+
 function publicS3Endpoint(value: string | undefined): string | null {
   if (!value) return null;
   let parsed: URL;
@@ -720,6 +854,25 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
 
       return {
         body: await s3BodyToBuffer(output.Body, { maxBytes, signal }),
+        contentType: output.ContentType ?? "application/octet-stream",
+        storageKey
+      };
+    },
+    async getObjectStream(storageKey, options) {
+      const maxBytes = normalizedMaxBytes(options?.maxBytes);
+      const signal = options?.signal;
+      const output = await readOutput(storageKey, { maxBytes, signal });
+      const byteSize = output.ContentLength;
+      if (!Number.isSafeInteger(byteSize) || Number(byteSize) < 0 || !output.Body) {
+        throw new Error("stored_object_metadata_invalid");
+      }
+      return {
+        body: boundedExactWebStream(s3BodyToWebStream(output.Body), {
+          byteSize: Number(byteSize),
+          maxBytes,
+          signal
+        }),
+        byteSize: Number(byteSize),
         contentType: output.ContentType ?? "application/octet-stream",
         storageKey
       };

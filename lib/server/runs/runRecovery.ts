@@ -142,6 +142,8 @@ import {
   type ToolExecutionResult
 } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import {
   finalizeRunCompletion,
   usageAttributionsWithEstimatedCost
@@ -314,6 +316,7 @@ export type RunRecoveryDeps = Readonly<{
   repository: RunRecoveryRepository;
   searchProviders?: Readonly<Record<string, ProviderSearchAdapter>>;
   storage?: Pick<StorageAdapter, "getObject">;
+  workspace?: WorkspaceCoordinator;
 }>;
 
 async function resolveAnswerRuntime(
@@ -489,7 +492,7 @@ function toolLoopJson(value: unknown, maxBytes: number, code: string): ToolLoopJ
 function toolExecutionErrorResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Knowledge" | "Search" | "Tool" = "Tool"
+  label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool"
 ): ToolExecutionResult {
   const overflowResult = label === "Knowledge"
     ? null
@@ -710,6 +713,11 @@ function isRecoveredSearchCall(context: RecoveryToolContext, name: string): bool
 function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): boolean {
   return context.run.normalizedRequest.knowledgePlan.mode !== "none" &&
     context.deps.knowledgeExecutor?.accepts(name) === true;
+}
+
+function isRecoveredWorkspaceCall(context: RecoveryToolContext, name: string): boolean {
+  const workspace = context.run.normalizedRequest.workspace;
+  return Boolean(workspace && context.deps.workspace?.accepts({ name, workspace }));
 }
 
 function isRecoveredMcpDiscoveryCall(
@@ -1351,6 +1359,15 @@ async function executePersistedToolCall(
               toolName: call.name,
               version: 1
             }
+          : isRecoveredWorkspaceCall(context, call.name)
+          ? {
+              internetEnabled: context.run.normalizedRequest.workspace!.internetEnabled,
+              kind: "workspace",
+              sessionId: context.run.normalizedRequest.workspace!.sessionId,
+              toolCatalogHash: context.run.normalizedRequest.workspace!.toolCatalogHash,
+              toolName: call.name,
+              version: 1
+            }
           : {
               fingerprint: route?.fingerprint ?? null,
               kind: "mcp",
@@ -1367,6 +1384,8 @@ async function executePersistedToolCall(
             })).authorized
           : isRecoveredSearchCall(context, call.name)
           ? await currentRecoverySearchDispatchAllowed(context)
+          : isRecoveredWorkspaceCall(context, call.name)
+            ? claim.call.workspaceBindingId === context.run.id
           : generationId
             ? await currentRecoveryMcpDispatchAllowed(context, call.name, generationId)
             : false;
@@ -1444,6 +1463,21 @@ async function executePersistedToolCall(
         modelRunToolCallId: claim.call.id,
         result
       });
+    } else if (
+      context.run.normalizedRequest.workspace &&
+      isRecoveredWorkspaceCall(context, call.name)
+    ) {
+      if (claim.call.workspaceBindingId !== context.run.id) {
+        throw new Error("workspace_run_binding_unavailable");
+      }
+      result = await context.deps.workspace!.execute({
+        call,
+        modelRunToolCallId: claim.call.id,
+        runId: context.run.id,
+        signal,
+        userId: context.run.userId,
+        workspace: context.run.normalizedRequest.workspace
+      });
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -1486,7 +1520,9 @@ async function executePersistedToolCall(
         error,
         isRecoveredKnowledgeCall(context, call.name)
           ? "Knowledge"
-          : context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
+          : context.searchExecutor && isRecoveredSearchCall(context, call.name)
+            ? "Search"
+            : isRecoveredWorkspaceCall(context, call.name) ? "Workspace" : "Tool"
       );
     }
   }
@@ -1685,7 +1721,8 @@ async function recoverCheckpointedToolLoop(
       {
         capabilities: run.normalizedRequest.modelCapabilities,
         limits: attachmentLimits,
-        signal
+        signal,
+        workspaceEnabled: run.normalizedRequest.workspace !== undefined
       }
     );
     if (attachments.length !== attachmentIds.length) {
@@ -1770,11 +1807,26 @@ async function recoverCheckpointedToolLoop(
         "The saved MCP discovery policy is no longer available."
       );
     }
+    const workspace = run.normalizedRequest.workspace;
+    if (workspace && !deps.workspace) {
+      throw new ToolLoopRecoveryError(
+        "workspace_runtime_unavailable",
+        "The saved Workspace runtime is unavailable."
+      );
+    }
+    const workspaceTools = clientToolsEnabled && workspace && deps.workspace
+      ? await deps.workspace.tools({
+          runId: run.id,
+          userId: run.userId,
+          workspace
+        })
+      : [];
     const tools: RunTool[] = [
       ...(recoveredKnowledgeEnabled ? deps.knowledgeExecutor?.tools ?? [] : []),
       ...(searchExecutor?.tools ?? []),
       ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
-      ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
+      ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : []),
+      ...workspaceTools
     ];
     if (tools.length === 0) {
       throw new ToolLoopRecoveryError(
@@ -1814,6 +1866,21 @@ async function recoverCheckpointedToolLoop(
       usageAccountedToolCallIds: new Set(),
       usageAttributions
     };
+    async function finalizeRecoveredWorkspace(): Promise<void> {
+      if (!workspace) return;
+      if (!deps.workspace) {
+        throw new ToolLoopRecoveryError(
+          "workspace_runtime_unavailable",
+          "The saved Workspace runtime is unavailable."
+        );
+      }
+      await deps.workspace.finalize({
+        runId: run.id,
+        signal,
+        userId: run.userId,
+        workspace
+      });
+    }
     tokenBuffer = createRunTokenPersistenceBuffer({
       allowErroredAssistant: true,
       assistantMessageId: run.assistantMessageId,
@@ -2124,6 +2191,7 @@ async function recoverCheckpointedToolLoop(
     async function finalizeRecoveredKnowledgeToolLoop(): Promise<void> {
       await tokenBuffer!.flush();
       await persistCumulativeUsage();
+      await finalizeRecoveredWorkspace();
       const dispatchDraft = recoveredKnowledgeDispatchDraft();
       const latest = await loadRecoveryRunControl(deps, run.id, run.userId);
       if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) {
@@ -2194,7 +2262,8 @@ async function recoverCheckpointedToolLoop(
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
           if (!route && !isRecoveredKnowledgeCall(context, call.name) &&
             searchExecutor?.accepts(call.name) !== true &&
-            !isRecoveredMcpDiscoveryCall(context, call.name)) {
+            !isRecoveredMcpDiscoveryCall(context, call.name) &&
+            !isRecoveredWorkspaceCall(context, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
@@ -2209,7 +2278,10 @@ async function recoverCheckpointedToolLoop(
             ordinal,
             providerCallId: call.id,
             ...(route ? { runtimeGenerationFingerprint: route.fingerprint } : {}),
-            toolName: call.name
+            toolName: call.name,
+            ...(isRecoveredWorkspaceCall(context, call.name)
+              ? { workspace: true as const }
+              : {})
           };
         }),
         providerContinuation: toolLoopJson(
@@ -2346,6 +2418,7 @@ async function recoverCheckpointedToolLoop(
           return;
         }
         const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
+        await finalizeRecoveredWorkspace();
         const completion = await finalizeRunCompletion({
           outputEvents: runOutputArtifactEvents(refreshed.events),
           repository: deps.repository,
@@ -2591,6 +2664,7 @@ async function recoverCheckpointedToolLoop(
     }
     const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
     const usage = sumTokenUsage(groupedAttributions.map((attribution) => attribution.usage));
+    await finalizeRecoveredWorkspace();
     const completion = await finalizeRunCompletion({
       repository: deps.repository,
       result: {
@@ -2650,6 +2724,8 @@ async function recoverCheckpointedToolLoop(
           )
         : isAttachmentMaterializationError(recoveryError)
           ? new ToolLoopRecoveryError(recoveryError.code, recoveryError.message)
+          : recoveryError instanceof WorkspaceRuntimeError
+            ? new ToolLoopRecoveryError(recoveryError.code, recoveryError.message)
           : new ToolLoopRecoveryError(
               "tool_loop_recovery_failed",
               recoveryError instanceof Error ? recoveryError.message : "Tool-loop recovery failed."

@@ -33,7 +33,7 @@ const capabilities = {
   reasoning: true,
   reasoningEfforts: ["low", "medium", "high", "xhigh"],
   streaming: true,
-  toolCalling: false,
+  toolCalling: true,
   vision: false
 };
 const modelConfiguration = {
@@ -289,7 +289,9 @@ test.describe("system model policy", () => {
     await page.getByRole("button", { name: "Save system models" }).click();
     await expect(page.getByText("System models updated.", { exact: true })).toBeVisible();
     await expect(page.getByText("Status: Available.", { exact: true })).toBeVisible();
-    await expect(page.getByText("MCP Auto: Verification required.", { exact: true }))
+    await expect(page.getByText("Structured output: Verification required.", { exact: true }))
+      .toBeVisible();
+    await expect(page.getByText("Memory control: Verification required.", { exact: true }))
       .toBeVisible();
 
     await page.route("**/api/admin/providers/system-model-policy", async (route) => {
@@ -301,6 +303,12 @@ test.describe("system model policy", () => {
       await prisma.providerModelCredentialCheck.update({
         data: {
           evidence: {
+            forcedToolCall: {
+              adapterKind: "openai_responses_compatible",
+              probeVersion: 1,
+              upstreamModelId: modelConfiguration.upstreamModelId,
+              verified: true
+            },
             method: "system_policy_fixture",
             structuredOutput: {
               adapterKind: "openai_responses_compatible",
@@ -320,11 +328,10 @@ test.describe("system model policy", () => {
       });
     });
     await page.getByRole("button", { name: "Run verification" }).click();
-    await expect(page.getByText(
-      "Structured output verified. MCP Auto is ready.",
-      { exact: true }
-    )).toBeVisible();
-    await expect(page.getByText("MCP Auto: Ready.", { exact: true })).toBeVisible();
+    await expect(page.getByText("System Model strict utilities verified.", { exact: true }))
+      .toBeVisible();
+    await expect(page.getByText("Structured output: Ready.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Memory control: Ready.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Run verification" })).toHaveCount(0);
 
     const response = await page.request.get("/api/admin/providers/system-model-policy");

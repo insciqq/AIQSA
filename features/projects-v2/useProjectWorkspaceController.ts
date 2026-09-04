@@ -592,7 +592,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       };
       const summary: WorkspaceChatSummary = {
         ...projectChatSummaryFromApi(chat),
-        pendingProjectDraft: { folderId, projectId }
+        pendingProjectDraft: { folderId, projectId },
+        workspace: undefined
       };
       if (
         sourceSessionKey &&

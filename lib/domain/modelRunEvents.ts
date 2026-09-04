@@ -25,6 +25,13 @@ export type ModelRunChatUpdateData = {
       cacheWriteInputTokens: number;
       totalTokens: number;
     } | null;
+    workspace?: {
+      available: boolean;
+      enabled: boolean;
+      internetEnabled: boolean | null;
+      sessionState: "not_started" | "creating" | "ready" | "running" | "stopped" | "failed" | null;
+      unavailableReason?: "installation_disabled" | "runtime_unavailable" | "model_tools_required";
+    };
   };
   messages: {
     artifactSummary?: unknown;

@@ -45,6 +45,8 @@ export type PersistedToolLoopCall = Readonly<{
     runtimeGenerationFingerprint: string;
     runtimeGenerationId: string | null;
   }> | null;
+  /** Present on repository records; omitted only by historical/in-memory fixtures. */
+  workspaceBindingId?: string | null;
   ordinal: number;
   providerCallId: string;
   result: ToolLoopJsonValue | null;
@@ -119,6 +121,7 @@ export type PersistToolLoopCallBatchInput = Readonly<{
     providerCallId: string;
     runtimeGenerationFingerprint?: string | null;
     toolName: string;
+    workspace?: true;
   }>[];
   providerContinuation: ToolLoopJsonValue | null;
   providerCursor?: number | string | null;

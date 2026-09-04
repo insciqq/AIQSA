@@ -20,6 +20,7 @@ import {
   type UpdateProjectRequestWire
 } from "@/lib/contracts/projects";
 import type { ProjectRole } from "@/lib/domain/projects";
+import { UNAVAILABLE_CHAT_WORKSPACE_STATE } from "@/lib/contracts/workspace";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,7 +83,8 @@ export function projectChatSummaryFromApi(chat: ProjectChatSummaryWire): Workspa
     pinned: chat.pinned,
     projectId: chat.projectId,
     title: chat.title,
-    updatedAt: chat.updatedAt
+    updatedAt: chat.updatedAt,
+    workspace: chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
   };
 }
 

@@ -623,12 +623,9 @@ describe("Prisma explicit Memory vector enrichment", () => {
         relationsDetachedAt: expect.any(Date),
         state: "SUCCEEDED"
       });
-      const entry = await prisma.memorySearchEntry.findFirstOrThrow({
+      await expect(prisma.memorySearchEntry.findFirst({
         where: { factVersionId: saved.versionId }
-      });
-
-      await expect(createPrismaMemoryItemEmbeddingRepository(prisma)
-        .loadTarget(fixture.userId, entry.id)).resolves.toBeNull();
+      })).resolves.toBeNull();
     } finally {
       await fixture.cleanup();
     }

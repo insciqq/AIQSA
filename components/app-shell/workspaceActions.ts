@@ -49,6 +49,7 @@ import {
   composerSessionKey,
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
+  selectComposerSession,
   type ComposerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
@@ -142,7 +143,8 @@ export function useWorkspaceActions({
       pinned: detail.pinned,
       projectId: detail.projectId ?? null,
       title: detail.title,
-      updatedAt: detail.updatedAt
+      updatedAt: detail.updatedAt,
+      workspace: detail.workspace
     };
   }
 
@@ -559,7 +561,14 @@ export function useWorkspaceActions({
     useWorkspaceStore.getState().setActiveChatId(chat.id);
     useThreadStore.getState().touchThread(chat.id);
     pruneThreadCache();
-    useComposerSessionStore.getState().activateSession(composerSessionKey(chat.id));
+    const sessionStore = useComposerSessionStore.getState();
+    const sessionKey = composerSessionKey(chat.id);
+    sessionStore.activateSession(sessionKey);
+    if (chat.workspace) {
+      useComposerSessionStore.getState().updateSession(sessionKey, {
+        workspaceEnabled: chat.workspace.enabled
+      });
+    }
     if (!options.preserveControls) {
       applyChatDefaults(chat, options.catalogOverride);
     }
@@ -935,7 +944,15 @@ export function useWorkspaceActions({
       const response = await shellFetch("/api/chats", {
         body: JSON.stringify({
           folderId,
-          ...(initialMemoryMode === "EXCLUDED" ? { memoryMode: "EXCLUDED" } : {})
+          ...(initialMemoryMode === "EXCLUDED" ? { memoryMode: "EXCLUDED" } : {}),
+          ...(sourceSessionKey
+            ? {
+                workspaceEnabled: selectComposerSession(
+                  useComposerSessionStore.getState(),
+                  sourceSessionKey
+                ).workspaceEnabled
+              }
+            : {})
         }),
         headers: {
           "content-type": "application/json"
@@ -980,6 +997,61 @@ export function useWorkspaceActions({
         kind: "error",
         text: errorMessage(error)
       });
+      return null;
+    } finally {
+      useWorkspaceStore.getState().setCreatingChat(false);
+    }
+  }
+
+  async function createPersonalChatForSend(
+    folderId: string | null = null,
+    sourceSessionKey?: ComposerSessionKey
+  ): Promise<WorkspaceChatSummary | null> {
+    if (!sourceSessionKey) return null;
+    useWorkspaceStore.getState().setCreatingChat(true);
+    try {
+      const session = selectComposerSession(
+        useComposerSessionStore.getState(),
+        sourceSessionKey
+      );
+      const controls = useComposerControlStore.getState();
+      const memoryMode = composerSessionModeFromKey(sourceSessionKey);
+      const now = new Date().toISOString();
+      const summary: WorkspaceChatSummary = {
+        activeLeafMessageId: null,
+        createdAt: now,
+        defaultKnowledgePlan: null,
+        defaultModelId: controls.selectedModelId,
+        defaultProvider: controls.selectedProvider,
+        folderId,
+        id: crypto.randomUUID(),
+        memoryMode,
+        messageCount: 0,
+        pendingPersonalDraft: { folderId, memoryMode },
+        ...(memoryMode === "TEMPORARY"
+          ? { pendingInitialMemoryMode: "TEMPORARY" as const }
+          : {}),
+        pinned: false,
+        projectId: null,
+        title: "New Chat",
+        updatedAt: now
+      };
+      if (!useComposerSessionStore.getState().transferSession(
+        sourceSessionKey,
+        composerSessionKey(summary.id)
+      )) {
+        return null;
+      }
+      // The transferred session owns the blank Workspace intent; keeping the
+      // wire-only workspace projection absent avoids inventing availability.
+      useComposerSessionStore.getState().updateSession(composerSessionKey(summary.id), {
+        workspaceEnabled: session.workspaceEnabled
+      });
+      mergeChatIntoList(summary);
+      await activateChat(summary, { preserveControls: true, resumeRuns: false });
+      return summary;
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
       return null;
     } finally {
       useWorkspaceStore.getState().setCreatingChat(false);
@@ -1212,6 +1284,7 @@ export function useWorkspaceActions({
     activatePersonalChatById,
     applyChatUpdate,
     createChat,
+    createPersonalChatForSend,
     deleteChat,
     exportChat,
     fetchChatDetail,

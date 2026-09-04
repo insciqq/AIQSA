@@ -6,6 +6,8 @@ import type {
   ThreadAssistantIdentity,
   ThreadToolActivity
 } from "../../contracts/chats";
+import type { ChatWorkspaceState } from "../../contracts/workspace";
+import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunStatus } from "../../contracts/runs";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
@@ -174,6 +176,7 @@ export type RunChatUpdateRecord = {
     title: string;
     updatedAt: Date | string;
     usageStats?: ChatUsageStats | null;
+    workspace?: ChatWorkspaceState;
   };
   messages: {
     artifactSummary?: ThreadArtifactSummary | null;
@@ -212,6 +215,16 @@ export class AttachmentLinkConflictError extends Error {
   constructor() {
     super("attachment_not_available");
     this.name = "AttachmentLinkConflictError";
+  }
+}
+
+export class WorkspaceRunConflictError extends Error {
+  readonly code: "workspace_busy" | "workspace_disabled" | "workspace_runtime_incompatible";
+
+  constructor(code: WorkspaceRunConflictError["code"]) {
+    super(code);
+    this.code = code;
+    this.name = "WorkspaceRunConflictError";
   }
 }
 
@@ -313,11 +326,20 @@ export type CreateRunInput = {
   provider: string;
   providerRequestPreview: Record<string, unknown>;
   project?: ProjectRunAdmission;
+  /** First personal send only: the chat row is committed with messages/run in
+   * the same transaction, so rejected admission cannot leave an empty chat. */
+  personalChat?: Readonly<{
+    defaultProviderModelId: string | null;
+    folderId: string | null;
+    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+  }>;
   /** First Project send only: the chat row is committed with messages/run in
    * the same transaction, so a rejected admission cannot leave an empty chat. */
   projectChat?: Readonly<{ folderId: string | null }>;
   signal?: AbortSignal;
   userId: string;
+  workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
+  workspaceEnabled?: boolean;
 };
 
 export type CreateRegenerationRunInput = {
@@ -339,6 +361,8 @@ export type CreateRegenerationRunInput = {
   signal?: AbortSignal;
   userId: string;
   userMessageId: string;
+  workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
+  workspaceEnabled?: boolean;
 };
 
 export type PreparingRunAdmissionInput =
@@ -402,6 +426,7 @@ export type RunOwnedChatRecord = Readonly<{
   defaultKnowledgePlan?: unknown;
   defaultModelId: string;
   defaultProvider: string;
+  folderId?: string | null;
   folderDefaultKnowledgePlan?: unknown;
   id: string;
   memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
@@ -410,6 +435,7 @@ export type RunOwnedChatRecord = Readonly<{
   projectMemory: string | null;
   project?: ProjectRunAdmission;
   title: string;
+  workspaceEnabled?: boolean;
 }>;
 
 export type RunRepository = {
@@ -527,6 +553,12 @@ export type RunRepository = {
     projectId: string;
     userId: string;
   }>): Promise<RunOwnedChatRecord | null>;
+  loadPersonalFirstSend?(input: Readonly<{
+    chatId: string;
+    folderId: string | null;
+    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+    userId: string;
+  }>): Promise<RunOwnedChatRecord | null>;
   findRecentActiveRunForChat(input: { chatId: string; since: Date; userId: string }): Promise<RunControlRecord | null>;
   findStaleActiveRunsForUser(input: {
     chatId?: string;
@@ -557,6 +589,7 @@ export type RunRepository = {
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
       project?: ProjectRunAdmission;
+      workspaceEnabled?: boolean;
     };
     userMessage: {
       content: unknown;

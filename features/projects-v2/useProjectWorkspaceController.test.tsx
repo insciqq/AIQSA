@@ -118,7 +118,13 @@ function projectChat(input: {
     pinned: false,
     projectId: "project-1",
     title: input.title,
-    updatedAt: input.updatedAt ?? "2026-08-17T00:01:00.000Z"
+    updatedAt: input.updatedAt ?? "2026-08-17T00:01:00.000Z",
+    workspace: {
+      available: true,
+      enabled: false,
+      internetEnabled: true,
+      sessionState: null
+    }
   };
 }
 
@@ -551,6 +557,7 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
       pendingProjectDraft: { folderId: null, projectId: "project-1" },
       projectId: "project-1"
     });
+    expect(created!.workspace).toBeUndefined();
     const targetKey = composerSessionKey(created!.id);
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(targetKey);
     expect(useComposerSessionStore.getState().sessionsByKey[sourceKey]).toBeUndefined();

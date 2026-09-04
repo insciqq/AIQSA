@@ -24,11 +24,13 @@ const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 function authenticatedUploadRequest(
   file: File,
   signal?: AbortSignal,
-  projectId?: string
+  projectId?: string,
+  scope?: "workspace"
 ): Request {
   const form = new FormData();
   form.set("file", file);
   if (projectId) form.set("projectId", projectId);
+  if (scope) form.set("scope", scope);
   return new Request("http://app.local/api/uploads", {
     body: form,
     headers: { cookie: auth.cookie },
@@ -206,6 +208,61 @@ describe("upload handler", () => {
     expect(body.attachment).not.toHaveProperty("checksum");
     expect(body.attachment).not.toHaveProperty("storageKey");
     expect(kickProcessing).toHaveBeenCalledOnce();
+  });
+
+  it("admits opaque files only while the Workspace runtime is available", async () => {
+    const unavailableStorage = createMemoryStorageAdapter();
+    const unavailableCreate = vi.fn(async (input) => created(input));
+    const unavailable = createUploadHandler({
+      createAttachment: unavailableCreate,
+      resolveAuth: auth.resolveAuth,
+      storage: unavailableStorage,
+      workspaceScopeAvailable: async () => false
+    });
+    const opaqueFile = () => new File(
+      [Buffer.from([0, 1, 2, 3])],
+      "payload.aiqsa-opaque",
+      { type: "application/x-aiqsa-opaque" }
+    );
+
+    const rejected = await unavailable(authenticatedUploadRequest(
+      opaqueFile(),
+      undefined,
+      undefined,
+      "workspace"
+    ));
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toEqual({ error: "workspace_runtime_unavailable" });
+    expect(unavailableCreate).not.toHaveBeenCalled();
+    expect(unavailableStorage.objects.size).toBe(0);
+
+    const storage = createMemoryStorageAdapter();
+    const kickProcessing = vi.fn();
+    let persisted: Parameters<Parameters<typeof createUploadHandler>[0]["createAttachment"]>[0] | null = null;
+    const available = createUploadHandler({
+      async createAttachment(input) {
+        persisted = input;
+        return created(input);
+      },
+      kickProcessing,
+      resolveAuth: auth.resolveAuth,
+      storage,
+      workspaceScopeAvailable: async () => true
+    });
+    const accepted = await available(authenticatedUploadRequest(
+      opaqueFile(),
+      undefined,
+      undefined,
+      "workspace"
+    ));
+    expect(accepted.status).toBe(200);
+    expect(persisted).toMatchObject({
+      kind: "file",
+      mimeType: "application/x-aiqsa-opaque",
+      status: "ready"
+    });
+    expect(kickProcessing).not.toHaveBeenCalled();
+    expect(storage.objects.size).toBe(1);
   });
 
   it("returns the committed processing row when the process-local wake-up fails", async () => {

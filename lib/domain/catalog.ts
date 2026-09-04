@@ -364,7 +364,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       pdf: true,
       reasoning: true,
       streaming: true,
-      toolCalling: false,
+      toolCalling: true,
       vision: true
     },
     defaultParams: defaultFakeProviderParams(),

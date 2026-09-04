@@ -221,7 +221,7 @@ describe("AttachmentTrayV2", () => {
 });
 
 describe("SentAttachmentsV2", () => {
-  it("renders a quiet owner-only label line without private identifiers", () => {
+  it("renders quiet authorized download links without storage locations", () => {
     const { container } = render(
       <SentAttachmentsV2
         blocks={[
@@ -234,8 +234,15 @@ describe("SentAttachmentsV2", () => {
     const list = screen.getByRole("list", { name: "Message attachments" });
     expect(list).toHaveTextContent("sample.txt");
     expect(list).toHaveTextContent("Диаграмма продаж");
-    expect(container.innerHTML).not.toContain("private-attachment-id");
-    expect(container.innerHTML).not.toContain("private-image-id");
+    expect(screen.getByRole("link", { name: "sample.txt" })).toHaveAttribute(
+      "href",
+      "/api/attachments/private-attachment-id/content"
+    );
+    expect(screen.getByRole("link", { name: "Диаграмма продаж" })).toHaveAttribute(
+      "href",
+      "/api/attachments/private-image-id/content"
+    );
+    expect(container.innerHTML).not.toMatch(/minio|storageKey|s3:\/\//iu);
   });
 
   it("renders nothing for a message without attachments", () => {

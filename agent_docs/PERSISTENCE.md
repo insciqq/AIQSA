@@ -43,6 +43,8 @@ The protected non-archived `Full access` group has explicit membership and seman
 
 Persist run or tool data only for execution, recovery, duplicate-side-effect prevention, security, deletion, citations/generated output, retention, or aggregate accounting. Presentation-only event histories, previews, and inspector payloads are not storage justification. Remove a projection first, prove recovery consumers, stop writes, then remove schema with a forward migration.
 
+Workspace capability is chat state, but every accepted Workspace run binds one exact session, policy revision, image/network mode, runtime/MCP versions, tool-catalog hash and definitions, sandbox paths, and output scope. The binding, tool calls, and per-path output rows are recovery and side-effect authority; a generated Attachment becomes visible only after streamed object settlement and an idempotent unique binding/path commit. Original and generated objects remain independently downloadable after a sandbox stops or disappears. A reset removes only runtime state and advances the session fence; it does not delete messages, originals, exports, or generated attachments.
+
 Project synchronization uses a bounded durable outbox inserted with the authoritative mutation. Its monotonic opaque cursor, Project identity, event category, affected identity/version, and timestamp support ordering and reconnect; rows contain no secret, attachment content, private resource label, retrieval text, tool arguments/results, or browser projection. Current safe state is serialized from authoritative tables at delivery. PostgreSQL notification is only a post-commit wake-up signal, never the durable source, and retention expiry produces an explicit canonical resync.
 
 ## Migrations And Bootstrap
@@ -84,6 +86,8 @@ Knowledge Trash is an immediate future-admission fence while membership and publ
 Temporary chat expiry, permanent retained-chat deletion, account Memory cleanup, reusable-Memory deletion, and scope-target deletion are typed aggregate obligations. Admission first fences future recall/work/sharing, then retry-safe handlers settle active work and remove only the authorized aggregate. Deletion obligations may become visibly administrator-blocked but are never abandoned. Provider, external tool, backup, and already-sent Search/embedding retention are not falsely promised as erased.
 
 Project deletion is an explicit Owner-authorized aggregate transition that removes Project-owned content and bindings under database ownership rules; removing Project Base bindings does not delete a member's personal Source or Base. Account deletion stages and drains every owned Knowledge Source and Base obligation before deleting the user. Deleting an individual account does not substitute for deleting a Project, and Project archival does not rewrite accepted evidence.
+
+Workspace idle stop preserves its guest disk, while expiry, reset, and owning-chat deletion first create a durable exact-session cleanup obligation and only then acknowledge destructive runtime work. Missing disks are recreated from current canonical originals with a visible warning instead of pretending persistence survived. Guest disks and runtime identities are excluded from backup; restore clears them and resets sessions to pending before any new run can restage originals. Cleanup claims are leased, idempotent, content-free, and never authorize deleting a differently bound sandbox.
 
 ## Backup And Restore
 

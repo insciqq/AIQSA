@@ -48,6 +48,7 @@ import {
 import {
   anthropicMessagesToolBridge,
   deepSeekResponsesToolBridge,
+  fakeProviderToolBridge,
   geminiInteractionsToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
@@ -258,7 +259,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     if (input.secret !== null) {
       throw new Error("provider_credential_unexpected");
     }
-    return { adapter: createFakeProviderAdapter() };
+    return { adapter: createFakeProviderAdapter(), toolBridge: fakeProviderToolBridge };
   }
   if (snapshot.model.modelClass !== "answer") {
     throw new Error("provider_model_class_invalid");

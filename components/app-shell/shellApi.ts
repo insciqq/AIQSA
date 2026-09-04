@@ -220,7 +220,8 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     pinned: chat.pinned,
     projectId: chat.projectId ?? null,
     title: chat.title,
-    updatedAt: chat.updatedAt
+    updatedAt: chat.updatedAt,
+    workspace: chat.workspace
   };
 }
 

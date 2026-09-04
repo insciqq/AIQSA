@@ -30,7 +30,14 @@ const summary = {
   pinned: false,
   sourceRevision: 4,
   title: "Archived source",
-  updatedAt
+  updatedAt,
+  workspace: {
+    available: false,
+    enabled: false,
+    internetEnabled: null,
+    sessionState: null,
+    unavailableReason: "installation_disabled" as const
+  }
 };
 
 function readyList() {
@@ -71,7 +78,8 @@ function readyDetail() {
       sourceRevision: 4,
       title: "Archived source",
       updatedAt,
-      usageStats: null
+      usageStats: null,
+      workspace: summary.workspace
     },
     detailLoadState: "ready"
   });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
@@ -103,6 +104,10 @@ import {
   DEFAULT_TOOL_RUN_BUDGETS,
   type ToolRunBudgets
 } from "./toolBudgets";
+import type {
+  WorkspaceAdmissionService,
+  WorkspaceRunAdmissionPlan
+} from "../workspace/admission";
 
 const visibleAnswerContract =
   "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors, and do not expose provider, retrieval, tool, request, usage, or event internals. Include citations naturally only when they help the answer.";
@@ -179,6 +184,7 @@ export type RunPreparationDeps = Readonly<{
   }>;
   skills?: SkillRunResolver;
   storage?: Pick<StorageAdapter, "getObject">;
+  workspace?: WorkspaceAdmissionService;
 }>;
 
 export type SendRunPreparationSource = Readonly<{
@@ -193,8 +199,10 @@ export type SendRunPreparationSource = Readonly<{
     messageCount?: number;
     projectMemory: string | null;
     project?: ProjectRunAdmission;
+    workspaceEnabled?: boolean;
   }>;
   draftProjectChat?: boolean;
+  draftPersonalChat?: boolean;
   kind: "send";
 }>;
 
@@ -214,6 +222,7 @@ export type RegenerateRunPreparationSource = Readonly<{
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
       project?: ProjectRunAdmission;
+      workspaceEnabled?: boolean;
     }>;
     userMessage: Readonly<{
       content: unknown;
@@ -258,6 +267,7 @@ export type MaterializedPreparedRunData = {
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   skillBindings?: AcceptedSkillRun[];
+  workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan: ProviderAdmissionPlan;
   providerRequest: ProviderRunRequest;
@@ -491,6 +501,13 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     ...(prepared.skillBindings
       ? { skillBindings: mutablePreparedData<AcceptedSkillRun[]>(prepared.skillBindings) }
       : {}),
+    ...(prepared.workspaceAdmissionPlan
+      ? {
+          workspaceAdmissionPlan: mutablePreparedData<WorkspaceRunAdmissionPlan>(
+            prepared.workspaceAdmissionPlan
+          )
+        }
+      : {}),
     normalizedRequest: mutablePreparedData<NormalizedRunRequest>(prepared.normalizedRequest),
     providerAdmissionPlan: mutablePreparedData<ProviderAdmissionPlan>(
       prepared.providerAdmissionPlan
@@ -518,6 +535,55 @@ function normalizeContent(body: Readonly<Record<string, unknown>>): NormalizedRu
   }
 
   return { blocks: [] };
+}
+
+function resolveWorkspaceEnabled(
+  body: Readonly<Record<string, unknown>> | null,
+  persisted: boolean | undefined
+): boolean | null {
+  if (!body || !Object.hasOwn(body, "workspace")) return persisted === true;
+  const value = body.workspace;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !("enabled" in value) ||
+    typeof (value as { enabled?: unknown }).enabled !== "boolean"
+  ) {
+    return null;
+  }
+  return (value as { enabled: boolean }).enabled;
+}
+
+function promptWithWorkspaceContract(
+  prompt: NormalizedRunRequest["prompt"],
+  workspace: WorkspaceRunAdmissionPlan,
+  attachments: readonly ProviderAttachment[]
+): NormalizedRunRequest["prompt"] {
+  const files = attachments.slice(0, 64).map((attachment) =>
+    `- ${attachment.fileName.slice(0, 256)} (${attachment.mimeType.slice(0, 128)}, ${attachment.byteSize} bytes)`
+  );
+  const contract = [
+    "Workspace is active.",
+    `Working directory: ${workspace.normalized.projectDirectory}`,
+    "Original attachments: /workspace/inbox",
+    `Attachment index: ${workspace.normalized.inboxIndexPath}`,
+    `Current message manifest: ${workspace.normalized.messageManifestPath}`,
+    "Do not modify originals in inbox; copy files that need changes into project.",
+    `Internet inside the workspace: ${workspace.normalized.internetEnabled ? "enabled (public destinations only)" : "disabled"}.`,
+    "You may install required packages through available package managers.",
+    `Put user-downloadable files only in ${workspace.normalized.outputDirectory}.`,
+    "After changes, run appropriate tests or checks.",
+    "Do not claim that a file was created or a check passed until a tool verified it.",
+    ...(files.length > 0 ? ["Current message attachments:", ...files] : [])
+  ].join("\n");
+  return {
+    ...prompt,
+    system: [prompt.system, contract]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join("\n\n") || null
+  };
 }
 
 function contentFromStored(value: unknown): NormalizedRunRequest["content"] {
@@ -776,16 +842,21 @@ function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
 
 function validateAttachmentCapabilities(
   attachments: ProviderAttachment[],
-  capabilities: ProviderModelCapabilities
+  capabilities: ProviderModelCapabilities,
+  workspaceEnabled = false
 ): { code: string; status: 400 } | null {
   const hasPdf = attachments.some((attachment) => attachment.kind === "pdf");
   const hasImage = attachments.some((attachment) => attachment.kind === "image");
 
-  if (hasPdf && !capabilities.pdf && !capabilities.nativePdfInput) {
+  if (!workspaceEnabled && attachments.some((attachment) => attachment.kind === "file")) {
+    return { code: "unsupported_attachment_type", status: 400 };
+  }
+
+  if (hasPdf && !workspaceEnabled && !capabilities.pdf && !capabilities.nativePdfInput) {
     return { code: "pdf_attachment_not_supported", status: 400 };
   }
 
-  if (hasImage && !capabilities.vision) {
+  if (hasImage && !workspaceEnabled && !capabilities.vision) {
     return { code: "image_attachment_not_supported", status: 400 };
   }
 
@@ -810,9 +881,10 @@ function hasZeroEmittedPartialPdfStatus(metadata: unknown): boolean {
 
 function validatePdfTextAvailability(
   attachments: ProviderAttachment[],
-  capabilities: ProviderModelCapabilities
+  capabilities: ProviderModelCapabilities,
+  workspaceEnabled = false
 ): { code: string; message: string; status: 400 } | null {
-  if (capabilities.nativePdfInput || !capabilities.pdf) {
+  if (workspaceEnabled || capabilities.nativePdfInput || !capabilities.pdf) {
     return null;
   }
 
@@ -885,6 +957,10 @@ export async function prepareRun(
     ? await deps.runPolicy.load()
     : DEFAULT_TOOL_RUN_BUDGETS;
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
+  if (workspaceEnabled === null) {
+    return failure("workspace_intent_invalid", 400);
+  }
   // Keep the persisted Project Memory contract intact while making the
   // admission snapshot explicitly dormant. This prevents callers supplying a
   // stale/enabled in-memory snapshot from reintroducing Project Memory text or
@@ -1143,7 +1219,9 @@ export async function prepareRun(
       ...(project ? { executionScope: "project" as const } : {}),
       providerConnectionId: selectedProvider,
       providerModelId: selectedModelId,
-      ...(knowledgeRequested ? { requiresClientToolCoexistence: true } : {}),
+      ...(knowledgeRequested || workspaceEnabled
+        ? { requiresClientToolCoexistence: true }
+        : {}),
       searchPlan: requestedSearchPlan,
       ...(requestedSearchPreference && !project
         ? {
@@ -1286,7 +1364,7 @@ export async function prepareRun(
 
   const mcpToolsEnabled = mcpDiscoveryEnabled ||
     Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const requiresClientToolCoexistence = knowledgeRequested || mcpToolsEnabled;
+  const requiresClientToolCoexistence = knowledgeRequested || mcpToolsEnabled || workspaceEnabled;
   if (
     requiresClientToolCoexistence &&
     admissionPlan.searches.some((candidate) =>
@@ -1365,13 +1443,13 @@ export async function prepareRun(
   const scopedPrompt = project
     ? promptWithSharedProjectContext(normalizedPrompt, project)
     : normalizedPrompt;
-  const prompt: NormalizedRunRequest["prompt"] = {
+  let prompt: NormalizedRunRequest["prompt"] = {
     ...scopedPrompt,
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
   const sendContext =
     input.source.kind === "send"
-      ? input.source.draftProjectChat
+      ? input.source.draftProjectChat || input.source.draftPersonalChat
         ? []
         : await deps.repository.loadConversationContextForExpectedLeaf(
             chat.id,
@@ -1489,7 +1567,8 @@ export async function prepareRun(
       capabilities: modelCapabilities,
       limits: attachmentLimits,
       ...(project ? { projectId: project.projectId } : {}),
-      ...(input.signal ? { signal: input.signal } : {})
+      ...(input.signal ? { signal: input.signal } : {}),
+      workspaceEnabled
     });
   } catch (error) {
     const rejected = attachmentFailure(error);
@@ -1501,18 +1580,56 @@ export async function prepareRun(
     return failure("attachment_not_found", 400);
   }
 
-  const attachmentAccess = validateAttachmentCapabilities(attachments, modelCapabilities);
+  const attachmentAccess = validateAttachmentCapabilities(
+    attachments,
+    modelCapabilities,
+    workspaceEnabled
+  );
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
   }
 
-  const pdfTextAvailability = validatePdfTextAvailability(attachments, modelCapabilities);
+  const pdfTextAvailability = validatePdfTextAvailability(
+    attachments,
+    modelCapabilities,
+    workspaceEnabled
+  );
   if (pdfTextAvailability) {
     return failure(
       pdfTextAvailability.code,
       pdfTextAvailability.status,
       pdfTextAvailability.message
     );
+  }
+
+  let workspaceAdmissionPlan: WorkspaceRunAdmissionPlan | undefined;
+  let workspaceTools: readonly import("../tools/types").RunTool[] = [];
+  if (workspaceEnabled) {
+    if (!deps.workspace) return failure("workspace_runtime_unavailable", 503);
+    const runId = randomUUID();
+    const userMessageId = input.source.kind === "send"
+      ? randomUUID()
+      : input.source.source.userMessage.id;
+    const assistantMessageId = randomUUID();
+    const workspaceAdmission = await deps.workspace.prepare({
+      assistantMessageId,
+      chatId: chat.id,
+      enabled: true,
+      modelSupportsTools: modelCapabilities.toolCalling === true &&
+        toolBridge?.supportsToolCalling({
+          modelId: executionModelId,
+          provider: executionProvider
+        }) === true,
+      runId,
+      ...(input.signal ? { signal: input.signal } : {}),
+      userMessageId
+    });
+    if (!workspaceAdmission.ok) {
+      return failure(workspaceAdmission.code, workspaceAdmission.status);
+    }
+    workspaceAdmissionPlan = workspaceAdmission.plan;
+    workspaceTools = workspaceAdmission.tools;
+    prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments);
   }
 
   const baseNormalizedRequest: NormalizedRunRequest = {
@@ -1569,10 +1686,21 @@ export async function prepareRun(
     toolBudgets: {
       mcpAutoDiscoveryTimeoutSeconds: toolBudgets.mcpAutoDiscoveryTimeoutSeconds,
       maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
-      maxToolCalls: toolBudgets.maxToolCalls,
-      maxToolRounds: toolBudgets.maxToolRounds
+      maxToolCalls: workspaceEnabled
+        ? Math.max(
+            toolBudgets.maxToolCalls,
+            workspaceAdmissionPlan?.normalized.maxToolCalls ?? toolBudgets.maxToolCalls
+          )
+        : toolBudgets.maxToolCalls,
+      maxToolRounds: workspaceEnabled
+        ? Math.max(
+            toolBudgets.maxToolRounds,
+            workspaceAdmissionPlan?.normalized.maxToolRounds ?? toolBudgets.maxToolRounds
+          )
+        : toolBudgets.maxToolRounds
     },
-    toolMode: knowledgeRequested || body?.tools !== "none" ? "auto" : "none"
+    toolMode: workspaceEnabled || knowledgeRequested || body?.tools !== "none" ? "auto" : "none",
+    ...(workspaceAdmissionPlan ? { workspace: workspaceAdmissionPlan.normalized } : {})
   };
   const plannedSearchTools = createSearchPlanToolRouter({
     plan: baseNormalizedRequest.searchPlan,
@@ -1583,7 +1711,8 @@ export async function prepareRun(
     : [
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
-        ...mcpRunTools(baseNormalizedRequest.mcp)
+        ...mcpRunTools(baseNormalizedRequest.mcp),
+        ...workspaceTools
       ];
 
   let answeringPlan: KnowledgeAnsweringPlan | undefined;
@@ -1739,6 +1868,7 @@ export async function prepareRun(
           }))
         }
       : {}),
+    ...(workspaceAdmissionPlan ? { workspaceAdmissionPlan } : {}),
     normalizedRequest,
     providerAdmissionPlan: admissionPlan,
     providerRequest,

@@ -144,6 +144,55 @@ const magicFixtures = [
 ] as const;
 
 describe("upload validation", () => {
+  it("accepts bounded opaque files only for Workspace while keeping known formats strict", () => {
+    expect(validateUpload({
+      byteSize: 4,
+      bytes: Buffer.from([0, 1, 2, 3]),
+      fileName: "payload.unknown",
+      maxBytes: 100,
+      mimeType: "application/x-custom",
+      scope: "workspace"
+    })).toEqual({
+      kind: "file",
+      mimeType: "application/x-custom",
+      ok: true
+    });
+    expect(validateUpload({
+      byteSize: 4,
+      bytes: Buffer.from([0, 1, 2, 3]),
+      fileName: "payload.unknown",
+      maxBytes: 100,
+      mimeType: "not a mime",
+      scope: "workspace"
+    })).toEqual({
+      kind: "file",
+      mimeType: "application/octet-stream",
+      ok: true
+    });
+    expect(validateUpload({
+      byteSize: 4,
+      bytes: Buffer.from([0, 1, 2, 3]),
+      fileName: "payload.unknown",
+      maxBytes: 100,
+      mimeType: "application/octet-stream"
+    })).toEqual({ code: "unsupported_type", ok: false });
+    expect(validateUpload({
+      byteSize: 4,
+      bytes: Buffer.from("nope"),
+      fileName: "claimed.pdf",
+      maxBytes: 100,
+      mimeType: "application/pdf",
+      scope: "workspace"
+    })).toEqual({ code: "unsupported_type", ok: false });
+    expect(validateUpload({
+      byteSize: 4,
+      fileName: "claimed.pdf",
+      maxBytes: 100,
+      mimeType: "text/plain",
+      scope: "workspace"
+    })).toEqual({ code: "unsupported_type", ok: false });
+  });
+
   it("reads the canonical upload-size setting and falls back safely", () => {
     expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "1048576" })).toBe(1_048_576);
     expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "invalid" })).toBe(25_000_000);

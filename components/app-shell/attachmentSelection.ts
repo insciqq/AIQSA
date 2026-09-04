@@ -2,6 +2,8 @@ import { uploadAcceptFor, uploadFormatFor } from "../../lib/domain/uploadFormats
 
 export type ComposerAttachmentPolicy = Readonly<{
   documents: boolean;
+  /** Accept opaque formats for Workspace staging. */
+  files?: boolean;
   images: boolean;
   pdfs: boolean;
 }>;
@@ -13,10 +15,14 @@ export const DEFAULT_COMPOSER_ATTACHMENT_POLICY: ComposerAttachmentPolicy = {
 };
 
 function fileKind(file: File): "document" | "image" | "pdf" | "unsupported" {
-  return uploadFormatFor(file.name, file.type, "attachment")?.kind ?? "unsupported";
+  const kind = uploadFormatFor(file.name, file.type, "attachment")?.kind;
+  return kind && kind !== "file" ? kind : "unsupported";
 }
 
 export function attachmentAcceptForPolicy(policy: ComposerAttachmentPolicy): string {
+  // An empty accept attribute is the browser contract for an unrestricted
+  // picker. Server validation still owns count, bytes, names and settlement.
+  if (policy.files) return "";
   return uploadAcceptFor({
     kinds: [
       ...(policy.documents ? ["document" as const] : []),
@@ -40,7 +46,7 @@ export function partitionAttachmentSelection(
       ? policy.images
       : kind === "pdf"
         ? policy.pdfs
-        : kind === "document" && policy.documents;
+        : kind === "document" ? policy.documents : Boolean(policy.files);
     (allowed ? accepted : rejected).push(file);
   }
   return { accepted, rejected };

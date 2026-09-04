@@ -105,6 +105,24 @@ services:
       AIQSA_UPLOAD_MAX_CONCURRENCY: ${AIQSA_UPLOAD_MAX_CONCURRENCY:-4}
       AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES: ${AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES:-1048576}
       AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
+      AIQSA_WORKSPACE_CPUS: ${AIQSA_WORKSPACE_CPUS:-2}
+      AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: ${AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME:-1}
+      AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
+      AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.25}
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-80}
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-40}
+      AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
+      AIQSA_WORKSPACE_MEMORY_MIB: ${AIQSA_WORKSPACE_MEMORY_MIB:-4096}
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES:-268435456}
+      AIQSA_WORKSPACE_OUTPUT_MAX_FILES: ${AIQSA_WORKSPACE_OUTPUT_MAX_FILES:-25}
+      AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES:-536870912}
+      AIQSA_WORKSPACE_RETENTION_SECONDS: ${AIQSA_WORKSPACE_RETENTION_SECONDS:-86400}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-aiqsa-development-workspace-runner-token-000000}
+      AIQSA_WORKSPACE_RUNNER_URL: ${AIQSA_WORKSPACE_RUNNER_URL:-http://workspace-runner:4310}
+      AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS:-120}
+      AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: ${AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES:-131072}
+      AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS:-1800}
       AIQSA_YANDEX_OAUTH_CLIENT_ID: ""
       AIQSA_YANDEX_OAUTH_CLIENT_SECRET: ""
       DATABASE_URL: postgresql://aiqsa:aiqsa-dev-password@postgres:5432/aiqsa?schema=public
@@ -132,6 +150,7 @@ services:
       - mcp-control
       - parser-control
       - search-control
+      - workspace-control
     volumes:
       - .:/app
       - /app/node_modules
@@ -323,6 +342,109 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - toolhive_dev_data:/var/lib/toolhive
 
+  workspace-runner:
+    profiles:
+      - workspace-live
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: workspace-runner
+    image: aiqsa-workspace-runner:0.1.25-dev
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_WORKSPACE_RUNNER_CPU_LIMIT:-4.0}
+    devices:
+      - /dev/kvm:/dev/kvm
+    environment:
+      AIQSA_WORKSPACE_CPUS: ${AIQSA_WORKSPACE_CPUS:-2}
+      AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0"
+      AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
+      AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.25}
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-80}
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-40}
+      AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
+      AIQSA_WORKSPACE_MEMORY_MIB: ${AIQSA_WORKSPACE_MEMORY_MIB:-4096}
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES:-268435456}
+      AIQSA_WORKSPACE_OUTPUT_MAX_FILES: ${AIQSA_WORKSPACE_OUTPUT_MAX_FILES:-25}
+      AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES:-536870912}
+      AIQSA_WORKSPACE_RETENTION_SECONDS: ${AIQSA_WORKSPACE_RETENTION_SECONDS:-86400}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-aiqsa-development-workspace-runner-token-000000}
+      AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS:-120}
+      AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: ${AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES:-131072}
+      AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS:-1800}
+    group_add:
+      - ${AIQSA_KVM_GID:-993}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4310/health',{headers:{authorization:'Bearer '+process.env.AIQSA_WORKSPACE_RUNNER_TOKEN}}).then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_WORKSPACE_RUNNER_MEMORY_LIMIT:-8g}
+    networks:
+      - workspace-control
+      - workspace-egress
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m
+    volumes:
+      - workspace_runtime_dev_data:/var/lib/microsandbox
+
+  workspace-maintenance:
+    profiles:
+      - workspace-live
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    command: sh -c "npm run db:generate && npm run workspace:maintenance"
+    environment:
+      AIQSA_TEST_MODE: "1"
+      AIQSA_WORKSPACE_CPUS: ${AIQSA_WORKSPACE_CPUS:-2}
+      AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0"
+      AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
+      AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.25}
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-80}
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-40}
+      AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
+      AIQSA_WORKSPACE_MEMORY_MIB: ${AIQSA_WORKSPACE_MEMORY_MIB:-4096}
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES:-268435456}
+      AIQSA_WORKSPACE_OUTPUT_MAX_FILES: ${AIQSA_WORKSPACE_OUTPUT_MAX_FILES:-25}
+      AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES:-536870912}
+      AIQSA_WORKSPACE_RETENTION_SECONDS: ${AIQSA_WORKSPACE_RETENTION_SECONDS:-86400}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-aiqsa-development-workspace-runner-token-000000}
+      AIQSA_WORKSPACE_RUNNER_URL: http://workspace-runner:4310
+      AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS:-120}
+      AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: ${AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES:-131072}
+      AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS:-1800}
+      DATABASE_URL: postgresql://aiqsa:aiqsa-dev-password@postgres:5432/aiqsa?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      workspace-runner:
+        condition: service_healthy
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_WORKSPACE_MAINTENANCE_MEMORY_LIMIT:-512m}
+    networks:
+      - default
+      - workspace-control
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - .:/app
+      - /app/node_modules
+
   postgres:
     image: pgvector/pgvector:0.8.6-pg18-trixie@sha256:78bf48b801e792f99e3ac62b5036fd3876e9be48afda16c1e331af1c75ceb2ff
     environment:
@@ -429,9 +551,19 @@ networks:
     ipam:
       config:
         - subnet: ${AIQSA_DEV_SEARCH_DIAGNOSTIC_NETWORK_SUBNET:-192.168.66.0/24}
+  workspace-control:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_WORKSPACE_CONTROL_NETWORK_SUBNET:-192.168.67.0/24}
+  workspace-egress:
+    ipam:
+      config:
+        - subnet: ${AIQSA_DEV_WORKSPACE_EGRESS_NETWORK_SUBNET:-192.168.68.0/24}
 
 volumes:
   minio_dev_data:
   opensearch_dev_data:
   postgres18_dev_data:
   toolhive_dev_data:
+  workspace_runtime_dev_data:

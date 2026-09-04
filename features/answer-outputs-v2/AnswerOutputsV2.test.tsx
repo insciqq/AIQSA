@@ -387,4 +387,28 @@ describe("answer outputs v2", () => {
     expect(screen.queryByText("Memory was unavailable for this response."))
       .not.toBeInTheDocument();
   });
+
+  it("renders settled generated files with safe metadata and authorized downloads", () => {
+    render(<AnswerOutputsV2 artifact={{
+      citations: [],
+      generatedFiles: [{
+        attachmentId: "generated-file-id",
+        byteSize: 18_400_000,
+        fileName: "fixed-project.tar.gz",
+        mimeType: "application/gzip",
+        relativePath: "fixed-project.tar.gz"
+      }],
+      reasoningText: [],
+      sources: []
+    }} />);
+
+    const region = screen.getByRole("region", { name: "Generated files" });
+    expect(region).toHaveTextContent("fixed-project.tar.gz");
+    expect(region).toHaveTextContent("TAR.GZ");
+    expect(region).toHaveTextContent("17.5 MB");
+    expect(screen.getByRole("link", { name: /Download/u })).toHaveAttribute(
+      "href",
+      "/api/attachments/generated-file-id/content"
+    );
+  });
 });

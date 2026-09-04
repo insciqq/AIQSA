@@ -421,8 +421,13 @@ const directPdfBlockingErrorCodes = new Set([
 
 function validateAttachmentReadiness(
   record: RunAttachmentRecord,
-  capabilities: ProviderModelCapabilities
+  capabilities: ProviderModelCapabilities,
+  workspaceEnabled: boolean
 ): void {
+  // A Workspace run consumes the settled original object directly. Parser
+  // progress/failure therefore cannot block admission, while integrity and
+  // ownership checks remain mandatory.
+  if (workspaceEnabled) return;
   const directPdf = record.kind === "pdf" && capabilities.nativePdfInput;
   if (directPdf) {
     if (record.processingErrorCode === "attachment_checksum_mismatch") {
@@ -464,6 +469,7 @@ export async function loadProviderAttachments(
     limits: RunAttachmentLimits;
     projectId?: string;
     signal?: AbortSignal;
+    workspaceEnabled?: boolean;
   }>
 ): Promise<ProviderAttachment[]> {
   if (options.signal?.aborted) throw abortReason(options.signal);
@@ -502,7 +508,11 @@ export async function loadProviderAttachments(
     });
   }
   const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
-  records.forEach((record) => validateAttachmentReadiness(record, options.capabilities));
+  records.forEach((record) => validateAttachmentReadiness(
+    record,
+    options.capabilities,
+    options.workspaceEnabled === true
+  ));
   const plan = materializationPlan(records, options.capabilities, options.limits);
   if (plan.binaryById.size === 0) {
     return records.map((record) => providerAttachment(record));

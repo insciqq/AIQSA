@@ -81,6 +81,26 @@ export type ProviderAttachment = {
   status: string;
 };
 
+/** Server-owned immutable Workspace snapshot. It is persisted with the run
+ * and is never accepted from the browser as configuration. */
+export type NormalizedRunWorkspace = Readonly<{
+  enabled: true;
+  imageRef: string;
+  inboxIndexPath: string;
+  internetEnabled: boolean;
+  mcpVersion: string;
+  maxToolCalls: number;
+  maxToolRounds: number;
+  messageManifestPath: string;
+  outputDirectory: string;
+  projectDirectory: string;
+  runtimeVersion: string;
+  sessionId: string;
+  syncToolTimeoutSeconds: number;
+  toolCatalogHash: string;
+  turnTimeoutSeconds: number;
+}>;
+
 export type NormalizedRunRequest = {
   attachmentIds: string[];
   chatId: string;
@@ -176,6 +196,7 @@ export type NormalizedRunRequest = {
   }>;
   /** Durable operator/client suppression for all client-side run tools. */
   toolMode: "auto" | "none";
+  workspace?: NormalizedRunWorkspace;
 };
 
 export type ProviderSearchReasoningPolicy =

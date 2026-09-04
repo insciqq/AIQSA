@@ -10,6 +10,7 @@ import { prisma } from "@/lib/server/prisma";
 import { Prisma } from "@prisma/client";
 import { createAttachmentLibraryHandler } from "@/lib/server/uploads/libraryHandlers";
 import { attachmentLibraryRepository } from "@/lib/server/uploads/libraryRepository";
+import { workspaceAvailabilityService } from "@/lib/server/workspace/defaultServices";
 
 export const runtime = "nodejs";
 
@@ -43,9 +44,13 @@ export const POST = createUploadHandler({
           metadata: input.metadata as Prisma.InputJsonValue,
           mimeType: input.mimeType,
           processingErrorCode: input.processingErrorCode,
-          processingJob: {
-            create: { ownerUserId: input.processingOwnerUserId ?? input.userId }
-          },
+          ...(input.status === "processing"
+            ? {
+                processingJob: {
+                  create: { ownerUserId: input.processingOwnerUserId ?? input.userId }
+                }
+              }
+            : {}),
           status: input.status,
           storageKey: input.storageKey,
           ...(input.projectId
@@ -65,11 +70,11 @@ export const POST = createUploadHandler({
       extractedText: attachment.extractedText,
       fileName: attachment.fileName,
       id: attachment.id,
-      kind: attachment.kind as "document" | "image" | "pdf",
+      kind: attachment.kind as "document" | "file" | "image" | "pdf",
       metadata: attachment.metadata,
       mimeType: attachment.mimeType,
       processingErrorCode: null,
-      status: "processing",
+      status: attachment.status as "processing" | "ready",
       storageKey: attachment.storageKey,
       updatedAt: attachment.updatedAt
     };
@@ -115,5 +120,9 @@ export const POST = createUploadHandler({
       : null;
   },
   resolveAuth: resolveRequestAuth,
-  storage: createS3StorageAdapter()
+  storage: createS3StorageAdapter(),
+  async workspaceScopeAvailable() {
+    const snapshot = await workspaceAvailabilityService.snapshot();
+    return snapshot.policy.enabled && snapshot.runtime.state === "ready";
+  }
 });

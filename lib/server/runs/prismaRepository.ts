@@ -29,6 +29,7 @@ import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowled
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { loadMemoryRunPresentationStatuses } from "../memory/retrieval/runProjection";
+import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
@@ -83,6 +84,9 @@ import {
 } from "../knowledge/evidenceRepository";
 import { decodeKnowledgeDocumentContext } from "../knowledge/documentContext";
 import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
+import type { WorkspaceAvailabilityService } from "../workspace/availability";
+import { workspaceModelSupportsTools } from "../workspace/availability";
+import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -155,6 +159,7 @@ export function createPrismaRunRepository(
     memoryExecutionAuthority?: MemoryExecutionAuthorityDependencies;
     memoryRetrieval?: MemoryRunRetrievalService;
     memorySourceHooks?: MemorySourceMutationHooks;
+    workspaceAvailability?: WorkspaceAvailabilityService;
   }> = {}
 ): RunRepository {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
@@ -164,6 +169,8 @@ export function createPrismaRunRepository(
     createPrismaMemoryRunRetrievalService(prismaClient, {
       authority: memoryExecutionAuthority
     });
+  const workspaceAvailability = options.workspaceAvailability ??
+    defaultWorkspaceAvailabilityService;
   const toolLoopOperations = createPrismaRunToolLoopOperations(
     prismaClient,
     memorySourceHooks
@@ -939,11 +946,13 @@ export function createPrismaRunRepository(
           defaultKnowledgePlan: true,
           defaultProviderModel: { select: { connectionId: true, id: true } },
           folder: { select: { defaultKnowledgePlan: true, projectMemory: true } },
+          folderId: true,
           id: true,
           memoryMode: true,
           projectFolderId: true,
           projectId: true,
-          title: true
+          title: true,
+          workspaceEnabled: true
         },
         where: {
           archived: false,
@@ -965,6 +974,7 @@ export function createPrismaRunRepository(
         defaultKnowledgePlan: chat.defaultKnowledgePlan,
         defaultModelId: chat.defaultProviderModel?.id ?? "",
         defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
+        folderId: chat.folderId,
         folderDefaultKnowledgePlan: chat.folder?.defaultKnowledgePlan ?? null,
         id: chat.id,
         memoryMode: chat.memoryMode,
@@ -972,7 +982,8 @@ export function createPrismaRunRepository(
         projectFolderId: chat.projectFolderId,
         projectMemory: chat.folder?.projectMemory ?? null,
         ...(project ? { project } : {}),
-        title: chat.title
+        title: chat.title,
+        workspaceEnabled: chat.workspaceEnabled
       };
     },
     loadProjectFirstSend: async ({ chatId, folderId, projectId, userId }) => {
@@ -1007,7 +1018,43 @@ export function createPrismaRunRepository(
         project,
         projectFolderId: folderId,
         projectMemory: null,
-        title: "New Chat"
+        title: "New Chat",
+        workspaceEnabled: false
+      };
+    },
+    loadPersonalFirstSend: async ({ chatId, folderId, memoryMode, userId }) => {
+      const [existing, defaults, folder] = await Promise.all([
+        prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }),
+        loadChatCreationDefaults(prismaClient, userId),
+        folderId
+          ? prismaClient.folder.findFirst({
+              select: { defaultKnowledgePlan: true, id: true, projectMemory: true },
+              where: { id: folderId, userId }
+            })
+          : null
+      ]);
+      if (existing || !defaults || (folderId && !folder)) return null;
+      const model = defaults.defaultProviderModelId
+        ? await prismaClient.providerModel.findUnique({
+            select: { connectionId: true, id: true },
+            where: { id: defaults.defaultProviderModelId }
+          })
+        : null;
+      return {
+        activeLeafMessageId: null,
+        defaultKnowledgePlan: null,
+        defaultModelId: model?.id ?? "",
+        defaultProvider: model?.connectionId ?? "",
+        folderDefaultKnowledgePlan: folder?.defaultKnowledgePlan ?? null,
+        folderId,
+        id: chatId,
+        // Temporary is an atomic NORMAL -> TEMPORARY first-send conversion;
+        // prepareRun must see the pre-conversion source mode.
+        memoryMode: memoryMode === "TEMPORARY" ? "NORMAL" : memoryMode,
+        messageCount: 0,
+        projectMemory: folder?.projectMemory ?? null,
+        title: "New Chat",
+        workspaceEnabled: false
       };
     },
     findRecentActiveRunForChat: async ({ chatId, since, userId }) => {
@@ -1102,7 +1149,8 @@ export function createPrismaRunRepository(
               },
               id: true,
               memoryMode: true,
-              projectId: true
+              projectId: true,
+              workspaceEnabled: true
             }
           },
           parent: {
@@ -1147,6 +1195,7 @@ export function createPrismaRunRepository(
         id: sourceMessage.chat.id,
         memoryMode: sourceMessage.chat.memoryMode,
         projectMemory: sourceMessage.chat.folder?.projectMemory ?? null,
+        workspaceEnabled: sourceMessage.chat.workspaceEnabled,
         ...(project ? { project } : {})
       };
 
@@ -1252,6 +1301,7 @@ export function createPrismaRunRepository(
         : null;
     },
     getChatUpdateForRun: async ({ assistantMessageId, chatId, userId, userMessageId }) => {
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       return prismaClient.$transaction(async (tx) => {
         const access = await resolveChatAccess(tx, { chatId, userId });
         if (!access) return null;
@@ -1267,8 +1317,12 @@ export function createPrismaRunRepository(
           defaultKnowledgePlan: true,
           defaultProviderModel: {
             select: {
+              activeConfig: true,
+              activeVersion: true,
               connectionId: true,
-              id: true
+              enabled: true,
+              id: true,
+              modelClass: true
             }
           },
           folderId: true,
@@ -1346,7 +1400,17 @@ export function createPrismaRunRepository(
                       toolName: true
                     }
                   },
-                  updatedAt: true
+                  updatedAt: true,
+                  workspaceProducedAttachments: {
+                    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+                    select: {
+                      byteSize: true,
+                      fileName: true,
+                      id: true,
+                      mimeType: true,
+                      workspaceRunOutput: { select: { relativePath: true } }
+                    }
+                  }
                 },
                 take: 1
               }
@@ -1362,7 +1426,14 @@ export function createPrismaRunRepository(
           },
           pinned: true,
           title: true,
-          updatedAt: true
+          updatedAt: true,
+          workspaceEnabled: true,
+          workspaceSession: {
+            select: {
+              internetEnabled: true,
+              state: true
+            }
+          }
         },
         where: {
           archived: false,
@@ -1409,7 +1480,12 @@ export function createPrismaRunRepository(
             projectId: chat.projectId,
             title: chat.title,
             updatedAt: chat.updatedAt,
-            usageStats
+            usageStats,
+            workspace: workspaceAvailability.project(workspaceSnapshot, {
+              enabled: chat.workspaceEnabled,
+              modelSupportsTools: workspaceModelSupportsTools(chat.defaultProviderModel),
+              session: chat.workspaceSession
+            })
           },
           messages: chat.messages.map((message) => {
             const modelRun = message.assistantModelRuns[0];

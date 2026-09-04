@@ -66,7 +66,8 @@ export function createProjectChatHandler(deps: ProjectContentHandlerDeps) {
     if (session instanceof Response) return session;
     const [input, inputError] = await body(request);
     if (inputError) return inputError;
-    if (!input || Object.keys(input).some((key) => !["folderId", "title"].includes(key))) {
+    if (!input || Object.keys(input).some((key) =>
+      !["folderId", "title", "workspaceEnabled"].includes(key))) {
       return error("project_chat_input_invalid", 400);
     }
     const folderId = input.folderId === undefined || input.folderId === null
@@ -75,7 +76,12 @@ export function createProjectChatHandler(deps: ProjectContentHandlerDeps) {
     const title = input.title === undefined || input.title === null
       ? input.title
       : text(input.title, 80);
-    if (folderId === null || title === null) return error("project_chat_input_invalid", 400);
+    const workspaceEnabled = input.workspaceEnabled;
+    if (
+      folderId === null ||
+      title === null ||
+      (workspaceEnabled !== undefined && typeof workspaceEnabled !== "boolean")
+    ) return error("project_chat_input_invalid", 400);
     const { projectId } = await context.params;
     return result(
       await deps.repository.createChat({
@@ -83,7 +89,8 @@ export function createProjectChatHandler(deps: ProjectContentHandlerDeps) {
         folderId,
         projectId,
         title,
-        userId: session.userId
+        userId: session.userId,
+        ...(typeof workspaceEnabled === "boolean" ? { workspaceEnabled } : {})
       }),
       (chat) => Response.json({ chat }, { status: 201 })
     );

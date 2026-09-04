@@ -191,6 +191,51 @@ describe("attachment capabilities", () => {
     expect(attachmentBlocksSend(parserFailure, extractionModel)).toBe(true);
   });
 
+  it("accepts opaque files and ignores parser readiness only while Workspace is enabled", () => {
+    const extractionModel = model("pdf_text_extraction", false);
+    const opaque = {
+      fileName: "dataset.custom",
+      id: "opaque",
+      kind: "file" as const,
+      status: "ready" as const
+    };
+    const processing = {
+      fileName: "scan.pdf",
+      id: "scan",
+      kind: "pdf" as const,
+      status: "processing" as const
+    };
+    const parserFailure = {
+      ...processing,
+      processingErrorCode: "parser_unavailable",
+      status: "failed" as const
+    };
+    const storageFailure = {
+      ...parserFailure,
+      processingErrorCode: "attachment_object_read_failed"
+    };
+
+    expect(attachmentPolicyForModel(undefined, true)).toEqual({
+      documents: true,
+      files: true,
+      images: true,
+      pdfs: true
+    });
+    expect(attachmentAcceptForPolicy(attachmentPolicyForModel(undefined, true))).toBe("");
+    expect(partitionAttachmentsForModel([opaque], extractionModel)).toEqual({
+      supported: [],
+      unsupported: [opaque]
+    });
+    expect(partitionAttachmentsForModel([opaque], extractionModel, true)).toEqual({
+      supported: [opaque],
+      unsupported: []
+    });
+    expect(attachmentBlocksSend(processing, extractionModel, true)).toBe(false);
+    expect(attachmentBlocksSend(parserFailure, extractionModel, true)).toBe(false);
+    expect(attachmentBlocksSend(storageFailure, extractionModel, true)).toBe(true);
+    expect(attachmentWarningsForModel([processing, parserFailure], extractionModel, true)).toEqual([]);
+  });
+
   it("ignores malformed processing metadata in browser-side decisions", () => {
     const malformed = {
       fileName: "untrusted.pdf",

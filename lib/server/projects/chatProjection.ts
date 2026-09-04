@@ -1,5 +1,9 @@
 import { ModelRunStatus, Prisma } from "@prisma/client";
 import type { ProjectChatSummaryWire } from "@/lib/contracts/projects";
+import type {
+  WorkspaceAvailabilityService,
+  WorkspaceAvailabilitySnapshot
+} from "@/lib/server/workspace/availability";
 import {
   projectChatDefaultsProjection,
   type ProjectChatDefaultAuthority
@@ -29,20 +33,40 @@ export const projectChatSelect = {
   createdByDisplayName: true,
   createdByUserId: true,
   defaultKnowledgePlan: true,
-  defaultProviderModel: { select: { connectionId: true, id: true } },
+  defaultProviderModel: {
+    select: {
+      activeConfig: true,
+      activeVersion: true,
+      connectionId: true,
+      enabled: true,
+      id: true,
+      modelClass: true
+    }
+  },
   id: true,
   pinned: true,
   projectFolderId: true,
   projectId: true,
   title: true,
-  updatedAt: true
+  updatedAt: true,
+  workspaceEnabled: true,
+  workspaceSession: {
+    select: {
+      internetEnabled: true,
+      state: true
+    }
+  }
 } satisfies Prisma.ChatSelect;
 
 export type ProjectChatRow = Prisma.ChatGetPayload<{ select: typeof projectChatSelect }>;
 
 export function projectChatWire(
   chat: ProjectChatRow,
-  authority: ProjectChatDefaultAuthority
+  authority: ProjectChatDefaultAuthority,
+  workspace: Readonly<{
+    availability: WorkspaceAvailabilityService;
+    snapshot: WorkspaceAvailabilitySnapshot;
+  }>
 ): ProjectChatSummaryWire {
   if (!chat.projectId) throw new Error("project_chat_integrity_invalid");
   const defaults = projectChatDefaultsProjection(authority, {
@@ -65,6 +89,12 @@ export function projectChatWire(
     pinned: chat.pinned,
     projectId: chat.projectId,
     title: chat.title,
-    updatedAt: chat.updatedAt.toISOString()
+    updatedAt: chat.updatedAt.toISOString(),
+    workspace: workspace.availability.project(workspace.snapshot, {
+      enabled: chat.workspaceEnabled,
+      modelSupportsTools: defaults.defaultModelId !== null &&
+        authority.toolCallingModelIds.has(defaults.defaultModelId),
+      session: chat.workspaceSession
+    })
   };
 }

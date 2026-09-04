@@ -53,6 +53,8 @@ export type ChatMenuActionsInputV2 = Readonly<{
   shareDisabled?: boolean;
   /** The compact row menu and the complete header overflow have distinct jobs. */
   surface: "header" | "row";
+  /** Optional owner-specific group placed before archive/delete. */
+  supplementalActions?: readonly UiV2MenuAction[];
 }>;
 
 /**
@@ -82,7 +84,8 @@ export function chatMenuActionsV2({
   onShare,
   renameDisabled = false,
   shareDisabled = false,
-  surface
+  surface,
+  supplementalActions = []
 }: ChatMenuActionsInputV2): UiV2MenuAction[] {
   const chat: UiV2MenuAction[] = [
     ...(onRename ? [{ disabled: renameDisabled, icon: "edit", label: "Rename", onSelect: onRename }] as const : []),
@@ -148,7 +151,7 @@ export function chatMenuActionsV2({
       ? [{ disabled: deleteDisabled, icon: "trash", label: "Delete…", onSelect: onDelete, tone: "destructive" }] as const
       : [])
   ];
-  return [chat, content, destructive]
+  return [chat, content, supplementalActions, destructive]
     .filter((group) => group.length > 0)
     .flatMap((group, index) => index === 0
       ? group

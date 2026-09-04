@@ -15,6 +15,7 @@ export function reconcileCurrentComposerAttachments(
   renderedModel: CatalogModel,
   options: Readonly<{
     clearResolvedLimitFeedback?: boolean;
+    workspaceEnabled?: boolean;
   }> = {}
 ): boolean {
   const sessionStore = useComposerSessionStore.getState();
@@ -37,7 +38,8 @@ export function reconcileCurrentComposerAttachments(
 
   const { supported, unsupported } = partitionAttachmentsForModel(
     sourceSession.attachments,
-    renderedModel
+    renderedModel,
+    options.workspaceEnabled
   );
   if (unsupported.length === 0) {
     const retainedError = withoutAttachmentLimitFeedbackMessage(

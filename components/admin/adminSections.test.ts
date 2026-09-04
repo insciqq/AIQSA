@@ -25,6 +25,7 @@ describe("adminSections", () => {
       { group: "team-access", id: "access-rules", label: "Access rules" },
       { group: "operations", id: "usage", label: "Usage" },
       { group: "infrastructure", id: "mcp", label: "MCP servers" },
+      { group: "infrastructure", id: "workspace", label: "Workspace" },
       { group: "infrastructure", id: "email", label: "Email delivery" },
       { group: "safety", id: "safety", label: "Safety" }
     ]);
@@ -37,7 +38,7 @@ describe("adminSections", () => {
       { label: "AI setup", sections: ["Providers", "Search", "Knowledge", "Memory"] },
       { label: "Team & access", sections: ["Users", "Access & groups", "Invites", "Access rules"] },
       { label: "Operations", sections: ["Usage"] },
-      { label: "Infrastructure", sections: ["MCP servers", "Email delivery"] },
+      { label: "Infrastructure", sections: ["MCP servers", "Workspace", "Email delivery"] },
       { label: "Safety", sections: ["Safety"] }
     ]);
     expect(adminSectionConfig("access").description).toContain("model and search entitlements");

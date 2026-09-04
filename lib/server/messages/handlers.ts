@@ -4,6 +4,10 @@ import type {
   WorkspaceChatSummaryWire
 } from "../../contracts/chats";
 import type { KnowledgePlan } from "../../contracts/knowledge";
+import {
+  UNAVAILABLE_CHAT_WORKSPACE_STATE,
+  type ChatWorkspaceState
+} from "../../contracts/workspace";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -36,6 +40,7 @@ export type BranchChatRecord = {
   projectId?: string | null;
   title: string;
   updatedAt: Date | string;
+  workspace?: ChatWorkspaceState;
 };
 
 export class ActiveMessageMutationConflictError extends Error {
@@ -126,7 +131,8 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
     pinned: chat.pinned,
     ...(chat.projectId !== undefined ? { projectId: chat.projectId } : {}),
     title: chat.title,
-    updatedAt: chat.updatedAt instanceof Date ? chat.updatedAt.toISOString() : chat.updatedAt
+    updatedAt: chat.updatedAt instanceof Date ? chat.updatedAt.toISOString() : chat.updatedAt,
+    workspace: chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
   };
 }
 

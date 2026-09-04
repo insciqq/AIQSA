@@ -36,6 +36,7 @@ import {
   reconcileMemoryHistoryBackfills,
   resolveMemoryHistoryBackfillWindow
 } from "../history/backfill";
+import { workspaceRuntime } from "../../workspace/defaultServices";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -104,7 +105,11 @@ const defaultItemEmbeddingHandler = createPrismaMemoryEmbeddingHandler(
 );
 
 const defaultTemporaryChatDeletionHandler =
-  createPrismaTemporaryChatDeletionHandler(createS3StorageAdapter(), prisma);
+  createPrismaTemporaryChatDeletionHandler(
+    createS3StorageAdapter(),
+    prisma,
+    workspaceRuntime
+  );
 
 const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
 const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
