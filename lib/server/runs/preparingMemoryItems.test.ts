@@ -94,6 +94,36 @@ function automaticEvidenceRow(overrides: Readonly<Record<string, unknown>> = {})
 }
 
 describe("preparing Memory item finalization", () => {
+  it.each(["TARGETED_CURRENT", "PAST_CHAT_SEARCH"])(
+    "freezes an explicit response preference under the %s envelope and rejects late invalidation",
+    async (retrievalMode) => {
+      const input = { ...item, featureSnapshot: {
+        ...item.featureSnapshot, retrievalMode, responsePreferenceCore: true
+      } };
+      const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+        .mockResolvedValueOnce([{
+          ...automaticFactRow, factCategory: "preferences", sourceMode: "EXPLICIT"
+        }]);
+      const tx = { $queryRaw } as unknown as Prisma.TransactionClient;
+      const frozen = await resolvePreparingMemoryItem(tx, authority, "Explain in detail.", input);
+      expect(frozen).toMatchObject({
+        exactSafeText: item.exactSafeText,
+        featureSnapshot: { responsePreferenceCore: true, retrievalMode, tier: "CORE" },
+        sourceSnapshot: { sourceMode: "EXPLICIT" }
+      });
+      const sql = $queryRaw.mock.calls[0]![0].strings.join("?");
+      expect(sql).toContain('version."sourceMode" = \'EXPLICIT\'');
+      expect(sql).toContain('version."modality" = \'PREFERENCE\'');
+      expect(sql).toContain('version."category" = \'preferences\'');
+      expect(sql).toContain('version."coreEligible" = TRUE');
+      expect(sql).toContain('FROM "MemoryFeedback"');
+      // The exact same accepted item cannot survive a subsequent failed
+      // owner/source/lifecycle rejoin, even with its prior frozen snapshot.
+      await expect(resolvePreparingMemoryItem(tx, authority, "Explain in detail.", input))
+        .rejects.toThrow("memory_attempt_item_stale");
+    }
+  );
+
   it("revalidates Core directly when no search generation is active", async () => {
     const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
       .mockResolvedValueOnce([automaticFactRow])
