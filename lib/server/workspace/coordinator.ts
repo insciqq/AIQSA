@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import {
   isSafeWorkspaceRelativePath,
   WORKSPACE_MCP_TOOL_ALLOWLIST,
+  WORKSPACE_PERMANENT_EXPORT_ERROR_CODES,
   workspaceAttachmentPath,
   workspaceMessageManifestPath,
   workspaceToolIsAllowed
@@ -63,13 +64,47 @@ export type WorkspaceExecutionBinding = Readonly<{
   userId: string;
 }>;
 
+/**
+ * Result of one atomic export claim. Exactly one worker owns an `EXPORTING`
+ * binding at a time through a bounded lease; `busy` means another live lease
+ * exists, `complete` returns the settled files, and `failed` marks a permanent
+ * error that retries must not repeat.
+ */
+export type WorkspaceExportClaim =
+  | Readonly<{ status: "busy" }>
+  | Readonly<{ status: "claimed"; token: string }>
+  | Readonly<{ status: "complete" }>
+  | Readonly<{ code: string; status: "failed" }>;
+
+/** Lease window for one export attempt; renewed before every long step. */
+export const WORKSPACE_EXPORT_LEASE_MS = 120_000;
+
 export type WorkspaceCoordinatorRepository = Readonly<{
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
+  claimExport(input: Readonly<{
+    leaseMs: number;
+    runId: string;
+    sessionId: string;
+  }>): Promise<WorkspaceExportClaim>;
   generatedFiles(input: Readonly<{ runId: string; userId: string }>): Promise<readonly ThreadGeneratedFile[]>;
-  markExportComplete(input: Readonly<{ runId: string; sessionId: string }>): Promise<boolean>;
-  markExportFailed(input: Readonly<{ code: string; runId: string; sessionId: string }>): Promise<void>;
-  markExporting(input: Readonly<{ runId: string; sessionId: string }>): Promise<"complete" | "exporting">;
+  markExportComplete(input: Readonly<{
+    runId: string;
+    sessionId: string;
+    token: string;
+  }>): Promise<boolean>;
+  markExportFailed(input: Readonly<{
+    code: string;
+    runId: string;
+    sessionId: string;
+    token: string;
+  }>): Promise<boolean>;
+  renewExportLease(input: Readonly<{
+    leaseMs: number;
+    runId: string;
+    sessionId: string;
+    token: string;
+  }>): Promise<boolean>;
   markSessionFailed(input: Readonly<{ code: string; sessionId: string }>): Promise<void>;
   markSessionLost(input: Readonly<{
     runtimeSandboxId: string;
@@ -282,41 +317,108 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
       return rows.map(generatedFile);
     },
-    async markExportComplete({ runId, sessionId }) {
-      const updated = await prisma.workspaceRunBinding.updateMany({
-        data: { exportState: "COMPLETE", lastExportErrorCode: null },
+    async claimExport({ leaseMs, runId, sessionId }) {
+      const now = new Date();
+      const token = randomUUID().replaceAll("-", "");
+      // One conditional UPDATE is the whole claim: a pending binding, a
+      // retryable failure, or an expired/absent lease may be taken; a live
+      // lease or a settled binding may not.
+      const claimed = await prisma.workspaceRunBinding.updateMany({
+        data: {
+          exportAttemptCount: { increment: 1 },
+          exportLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+          exportLeaseToken: token,
+          exportStartedAt: now,
+          exportState: "EXPORTING",
+          lastExportErrorCode: null
+        },
         where: {
           modelRunId: runId,
           workspaceSessionId: sessionId,
-          exportState: { in: ["PENDING", "EXPORTING", "FAILED"] }
+          OR: [
+            { exportState: "PENDING" },
+            {
+              exportState: "FAILED",
+              OR: [
+                { lastExportErrorCode: null },
+                { lastExportErrorCode: { notIn: [...WORKSPACE_PERMANENT_EXPORT_ERROR_CODES] } }
+              ]
+            },
+            {
+              exportState: "EXPORTING",
+              OR: [
+                { exportLeaseExpiresAt: null },
+                { exportLeaseExpiresAt: { lte: now } }
+              ]
+            }
+          ]
+        }
+      });
+      if (claimed.count === 1) return { status: "claimed", token };
+      const binding = await prisma.workspaceRunBinding.findUnique({
+        select: { exportState: true, lastExportErrorCode: true, workspaceSessionId: true },
+        where: { modelRunId: runId }
+      });
+      if (!binding || binding.workspaceSessionId !== sessionId) {
+        throw new WorkspaceRuntimeError("workspace_output_export_failed");
+      }
+      if (binding.exportState === "COMPLETE") return { status: "complete" };
+      if (binding.exportState === "FAILED") {
+        return {
+          code: binding.lastExportErrorCode ?? "workspace_output_export_failed",
+          status: "failed"
+        };
+      }
+      return { status: "busy" };
+    },
+    async markExportComplete({ runId, sessionId, token }) {
+      const updated = await prisma.workspaceRunBinding.updateMany({
+        data: {
+          exportCompletedAt: new Date(),
+          exportLeaseExpiresAt: null,
+          exportLeaseToken: null,
+          exportState: "COMPLETE",
+          lastExportErrorCode: null
+        },
+        where: {
+          exportLeaseToken: token,
+          exportState: "EXPORTING",
+          modelRunId: runId,
+          workspaceSessionId: sessionId
         }
       });
       return updated.count === 1;
     },
-    async markExportFailed({ code, runId, sessionId }) {
-      await prisma.workspaceRunBinding.updateMany({
-        data: { exportState: "FAILED", lastExportErrorCode: code.slice(0, 64) },
-        where: { modelRunId: runId, workspaceSessionId: sessionId }
+    async markExportFailed({ code, runId, sessionId, token }) {
+      // Only the current lease owner may fail its own attempt, and a settled
+      // COMPLETE binding is never downgraded by a late worker.
+      const updated = await prisma.workspaceRunBinding.updateMany({
+        data: {
+          exportLeaseExpiresAt: null,
+          exportLeaseToken: null,
+          exportState: "FAILED",
+          lastExportErrorCode: code.slice(0, 64)
+        },
+        where: {
+          exportLeaseToken: token,
+          exportState: "EXPORTING",
+          modelRunId: runId,
+          workspaceSessionId: sessionId
+        }
       });
+      return updated.count === 1;
     },
-    async markExporting({ runId, sessionId }) {
-      return prisma.$transaction(async (tx) => {
-        const binding = await tx.workspaceRunBinding.findUnique({
-          select: { exportState: true },
-          where: { modelRunId: runId }
-        });
-        if (!binding) throw new WorkspaceRuntimeError("workspace_output_export_failed");
-        if (binding.exportState === "COMPLETE") return "complete" as const;
-        await tx.workspaceRunBinding.update({
-          data: {
-            exportAttemptCount: { increment: 1 },
-            exportState: "EXPORTING",
-            lastExportErrorCode: null
-          },
-          where: { modelRunId: runId, workspaceSessionId: sessionId }
-        });
-        return "exporting" as const;
+    async renewExportLease({ leaseMs, runId, sessionId, token }) {
+      const updated = await prisma.workspaceRunBinding.updateMany({
+        data: { exportLeaseExpiresAt: new Date(Date.now() + leaseMs) },
+        where: {
+          exportLeaseToken: token,
+          exportState: "EXPORTING",
+          modelRunId: runId,
+          workspaceSessionId: sessionId
+        }
       });
+      return updated.count === 1;
     },
     async markSessionFailed({ code, sessionId }) {
       await prisma.workspaceSession.updateMany({
@@ -859,16 +961,33 @@ export function createWorkspaceCoordinator(input: Readonly<{
     },
     async finalize({ runId, signal, userId, workspace }) {
       const initial = await requireBinding(runId, userId, workspace);
-      const state = await input.repository.markExporting({
+      const claim = await input.repository.claimExport({
+        leaseMs: WORKSPACE_EXPORT_LEASE_MS,
         runId,
         sessionId: initial.sessionId
       });
-      if (state === "complete") {
+      if (claim.status === "complete") {
         return input.repository.generatedFiles({ runId, userId });
       }
+      if (claim.status === "failed") {
+        throw new WorkspaceRuntimeError(
+          claim.code === "workspace_output_limit_exceeded"
+            ? "workspace_output_limit_exceeded"
+            : "workspace_output_export_failed"
+        );
+      }
+      if (claim.status === "busy") {
+        throw new WorkspaceRuntimeError("workspace_output_export_failed");
+      }
+      const lease = { runId, sessionId: initial.sessionId, token: claim.token };
+      const renew = async () => {
+        if (!(await input.repository.renewExportLease({ ...lease, leaseMs: WORKSPACE_EXPORT_LEASE_MS }))) {
+          throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        }
+      };
       try {
         if (!initial.runtimeSandboxId) {
-          if (!(await input.repository.markExportComplete({ runId, sessionId: initial.sessionId }))) {
+          if (!(await input.repository.markExportComplete(lease))) {
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
           return [];
@@ -881,6 +1000,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         if (!binding.runtimeSandboxId) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
+        await renew();
         const outputs = await input.runtime.collectOutputs({
           modelRunId: runId,
           outputDirectory: binding.outputDirectory,
@@ -903,6 +1023,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         }
         const files: ThreadGeneratedFile[] = [];
         for (const output of outputs) {
+          await renew();
           const storageKey = outputStorageKey(binding, output);
           if (!(await objectMatches(input.storage, storageKey, output, signal))) {
             if (!input.storage.putObjectStream) {
@@ -931,7 +1052,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
             storageKey
           }));
         }
-        if (!(await input.repository.markExportComplete({ runId, sessionId: binding.sessionId }))) {
+        await renew();
+        if (!(await input.repository.markExportComplete(lease))) {
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
         }
         await input.repository.markSessionReady({
@@ -943,11 +1065,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         const code = runtimeCode(error) === "workspace_output_limit_exceeded"
           ? "workspace_output_limit_exceeded"
           : "workspace_output_export_failed";
-        await input.repository.markExportFailed({
-          code,
-          runId,
-          sessionId: initial.sessionId
-        }).catch(() => undefined);
+        await input.repository.markExportFailed({ ...lease, code }).catch(() => undefined);
         throw error instanceof WorkspaceRuntimeError
           ? error
           : new WorkspaceRuntimeError("workspace_output_export_failed");

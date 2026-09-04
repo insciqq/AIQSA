@@ -22,19 +22,112 @@ import {
 type DeterministicExec = {
   closed: boolean;
   done: boolean;
+  exitCode: number | null;
   modelRunId: string;
   output: string;
+  timer: ReturnType<typeof setTimeout> | null;
 };
+
+/**
+ * Test-only faults a deterministic scenario can arm through the
+ * `aiqsa-test fault <name>` shell directive. Each fires once.
+ */
+type DeterministicFault = "export_list_once" | "export_stream_once";
+
+/** Content-free counters that scenarios read back through `aiqsa-test metrics`. */
+export type DeterministicWorkspaceMetrics = Readonly<{
+  guestFileWrites: number;
+  indexWrites: number;
+  lastStagedAttachmentIds: readonly string[];
+  stageCalls: number;
+  stagedAttachmentBodies: number;
+}>;
 
 type DeterministicSession = {
   directories: Set<string>;
   execs: Map<string, DeterministicExec>;
+  faults: Set<DeterministicFault>;
   files: Map<string, Uint8Array>;
   internetEnabled: boolean;
+  metrics: {
+    guestFileWrites: number;
+    indexWrites: number;
+    lastStagedAttachmentIds: string[];
+    stageCalls: number;
+    stagedAttachmentBodies: number;
+  };
   runtimeSandboxId: string;
   sandboxName: string;
   state: "ready" | "stopped";
 };
+
+/**
+ * Deterministic command grammar. Real guests run arbitrary shell; the
+ * deterministic runtime only models the shapes tests need:
+ *
+ * - `pwd` prints the project directory;
+ * - `sleep <seconds>` blocks until the delay elapses or the call is aborted;
+ * - `sleep <seconds> && echo <text> > <path>` / `; touch <path>` additionally
+ *   writes a marker after the delay unless the execution was quiesced first;
+ * - `aiqsa-test <directive>` arms faults or reports metrics.
+ */
+const SLEEP_COMMAND = /^sleep\s+(\d+(?:\.\d+)?)\s*$/u;
+const DELAYED_WRITE_COMMAND =
+  /^sleep\s+(\d+(?:\.\d+)?)\s*(?:;|&&)\s*(?:touch\s+(\/\S+)|echo\s+(\S+)\s*>\s*(\/\S+))\s*$/u;
+const TEST_DIRECTIVE = /^aiqsa-test\s+([a-z-]+)(?:\s+([a-z-]+))?\s*$/u;
+
+type DelayedCommand = Readonly<{
+  delayMs: number;
+  write: Readonly<{ content: string; path: string }> | null;
+}>;
+
+function parseDelayedCommand(command: string): DelayedCommand | null {
+  const sleep = SLEEP_COMMAND.exec(command);
+  if (sleep) return { delayMs: Math.round(Number(sleep[1]) * 1_000), write: null };
+  const delayed = DELAYED_WRITE_COMMAND.exec(command);
+  if (!delayed) return null;
+  const path = delayed[2] ?? delayed[4]!;
+  return {
+    delayMs: Math.round(Number(delayed[1]) * 1_000),
+    write: { content: delayed[2] ? "" : `${delayed[3]!}\n`, path }
+  };
+}
+
+function waitOrAbort(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cancelled = () => {
+      clearTimeout(timer);
+      reject(new WorkspaceRuntimeError("workspace_tool_cancelled"));
+    };
+    if (signal?.aborted) {
+      cancelled();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", cancelled);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", cancelled, { once: true });
+  });
+}
+
+function terminateExec(exec: DeterministicExec, exitCode: number): void {
+  if (exec.timer) {
+    clearTimeout(exec.timer);
+    exec.timer = null;
+  }
+  if (!exec.done) {
+    exec.done = true;
+    exec.exitCode = exitCode;
+  }
+}
+
+function shellResult(stdout: string, exitCode = 0, stderr = ""): WorkspaceToolResult {
+  return {
+    ...toolResult({ exitCode, stderr, stdout, success: exitCode === 0 }, "complete"),
+    exitCode
+  };
+}
 
 function bytes(value: string | Uint8Array): Uint8Array {
   return typeof value === "string" ? new TextEncoder().encode(value) : value;
@@ -143,6 +236,16 @@ function body(value: Uint8Array): ReadableStream<Uint8Array> {
   });
 }
 
+/** Streams a first chunk and then fails, like a runner that died mid-transfer. */
+function faultedBody(value: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(value.slice(0, Math.max(1, Math.floor(value.byteLength / 2))));
+      controller.error(new WorkspaceRuntimeError("workspace_output_export_failed"));
+    }
+  });
+}
+
 function toolResult(data: unknown, status: "complete" | "error" = "complete"): WorkspaceToolResult {
   const text = JSON.stringify(status === "complete"
     ? { data, ok: true }
@@ -206,9 +309,18 @@ async function readRequestBody(stream: ReadableStream<Uint8Array>, maximum: numb
 
 export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   private catalogPromise: Promise<WorkspaceToolCatalog> | null = null;
+  private readonly generations = new Map<string, number>();
   private readonly sessions = new Map<string, DeterministicSession>();
 
   constructor(private readonly config: WorkspaceConfig) {}
+
+  /** Content-free staging/write counters for the session, for focused tests. */
+  metrics(sessionId: string): DeterministicWorkspaceMetrics | null {
+    const session = this.sessions.get(sessionId);
+    return session
+      ? { ...session.metrics, lastStagedAttachmentIds: [...session.metrics.lastStagedAttachmentIds] }
+      : null;
+  }
 
   async health() {
     try {
@@ -242,8 +354,12 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     let session = this.sessions.get(input.sessionId);
     if (!session) {
       if (input.runtimeSandboxId !== null) throw new WorkspaceRuntimeError("workspace_session_lost");
+      // A recreated sandbox gets a new runtime identity, exactly like a real
+      // microVM that replaced a lost disk.
+      const generation = (this.generations.get(input.sessionId) ?? 0) + 1;
+      this.generations.set(input.sessionId, generation);
       const runtimeSandboxId = createHash("sha256")
-        .update(`deterministic\0${input.sessionId}\0${input.sandboxName}`)
+        .update(`deterministic\0${input.sessionId}\0${input.sandboxName}\0${generation}`)
         .digest("hex");
       session = {
         directories: new Set([
@@ -254,8 +370,16 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
           `${WORKSPACE_ROOT}/tmp`
         ]),
         execs: new Map(),
+        faults: new Set(),
         files: new Map(),
         internetEnabled: input.internetEnabled,
+        metrics: {
+          guestFileWrites: 0,
+          indexWrites: 0,
+          lastStagedAttachmentIds: [],
+          stageCalls: 0,
+          stagedAttachmentBodies: 0
+        },
         runtimeSandboxId,
         sandboxName: input.sandboxName,
         state: "ready"
@@ -286,6 +410,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
+    session.metrics.stageCalls += 1;
+    session.metrics.lastStagedAttachmentIds = [];
     if (input.outputDirectory) session.directories.add(safePath(input.outputDirectory));
     for (const attachment of input.attachments) {
       const content = await readRequestBody(attachment.body, attachment.byteSize);
@@ -293,11 +419,38 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
       }
       session.files.set(safePath(attachment.sandboxPath), content);
+      session.metrics.stagedAttachmentBodies += 1;
+      session.metrics.guestFileWrites += 1;
+      session.metrics.lastStagedAttachmentIds.push(attachment.attachmentId);
     }
     for (const manifest of input.manifests) {
       session.files.set(workspaceMessageManifestPath(manifest.messageId), bytes(JSON.stringify(manifest.body)));
     }
     session.files.set(WORKSPACE_INBOX_INDEX_PATH, bytes(JSON.stringify(input.inboxIndex)));
+    session.metrics.indexWrites += 1;
+  }
+
+  private directive(
+    sessionId: string,
+    session: DeterministicSession,
+    name: string,
+    argument: string | undefined
+  ): WorkspaceToolResult {
+    if (name === "metrics") {
+      return shellResult(`${JSON.stringify(session.metrics)}\n`);
+    }
+    if (name === "fault" && (argument === "export-list-once" || argument === "export-stream-once")) {
+      session.faults.add(argument === "export-list-once" ? "export_list_once" : "export_stream_once");
+      return shellResult("armed\n");
+    }
+    if (name === "lose-session") {
+      // Simulates a microVM whose disk disappeared: every later call for the
+      // old runtime identity reports the session as lost.
+      for (const exec of session.execs.values()) terminateExec(exec, 137);
+      this.sessions.delete(sessionId);
+      return shellResult("lost\n");
+    }
+    return shellResult("", 127, `aiqsa-test: unknown directive\n`);
   }
 
   async loadBoundTools(input: Parameters<WorkspaceRuntime["loadBoundTools"]>[0]) {
@@ -404,54 +557,85 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       case "sandbox_shell":
       case "sandbox_exec": {
         const command = stringArgument(args.command);
-        if (command === "sleep 300") {
-          await new Promise<never>((_resolve, reject) => {
-            const cancelled = () => reject(
-              new WorkspaceRuntimeError("workspace_tool_cancelled")
-            );
-            if (input.signal?.aborted) {
-              cancelled();
-              return;
-            }
-            input.signal?.addEventListener("abort", cancelled, { once: true });
-          });
+        const directive = TEST_DIRECTIVE.exec(command);
+        if (directive) return this.directive(input.sessionId, session, directive[1]!, directive[2]);
+        const delayed = parseDelayedCommand(command);
+        if (delayed) {
+          await waitOrAbort(delayed.delayMs, input.signal);
+          if (delayed.write) {
+            session.files.set(safePath(delayed.write.path), bytes(delayed.write.content));
+            session.metrics.guestFileWrites += 1;
+          }
+          return shellResult("");
         }
-        const stdout = command === "pwd" ? `${WORKSPACE_PROJECT_DIRECTORY}\n` : "";
-        return {
-          ...toolResult({ exitCode: 0, stderr: "", stdout, success: true }),
-          exitCode: 0
-        };
+        return shellResult(command === "pwd" ? `${WORKSPACE_PROJECT_DIRECTORY}\n` : "");
       }
       case "sandbox_exec_start": {
+        const command = stringArgument(args.command);
         const execSessionId = createHash("sha256")
           .update(`${input.modelRunToolCallId}\0${session.execs.size}`)
           .digest("hex")
           .slice(0, 32);
-        session.execs.set(execSessionId, {
+        const delayed = parseDelayedCommand(command);
+        const exec: DeterministicExec = {
           closed: false,
-          done: true,
+          done: delayed === null,
+          exitCode: delayed === null ? 0 : null,
           modelRunId: input.modelRunId,
-          output: ""
-        });
+          output: "",
+          timer: null
+        };
+        if (delayed) {
+          // The delayed side effect models a still-running guest process; it
+          // must never fire once the execution was quiesced or the VM stopped.
+          exec.timer = setTimeout(() => {
+            exec.timer = null;
+            if (exec.done || session.state !== "ready") return;
+            if (delayed.write) {
+              session.files.set(safePath(delayed.write.path), bytes(delayed.write.content));
+              session.metrics.guestFileWrites += 1;
+            }
+            exec.done = true;
+            exec.exitCode = 0;
+          }, delayed.delayMs);
+          exec.timer.unref?.();
+        }
+        session.execs.set(execSessionId, exec);
         return toolResult({ execSessionId, sandbox: session.sandboxName, stopSandboxOnExit: null });
       }
       case "sandbox_exec_poll": {
         const execSessionId = stringArgument(args.execSessionId);
         const exec = session.execs.get(execSessionId);
         if (!exec || exec.modelRunId !== input.modelRunId || exec.closed) return toolResult(null, "error");
-        return toolResult({ done: exec.done, error: null, events: [], exitStatus: { code: 0 }, nextCursor: 0 });
+        return toolResult({
+          done: exec.done,
+          error: null,
+          events: [],
+          exitStatus: exec.done ? { code: exec.exitCode ?? 0 } : null,
+          nextCursor: 0
+        });
       }
-      case "sandbox_exec_write_stdin":
+      case "sandbox_exec_write_stdin": {
+        const execSessionId = stringArgument(args.execSessionId);
+        const exec = session.execs.get(execSessionId);
+        if (!exec || exec.modelRunId !== input.modelRunId || exec.closed) return toolResult(null, "error");
+        return toolResult({ execSessionId, accepted: true });
+      }
       case "sandbox_exec_signal": {
         const execSessionId = stringArgument(args.execSessionId);
         const exec = session.execs.get(execSessionId);
         if (!exec || exec.modelRunId !== input.modelRunId || exec.closed) return toolResult(null, "error");
+        const signal = typeof args.signal === "string" ? args.signal.toLowerCase() : "";
+        if (signal === "term" || signal === "kill" || signal === "int") {
+          terminateExec(exec, signal === "kill" ? 137 : 143);
+        }
         return toolResult({ execSessionId, accepted: true });
       }
       case "sandbox_exec_close": {
         const execSessionId = stringArgument(args.execSessionId);
         const exec = session.execs.get(execSessionId);
         if (!exec || exec.modelRunId !== input.modelRunId) return toolResult(null, "error");
+        terminateExec(exec, 137);
         exec.closed = true;
         return toolResult({ closed: true, execSessionId });
       }
@@ -461,7 +645,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   async cancelToolCall(input: Parameters<WorkspaceRuntime["cancelToolCall"]>[0]): Promise<void> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     for (const exec of session.execs.values()) {
-      if (exec.modelRunId === input.modelRunId) exec.done = true;
+      if (exec.modelRunId === input.modelRunId) terminateExec(exec, 143);
     }
   }
 
@@ -469,10 +653,14 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     for (const exec of session.execs.values()) {
       if (exec.modelRunId === input.modelRunId) {
-        exec.done = true;
+        terminateExec(exec, 137);
         exec.closed = true;
       }
     }
+    if (session.faults.delete("export_list_once")) {
+      throw new WorkspaceRuntimeError("workspace_output_export_failed");
+    }
+    const streamFault = session.faults.delete("export_stream_once");
     const prefix = `${safePath(input.outputDirectory)}/`;
     const candidates = [...session.files.entries()]
       .filter(([path]) => path.startsWith(prefix))
@@ -490,8 +678,10 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     ) {
       throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
     }
-    return candidates.map((candidate) => ({
-      body: body(candidate.content),
+    return candidates.map((candidate, index) => ({
+      body: streamFault && index === candidates.length - 1
+        ? faultedBody(candidate.content)
+        : body(candidate.content),
       byteSize: candidate.content.byteLength,
       checksum: hash(candidate.content),
       mimeType: mimeTypeForPath(candidate.relativePath),
@@ -535,6 +725,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     if (input.runtimeSandboxId && input.runtimeSandboxId !== session.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
+    // Stopping the VM ends every guest process while the disk survives.
+    for (const exec of session.execs.values()) terminateExec(exec, 137);
     session.state = "stopped";
   }
 
@@ -544,6 +736,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     if (input.runtimeSandboxId && input.runtimeSandboxId !== session.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
+    for (const exec of session.execs.values()) terminateExec(exec, 137);
     this.sessions.delete(input.sessionId);
   }
 }

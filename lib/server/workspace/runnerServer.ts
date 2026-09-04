@@ -135,14 +135,17 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput): Pro
 }
 
 export function createWorkspaceRunnerServer(input: Readonly<{
+  /** Clock for pending-output expiry; tests inject a controllable clock. */
+  now?: () => number;
   runtime: WorkspaceRuntime;
   token: string;
 }>): Server {
   if (input.token.length < 32) throw new Error("workspace_runner_token_invalid");
+  const clock = input.now ?? Date.now;
   const pendingOutputs = new Map<string, PendingOutput>();
   const key = (sessionId: string, opaqueFileId: string) => `${sessionId}:${opaqueFileId}`;
   const prunePending = () => {
-    const now = Date.now();
+    const now = clock();
     for (const [id, pending] of pendingOutputs) {
       if (pending.expiresAt <= now) {
         void pending.output.body.cancel("expired").catch(() => undefined);
@@ -297,7 +300,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         });
         for (const output of outputs) {
           pendingOutputs.set(key(sessionId, output.opaqueFileId), {
-            expiresAt: Date.now() + PENDING_OUTPUT_TTL_MS,
+            expiresAt: clock() + PENDING_OUTPUT_TTL_MS,
             output
           });
         }
@@ -329,7 +332,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           sessionId
         });
         pendingOutputs.set(key(sessionId, output.opaqueFileId), {
-          expiresAt: Date.now() + PENDING_OUTPUT_TTL_MS,
+          expiresAt: clock() + PENDING_OUTPUT_TTL_MS,
           output
         });
         const { body: _body, ...metadata } = output;
