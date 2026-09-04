@@ -8,6 +8,11 @@ import type { WorkspaceRuntime } from "./runtime";
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
 const CLAIM_STALE_MS = 15 * 60 * 1_000;
 const OPERATION_STALE_MS = 5 * 60 * 1_000;
+// A run's own settlement follows its terminal status within seconds; a
+// session still RUNNING/CREATING with no active run after this grace was
+// left behind (app crash, or a runner that was unreachable at settle time)
+// and must not wait for the operation-marker window.
+const SESSION_BACKSTOP_STALE_MS = 30 * 1_000;
 
 type SessionCandidate = Readonly<{
   chatId: string;
@@ -102,10 +107,11 @@ export async function runWorkspaceMaintenance(input: Readonly<{
   // is uncertain, and move it out of the active states without waiting for
   // the idle TTL.
   const registry = createPrismaWorkspaceExecutionRegistry(input.prisma);
+  const staleSessionBefore = new Date(now.getTime() - SESSION_BACKSTOP_STALE_MS);
   const staleSessions = await input.prisma.$queryRaw<SessionCandidate[]>(Prisma.sql`
     SELECT ws."id", ws."chatId", ws."sandboxName", ws."runtimeSandboxId"
     FROM "WorkspaceSession" ws
-    WHERE ws."updatedAt" <= ${staleOperationBefore}
+    WHERE ws."updatedAt" <= ${staleSessionBefore}
       AND ws."lastErrorCode" IS NULL
       AND ws."state" IN (
         'RUNNING'::"WorkspaceSessionState",
@@ -156,7 +162,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         id: session.id,
         lastErrorCode: null,
         state: { in: ["RUNNING", "CREATING"] },
-        updatedAt: { lte: staleOperationBefore }
+        updatedAt: { lte: staleSessionBefore }
       }
     });
     if (settled.count === 1) {

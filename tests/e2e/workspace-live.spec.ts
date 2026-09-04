@@ -239,8 +239,12 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
     const firstMtimes = await page.locator('article[data-role="assistant"]').last().textContent();
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_staging_probe]", "Inbox mtimes:");
     const secondMtimes = await page.locator('article[data-role="assistant"]').last().textContent();
-    expect(firstMtimes).toMatch(/Inbox mtimes: \/workspace\/inbox\/messages\/\S+ \d+/u);
-    expect(secondMtimes).toBe(firstMtimes);
+    // Compare only the guest's answer line: the activity timeline above it
+    // legitimately differs between turns (durations).
+    const mtimesLine = (text: string | null) =>
+      text?.match(/Inbox mtimes: (\/workspace\/inbox\/messages\/\S+ \d+)/u)?.[1] ?? null;
+    expect(mtimesLine(firstMtimes)).toMatch(/^\/workspace\/inbox\/messages\/\S+ \d+$/u);
+    expect(mtimesLine(secondMtimes)).toBe(mtimesLine(firstMtimes));
 
     // Stop after a real exec_start: the delayed marker must never appear and no
     // registered execution may stay open.
@@ -255,6 +259,8 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
     await stopButton.click();
     await expect(stopButton).toHaveCount(0, { timeout: 60_000 });
     await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
+    // The stopped turn's own timeline shows the terminated command.
+    await expect(liveActivity).toContainText("Stopped sleep 300", { timeout: 30_000 });
     await expect(page.locator(".v2-composer-workspace-state")).not.toContainText("Running a command", { timeout: 30_000 });
     await page.waitForTimeout(13_000);
     const stoppedSession = await prisma.workspaceSession.findUniqueOrThrow({
@@ -266,7 +272,6 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
       where: { state: { in: ["ACTIVE", "TERMINATING"] }, workspaceSessionId: stoppedSession.id }
     })).toBe(0);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_marker_probe]", "Late marker absent after Stop.");
-    await expect(page.getByTestId("tool-activity-disclosure").last()).toContainText("Stopped sleep 300");
 
     const output = await generatedArchive(page, onlineChatId);
     const outputFiles = tarContents(output.bytes).files;
