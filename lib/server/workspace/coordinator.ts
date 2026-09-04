@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import {
   isSafeWorkspaceRelativePath,
+  WORKSPACE_EXEC_SESSION_TOOL_NAMES,
   WORKSPACE_MCP_TOOL_ALLOWLIST,
   WORKSPACE_PERMANENT_EXPORT_ERROR_CODES,
   workspaceAttachmentPath,
@@ -19,6 +20,11 @@ import {
 } from "@/lib/server/uploads/storage";
 import { resolveProjectAccess } from "@/lib/server/projects/access";
 import type { WorkspaceConfig } from "./config";
+import {
+  WORKSPACE_EXECUTION_OPEN_STATES,
+  type WorkspaceExecutionRegistry
+} from "./executionRegistry";
+import { quiesceWorkspaceExecutions } from "./quiescence";
 import type {
   WorkspaceAttachmentStream,
   WorkspaceBoundTool,
@@ -80,6 +86,12 @@ export type WorkspaceExportClaim =
 export const WORKSPACE_EXPORT_LEASE_MS = 120_000;
 
 export type WorkspaceCoordinatorRepository = Readonly<{
+  /**
+   * Accepted `sandbox_exec_start` calls that never settled and own no
+   * registry row: the process may be running, so only a VM stop proves
+   * quiescence.
+   */
+  ambiguousExecutionStarts(input: Readonly<{ runId: string }>): Promise<number>;
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   claimExport(input: Readonly<{
@@ -131,6 +143,15 @@ export type WorkspaceCoordinatorRepository = Readonly<{
     output: Omit<WorkspaceOutputStream, "body" | "opaqueFileId">;
     storageKey: string;
   }>): Promise<ThreadGeneratedFile>;
+  /**
+   * Guarded terminal transition of a session that no run uses any more.
+   * Never touches DELETING, FAILED, or an in-progress archive/idle-stop marker,
+   * and never extends the activity window.
+   */
+  settleSession(input: Readonly<{
+    outcome: "pending" | "ready" | "stopped";
+    sessionId: string;
+  }>): Promise<boolean>;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -260,6 +281,16 @@ export function createPrismaWorkspaceCoordinatorRepository(
   }
 
   return {
+    async ambiguousExecutionStarts({ runId }) {
+      return prisma.modelRunToolCall.count({
+        where: {
+          state: { in: ["pending", "running"] },
+          toolName: { contains: "sandbox_exec_start" },
+          workspaceExecution: { is: null },
+          workspaceRunBindingId: runId
+        }
+      });
+    },
     async binding({ runId, userId }) {
       return loadBinding(runId, userId);
     },
@@ -482,6 +513,20 @@ export function createPrismaWorkspaceCoordinatorRepository(
         where: { id: sessionId, state: { in: ["CREATING", "RUNNING", "READY"] } }
       });
     },
+    async settleSession({ outcome, sessionId }) {
+      const updated = await prisma.workspaceSession.updateMany({
+        data: outcome === "stopped"
+          ? { state: "STOPPED", stoppedAt: new Date() }
+          : { state: outcome === "ready" ? "READY" : "PENDING", stoppedAt: null },
+        where: {
+          id: sessionId,
+          lastErrorCode: null,
+          runtimeSandboxId: outcome === "pending" ? null : { not: null },
+          state: { in: outcome === "stopped" ? ["CREATING", "RUNNING", "READY"] : ["CREATING", "RUNNING"] }
+        }
+      });
+      return updated.count === 1;
+    },
     async settleOutput({ binding, output, storageKey }) {
       if (!isSafeWorkspaceRelativePath(output.relativePath)) {
         throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
@@ -561,13 +606,17 @@ export function createPrismaWorkspaceCoordinatorRepository(
   };
 }
 
+export type WorkspaceSettlementOutcome = "cancelled" | "completed" | "failed" | "timed_out";
+
+export type WorkspaceSettlementResult = Readonly<{
+  /** Every execution of the run is provably gone (closed, or the VM was stopped). */
+  quiesced: boolean;
+  sessionSettled: boolean;
+  stoppedVm: boolean;
+}>;
+
 export type WorkspaceCoordinator = Readonly<{
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
-  cancel(input: Readonly<{
-    modelRunId: string;
-    modelRunToolCallId: string;
-    userId: string;
-  }>): Promise<void>;
   execute(input: Readonly<{
     call: ModelToolCall;
     modelRunToolCallId: string;
@@ -582,6 +631,17 @@ export type WorkspaceCoordinator = Readonly<{
     userId: string;
     workspace: NormalizedRunWorkspace;
   }>): Promise<readonly ThreadGeneratedFile[]>;
+  /**
+   * Idempotent terminal settlement for any run outcome: quiesce the run's
+   * executions (falling back to a VM stop), then move the session out of
+   * RUNNING/CREATING. Safe to call more than once and without a runtime.
+   */
+  settle(input: Readonly<{
+    outcome: WorkspaceSettlementOutcome;
+    runId: string;
+    userId: string;
+    workspace?: NormalizedRunWorkspace;
+  }>): Promise<WorkspaceSettlementResult>;
   tools(input: Readonly<{
     runId: string;
     userId: string;
@@ -633,6 +693,22 @@ async function objectMatches(
   }
 }
 
+const EXEC_SESSION_TOOLS = new Set<string>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
+
+function isExecSessionTool(name: string): boolean {
+  return EXEC_SESSION_TOOLS.has(name);
+}
+
+function executionErrorResult(call: ModelToolCall, text: string): ToolExecutionResult {
+  return {
+    callId: call.id,
+    content: [{ text, type: "text" }],
+    name: call.name,
+    rawPreview: { truncated: false },
+    status: "error"
+  };
+}
+
 function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): ToolExecutionResult {
   const content: ToolExecutionResult["content"] = [];
   for (const entry of result.content) {
@@ -659,6 +735,7 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): To
 
 export function createWorkspaceCoordinator(input: Readonly<{
   config: WorkspaceConfig;
+  registry: WorkspaceExecutionRegistry;
   repository: WorkspaceCoordinatorRepository;
   runtime: WorkspaceRuntime;
   storage: StorageAdapter;
@@ -814,6 +891,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return readyBinding;
       } catch (error) {
         initialized.delete(binding.runId);
+        // A cancelled turn is not a runtime failure: the row keeps its
+        // CREATING/RUNNING state so terminal settlement can resolve it, and a
+        // sandbox that did get created is reconnected by name on the next turn.
+        if (
+          signal?.aborted ||
+          (error instanceof WorkspaceRuntimeError && error.code === "workspace_tool_cancelled")
+        ) {
+          throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+        }
         if (
           error instanceof WorkspaceRuntimeError &&
           error.code === "workspace_session_lost" &&
@@ -856,19 +942,115 @@ export function createWorkspaceCoordinator(input: Readonly<{
     }
   }
 
+  async function quiesceRun(
+    binding: WorkspaceExecutionBinding,
+    signal?: AbortSignal
+  ): Promise<Readonly<{ proven: boolean; stoppedVm: boolean }>> {
+    if (!binding.runtimeSandboxId) return { proven: true, stoppedVm: false };
+    return quiesceWorkspaceExecutions({
+      ambiguousStarts: await input.repository.ambiguousExecutionStarts({ runId: binding.runId }),
+      modelRunId: binding.runId,
+      registry: input.registry,
+      runtime: input.runtime,
+      runtimeSandboxId: binding.runtimeSandboxId,
+      sessionId: binding.sessionId,
+      signal
+    });
+  }
+
+  async function ownedExecution(
+    binding: WorkspaceExecutionBinding,
+    execSessionId: unknown
+  ): Promise<boolean> {
+    if (typeof execSessionId !== "string") return false;
+    const record = await input.registry.find({
+      runtimeExecSessionId: execSessionId,
+      sessionId: binding.sessionId
+    });
+    return record?.modelRunId === binding.runId;
+  }
+
+  async function registerExecution(
+    binding: WorkspaceExecutionBinding,
+    modelRunToolCallId: string,
+    result: WorkspaceToolResult
+  ): Promise<boolean> {
+    const runtimeSandboxId = binding.runtimeSandboxId;
+    if (!runtimeSandboxId) return false;
+    const execSessionId = result.execSessionId;
+    const registered = execSessionId
+      ? await input.registry.register({
+          modelRunId: binding.runId,
+          modelRunToolCallId,
+          runtimeExecSessionId: execSessionId,
+          sessionId: binding.sessionId
+        }).catch(() => "conflict" as const)
+      : "conflict";
+    if (registered === "registered") return true;
+    // Ownership is not durable: kill the process now, or stop the VM when even
+    // that cannot be proven, before the model is told anything.
+    const terminated = execSessionId
+      ? await input.runtime.terminateExecutions({
+          executions: [{ modelRunId: binding.runId, runtimeExecSessionId: execSessionId }],
+          runtimeSandboxId,
+          sessionId: binding.sessionId
+        }).catch(() => null)
+      : null;
+    if (!terminated?.every((entry) => entry.outcome === "closed")) {
+      await input.runtime.stopSession({ runtimeSandboxId, sessionId: binding.sessionId })
+        .catch(() => undefined);
+      initialized.delete(binding.runId);
+      await input.repository.settleSession({ outcome: "stopped", sessionId: binding.sessionId })
+        .catch(() => false);
+    }
+    return false;
+  }
+
+  async function closeExecution(
+    binding: WorkspaceExecutionBinding,
+    execSessionId: unknown
+  ): Promise<void> {
+    if (typeof execSessionId !== "string") return;
+    const record = await input.registry.find({
+      runtimeExecSessionId: execSessionId,
+      sessionId: binding.sessionId
+    });
+    if (record?.modelRunId !== binding.runId) return;
+    await input.registry.transition({
+      from: [...WORKSPACE_EXECUTION_OPEN_STATES],
+      id: record.id,
+      to: "CLOSED"
+    });
+  }
+
   return {
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
-    async cancel({ modelRunId, modelRunToolCallId, userId }) {
-      const binding = await input.repository.binding({ runId: modelRunId, userId });
-      if (!binding?.runtimeSandboxId) return;
-      await input.runtime.cancelToolCall({
-        modelRunId,
-        modelRunToolCallId,
-        runtimeSandboxId: binding.runtimeSandboxId,
+    async settle({ outcome: _outcome, runId, userId, workspace }) {
+      const binding = await input.repository.binding({ runId, userId });
+      if (!binding || (workspace && !exactBinding(binding, workspace))) {
+        initializing.delete(runId);
+        initialized.delete(runId);
+        return { quiesced: false, sessionSettled: false, stoppedVm: false };
+      }
+      const cached = initialized.get(runId);
+      const current = binding.runtimeSandboxId === null && cached?.runtimeSandboxId
+        ? { ...binding, runtimeSandboxId: cached.runtimeSandboxId }
+        : binding;
+      const quiescence = await quiesceRun(current);
+      initializing.delete(runId);
+      initialized.delete(runId);
+      if (!quiescence.proven) {
+        // The session stays RUNNING on purpose: maintenance retries the
+        // backstop later instead of reporting a live process as idle.
+        return { quiesced: false, sessionSettled: false, stoppedVm: false };
+      }
+      const sessionSettled = await input.repository.settleSession({
+        outcome: quiescence.stoppedVm ? "stopped" : current.runtimeSandboxId ? "ready" : "pending",
         sessionId: binding.sessionId
       });
+      return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm };
     },
     async execute({ call, modelRunToolCallId, runId, signal, userId, workspace }) {
       const initial = await requireBinding(runId, userId, workspace);
@@ -881,6 +1063,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const definition = binding.toolDefinitions.find((tool) => tool.namespacedName === call.name);
       if (!definition || !binding.runtimeSandboxId) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      if (isExecSessionTool(definition.originalName)) {
+        // The durable registry, not the runner cache, decides ownership.
+        const owned = await ownedExecution(binding, call.arguments.execSessionId);
+        if (!owned) {
+          return executionErrorResult(call, "This execution does not belong to the current run.");
+        }
       }
       const timeout = new AbortController();
       const timer = setTimeout(
@@ -928,6 +1117,17 @@ export function createWorkspaceCoordinator(input: Readonly<{
           binding = initializedBinding.binding;
           result = await dispatch(binding);
           initializedBinding = { binding, recreated: true };
+        }
+        if (definition.originalName === "sandbox_exec_start" && result.status === "complete") {
+          const registered = await registerExecution(binding, modelRunToolCallId, result);
+          if (!registered) {
+            return executionErrorResult(
+              call,
+              "The long-running execution could not be registered and was stopped. Start it again."
+            );
+          }
+        } else if (definition.originalName === "sandbox_exec_close" && result.status === "complete") {
+          await closeExecution(binding, call.arguments.execSessionId);
         }
         const projected = resultFromRuntime(call, result);
         return initializedBinding.recreated
@@ -999,6 +1199,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
         const binding = await initialize(initial, workspace, signal);
         if (!binding.runtimeSandboxId) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
+        }
+        // Freeze the output set: no process of this run may still be writing
+        // between the listing/hash and the upload.
+        const quiescence = await quiesceRun(binding, signal);
+        if (!quiescence.proven || quiescence.stoppedVm) {
+          throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
         }
         await renew();
         const outputs = await input.runtime.collectOutputs({

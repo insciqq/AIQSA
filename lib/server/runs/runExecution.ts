@@ -668,6 +668,21 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       const signal = workspaceTurnController
         ? AbortSignal.any([abortController.signal, workspaceTurnController.signal])
         : abortController.signal;
+      // Terminal Workspace settlement runs on every exit path so a stopped,
+      // timed-out, or failed turn never leaves a live guest process or a
+      // session stuck in RUNNING/CREATING. Best effort: it must not mask the
+      // run's own terminal persistence.
+      const settleWorkspace = async (
+        outcome: "cancelled" | "completed" | "failed" | "timed_out"
+      ) => {
+        if (!normalizedRequest.workspace || !input.workspace) return;
+        await input.workspace.settle({
+          outcome,
+          runId,
+          userId: input.userId,
+          workspace: normalizedRequest.workspace
+        }).catch(() => undefined);
+      };
       const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
         ...(input.prepared.project
@@ -2668,6 +2683,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             userId: input.userId,
             workspace: normalizedRequest.workspace
           });
+          await settleWorkspace("completed");
         }
         const persistedProviderResult = groundedLiveOnly
           ? {
@@ -2743,6 +2759,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           !abortController.signal.aborted;
         if (abortController.signal.aborted || isAbortError(error) && !workspaceTurnTimedOut) {
           await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
+          await settleWorkspace("cancelled");
           await tokenBuffer.flush().catch(() => undefined);
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
@@ -2754,6 +2771,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             userId: input.userId
           }).catch(() => undefined);
         }
+        await settleWorkspace(workspaceTurnTimedOut ? "timed_out" : "failed");
         let failure = workspaceTurnTimedOut
           ? workspaceTurnController.signal.reason
           : error;

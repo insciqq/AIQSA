@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { WorkspaceConfig } from "./config";
+import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
+import { quiesceWorkspaceExecutions } from "./quiescence";
 import type { WorkspaceRuntime } from "./runtime";
 
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
@@ -29,6 +31,10 @@ export type WorkspaceMaintenanceSummary = Readonly<{
   idleFailed: number;
   idleStopped: number;
   staleOperationsRecovered: number;
+  /** Sessions left RUNNING/CREATING by a crashed app that were settled here. */
+  staleSessionsSettled: number;
+  /** Of those, sessions whose VM had to be stopped to prove quiescence. */
+  staleSessionsStopped: number;
 }>;
 
 /**
@@ -89,6 +95,75 @@ export async function runWorkspaceMaintenance(input: Readonly<{
       state: "CREATING"
     }
   });
+
+  // App-crash backstop: a session still RUNNING, or CREATING without an
+  // operation marker, whose chat has no active run was abandoned by a run that
+  // never settled. Quiesce what the registry knows, stop the VM when anything
+  // is uncertain, and move it out of the active states without waiting for
+  // the idle TTL.
+  const registry = createPrismaWorkspaceExecutionRegistry(input.prisma);
+  const staleSessions = await input.prisma.$queryRaw<SessionCandidate[]>(Prisma.sql`
+    SELECT ws."id", ws."chatId", ws."sandboxName", ws."runtimeSandboxId"
+    FROM "WorkspaceSession" ws
+    WHERE ws."updatedAt" <= ${staleOperationBefore}
+      AND ws."lastErrorCode" IS NULL
+      AND ws."state" IN (
+        'RUNNING'::"WorkspaceSessionState",
+        'CREATING'::"WorkspaceSessionState"
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "ModelRun" mr
+        WHERE mr."chatId" = ws."chatId"
+          AND mr."status" IN (
+            'preparing'::"ModelRunStatus",
+            'queued'::"ModelRunStatus",
+            'in_progress'::"ModelRunStatus",
+            'streaming'::"ModelRunStatus"
+          )
+      )
+    ORDER BY ws."updatedAt" ASC, ws."id" ASC
+    LIMIT ${limit}
+  `);
+  let staleSessionsSettled = 0;
+  let staleSessionsStopped = 0;
+  for (const session of staleSessions) {
+    let stoppedVm = false;
+    if (session.runtimeSandboxId) {
+      const ambiguousStarts = await input.prisma.modelRunToolCall.count({
+        where: {
+          state: { in: ["pending", "running"] },
+          toolName: { contains: "sandbox_exec_start" },
+          workspaceExecution: { is: null },
+          workspaceRunBinding: { workspaceSessionId: session.id }
+        }
+      });
+      const quiescence = await quiesceWorkspaceExecutions({
+        ambiguousStarts,
+        registry,
+        runtime: input.runtime,
+        runtimeSandboxId: session.runtimeSandboxId,
+        sessionId: session.id
+      });
+      if (!quiescence.proven) continue;
+      stoppedVm = quiescence.stoppedVm;
+    }
+    const settled = await input.prisma.workspaceSession.updateMany({
+      data: stoppedVm
+        ? { state: "STOPPED", stoppedAt: now }
+        : { state: session.runtimeSandboxId ? "READY" : "PENDING", stoppedAt: null },
+      where: {
+        id: session.id,
+        lastErrorCode: null,
+        state: { in: ["RUNNING", "CREATING"] },
+        updatedAt: { lte: staleOperationBefore }
+      }
+    });
+    if (settled.count === 1) {
+      staleSessionsSettled += 1;
+      if (stoppedVm) staleSessionsStopped += 1;
+    }
+  }
 
   const expired = await input.prisma.$transaction(async (tx) => {
     const candidates = await tx.$queryRaw<SessionCandidate[]>(Prisma.sql`
@@ -283,6 +358,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         runtimeSandboxId: claim.runtimeSandboxId,
         sessionId: claim.workspaceSessionId
       });
+      await registry.closeAll({ sessionId: claim.workspaceSessionId, to: "CLOSED" });
       const completed = await input.prisma.$transaction(async (tx) => {
         const job = await tx.workspaceCleanupJob.findFirst({
           select: { id: true },
@@ -335,6 +411,8 @@ export async function runWorkspaceMaintenance(input: Readonly<{
     expiredFenced: expired,
     idleFailed,
     idleStopped,
-    staleOperationsRecovered: staleOperationsRecovered.count
+    staleOperationsRecovered: staleOperationsRecovered.count,
+    staleSessionsSettled,
+    staleSessionsStopped
   };
 }

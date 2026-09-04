@@ -1618,6 +1618,18 @@ async function recoverCheckpointedToolLoop(
   let usageEvidenceTrusted = true;
   let currentProviderResponseId = run.providerResponseId;
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
+  // Terminal Workspace settlement for a recovered turn that stops or fails:
+  // best effort, never allowed to mask the run's own terminal persistence.
+  const settleRecoveredWorkspaceOnExit = async (outcome: "cancelled" | "failed") => {
+    const savedWorkspace = run.normalizedRequest.workspace;
+    if (!savedWorkspace || !deps.workspace) return;
+    await deps.workspace.settle({
+      outcome,
+      runId: run.id,
+      userId: run.userId,
+      workspace: savedWorkspace
+    }).catch(() => undefined);
+  };
 
   function allUsageAttributions(): RunUsageAttribution[] {
     return [
@@ -1880,6 +1892,18 @@ async function recoverCheckpointedToolLoop(
         userId: run.userId,
         workspace
       });
+      await settleRecoveredWorkspace("completed");
+    }
+    async function settleRecoveredWorkspace(
+      outcome: "cancelled" | "completed" | "failed"
+    ): Promise<void> {
+      if (!workspace || !deps.workspace) return;
+      await deps.workspace.settle({
+        outcome,
+        runId: run.id,
+        userId: run.userId,
+        workspace
+      }).catch(() => undefined);
     }
     tokenBuffer = createRunTokenPersistenceBuffer({
       allowErroredAssistant: true,
@@ -2690,9 +2714,11 @@ async function recoverCheckpointedToolLoop(
     }
   } catch (error) {
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
+      await settleRecoveredWorkspaceOnExit("cancelled");
       await tokenBuffer?.flush().catch(() => undefined);
       return;
     }
+    await settleRecoveredWorkspaceOnExit("failed");
     let recoveryError = error;
     const originalStreamSafetyReport = providerStreamSafetyReport(error);
     try {
@@ -4457,6 +4483,8 @@ export async function reconcileInstallationRuns(
       code: "run_orphaned",
       message: "Run stopped reporting progress and was marked failed."
     });
+    await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId })
+      .catch(() => undefined);
   }));
 }
 
@@ -4528,5 +4556,7 @@ export async function reconcileStaleRuns(
       message: "Run stopped reporting progress and was marked failed."
     };
     await deps.repository.failRun(run.id, run.assistantMessageId, payload);
+    await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId })
+      .catch(() => undefined);
   }
 }

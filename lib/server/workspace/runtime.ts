@@ -35,6 +35,8 @@ export type WorkspaceToolResult = Readonly<{
     type: "json" | "text";
     value?: unknown;
   }>[];
+  /** Official long-lived execution id returned by a successful `sandbox_exec_start`. */
+  execSessionId?: string;
   exitCode?: number | null;
   originalByteCount?: number;
   status: "complete" | "error";
@@ -60,6 +62,16 @@ export type WorkspaceOutputStream = Readonly<{
   mimeType: string;
   opaqueFileId: string;
   relativePath: string;
+}>;
+
+/**
+ * Result of quiescing one long-lived execution. `closed` proves the guest
+ * process is gone; `unknown` means the runtime could not prove it, so the
+ * caller must stop the VM to guarantee quiescence.
+ */
+export type WorkspaceExecutionTermination = Readonly<{
+  outcome: "closed" | "unknown";
+  runtimeExecSessionId: string;
 }>;
 
 export interface WorkspaceRuntime {
@@ -104,6 +116,17 @@ export interface WorkspaceRuntime {
     runtimeSandboxId: string;
     sessionId: string;
   }>): Promise<void>;
+  /**
+   * Terminates the given executions on behalf of the application's durable
+   * registry: TERM, a bounded grace period, KILL, then close. The runner's own
+   * ownership cache must not block this after a restart.
+   */
+  terminateExecutions(input: Readonly<{
+    executions: readonly Readonly<{ modelRunId: string; runtimeExecSessionId: string }>[];
+    runtimeSandboxId: string;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<readonly WorkspaceExecutionTermination[]>;
   collectOutputs(input: Readonly<{
     modelRunId: string;
     outputDirectory: string;
@@ -132,6 +155,7 @@ export class WorkspaceRuntimeError extends Error {
   readonly code:
     | "workspace_attachment_unavailable"
     | "workspace_archive_limit_exceeded"
+    | "workspace_execution_cleanup_failed"
     | "workspace_output_limit_exceeded"
     | "workspace_output_export_failed"
     | "workspace_runtime_incompatible"

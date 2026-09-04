@@ -200,6 +200,9 @@ function record(value: unknown): Record<string, unknown> | null {
 export function workspaceCommandRunning(events: readonly RunEventView[]): boolean {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!;
+    // A finished stream (Stop, error, completion) ends the tool phase even
+    // when the last artifact was a transient `tool_call requested`.
+    if (event.type === "done" || event.type === "error") return false;
     if (event.type !== "artifact") continue;
     const data = record(event.data);
     const payload = record(data?.payload);
@@ -1900,7 +1903,7 @@ export function PowerAppShellV2({
       archive: archiveWorkspace,
       available: workspaceAvailable,
       busy: workspaceCapabilityBusy,
-      commandRunning: workspaceCommandRunning(activeRunSurface.events),
+      commandRunning: activeChatStreaming && workspaceCommandRunning(activeRunSurface.events),
       enabled: workspaceEnabled,
       internetEnabled: workspaceInternetEnabled,
       loading: workspaceInstallation === null,

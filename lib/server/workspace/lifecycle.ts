@@ -10,6 +10,7 @@ import type {
 } from "@/lib/contracts/workspace";
 import { workspaceModelSupportsTools, type WorkspaceAvailabilityService } from "./availability";
 import type { WorkspaceConfig } from "./config";
+import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceRuntime, WorkspaceOutputStream } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
@@ -412,6 +413,9 @@ export function createWorkspaceLifecycleService(input: Readonly<{
           runtimeSandboxId: session.runtimeSandboxId,
           sessionId: session.id
         });
+        // The VM is gone, so no registered execution can still be running.
+        await createPrismaWorkspaceExecutionRegistry(input.prisma)
+          .closeAll({ sessionId: session.id, to: "CLOSED" });
         const policy = await input.policy.read();
         await input.prisma.$transaction(async (tx) => {
           const job = await tx.workspaceCleanupJob.findUnique({

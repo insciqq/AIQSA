@@ -42,6 +42,14 @@ describe("PowerAppShellV2 catalog loading", () => {
       },
       type: "artifact"
     }])).toBe(false);
+    expect(workspaceCommandRunning([workspaceCall, {
+      data: { runId: "run_1", status: "cancelled" },
+      type: "done"
+    }])).toBe(false);
+    expect(workspaceCommandRunning([workspaceCall, {
+      data: { code: "provider_stream_failed", message: "failed" },
+      type: "error"
+    }])).toBe(false);
   });
 
   it.each([

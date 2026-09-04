@@ -425,3 +425,71 @@ describe("deterministic Workspace harness", () => {
     expect(runtime.metrics(sessionId)).toMatchObject({ stageCalls: 0 });
   });
 });
+
+describe("deterministic Workspace execution termination", () => {
+  it("closes known executions, reports forgotten ones as unknown, and exposes exec ids", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "0199aabc-12ef-7abc-8abc-0123456789b4";
+    const created = await runtime.ensureSession({
+      cpus: 2,
+      diskMiB: 10_240,
+      imageRef: config.imageRef,
+      internetEnabled: false,
+      memoryMiB: 4_096,
+      runtimeSandboxId: null,
+      sandboxName: workspaceSandboxName(sessionId),
+      sessionId
+    });
+    const started = await runtime.callBoundTool({
+      arguments: { command: "sleep 30 && echo late > /workspace/project/late.txt" },
+      modelRunId: "run_terminate",
+      modelRunToolCallId: "call_start",
+      originalName: "sandbox_exec_start",
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    });
+    expect(started.execSessionId).toMatch(/^[a-f0-9]{32}$/u);
+    const execSessionId = started.execSessionId!;
+    await expect(runtime.terminateExecutions({
+      executions: [
+        { modelRunId: "run_terminate", runtimeExecSessionId: execSessionId },
+        { modelRunId: "run_terminate", runtimeExecSessionId: "missing" }
+      ],
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([
+      { outcome: "closed", runtimeExecSessionId: execSessionId },
+      { outcome: "unknown", runtimeExecSessionId: "missing" }
+    ]);
+    await expect(runtime.callBoundTool({
+      arguments: { execSessionId },
+      modelRunId: "run_terminate",
+      modelRunToolCallId: "call_poll",
+      originalName: "sandbox_exec_poll",
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    })).resolves.toMatchObject({ status: "error" });
+
+    const second = await runtime.callBoundTool({
+      arguments: { command: "sleep 30" },
+      modelRunId: "run_terminate",
+      modelRunToolCallId: "call_start_2",
+      originalName: "sandbox_exec_start",
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    });
+    await runtime.callBoundTool({
+      arguments: { command: "aiqsa-test forget-executions" },
+      modelRunId: "run_terminate",
+      modelRunToolCallId: "call_forget",
+      originalName: "sandbox_shell",
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    });
+    await expect(runtime.terminateExecutions({
+      executions: [{ modelRunId: "run_terminate", runtimeExecSessionId: second.execSessionId! }],
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([{ outcome: "unknown", runtimeExecSessionId: second.execSessionId }]);
+  });
+});

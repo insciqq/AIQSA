@@ -87,7 +87,8 @@ describe("Prisma Workspace maintenance", () => {
       loadBoundTools: unused,
       removeSession,
       stageAttachments: unused,
-      stopSession
+      stopSession,
+      terminateExecutions: unused
     };
 
     const user = await prisma.user.create({
@@ -196,7 +197,9 @@ describe("Prisma Workspace maintenance", () => {
         expiredFenced: 1,
         idleFailed: 0,
         idleStopped: 1,
-        staleOperationsRecovered: 1
+        staleOperationsRecovered: 1,
+        staleSessionsSettled: 0,
+        staleSessionsStopped: 0
       });
       expect(stopSession).toHaveBeenCalledWith({
         runtimeSandboxId: idle.runtimeSandboxId,
@@ -321,7 +324,8 @@ describe("Prisma Workspace maintenance", () => {
       loadBoundTools: unused,
       removeSession,
       stageAttachments: unused,
-      stopSession
+      stopSession,
+      terminateExecutions: unused
     };
     const user = await prisma.user.create({
       data: { displayName: "Workspace Maintenance Overflow Test", id: userId }
@@ -370,7 +374,9 @@ describe("Prisma Workspace maintenance", () => {
         expiredFenced: 1,
         idleFailed: 0,
         idleStopped: 0,
-        staleOperationsRecovered: 0
+        staleOperationsRecovered: 0,
+        staleSessionsSettled: 0,
+        staleSessionsStopped: 0
       });
       expect(removeSession).toHaveBeenCalledWith({
         runtimeSandboxId: oldest.runtimeSandboxId,
@@ -396,5 +402,204 @@ describe("Prisma Workspace maintenance", () => {
       });
       await prisma.user.deleteMany({ where: { id: userId } });
     }
+  });
+});
+
+describe("Prisma Workspace maintenance backstop", () => {
+  const BACKSTOP_USER_PREFIX = `${TEST_USER_PREFIX}backstop-`;
+
+  afterAll(async () => {
+    const users = await prisma.user.findMany({
+      select: { id: true },
+      where: { id: { startsWith: BACKSTOP_USER_PREFIX } }
+    });
+    const userIds = users.map(({ id }) => id);
+    if (userIds.length === 0) return;
+    const chats = await prisma.chat.findMany({ select: { id: true }, where: { userId: { in: userIds } } });
+    const chatIds = chats.map(({ id }) => id);
+    await prisma.modelRun.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.chat.updateMany({ data: { activeLeafMessageId: null }, where: { id: { in: chatIds } } });
+    await prisma.message.deleteMany({ where: { chatId: { in: chatIds } } });
+    await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
+    await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+  });
+
+  it("settles sessions abandoned in RUNNING or CREATING once their chat has no active run", async () => {
+    const userId = `${BACKSTOP_USER_PREFIX}${randomUUID()}`;
+    const now = new Date();
+    const staleAt = new Date(now.getTime() - 6 * 60 * 1_000);
+    const future = new Date(now.getTime() + config.retentionSeconds * 1_000);
+    const terminateExecutions = vi.fn<WorkspaceRuntime["terminateExecutions"]>(async (input) =>
+      input.executions.map((execution) => ({
+        outcome: "closed" as const,
+        runtimeExecSessionId: execution.runtimeExecSessionId
+      })));
+    const stopSession = vi.fn<WorkspaceRuntime["stopSession"]>(async () => undefined);
+    const runtime: WorkspaceRuntime = {
+      callBoundTool: unused,
+      cancelToolCall: unused,
+      collectOutputs: unused,
+      createProjectArchive: unused,
+      ensureSession: unused,
+      health: unused,
+      loadBoundTools: unused,
+      removeSession: unused,
+      stageAttachments: unused,
+      stopSession,
+      terminateExecutions
+    };
+    await prisma.user.create({ data: { displayName: "Workspace Backstop Test", id: userId } });
+    const chat = async (title: string) => prisma.chat.create({
+      data: { title, userId, workspaceEnabled: true }
+    });
+    const [registeredChat, creatingChat, ambiguousChat] = await Promise.all([
+      chat("Registered execution"),
+      chat("Creating without runtime"),
+      chat("Ambiguous exec start")
+    ]);
+    const session = (chatId: string, data: Record<string, unknown>) => prisma.workspaceSession.create({
+      data: {
+        chatId,
+        expiresAt: future,
+        imageRef: config.imageRef,
+        internetEnabled: true,
+        lastActiveAt: staleAt,
+        policyRevision: 1,
+        sandboxName: `aiqsa-ws-${randomUUID()}`,
+        updatedAt: staleAt,
+        ...data
+      }
+    });
+    const registered = await session(registeredChat.id, {
+      runtimeSandboxId: `runtime-registered-${randomUUID()}`,
+      state: "RUNNING"
+    });
+    const creating = await session(creatingChat.id, { runtimeSandboxId: null, state: "CREATING" });
+    const ambiguous = await session(ambiguousChat.id, {
+      runtimeSandboxId: `runtime-ambiguous-${randomUUID()}`,
+      state: "RUNNING"
+    });
+    const cancelledRun = async (chatId: string, sessionId: string) => {
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId,
+          content: textMessageContent("Start a long command"),
+          modelId: "fake-qsa",
+          provider: "fake",
+          role: "user",
+          status: "complete"
+        }
+      });
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId,
+          content: textMessageContent("Stopped."),
+          modelId: "fake-qsa",
+          parentMessageId: userMessage.id,
+          provider: "fake",
+          role: "assistant",
+          status: "cancelled"
+        }
+      });
+      const run = await prisma.modelRun.create({
+        data: {
+          assistantMessageId: assistantMessage.id,
+          chatId,
+          modelId: "fake-qsa",
+          normalizedRequest: {},
+          provider: "fake",
+          status: "cancelled",
+          userId,
+          userMessageId: userMessage.id
+        }
+      });
+      await prisma.workspaceRunBinding.create({
+        data: {
+          imageRef: config.imageRef,
+          internetEnabled: true,
+          mcpVersion: "0.6.16",
+          modelRunId: run.id,
+          outputDirectory: `/workspace/output/${run.id}`,
+          policyRevision: 1,
+          runtimeVersion: "0.6.16",
+          toolCatalogHash: "a".repeat(64),
+          toolDefinitions: [{ name: "fixture" }],
+          workspaceSessionId: sessionId
+        }
+      });
+      return run;
+    };
+    const registeredRun = await cancelledRun(registeredChat.id, registered.id);
+    const registeredCall = await prisma.modelRunToolCall.create({
+      data: {
+        arguments: {},
+        modelRunId: registeredRun.id,
+        ordinal: 0,
+        providerCallId: `call_${randomUUID()}`,
+        roundIndex: 1,
+        state: "complete",
+        toolName: "mcp_workspace_sandbox_exec_start_fixture",
+        workspaceRunBindingId: registeredRun.id
+      }
+    });
+    const execution = await prisma.workspaceExecution.create({
+      data: {
+        modelRunId: registeredRun.id,
+        modelRunToolCallId: registeredCall.id,
+        runtimeExecSessionId: "exec-registered",
+        workspaceSessionId: registered.id
+      }
+    });
+    const ambiguousRun = await cancelledRun(ambiguousChat.id, ambiguous.id);
+    await prisma.modelRunToolCall.create({
+      data: {
+        arguments: {},
+        modelRunId: ambiguousRun.id,
+        ordinal: 0,
+        providerCallId: `call_${randomUUID()}`,
+        roundIndex: 1,
+        state: "running",
+        toolName: "mcp_workspace_sandbox_exec_start_fixture",
+        workspaceRunBindingId: ambiguousRun.id
+      }
+    });
+
+    await expect(runWorkspaceMaintenance({ config, now, prisma, runtime })).resolves.toMatchObject({
+      staleSessionsSettled: 3,
+      staleSessionsStopped: 1
+    });
+    expect(terminateExecutions).toHaveBeenCalledWith(expect.objectContaining({
+      executions: [{ modelRunId: registeredRun.id, runtimeExecSessionId: "exec-registered" }],
+      runtimeSandboxId: registered.runtimeSandboxId,
+      sessionId: registered.id
+    }));
+    expect(stopSession).toHaveBeenCalledTimes(1);
+    expect(stopSession).toHaveBeenCalledWith({
+      runtimeSandboxId: ambiguous.runtimeSandboxId,
+      sessionId: ambiguous.id
+    });
+    await expect(prisma.workspaceSession.findUniqueOrThrow({
+      select: { state: true },
+      where: { id: registered.id }
+    })).resolves.toEqual({ state: "READY" });
+    await expect(prisma.workspaceSession.findUniqueOrThrow({
+      select: { state: true },
+      where: { id: creating.id }
+    })).resolves.toEqual({ state: "PENDING" });
+    await expect(prisma.workspaceSession.findUniqueOrThrow({
+      select: { state: true, stoppedAt: true },
+      where: { id: ambiguous.id }
+    })).resolves.toEqual({ state: "STOPPED", stoppedAt: now });
+    await expect(prisma.workspaceExecution.findUniqueOrThrow({
+      select: { state: true },
+      where: { id: execution.id }
+    })).resolves.toEqual({ state: "CLOSED" });
+
+    // Nothing left to settle: the backstop is idempotent.
+    await expect(runWorkspaceMaintenance({ config, now, prisma, runtime })).resolves.toMatchObject({
+      staleSessionsSettled: 0,
+      staleSessionsStopped: 0
+    });
   });
 });

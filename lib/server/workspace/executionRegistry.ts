@@ -23,6 +23,13 @@ export const WORKSPACE_EXECUTION_OPEN_STATES = Object.freeze([
 ] as const satisfies readonly WorkspaceExecutionState[]);
 
 export type WorkspaceExecutionRegistry = Readonly<{
+  /** Moves every open execution of a session to a terminal state (VM stopped or removed). */
+  closeAll(input: Readonly<{
+    errorCode?: string | null;
+    modelRunId?: string;
+    sessionId: string;
+    to: "CLOSED" | "LOST";
+  }>): Promise<number>;
   find(input: Readonly<{
     runtimeExecSessionId: string;
     sessionId: string;
@@ -80,6 +87,21 @@ export function createPrismaWorkspaceExecutionRegistry(
   prisma: PrismaClient
 ): WorkspaceExecutionRegistry {
   return {
+    async closeAll({ errorCode, modelRunId, sessionId, to }) {
+      const updated = await prisma.workspaceExecution.updateMany({
+        data: {
+          completedAt: new Date(),
+          state: to,
+          ...(errorCode === undefined ? {} : { lastErrorCode: errorCode?.slice(0, 64) ?? null })
+        },
+        where: {
+          state: { in: [...WORKSPACE_EXECUTION_OPEN_STATES] },
+          workspaceSessionId: sessionId,
+          ...(modelRunId ? { modelRunId } : {})
+        }
+      });
+      return updated.count;
+    },
     async find({ runtimeExecSessionId, sessionId }) {
       if (!isWorkspaceRuntimeExecSessionId(runtimeExecSessionId)) return null;
       const row = await prisma.workspaceExecution.findUnique({
