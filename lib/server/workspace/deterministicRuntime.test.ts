@@ -493,3 +493,76 @@ describe("deterministic Workspace execution termination", () => {
     })).resolves.toEqual([{ outcome: "unknown", runtimeExecSessionId: second.execSessionId }]);
   });
 });
+
+describe("deterministic Workspace staged index", () => {
+  it("lists intact staged originals and ignores corrupt or partial indexes", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "0199aabc-12ef-7abc-8abc-0123456789b5";
+    const created = await runtime.ensureSession({
+      cpus: 2,
+      diskMiB: 10_240,
+      imageRef: config.imageRef,
+      internetEnabled: false,
+      memoryMiB: 4_096,
+      runtimeSandboxId: null,
+      sandboxName: workspaceSandboxName(sessionId),
+      sessionId
+    });
+    await expect(runtime.listStagedAttachments({
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([]);
+    const payload = new TextEncoder().encode("original bytes");
+    const entry = {
+      attachmentId: "att_index_1",
+      byteSize: payload.byteLength,
+      checksum: createHash("sha256").update(payload).digest("hex"),
+      sandboxPath: workspaceAttachmentPath({
+        attachmentId: "att_index_1",
+        messageId: "msg_index",
+        originalName: "data.bin"
+      })
+    };
+    const missing = {
+      attachmentId: "att_index_2",
+      byteSize: 5,
+      checksum: "b".repeat(64),
+      sandboxPath: workspaceAttachmentPath({
+        attachmentId: "att_index_2",
+        messageId: "msg_index",
+        originalName: "gone.bin"
+      })
+    };
+    await runtime.stageAttachments({
+      attachments: [{
+        ...entry,
+        body: stream(payload),
+        kind: "file",
+        messageId: "msg_index",
+        mimeType: "application/octet-stream",
+        originalName: "data.bin"
+      }],
+      inboxIndex: { attachments: [entry, missing], manifests: [], version: 1 },
+      manifests: [],
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    });
+    await expect(runtime.listStagedAttachments({
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([entry]);
+
+    await runtime.callBoundTool({
+      arguments: { content: "{not json", path: "/workspace/inbox/index.json" },
+      modelRunId: "run_index",
+      modelRunToolCallId: "call_corrupt",
+      originalName: "sandbox_fs_write",
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    });
+    await expect(runtime.listStagedAttachments({
+      runtimeSandboxId: created.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([]);
+  });
+});

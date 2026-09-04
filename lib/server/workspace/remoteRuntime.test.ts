@@ -103,7 +103,16 @@ describe("remote Workspace runner protocol", () => {
         originalName: "payload.bin",
         sandboxPath
       }],
-      inboxIndex: { attachments: [{ attachmentId: "att_http_1", sandboxPath }] },
+      inboxIndex: {
+        attachments: [{
+          attachmentId: "att_http_1",
+          byteSize: attachment.byteLength,
+          checksum: createHash("sha256").update(attachment).digest("hex"),
+          sandboxPath
+        }],
+        manifests: [],
+        version: 1
+      },
       manifests: [{ body: { attachments: [{ attachmentId: "att_http_1" }] }, messageId: "msg_http_1" }],
       runtimeSandboxId: session.runtimeSandboxId,
       sessionId
@@ -144,6 +153,15 @@ describe("remote Workspace runner protocol", () => {
     );
     expect(oversized.status).toBe(400);
 
+    await expect(runtime.listStagedAttachments({
+      runtimeSandboxId: session.runtimeSandboxId,
+      sessionId
+    })).resolves.toEqual([{
+      attachmentId: "att_http_1",
+      byteSize: attachment.byteLength,
+      checksum: createHash("sha256").update(attachment).digest("hex"),
+      sandboxPath
+    }]);
     const staged = await runtime.callBoundTool({
       arguments: { path: sandboxPath },
       modelRunId: "run_http_1",

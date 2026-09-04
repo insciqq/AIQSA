@@ -148,6 +148,77 @@ export function isRetryableWorkspaceExportErrorCode(code: string | null | undefi
 
 const RUNTIME_EXEC_SESSION_ID_PATTERN = /^[^\u0000-\u001f\u007f]{1,256}$/u;
 
+/**
+ * Guest-visible inbox index written on every staging pass. The application
+ * reads it back to stage only missing or changed originals, so it is decoded
+ * strictly: any malformed index simply means "restage everything".
+ */
+export const WORKSPACE_INBOX_INDEX_VERSION = 1;
+export const WORKSPACE_INBOX_INDEX_MAX_ENTRIES = 1_024;
+export const WORKSPACE_INBOX_INDEX_MAX_BYTES = 2 * 1_024 * 1_024;
+const CHECKSUM_PATTERN = /^[a-f0-9]{64}$/u;
+const MAX_STAGED_BYTE_SIZE = 1_073_741_824;
+
+export type WorkspaceStagedAttachmentEntry = Readonly<{
+  attachmentId: string;
+  byteSize: number;
+  checksum: string;
+  sandboxPath: string;
+}>;
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function decodeWorkspaceStagedAttachmentEntry(
+  value: unknown
+): WorkspaceStagedAttachmentEntry | null {
+  if (
+    !isRecordValue(value) ||
+    typeof value.attachmentId !== "string" ||
+    !isWorkspaceOpaqueId(value.attachmentId) ||
+    typeof value.byteSize !== "number" ||
+    !Number.isSafeInteger(value.byteSize) ||
+    value.byteSize < 1 ||
+    value.byteSize > MAX_STAGED_BYTE_SIZE ||
+    typeof value.checksum !== "string" ||
+    !CHECKSUM_PATTERN.test(value.checksum) ||
+    typeof value.sandboxPath !== "string" ||
+    !value.sandboxPath.startsWith(`${WORKSPACE_INBOX_DIRECTORY}/messages/`) ||
+    !isSafeWorkspaceRelativePath(value.sandboxPath.slice(WORKSPACE_ROOT.length + 1))
+  ) {
+    return null;
+  }
+  return {
+    attachmentId: value.attachmentId,
+    byteSize: value.byteSize,
+    checksum: value.checksum,
+    sandboxPath: value.sandboxPath
+  };
+}
+
+export function decodeWorkspaceInboxIndexAttachments(
+  value: unknown
+): readonly WorkspaceStagedAttachmentEntry[] | null {
+  if (
+    !isRecordValue(value) ||
+    value.version !== WORKSPACE_INBOX_INDEX_VERSION ||
+    !Array.isArray(value.attachments) ||
+    value.attachments.length > WORKSPACE_INBOX_INDEX_MAX_ENTRIES
+  ) {
+    return null;
+  }
+  const entries: WorkspaceStagedAttachmentEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value.attachments) {
+    const entry = decodeWorkspaceStagedAttachmentEntry(candidate);
+    if (!entry || seen.has(entry.attachmentId)) return null;
+    seen.add(entry.attachmentId);
+    entries.push(entry);
+  }
+  return entries;
+}
+
 export function isWorkspaceRuntimeExecSessionId(value: unknown): value is string {
   return typeof value === "string" && RUNTIME_EXEC_SESSION_ID_PATTERN.test(value);
 }

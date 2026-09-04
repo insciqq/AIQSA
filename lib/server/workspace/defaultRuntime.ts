@@ -17,6 +17,7 @@ class UnavailableWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async ensureSession(): Promise<never> { return this.unavailable(); }
+  async listStagedAttachments(): Promise<never> { return this.unavailable(); }
   async stageAttachments(): Promise<never> { return this.unavailable(); }
   async loadBoundTools(): Promise<never> { return this.unavailable(); }
   async callBoundTool(): Promise<never> { return this.unavailable(); }

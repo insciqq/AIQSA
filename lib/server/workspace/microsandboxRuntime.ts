@@ -16,6 +16,7 @@ import {
 } from "microsandbox";
 import {
   WORKSPACE_EXEC_SESSION_TOOL_NAMES,
+  WORKSPACE_INBOX_INDEX_MAX_BYTES,
   WORKSPACE_INBOX_INDEX_PATH,
   WORKSPACE_PROJECT_DIRECTORY,
   WORKSPACE_ROOT,
@@ -26,7 +27,9 @@ import {
   workspaceAttachmentPath,
   workspaceSandboxName,
   workspaceToolIsAllowed,
-  type WorkspaceMcpToolName
+  decodeWorkspaceInboxIndexAttachments,
+  type WorkspaceMcpToolName,
+  type WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
@@ -483,6 +486,32 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
 
   private async openMcpConnection(): Promise<McpConnection> {
     return openPinnedOfficialMcp(this.config.mcpVersion);
+  }
+
+  async listStagedAttachments(
+    input: Parameters<WorkspaceRuntime["listStagedAttachments"]>[0]
+  ): Promise<readonly WorkspaceStagedAttachmentEntry[]> {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const fs = session.sandbox.fs();
+    try {
+      if (!(await fs.exists(WORKSPACE_INBOX_INDEX_PATH))) return [];
+      const metadata = await fs.stat(WORKSPACE_INBOX_INDEX_PATH);
+      if (metadata.kind !== "file" || metadata.size > WORKSPACE_INBOX_INDEX_MAX_BYTES) return [];
+      const entries = decodeWorkspaceInboxIndexAttachments(
+        JSON.parse(new TextDecoder().decode(await fs.read(WORKSPACE_INBOX_INDEX_PATH)))
+      );
+      if (!entries) return [];
+      const staged: WorkspaceStagedAttachmentEntry[] = [];
+      for (const entry of entries) {
+        // Only a regular file of the recorded size counts as staged; symlinks,
+        // directories, and partial writes are restaged from the original.
+        const stat = await fs.stat(entry.sandboxPath).catch(() => null);
+        if (stat && stat.kind === "file" && stat.size === entry.byteSize) staged.push(entry);
+      }
+      return staged;
+    } catch {
+      return [];
+    }
   }
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {

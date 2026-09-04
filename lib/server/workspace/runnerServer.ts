@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { once } from "node:events";
 import { Readable } from "node:stream";
 import {
+  WORKSPACE_INBOX_INDEX_MAX_ENTRIES,
   isWorkspaceOpaqueId,
   workspaceAttachmentPath,
   workspaceToolIsAllowed
@@ -221,6 +222,16 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         });
         response.writeHead(204);
         response.end();
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/stage/list") {
+        const body = await readJson(request);
+        const staged = await input.runtime.listStagedAttachments({
+          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
+          sessionId
+        });
+        sendJson(response, 200, { staged: staged.slice(0, WORKSPACE_INBOX_INDEX_MAX_ENTRIES) });
         return;
       }
 
