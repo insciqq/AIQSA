@@ -25,6 +25,8 @@ import {
   groundSettledKnowledgeAnswerV53,
   groundSettledKnowledgeAnswerV54,
   groundSettledKnowledgeAnswerV55,
+  groundSettledKnowledgeAnswerV56,
+  groundSettledKnowledgeAnswerV57,
   KnowledgeAnswerContractError
 } from "./grounding";
 
@@ -363,5 +365,55 @@ describe("Grounding Evidence V55", () => {
     });
     expect(JSON.stringify(grounded)).not.toContain("Question");
     expect(JSON.stringify(grounded)).not.toContain("Evidence");
+  });
+});
+
+describe("Grounding Evidence V56", () => {
+  it("records a safe Final Selector fallback without retaining correction content", () => {
+    const grounded = groundSettledKnowledgeAnswerV56({
+      ...input(),
+      crossTargetExactRepeatCount: 1,
+      finalSelectorFallbackApplied: true,
+      draftClaimCount: 1,
+      settlement: {
+        ...input().settlement,
+        finalText: "Verified base answer. [K1]",
+        requestCoverage: "partial",
+        supportedClaimCount: 1
+      }
+    });
+    expect(grounded).toMatchObject({
+      correctionAttempted: true,
+      correctionSucceeded: false,
+      finalSelectorFallbackApplied: true,
+      version: 56
+    });
+    expect(JSON.stringify(grounded)).not.toContain("Corrected collective answer");
+  });
+
+  it("rejects a fallback receipt without a correction operation", () => {
+    const value = input();
+    expect(() => groundSettledKnowledgeAnswerV56({
+      ...value,
+      crossTargetExactRepeatCount: 0,
+      finalSelectorFallbackApplied: true,
+      operations: value.operations.filter(({ role }) =>
+        role !== "supplement" && role !== "final")
+    })).toThrow(KnowledgeAnswerContractError);
+  });
+});
+
+describe("Grounding Evidence V57", () => {
+  it("versions the supported-subset review without adding content", () => {
+    const grounded = groundSettledKnowledgeAnswerV57({
+      ...input(),
+      crossTargetExactRepeatCount: 0,
+      finalSelectorFallbackApplied: false
+    });
+    expect(grounded).toMatchObject({
+      finalSelectorFallbackApplied: false,
+      version: 57
+    });
+    expect(JSON.stringify(grounded)).not.toContain("dated reading");
   });
 });

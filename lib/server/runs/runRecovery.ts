@@ -3119,7 +3119,7 @@ async function recoverKnowledgeAnswerGrounding(
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
   let pipeline: "v20_v16" | "v21_scope_v6";
-  let scopeV6SnapshotVersion: 37 | 38 | 39 | undefined;
+  let scopeV6SnapshotVersion: 37 | 38 | 39 | 40 | 41 | undefined;
   if (input.draftDispatch) {
     if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
       if (input.draftDispatch.attempt.ordinal !== 1 ||

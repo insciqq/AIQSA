@@ -2123,16 +2123,299 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       .not.toContain("Explain alpha.");
     expect(snapshots[5]).toMatchObject({
       operation: KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION,
-      version: 39
+      version: 41
     });
     expect(snapshots[6]).toMatchObject({
       operation: KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
-      version: 39
+      version: 41
     });
     expect(snapshots[7]).toMatchObject({
       operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
-      version: 39
+      version: 41
     });
+  });
+
+  it("reviews a supported primary subset after an optional supplement is unsupported", async () => {
+    const recorder = lifecycleRecorder();
+    let finalCalls = 0;
+    const primaryClaims = [{
+      id: "C1", supportHandles: ["K1"], verdict: "supported"
+    }, {
+      id: "C2", supportHandles: ["K2"], verdict: "supported"
+    }] as const;
+    const execute = vi.fn(async (operation):
+      Promise<KnowledgeAnswerOperationExecutionV21> => ({
+      output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+        ? {
+            claims: [{ citationHints: ["K1"], text: "Alpha preserves order." }, {
+              citationHints: ["K2"], text: "Beta removes duplicates."
+            }],
+            version: 1
+          }
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+          ? {
+              evidenceUnits: [{ findings: [], handle: "K1" }, {
+                findings: [], handle: "K2"
+              }],
+              jointFindings: [{
+                description: "Explain alpha and beta.",
+                evidenceAtomIds: ["A1", "A2"],
+                requestAnchor: "Q1"
+              }],
+              unsupportedDimensions: [],
+              version: 6
+            }
+          : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+            ? { additions: [], version: 1 }
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+              ? {
+                  claims: primaryClaims,
+                  coverage: [{ id: "D1", status: "covered", supportIds: ["C1", "C2"] }],
+                  extractIds: [],
+                  insufficientReason: "not_applicable",
+                  version: 1
+                }
+              : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+                ? { decisions: [{ id: "D1", status: "missing" }], version: 2 }
+                : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+                  ? { targets: { D1: ["Alpha and beta form one result."] }, version: 2 }
+                  : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+                    ? {
+                        claims: [...primaryClaims, {
+                          id: "C3", supportHandles: [], verdict: "unsupported"
+                        }],
+                        coverage: [{
+                          id: "D1",
+                          status: finalCalls++ === 0 ? "missing" : "covered",
+                          supportIds: finalCalls === 1 ? [] : ["C1", "C2"]
+                        }],
+                        extractIds: [],
+                        insufficientReason: "not_applicable",
+                        version: 1
+                      }
+                    : (() => { throw new Error("unexpected_current_operation"); })(),
+      providerResponseId: `response-${operation.name}-${finalCalls}`,
+      usage
+    }));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(finalCalls).toBe(2);
+    expect(result.operations).toHaveLength(8);
+    expect(result.operations.slice(-2).map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+    ]);
+    expect(recorder.entries.get(7)?.acceptedResult).toEqual({
+      kind: "selector_failed",
+      reason: "selector_coverage_invalid"
+    });
+    expect(recorder.entries.get(8)?.acceptedRequest.systemPrompt).toContain(
+      "unsupported optional supplemental claim does not invalidate"
+    );
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "complete",
+      supportedClaimCount: 2
+    });
+    expect(result.settlement.finalText).not.toContain("form one result");
+  });
+
+  it("does not review the same supported-subset anomaly after ordinal eight", async () => {
+    const recorder = lifecycleRecorder();
+    let scopeCalls = 0;
+    let finalCalls = 0;
+    const validScope = {
+      evidenceUnits: [{ findings: [], handle: "K1" }, { findings: [], handle: "K2" }],
+      jointFindings: [{
+        description: "Explain alpha and beta.",
+        evidenceAtomIds: ["A1", "A2"],
+        requestAnchor: "Q1"
+      }],
+      unsupportedDimensions: [],
+      version: 6
+    };
+    const primaryClaims = [{
+      id: "C1", supportHandles: ["K1"], verdict: "supported"
+    }, {
+      id: "C2", supportHandles: ["K2"], verdict: "supported"
+    }] as const;
+    const execute = vi.fn(async (operation):
+      Promise<KnowledgeAnswerOperationExecutionV21> => ({
+      output: operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21
+        ? {
+            claims: [{ citationHints: ["K1"], text: "Alpha preserves order." }, {
+              citationHints: ["K2"], text: "Beta removes duplicates."
+            }],
+            version: 1
+          }
+        : operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION
+          ? scopeCalls++ === 0
+            ? {
+                ...validScope,
+                jointFindings: [{
+                  ...validScope.jointFindings[0],
+                  requestAnchor: "missing request anchor"
+                }]
+              }
+            : validScope
+          : operation.name === KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION
+            ? { additions: [], version: 1 }
+            : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21
+              ? {
+                  claims: primaryClaims,
+                  coverage: [{ id: "D1", status: "covered", supportIds: ["C1", "C2"] }],
+                  extractIds: [],
+                  insufficientReason: "not_applicable",
+                  version: 1
+                }
+              : operation.name === KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION
+                ? { decisions: [{ id: "D1", status: "missing" }], version: 2 }
+                : operation.name === KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21
+                  ? { targets: { D1: ["Alpha and beta form one result."] }, version: 2 }
+                  : operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+                    ? (() => {
+                        finalCalls += 1;
+                        return {
+                          claims: [...primaryClaims, {
+                            id: "C3", supportHandles: [], verdict: "unsupported"
+                          }],
+                          coverage: [{ id: "D1", status: "missing", supportIds: [] }],
+                          extractIds: [],
+                          insufficientReason: "not_applicable",
+                          version: 1
+                        };
+                      })()
+                    : (() => { throw new Error("unexpected_current_operation"); })(),
+      providerResponseId: `response-${operation.name}-${scopeCalls}`,
+      usage
+    }));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(scopeCalls).toBe(2);
+    expect(finalCalls).toBe(1);
+    expect(result.operations).toHaveLength(8);
+    expect(result.operations.at(-1)).toMatchObject({
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      ordinal: 8
+    });
+    expect(recorder.entries.get(8)?.acceptedResult).toMatchObject({
+      coverage: [{ id: "D1", status: "missing" }]
+    });
+  });
+
+  it("settles from the verified base when the ordinal-eight Final Selector is invalid", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    let scopeCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> => {
+      if (operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION &&
+        scopeCalls++ === 0) {
+        return {
+          output: {
+            ...scopeOutput(false),
+            evidenceUnits: [{
+              ...scopeOutput(false).evidenceUnits[0],
+              findings: [{
+                ...scopeOutput(false).evidenceUnits[0]!.findings[0]!,
+                requestAnchor: "missing request anchor"
+              }]
+            }, scopeOutput(false).evidenceUnits[1]]
+          },
+          providerResponseId: "response-invalid-scope",
+          usage
+        };
+      }
+      if (operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21) {
+        return { output: {}, providerResponseId: "response-invalid-final", usage };
+      }
+      return baseline(operation);
+    });
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(result.operations).toHaveLength(8);
+    expect(result.operations.at(-1)).toMatchObject({
+      operation: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      ordinal: 8
+    });
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "partial",
+      supportedClaimCount: 1
+    });
+    expect(result.settlement.finalText).toContain("Alpha preserves order. [K1]");
+    expect(result.settlement.finalText).not.toContain("Beta removes duplicates.");
+  });
+
+  it("uses one available Final Selector repair, then settles from the verified base", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> =>
+      operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+        ? { output: {}, providerResponseId: "response-invalid-final", usage }
+        : baseline(operation));
+
+    const result = await executeKnowledgeAnswerGroundingV21ScopeV6(
+      pipelineInput(recorder.lifecycle, execute)
+    );
+
+    expect(result.operations).toHaveLength(8);
+    expect(result.operations.slice(-2).map(({ operation }) => operation)).toEqual([
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
+      KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+    ]);
+    expect(result.settlement).toMatchObject({
+      requestCoverage: "partial",
+      supportedClaimCount: 1
+    });
+    expect(result.settlement.finalText).not.toContain("Beta removes duplicates.");
+  });
+
+  it("keeps Snapshot V39's exhausted Final Selector failure exact", async () => {
+    const recorder = lifecycleRecorder();
+    const baseline = currentExecution(false);
+    let scopeCalls = 0;
+    const execute = vi.fn(async (
+      operation
+    ): Promise<KnowledgeAnswerOperationExecutionV21> => {
+      if (operation.name === KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION &&
+        scopeCalls++ === 0) {
+        return {
+          output: {
+            ...scopeOutput(false),
+            evidenceUnits: [{
+              ...scopeOutput(false).evidenceUnits[0],
+              findings: [{
+                ...scopeOutput(false).evidenceUnits[0]!.findings[0]!,
+                requestAnchor: "missing request anchor"
+              }]
+            }, scopeOutput(false).evidenceUnits[1]]
+          },
+          providerResponseId: "response-invalid-scope",
+          usage
+        };
+      }
+      if (operation.name === KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21) {
+        return { output: {}, providerResponseId: "response-invalid-final", usage };
+      }
+      return baseline(operation);
+    });
+
+    await expect(executeKnowledgeAnswerGroundingV21ScopeV6({
+      ...pipelineInput(recorder.lifecycle, execute),
+      snapshotVersion: 39
+    })).rejects.toThrow("knowledge_grounded_selector_result_invalid");
+    expect(recorder.entries.size).toBe(8);
   });
 
   it("recomputes only validator-rejected Scope map units", async () => {

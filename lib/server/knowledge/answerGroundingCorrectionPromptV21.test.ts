@@ -25,7 +25,9 @@ import {
 } from "./answerGroundingAnswerLevelCompressionV1";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_ACCUMULATIVE_TARGET_REDUCE_CONTRACT_V1,
-  knowledgeGroundedDeltaSelectorPromptV7
+  KNOWLEDGE_GROUNDED_SELECTOR_SUPPORTED_SUBSET_REVIEW_CONTRACT_V1,
+  knowledgeGroundedDeltaSelectorPromptV7,
+  knowledgeGroundedDeltaSelectorPromptV8
 } from "./answerGroundingAccumulativeReduceV1";
 import {
   knowledgeCoverageEvidenceFromManifestV6,
@@ -525,6 +527,29 @@ describe("targeted correction prompts", () => {
     expect(current.systemPrompt).toContain("candidate map points");
     expect(current.systemPrompt).toContain("targetEvidenceAtomIndex remains the sole");
     expect(current.systemPrompt).toContain("either source may be absent");
+  });
+
+  it("keeps unsupported optional deltas outside an otherwise supported subset", () => {
+    const { correctedDraft, evidence, request, scope, selector } = fixture();
+    const input = {
+      bindings: [{ claimId: "C2", targetDimensionId: "D2" }],
+      draft: correctedDraft,
+      evidence,
+      initialSelector: selector,
+      request,
+      scope
+    };
+    const historical = knowledgeGroundedDeltaSelectorPromptV7(input);
+    const current = knowledgeGroundedDeltaSelectorPromptV8(input);
+    expect(current.userPrompt).toBe(historical.userPrompt);
+    expect(current.systemPrompt).toBe(
+      `${historical.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_SUPPORTED_SUBSET_REVIEW_CONTRACT_V1
+    );
+    expect(current.systemPrompt).toContain(
+      "unsupported optional supplemental claim does not invalidate"
+    );
+    expect(current.systemPrompt).toContain("Never use an unsupported claim as support");
   });
 
   it("rejects an incomplete or cross-target delta prompt before dispatch", () => {

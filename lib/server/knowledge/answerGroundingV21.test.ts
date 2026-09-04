@@ -16,6 +16,8 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
@@ -185,7 +187,7 @@ const threeDimensions = Object.freeze([
 ]);
 
 describe("Knowledge grounding V21 contracts", () => {
-  it("keeps V37/V38 and current V39 snapshots protocol-isolated", () => {
+  it("keeps V37-V40 and current V41 snapshots protocol-isolated", () => {
     const prompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
       draftPass: "primary",
       evidenceManifest,
@@ -205,6 +207,8 @@ describe("Knowledge grounding V21 contracts", () => {
     const create = (protocol:
       | typeof KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1
       | typeof KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1
+      | typeof KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1
+      | typeof KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1
       | typeof KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1) =>
       createKnowledgeAnswerOperationRequestSnapshotV21({
         contractVersion: 21,
@@ -224,17 +228,29 @@ describe("Knowledge grounding V21 contracts", () => {
     const targetLocal = create(
       KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
     );
-    const current = create(
+    const qualityRepresentative = create(
       KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1
+    );
+    const safeFallback = create(
+      KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1
+    );
+    const current = create(
+      KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1
     );
     expect(historical.version).toBe(37);
     expect(targetLocal.version).toBe(38);
-    expect(current.version).toBe(39);
+    expect(qualityRepresentative.version).toBe(39);
+    expect(safeFallback.version).toBe(40);
+    expect(current.version).toBe(41);
     expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(historical)).toBe(true);
     expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(targetLocal)).toBe(true);
+    expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(qualityRepresentative)).toBe(true);
+    expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(safeFallback)).toBe(true);
     expect(isRecoverableKnowledgeAnswerOperationSnapshotV21(current)).toBe(true);
     expect(isCurrentKnowledgeAnswerOperationSnapshotV21(historical)).toBe(false);
     expect(isCurrentKnowledgeAnswerOperationSnapshotV21(targetLocal)).toBe(false);
+    expect(isCurrentKnowledgeAnswerOperationSnapshotV21(qualityRepresentative)).toBe(false);
+    expect(isCurrentKnowledgeAnswerOperationSnapshotV21(safeFallback)).toBe(false);
     expect(isCurrentKnowledgeAnswerOperationSnapshotV21(current)).toBe(true);
     expect(decodeKnowledgeAnswerOperationRequestSnapshotV21({
       ...historical,

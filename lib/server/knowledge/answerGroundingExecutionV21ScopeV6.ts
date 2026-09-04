@@ -29,6 +29,8 @@ import {
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_V21_CONTRACT_VERSIONS,
   buildKnowledgeSupportedAnswerViewV1,
@@ -53,6 +55,7 @@ import {
   knowledgeTargetedSupplementFitsV1,
   knowledgeTargetedSupplementCrossTargetExactRepeatCountV1,
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
+  knowledgeGroundedDeltaCoverageReviewRequiredV2,
   mergeKnowledgeGroundedCorrectionV3,
   mergeKnowledgeTargetedSupplementV2,
   mergeKnowledgeTargetedSupplementV3,
@@ -62,7 +65,8 @@ import {
   type KnowledgeTargetedSupplementClaimBindingV1
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeGroundedDeltaSelectorPromptV7
+  knowledgeGroundedDeltaSelectorPromptV7,
+  knowledgeGroundedDeltaSelectorPromptV8
 } from "./answerGroundingAccumulativeReduceV1";
 import {
   knowledgeAnswerDraftPromptV21GlobalReducerV1,
@@ -269,7 +273,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   request: string;
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
-  snapshotVersion?: 37 | 38 | 39;
+  snapshotVersion?: 37 | 38 | 39 | 40 | 41;
   transport: "native_strict" | "provider_neutral_json";
 }>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const inheritedReasoningEffort = input.reasoningEffort ?? null;
@@ -288,13 +292,22 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (!executionPolicy ||
     (input.executionPolicy !== undefined && input.reasoningEffort !== undefined) ||
     (input.snapshotVersion !== undefined && input.snapshotVersion !== 37 &&
-      input.snapshotVersion !== 38 && input.snapshotVersion !== 39)) {
+      input.snapshotVersion !== 38 && input.snapshotVersion !== 39 &&
+      input.snapshotVersion !== 40 && input.snapshotVersion !== 41)) {
     throw new Error("knowledge_grounding_execution_policy_invalid");
   }
   const targetLocalSupplement = input.snapshotVersion !== 37;
   const qualityRepresentativeReduction = input.snapshotVersion !== 37 &&
     input.snapshotVersion !== 38;
-  const protocol = qualityRepresentativeReduction
+  const safeFinalSelectorFallback = input.snapshotVersion === undefined ||
+    input.snapshotVersion === 40 || input.snapshotVersion === 41;
+  const supportedSubsetReview = input.snapshotVersion === undefined ||
+    input.snapshotVersion === 41;
+  const protocol = supportedSubsetReview
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1
+    : safeFinalSelectorFallback
+    ? KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1
+    : qualityRepresentativeReduction
     ? KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1
     : targetLocalSupplement
     ? KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
@@ -645,6 +658,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   }
   scope = completeness.scope;
   const coverageScopePayloadHash = knowledgeAnswerHash(scope);
+  let reopenedTargetIds: readonly string[] = Object.freeze([]);
 
   const runSelector = async (selectorInput: Readonly<{
     correction?: Readonly<{
@@ -669,8 +683,11 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         selectorInput.repairReason !== "selector_dimension_invalid") {
       throw new Error("knowledge_grounded_selector_correction_state_invalid");
     }
+    const correctionPrompt = supportedSubsetReview
+      ? knowledgeGroundedDeltaSelectorPromptV8
+      : knowledgeGroundedDeltaSelectorPromptV7;
     const prompt = selectorInput.correction
-      ? knowledgeGroundedDeltaSelectorPromptV7({
+      ? correctionPrompt({
           atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
           bindings: selectorInput.correction.bindings,
           draft: selectorInput.draft,
@@ -745,15 +762,23 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           }
           return operationRecord(knowledgeGroundedSelectorV21Fallback(validation.reason));
         }
-        const coverageReviewRequired = selectorInput.correction !== undefined &&
+        const coverageReviewInput = selectorInput.correction === undefined
+          ? null
+          : {
+              bindings: selectorInput.correction.bindings,
+              finalSelector: validation.value,
+              initialSelector: selectorInput.correction.initialSelector,
+              primaryClaimCount: selectorInput.correction.initialSelector.claims.length
+            };
+        const coverageReviewRequired = coverageReviewInput !== null &&
           selectorInput.selectorPass === "final" && selectorInput.ordinal <
             KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2 &&
-          knowledgeGroundedDeltaCoverageReviewRequiredV1({
-            bindings: selectorInput.correction.bindings,
-            finalSelector: validation.value,
-            initialSelector: selectorInput.correction.initialSelector,
-            primaryClaimCount: selectorInput.correction.initialSelector.claims.length
-          });
+          (supportedSubsetReview
+            ? knowledgeGroundedDeltaCoverageReviewRequiredV2({
+                ...coverageReviewInput,
+                reopenedTargetIds
+              })
+            : knowledgeGroundedDeltaCoverageReviewRequiredV1(coverageReviewInput));
         return operationRecord(coverageReviewRequired
           ? knowledgeGroundedSelectorV21Fallback("selector_coverage_invalid")
           : candidate);
@@ -945,6 +970,12 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       closure,
       selector: acceptedSelector
     });
+    reopenedTargetIds = Object.freeze(correctionBaseSelector.coverage.flatMap(
+      (dimension, index) => dimension.status === "missing" &&
+        acceptedSelector.coverage[index]?.status !== "missing"
+        ? [dimension.id]
+        : []
+    ));
   }
 
   const primaryClaimCount = isKnowledgeDraftMalformed(primaryDraft)
@@ -1120,6 +1151,14 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     scope,
     scopeProtocol: "append_only_completeness_reduce_v2"
   });
+  if (finalFailure && safeFinalSelectorFallback) {
+    return result(settle({
+      draft: primaryDraft,
+      evidence,
+      selector: correctionBaseSelector,
+      scopeProtocol: "append_only_completeness_reduce_v2"
+    }));
+  }
   if (!finalSelector) throw new Error("knowledge_grounded_selector_result_invalid");
   const correctedSelector = mergeKnowledgeGroundedCorrectionV3({
     bindings: merged.bindings,

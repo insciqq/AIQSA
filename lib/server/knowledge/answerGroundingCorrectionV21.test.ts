@@ -28,6 +28,7 @@ import {
   knowledgeTargetedSupplementFitsV1,
   knowledgeTargetedSupplementCrossTargetExactRepeatCountV1,
   knowledgeGroundedDeltaCoverageReviewRequiredV1,
+  knowledgeGroundedDeltaCoverageReviewRequiredV2,
   knowledgeTargetPrimaryClaimsV1,
   mergeKnowledgeGroundedCorrectionV1,
   mergeKnowledgeGroundedCorrectionV2,
@@ -902,6 +903,85 @@ describe("target-addressed Knowledge correction", () => {
         })]),
         coverage: final.coverage
       })
+    })).toBe(false);
+  });
+
+  it("reviews a missing dated-reading target covered by immutable primary handles", () => {
+    const target = Object.freeze({
+      description: "List the readings recorded on 2026-01-01, 2026-01-02, and 2026-01-03.",
+      evidenceAtomIds: Object.freeze(["A1", "A2", "A3"]),
+      evidenceHandles: Object.freeze(["K1", "K2", "K3"]),
+      id: "D1",
+      requestAnchor: "all three dated readings",
+      status: "missing" as const,
+      supportIds: Object.freeze([])
+    });
+    const primaryClaims = Object.freeze(["K1", "K2", "K3"].map((handle, index) =>
+      Object.freeze({
+        id: `C${index + 1}`,
+        supportHandles: Object.freeze([handle]),
+        verdict: "supported" as const
+      })));
+    const initial = selector({
+      claims: primaryClaims,
+      coverage: Object.freeze([target])
+    });
+    const optionalUnsupported = Object.freeze({
+      id: "C4",
+      supportHandles: Object.freeze([]),
+      verdict: "unsupported" as const
+    });
+    const final = selector({
+      claims: Object.freeze([...primaryClaims, optionalUnsupported]),
+      coverage: Object.freeze([target])
+    });
+    const input = {
+      bindings: [{ claimId: "C4", targetDimensionId: "D1" }],
+      finalSelector: final,
+      initialSelector: initial,
+      primaryClaimCount: 3,
+      reopenedTargetIds: ["D1"]
+    } as const;
+
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV1(input)).toBe(false);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV2(input)).toBe(true);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV2({
+      ...input,
+      finalSelector: selector({
+        claims: Object.freeze([primaryClaims[0]!, Object.freeze({
+          ...primaryClaims[1]!,
+          supportHandles: Object.freeze([]),
+          verdict: "unsupported" as const
+        }), primaryClaims[2]!, optionalUnsupported]),
+        coverage: final.coverage
+      })
+    })).toBe(false);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV2({
+      ...input,
+      initialSelector: selector({
+        claims: primaryClaims,
+        coverage: Object.freeze([Object.freeze({
+          ...target,
+          evidenceAtomIds: Object.freeze([...target.evidenceAtomIds, "A4"]),
+          evidenceHandles: Object.freeze([...target.evidenceHandles, "K4"])
+        })])
+      }),
+      finalSelector: selector({
+        claims: final.claims,
+        coverage: Object.freeze([Object.freeze({
+          ...target,
+          evidenceAtomIds: Object.freeze([...target.evidenceAtomIds, "A4"]),
+          evidenceHandles: Object.freeze([...target.evidenceHandles, "K4"])
+        })])
+      })
+    })).toBe(false);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV2({
+      ...input,
+      bindings: [{ claimId: "C4", targetDimensionId: "D2" }]
+    })).toBe(false);
+    expect(knowledgeGroundedDeltaCoverageReviewRequiredV2({
+      ...input,
+      reopenedTargetIds: []
     })).toBe(false);
   });
 

@@ -1141,6 +1141,86 @@ export function knowledgeGroundedDeltaCoverageReviewRequiredV1(input: Readonly<{
   });
 }
 
+/** Extends V1 with one content-free structural anomaly: supported immutable
+ * primary map points collectively span an exact reopened target's admitted
+ * handles, but that target remains missing after an optional supplemental
+ * claim was rejected. Handle coverage can request a fresh verifier pass; it
+ * never promotes target coverage or changes any claim verdict. */
+export function knowledgeGroundedDeltaCoverageReviewRequiredV2(input: Readonly<{
+  bindings: readonly KnowledgeTargetedSupplementClaimBindingV1[];
+  finalSelector: KnowledgeGroundedSelectorV21;
+  initialSelector: KnowledgeGroundedSelectorV21;
+  primaryClaimCount: number;
+  reopenedTargetIds: readonly string[];
+}>): boolean {
+  if (knowledgeGroundedDeltaCoverageReviewRequiredV1(input)) return true;
+  if (!Number.isSafeInteger(input.primaryClaimCount) || input.primaryClaimCount < 1 ||
+    input.initialSelector.claims.length !== input.primaryClaimCount ||
+    input.finalSelector.claims.length < input.primaryClaimCount ||
+    input.initialSelector.coverage.length !== input.finalSelector.coverage.length ||
+    input.bindings.length !== input.finalSelector.claims.length - input.primaryClaimCount) {
+    return false;
+  }
+  const finalClaimById = new Map(input.finalSelector.claims.map((claim) =>
+    [claim.id, claim] as const));
+  const bindingClaimIds = new Set(input.bindings.map(({ claimId }) => claimId));
+  const reopenedTargetIds = new Set(input.reopenedTargetIds);
+  const supplementalClaimIds = new Set(input.finalSelector.claims
+    .slice(input.primaryClaimCount).map(({ id }) => id));
+  const targetableIds = new Set(input.initialSelector.coverage
+    .filter((dimension) => dimension.status === "missing" &&
+      dimension.evidenceHandles.length > 0)
+    .map(({ id }) => id));
+  if (finalClaimById.size !== input.finalSelector.claims.length ||
+    bindingClaimIds.size !== input.bindings.length ||
+    reopenedTargetIds.size !== input.reopenedTargetIds.length ||
+    input.reopenedTargetIds.some((id) => !targetIdPattern.test(id) ||
+      !targetableIds.has(id)) ||
+    input.bindings.some(({ claimId, targetDimensionId }) =>
+      !supplementalClaimIds.has(claimId) || !targetableIds.has(targetDimensionId))) {
+    return false;
+  }
+
+  return input.initialSelector.coverage.some((initialDimension, index) => {
+    const finalDimension = input.finalSelector.coverage[index];
+    if (!finalDimension || initialDimension.id !== finalDimension.id ||
+      initialDimension.description !== finalDimension.description ||
+      initialDimension.requestAnchor !== finalDimension.requestAnchor ||
+      !sameStrings(initialDimension.evidenceHandles, finalDimension.evidenceHandles) ||
+      !sameStrings(initialDimension.evidenceAtomIds, finalDimension.evidenceAtomIds) ||
+      !reopenedTargetIds.has(initialDimension.id) ||
+      initialDimension.status !== "missing" ||
+      initialDimension.evidenceHandles.length === 0 ||
+      finalDimension.status !== "missing") return false;
+
+    const targetSupplementClaims = input.bindings
+      .filter(({ targetDimensionId }) => targetDimensionId === initialDimension.id)
+      .map(({ claimId }) => finalClaimById.get(claimId));
+    if (targetSupplementClaims.length === 0 ||
+      targetSupplementClaims.some((claim) => !claim) ||
+      targetSupplementClaims.some((claim) => claim?.verdict === "supported" &&
+        (claim.supportHandles.length === 0 || claim.supportHandles.some((handle) =>
+          !initialDimension.evidenceHandles.includes(handle)))) ||
+      !targetSupplementClaims.some((claim) => claim?.verdict === "unsupported")) {
+      return false;
+    }
+
+    const admittedHandles = new Set(initialDimension.evidenceHandles);
+    const primaryCandidates = input.initialSelector.claims.filter((claim) =>
+      claim.verdict === "supported" && claim.supportHandles.length > 0 &&
+      claim.supportHandles.every((handle) => admittedHandles.has(handle)));
+    if (primaryCandidates.length === 0 || primaryCandidates.some((claim) => {
+      const finalClaim = finalClaimById.get(claim.id);
+      return !finalClaim || finalClaim.verdict !== "supported" ||
+        !sameStrings(claim.supportHandles, finalClaim.supportHandles);
+    })) return false;
+
+    const primaryHandles = new Set(primaryCandidates.flatMap((claim) =>
+      claim.supportHandles));
+    return initialDimension.evidenceHandles.every((handle) => primaryHandles.has(handle));
+  });
+}
+
 /** Applies the final Selector as a delta. Initial support, covered Scope, and
  * eligibility decisions are immutable; only supplement claim verdicts and
  * mappings for dimensions that were initially missing can be added. A new

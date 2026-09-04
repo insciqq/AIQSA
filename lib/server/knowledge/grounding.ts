@@ -125,6 +125,8 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52 = 52 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 = 53 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 = 54 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55 = 55 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V56 = 56 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V57 = 57 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -1015,6 +1017,29 @@ export type KnowledgeGroundingEvidenceV55 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV56 =
+  KnowledgeGroundingOperationEvidenceV55;
+
+export type KnowledgeGroundingEvidenceV56 = Omit<
+  KnowledgeGroundingEvidenceV55,
+  "operations" | "version"
+> & Readonly<{
+  finalSelectorFallbackApplied: boolean;
+  operations: readonly KnowledgeGroundingOperationEvidenceV56[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V56;
+}>;
+
+export type KnowledgeGroundingOperationEvidenceV57 =
+  KnowledgeGroundingOperationEvidenceV56;
+
+export type KnowledgeGroundingEvidenceV57 = Omit<
+  KnowledgeGroundingEvidenceV56,
+  "operations" | "version"
+> & Readonly<{
+  operations: readonly KnowledgeGroundingOperationEvidenceV57[];
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V57;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -1065,7 +1090,9 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV52
   | KnowledgeGroundingEvidenceV53
   | KnowledgeGroundingEvidenceV54
-  | KnowledgeGroundingEvidenceV55;
+  | KnowledgeGroundingEvidenceV55
+  | KnowledgeGroundingEvidenceV56
+  | KnowledgeGroundingEvidenceV57;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3771,6 +3798,52 @@ export function groundSettledKnowledgeAnswerV55(
   return Object.freeze({
     ...grounded,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55
+  });
+}
+
+/** V56 attests Snapshot V40's fail-closed final-Selector fallback. A rejected
+ * optional correction is never published; the immutable pre-correction
+ * Selector remains the settlement authority without another operation. */
+export function groundSettledKnowledgeAnswerV56(
+  input: KnowledgeGroundingV54Input & Readonly<{
+    finalSelectorFallbackApplied: boolean;
+  }>
+): KnowledgeGroundingEvidenceV56 {
+  if (typeof input.finalSelectorFallbackApplied !== "boolean") {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The final-Selector fallback receipt is invalid"
+    );
+  }
+  const { finalSelectorFallbackApplied, ...historicalInput } = input;
+  const grounded = groundSettledKnowledgeAnswerV55(historicalInput);
+  if (finalSelectorFallbackApplied &&
+    (!grounded.correctionAttempted || !grounded.correctionSucceeded)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The final-Selector fallback operation receipt is invalid"
+    );
+  }
+  return Object.freeze({
+    ...grounded,
+    correctionSucceeded: finalSelectorFallbackApplied
+      ? false
+      : grounded.correctionSucceeded,
+    finalSelectorFallbackApplied,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V56
+  });
+}
+
+/** V57 attests Snapshot V41's supported-subset review contract. Receipt
+ * fields remain content-free and identical to V56; the version distinguishes
+ * the immutable prompt and bounded anomaly-review behavior. */
+export function groundSettledKnowledgeAnswerV57(
+  input: Parameters<typeof groundSettledKnowledgeAnswerV56>[0]
+): KnowledgeGroundingEvidenceV57 {
+  const grounded = groundSettledKnowledgeAnswerV56(input);
+  return Object.freeze({
+    ...grounded,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V57
   });
 }
 
