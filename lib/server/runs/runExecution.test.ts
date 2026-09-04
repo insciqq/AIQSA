@@ -3126,6 +3126,69 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([]);
   });
 
+  it("maps automatic RAG synthesis failures to the safe Knowledge boundary", async () => {
+    const internalFailure = "knowledge_grounded_selector_result_invalid";
+    const repository = createRepository({ groundingError: new Error(internalFailure) });
+    const { executor } = toolLoopKnowledgeExecutor();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "private corpus query" },
+            id: "knowledge-call-1",
+            name: KNOWLEDGE_SEARCH_TOOL_NAME
+          }]
+        });
+      }
+      if (providerRequests.length === 2) {
+        return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      }
+      return providerResult({
+        finalText: JSON.stringify(plannedCurrentKnowledgeOutput(
+          providerRequests.length - 2,
+          "Supported answer"
+        ))
+      });
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: executor,
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text());
+
+    expect(providerRequests).toHaveLength(7);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([
+      expect.objectContaining({
+        error: {
+          code: "knowledge_answer_failed",
+          message: "The Knowledge answer provider failed."
+        },
+        options: { recoveryTerminal: true }
+      })
+    ]);
+    expect(events.at(-1)).toEqual({
+      data: {
+        code: "knowledge_answer_failed",
+        message: "The Knowledge answer provider failed."
+      },
+      type: "error"
+    });
+    expect(JSON.stringify({ events, failedRuns: repository.failedRuns }))
+      .not.toContain(internalFailure);
+  });
+
   it("durably settles a local Knowledge deadline before continuing the tool loop", async () => {
     const finalText = "Knowledge retrieval was unavailable.";
     const repository = createRepository({

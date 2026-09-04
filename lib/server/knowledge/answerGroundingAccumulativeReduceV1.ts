@@ -21,6 +21,15 @@ export const KNOWLEDGE_GROUNDED_SELECTOR_ACCUMULATIVE_TARGET_REDUCE_CONTRACT_V1 
     "</aiqsa_knowledge_grounded_selector_accumulative_target_reduce_contract>"
   ].join("\n"));
 
+export const KNOWLEDGE_GROUNDED_SELECTOR_SUPPORTED_SUBSET_REVIEW_CONTRACT_V1 =
+  Object.freeze([
+    '<aiqsa_knowledge_grounded_selector_supported_subset_review_contract version="1">',
+    "This contract refines only final target reduction. An unsupported optional supplemental claim does not invalidate an otherwise collectively complete supported subset of revalidated primary and supplemental claims.",
+    "For each target, evaluate every supported subset allowed by the inherited contract and leave the target missing only when no allowed supported subset entails the complete immutable target. Never use an unsupported claim as support, change its verdict to complete a subset, or weaken any least-authority or provenance rule.",
+    "This review changes no schema, authority input, operation type, retry count, or server-side coverage decision.",
+    "</aiqsa_knowledge_grounded_selector_supported_subset_review_contract>"
+  ].join("\n"));
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -45,5 +54,18 @@ export function knowledgeGroundedDeltaSelectorPromptV7(
         initialSelector: input.initialSelector
       })
     })
+  });
+}
+
+/** Snapshot V41 makes supported-subset evaluation explicit without changing
+ * the V7 payload or any historical prompt bytes. */
+export function knowledgeGroundedDeltaSelectorPromptV8(
+  input: Parameters<typeof knowledgeGroundedDeltaSelectorPromptV7>[0]
+): Readonly<{ systemPrompt: string; userPrompt: string }> {
+  const base = knowledgeGroundedDeltaSelectorPromptV7(input);
+  return Object.freeze({
+    systemPrompt: `${base.systemPrompt}\n\n` +
+      KNOWLEDGE_GROUNDED_SELECTOR_SUPPORTED_SUBSET_REVIEW_CONTRACT_V1,
+    userPrompt: base.userPrompt
   });
 }

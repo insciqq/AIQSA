@@ -679,6 +679,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       let persistedProviderResponseId: string | null = null;
       let answerStartMarked = false;
       let groundedLiveOnly = false;
+      let knowledgeAnswerAttempted = groundedKnowledgeAnswer;
       let projectAccessCheck: Promise<boolean> | null = null;
       let projectAccessRevoked = false;
       let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
@@ -2616,6 +2617,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   : KNOWLEDGE_INSUFFICIENT_MESSAGE
               };
             } else {
+              knowledgeAnswerAttempted = true;
               knowledgeAnswerExecution = await runAutomaticKnowledgeAnswer({
                 dispatchDraft: toolLoopResult.knowledgeDispatchDraft,
                 evidenceBindings: null,
@@ -2779,7 +2781,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               ? failure.code
               : null);
         const failureCode = contractFailureCode ??
-          (groundedKnowledgeAnswer
+          (knowledgeAnswerAttempted
             ? focusedKnowledgeFailureCode(failure)
             : pipelineError?.code ??
               (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
@@ -2791,7 +2793,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           : {
               code: failureCode,
-              message: groundedKnowledgeAnswer
+              message: knowledgeAnswerAttempted
                 ? safeKnowledgeFailureMessage(failureCode)
                 : failure instanceof Error ? failure.message : "Provider stream failed"
             };
@@ -2807,7 +2809,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           runId,
           input.created.assistantMessageId,
           payload,
-          safetyCode || deadlineExceeded || groundedKnowledgeAnswer ||
+          safetyCode || deadlineExceeded || knowledgeAnswerAttempted ||
             failureCode === "memory_answer_model_tools_retired"
             ? { recoveryTerminal: true }
             : undefined

@@ -29,6 +29,8 @@ import {
   KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
   KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1,
+  KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1,
   KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1,
   buildKnowledgeSupportedAnswerViewV1,
   createKnowledgeAnswerOperationRequestSnapshotV21,
@@ -46,7 +48,8 @@ import {
   mergeKnowledgeTargetedSupplementV3
 } from "./answerGroundingCorrectionV21";
 import {
-  knowledgeGroundedDeltaSelectorPromptV7
+  knowledgeGroundedDeltaSelectorPromptV7,
+  knowledgeGroundedDeltaSelectorPromptV8
 } from "./answerGroundingAccumulativeReduceV1";
 import {
   knowledgeAnswerDraftPromptV21GlobalReducerV1,
@@ -1179,8 +1182,18 @@ describe("Knowledge Evidence v2 repository projection", () => {
     targetLocalSupplement: true
   }, {
     evidenceVersion: 55 as const,
-    name: "current V39",
+    name: "historical V39",
     protocol: KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1,
+    targetLocalSupplement: true
+  }, {
+    evidenceVersion: 56 as const,
+    name: "historical V40",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_SAFE_FINAL_SELECTOR_FALLBACK_PROTOCOL_V1,
+    targetLocalSupplement: true
+  }, {
+    evidenceVersion: 57 as const,
+    name: "current V41",
+    protocol: KNOWLEDGE_ANSWER_SCOPE_V6_SUPPORTED_SUBSET_REVIEW_PROTOCOL_V1,
     targetLocalSupplement: true
   }])("reconstructs $name closure into its isolated evidence version", async ({
     evidenceVersion,
@@ -1302,7 +1315,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       evidenceManifest: dispatchDraft.message,
       request
     });
-    const selectorPrompt = (evidenceVersion === 55
+    const selectorPrompt = (evidenceVersion >= 55
       ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
       : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
@@ -1424,7 +1437,10 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     });
-    const finalPrompt = knowledgeGroundedDeltaSelectorPromptV7({
+    const correctionPrompt = evidenceVersion === 57
+      ? knowledgeGroundedDeltaSelectorPromptV8
+      : knowledgeGroundedDeltaSelectorPromptV7;
+    const finalPrompt = correctionPrompt({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       bindings: merged.bindings,
       draft: mergedDraft,
@@ -1433,7 +1449,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       request,
       scope: acceptedScope!
     });
-    const finalRepairPrompt = knowledgeGroundedDeltaSelectorPromptV7({
+    const finalRepairPrompt = correctionPrompt({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
       bindings: merged.bindings,
       draft: mergedDraft,
@@ -1620,6 +1636,42 @@ describe("Knowledge Evidence v2 repository projection", () => {
       "final",
       "final"
     ]);
+    if (evidenceVersion === 56 || evidenceVersion === 57) {
+      const failedFinal = {
+        kind: "selector_failed",
+        reason: "selector_coverage_invalid"
+      } as const;
+      const fallbackAttempts = [
+        ...attempts.slice(0, -1),
+        v21AttemptRow({
+          acceptedRequest: finalRepairRequest,
+          acceptedResult: failedFinal,
+          draft: dispatchDraft,
+          ordinal: 8,
+          purpose: KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21
+        })
+      ];
+      const fallback = await groundKnowledgeRunAnswerV21(client(row(), {
+        attempts: fallbackAttempts,
+        providerExecutionSnapshot: fakeProviderExecutionSnapshot()
+      }), { runId: "run-1", userId: "user-1" });
+      expect(fallback.grounding).toMatchObject({
+        correctionAttempted: true,
+        correctionSucceeded: false,
+        draftClaimCount: 1,
+        finalSelectorFallbackApplied: true,
+        finalText: [
+          "Completed Atlas exports are retained for 30 days. [K1]",
+          "Some requested information could not be verified from the available Knowledge evidence."
+        ].join("\n\n"),
+        requestCoverage: "partial",
+        supportedClaimCount: 1,
+        version: evidenceVersion
+      });
+      expect(fallback.grounding.finalText).not.toContain(
+        "The retention period starts after completion."
+      );
+    }
     const conflictingCompletenessRequest = {
       ...completenessRequest,
       userPrompt: "{}"
