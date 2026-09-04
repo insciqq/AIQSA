@@ -81,6 +81,12 @@ export function kickDefaultMcpRuntime(userId?: string): void {
   getDefaultMcpRuntimeCoordinator().kick(userId);
 }
 
+export function defaultMcpOperationalStatus(generationId: string) {
+  // Status reads must not create/start the coordinator or wake idle workloads.
+  return (globalThis as McpRuntimeGlobal).__aiqsaMcpRuntimeCoordinator
+    ?.operationalStatus(generationId) ?? "inactive";
+}
+
 const loadRunPlan = createPrismaMcpRunPlanLoader();
 const loadProjectRunPlan = createPrismaMcpProjectRunPlanLoader();
 const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();

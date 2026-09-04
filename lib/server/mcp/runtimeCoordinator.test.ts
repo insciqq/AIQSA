@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   McpClientSessionError,
   type McpFatalResponseErrorCode
@@ -46,6 +46,7 @@ function harness(input: {
   failList?: boolean;
   inventory?: McpRuntimeInventoryTool[];
   inventoryDescription?: string;
+  now?: () => Date;
   retainedFingerprints?: string[];
 } = {}) {
   const calls: string[] = [];
@@ -72,6 +73,7 @@ function harness(input: {
     exactKnownSecrets: () => input.dynamicSecrets ?? [],
     fatalResponseErrorCode: () => fatalResponseErrorCode,
     isClosed: () => closed,
+    ping: vi.fn(async () => undefined),
     listTools: vi.fn(async () => {
       if (input.failList) throw new Error("inventory schema invalid");
       return inventory;
@@ -109,7 +111,7 @@ function harness(input: {
     return session;
   });
   const coordinator = new McpRuntimeCoordinator({
-    now: () => now,
+    now: input.now ?? (() => now),
     repository,
     ...(input.cleanupOrphans ? {
       runtimeLifecycle: { cleanupOrphans: input.cleanupOrphans }
@@ -133,6 +135,129 @@ function harness(input: {
 }
 
 describe("MCP runtime coordinator", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("requires fresh protocol proof and deduplicates non-blocking health renewal", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    expect(test.createSession).not.toHaveBeenCalled();
+    await test.coordinator.reconcileNow();
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+    const ping = deferred<void>();
+    vi.mocked(test.session.ping).mockReturnValue(ping.promise);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await test.coordinator.reconcileNow();
+    expect(test.session.ping).toHaveBeenCalledTimes(1);
+    expect(test.session.listTools).toHaveBeenCalledTimes(1);
+    ping.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("cancels a hanging probe at two seconds and ignores a late success", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    const ping = deferred<void>();
+    vi.mocked(test.session.ping).mockReturnValue(ping.promise);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(vi.mocked(test.session.ping).mock.calls[0]![0]!.signal!.aborted).toBe(true);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "mcp_timeout" }));
+    ping.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    expect(test.createSession).toHaveBeenCalledTimes(1);
+    await test.coordinator.stop();
+  });
+
+  it("renews 30 seconds after protocol success independently of the reconciliation timer's phase", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    const inventory = deferred<McpRuntimeInventoryTool[]>();
+    vi.mocked(test.session.listTools).mockReturnValue(inventory.promise);
+    test.coordinator.start();
+    await vi.advanceTimersByTimeAsync(500);
+    inventory.resolve([]);
+    await test.coordinator.reconcileNow();
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(test.session.ping).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(test.session.ping).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(test.session.ping).toHaveBeenCalledTimes(2);
+    await test.coordinator.stop();
+  });
+
+  it("bounds overlapping scheduler and catalog probes to four across generations", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    const launches = Array.from({ length: 6 }, (_, index) => launch({
+      fingerprint: `fingerprint-${index}`, generationId: `generation-${index}`
+    }));
+    const pending = launches.map(() => deferred<void>());
+    const pings = launches.map((_, index) => vi.fn(() => pending[index]!.promise));
+    test.setLaunches(launches);
+    test.createSession.mockImplementation(async ({ generationId }) => ({
+      ...test.session, ping: pings[Number(generationId.split("-")[1])]!
+    }));
+    await test.coordinator.reconcileNow();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await test.coordinator.reconcileNow();
+    for (const entry of launches) expect(test.coordinator.operationalStatus(entry.generationId)).toBe("checking");
+    expect(pings.map((ping) => ping.mock.calls.length)).toEqual([1, 1, 1, 1, 0, 0]);
+    pending[0]!.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pings.map((ping) => ping.mock.calls.length)).toEqual([1, 1, 1, 1, 1, 0]);
+    for (const ping of pending) ping.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pings.every((ping) => ping.mock.calls.length === 1)).toBe(true);
+    expect(test.session.listTools).toHaveBeenCalledTimes(6);
+    await test.coordinator.stop();
+  });
+
+  it("fences a drained generation's late ping and never probes a known closed session", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    const pending = deferred<void>();
+    vi.mocked(test.session.ping).mockReturnValue(pending.promise);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await vi.advanceTimersByTimeAsync(0);
+    test.setLaunches([]);
+    vi.mocked(test.repository.listDrainedGenerationIds).mockResolvedValue(["generation-1"]);
+    await test.coordinator.reconcileNow();
+    pending.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+
+    const closed = harness();
+    await closed.coordinator.reconcileNow();
+    closed.setClosed(true);
+    expect(closed.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    expect(closed.session.ping).not.toHaveBeenCalled();
+    await closed.coordinator.stop();
+  });
+
   it("starts only the explicitly requested on-demand servers", async () => {
     const test = harness();
 

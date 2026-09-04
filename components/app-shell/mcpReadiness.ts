@@ -28,5 +28,12 @@ export function isMcpReadinessTransitioning(readiness: McpReadiness): boolean {
 }
 
 export function hasTransitioningMcpServer(servers: readonly UserMcpServer[]): boolean {
-  return servers.some((server) => server.enabled && isMcpReadinessTransitioning(server.readiness));
+  return servers.some((server) => server.enabled &&
+    (server.operationalStatus === "checking" || isMcpReadinessTransitioning(server.readiness)));
+}
+
+export function mcpOperationalPresentation(server: UserMcpServer): McpReadinessPresentation {
+  if (server.operationalStatus === "active") return { kind: "ready", label: "Active" };
+  if (server.operationalStatus === "checking") return { kind: "progress", label: "Checking" };
+  return { kind: "disabled", label: "Inactive" };
 }

@@ -31,6 +31,7 @@ type FixtureOptions = Readonly<{
   enableLogging?: boolean;
   instructions?: string;
   listTools?: (cursor: string | undefined) => ListToolsResult | Promise<ListToolsResult>;
+  ping?: (signal: AbortSignal) => Promise<void>;
 }>;
 
 type Fixture = Readonly<{
@@ -105,6 +106,10 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
   server.setRequestHandler("tools/list", async (request) =>
     options.listTools?.(request.params?.cursor) ?? { tools: [tool("echo")] }
   );
+  server.setRequestHandler("ping", async (_request, extra) => {
+    await options.ping?.(extra.mcpReq.signal);
+    return {};
+  });
   server.setRequestHandler("tools/call", async (request, extra) =>
     options.callTool?.({
       arguments: request.params.arguments ?? {},
@@ -215,6 +220,37 @@ describe("MCP tool argument schema validation", () => {
 });
 
 describe("McpClientSession", () => {
+  it("pings the real local protocol transport without reading tools or calling one", async () => {
+    const listTools = vi.fn(() => ({ tools: [] }));
+    const callTool = vi.fn(() => ({ content: [] }));
+    const ping = vi.fn(async () => undefined);
+    const fixture = await startFixture({ listTools, callTool, ping });
+    const session = createSession(fixture);
+    await expect(session.ping()).rejects.toMatchObject({ code: "mcp_session_not_ready", operation: "ping" });
+    await session.initialize();
+    await session.ping({ timeoutMs: 2_000 });
+    expect(ping).toHaveBeenCalledOnce();
+    expect(listTools).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
+    await session.close();
+    await expect(session.ping()).rejects.toMatchObject({ code: "mcp_session_closed" });
+  });
+
+  it("bounds ping timeouts and redacts cancellation reasons", async () => {
+    const fixture = await startFixture({ ping: () => new Promise(() => {}) });
+    const session = createSession(fixture);
+    await session.initialize();
+    await expect(session.ping({ timeoutMs: 25 })).rejects.toMatchObject({
+      code: "mcp_request_timeout", operation: "ping"
+    });
+    const controller = new AbortController();
+    controller.abort(new Error(privateCancellationReason));
+    const error = await session.ping({ signal: controller.signal }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: "mcp_request_cancelled", operation: "ping" });
+    expect(JSON.stringify(error)).not.toContain(privateCancellationReason);
+    await session.close();
+  });
+
   it("uses the official SDK lifecycle, paginates canonical tools, and marks inventory stale without auto-refresh", async () => {
     const listCursors: Array<string | undefined> = [];
     let schemaOrderReversed = false;

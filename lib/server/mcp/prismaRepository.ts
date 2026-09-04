@@ -44,7 +44,8 @@ import type {
 import type {
   McpRepository,
   McpRepositoryError,
-  McpRepositoryResult
+  McpRepositoryResult,
+  McpUserServerState
 } from "./repositoryContract";
 
 const adminServerInclude = {
@@ -550,7 +551,7 @@ export function deriveMcpUserReadiness(input: {
   oauthState: string | null;
   preferenceUpdatedAt: Date | null;
   runtime: { errorCode: string | null; inventory: Prisma.JsonValue | null; state: string } | null;
-}): Pick<UserMcpServer, "errorCode" | "readiness" | "tools"> {
+}): Pick<McpUserServerState, "errorCode" | "readiness" | "tools"> {
   if (!input.enabled) return { errorCode: null, readiness: "disabled", tools: [] };
   if (input.hasInvalidValues || input.hasMissingValues) {
     return { errorCode: "configuration_required", readiness: "needs_setup", tools: [] };
@@ -589,7 +590,7 @@ function serializeUserServer(input: {
   oauthRedirectUri?: (serverId: string) => string;
   record: UserServerRecord;
   userId: string;
-}): UserMcpServer | null {
+}): McpUserServerState | null {
   const direct = input.record.grants.find((grant) => grant.userId === input.userId) ?? null;
   const groups = input.record.grants.filter((grant) => grant.groupId && input.groupIds.includes(grant.groupId));
   const grant = resolveEffectiveMcpGrant({ direct, groups });
@@ -688,6 +689,7 @@ function serializeUserServer(input: {
     name: input.record.displayName,
     oauthAvailable: draft.auth.mode === "oauth",
     oauthState: draft.auth.mode === "oauth" ? oauth?.state ?? "disconnected" : null,
+    runtimeGenerationId: preference?.desiredRuntimeGeneration?.id ?? null,
     ...readiness
   };
 }

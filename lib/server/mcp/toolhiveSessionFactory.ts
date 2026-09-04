@@ -57,6 +57,7 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
         fatalResponseErrorCode: () => active.fatalResponseErrorCode?.() ?? null,
         isClosed: () => active.isClosed?.() ?? false,
         listTools: (signal) => active.listTools(signal),
+        ping: (options) => active.ping(options),
         serverEvidence: () => active.serverEvidence?.() ?? null
       };
     }

@@ -190,6 +190,8 @@ function responseIdKeys(value: unknown): readonly string[] {
 
 function operationForMethod(method: unknown): McpResponseOperation {
   switch (method) {
+    case "ping":
+      return "ping";
     case "initialize":
       return "initialize";
     case "tools/list":

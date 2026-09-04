@@ -1,9 +1,9 @@
 // @vitest-environment node
 
-import type { AdminMcpServer, UserMcpServer } from "@/lib/contracts/mcp";
+import type { AdminMcpServer } from "@/lib/contracts/mcp";
 import { describe, expect, it, vi } from "vitest";
 import { createMcpOAuthSettler } from "./oauthSettlement";
-import type { McpRepository } from "./repositoryContract";
+import type { McpRepository, McpUserServerState } from "./repositoryContract";
 
 const DRAFT_HASH = "draft-hash-1";
 
@@ -70,12 +70,13 @@ function adminServer(input: Readonly<{
   };
 }
 
-function userServer(enabled: boolean): UserMcpServer {
+function userServer(enabled: boolean): McpUserServerState {
   return {
     accountLabel: "Workspace",
     description: "OAuth MCP",
     enabled,
     errorCode: null,
+    runtimeGenerationId: null,
     fields: [],
     id: "server-1",
     knownToolCount: 1,

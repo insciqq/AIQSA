@@ -17,7 +17,7 @@ const server = {
   accountLabel: null,
   description: "Team memory",
   enabled: true,
-  errorCode: null,
+  operationalStatus: "inactive" as const,
   fields: [{
     configured: false,
     description: "Personal token",
@@ -61,6 +61,18 @@ describe("MCP settings API", () => {
     await expect(disconnectUserMcpServer("server/1")).resolves.toBe("disconnected");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/me/mcp/server%2F1");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/mcp/server%2F1/oauth/disconnect");
+  });
+
+  it("drops internal diagnostics and rejects absent or inconsistent operational status", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ servers: [{
+      ...server, errorCode: "mcp_artifact_missing", runtimeGenerationId: "private-generation"
+    }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await loadUserMcpServers()).toEqual([server]);
+    for (const operationalStatus of [undefined, "ready", "active"]) {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ servers: [{ ...server, operationalStatus }] }));
+      await expect(loadUserMcpServers()).rejects.toThrow();
+    }
   });
 
   it("returns stable coded errors with bounded setup issues and OAuth actions", async () => {

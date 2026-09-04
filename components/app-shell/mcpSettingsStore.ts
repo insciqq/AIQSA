@@ -25,7 +25,9 @@ export const useMcpSettingsStore = create<McpSettingsStore>((set) => ({
   loadState: "idle",
   oauthOutcome: null,
   replaceServer(server) {
+    catalogRevision += 1;
     set((state) => ({
+      loadState: state.loadState === "loading" ? "ready" : state.loadState,
       servers: state.servers.map((candidate) => candidate.id === server.id ? server : candidate)
     }));
     syncMcpReadinessPolling(true);
@@ -40,6 +42,9 @@ export const useMcpSettingsStore = create<McpSettingsStore>((set) => ({
 }));
 
 let loadPromise: Promise<UserMcpServer[]> | null = null;
+let catalogRevision = 0;
+let loadGeneration = 0;
+let settingsObservers = 0;
 let readinessPollAttempt = 0;
 let readinessPollInFlight = false;
 let readinessPollTimer: number | null = null;
@@ -56,7 +61,8 @@ function stopMcpReadinessPolling(): void {
 }
 
 function syncMcpReadinessPolling(reset = false): void {
-  if (!hasTransitioningMcpServer(useMcpSettingsStore.getState().servers)) {
+  const servers = useMcpSettingsStore.getState().servers;
+  if (!settingsObservers || !servers.some((server) => server.enabled)) {
     stopMcpReadinessPolling();
     return;
   }
@@ -68,7 +74,9 @@ function syncMcpReadinessPolling(reset = false): void {
   }
   if (document.visibilityState !== "visible" || readinessPollInFlight || readinessPollTimer !== null) return;
 
-  const delay = readinessPollDelaysMs[Math.min(readinessPollAttempt, readinessPollDelaysMs.length - 1)]!;
+  const delay = hasTransitioningMcpServer(servers)
+    ? readinessPollDelaysMs[Math.min(readinessPollAttempt, readinessPollDelaysMs.length - 1)]!
+    : 30_000;
   readinessPollTimer = window.setTimeout(async () => {
     readinessPollTimer = null;
     if (document.visibilityState !== "visible") return;
@@ -83,6 +91,29 @@ function syncMcpReadinessPolling(reset = false): void {
       syncMcpReadinessPolling();
     }
   }, delay);
+}
+
+function refreshVisibleSettings(): void {
+  stopMcpReadinessPolling();
+  if (document.visibilityState === "visible") {
+    void refreshMcpSettings(true, { background: true }).catch(() => undefined);
+  }
+}
+
+/** Own polling only while the Settings section is mounted and the tab is visible. */
+export function observeMcpSettings(): () => void {
+  settingsObservers += 1;
+  if (settingsObservers === 1) {
+    document.addEventListener("visibilitychange", refreshVisibleSettings);
+    refreshVisibleSettings();
+  }
+  return () => {
+    settingsObservers = Math.max(0, settingsObservers - 1);
+    if (!settingsObservers) {
+      document.removeEventListener("visibilitychange", refreshVisibleSettings);
+      stopMcpReadinessPolling();
+    }
+  };
 }
 
 function oauthAuthorizingKey(serverId: string): string {
@@ -120,17 +151,27 @@ export async function refreshMcpSettings(
   }
   if (loadPromise) return loadPromise;
 
+  const generation = loadGeneration;
+  const revision = catalogRevision;
   const preserveCurrentState = options.background === true && current.loadState !== "idle";
-  useMcpSettingsStore.setState(preserveCurrentState
-    ? { error: null }
-    : { error: null, loadState: "loading" });
+  useMcpSettingsStore.setState({
+    error: null,
+    ...(preserveCurrentState ? {} : { loadState: "loading" }),
+    // Renewal/error state cannot leave stale positive evidence on screen.
+    servers: current.servers.map((server) => server.operationalStatus === "active"
+      ? { ...server, operationalStatus: "checking" } : server)
+  });
   loadPromise = loadUserMcpServers().then(
     (servers) => {
+      if (generation !== loadGeneration || revision !== catalogRevision) {
+        return useMcpSettingsStore.getState().servers;
+      }
       useMcpSettingsStore.setState({ error: null, loadState: "ready", servers });
       syncMcpReadinessPolling();
       return servers;
     },
     (error: unknown) => {
+      if (generation !== loadGeneration || revision !== catalogRevision) throw error;
       const code = error instanceof Error ? error.message : "mcp_request_failed";
       useMcpSettingsStore.setState(preserveCurrentState
         ? { error: code }
@@ -138,7 +179,10 @@ export async function refreshMcpSettings(
       throw error;
     }
   ).finally(() => {
-    loadPromise = null;
+    if (generation === loadGeneration) {
+      loadPromise = null;
+      syncMcpReadinessPolling();
+    }
   });
   return loadPromise;
 }
@@ -158,6 +202,10 @@ export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
 }
 
 export function deactivateMcpSettings(): void {
+  loadGeneration += 1;
+  catalogRevision += 1;
+  settingsObservers = 0;
+  if (typeof document !== "undefined") document.removeEventListener("visibilitychange", refreshVisibleSettings);
   loadPromise = null;
   readinessPollInFlight = false;
   stopMcpReadinessPolling();

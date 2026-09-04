@@ -1321,7 +1321,7 @@
   line-height: 1.45;
 }
 
-/* One status line: availability · readiness · tool count. */
+/* Operational status, actionable setup and informational tool count. */
 .v2-settings-server-status {
   display: flex;
   flex-wrap: wrap;
@@ -1335,10 +1335,6 @@
 
 .v2-settings-server-status > [aria-hidden="true"] {
   margin: 0 0.375rem;
-}
-
-.v2-settings-server-availability[data-resource-availability="enabled"] {
-  color: var(--v2-color-text2);
 }
 
 .v2-settings-server-readiness {
@@ -1361,8 +1357,7 @@
   color: var(--v2-color-warn);
 }
 
-.v2-settings-server-readiness[data-tone="danger"],
-.v2-settings-server-error-code {
+.v2-settings-server-readiness[data-tone="danger"] {
   color: var(--v2-color-danger);
 }
 
@@ -1375,7 +1370,13 @@
   margin-left: auto;
 }
 
-.v2-settings-server-action > .v2-switch {
+.v2-settings-server-preference {
+  display: grid;
+  justify-items: end;
+  gap: 0.25rem;
+}
+
+.v2-settings-server-preference > .v2-switch {
   margin: -0.25rem 0;
 }
 

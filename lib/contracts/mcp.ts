@@ -228,17 +228,19 @@ export type UserMcpConfigurationField = {
   valueType: McpConfigurationSlot["valueType"];
 };
 
+export type McpOperationalStatus = "active" | "checking" | "inactive";
+
 export type UserMcpServer = {
   accountLabel: string | null;
   description: string;
   enabled: boolean;
-  errorCode: string | null;
   fields: UserMcpConfigurationField[];
   id: string;
   knownToolCount: number;
   name: string;
   oauthAvailable: boolean;
   oauthState: "disconnected" | "disconnecting" | "ready" | "reauthorization_required" | null;
+  operationalStatus: McpOperationalStatus;
   readiness: McpReadiness;
   tools: { description: string | null; name: string }[];
 };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useComposerControlStore } from "./composerControlStore";
-import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing, consumeMcpOAuthReturn, refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
+import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing, consumeMcpOAuthReturn, observeMcpSettings, refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
 import {
   resetComposerControlStoreForTest,
   resetMcpSettingsStoreForTest
@@ -10,7 +10,7 @@ const server = {
   accountLabel: null,
   description: "Team tasks",
   enabled: true,
-  errorCode: null,
+  operationalStatus: "active" as const,
   fields: [],
   id: "server-1",
   knownToolCount: 1,
@@ -26,6 +26,7 @@ describe("MCP settings store", () => {
     resetComposerControlStoreForTest();
     resetMcpSettingsStoreForTest();
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     window.history.replaceState(null, "", "/");
   });
@@ -70,9 +71,9 @@ describe("MCP settings store", () => {
 
   it("polls an activating server with backoff until readiness becomes terminal", async () => {
     vi.useFakeTimers();
-    const queued = { ...server, readiness: "queued" as const, tools: [] };
+    const queued = { ...server, operationalStatus: "checking" as const, readiness: "queued" as const, tools: [] };
     const starting = { ...queued, readiness: "starting" as const };
-    const responses = [starting, server];
+    const responses = [queued, starting, server];
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       servers: [responses.shift() ?? server]
     }), { status: 200 }));
@@ -86,7 +87,10 @@ describe("MCP settings store", () => {
       observedLoadStates.push(state.loadState);
     });
 
-    useMcpSettingsStore.getState().replaceServer(queued);
+    const stop = observeMcpSettings();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockClear();
     await vi.advanceTimersByTimeAsync(749);
     expect(fetchMock).not.toHaveBeenCalled();
 
@@ -102,6 +106,65 @@ describe("MCP settings store", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     unsubscribe();
+    stop();
+  });
+
+  it("renews visible health every 30 seconds, pauses hidden polling and refreshes on return", async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ servers: [server] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const stop = observeMcpSettings();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    stop();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves the list but removes stale active claims while renewal hangs or fails", async () => {
+    useMcpSettingsStore.setState({ loadState: "ready", servers: [server] });
+    let fail!: (error: Error) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((_resolve, reject) => { fail = reject; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = refreshMcpSettings(true, { background: true }).catch(() => undefined);
+    const duplicate = refreshMcpSettings(true, { background: true }).catch(() => undefined);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useMcpSettingsStore.getState()).toMatchObject({
+      loadState: "ready", servers: [{ id: server.id, operationalStatus: "checking" }]
+    });
+    fail(new Error("offline"));
+    await Promise.all([pending, duplicate]);
+    expect(useMcpSettingsStore.getState()).toMatchObject({
+      loadState: "ready", servers: [{ id: server.id, operationalStatus: "checking" }]
+    });
+  });
+
+  it("ignores a pre-mutation catalog response after the user disables the server", async () => {
+    useMcpSettingsStore.setState({ loadState: "ready", servers: [server] });
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    const pending = refreshMcpSettings(true);
+    useMcpSettingsStore.getState().replaceServer({
+      ...server, enabled: false, operationalStatus: "inactive", readiness: "disabled"
+    });
+    finish(new Response(JSON.stringify({ servers: [server] })));
+    await pending;
+    expect(useMcpSettingsStore.getState().loadState).toBe("ready");
+    expect(useMcpSettingsStore.getState().servers[0]).toMatchObject({ enabled: false, operationalStatus: "inactive" });
   });
 
   it("never changes the composer mode when the last server disables or readiness changes", () => {

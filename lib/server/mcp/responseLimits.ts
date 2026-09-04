@@ -1,4 +1,4 @@
-export type McpResponseOperation = "call_tool" | "initialize" | "list_tools" | "unknown";
+export type McpResponseOperation = "call_tool" | "initialize" | "list_tools" | "ping" | "unknown";
 
 export type McpResponseWireLimits = Readonly<{
   callToolResponseMaxBytes: number;
@@ -85,6 +85,8 @@ export function mcpResponseMaxBytes(
       return limits.initializeResponseMaxBytes;
     case "list_tools":
       return limits.listToolsResponseMaxBytes;
+    case "ping":
+      return Math.min(16 * 1_024, limits.unknownResponseMaxBytes);
     case "unknown":
       return limits.unknownResponseMaxBytes;
   }

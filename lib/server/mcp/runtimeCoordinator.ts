@@ -5,6 +5,7 @@ import {
   type AiqsaMcpToolCallResult,
   type McpFatalResponseErrorCode
 } from "./clientSession";
+import type { McpOperationalStatus } from "@/lib/contracts/mcp";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
 
@@ -53,6 +54,7 @@ export type McpRuntimeSession = {
   fatalResponseErrorCode?(): McpFatalResponseErrorCode | null;
   isClosed?(): boolean;
   listTools(signal?: AbortSignal): Promise<McpRuntimeInventoryTool[]>;
+  ping(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
   serverEvidence?(): AiqsaMcpServerEvidence | null;
 };
 
@@ -98,6 +100,7 @@ type LiveRuntime = {
   evictionErrorCode: string | null;
   fingerprint: string;
   local: boolean;
+  lastProtocolSuccessAt: number;
   redactionValues: readonly string[];
   repositoryStateWrite: Promise<boolean> | null;
   session: McpRuntimeSession;
@@ -147,6 +150,10 @@ type StartingRuntime = {
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_PARALLEL_STARTS = 4;
+export const MCP_HEALTH_CADENCE_MS = 30_000;
+export const MCP_HEALTH_DEADLINE_MS = 2_000;
+const MAX_PARALLEL_PROBES = 4;
+type HealthProbe = { runtime: LiveRuntime; controller: AbortController | null };
 const RESPONSE_LIMIT_ERROR_CODES: ReadonlySet<McpClientSessionError["code"]> = new Set([
   "mcp_call_result_too_large",
   "mcp_initialize_response_too_large",
@@ -223,10 +230,13 @@ export class McpRuntimeCoordinator {
   readonly #runtimeLifecycle: McpRuntimeLifecycle | null;
   readonly #sessions: McpRuntimeSessionFactory;
   readonly #starts = new Map<string, StartingRuntime>();
+  readonly #healthProbes = new Map<string, HealthProbe>();
+  #activeProbes = 0;
   #pendingAll = false;
   readonly #pendingUsers = new Set<string>();
   #runPromise: Promise<void> | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
+  #healthTimer: ReturnType<typeof setTimeout> | null = null;
 
   async #evictFailedRuntime(
     generationId: string,
@@ -237,6 +247,7 @@ export class McpRuntimeCoordinator {
     if (this.#live.get(generationId) !== runtime) return false;
     runtime.evictionErrorCode = errorCode;
     this.#live.delete(generationId);
+    this.#discardHealthProbe(generationId, runtime);
     const repositoryStateWrite = runtime.repositoryStateWrite;
     const cleanupPromise = cleanup === "dispose"
       ? runtime.session.dispose?.() ?? runtime.session.close()
@@ -275,16 +286,21 @@ export class McpRuntimeCoordinator {
     if (this.#timer) return;
     this.#timer = setInterval(() => this.kick(), this.#intervalMs);
     this.#timer.unref?.();
+    this.#scheduleHealthCheck();
     this.kick();
   }
 
   async stop(): Promise<void> {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#healthTimer) clearTimeout(this.#healthTimer);
+    this.#healthTimer = null;
     await this.#runPromise?.catch(() => undefined);
     await Promise.allSettled([...this.#starts.values()].map((runtime) => runtime.promise));
     const sessions = [...this.#live.values()].map((runtime) => runtime.session);
     this.#live.clear();
+    for (const probe of this.#healthProbes.values()) probe.controller?.abort();
+    this.#healthProbes.clear();
     await Promise.allSettled(sessions.map((session) => session.close()));
   }
 
@@ -366,6 +382,102 @@ export class McpRuntimeCoordinator {
     return runtime !== undefined && !isClosedSession(runtime.session);
   }
 
+  /** A prompt snapshot; renews only an already-owned session, never starts one. */
+  operationalStatus(generationId: string): McpOperationalStatus {
+    const runtime = this.#live.get(generationId);
+    if (!runtime) return this.#starts.has(generationId) ? "checking" : "inactive";
+    if (isClosedSession(runtime.session)) {
+      void this.#evictFailedRuntime(generationId, runtime, closedSessionErrorCode(runtime.session))
+        .catch(() => undefined);
+      return "inactive";
+    }
+    const age = this.#now().getTime() - runtime.lastProtocolSuccessAt;
+    if (age < 0 || age >= MCP_HEALTH_CADENCE_MS || this.#healthProbes.has(generationId)) {
+      if (!this.#healthProbes.has(generationId)) {
+        this.#healthProbes.set(generationId, { runtime, controller: null });
+        this.#drainHealthProbes();
+      }
+      return "checking";
+    }
+    return this.#refreshes.has(generationId) ? "checking" : "active";
+  }
+
+  #discardHealthProbe(generationId: string, runtime: LiveRuntime): void {
+    const probe = this.#healthProbes.get(generationId);
+    if (probe?.runtime !== runtime) return;
+    this.#healthProbes.delete(generationId);
+    probe.controller?.abort();
+  }
+
+  #scheduleHealthCheck(): void {
+    if (this.#healthTimer) clearTimeout(this.#healthTimer);
+    this.#healthTimer = null;
+    if (!this.#timer) return;
+    let dueAt = Infinity;
+    for (const [generationId, runtime] of this.#live) {
+      if (!this.#healthProbes.has(generationId) && !isClosedSession(runtime.session)) {
+        dueAt = Math.min(dueAt, runtime.lastProtocolSuccessAt + MCP_HEALTH_CADENCE_MS);
+      }
+    }
+    if (!Number.isFinite(dueAt)) return;
+    this.#healthTimer = setTimeout(() => {
+      this.#healthTimer = null;
+      for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
+      this.#scheduleHealthCheck();
+    }, Math.max(1, dueAt - this.#now().getTime()));
+    this.#healthTimer.unref?.();
+  }
+
+  #drainHealthProbes(): void {
+    for (const [generationId, probe] of this.#healthProbes) {
+      if (this.#activeProbes >= MAX_PARALLEL_PROBES) return;
+      if (probe.controller) continue;
+      if (this.#live.get(generationId) !== probe.runtime) {
+        this.#healthProbes.delete(generationId);
+        continue;
+      }
+      const controller = new AbortController();
+      probe.controller = controller;
+      this.#activeProbes += 1;
+      void this.#probe(generationId, probe, controller).finally(() => {
+        if (this.#healthProbes.get(generationId) === probe) this.#healthProbes.delete(generationId);
+        this.#activeProbes -= 1;
+        this.#drainHealthProbes();
+        this.#scheduleHealthCheck();
+      });
+    }
+  }
+
+  async #probe(generationId: string, probe: HealthProbe, controller: AbortController): Promise<void> {
+    const runtime = probe.runtime;
+    const timeoutError = new McpClientSessionError({ code: "mcp_request_timeout", operation: "ping" });
+    const timer = setTimeout(() => controller.abort(timeoutError), MCP_HEALTH_DEADLINE_MS);
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => runtime.session.ping({
+          signal: controller.signal, timeoutMs: MCP_HEALTH_DEADLINE_MS
+        })),
+        cancelled
+      ]);
+      if (this.#live.get(generationId) !== runtime || this.#healthProbes.get(generationId) !== probe) return;
+      if (isClosedSession(runtime.session)) throw new Error("mcp_session_closed");
+      runtime.lastProtocolSuccessAt = this.#now().getTime();
+    } catch (error) {
+      // Eviction removes live proof immediately; cleanup does not hold a probe slot.
+      if (this.#live.get(generationId) === runtime) {
+        void this.#evictFailedRuntime(generationId, runtime, stableRuntimeError(error)).catch(() => undefined);
+      }
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
   async ensureAcceptedGeneration(generationId: string): Promise<boolean> {
     const live = this.#live.get(generationId);
     if (live) {
@@ -416,6 +528,7 @@ export class McpRuntimeCoordinator {
     });
     await this.#reconcileLaunches(launches);
     await this.#drainUnused();
+    for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
   }
 
   async #reconcileLaunches(launches: McpRuntimeLaunch[]): Promise<void> {
@@ -437,6 +550,7 @@ export class McpRuntimeCoordinator {
       }
       if (live) {
         this.#live.delete(launch.generationId);
+        this.#discardHealthProbe(launch.generationId, live);
         await live.session.close().catch(() => undefined);
       }
       await this.#start(launch);
@@ -476,6 +590,7 @@ export class McpRuntimeCoordinator {
     if (live?.fingerprint === launch.fingerprint) return;
     if (live) {
       this.#live.delete(launch.generationId);
+      this.#discardHealthProbe(launch.generationId, live);
       await live.session.close().catch(() => undefined);
     }
     const now = this.#now();
@@ -495,6 +610,7 @@ export class McpRuntimeCoordinator {
         }
       });
       const tools = await session.listTools();
+      const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(session)) throw new Error("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const disabledToolNames = new Set(launch.disabledToolNames ?? []);
@@ -516,10 +632,12 @@ export class McpRuntimeCoordinator {
         evictionErrorCode: null,
         fingerprint: launch.fingerprint,
         local: Boolean(launch.toolHive),
+        lastProtocolSuccessAt: protocolSuccessAt,
         redactionValues: [...launch.redactionValues],
         repositoryStateWrite: null,
         session
       });
+      this.#scheduleHealthCheck();
     } catch (error) {
       const errorCode = session
         ? fatalResponseErrorCode(session) ?? stableRuntimeError(error)
@@ -605,6 +723,7 @@ export class McpRuntimeCoordinator {
         return false;
       }
       const tools = await live.session.listTools();
+      const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
       const effectiveTools = effectiveRuntimeTools(tools, live.disabledToolNames);
@@ -639,6 +758,8 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
       live.enabledToolNames = new Set(effectiveTools.map((tool) => tool.name));
+      live.lastProtocolSuccessAt = protocolSuccessAt;
+      this.#scheduleHealthCheck();
       return true;
     } catch (error) {
       if (live.evictionErrorCode !== null) return false;
@@ -670,6 +791,7 @@ export class McpRuntimeCoordinator {
       if (!await this.#repository.deleteDrainedGeneration(generationId)) continue;
       if (!live) continue;
       this.#live.delete(generationId);
+      this.#discardHealthProbe(generationId, live);
       await (live.session.dispose?.() ?? live.session.close()).catch(() => undefined);
     }
     await this.#repository.finalizeDeletedServers();
