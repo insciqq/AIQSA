@@ -144,6 +144,8 @@ import {
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { workspaceActivityEvent } from "../workspace/activityProjection";
+import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
   usageAttributionsWithEstimatedCost
@@ -1473,6 +1475,10 @@ async function executePersistedToolCall(
       result = await context.deps.workspace!.execute({
         call,
         modelRunToolCallId: claim.call.id,
+        onActivity: async (entry) => {
+          const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+          if (event) await context.deps.repository.appendRunOutputEvent(context.run.id, event);
+        },
         runId: context.run.id,
         signal,
         userId: context.run.userId,
@@ -1620,10 +1626,15 @@ async function recoverCheckpointedToolLoop(
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
   // Terminal Workspace settlement for a recovered turn that stops or fails:
   // best effort, never allowed to mask the run's own terminal persistence.
+  const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
+    const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+    if (event) await deps.repository.appendRunOutputEvent(run.id, event);
+  };
   const settleRecoveredWorkspaceOnExit = async (outcome: "cancelled" | "failed") => {
     const savedWorkspace = run.normalizedRequest.workspace;
     if (!savedWorkspace || !deps.workspace) return;
     await deps.workspace.settle({
+      onActivity: onWorkspaceActivity,
       outcome,
       runId: run.id,
       userId: run.userId,
@@ -1889,6 +1900,7 @@ async function recoverCheckpointedToolLoop(
       // Export trouble never fails the recovered answer; the binding keeps
       // a retryable state for background export recovery.
       await deps.workspace.finalize({
+        onActivity: onWorkspaceActivity,
         runId: run.id,
         signal,
         userId: run.userId,
@@ -1901,6 +1913,7 @@ async function recoverCheckpointedToolLoop(
     ): Promise<void> {
       if (!workspace || !deps.workspace) return;
       await deps.workspace.settle({
+        onActivity: onWorkspaceActivity,
         outcome,
         runId: run.id,
         userId: run.userId,

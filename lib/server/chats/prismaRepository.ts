@@ -5,7 +5,19 @@ import {
 } from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "../../domain/workspace";
+import {
+  WORKSPACE_MCP_TOOL_ALLOWLIST,
+  isRetryableWorkspaceExportErrorCode
+} from "../../domain/workspace";
+import {
+  WORKSPACE_ACTIVITY_MAX_ENTRIES,
+  decodeThreadWorkspaceActivityEntry,
+  isWorkspaceErrorCode,
+  type ThreadWorkspaceActivity,
+  type ThreadWorkspaceActivityEntry,
+  type ThreadWorkspaceOutputStatus
+} from "../../contracts/workspace";
+import { foldWorkspaceActivityEntries } from "../workspace/activityProjection";
 import { projectThreadSearchSources } from "../../domain/searchSources";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import {
@@ -148,6 +160,9 @@ const assistantRunDetailSelect = {
     }
   },
   updatedAt: true,
+  workspaceRunBinding: {
+    select: { exportState: true, lastExportErrorCode: true }
+  },
   workspaceProducedAttachments: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
@@ -690,7 +705,8 @@ function serializeHydratedMessage(
     provider: message.provider,
     role: message.role,
     status: message.status,
-    toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null
+    toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null,
+    workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
   };
 }
 
@@ -1035,6 +1051,54 @@ export function summarizeMessageRunToolActivity(
   return calls.length > 0 || warning
     ? { calls, ...(warning ? { warning } : {}) }
     : null;
+}
+
+type WorkspaceActivityRun = {
+  events: { payload: unknown }[];
+  status: string;
+  workspaceRunBinding?: {
+    exportState: string;
+    lastExportErrorCode: string | null;
+  } | null;
+};
+
+function workspaceOutputStatus(run: WorkspaceActivityRun): ThreadWorkspaceOutputStatus | undefined {
+  const binding = run.workspaceRunBinding;
+  if (!binding) return undefined;
+  const code = isWorkspaceErrorCode(binding.lastExportErrorCode) ? binding.lastExportErrorCode : undefined;
+  if (binding.exportState === "COMPLETE") return { state: "complete" };
+  if (binding.exportState === "EXPORTING") return { state: "exporting" };
+  if (binding.exportState === "FAILED") {
+    return isRetryableWorkspaceExportErrorCode(binding.lastExportErrorCode)
+      ? { ...(code ? { errorCode: code } : {}), state: "retrying" }
+      : { ...(code ? { errorCode: code } : {}), state: "failed" };
+  }
+  // PENDING: the export is owed once the answer is complete; before that it has not started.
+  return run.status === "complete" ? { state: "retrying" } : undefined;
+}
+
+/**
+ * Reloadable Workspace timeline: exact persisted `workspace_activity` entries
+ * folded to their latest state, with entries a stopped or crashed run left
+ * running settled from the run outcome, plus the export status of the binding.
+ */
+export function summarizeMessageRunWorkspaceActivity(
+  run: WorkspaceActivityRun
+): ThreadWorkspaceActivity | null {
+  const entries = run.events
+    .map((event) => event.payload)
+    .filter((payload) => artifactType(payload) === "workspace_activity")
+    .map((payload) => decodeThreadWorkspaceActivityEntry(isRecord(payload) ? payload.payload : null))
+    .filter((entry): entry is ThreadWorkspaceActivityEntry => entry !== null);
+  const outputStatus = workspaceOutputStatus(run);
+  if (entries.length === 0 && !outputStatus) return null;
+  const terminal = run.status === "cancelled"
+    ? "cancelled" as const
+    : run.status === "error" ? "failed" as const : null;
+  return {
+    entries: foldWorkspaceActivityEntries(entries, terminal).slice(0, WORKSPACE_ACTIVITY_MAX_ENTRIES),
+    ...(outputStatus ? { outputStatus } : {})
+  };
 }
 
 function safeJsonSnippet(value: unknown): string {

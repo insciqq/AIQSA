@@ -1,4 +1,8 @@
 import { decodeThreadSearchSource, type ThreadSearchSource } from "../../contracts/searchSources";
+import {
+  decodeThreadWorkspaceActivityEntry,
+  type ThreadWorkspaceActivityEntry
+} from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { safeExternalHref } from "../../domain/links";
 import { projectThreadSearchSources } from "../../domain/searchSources";
@@ -37,6 +41,13 @@ export type RunOutputArtifactEvent =
       data: {
         artifactType: "search";
         payload: { action: { sources: ThreadSearchSource[] } };
+      };
+      type: "artifact";
+    }
+  | {
+      data: {
+        artifactType: "workspace_activity";
+        payload: ThreadWorkspaceActivityEntry;
       };
       type: "artifact";
     };
@@ -183,7 +194,28 @@ export function projectRunOutputArtifactEvent(
       : null;
   }
 
+  if (event.data.artifactType === "workspace_activity") {
+    // Already a client-safe projection; the exact decoder is the only gate.
+    const entry = decodeThreadWorkspaceActivityEntry(event.data.payload);
+    return entry
+      ? { data: { artifactType: "workspace_activity", payload: entry }, type: "artifact" }
+      : null;
+  }
+
   return null;
+}
+
+function isExactWorkspaceActivity(value: unknown): value is ThreadWorkspaceActivityEntry {
+  const decoded = decodeThreadWorkspaceActivityEntry(value);
+  return decoded !== null && JSON.stringify(decoded) === JSON.stringify(sortedKeys(value));
+}
+
+function sortedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, sortedKeys(value[key])])
+  );
 }
 
 /** Validates an already-projected event at the repository boundary. */
@@ -203,6 +235,9 @@ export function isRunOutputArtifactEvent(
       event.data.payload.text.length > 0 &&
       event.data.payload.text.length <= reasoningTextLimit &&
       event.data.payload.text.trim() === event.data.payload.text;
+  }
+  if (event.data.artifactType === "workspace_activity") {
+    return isExactWorkspaceActivity(event.data.payload);
   }
   if (event.data.artifactType !== "search" || !isRecord(event.data.payload) ||
     !hasOnlyKeys(event.data.payload, ["action"]) ||

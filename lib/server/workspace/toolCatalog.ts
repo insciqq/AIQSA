@@ -31,9 +31,25 @@ const HIDDEN_ARGUMENT_SET = new Set<string>(HIDDEN_ARGUMENTS);
 const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
 const MAX_CATALOG_BYTES = 256 * 1_024;
 
-/** Canonical provider-facing catalog proven against microsandbox-mcp 0.6.16. */
+/**
+ * Provider-facing guidance prepended to the official descriptions. The model
+ * must not pass pipelines, operators, redirects, globs, or heredocs to direct
+ * exec; that mistake produced a dev-stand failure that only sandbox_shell can
+ * serve. Changing this text changes the pinned catalog hash below.
+ */
+const DESCRIPTION_GUIDANCE: Partial<Record<WorkspaceMcpToolName, string>> = {
+  sandbox_exec:
+    "Executes a program directly without shell parsing: `command` is the program and `args` its " +
+    "arguments. Pipes, redirects, &&, ||, glob expansion, variable expansion and heredocs are not " +
+    "supported here; use sandbox_shell for shell syntax.",
+  sandbox_shell:
+    "Executes a command through a shell. Use it for pipes, redirects, globbing, &&, ||, heredocs " +
+    "and multi-step command lines."
+};
+
+/** Canonical provider-facing catalog proven against microsandbox-mcp 0.6.16 plus the guidance above. */
 export const WORKSPACE_BOUND_TOOL_CATALOG_HASH =
-  "8a284439b71c1a36c2a98bd5d345c5ae64c0436975cbcabf5603c44036c5c585";
+  "b2ed230bf721d843c1d1ea9031ef3ba5f949e91e9ad7d5243b043de594306f2e";
 
 export function namespacedWorkspaceToolName(originalName: WorkspaceMcpToolName): string {
   return namespacedMcpToolName(WORKSPACE_MCP_NAMESPACE, originalName);
@@ -97,10 +113,12 @@ export function bindOfficialWorkspaceTools(input: Readonly<{
   const tools: WorkspaceBoundTool[] = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName) => {
     const official = byName.get(originalName);
     if (!official) throw new Error("workspace_tool_catalog_incomplete");
+    const officialDescription = typeof official.description === "string"
+      ? official.description
+      : "Workspace execution tool";
+    const guidance = DESCRIPTION_GUIDANCE[originalName];
     return {
-      description: typeof official.description === "string"
-        ? official.description.slice(0, 4_096)
-        : "Workspace execution tool",
+      description: (guidance ? `${guidance} ${officialDescription}` : officialDescription).slice(0, 4_096),
       inputSchema: sanitizedSchema(official),
       namespacedName: namespacedWorkspaceToolName(originalName),
       originalName

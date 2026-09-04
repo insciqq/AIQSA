@@ -47,6 +47,7 @@ export type ModelRunChatUpdateData = {
     role: string;
     status: string;
     toolActivity?: unknown;
+    workspaceActivity?: unknown;
   }[];
 };
 
@@ -99,7 +100,15 @@ export type ModelRunSseEvent =
   | {
       type: "artifact";
       data: {
-        artifactType: "citation" | "context_truncated" | "reasoning" | "search" | "summary" | "tool_call" | "tool_result";
+        artifactType:
+          | "citation"
+          | "context_truncated"
+          | "reasoning"
+          | "search"
+          | "summary"
+          | "tool_call"
+          | "tool_result"
+          | "workspace_activity";
         payload: unknown;
         searchDisplayName?: string;
         searchStrategy?: string;

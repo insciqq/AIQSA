@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { ThreadGeneratedFile } from "@/lib/contracts/workspace";
+import type {
+  ThreadGeneratedFile,
+  ThreadWorkspaceActivityEntry
+} from "@/lib/contracts/workspace";
 import {
   isRetryableWorkspaceExportErrorCode,
   isSafeWorkspaceRelativePath,
@@ -26,6 +29,12 @@ import {
   type WorkspaceExecutionRegistry
 } from "./executionRegistry";
 import { quiesceWorkspaceExecutions } from "./quiescence";
+import {
+  projectWorkspaceActivity,
+  workspaceActivityEvent,
+  workspaceLifecycleActivity,
+  type ExecOutputBuffer
+} from "./activityProjection";
 import type {
   WorkspaceAttachmentStream,
   WorkspaceBoundTool,
@@ -717,6 +726,8 @@ export type WorkspaceExportResult =
 
 export type WorkspaceSettlementOutcome = "cancelled" | "completed" | "failed" | "timed_out";
 
+export type WorkspaceActivityListener = (entry: ThreadWorkspaceActivityEntry) => Promise<void>;
+
 export type WorkspaceSettlementResult = Readonly<{
   /** Every execution of the run is provably gone (closed, or the VM was stopped). */
   quiesced: boolean;
@@ -729,6 +740,8 @@ export type WorkspaceCoordinator = Readonly<{
   execute(input: Readonly<{
     call: ModelToolCall;
     modelRunToolCallId: string;
+    /** Receives client-safe activity entries in timeline order (lifecycle, then the running step). */
+    onActivity?: WorkspaceActivityListener;
     runId: string;
     signal?: AbortSignal;
     userId: string;
@@ -739,6 +752,7 @@ export type WorkspaceCoordinator = Readonly<{
    * answer stays complete and the binding records the export state instead.
    */
   finalize(input: Readonly<{
+    onActivity?: WorkspaceActivityListener;
     recovery?: boolean;
     runId: string;
     signal?: AbortSignal;
@@ -756,6 +770,7 @@ export type WorkspaceCoordinator = Readonly<{
    * RUNNING/CREATING. Safe to call more than once and without a runtime.
    */
   settle(input: Readonly<{
+    onActivity?: WorkspaceActivityListener;
     outcome: WorkspaceSettlementOutcome;
     runId: string;
     userId: string;
@@ -818,14 +833,27 @@ function isExecSessionTool(name: string): boolean {
   return EXEC_SESSION_TOOLS.has(name);
 }
 
-function executionErrorResult(call: ModelToolCall, text: string): ToolExecutionResult {
+function executionErrorResult(
+  call: ModelToolCall,
+  text: string,
+  code = "operation_failed"
+): ToolExecutionResult {
   return {
     callId: call.id,
-    content: [{ text, type: "text" }],
+    content: [{ text: JSON.stringify({ error: { code, message: text }, ok: false }), type: "text" }],
     name: call.name,
     rawPreview: { truncated: false },
     status: "error"
   };
+}
+
+function withActivity(
+  result: ToolExecutionResult,
+  entry: ThreadWorkspaceActivityEntry | null
+): ToolExecutionResult {
+  return entry
+    ? { ...result, artifacts: [...(result.artifacts ?? []), workspaceActivityEvent(entry)] }
+    : result;
 }
 
 function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): ToolExecutionResult {
@@ -861,6 +889,25 @@ export function createWorkspaceCoordinator(input: Readonly<{
 }>): WorkspaceCoordinator {
   const initializing = new Map<string, Promise<WorkspaceExecutionBinding>>();
   const initialized = new Map<string, WorkspaceExecutionBinding>();
+  // Projection state for the activity timeline: original inbox filenames per
+  // guest path and bounded output buffers per long-lived execution.
+  const inboxNamesByRun = new Map<string, Map<string, string>>();
+  const execOutputsByRun = new Map<string, Map<string, ExecOutputBuffer>>();
+  const lifecycleOrdinal = new Map<string, number>();
+
+  function nextLifecycleOrdinal(runId: string): number {
+    const value = (lifecycleOrdinal.get(runId) ?? 0) + 1;
+    lifecycleOrdinal.set(runId, value);
+    return value;
+  }
+
+  function forgetRun(runId: string): void {
+    initializing.delete(runId);
+    initialized.delete(runId);
+    inboxNamesByRun.delete(runId);
+    execOutputsByRun.delete(runId);
+    lifecycleOrdinal.delete(runId);
+  }
 
   function activityWindow(): Readonly<{ expiresAt: Date; lastActiveAt: Date }> {
     const lastActiveAt = new Date();
@@ -885,7 +932,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
   async function initialize(
     binding: WorkspaceExecutionBinding,
     _workspace: NormalizedRunWorkspace | null,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onActivity?: WorkspaceActivityListener
   ): Promise<WorkspaceExecutionBinding> {
     const ready = initialized.get(binding.runId);
     if (
@@ -898,6 +946,17 @@ export function createWorkspaceCoordinator(input: Readonly<{
     const pending = initializing.get(binding.runId);
     if (pending) return pending;
     const operation = (async () => {
+      const startedAt = new Date();
+      const startOrdinal = nextLifecycleOrdinal(binding.runId);
+      const lifecycle = (entry: Parameters<typeof workspaceLifecycleActivity>[0]) =>
+        onActivity?.(workspaceLifecycleActivity(entry)).catch(() => undefined) ?? Promise.resolve();
+      await lifecycle({
+        kind: "workspace_start",
+        ordinal: startOrdinal,
+        phase: "running",
+        runId: binding.runId,
+        startedAt
+      });
       if (!(await input.repository.markSessionStarting({
         ...activityWindow(),
         sessionId: binding.sessionId
@@ -923,7 +982,27 @@ export function createWorkspaceCoordinator(input: Readonly<{
         }))) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
+        await lifecycle({
+          durationMs: Date.now() - startedAt.getTime(),
+          kind: "workspace_start",
+          ordinal: startOrdinal,
+          phase: "succeeded",
+          runId: binding.runId,
+          startedAt
+        });
         const attachments = await input.repository.attachments(binding);
+        const prepareStartedAt = new Date();
+        const prepareOrdinal = nextLifecycleOrdinal(binding.runId);
+        if (attachments.length > 0) {
+          await lifecycle({
+            count: attachments.length,
+            kind: "attachments_prepare",
+            ordinal: prepareOrdinal,
+            phase: "running",
+            runId: binding.runId,
+            startedAt: prepareStartedAt
+          });
+        }
         const entries = attachments.map((attachment) => ({
           attachmentId: attachment.attachmentId,
           byteSize: attachment.byteSize,
@@ -1016,6 +1095,21 @@ export function createWorkspaceCoordinator(input: Readonly<{
           sessionId: binding.sessionId,
           signal
         });
+        inboxNamesByRun.set(
+          binding.runId,
+          new Map(entries.map((entry) => [entry.sandboxPath, entry.originalName]))
+        );
+        if (attachments.length > 0) {
+          await lifecycle({
+            count: attachments.length,
+            durationMs: Date.now() - prepareStartedAt.getTime(),
+            kind: "attachments_prepare",
+            ordinal: prepareOrdinal,
+            phase: "succeeded",
+            runId: binding.runId,
+            startedAt: prepareStartedAt
+          });
+        }
         const catalog = await input.runtime.loadBoundTools({
           runtimeSandboxId: session.runtimeSandboxId,
           sessionId: binding.sessionId,
@@ -1045,8 +1139,23 @@ export function createWorkspaceCoordinator(input: Readonly<{
           signal?.aborted ||
           (error instanceof WorkspaceRuntimeError && error.code === "workspace_tool_cancelled")
         ) {
+          await lifecycle({
+            kind: "workspace_start",
+            ordinal: startOrdinal,
+            phase: "cancelled",
+            runId: binding.runId,
+            startedAt
+          });
           throw new WorkspaceRuntimeError("workspace_tool_cancelled");
         }
+        await lifecycle({
+          errorCode: runtimeCode(error),
+          kind: "workspace_start",
+          ordinal: startOrdinal,
+          phase: "failed",
+          runId: binding.runId,
+          startedAt
+        });
         if (
           error instanceof WorkspaceRuntimeError &&
           error.code === "workspace_session_lost" &&
@@ -1071,10 +1180,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
   async function initializeWithLostSessionRecovery(
     binding: WorkspaceExecutionBinding,
     workspace: NormalizedRunWorkspace,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onActivity?: WorkspaceActivityListener
   ): Promise<Readonly<{ binding: WorkspaceExecutionBinding; recreated: boolean }>> {
     try {
-      return { binding: await initialize(binding, workspace, signal), recreated: false };
+      return { binding: await initialize(binding, workspace, signal, onActivity), recreated: false };
     } catch (error) {
       if (
         !(error instanceof WorkspaceRuntimeError) ||
@@ -1085,8 +1195,26 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
       const fresh = await requireBinding(binding.runId, binding.userId, workspace);
       if (fresh.runtimeSandboxId !== null) throw error;
-      return { binding: await initialize(fresh, workspace, signal), recreated: true };
+      // The loss is user-visible, not only a note inside the tool result.
+      await onActivity?.(workspaceLifecycleActivity({
+        kind: "workspace_recreated",
+        ordinal: nextLifecycleOrdinal(binding.runId),
+        phase: "succeeded",
+        runId: binding.runId,
+        startedAt: new Date()
+      })).catch(() => undefined);
+      return { binding: await initialize(fresh, workspace, signal, onActivity), recreated: true };
     }
+  }
+
+  const SHELL_SYNTAX = /&&|\|\||[|;<>`$\n]|\s/u;
+
+  function projectionState(runId: string): Map<string, ExecOutputBuffer> {
+    const existing = execOutputsByRun.get(runId);
+    if (existing) return existing;
+    const created = new Map<string, ExecOutputBuffer>();
+    execOutputsByRun.set(runId, created);
+    return created;
   }
 
   async function quiesceRun(
@@ -1174,11 +1302,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
-    async settle({ outcome: _outcome, runId, userId, workspace }) {
+    async settle({ onActivity, outcome, runId, userId, workspace }) {
       const binding = await input.repository.binding({ runId, userId });
       if (!binding || (workspace && !exactBinding(binding, workspace))) {
-        initializing.delete(runId);
-        initialized.delete(runId);
+        forgetRun(runId);
         return { quiesced: false, sessionSettled: false, stoppedVm: false };
       }
       const cached = initialized.get(runId);
@@ -1186,8 +1313,16 @@ export function createWorkspaceCoordinator(input: Readonly<{
         ? { ...binding, runtimeSandboxId: cached.runtimeSandboxId }
         : binding;
       const quiescence = await quiesceRun(current);
-      initializing.delete(runId);
-      initialized.delete(runId);
+      if ((outcome === "cancelled" || outcome === "timed_out") && cached) {
+        await onActivity?.(workspaceLifecycleActivity({
+          kind: "workspace_stopped",
+          ordinal: nextLifecycleOrdinal(runId),
+          phase: "cancelled",
+          runId,
+          startedAt: new Date()
+        })).catch(() => undefined);
+      }
+      forgetRun(runId);
       if (!quiescence.proven) {
         // The session stays RUNNING on purpose: maintenance retries the
         // backstop later instead of reporting a live process as idle.
@@ -1199,18 +1334,53 @@ export function createWorkspaceCoordinator(input: Readonly<{
       });
       return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm };
     },
-    async execute({ call, modelRunToolCallId, runId, signal, userId, workspace }) {
+    async execute({ call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
       const initial = await requireBinding(runId, userId, workspace);
+      const definitionByName = initial.toolDefinitions.find((tool) => tool.namespacedName === call.name);
+      if (definitionByName?.originalName === "sandbox_exec" &&
+        typeof call.arguments.command === "string" &&
+        SHELL_SYNTAX.test(call.arguments.command)) {
+        // Direct exec spawns `command` as one program: pipes, operators,
+        // redirects, and embedded arguments belong to sandbox_shell.
+        const rejected = executionErrorResult(
+          call,
+          "This command uses shell syntax, but sandbox_exec does not invoke a shell. " +
+            "Use sandbox_shell, or pass only the program in `command` and its arguments in `args`.",
+          "workspace_shell_syntax_requires_shell"
+        );
+        const entry = projectWorkspaceActivity({
+          arguments: call.arguments,
+          callId: modelRunToolCallId,
+          originalName: "sandbox_exec",
+          result: rejected,
+          runId,
+          startedAt: new Date()
+        }, "settled");
+        return entry ? { ...rejected, artifacts: [workspaceActivityEvent(entry)] } : rejected;
+      }
       let initializedBinding = await initializeWithLostSessionRecovery(
         initial,
         workspace,
-        signal
+        signal,
+        onActivity
       );
       let binding = initializedBinding.binding;
       const definition = binding.toolDefinitions.find((tool) => tool.namespacedName === call.name);
       if (!definition || !binding.runtimeSandboxId) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
+      const startedAt = new Date();
+      const projectionInput = {
+        arguments: call.arguments,
+        callId: modelRunToolCallId,
+        execOutputs: projectionState(runId),
+        inboxNames: inboxNamesByRun.get(runId),
+        originalName: definition.originalName,
+        runId,
+        startedAt
+      };
+      const requested = projectWorkspaceActivity(projectionInput, "running");
+      if (requested) await onActivity?.(requested).catch(() => undefined);
       if (isExecSessionTool(definition.originalName)) {
         // The durable registry, not the runner cache, decides ownership.
         const owned = await ownedExecution(binding, call.arguments.execSessionId);
@@ -1259,7 +1429,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
           initializedBinding = await initializeWithLostSessionRecovery(
             fresh,
             workspace,
-            combined
+            combined,
+            onActivity
           );
           binding = initializedBinding.binding;
           result = await dispatch(binding);
@@ -1268,15 +1439,27 @@ export function createWorkspaceCoordinator(input: Readonly<{
         if (definition.originalName === "sandbox_exec_start" && result.status === "complete") {
           const registered = await registerExecution(binding, modelRunToolCallId, result);
           if (!registered) {
-            return executionErrorResult(
+            const rejected = executionErrorResult(
               call,
               "The long-running execution could not be registered and was stopped. Start it again."
             );
+            return withActivity(rejected, projectWorkspaceActivity({
+              ...projectionInput,
+              durationMs: Date.now() - startedAt.getTime(),
+              result: rejected
+            }, "settled"));
           }
         } else if (definition.originalName === "sandbox_exec_close" && result.status === "complete") {
           await closeExecution(binding, call.arguments.execSessionId);
         }
-        const projected = resultFromRuntime(call, result);
+        const projected = withActivity(
+          resultFromRuntime(call, result),
+          projectWorkspaceActivity({
+            ...projectionInput,
+            durationMs: Date.now() - startedAt.getTime(),
+            result: resultFromRuntime(call, result)
+          }, "settled")
+        );
         return initializedBinding.recreated
           ? {
               ...projected,
@@ -1306,7 +1489,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         clearTimeout(timer);
       }
     },
-    async finalize({ recovery, runId, signal, userId, workspace }) {
+    async finalize({ onActivity, recovery, runId, signal, userId, workspace }) {
       const initial = await input.repository.binding({ runId, userId });
       if (!initial || (workspace && !exactBinding(initial, workspace))) {
         return { code: "workspace_runtime_incompatible", retryable: false, status: "failed" };
@@ -1351,6 +1534,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
       heartbeatTimer.unref?.();
       const exportSignal = signal ? AbortSignal.any([signal, heartbeat.signal]) : heartbeat.signal;
       let batch: Readonly<{ batchId: string; runtimeSandboxId: string }> | null = null;
+      const exportStartedAt = new Date();
+      const exportOrdinal = nextLifecycleOrdinal(runId);
+      let exportCount = 0;
+      const exportActivity = (
+        phase: "failed" | "running" | "succeeded",
+        errorCode?: WorkspaceRuntimeError["code"]
+      ) => onActivity?.(workspaceLifecycleActivity({
+        count: exportCount,
+        ...(phase === "running" ? {} : { durationMs: Date.now() - exportStartedAt.getTime() }),
+        ...(errorCode ? { errorCode } : {}),
+        kind: "outputs_export",
+        ordinal: exportOrdinal,
+        phase,
+        runId,
+        startedAt: exportStartedAt
+      })).catch(() => undefined) ?? Promise.resolve();
       try {
         if (!initial.runtimeSandboxId) {
           if (!(await input.repository.markExportComplete(lease))) {
@@ -1362,7 +1561,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // the runner itself was restarted. Reconnect and restage originals
         // before collecting output, but never recreate a genuinely lost VM:
         // doing so would silently turn missing deliverables into a success.
-        const binding = await initialize(initial, workspace ?? null, exportSignal);
+        const binding = await initialize(initial, workspace ?? null, exportSignal, onActivity);
         if (!binding.runtimeSandboxId) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
@@ -1382,6 +1581,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
         });
         const batchId = outputs.find((output) => output.batchId)?.batchId;
         if (batchId) batch = { batchId, runtimeSandboxId: binding.runtimeSandboxId };
+        exportCount = outputs.length;
+        if (outputs.length > 0) await exportActivity("running");
         const total = outputs.reduce((sum, output) => sum + output.byteSize, 0);
         if (
           outputs.length > input.config.outputMaxFiles ||
@@ -1435,9 +1636,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
           ...activityWindow(),
           sessionId: binding.sessionId
         });
+        if (files.length > 0) await exportActivity("succeeded");
         return { files, status: "complete" };
       } catch (error) {
         const code = runtimeCode(error);
+        await exportActivity("failed", code === "workspace_output_limit_exceeded" ? code : "workspace_output_export_failed");
         const recorded = code === "workspace_output_limit_exceeded" ||
           code === "workspace_session_lost" ||
           code === "workspace_runtime_incompatible"

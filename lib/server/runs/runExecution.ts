@@ -165,6 +165,8 @@ import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult"
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { workspaceActivityEvent } from "../workspace/activityProjection";
+import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 
 const globalForRuns = globalThis as unknown as {
@@ -392,7 +394,8 @@ function serializeChatUpdate(
       provider: message.provider,
       role: message.role,
       status: message.status,
-      toolActivity: message.toolActivity ?? null
+      toolActivity: message.toolActivity ?? null,
+      workspaceActivity: message.workspaceActivity ?? null
     }))
   } satisfies ChatUpdateDataWire;
 }
@@ -672,11 +675,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       // timed-out, or failed turn never leaves a live guest process or a
       // session stuck in RUNNING/CREATING. Best effort: it must not mask the
       // run's own terminal persistence.
+      // Client-safe Workspace timeline entries ride the same emit path as
+      // every other durable artifact: persisted exactly, streamed live.
+      const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
+        await emit(controller, encoder, input.repository, runId, workspaceActivityEvent(entry));
+      };
       const settleWorkspace = async (
         outcome: "cancelled" | "completed" | "failed" | "timed_out"
       ) => {
         if (!normalizedRequest.workspace || !input.workspace) return;
         await input.workspace.settle({
+          onActivity: onWorkspaceActivity,
           outcome,
           runId,
           userId: input.userId,
@@ -2167,6 +2176,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   result = await input.workspace!.execute({
                     call,
                     modelRunToolCallId: claim.call.id,
+                    onActivity: onWorkspaceActivity,
                     runId,
                     signal: context.signal,
                     userId: input.userId,
@@ -2681,6 +2691,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           // busy or failed export leaves the binding in a retryable state for
           // background recovery while the answer itself completes.
           await input.workspace.finalize({
+            onActivity: onWorkspaceActivity,
             runId,
             signal,
             userId: input.userId,

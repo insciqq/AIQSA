@@ -9,7 +9,8 @@ import { normalizeTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
   summarizeMessageRunArtifacts,
-  summarizeMessageRunToolActivity
+  summarizeMessageRunToolActivity,
+  summarizeMessageRunWorkspaceActivity
 } from "../chats/prismaRepository";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
@@ -1389,6 +1390,9 @@ export function createPrismaRunRepository(
                   },
                   normalizedRequest: true,
                   status: true,
+                  workspaceRunBinding: {
+                    select: { exportState: true, lastExportErrorCode: true }
+                  },
                   toolCalls: {
                     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
                     select: {
@@ -1519,7 +1523,8 @@ export function createPrismaRunRepository(
               provider: message.provider,
               role: message.role,
               status: message.status,
-              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null
+              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null,
+              workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
             };
           })
         };

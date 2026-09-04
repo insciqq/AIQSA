@@ -27,8 +27,10 @@ import {
 import {
   decodeChatWorkspaceState,
   decodeThreadGeneratedFile,
+  decodeThreadWorkspaceActivity,
   type ChatWorkspaceState,
-  type ThreadGeneratedFile
+  type ThreadGeneratedFile,
+  type ThreadWorkspaceActivity
 } from "./workspace";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
@@ -72,6 +74,7 @@ export type ThreadMessage = {
   runId?: string | null;
   status: "cancelled" | "complete" | "error" | "streaming";
   toolActivity?: ThreadToolActivity | null;
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 };
 
 /**
@@ -227,6 +230,7 @@ export type ChatMessageWire = {
   role: string;
   status: string;
   toolActivity?: ThreadToolActivity | null;
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 };
 
 export type ProjectMessageAuthorWire = Readonly<{
@@ -915,6 +919,13 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     toolActivity = decodeThreadToolActivity(value.toolActivity);
     if (!toolActivity) return null;
   }
+  let workspaceActivity: ThreadWorkspaceActivity | null | undefined;
+  if (value.workspaceActivity === undefined || value.workspaceActivity === null) {
+    workspaceActivity = value.workspaceActivity;
+  } else {
+    workspaceActivity = decodeThreadWorkspaceActivity(value.workspaceActivity);
+    if (!workspaceActivity) return null;
+  }
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {
     author = value.author;
@@ -962,7 +973,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     provider,
     role,
     status,
-    ...(toolActivity !== undefined ? { toolActivity } : {})
+    ...(toolActivity !== undefined ? { toolActivity } : {}),
+    ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
   };
 }
 

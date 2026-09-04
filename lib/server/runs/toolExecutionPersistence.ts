@@ -21,7 +21,8 @@ const artifactTypes = new Set([
   "search",
   "summary",
   "tool_call",
-  "tool_result"
+  "tool_result",
+  "workspace_activity"
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

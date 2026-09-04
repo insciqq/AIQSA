@@ -866,3 +866,130 @@ describe("Workspace coordinator export settlement", () => {
     expect(liveClaim).not.toHaveBeenCalled();
   });
 });
+
+describe("Workspace coordinator activity projection", () => {
+  it("rejects shell syntax in direct exec with an actionable error before touching the runtime", async () => {
+    const value = fixture();
+    const execName = namespacedWorkspaceToolName("sandbox_exec");
+    const result = await value.coordinator.execute({
+      call: {
+        arguments: { command: "pwd && ls -la && cat > script.py <<'PY'\nprint(1)\nPY" },
+        id: "call_exec_shell",
+        name: execName
+      },
+      modelRunToolCallId: "stored_exec_shell",
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    });
+    expect(result.status).toBe("error");
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("workspace_shell_syntax_requires_shell")
+    });
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Use sandbox_shell") });
+    expect(value.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+    expect(result.artifacts).toEqual([expect.objectContaining({
+      data: expect.objectContaining({
+        artifactType: "workspace_activity",
+        payload: expect.objectContaining({
+          command: expect.objectContaining({ preview: "pwd && ls -la && cat > script.py <<'PY'" }),
+          errorCode: "workspace_shell_syntax_requires_shell",
+          kind: "command",
+          phase: "failed"
+        })
+      })
+    })]);
+
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({
+      content: [{ text: JSON.stringify({ data: { exitCode: 0, stderr: "", stdout: "/workspace/project\n", success: true }, ok: true }), type: "text" }],
+      exitCode: 0,
+      status: "complete"
+    });
+    await expect(value.coordinator.execute({
+      call: { arguments: { args: ["-la"], command: "ls" }, id: "call_exec_ok", name: execName },
+      modelRunToolCallId: "stored_exec_ok",
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    })).resolves.toMatchObject({ status: "complete" });
+    expect(value.runtime.callBoundTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits lifecycle entries in timeline order and attaches the settled step to the result", async () => {
+    const value = fixture();
+    const entries: string[] = [];
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({
+      content: [{ text: JSON.stringify({ data: { exitCode: 0, stderr: "", stdout: "ok\n", success: true }, ok: true }), type: "text" }],
+      exitCode: 0,
+      status: "complete"
+    });
+    const result = await value.coordinator.execute({
+      call: { arguments: { command: "npm test" }, id: "call_timeline", name: value.shellToolName },
+      modelRunToolCallId: "stored_timeline",
+      onActivity: async (entry) => { entries.push(`${entry.kind}:${entry.phase}`); },
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    });
+    expect(entries).toEqual([
+      "workspace_start:running",
+      "workspace_start:succeeded",
+      "attachments_prepare:running",
+      "attachments_prepare:succeeded",
+      "command:running"
+    ]);
+    expect(result.artifacts).toEqual([expect.objectContaining({
+      data: expect.objectContaining({
+        artifactType: "workspace_activity",
+        payload: expect.objectContaining({
+          command: expect.objectContaining({ exitCode: 0, preview: "npm test", stdoutPreview: "ok\n" }),
+          kind: "command",
+          phase: "succeeded"
+        })
+      })
+    })]);
+    const raw = JSON.stringify(result.artifacts);
+    expect(raw).not.toContain("sandbox_");
+    expect(raw).not.toContain("runtime_1");
+
+    const exported: string[] = [];
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([{
+      body: body("report"),
+      byteSize: 6,
+      checksum: createHash("sha256").update("report").digest("hex"),
+      mimeType: "text/markdown",
+      opaqueFileId: "a".repeat(64),
+      relativePath: "report.md"
+    }]);
+    await value.coordinator.finalize({
+      onActivity: async (entry) => { exported.push(`${entry.kind}:${entry.phase}:${entry.count ?? ""}`); },
+      runId: value.runId,
+      userId: "user_1",
+      workspace: value.workspace
+    });
+    expect(exported).toEqual(["outputs_export:running:1", "outputs_export:succeeded:1"]);
+
+    const stopped: string[] = [];
+    const fresh = fixture();
+    vi.mocked(fresh.runtime.callBoundTool).mockResolvedValueOnce({
+      content: [{ text: "ok", type: "text" }],
+      status: "complete"
+    });
+    await fresh.coordinator.execute({
+      call: { arguments: { command: "pwd" }, id: "call_before_stop", name: fresh.shellToolName },
+      modelRunToolCallId: "stored_before_stop",
+      runId: fresh.runId,
+      userId: "user_1",
+      workspace: fresh.workspace
+    });
+    await fresh.coordinator.settle({
+      onActivity: async (entry) => { stopped.push(`${entry.kind}:${entry.phase}`); },
+      outcome: "cancelled",
+      runId: fresh.runId,
+      userId: "user_1",
+      workspace: fresh.workspace
+    });
+    expect(stopped).toEqual(["workspace_stopped:cancelled"]);
+  });
+});
