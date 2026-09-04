@@ -5865,7 +5865,7 @@ function validBaselinePlan(
   const facts = kinds.includes("FACT") || kinds.includes("EVENT");
   return validPlan(baseline) && !baseline.aggregationRequested &&
     (!baseline.applyResponsePreferences || facts && snapshot.useMemoryFacts) &&
-    !baseline.includePatterns &&
+    (!baseline.includePatterns || facts && snapshot.useMemoryFacts) &&
     !baseline.profileRequested && !baseline.recencyRequested &&
     baseline.mode === (facts ? "TARGETED_CURRENT" : "PAST_CHAT_SEARCH") &&
     baseline.temporalIntent === "ANY" &&

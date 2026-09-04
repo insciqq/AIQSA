@@ -126,6 +126,26 @@ function core(id: string, text?: string): MemoryCoreCandidate {
   return { candidate: ranked(id, false, "CORE"), expansion: expansion(id, false, text) };
 }
 
+function supportedPattern(supportCount = 3) {
+  const candidate = ranked("pattern");
+  const pattern: MemoryRankedCandidate = { ...candidate, metadata: {
+    ...candidate.metadata, directness: "INFERRED", modality: "PATTERN",
+    sourceAuthority: "SYNTHESIS", sourceMode: "AUTOMATIC", synthesisDepth: 1
+  } };
+  const expanded: MemoryExpandedCandidate = {
+    ...expansion("pattern", false, "The user tends to prepare a written checklist."),
+    patternSupportingEvidence: Array.from({ length: supportCount }, (_, index) => ({
+      itemId: `support-${index}`, observedAt: now,
+      safeText: `I wrote a checklist for workshop ${index + 1}.`,
+      sourceAuthority: "EXPLICIT", sourceChatId: null,
+      sourceRootHash: String(index + 1).repeat(64)
+    }))
+  };
+  return { expanded: [expanded], ranked: [pattern], plan: planMemoryRetrieval({
+    currentUserText: "How should I prepare?", includePatterns: true, now
+  }) };
+}
+
 function renderedEvidence(pack: MemoryContextPack): readonly Record<string, unknown>[] {
   return (pack.text ?? "").split("\n").flatMap((line) => {
     if (!line.startsWith("{")) return [];
@@ -169,7 +189,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v39");
+    expect(pack.packerVersion).toBe("memory-context-packer-v40");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -707,6 +727,84 @@ describe("Personal Memory context pack", () => {
 
     expect(pack.items).toEqual([]);
     expect(pack.omissionCounts).toMatchObject({ pattern_support_missing: 1 });
+  });
+
+  it.each([0, 2, 3, 8, 9])("keeps pattern support cardinality bounded: %i", (count) => {
+    const pack = packMemoryPersonalContext(supportedPattern(count));
+    expect(pack.items.length).toBe(count >= 3 && count <= 8 ? 1 : 0);
+    if (pack.items.length) expect(pack.items[0]!.patternSupportingEvidence).toHaveLength(count);
+  });
+
+  it.each(["same-root", "duplicate-version", "empty-text", "invalid-date", "derived-support"])(
+    "omits a pattern with invalid independent supports: %s", (defect) => {
+      const fixture = supportedPattern();
+      const supports = fixture.expanded[0]!.patternSupportingEvidence!;
+      const malformed = supports.map((support, index) => index === 2 ? {
+        ...support,
+        ...(defect === "same-root" ? { sourceRootHash: supports[0]!.sourceRootHash } : {}),
+        ...(defect === "duplicate-version" ? { itemId: supports[0]!.itemId } : {}),
+        ...(defect === "empty-text" ? { safeText: " " } : {}),
+        ...(defect === "invalid-date" ? { observedAt: new Date(NaN) } : {}),
+        ...(defect === "derived-support"
+          ? { sourceAuthority: "SYNTHESIS" as unknown as typeof support.sourceAuthority } : {})
+      } : support);
+      const pack = packMemoryPersonalContext({ ...fixture, expanded: [{
+        ...fixture.expanded[0]!, patternSupportingEvidence: malformed
+      }] });
+      expect(pack.items).toEqual([]);
+      expect(pack.text).toBeNull();
+    }
+  );
+
+  it.each([profilePlan, historicalPlan, pastChatPlan, aggregationPlan])(
+    "keeps PATTERN out of standalone non-current-fact operations: $mode/$aggregationRequested", (plan) => {
+      const fixture = supportedPattern();
+      const pack = packMemoryPersonalContext({
+        ...fixture, plan, factPlan: planMemoryRetrieval({
+          currentUserText: plan.originalSanitizedQuery, includePatterns: true, now
+        })
+      });
+      expect(pack.items).toEqual([]);
+      expect(pack.omissionCounts.pattern_not_authorized).toBe(1);
+    }
+  );
+
+  it("carries a separately admitted fact policy through the deterministic history envelope only", () => {
+    const fixture = supportedPattern();
+    const history = planMemoryRetrieval({
+      aggregationRequested: true, currentUserText: fixture.plan.originalSanitizedQuery,
+      filters: { sourceKinds: ["HISTORY"] }, mode: "PAST_CHAT_SEARCH", now, temporalIntent: "ANY"
+    });
+    for (const sameQuery of [false, true]) {
+      const pack = packMemoryPersonalContext({
+        ...fixture, plan: history, questionDirectedTemporalFallback: true,
+        factPlan: sameQuery ? fixture.plan : planMemoryRetrieval({
+          currentUserText: "unrelated accepted request", includePatterns: true, now
+        })
+      });
+      expect(pack.items.length).toBe(sameQuery ? 1 : 0);
+      expect(history.includePatterns).toBe(false);
+    }
+  });
+
+  it("packs a pattern and all supports atomically inside its fact and provider budgets", () => {
+    const fixture = supportedPattern();
+    const full = packMemoryPersonalContext(fixture);
+    expect(full.items).toHaveLength(1);
+    expect(packMemoryPersonalContext({ ...fixture, maximumTokens: full.approxTokens }).items)
+      .toHaveLength(1);
+    const tooSmall = packMemoryPersonalContext({ ...fixture, maximumTokens: full.approxTokens - 1 });
+    expect(tooSmall.items).toEqual([]);
+    expect(tooSmall.text).toBeNull();
+    const tooLarge = packMemoryPersonalContext({ ...fixture, expanded: [{
+      ...fixture.expanded[0]!, patternSupportingEvidence: fixture.expanded[0]!.patternSupportingEvidence!
+        .map((support) => ({ ...support, safeText: "🔎".repeat(1800) }))
+    }] });
+    expect(tooLarge.items).toEqual([]);
+    expect(tooLarge.omissionCounts.fact_token_budget).toBe(1);
+    const duplicate = packMemoryPersonalContext({ ...fixture, ranked: [...fixture.ranked, ...fixture.ranked] });
+    expect(duplicate.items).toHaveLength(1);
+    expect(duplicate.items[0]!.patternSupportingEvidence).toHaveLength(3);
   });
 
   it("labels MEDIUM facts as non-authoritative supporting observations", () => {

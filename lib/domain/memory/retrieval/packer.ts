@@ -831,6 +831,8 @@ function expandedMap(
 export function packMemoryPersonalContext(input: Readonly<{
   core?: readonly MemoryCoreCandidate[];
   expanded: readonly MemoryExpandedCandidate[];
+  /** Separately admitted current-fact policy of a deterministic mixed read. */
+  factPlan?: MemoryRetrievalPlan;
   hardCapTokens?: number;
   maximumTokens?: number | null;
   plan: MemoryRetrievalPlan;
@@ -841,6 +843,16 @@ export function packMemoryPersonalContext(input: Readonly<{
   const aggregation = input.plan.aggregationRequested;
   const questionDirectedTemporalFallback =
     input.questionDirectedTemporalFallback === true;
+  const patternPlan = input.plan.mode === "TARGETED_CURRENT"
+    ? input.plan
+    : questionDirectedTemporalFallback && input.plan.mode === "PAST_CHAT_SEARCH" &&
+        input.factPlan?.originalSanitizedQuery === input.plan.originalSanitizedQuery
+      ? input.factPlan
+      : null;
+  const patternsAllowed = patternPlan?.includePatterns === true &&
+    patternPlan.mode === "TARGETED_CURRENT" && !patternPlan.aggregationRequested &&
+    !patternPlan.profileRequested && patternPlan.filters.sourceKinds.includes("FACT") &&
+    (patternPlan.temporalIntent === "CURRENT" || patternPlan.temporalIntent === "ANY");
   const defaults = memoryContextBudgetLimits(input.plan);
   const requestedHardCapTokens = input.hardCapTokens ?? defaults.hardCapTokens;
   const requestedTargetTokens = input.targetTokens ?? defaults.targetTokens;
@@ -941,7 +953,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     dynamicExpansions
   )) {
     if (candidate.metadata.sourceAuthority === "SYNTHESIS" &&
-      !input.plan.includePatterns) {
+      !patternsAllowed) {
       increment(omissionCounts, "pattern_not_authorized");
       continue;
     }

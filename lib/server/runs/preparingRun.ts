@@ -525,6 +525,24 @@ export function validateMemoryPreparingAttemptResult(
         false
       );
     }
+    if (item.featureSnapshot?.evidenceType === "pattern") {
+      const factPlan = isRecord(input.budgetSnapshot.factPlan)
+        ? input.budgetSnapshot.factPlan
+        : budgetPlan;
+      const feature = item.featureSnapshot;
+      if (item.itemType !== "FACT_VERSION" || feature.tier !== "DYNAMIC" ||
+        factPlan?.mode !== "TARGETED_CURRENT" || factPlan.includePatterns !== true ||
+        factPlan.aggregationRequested !== false || factPlan.profileRequested !== false ||
+        factPlan.originalQueryHash !== budgetPlan?.originalQueryHash ||
+        !Array.isArray(factPlan.filterSourceKinds) || !factPlan.filterSourceKinds.includes("FACT") ||
+        feature.retrievalMode !== factPlan.mode || feature.includePatterns !== true ||
+        feature.aggregationRequested !== false || feature.historical !== false ||
+        feature.sourceAuthority !== "derived_pattern" ||
+        feature.temporalIntent !== factPlan.temporalIntent ||
+        (feature.temporalIntent !== "CURRENT" && feature.temporalIntent !== "ANY")) {
+        throw new MemoryPreparingRunConflictError("memory_attempt_item_pattern_authority_invalid", false);
+      }
+    }
     seenItems.add(identity);
   }
 }
