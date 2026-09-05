@@ -1198,6 +1198,9 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
     ${hit.rank},
     ${hit.score}
   )`));
+  // Keep hit and neighbor predicates eligible for passage-index pushdown.
+  // Materializing every passage of each hit artifact can make the planner
+  // combine broad neighbor rows before restricting them to matched anchors.
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
@@ -1217,7 +1220,7 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
         SELECT hit."indexArtifactId" FROM bm25_hits AS hit
       )
     ),
-    scoped_passages AS MATERIALIZED (${sharedScopedPassagesSql("hit_artifacts")}),
+    scoped_passages AS NOT MATERIALIZED (${sharedScopedPassagesSql("hit_artifacts")}),
     matched AS MATERIALIZED (
       SELECT
         chunk."baseName",
@@ -2006,6 +2009,7 @@ export async function executeKnowledgeRetrievalCore(
       });
       selected = Object.freeze(selectRerankedKnowledgeCandidates({
         candidates: ordered,
+        query: input.query,
         resultLimit: input.resultLimit
       }));
     }

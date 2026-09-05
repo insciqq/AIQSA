@@ -1827,7 +1827,7 @@ describe("run recovery", () => {
     expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
   });
 
-  it.each([undefined, 9, 10, 11] as const)("recovers the evidence review after a settled compose operation without regenerating the answer (%s)", async (workflowVersion) => {
+  it.each([[undefined, undefined], [9, undefined], [10, undefined], [11, undefined], [11, 1]] as const)("recovers the evidence review after a settled compose operation without regenerating the answer (%s, %s)", async (workflowVersion, repairFeedbackVersion) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
     const dispatch = knowledgeProviderDispatchRecorder("dispatch");
     const snapshotInput = { evidenceReceiptHash: dispatch.draft.manifestHash,
@@ -1835,7 +1835,7 @@ describe("run recovery", () => {
       transport: "provider_neutral_json" as const };
     const promptInput = { request: "remember this", evidenceManifest: dispatch.draft.message };
     const acceptedRequest = workflowVersion === 11
-      ? createKnowledgeEvidenceAnswerSnapshotV2({ ...snapshotInput, operation: "knowledge_evidence_compose_v2", workflowVersion,
+      ? createKnowledgeEvidenceAnswerSnapshotV2({ ...snapshotInput, operation: "knowledge_evidence_compose_v2", workflowVersion, repairFeedbackVersion,
         ...knowledgeEvidenceAnswerDraftPromptV2(promptInput) })
       : createKnowledgeEvidenceAnswerSnapshotV1({ ...snapshotInput, operation: "knowledge_evidence_compose_v1", workflowVersion,
         ...knowledgeEvidenceAnswerDraftPromptV1(promptInput) });
@@ -1869,6 +1869,9 @@ describe("run recovery", () => {
     expect(requests).toHaveLength(1);
     expect(dispatch.lifecycle.prepare).toHaveBeenCalledWith(expect.objectContaining({ ordinal: 2,
       purpose: workflowVersion === 11 ? "knowledge_evidence_review_v2" : "knowledge_evidence_review_v1" }));
+    const repairRequest = vi.mocked(dispatch.lifecycle.prepare).mock.calls[0]?.[0].acceptedRequest;
+    if (repairFeedbackVersion === 1) expect(repairRequest).toMatchObject({ repairFeedbackVersion: 1 });
+    else expect(repairRequest).not.toHaveProperty("repairFeedbackVersion");
     expect(groundKnowledgeEvidenceAnswer).toHaveBeenCalledOnce();
     expect(requests[0]?.toolChoice).toBe("none");
   });
@@ -3183,7 +3186,7 @@ describe("run recovery", () => {
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
   });
 
-  it.each([[undefined, undefined], [2, 2], [3, 3], [3, 4]] as const)("recovers a pending search_knowledge call with its pinned search instructions (%s) and packing (%s)", async (knowledgeSearchInstructionVersion, knowledgeEvidencePackingVersion) => {
+  it.each([[undefined, undefined], [2, 2], [3, 3], [3, 4], [3, 5]] as const)("recovers a pending search_knowledge call with its pinned search instructions (%s) and packing (%s)", async (knowledgeSearchInstructionVersion, knowledgeEvidencePackingVersion) => {
     const request = { ...normalizedKnowledgeRequest(),
       ...(knowledgeSearchInstructionVersion === undefined ? {} : { knowledgeSearchInstructionVersion }),
       ...(knowledgeEvidencePackingVersion === undefined ? {} : { knowledgeEvidencePackingVersion }) };

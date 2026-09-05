@@ -8,6 +8,8 @@ import type { KnowledgeEvidenceAnswerReviewV1 } from "../knowledge/evidenceAnswe
 import type { ProviderRunRequest } from "../providers/types";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
+import { packKnowledgeEvidenceDispatchManifest, KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION } from "../knowledge/evidenceDispatchManifest";
+import { buildKnowledgeEvidenceAnswerPublicationV2, validateKnowledgeEvidenceAnswerReviewV2 } from "../knowledge/evidenceAnswerReviewV2";
 import type { CheckpointedToolLoopRun, PersistedToolLoopCall, ToolLoopCheckpoint } from "./toolLoopPersistence";
 
 vi.mock("../knowledge/automaticEvidence", () => ({ toolLoopKnowledgeEvidenceDispatchDraft: vi.fn(() => null) }));
@@ -143,5 +145,54 @@ describe("review-driven Knowledge retrieval", () => {
     cancelled.execute.mockImplementation(async () => { cancelled.abort.abort(); throw Error("cancelled"); });
     await expect(refineKnowledgeEvidence(cancelled.input)).rejects.toThrow();
     expect(cancelled.repository.settleToolLoopCall).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 5] as const)("retains correction premises with packing policy %s across search and recovery", async packingVersion => {
+    const candidates = ["North takes effect on June 2.", "North is active.", "The archive uses plain text."].map((text, index) => ({
+      ambiguity: "none" as const, evidenceId: `evidence-${index + 1}`, exactExcerpt: text,
+      fileName: "schedule.txt", handle: `K${index + 1}`, locator: `page=${index + 1}; heading=Schedule`,
+      operationOrdinal: 1, resultOrdinal: [3, 1, 2][index]!, sourceAlias: "S1", sourceLabel: "Schedule",
+      sourceTruncated: false, sourceVersionNumber: 1, state: "available" as const
+    }));
+    const fresh = { ...candidates[0]!, evidenceId: "evidence-4", handle: "K4", operationOrdinal: 2, resultOrdinal: 1,
+      exactExcerpt: "South takes effect on June 3." };
+    const options = { coverageStatement: "Retrieved schedule fragments.", header: "<evidence>", footer: "</evidence>",
+      maximumBytes: 10_000, maximumTokens: 10_000, runtimeVersion: 1 as const, profileId: "fake:answer", promptFragmentVersion: 1 as const,
+      packingVersion: KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION };
+    const previous = packKnowledgeEvidenceDispatchManifest({ ...options, candidates });
+    const required = packKnowledgeEvidenceDispatchManifest({ ...options, candidates: [candidates[0]!, candidates[1]!, fresh] });
+    const maximumBytes = Math.max(previous.messageBytes, required.messageBytes);
+    const draft = { version: 1 as const, blocks: [
+      { id: "B1", kind: "paragraph" as const, text: "North is active.", evidenceHandles: ["K2"] },
+      { id: "B2", kind: "paragraph" as const, text: "North takes effect on June 9.", evidenceHandles: ["K1"] }
+    ] };
+    const context = { draft, availableHandles: previous.items.map(item => item.handle), availableSourceAliases: ["S1"] };
+    const validation = validateKnowledgeEvidenceAnswerReviewV2({ version: 2, analysisComplete: true,
+      blocks: [
+        { blockId: "B1", verdict: "supported", evidenceHandles: ["K2"], reason: "" },
+        { blockId: "B2", verdict: "contradicted", evidenceHandles: [], reason: "The documented date is June 2." }
+      ], requirements: [
+        { requirement: "Give the North effective date.", status: "needs_correction", blockIds: [], correctionEvidenceHandles: ["K1"], gap: "Use the documented date." },
+        { requirement: "Give the South effective date.", status: "missing_evidence", blockIds: [], correctionEvidenceHandles: [], gap: "The South date is absent." }
+      ], followUps: [{ query: "South effective date", sourceAliases: [], requirementIds: ["R2"] }]
+    }, context);
+    expect(validation.kind).toBe("accepted");
+    if (validation.kind !== "accepted") throw Error("neutral_review_rejected");
+    const f = fixture(11);
+    f.request.knowledgeEvidencePackingVersion = packingVersion;
+    const input = { ...f.input, previousEvidence: previous, result: { ...f.input.result, review: validation.value,
+      publication: buildKnowledgeEvidenceAnswerPublicationV2({ ...context, review: validation.value,
+        coverageLimitations: EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 }) } };
+    const pack = ({ retainedItems }: Parameters<typeof toolLoopKnowledgeEvidenceDispatchDraft>[0]) =>
+      packKnowledgeEvidenceDispatchManifest({ ...options, maximumBytes, candidates: [...candidates, fresh], retainedItems });
+    vi.mocked(toolLoopKnowledgeEvidenceDispatchDraft).mockImplementationOnce(pack).mockImplementationOnce(pack);
+    const packed = await refineKnowledgeEvidence(input);
+    const recovered = await refineKnowledgeEvidence(input);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(recovered).toEqual(packed);
+    expect(packed?.items.map(item => item.handle).sort()).toEqual(packingVersion === 5 ? ["K1", "K2", "K4"] : ["K2", "K3", "K4"]);
+    if (packingVersion === 5) {
+      expect(packed?.items.find(item => item.handle === "K1")?.itemHash).toBe(previous.items.find(item => item.handle === "K1")?.itemHash);
+    }
   });
 });

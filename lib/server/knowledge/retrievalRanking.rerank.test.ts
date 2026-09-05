@@ -60,9 +60,9 @@ function candidate(input: Readonly<{
   };
 }
 
-describe("Knowledge ranking profile v8", () => {
+describe("Knowledge ranking profile v10", () => {
   it("versions the widened candidate and rerank pool constants", () => {
-    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(8);
+    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(10);
     expect(KNOWLEDGE_LANE_CANDIDATE_LIMIT).toBe(64);
     expect(KNOWLEDGE_BROAD_RERANK_INPUT_MAX).toBe(96);
     expect(KNOWLEDGE_SCOPED_RERANK_INPUT_MAX).toBe(48);
@@ -85,11 +85,11 @@ describe("Pre-rerank pool selection", () => {
     expect(pool.map(({ chunkId }) => chunkId).sort()).toEqual(ids);
     const ordered = orderRerankedKnowledgeCandidates({ pool, query: "value",
       rerankScores: new Map(pool.map(({ chunkId }) => [chunkId, 1])) });
-    const final = selectRerankedKnowledgeCandidates({ candidates: [...ordered, ordered[0]!], resultLimit: 8 });
+    const final = selectRerankedKnowledgeCandidates({ query: "value", candidates: [...ordered, ordered[0]!], resultLimit: 8 });
     expect(final.map(({ chunkId }) => chunkId).sort()).toEqual(ids);
     const bounded = selectKnowledgePreRerankPool({ candidates, bindingOrdinals: [0], maximum: 1 });
     expect(bounded).toHaveLength(1);
-    expect(selectRerankedKnowledgeCandidates({ candidates: ordered, resultLimit: 1 })).toHaveLength(1);
+    expect(selectRerankedKnowledgeCandidates({ query: "value", candidates: ordered, resultLimit: 1 })).toHaveLength(1);
   });
 
   it("retains an occurrence's exact signal when its other lane delivery ranks higher", () => {
@@ -222,6 +222,29 @@ describe("Pre-rerank pool selection", () => {
 });
 
 describe("Post-rerank final ranking", () => {
+  it("keeps existing relevance order when only lower-scoring unrelated passages are added", () => {
+    const original = [
+      candidate({ chunkId: "model-first", source: "Primary", text: "A mechanism description." }),
+      candidate({ chunkId: "term-match", source: "Secondary", text: "needle" })
+    ];
+    const background = [
+      candidate({ chunkId: "background-a", text: "An unrelated announcement." }),
+      candidate({ chunkId: "background-b", text: "An unrelated overview." })
+    ];
+    const rerankScores = new Map([
+      ["model-first", 0.9], ["term-match", 0.8],
+      ["background-a", 0.2], ["background-b", 0.1]
+    ]);
+    const order = (candidates: readonly KnowledgeRetrievalCandidate[]) =>
+      orderRerankedKnowledgeCandidates({
+        pool: fuseKnowledgeCandidates(candidates), query: "needle", rerankScores
+      }).filter(item => original.some(row => row.chunkId === item.chunkId))
+        .map(item => item.chunkId);
+
+    // The original model ranks and their one-term coverage are unchanged.
+    expect(order([...original, ...background])).toEqual(order(original));
+  });
+
   it("ranks by rerank score, then exact signal, then fused RRF, then chunk id", () => {
     const pool = fuseKnowledgeCandidates([
       candidate({ chunkId: "chunk-a", signals: [signal("passage_bm25", 1)] }),
@@ -284,6 +307,7 @@ describe("Post-rerank final ranking", () => {
       rerankScores: new Map([["chunk-scored", -0.5]])
     });
     const selected = selectRerankedKnowledgeCandidates({
+      query: "unmatched",
       candidates: ordered,
       resultLimit: 2
     });
@@ -327,6 +351,7 @@ describe("Post-rerank final ranking", () => {
       rerankScores: new Map(pool.map((entry, index) => [entry.chunkId, 1 - index * 0.01]))
     });
     const selected = selectRerankedKnowledgeCandidates({
+      query: "unmatched",
       candidates: ordered,
       resultLimit: 16
     });
@@ -346,6 +371,7 @@ describe("Post-rerank final ranking", () => {
       candidate({ chunkId: "chunk-far", source: "third" })
     ]);
     const withinBand = selectRerankedKnowledgeCandidates({
+      query: "unmatched",
       candidates: orderRerankedKnowledgeCandidates({
         pool,
         query: "unmatched",
@@ -363,6 +389,7 @@ describe("Post-rerank final ranking", () => {
       .toEqual(["chunk-a", "chunk-near", "chunk-b"]);
 
     const outsideBand = selectRerankedKnowledgeCandidates({
+      query: "unmatched",
       candidates: orderRerankedKnowledgeCandidates({
         pool,
         query: "unmatched",
@@ -380,6 +407,22 @@ describe("Post-rerank final ranking", () => {
       .toEqual(["chunk-a", "chunk-b", "chunk-near"]);
   });
 
+  it("preserves stronger query coverage when an alternative Source has a close model score", () => {
+    const pool = fuseKnowledgeCandidates([
+      candidate({ chunkId: "first", source: "shared", text: "needle" }),
+      candidate({ chunkId: "second", source: "shared", text: "needle" }),
+      candidate({ chunkId: "alternative", source: "other", text: "An unrelated announcement." })
+    ]);
+    const ordered = orderRerankedKnowledgeCandidates({
+      pool,
+      query: "needle",
+      rerankScores: new Map([["first", 0.9], ["second", 0.89], ["alternative", 0.87]])
+    });
+    expect(ordered.map((entry) => entry.chunkId)).toEqual(["first", "second", "alternative"]);
+    expect(selectRerankedKnowledgeCandidates({ query: "needle", candidates: ordered, resultLimit: 2 })
+      .map((entry) => entry.chunkId)).toEqual(["first", "second"]);
+  });
+
   it("never promotes an unscored candidate above a scored one", () => {
     const pool = fuseKnowledgeCandidates([
       candidate({ chunkId: "chunk-a", source: "shared" }),
@@ -387,6 +430,7 @@ describe("Post-rerank final ranking", () => {
       candidate({ chunkId: "chunk-c", source: "other" })
     ]);
     const selected = selectRerankedKnowledgeCandidates({
+      query: "unmatched",
       candidates: orderRerankedKnowledgeCandidates({
         pool,
         query: "unmatched",
@@ -419,6 +463,7 @@ describe("Post-rerank final ranking", () => {
       rerankScores
     });
     const selected = selectRerankedKnowledgeCandidates({
+      query: "Orion rollout phase 2027 2026",
       candidates: ordered,
       resultLimit: 16
     });

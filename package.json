@@ -15,7 +15,9 @@
   "packageManager": "npm@10.9.4",
   "scripts": {
     "benchmark:knowledge:bright:answer": "tsx benchmarks/knowledge/brightAnswerLive.ts",
+    "benchmark:knowledge:openrag:current": "tsx benchmarks/knowledge/openRagCurrentAnswerLive.ts",
     "benchmark:knowledge:bright:report": "tsx benchmarks/knowledge/brightAnswerReport.ts",
+    "benchmark:knowledge:bright:diagnose": "tsx benchmarks/knowledge/brightAnswerDiagnose.ts",
     "benchmark:knowledge:bright:census": "tsx benchmarks/knowledge/censusBrightStackOverflowProduct.ts",
     "benchmark:knowledge:bright:activate": "tsx benchmarks/knowledge/activateBrightStackOverflowImport.ts",
     "benchmark:knowledge:bright:embed": "tsx benchmarks/knowledge/embedBrightStackOverflowImport.ts",

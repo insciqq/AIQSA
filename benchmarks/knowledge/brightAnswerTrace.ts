@@ -3,6 +3,7 @@ import { normalizeProviderExecutionSnapshot } from "../../lib/server/providers/r
 import type { OpenRagAnswerModelPin } from "./openRagAnswerContract";
 import { textFromContent } from "./openRagAnswerLive";
 import { brightAnswerHash, isRecord } from "./brightAnswerHarness";
+import { captureBrightPackingReplayContext } from "./brightPackingReplay";
 
 /** Purpose-bound export of the benchmark's own run only. Explicit selects
  * deliberately omit credentials, HTTP envelopes, opaque continuation, raw
@@ -14,11 +15,16 @@ export async function captureBrightAnswerTrace(input: Readonly<{
   expectedPin: OpenRagAnswerModelPin;
   question: string;
   baseId: string | null;
+  expectedSourceCount?: number;
   scopePin: Readonly<{
     snapshotId: string; generationId: string; profileRevisionId: string;
     vectorSpaceFingerprint: string; targetDimension: number;
   }> | null;
 }>) {
+  const expectedSourceCount = input.expectedSourceCount ?? 107_081;
+  if (!Number.isSafeInteger(expectedSourceCount) || expectedSourceCount < 1) {
+    throw new Error("bright_answer_source_count_invalid");
+  }
   const runs = await input.prisma.modelRun.findMany({
     where: { chatId: input.chatId, userId: input.userId },
     take: 2,
@@ -36,7 +42,7 @@ export async function captureBrightAnswerTrace(input: Readonly<{
         select: {
           selection: true, resolvedBaseCount: true, resolvedSourceCount: true,
           sourceBindingStrategy: true, answerRoute: true, answerPolicy: true,
-          budgetPolicy: true
+          budgetPolicy: true, exclusions: true
         }
       },
       knowledgeRunBindings: {
@@ -145,7 +151,7 @@ export async function captureBrightAnswerTrace(input: Readonly<{
   const scope = run.knowledgeRunScope;
   const selection = isRecord(scope?.selection) ? scope.selection : null;
   if (input.baseId !== null && (scope?.resolvedBaseCount !== 1 ||
-    scope.resolvedSourceCount !== 107_081 || scope.answerRoute !== "rag_v1" ||
+    scope.resolvedSourceCount !== expectedSourceCount || scope.answerRoute !== "rag_v1" ||
     !Array.isArray(selection?.baseIds) || selection.baseIds.length !== 1 ||
     selection.baseIds[0] !== input.baseId) ||
     input.baseId === null && (scope !== null || run.knowledgeRuns.length > 0)) {
@@ -180,7 +186,8 @@ export async function captureBrightAnswerTrace(input: Readonly<{
       developer: typeof prompt?.developer === "string" ? prompt.developer : null,
       reasoningEffort: typeof normalized?.reasoningEffort === "string" ? normalized.reasoningEffort : null
     },
-    traceContractVersion: 1,
+    traceContractVersion: 2,
+    packingReplayContext: captureBrightPackingReplayContext(normalized, scope?.exclusions),
     limitations: [
       "Normalized persisted execution only; no raw HTTP/provider bodies or hidden reasoning.",
       "Pre-rerank candidate texts/scores not retained by the product are unavailable, not reconstructed.",

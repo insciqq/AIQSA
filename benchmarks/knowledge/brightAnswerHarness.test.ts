@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  assertBrightAnswerOperationScope, assertBrightAnswerMessageRoute, brightAnswerHash, brightAnswerJudgePrompt, createBrightAnswerStore,
+  assertBrightAnswerOperationScope, assertBrightAnswerMessageRoute, brightAnswerCodeFingerprint, brightAnswerHash, brightAnswerJudgePrompt, createBrightAnswerStore,
   decodeBrightAnswerJudgment, decodeBrightChatStage, parseBrightAnswerCli,
   readBrightBoundedResponse, safeBrightAnswerError, selectBrightAnswerQueries, settleBrightChatStage
 } from "./brightAnswerHarness";
@@ -14,6 +14,26 @@ afterEach(async () => {
 });
 
 describe("BRIGHT answer canary", () => {
+  it("binds paid and offline experiments to executable code while excluding private runs and tests", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "bright-fingerprint-"));
+    temporaryRoots.push(root);
+    for (const dir of ["prisma", "app/api", "lib", "benchmarks/knowledge/results", "benchmarks/knowledge/.data"]) {
+      await mkdir(resolve(root, dir), { recursive: true });
+    }
+    for (const path of ["instrumentation.ts", "prisma/schema.prisma", "package.json", "package-lock.json", "lib/runtime.ts"]) {
+      await writeFile(resolve(root, path), "fixture");
+    }
+    const before = await brightAnswerCodeFingerprint(root);
+    for (const path of ["lib/runtime.test.ts", "benchmarks/knowledge/results/probe.ts", "benchmarks/knowledge/.data/query.json"]) {
+      await writeFile(resolve(root, path), "PRIVATE_FIXTURE");
+    }
+    expect(await brightAnswerCodeFingerprint(root)).toBe(before);
+    await writeFile(resolve(root, "lib/runtime.ts"), "changed");
+    expect(await brightAnswerCodeFingerprint(root)).not.toBe(before);
+    await symlink(resolve(root, "lib/runtime.ts"), resolve(root, "app/api/alias.ts"));
+    await expect(brightAnswerCodeFingerprint(root)).rejects.toThrow("source_symlink_forbidden");
+  });
+
   it.each(["chat_page_cursor_invalid", "http_404", "unauthorized", null])(
     "requires the real message-route response before paid admission (%s)", async (code) => {
       const probe = vi.fn(async () => { if (code) throw new Error(code); return {}; });
@@ -55,6 +75,19 @@ describe("BRIGHT answer canary", () => {
     expect(() => selectBrightAnswerQueries(queries.slice(0, 10), first)).toThrow("query_range_invalid");
     expect(() => selectBrightAnswerQueries(queries, { queryOffset: 116, queryLimit: 2 })).toThrow("query_range_invalid");
     expect(() => parseBrightAnswerCli([...args, "--batch-size", "6"])).toThrow("canary_limit_invalid");
+  });
+
+  it("accepts an explicit answer-model selector without changing paid authority or query controls", () => {
+    const args = ["--output", "results/test", "--preflight-only"];
+    expect(parseBrightAnswerCli(args).answerModel).toBeNull();
+    expect(parseBrightAnswerCli([...args, "--answer-model", "vendor/model-v2"])).toEqual({
+      ...parseBrightAnswerCli(args), answerModel: "vendor/model-v2"
+    });
+    for (const value of ["", "--resume", " model", "model\n", "x".repeat(201)]) {
+      expect(() => parseBrightAnswerCli([...args, "--answer-model", value])).toThrow("model_invalid");
+    }
+    expect(() => parseBrightAnswerCli(["--output", "results/test", "--answer-model", "model"])).toThrow("paid_ack");
+    expect(() => parseBrightAnswerCli([...args, "--answer-model", "model", "--answer-model", "another"])).toThrow("duplicate");
   });
 
   it("separates answer correctness from grounding and rejects inconsistent passes", () => {
@@ -239,6 +272,14 @@ describe("private checkpoint integrity", () => {
     receipt.value.answer = "tampered";
     await writeFile(path, JSON.stringify(receipt));
     await expect(store.read("001/answer.json")).rejects.toThrow("corrupt");
+    await store.close();
+  });
+
+  it("rejects non-JSON manifest controls before acquiring a persistent lock", async () => {
+    const input = await fixture();
+    await expect(createBrightAnswerStore({ ...input, manifest: { limit: 12n } })).rejects.toThrow();
+    await expect(stat(input.output)).rejects.toMatchObject({ code: "ENOENT" });
+    const store = await createBrightAnswerStore(input);
     await store.close();
   });
 

@@ -778,7 +778,7 @@ export async function loadKnowledgeEvidencePackage(
 export async function loadKnowledgeFullContextDispatchRecovery(
   client: EvidenceClient,
   input: Readonly<{
-    knowledgeEvidencePackingVersion?: 2 | 3 | 4;
+    knowledgeEvidencePackingVersion?: 2 | 3 | 4 | 5;
     maximumTokens: number;
     modelId: string;
     provider: string;
@@ -875,7 +875,7 @@ export async function loadKnowledgeFullContextDispatchRecovery(
   let draft: KnowledgeEvidenceDispatchManifestDraft;
   try {
     draft = packKnowledgeFullContextDispatchManifest({
-      atomIndexVersion: input.knowledgeEvidencePackingVersion === 3 || input.knowledgeEvidencePackingVersion === 4 ? 3 : 2,
+      atomIndexVersion: input.knowledgeEvidencePackingVersion === 3 || input.knowledgeEvidencePackingVersion === 4 || input.knowledgeEvidencePackingVersion === 5 ? 3 : 2,
       candidates,
       excludedResources: evidence.readiness.excludedResources,
       maximumTokens: input.maximumTokens,

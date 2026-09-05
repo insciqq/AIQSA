@@ -108,11 +108,15 @@ export type NormalizedRunRequest = {
     version: 1;
   }>;
   /** Durable evidence-packing policy for Knowledge tool-loop recovery. Older
-   * accepted requests omit it and retain chronological V1 packing. */
-  knowledgeEvidencePackingVersion?: 2 | 3 | 4;
+   * accepted requests omit it and retain chronological V1 packing. V5 also
+   * reserves reviewed correction premises when packing a retrieval revision. */
+  knowledgeEvidencePackingVersion?: 2 | 3 | 4 | 5;
   /** Frozen instructions, Scope anchor projection and publication rendering.
    * Omission preserves the previously accepted Knowledge workflow. */
   knowledgeAnswerWorkflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  /** Closed review-field validation feedback. Omission preserves historical
+   * prompts and rejection receipts; only evidence-review workflow 11 uses it. */
+  knowledgeReviewRepairFeedbackVersion?: 1;
   /** Frozen retrieval instructions, independent of answer-stage versions.
    * V2 pins the tool descriptor; V3 also pins the retrieval system contract.
    * Omission retains historical descriptor and workflow-based selection. */

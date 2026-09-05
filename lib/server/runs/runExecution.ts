@@ -1454,6 +1454,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         if (evidenceAnswer) {
           const evidenceInput = { ...executionInput, executionPolicy: groundingExecutionPolicy!,
+            repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion,
             onOperationAccepted(operation: { usage: ModelRunUsage }) {
               rememberReportedUsage(normalizedRequest.provider, normalizedRequest.modelId, operation.usage);
             } };

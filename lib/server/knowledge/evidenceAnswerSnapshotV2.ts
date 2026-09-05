@@ -15,6 +15,8 @@ export type KnowledgeEvidenceAnswerSnapshotV2 = Omit<KnowledgeEvidenceAnswerSnap
   pipeline: typeof KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2.pipeline;
   version: 42;
   workflowVersion: 11;
+  /** Omission retains the historical generic structural repair. */
+  repairFeedbackVersion?: 1;
 }>;
 
 export function isKnowledgeEvidenceAnswerOperationV2(value: unknown): value is KnowledgeEvidenceAnswerOperationV2 {
@@ -22,8 +24,9 @@ export function isKnowledgeEvidenceAnswerOperationV2(value: unknown): value is K
 }
 
 export function createKnowledgeEvidenceAnswerSnapshotV2(input: Omit<Parameters<typeof createKnowledgeEvidenceAnswerSnapshotV1>[0],
-  "operation" | "workflowVersion"> & Readonly<{ operation: KnowledgeEvidenceAnswerOperationV2; workflowVersion: 11 }>): KnowledgeEvidenceAnswerSnapshotV2 {
-  if (!isKnowledgeEvidenceAnswerOperationV2(input.operation) || input.workflowVersion !== 11) throw Error("knowledge_evidence_answer_snapshot_invalid");
+  "operation" | "workflowVersion"> & Readonly<{ operation: KnowledgeEvidenceAnswerOperationV2; workflowVersion: 11; repairFeedbackVersion?: 1 }>): KnowledgeEvidenceAnswerSnapshotV2 {
+  if (!isKnowledgeEvidenceAnswerOperationV2(input.operation) || input.workflowVersion !== 11 ||
+    input.repairFeedbackVersion !== undefined && input.repairFeedbackVersion !== 1) throw Error("knowledge_evidence_answer_snapshot_invalid");
   const compose = input.operation === "knowledge_evidence_compose_v2";
   // Share the unchanged transport, execution-policy, hash and prompt fences.
   // This intermediate value is never dispatched or persisted as a V1 request.
@@ -33,6 +36,7 @@ export function createKnowledgeEvidenceAnswerSnapshotV2(input: Omit<Parameters<t
   if (Buffer.byteLength(JSON.stringify(schema), "utf8") > STRUCTURED_OUTPUT_LIMITS.maxSchemaBytes) throw Error("knowledge_evidence_answer_schema_invalid");
   const snapshot = Object.freeze({ ...base, contractVersion: 2 as const, name: input.operation, operation: input.operation,
     pipeline: KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2.pipeline, version: 42 as const, workflowVersion: 11 as const,
+    ...(input.repairFeedbackVersion === 1 ? { repairFeedbackVersion: 1 as const } : {}),
     schema, schemaHash: knowledgeAnswerHash(schema) });
   if (Buffer.byteLength(knowledgeAnswerCanonicalJson(snapshot), "utf8") > KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES) throw Error("knowledge_evidence_answer_snapshot_invalid");
   return snapshot;

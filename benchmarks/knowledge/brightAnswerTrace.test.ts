@@ -18,11 +18,12 @@ function fixture() {
     id: "run", modelId: "fixture-model", status: "complete", toolCalls: [], knowledgeRuns: [],
     userMessage: { content: "Synthetic question" }, assistantMessage: { content: "Synthetic answer" },
     providerRunBindings: [{ executionSnapshot: snapshot }],
-    normalizedRequest: { prompt: { system: "A fixed baseline", developer: null },
+    normalizedRequest: { provider: "fake", modelId: "fixture-model", knowledgeEvidencePackingVersion: 4,
+      modelCapabilities: { contextWindow: 32768, extra: "MUST_NOT_EXPORT" }, prompt: { system: "A fixed baseline", developer: null },
       params: { fixture: "MUST_NOT_EXPORT" }, mcp: { fixture: "MUST_NOT_EXPORT" } },
     errorPayload: { code: "fixture_failure", message: "MUST_NOT_EXPORT" },
     knowledgeRunScope: { selection: { baseIds: ["base"] }, resolvedBaseCount: 1,
-      resolvedSourceCount: 107_081, answerRoute: "rag_v1" },
+      resolvedSourceCount: 107_081, answerRoute: "rag_v1", exclusions: [] },
     knowledgeRunBindings: [{ knowledgeBaseId: "base", knowledgeBaseSnapshotId: "snapshot",
       indexGenerationId: "generation", includeWholeBase: true, vectorSpaceFingerprint: "vector", targetDimension: 3 }],
     knowledgeRunProfileBindings: [{ profileRevisionId: "profile" }],
@@ -47,6 +48,9 @@ describe("private normalized BRIGHT trace", () => {
     expect(JSON.stringify(trace)).not.toContain("MUST_NOT_EXPORT");
     expect(trace).not.toHaveProperty("providerRunBindings");
     expect(trace).not.toHaveProperty("normalizedRequest");
+    expect(trace).toMatchObject({ traceContractVersion: 2, packingReplayContext: {
+      version: 1, provider: "fake", modelId: "fixture-model", packingVersion: 4, contextWindow: 32768, exclusions: []
+    } });
   });
 
   it("rejects a different question, deployment, or frozen Source snapshot", async () => {
@@ -63,6 +67,15 @@ describe("private normalized BRIGHT trace", () => {
     await expect(captureBrightAnswerTrace(input)).rejects.toThrow("ambiguous");
     findMany.mockResolvedValue([]);
     await expect(captureBrightAnswerTrace(input)).resolves.toBeNull();
+  });
+
+  it("requires the exact attested corpus size when capturing another benchmark", async () => {
+    const { input, row } = fixture();
+    row.knowledgeRunScope.resolvedSourceCount = 100;
+    await expect(captureBrightAnswerTrace(input)).rejects.toThrow("scope_mismatch");
+    await expect(captureBrightAnswerTrace({ ...input, expectedSourceCount: 100 })).resolves.toMatchObject({ status: "complete" });
+    await expect(captureBrightAnswerTrace({ ...input, expectedSourceCount: 99 })).rejects.toThrow("scope_mismatch");
+    await expect(captureBrightAnswerTrace({ ...input, expectedSourceCount: 0 })).rejects.toThrow("source_count_invalid");
   });
 
   it("uses dispatched evidence only, excluding merely sealed candidates", () => {

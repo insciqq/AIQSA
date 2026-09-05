@@ -2481,10 +2481,12 @@ describe("run preparation", () => {
     ));
 
     expect(prepared.normalizedRequest.knowledgePlan).toEqual(selection);
-    expect(prepared.normalizedRequest.knowledgeEvidencePackingVersion).toBe(4);
-    expect(prepared.providerRequest.knowledgeEvidencePackingVersion).toBe(4);
+    expect(prepared.normalizedRequest.knowledgeEvidencePackingVersion).toBe(5);
+    expect(prepared.providerRequest.knowledgeEvidencePackingVersion).toBe(5);
     expect(prepared.normalizedRequest.knowledgeAnswerWorkflowVersion).toBe(11);
     expect(prepared.providerRequest.knowledgeAnswerWorkflowVersion).toBe(11);
+    expect(prepared.normalizedRequest.knowledgeReviewRepairFeedbackVersion).toBe(1);
+    expect(prepared.providerRequest.knowledgeReviewRepairFeedbackVersion).toBe(1);
     expect(prepared.normalizedRequest.knowledgeSearchInstructionVersion).toBe(3);
     expect(prepared.providerRequest.knowledgeSearchInstructionVersion).toBe(3);
     expect(prepared.normalizedRequest.knowledgeQueryAnchorVersion).toBe(2);

@@ -304,6 +304,9 @@ describe("focused Knowledge evidence", () => {
       request: { ...request(), knowledgeEvidencePackingVersion: 4 }, results: [toolResult]
     });
     expect(primaryFirst?.packingVersion).toBe(KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION);
+    expect(toolLoopKnowledgeEvidenceDispatchDraft({
+      request: { ...request(), knowledgeEvidencePackingVersion: 5 }, results: [toolResult]
+    })).toEqual(primaryFirst);
     expect(primaryFirst?.message).toBe(occurrences?.message);
   });
 
@@ -569,7 +572,7 @@ describe("focused Knowledge evidence", () => {
     expect(draft.message).not.toContain("Alice");
   });
 
-  it.each([3, 4] as const)("preserves parsed table rows, headers, dates and locators through RAG and full-context Scope (%s)", (knowledgeEvidencePackingVersion) => {
+  it.each([3, 4, 5] as const)("preserves parsed table rows, headers, dates and locators through RAG and full-context Scope (%s)", (knowledgeEvidencePackingVersion) => {
     const { data, header, rows } = tableOccurrenceFixture();
     expect(data.map(({ text }) => text)).toEqual(rows.map((row) => `${header}\n${row}`));
     const base = evidence();
