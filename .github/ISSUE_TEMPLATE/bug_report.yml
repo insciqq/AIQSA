@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in AIQSA does not work as documented.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please do not paste API keys, session secrets, `.env` contents, uploaded documents, or other private data.
+  - type: input
+    id: version
+    attributes:
+      label: AIQSA version
+      description: The release tag or image tag you are running (see Control Center or `AIQSA_IMAGE` in `.env`).
+      placeholder: v0.1.24
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Default docker-compose.yml installation
+        - Development stack (docker-compose.dev.yml)
+        - Custom / other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Send ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Provider, model, and enabled capabilities
+      description: Which provider and model were selected, and whether Search, Knowledge, Memory, MCP tools, or Workspace were enabled for the run.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Output of `docker compose logs app` around the failure, with secrets removed.
+      render: shell
