@@ -755,6 +755,7 @@ export function PowerAppShellV2({
 
   const {
     activateBlankWorkspace,
+    openContinuedChat,
     activateChat,
     activatePersonalChatById,
     applyChatUpdate,
@@ -1449,6 +1450,7 @@ export function PowerAppShellV2({
   const workspacePaneView = {
     actions: {
       ...workspaceInteraction.paneActions,
+      openContinuedChat,
       activateChat,
       createChat: activateBlankWorkspace,
       createFolder,

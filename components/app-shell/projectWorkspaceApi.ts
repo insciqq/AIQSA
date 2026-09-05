@@ -71,6 +71,7 @@ function jsonMutation(method: "DELETE" | "PATCH" | "POST", body?: unknown): Requ
 
 export function projectChatSummaryFromApi(chat: ProjectChatSummaryWire): WorkspaceChatSummary {
   return {
+    ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan,

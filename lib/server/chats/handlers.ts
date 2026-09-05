@@ -59,6 +59,7 @@ export type ChatMessageRecord = {
 };
 
 export type ChatSummaryRecord = {
+  hasContinuationSource?: boolean;
   activeLeafMessageId: string | null;
   createdAt: Date | string;
   defaultKnowledgePlan?: KnowledgePlan | null;
@@ -285,6 +286,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
 
 export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire {
   return {
+    ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: iso(chat.createdAt),
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,

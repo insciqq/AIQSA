@@ -1,6 +1,8 @@
 "use client";
 
 import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePreview";
+import { useChatContinuation } from "@/components/app-shell/useChatContinuation";
+import { composerContextGauge } from "@/components/app-shell/composerContextStats";
 
 import {
   ChatDeleteConfirmationDialog,
@@ -351,6 +353,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (selectedProjectContext && !activeChatSummary)
     ? workspace.projects.detail
     : null;
+  const latestMessage = thread.visibleMessages.at(-1);
+  const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
+    latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
+    !thread.activeChatDetailError && !activeProjectChat?.archived &&
+    (!projectContext || activeProject?.capabilities.mutateChats));
+  const continuation = useChatContinuation({
+    accountId: session.accountId, chatId: session.activeChatId,
+    leafMessageId: latestMessage?.id ?? null, eligible: continuationEligible,
+    recommended: Boolean(composer.composerContextStats?.session?.phase === "after_answer" &&
+      (composerContextGauge(composer.composerContextStats).fraction ?? 0) >= 0.7),
+    onOpen: (chat) => workspace.pane.actions.openContinuedChat?.(chat)
+  });
   const projectHeaderFolders = useMemo(
     () => (workspace.projects.workspace?.folders ?? []).map((folder) => ({
       ...folder,
@@ -857,7 +871,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // Answer anatomy: identity leads; the process fold (Thinking → Steps →
     // Memory) sits above the text with the memory-saved notice under it; the
     // actions row below carries the pager, the Sources chip and the verbs.
-    const leadingSlot = identity && source.assistantIdentity ? (
+    const leadingSlot = activeChatSummary?.hasContinuationSource && !source.runId &&
+      source.parentMessageId === thread.visibleMessages[0]?.id && thread.visibleMessages[0]?.parentMessageId === null ? (
+      <a className="v2-chat-continuation-source v2-focusable"
+        href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
+    ) : identity && source.assistantIdentity ? (
       <div className="v2-answer-lead">
         <span className="v2-answer-identity" data-testid={identity.testId}>
           <AssistantAvatarV2 recipe={source.assistantIdentity.avatar} size={20} />
@@ -1183,6 +1201,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
               contextStats={composer.composerContextStats}
+              continuation={continuationEligible ? continuation : null}
               crumb={activeChatCrumb}
               archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
                 projectContext && (

@@ -406,6 +406,7 @@ export type ProjectFolderWire = Readonly<{
 }>;
 
 export type ProjectChatSummaryWire = Readonly<{
+  hasContinuationSource?: boolean;
   activeRun: boolean;
   activeLeafMessageId: string | null;
   archived: boolean;
@@ -730,7 +731,8 @@ function decodeProjectFolder(value: unknown): ProjectFolderWire | null {
 }
 
 export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null {
-  if (!isRecord(value) || typeof value.activeRun !== "boolean" ||
+  if (!isRecord(value) || (value.hasContinuationSource !== undefined && typeof value.hasContinuationSource !== "boolean") ||
+    typeof value.activeRun !== "boolean" ||
     !nullableString(value.activeLeafMessageId) || typeof value.archived !== "boolean" ||
     typeof value.createdAt !== "string" || typeof value.createdByDisplayName !== "string" ||
     !nullableString(value.createdByUserId) || !nullableString(value.defaultModelId) ||
@@ -748,6 +750,7 @@ export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null
   if (!knowledge.ok) return null;
   return {
     activeRun: value.activeRun,
+    ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: value.activeLeafMessageId,
     archived: value.archived,
     createdAt: value.createdAt,

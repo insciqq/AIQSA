@@ -28,6 +28,24 @@ import {
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, ChatDetail, WorkspaceChatSummary, ThreadMessage } from "./types";
 
+it("opens a fully loaded continuation without a second detail request and keeps temporary chats out of navigation", async () => {
+  const setup = useWorkspaceActionsForTest({ attachments: [], draft: "Unsent source draft" });
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  const summary = chat({ id: "continuation", title: "Continued: source", activeLeafMessageId: "summary",
+    messageCount: 1, hasContinuationSource: true, memoryMode: "TEMPORARY", temporaryRetentionDeadline: "2026-09-06T12:00:00.000Z" });
+  const detail: ChatDetail = { ...summary, contextStats: { approximateActiveBranchInputTokens: 20 }, usageStats: null,
+    messages: [message({ id: "summary", role: "assistant", content: "Conversation summary" })],
+    pageInfo: { activeLeafMessageId: "summary", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: summary.updatedAt } };
+  await setup.actions.openContinuedChat(detail);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(useWorkspaceStore.getState().activeChatId).toBe("continuation");
+  expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === "continuation")).toMatchObject({ memoryMode: "TEMPORARY", hasContinuationSource: true });
+  expect(useWorkspaceStore.getState().navigationChats.some((chat) => chat.id === "continuation")).toBe(false);
+  expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("Unsent source draft");
+  expect(useThreadStore.getState().threadsByChatId.continuation?.messages[0]?.content).toBe("Conversation summary");
+});
+
 function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string }): WorkspaceChatSummary {
   return {
     activeLeafMessageId: null,

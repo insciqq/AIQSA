@@ -231,6 +231,7 @@ const lightweightMessageSelect = {
 } satisfies Prisma.MessageSelect;
 
 const chatSummarySelect = {
+  continuationSource: { select: { id: true } },
   _count: {
     select: {
       messages: true
@@ -774,6 +775,7 @@ function serializeChatDetail(input: {
       approximateActiveBranchInputTokens: input.contextInputTokens,
       session: latestSessionStatus(activeBranchPath(input.lightweightMessages, chat.activeLeafMessageId))
     },
+    ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
       serializeHydratedMessage(
@@ -828,6 +830,7 @@ function serializeChatSummary(
   workspaceSnapshot: WorkspaceAvailabilitySnapshot
 ): ChatSummaryRecord {
   return {
+    ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),

@@ -17,6 +17,7 @@ import type { ThemeId } from "@/components/app-shell/theme";
 import type {
   Catalog,
   CatalogModel,
+  ChatDetail,
   WorkspaceChatSummary,
   FolderSummary,
   ModelParameterControls,
@@ -60,6 +61,7 @@ export type ShellWorkspacePaneState = {
 };
 
 export type ShellWorkspacePaneActions = {
+  openContinuedChat?(chat: ChatDetail): void;
   activateChat(chat: WorkspaceChatSummary): void;
   cancelChatEdit(): void;
   cancelFolderEdit(): void;
