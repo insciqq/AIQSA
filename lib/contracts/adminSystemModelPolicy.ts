@@ -100,8 +100,8 @@ export function decodeAdminSystemModelPolicyResponse(
   const rerankerModel = policy.rerankerModel;
   const rerankerRoute = policy.rerankerRoute;
   const updatedBy = policy.updatedBy;
-  if ((policy.chatPdfModel !== null && (!record(policy.chatPdfModel) || !candidate(policy.chatPdfModel) ||
-      typeof policy.chatPdfModel.available !== "boolean")) ||
+  if ((policy.chatPdfModel !== null && (!record(policy.chatPdfModel) ||
+      typeof policy.chatPdfModel.available !== "boolean" || !candidate(policy.chatPdfModel))) ||
     !(policy.chatPdfReasoningEffort === null || boundedText(policy.chatPdfReasoningEffort, 32)) ||
     (policy.chatPdfModel === null && policy.chatPdfReasoningEffort !== null) ||
     (systemModel !== null && (!record(systemModel) || !candidate(systemModel) ||
