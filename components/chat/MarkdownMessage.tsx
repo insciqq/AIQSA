@@ -113,6 +113,16 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
 
 export type MarkdownCitationRenderer = (handle: string, key: string) => ReactNode | null;
 
+/**
+ * Resolves a link target the ordinary safe-href allowlist would reject.
+ * `{ href }` renders a same-origin link (optionally as a download); `"text"`
+ * renders the label as inert inline code instead of a dead link; `null`
+ * leaves the ordinary external-link behavior untouched.
+ */
+export type MarkdownHrefResolver = (
+  href: string
+) => Readonly<{ download?: string; href: string }> | "text" | null;
+
 function renderPlainInline(
   text: string,
   keyPrefix: string,
@@ -141,7 +151,8 @@ function renderPlainInline(
 function renderInline(
   text: string,
   keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer
+  renderCitation?: MarkdownCitationRenderer,
+  resolveHref?: MarkdownHrefResolver
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   const inlinePattern =
@@ -195,10 +206,29 @@ function renderInline(
       );
     } else if (token.startsWith("[") && token.includes("](")) {
       const label = token.slice(1, token.indexOf("]("));
-      const href = safeExternalHref(match[2]);
+      const resolved = resolveHref?.(match[2]) ?? null;
+      const href = resolved ? null : safeExternalHref(match[2]);
 
       nodes.push(
-        href ? (
+        resolved && resolved !== "text" ? (
+          <a
+            className="break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]"
+            data-testid="markdown-resolved-link"
+            {...(resolved.download ? { download: resolved.download } : {})}
+            href={resolved.href}
+            key={`${keyPrefix}-link-${match.index}`}
+          >
+            {label}
+          </a>
+        ) : resolved === "text" ? (
+          <code
+            className="break-words rounded-control bg-control-pressed px-1 py-0.5 font-mono text-[0.9em] text-ink [overflow-wrap:anywhere]"
+            data-testid="markdown-inert-link"
+            key={`${keyPrefix}-link-${match.index}`}
+          >
+            {label}
+          </code>
+        ) : href ? (
           <a
             className="break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]"
             href={href}
@@ -264,7 +294,8 @@ function headingClass(level: number): string {
 function renderHeading(
   line: string,
   keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer
+  renderCitation?: MarkdownCitationRenderer,
+  resolveHref?: MarkdownHrefResolver
 ): ReactNode | null {
   const heading = /^(#{1,6})\s+(.+)$/.exec(line.trim());
   if (!heading) {
@@ -273,7 +304,7 @@ function renderHeading(
 
   const level = heading[1].length;
   const className = `${headingClass(level)} break-words font-semibold text-ink first:pt-0 [overflow-wrap:anywhere]`;
-  const children = renderInline(heading[2], `${keyPrefix}-heading`, renderCitation);
+  const children = renderInline(heading[2], `${keyPrefix}-heading`, renderCitation, resolveHref);
 
   switch (level) {
     case 1:
@@ -383,7 +414,8 @@ function parseList(lines: string[], startIndex: number, baseIndent?: number): { 
 function renderList(
   block: ListBlock,
   keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer
+  renderCitation?: MarkdownCitationRenderer,
+  resolveHref?: MarkdownHrefResolver
 ): ReactNode {
   const Tag = block.ordered ? "ol" : "ul";
   const className = block.ordered
@@ -394,10 +426,10 @@ function renderList(
     <Tag className={className} key={keyPrefix}>
       {block.items.map((item, index) => (
         <li key={`${keyPrefix}-item-${index}`}>
-          {renderInline(item.content, `${keyPrefix}-item-${index}`, renderCitation)}
+          {renderInline(item.content, `${keyPrefix}-item-${index}`, renderCitation, resolveHref)}
           {item.children.map((child, childIndex) => (
             <div className="mt-1" key={`${keyPrefix}-item-${index}-child-${childIndex}`}>
-              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`, renderCitation)}
+              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`, renderCitation, resolveHref)}
             </div>
           ))}
         </li>
@@ -429,7 +461,8 @@ function renderTable(
   lines: string[],
   startIndex: number,
   keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer
+  renderCitation?: MarkdownCitationRenderer,
+  resolveHref?: MarkdownHrefResolver
 ): { nextIndex: number; node: ReactNode } {
   const headerCells = tableRowCells(lines[startIndex]);
   const rows: string[][] = [];
@@ -456,7 +489,7 @@ function renderTable(
             <tr>
               {headerCells.map((cell, cellIndex) => (
                 <th className="border-b border-r border-trace-subtle bg-answer-paper px-3 py-2 font-semibold last:border-r-0" key={`${keyPrefix}-th-${cellIndex}`}>
-                  {renderInline(cell, `${keyPrefix}-th-${cellIndex}`, renderCitation)}
+                  {renderInline(cell, `${keyPrefix}-th-${cellIndex}`, renderCitation, resolveHref)}
                 </th>
               ))}
             </tr>
@@ -469,7 +502,8 @@ function renderTable(
                     {renderInline(
                       row[cellIndex] ?? "",
                       `${keyPrefix}-td-${rowIndex}-${cellIndex}`,
-                      renderCitation
+                      renderCitation,
+                      resolveHref
                     )}
                   </td>
                 ))}
@@ -548,7 +582,8 @@ function isBlockStart(lines: string[], index: number): boolean {
 function renderTextLines(
   markdown: string,
   keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer
+  renderCitation?: MarkdownCitationRenderer,
+  resolveHref?: MarkdownHrefResolver
 ): ReactNode[] {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const nodes: ReactNode[] = [];
@@ -574,7 +609,7 @@ function renderTextLines(
       continue;
     }
 
-    const heading = renderHeading(lines[index], `${keyPrefix}-h-${index}`, renderCitation);
+    const heading = renderHeading(lines[index], `${keyPrefix}-h-${index}`, renderCitation, resolveHref);
     if (heading) {
       nodes.push(heading);
       index += 1;
@@ -596,14 +631,14 @@ function renderTextLines(
 
       nodes.push(
         <blockquote className="space-y-2 border-l-2 border-proof/40 pl-4 text-ink-secondary" key={`${keyPrefix}-quote-${index}`}>
-          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`, renderCitation)}
+          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`, renderCitation, resolveHref)}
         </blockquote>
       );
       continue;
     }
 
     if (isTableStart(lines, index)) {
-      const table = renderTable(lines, index, `${keyPrefix}-table-${index}`, renderCitation);
+      const table = renderTable(lines, index, `${keyPrefix}-table-${index}`, renderCitation, resolveHref);
       nodes.push(table.node);
       index = table.nextIndex;
       continue;
@@ -611,7 +646,7 @@ function renderTextLines(
 
     if (parseListLine(lines[index])) {
       const list = parseList(lines, index);
-      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`, renderCitation));
+      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`, renderCitation, resolveHref));
       index = list.nextIndex;
       continue;
     }
@@ -628,7 +663,8 @@ function renderTextLines(
         {renderInline(
           paragraphLines.join("\n").trim(),
           `${keyPrefix}-p-${index}`,
-          renderCitation
+          renderCitation,
+          resolveHref
         )}
       </p>
     );
@@ -640,6 +676,7 @@ function renderTextLines(
 type MarkdownMessageProps = {
   content: string;
   renderCitation?: MarkdownCitationRenderer;
+  resolveHref?: MarkdownHrefResolver;
   streaming?: boolean;
 };
 
@@ -745,6 +782,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
 function MarkdownMessageComponent({
   content,
   renderCitation,
+  resolveHref,
   streaming = false
 }: MarkdownMessageProps) {
   return (
@@ -754,7 +792,7 @@ function MarkdownMessageComponent({
           return <CodeBlock code={part.code} language={part.language} streaming={streaming} key={`${part.type}-${index}`} />;
         }
 
-        return renderTextLines(part.text, `${part.type}-${index}`, renderCitation);
+        return renderTextLines(part.text, `${part.type}-${index}`, renderCitation, resolveHref);
       })}
     </div>
   );

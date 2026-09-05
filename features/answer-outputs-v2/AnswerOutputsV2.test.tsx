@@ -412,3 +412,28 @@ describe("answer outputs v2", () => {
     );
   });
 });
+
+describe("AnswerOutputsV2 Workspace output status", () => {
+  it("keeps settled generated files visible under the export warning", () => {
+    render(
+      <AnswerOutputsV2
+        artifact={{
+          citations: [],
+          generatedFiles: [{ attachmentId: "att-1", byteSize: 4_200, fileName: "report.md", mimeType: "text/markdown", relativePath: "report.md" }],
+          knowledgeCitations: [],
+          reasoningText: [],
+          sources: []
+        }}
+        workspaceOutputStatus={{ errorCode: "workspace_output_export_failed", state: "retrying" }}
+      />
+    );
+    expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("still being prepared");
+    expect(screen.getByRole("link", { name: /Download/u })).toHaveAttribute("href", "/api/attachments/att-1/content");
+    expect(screen.getByRole("heading", { name: "Generated files" })).toBeVisible();
+  });
+
+  it("explains a permanent export failure even without generated files", () => {
+    render(<AnswerOutputsV2 artifact={null} workspaceOutputStatus={{ state: "failed" }} />);
+    expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared for download");
+  });
+});

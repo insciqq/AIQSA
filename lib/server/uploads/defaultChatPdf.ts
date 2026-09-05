@@ -17,13 +17,14 @@ import { createChatPdfRouteResolver } from "./chatPdfAdmission";
 import { createChatPdfAttempts } from "./chatPdfAttempts";
 import { createChatPdfCoordinator } from "./chatPdfCoordinator";
 import { createChatPdfRepository } from "./chatPdfPersistence";
-import { createChatPdfRunContinuation, type ChatPdfRunSnapshot } from "./chatPdfRunContinuation";
+import { createChatPdfRunContinuation, createChatPdfRunFailure, type ChatPdfRunSnapshot } from "./chatPdfRunContinuation";
 import { createS3StorageAdapter } from "./storage";
 
 function createDefaultChatPdf() {
   const repository = createPrismaRunRepository();
   const pdfRepository = createChatPdfRepository(prisma);
   const storage = createS3StorageAdapter();
+  const workspace = workspaceCoordinatorForStorage(storage);
   const coordinator = createChatPdfCoordinator({
     attempts: createChatPdfAttempts(prisma), execute: createAcceptedProviderRequestExecutor(prisma),
     registry: activeRunControllerRegistry, repository: pdfRepository, storage,
@@ -47,22 +48,9 @@ function createDefaultChatPdf() {
       knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,
       knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle, memoryEgress: defaultMemoryToolEgressReceiptService,
       mcp: defaultMcpRunPlan, pdfRepository, providerAdmission: providerAdmissionService,
-      providerRuntime: providerRuntimeResolver, repository, storage, workspace: workspaceCoordinatorForStorage(storage)
+      providerRuntime: providerRuntimeResolver, repository, storage, workspace
     }),
-    async fail(claim, error) {
-      const message = error.code === "pdf_local_text_unusable"
-        ? "This PDF could not be read. Try a different file."
-        : error.code === "pdf_preparation_context_limit" ? "This document does not fit the conversation context."
-        : "Document preparation could not finish. Try again.";
-      const settled = await repository.settlePreparingRunFailure({
-        errorCode: error.code, message, retryable: error.retryable, runId: claim.runId, state: "FAILED", userId: claim.userId
-      });
-      if (settled) return;
-      const run = await repository.getRunControlForRecovery?.(claim.runId);
-      if (run?.status === "streaming" && run.assistantMessageId && await repository.hasPendingPdfPreparation?.(claim.runId)) {
-        await repository.failRun(claim.runId, run.assistantMessageId, { code: error.code, message });
-      }
-    }
+    fail: createChatPdfRunFailure({ repository, workspace })
   });
   return {
     ...createChatPdfRouteResolver(prisma),

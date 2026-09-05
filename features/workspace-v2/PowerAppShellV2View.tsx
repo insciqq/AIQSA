@@ -3,6 +3,7 @@
 import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePreview";
 import { useChatContinuation } from "@/components/app-shell/useChatContinuation";
 import { composerContextGauge } from "@/components/app-shell/composerContextStats";
+import { WorkspaceExportHistoryV2 } from "./WorkspaceExportHistoryV2";
 
 import {
   ChatDeleteConfirmationDialog,
@@ -50,6 +51,9 @@ import {
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
+import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
+import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
+import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import {
@@ -313,6 +317,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
+  const [exportHistoryChatId, setExportHistoryChatId] = useState<string | null>(null);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
@@ -412,7 +417,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     ) {
       setProjectsSurfaceOpen(false);
     }
-    if (session.activeChatId !== previousChatId) setWorkspaceResetOpen(false);
+    if (session.activeChatId !== previousChatId) {
+      setWorkspaceResetOpen(false);
+      setExportHistoryChatId(null);
+    }
   }, [projectsSurfaceOpen, session.activeChatId]);
 
   useEffect(() => {
@@ -662,6 +670,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSend={() => void composer.submitComposer()}
       onStop={() => void composer.stopCurrentRun()}
       onUploadFiles={(files) => composer.uploadFiles(files)}
+      onReuseFile={composer.reuseFile}
       runId={thread.currentRunId}
       selectedAssistant={composer.assistant.selected}
       knowledgePlanSource={composer.knowledge.planSource}
@@ -814,7 +823,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           actions={actions}
           afterContent={(
             <>
-              <SentAttachmentsV2 blocks={sentAttachments} />
+              <SentAttachmentsV2 blocks={sentAttachments} canSave={!projectContext && !temporarySession} />
               {pagerSlot}
             </>
           )}
@@ -863,6 +872,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       runId: source.runId ?? null
     });
     const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null);
+    const workspaceActivity = presentWorkspaceActivityV2(events, source.workspaceActivity ?? null);
+    // Model-written `sandbox:` links resolve only against this run's own
+    // settled generated files; anything else renders as inert text.
+    const generatedFiles = artifact?.generatedFiles ?? [];
+    const resolveHref: MarkdownHrefResolver = (href) => {
+      const resolution = resolveWorkspaceOutputLink({ generatedFiles, href, runId: source.runId ?? null });
+      if (!resolution) return null;
+      return resolution.kind === "download"
+        ? { download: resolution.file.fileName, href: attachmentDownloadHref(resolution.file.attachmentId) }
+        : "text";
+    };
     // A live run shows only its factual status and streamed content. A settled
     // answer adds only direct user outputs; it never grows a receipt row or
     // post-hoc execution surface.
@@ -901,7 +921,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
-        actionsSlot={settled ? <AnswerOutputsV2 artifact={artifact} /> : null}
+        actionsSlot={settled
+          ? <AnswerOutputsV2 artifact={artifact} canSaveFiles={!projectContext && !temporarySession} workspaceOutputStatus={workspaceActivity?.outputStatus ?? null} />
+          : null}
         anchorId={source.id}
         artifact={artifact}
         content={messageText(source)}
@@ -924,6 +946,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         pdfPreparation={source.pdfPreparation}
         onStop={() => void composer.stopCurrentRun()}
         presentation={presentation}
+        resolveHref={resolveHref}
         renderCitation={knowledgeReference
           ? (handle, key) => knowledgeHandles.has(handle) ? (
               <KnowledgeCitationControl
@@ -938,6 +961,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           : null}
         toolActivity={toolActivity}
         workDurationMs={workDurationMs}
+        workspaceActivity={workspaceActivity}
       />
     );
   };
@@ -998,6 +1022,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const workspaceLifecycleDisabled = thread.activeChatStreaming ||
     composer.workspace.busy || Boolean(projectMutationReason);
   const workspaceMenuActions: HeaderOverflowActionV2[] = session.activeChatId ? [
+    {
+      icon: "file",
+      label: "Export history",
+      onSelect: () => setExportHistoryChatId(session.activeChatId)
+    },
     {
       disabled: workspaceLifecycleDisabled || !workspaceStarted,
       icon: "download",
@@ -1317,7 +1346,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               renderMessage={renderMessage}
               scrollRef={thread.threadScrollRef}
               showJumpToLatest={thread.showJumpToLatest}
-              unavailable={Boolean(thread.activeChatDetailError && session.activeChatId && !thread.activeChatDetailLoading)}
+              unavailable={Boolean(
+                session.activeChatId && !thread.activeChatDetailLoading &&
+                /\(chat_detail_failed_(401|403|404)\)$/u.test(thread.activeChatDetailError ?? "")
+              )}
             />
             {conversationMessages.length > 0 ? (
               <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={composerDockRef}>
@@ -1361,6 +1393,20 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onSelect={composer.assistant.selectById}
           recentIds={composer.assistant.recentIds}
           selectedAssistantId={composer.assistant.selected?.id ?? null}
+        />
+      ) : null}
+      {exportHistoryChatId && exportHistoryChatId === session.activeChatId ? (
+        <WorkspaceExportHistoryV2
+          key={exportHistoryChatId}
+          branchKey={thread.visibleMessages.at(-1)?.id ?? null}
+          canSave={!projectContext && !temporarySession}
+          chatId={exportHistoryChatId}
+          onClose={() => setExportHistoryChatId(null)}
+          onMessage={(messageId) => {
+            setExportHistoryChatId(null);
+            void workspace.pane.actions.openChatMessage(exportHistoryChatId, messageId);
+          }}
+          onUse={temporarySession || thread.activeChatStreaming || composer.uploading ? undefined : composer.reuseFile}
         />
       ) : null}
       <SkillLibraryOverlayV2

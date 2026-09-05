@@ -4,6 +4,7 @@ import {
   memoryCategoryLabel,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
+import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import {
   type UiV2IconName,
   UiV2Button,
@@ -804,21 +805,43 @@ export function FilesPanelV2({
   files,
   loadState = "ready",
   onRetry,
-  onOpen
+  onOpen,
+  onSave,
+  onRemove,
+  onUse,
+  onLoadMore,
+  useDisabled = false
 }: Readonly<{
   files: readonly FileSummaryV2[];
   loadState?: "error" | "idle" | "loading" | "ready";
   onOpen?(id: string): void;
   onRetry?(): void;
+  onSave?(id: string): void;
+  onRemove?(id: string): void;
+  onUse?(id: string): void;
+  useDisabled?: boolean;
+  onLoadMore?(): void;
 }>) {
+  const [filter, setFilter] = useState("all");
+  const visibleFiles = files.filter((file) => filter === "all" || (filter === "saved" ? file.saved : !file.saved));
   return (
     <div data-testid="library-files-panel">
-      <SectionHeading description="Uploads stay bound to the messages where they were added.">
+      <SectionHeading description="Save files and templates to use them in another chat.">
         Files
       </SectionHeading>
       <p className="v2-library-disclosure">
         <UiV2Icon name="lock" /> Files are private and visible only to you.
       </p>
+      <label className="v2-library-disclosure">Show files
+        <select aria-label="Show files" value={filter} onChange={(event) => setFilter(event.target.value)}>
+          <option value="all">All files</option>
+          <option value="saved">Saved files</option>
+          <option value="recent">From chats</option>
+        </select>
+      </label>
+      {loadState === "error" && files.length > 0 ? (
+        <p role="alert">Files could not be refreshed. <UiV2Button onClick={onRetry}>Retry</UiV2Button></p>
+      ) : null}
       {loadState === "loading" && files.length === 0 ? (
         <p className="v2-resource-empty" role="status">Loading files…</p>
       ) : loadState === "error" && files.length === 0 ? (
@@ -826,23 +849,32 @@ export function FilesPanelV2({
           <p>Files could not be loaded.</p>
           <UiV2Button onClick={onRetry}>Retry</UiV2Button>
         </div>
-      ) : files.length ? (
+      ) : visibleFiles.length ? (
         <ul className="v2-resource-list" aria-label="Files">
-          {files.map((file) => (
-            <FileRowV2 file={file} key={file.id} onOpen={onOpen} />
+          {visibleFiles.map((file) => (
+            <FileRowV2 file={file} key={file.id} onOpen={onOpen} onSave={onSave} onRemove={onRemove} onUse={onUse} useDisabled={useDisabled} />
           ))}
         </ul>
       ) : <p className="v2-resource-empty">No files yet.</p>}
+      {onLoadMore ? <UiV2Button disabled={loadState === "loading"} onClick={onLoadMore}>Load more files</UiV2Button> : null}
     </div>
   );
 }
 
 function FileRowV2({
   file,
-  onOpen
+  onOpen,
+  onSave,
+  onRemove,
+  onUse,
+  useDisabled
 }: Readonly<{
   file: FileSummaryV2;
   onOpen?(id: string): void;
+  onSave?(id: string): void;
+  onRemove?(id: string): void;
+  onUse?(id: string): void;
+  useDisabled: boolean;
 }>) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({
@@ -859,9 +891,13 @@ function FileRowV2({
         </div>
         <p>{file.meta}</p>
         {file.status === "failed" ? (
-          <p className="v2-file-failure">Processing failed. The original upload remains in its chat.</p>
+          <p className="v2-file-failure">Text processing failed. You can still download the file or use it in Workspace.</p>
         ) : null}
+        {file.mutation === "error" ? <p role="alert">The file action failed. Try again.</p> : null}
       </div>
+      <span className="v2-file-row-actions">
+      <a className="v2-focusable" download href={attachmentDownloadHref(file.id)}>Download</a>
+      {onUse ? <UiV2Button disabled={useDisabled} onClick={() => onUse(file.id)}>Use in chat</UiV2Button> : null}
       <span className="v2-file-actions-menu">
         <UiV2IconButton
           ref={triggerRef}
@@ -878,8 +914,8 @@ function FileRowV2({
             menuRef={menuRef}
             onClose={() => setMenuOpen(false)}
           >
-            <UiV2MenuItem
-              disabled={!onOpen}
+            {!file.saved ? <UiV2MenuItem
+              disabled={!onOpen || !file.canOpenChat}
               icon="chat"
               onClick={() => {
                 setMenuOpen(false);
@@ -887,9 +923,21 @@ function FileRowV2({
               }}
             >
               Open in chat
-            </UiV2MenuItem>
+            </UiV2MenuItem> : null}
+            {file.saved ? (
+              <UiV2MenuItem
+                disabled={!onRemove || file.mutation === "removing"}
+                onClick={() => { setMenuOpen(false); onRemove?.(file.id); }}
+              >Remove from Library</UiV2MenuItem>
+            ) : (
+              <UiV2MenuItem
+                disabled={!onSave || file.mutation === "saving" || file.mutation === "saved"}
+                onClick={() => { setMenuOpen(false); onSave?.(file.id); }}
+              >{file.mutation === "saved" ? "Saved to Library" : "Save to Library"}</UiV2MenuItem>
+            )}
           </UiV2ResponsiveMenu>
         ) : null}
+      </span>
       </span>
     </li>
   );

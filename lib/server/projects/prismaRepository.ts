@@ -64,6 +64,7 @@ import {
 } from "./chatDefaults";
 import { notifyProjectEvent } from "./events";
 import type { WorkspaceRuntime } from "../workspace/runtime";
+import { removeWorkspaceForDeletion } from "../workspace/removal";
 
 export type ProjectRepositoryResult<Value> =
   | Readonly<{ kind: "conflict"; reason: string }>
@@ -3351,103 +3352,19 @@ export function createPrismaProjectRepository(
             };
           }
           const sessions = await tx.workspaceSession.findMany({
-            orderBy: { id: "asc" },
-            select: {
-              id: true,
-              runtimeSandboxId: true,
-              sandboxName: true
-            },
-            where: { chat: { projectId: input.projectId } }
+            orderBy: { id: "asc" }, select: { id: true }, where: { chat: { projectId: input.projectId } }
           });
-          const claimedSessions = [] as Array<{
-            claimToken: string | null;
-            id: string;
-            runtimeSandboxId: string | null;
-            sandboxName: string;
-          }>;
-          for (const session of sessions) {
-            const claimToken = session.runtimeSandboxId ? randomUUID() : null;
-            await tx.workspaceSession.update({
-              data: { lastErrorCode: null, state: "DELETING" },
-              where: { id: session.id }
-            });
-            await tx.workspaceCleanupJob.upsert({
-              create: {
-                attemptCount: claimToken ? 1 : 0,
-                claimedAt: claimToken ? now : null,
-                claimToken,
-                lastAttemptAt: claimToken ? now : null,
-                nextAttemptAt: now,
-                runtimeSandboxId: session.runtimeSandboxId,
-                sandboxName: session.sandboxName,
-                state: claimToken ? "RUNNING" : "PENDING",
-                workspaceSessionId: session.id
-              },
-              update: {
-                ...(claimToken ? { attemptCount: { increment: 1 } } : {}),
-                claimedAt: claimToken ? now : null,
-                claimToken,
-                lastAttemptAt: claimToken ? now : null,
-                lastErrorCode: null,
-                nextAttemptAt: now,
-                runtimeSandboxId: session.runtimeSandboxId,
-                sandboxName: session.sandboxName,
-                state: claimToken ? "RUNNING" : "PENDING"
-              },
-              where: { workspaceSessionId: session.id }
-            });
-            claimedSessions.push({ ...session, claimToken });
-          }
-          return { kind: "ok" as const, sessions: claimedSessions };
+          return { kind: "ok" as const, sessions };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
         if (prepared.kind !== "ok") return prepared;
 
         for (const session of prepared.sessions) {
-          if (!session.runtimeSandboxId) continue;
-          if (!options.workspaceRuntime || !session.claimToken) {
-            return {
-              kind: "conflict",
-              reason: "project_workspace_cleanup_unavailable"
-            };
-          }
           try {
-            await options.workspaceRuntime.removeSession({
-              runtimeSandboxId: session.runtimeSandboxId,
-              sessionId: session.id
-            });
-            const settled = await prisma.workspaceSession.updateMany({
-              data: {
-                lastErrorCode: null,
-                runtimeSandboxId: null,
-                state: "DELETING",
-                stoppedAt: now
-              },
-              where: {
-                id: session.id,
-                runtimeSandboxId: session.runtimeSandboxId,
-                state: "DELETING"
-              }
-            });
-            if (settled.count !== 1) {
-              throw new Error("workspace_cleanup_fence_changed");
-            }
+            await removeWorkspaceForDeletion({ now, prisma, runtime: options.workspaceRuntime, sessionId: session.id });
           } catch {
-            await prisma.workspaceCleanupJob.updateMany({
-              data: {
-                claimedAt: null,
-                claimToken: null,
-                lastErrorCode: "workspace_remove_failed",
-                nextAttemptAt: new Date(now.getTime() + 30_000),
-                state: "FAILED"
-              },
-              where: {
-                claimToken: session.claimToken,
-                workspaceSessionId: session.id
-              }
-            }).catch(() => undefined);
             return {
               kind: "conflict",
-              reason: "project_workspace_cleanup_failed"
+              reason: options.workspaceRuntime ? "project_workspace_cleanup_failed" : "project_workspace_cleanup_unavailable"
             };
           }
         }

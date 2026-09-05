@@ -7,6 +7,7 @@ export const MEMORY_CONFIRMATION_COPY_VERSION = "memory-confirmation-v1" as cons
 export const MEMORY_TEMPORARY_RETENTION_POLICY_VERSION = "temporary-24h-v1" as const;
 export const MEMORY_STATEMENT_MAX_LENGTH = 2_000;
 export const MEMORY_CLIENT_PAGE_SIZE_MAX = 20;
+export const MEMORY_ANSWER_SOURCE_MAX_ITEMS = 40;
 
 export const MEMORY_CHAT_MODES = ["NORMAL", "EXCLUDED", "TEMPORARY"] as const;
 export type MemoryChatMode = (typeof MEMORY_CHAT_MODES)[number];

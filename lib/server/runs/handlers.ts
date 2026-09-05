@@ -930,7 +930,25 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     }
 
     const run = cancellation.run;
-    activeRunControllerRegistry.abort(run.id);
+    const aborted = activeRunControllerRegistry.abort(run.id);
+    const settled = aborted ? activeRunControllerRegistry.settled(run.id) : null;
+    if (settled) {
+      // Stop means the run's terminal handling (tool cancellation, Workspace
+      // quiescence and session settlement) is done before the client re-reads
+      // the chat; the wait is bounded so a wedged executor cannot hang Stop.
+      await Promise.race([
+        settled,
+        new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref?.())
+      ]);
+    } else if (deps.workspaceCoordinator) {
+      // PDF preparation may own a controller without an answer settlement
+      // promise. Release its Workspace reservation here as well as orphaned work.
+      await deps.workspaceCoordinator.settle({
+        outcome: "cancelled",
+        runId: run.id,
+        userId: auth.userId
+      }).catch(() => undefined);
+    }
 
     if (run.providerResponseId) {
       try {

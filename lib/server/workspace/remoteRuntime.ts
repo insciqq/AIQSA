@@ -1,10 +1,20 @@
 import type { WorkspaceMcpToolName } from "@/lib/domain/workspace";
-import { workspaceAttachmentPath } from "@/lib/domain/workspace";
+import {
+  WORKSPACE_INBOX_INDEX_MAX_ENTRIES,
+  decodeWorkspaceStagedAttachmentEntry,
+  isWorkspaceRuntimeExecSessionId,
+  workspaceAttachmentPath
+} from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
+import { parseWorkspaceOperation } from "./operationFence";
+import { parseOutputCaptureRequest } from "./outputManifest";
 import {
   WorkspaceRuntimeError,
   type WorkspaceBoundTool,
+  type WorkspaceExecutionTermination,
+  type WorkspaceOutputReleaseInput,
   type WorkspaceOutputStream,
+  type WorkspaceOperationInput,
   type WorkspaceRuntime,
   type WorkspaceRuntimeHealth,
   type WorkspaceRuntimeSession,
@@ -23,12 +33,15 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   switch (code) {
     case "workspace_attachment_unavailable":
     case "workspace_archive_limit_exceeded":
+    case "workspace_execution_cleanup_failed":
+    case "workspace_operation_stale":
     case "workspace_output_export_failed":
     case "workspace_output_limit_exceeded":
     case "workspace_runtime_incompatible":
     case "workspace_runtime_unavailable":
     case "workspace_session_create_failed":
     case "workspace_session_lost":
+    case "workspace_session_lost_before_dispatch":
     case "workspace_tool_cancelled":
     case "workspace_tool_timeout":
       return new WorkspaceRuntimeError(code);
@@ -53,6 +66,11 @@ async function jsonResponse(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * A genuinely lazy body: the runner handle is opened on the first read, not
+ * when the listing returns. With the default high-water mark the stream would
+ * pull immediately and open every single-use guest stream at listing time.
+ */
 function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   return new ReadableStream<Uint8Array>({
@@ -75,12 +93,14 @@ function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
         controller.error(error);
       }
     }
-  });
+  }, { highWaterMark: 0 });
 }
 
 function outputMetadata(value: unknown): Omit<WorkspaceOutputStream, "body"> | null {
   if (
     !isRecord(value) ||
+    typeof value.batchId !== "string" ||
+    !/^[a-f0-9]{32}$/u.test(value.batchId) ||
     typeof value.byteSize !== "number" ||
     !Number.isSafeInteger(value.byteSize) ||
     value.byteSize <= 0 ||
@@ -112,6 +132,36 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     this.token = config.runnerToken;
   }
 
+  async claimSessionOperation(input: WorkspaceOperationInput): Promise<void> {
+    await this.operationRequest("claim", input);
+  }
+
+  async retireSessionOperation(input: WorkspaceOperationInput): Promise<void> {
+    await this.operationRequest("retire", input);
+  }
+
+  private async operationRequest(action: "claim" | "retire", input: WorkspaceOperationInput): Promise<void> {
+    await this.boundedJson(`/v1/sessions/${encodeURIComponent(input.sessionId)}/operations/${action}`, {
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST"
+    });
+  }
+
+  private async boundedJson(path: string, init: RequestInit): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    timer.unref?.();
+    try {
+      return await this.json(path, {
+        ...init,
+        signal: init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
+      });
+    } catch (error) {
+      if (controller.signal.aborted && !init.signal?.aborted) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
   private async request(
     path: string,
     init: RequestInit & Readonly<{ duplex?: "half" }> = {}
@@ -129,6 +179,9 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       } as RequestInit);
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError) throw error;
+      // A caller-initiated abort is a cancellation, never a runner outage:
+      // reporting it as unavailable would falsely fail the session.
+      if (init.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     }
   }
@@ -168,7 +221,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         imageRef: input.imageRef,
         internetEnabled: input.internetEnabled,
         memoryMiB: input.memoryMiB,
-        runtimeSandboxId: input.runtimeSandboxId,
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId,
         sandboxName: input.sandboxName,
         sessionId: input.sessionId
       }),
@@ -186,6 +239,26 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     return value as WorkspaceRuntimeSession;
   }
 
+  async listStagedAttachments(input: Parameters<WorkspaceRuntime["listStagedAttachments"]>[0]) {
+    const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/stage/list`, {
+      body: JSON.stringify({ attachments: input.attachments, operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST",
+      signal: input.signal
+    });
+    if (
+      !isRecord(value) ||
+      !Array.isArray(value.staged) ||
+      value.staged.length > WORKSPACE_INBOX_INDEX_MAX_ENTRIES
+    ) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    return value.staged.map((entry) => {
+      const decoded = decodeWorkspaceStagedAttachmentEntry(entry);
+      if (!decoded) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      return decoded;
+    });
+  }
+
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {
     for (const attachment of input.attachments) {
       const response = await this.request(`/v1/sessions/${encodeURIComponent(input.sessionId)}/stage`, {
@@ -200,6 +273,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
           "x-aiqsa-file-name": Buffer.from(attachment.originalName, "utf8").toString("base64url"),
           "x-aiqsa-message-id": attachment.messageId,
           "x-aiqsa-mime-type": attachment.mimeType,
+          "x-aiqsa-workspace-operation": JSON.stringify(parseWorkspaceOperation(input.operation)),
           "x-aiqsa-runtime-sandbox-id": input.runtimeSandboxId
         },
         method: "POST",
@@ -212,7 +286,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         inboxIndex: input.inboxIndex,
         manifests: input.manifests,
         ...(input.outputDirectory ? { outputDirectory: input.outputDirectory } : {}),
-        runtimeSandboxId: input.runtimeSandboxId
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
       }),
       method: "POST",
       signal: input.signal
@@ -221,7 +295,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
 
   async loadBoundTools(input: Parameters<WorkspaceRuntime["loadBoundTools"]>[0]): Promise<WorkspaceToolCatalog> {
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/tools/catalog`, {
-      body: JSON.stringify({ runtimeSandboxId: input.runtimeSandboxId }),
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST",
       signal: input.signal
     });
@@ -245,25 +319,59 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
           arguments: input.arguments,
           modelRunId: input.modelRunId,
           modelRunToolCallId: input.modelRunToolCallId,
-          runtimeSandboxId: input.runtimeSandboxId
+          operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
         }),
         method: "POST",
         signal: input.signal
       }
     );
-    if (!isRecord(value) || !Array.isArray(value.content) || (value.status !== "complete" && value.status !== "error")) {
+    if (
+      !isRecord(value) ||
+      !Array.isArray(value.content) ||
+      (value.status !== "complete" && value.status !== "error") ||
+      (value.execSessionId !== undefined && !isWorkspaceRuntimeExecSessionId(value.execSessionId))
+    ) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     return value as WorkspaceToolResult;
   }
 
+  async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
+    const value = await this.boundedJson(
+      `/v1/sessions/${encodeURIComponent(input.sessionId)}/executions/terminate`,
+      {
+        body: JSON.stringify({
+          executions: input.executions,
+          operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
+        }),
+        method: "POST",
+        signal: input.signal
+      }
+    );
+    if (!isRecord(value) || !Array.isArray(value.results) || value.results.length > 256) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    return value.results.map((result): WorkspaceExecutionTermination => {
+      const outcome = isRecord(result) && result.outcome === "closed"
+        ? "closed"
+        : isRecord(result) && result.outcome === "unknown"
+          ? "unknown"
+          : null;
+      const runtimeExecSessionId = isRecord(result) ? result.runtimeExecSessionId : null;
+      if (!outcome || !isWorkspaceRuntimeExecSessionId(runtimeExecSessionId)) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      return { outcome, runtimeExecSessionId };
+    });
+  }
+
   async cancelToolCall(input: Parameters<WorkspaceRuntime["cancelToolCall"]>[0]): Promise<void> {
-    await this.json(
+    await this.boundedJson(
       `/v1/sessions/${encodeURIComponent(input.sessionId)}/tool-calls/${encodeURIComponent(input.modelRunToolCallId)}/abort`,
       {
         body: JSON.stringify({
           modelRunId: input.modelRunId,
-          runtimeSandboxId: input.runtimeSandboxId
+          operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
         }),
         method: "POST"
       }
@@ -278,7 +386,9 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     return {
       ...metadata,
       body: remoteBody(() => this.request(
-        `/v1/sessions/${encodeURIComponent(sessionId)}/outputs/stream?opaqueFileId=${encodeURIComponent(metadata.opaqueFileId)}`,
+        `/v1/sessions/${encodeURIComponent(sessionId)}/outputs/stream` +
+          `?opaqueFileId=${encodeURIComponent(metadata.opaqueFileId)}` +
+          `&batchId=${encodeURIComponent(metadata.batchId ?? "")}`,
         { signal }
       ))
     };
@@ -287,14 +397,15 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/list`, {
       body: JSON.stringify({
+        ...(input.capture ? { capture: parseOutputCaptureRequest(input.capture) } : {}),
         modelRunId: input.modelRunId,
         outputDirectory: input.outputDirectory,
-        runtimeSandboxId: input.runtimeSandboxId
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
       }),
       method: "POST",
       signal: input.signal
     });
-    if (!isRecord(value) || !Array.isArray(value.outputs)) {
+    if (!isRecord(value) || !Array.isArray(value.outputs) || (input.capture && value.captureId !== input.capture.id)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     const metadata = value.outputs.map(outputMetadata);
@@ -305,9 +416,25 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       .map((entry) => this.output(input.sessionId, entry, input.signal));
   }
 
+  async releaseOutputs(input: WorkspaceOutputReleaseInput): Promise<void> {
+    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/release`, {
+      body: JSON.stringify({ batchId: input.batchId, operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST",
+      signal: input.signal
+    });
+  }
+
+  async releaseOutputCapture(input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]): Promise<void> {
+    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/capture/release`, {
+      body: JSON.stringify({ captureId: input.captureId, modelRunId: input.modelRunId,
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST", signal: input.signal
+    });
+  }
+
   async createProjectArchive(input: Parameters<WorkspaceRuntime["createProjectArchive"]>[0]): Promise<WorkspaceOutputStream> {
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/project/archive`, {
-      body: JSON.stringify({ runtimeSandboxId: input.runtimeSandboxId }),
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST",
       signal: input.signal
     });
@@ -317,16 +444,16 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async stopSession(input: Parameters<WorkspaceRuntime["stopSession"]>[0]): Promise<void> {
-    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/stop`, {
-      body: JSON.stringify({ runtimeSandboxId: input.runtimeSandboxId }),
+    await this.boundedJson(`/v1/sessions/${encodeURIComponent(input.sessionId)}/stop`, {
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST",
       signal: input.signal
     });
   }
 
   async removeSession(input: Parameters<WorkspaceRuntime["removeSession"]>[0]): Promise<void> {
-    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}`, {
-      body: JSON.stringify({ runtimeSandboxId: input.runtimeSandboxId }),
+    await this.boundedJson(`/v1/sessions/${encodeURIComponent(input.sessionId)}`, {
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "DELETE",
       signal: input.signal
     });

@@ -5,7 +5,9 @@ import { CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_P
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
-import type { MarkdownCitationRenderer } from "@/components/chat/MarkdownMessage";
+import type { MarkdownCitationRenderer, MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
+import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
+import { workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
 import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import {
@@ -183,12 +185,15 @@ export type RunAnswerV2Props = Readonly<{
   onUseLoadAll?(): void;
   presentation: RunPresentationV2;
   renderCitation?: MarkdownCitationRenderer;
+  /** Resolves model-written Workspace output links to authorized downloads or inert text. */
+  resolveHref?: MarkdownHrefResolver;
   showReasoning?: boolean;
   /** Leading toolbar controls (the branch pager) placed before the Sources chip. */
   toolbarLeading?: ReactNode;
   toolActivity?: ThreadToolActivity | null;
   /** Send → first answer token; the live value while streaming, the persisted one once settled. */
   workDurationMs?: number | null;
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 }>;
 
 export function RunAnswerV2({
@@ -209,10 +214,12 @@ export function RunAnswerV2({
   pdfPreparation,
   onStop,
   renderCitation,
+  resolveHref,
   showReasoning = true,
   toolbarLeading = null,
   toolActivity = null,
-  workDurationMs = null
+  workDurationMs = null,
+  workspaceActivity = null
 }: RunAnswerV2Props) {
   const settled = settledRunPresentationV2(presentation);
   const sources = useAnswerSourcesV2({
@@ -223,7 +230,8 @@ export function RunAnswerV2({
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
   const liveLabel = presentation.kind === "activity"
-    ? (toolActivity ? runningToolLabel(toolActivity) : null) ??
+    ? workspaceLiveLabelV2(workspaceActivity) ??
+      (toolActivity ? runningToolLabel(toolActivity) : null) ??
       presentation.activity?.label ?? "Thinking…"
     : null;
   const process = (
@@ -233,6 +241,7 @@ export function RunAnswerV2({
       reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
       toolActivity={toolActivity}
       workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}
+      workspaceActivity={workspaceActivity}
     />
   );
   const afterContent = (
@@ -283,6 +292,7 @@ export function RunAnswerV2({
       hideEmptyContent={!content.trim() && presentation.kind !== "idle"}
       role="assistant"
       renderCitation={renderCitation}
+      resolveHref={resolveHref}
       streaming={presentation.kind === "streaming"}
       toolbarLeading={toolbarLeading || sources.chip ? (
         <>

@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import {
   createArchiveChatExplicitHandler,
@@ -14,5 +15,5 @@ const deps = {
   resolveAuth: resolveRequestAuth
 };
 
-export const GET = createGetArchivedChatHandler(deps);
-export const POST = createArchiveChatExplicitHandler(deps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetArchivedChatHandler>> = createGetArchivedChatHandler(deps);
+export const POST: AsyncRouteHandler<ReturnType<typeof createArchiveChatExplicitHandler>> = createArchiveChatExplicitHandler(deps);

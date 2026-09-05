@@ -9,11 +9,12 @@ import {
   isInstalled
 } from "microsandbox";
 import {
-  WORKSPACE_MCP_TOOL_ALLOWLIST,
+  type WorkspaceMcpToolName,
   workspaceAttachmentPath,
   workspaceRunOutputDirectory,
   workspaceSandboxName,
-  type WorkspaceMcpToolName
+  WORKSPACE_INBOX_INDEX_VERSION,
+  WORKSPACE_MCP_TOOL_ALLOWLIST
 } from "@/lib/domain/workspace";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { ensureBundledMicrosandboxRuntime } from "@/lib/server/workspace/microsandboxInstall";
@@ -233,8 +234,14 @@ try {
         byteSize: attachment.bytes.byteLength,
         checksum: sha256(attachment.bytes),
         mimeType: attachment.mime,
-        originalName: attachment.name
-      }))
+        originalName: attachment.name,
+        sandboxPath: workspaceAttachmentPath({
+          attachmentId: attachment.id,
+          messageId,
+          originalName: attachment.name
+        })
+      })),
+      version: WORKSPACE_INBOX_INDEX_VERSION
     },
     manifests: [{
       body: {
@@ -381,19 +388,99 @@ try {
     runtimeSandboxId: onlineRuntimeId,
     sessionId: onlineSessionId
   });
+  // A missing observation is opaque at the runtime boundary. It cannot prove
+  // process exit; exercise the same exact-VM fallback as terminal settlement.
   let cancelled = false;
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const polled = await call(onlineSessionId, onlineRuntimeId, longRunId, "sandbox_exec_poll", {
-      execSessionId
+    toolCallSequence += 1;
+    const polled = await runtime.callBoundTool({
+      arguments: { execSessionId },
+      modelRunId: longRunId,
+      modelRunToolCallId: `${longRunId}-poll-${toolCallSequence}`,
+      originalName: "sandbox_exec_poll",
+      runtimeSandboxId: onlineRuntimeId,
+      sessionId: onlineSessionId
     });
-    if (polled.done === true) {
+    const text = polled.content[0]?.text ?? "";
+    if (polled.status !== "complete") {
+      await runtime.stopSession({ runtimeSandboxId: onlineRuntimeId, sessionId: onlineSessionId });
+      const stopped = await Sandbox.get(onlineSandboxName);
+      assert.equal(stopped.id, onlineRuntimeId);
+      assert.equal(stopped.status, "stopped");
+      cancelled = true;
+      break;
+    }
+    const parsed = JSON.parse(text) as { data?: { done?: unknown } };
+    if (parsed.data?.done === true) {
       cancelled = true;
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   assert.equal(cancelled, true, "long command was not cancelled");
-  await call(onlineSessionId, onlineRuntimeId, longRunId, "sandbox_exec_close", { execSessionId });
+
+  // Registry-driven termination: the application addresses executions by
+  // their official id, and an id the server no longer knows is `unknown`.
+  const quiesceRunId = `${prefix}-quiesce`;
+  const quiesced = await call(onlineSessionId, onlineRuntimeId, quiesceRunId, "sandbox_exec_start", {
+    command: "sleep 12; echo late > /workspace/project/after-stop.txt",
+    shell: true
+  });
+  const quiesceId = String(quiesced.execSessionId ?? "");
+  const terminations = await runtime.terminateExecutions({
+    executions: [
+      { modelRunId: quiesceRunId, runtimeExecSessionId: quiesceId },
+      { modelRunId: quiesceRunId, runtimeExecSessionId: "never-started" }
+    ],
+    runtimeSandboxId: onlineRuntimeId,
+    sessionId: onlineSessionId
+  });
+  assert.equal(terminations.length, 2);
+  assert.equal(terminations[0]!.runtimeExecSessionId, quiesceId);
+  assert.equal(terminations[1]!.outcome, "unknown");
+  // The deliberately unknown handle requires a VM stop even if the known
+  // execution closed. Signal/observation results alone cannot settle the run.
+  await runtime.stopSession({ runtimeSandboxId: onlineRuntimeId, sessionId: onlineSessionId });
+  assert.equal((await Sandbox.get(onlineSandboxName)).status, "stopped");
+  const afterUnknown = await runtime.ensureSession({
+    cpus: config.cpus, diskMiB: config.diskMiB, imageRef: config.imageRef,
+    internetEnabled: true, memoryMiB: config.memoryMiB,
+    runtimeSandboxId: onlineRuntimeId, sandboxName: onlineSandboxName, sessionId: onlineSessionId
+  });
+  assert.equal(afterUnknown.runtimeSandboxId, onlineRuntimeId);
+  await new Promise((resolve) => setTimeout(resolve, 13_000));
+  const marker = await call(onlineSessionId, onlineRuntimeId, quiesceRunId, "sandbox_fs_exists", {
+    path: "/workspace/project/after-stop.txt"
+  });
+  assert.equal(marker.exists, false, "terminated execution still wrote its marker");
+
+  // Incremental staging: the guest index lists intact originals only.
+  const stagedListing = await runtime.listStagedAttachments({
+    attachments: staged.map((attachment) => ({
+      attachmentId: attachment.id,
+      byteSize: attachment.bytes.byteLength,
+      checksum: sha256(attachment.bytes),
+      sandboxPath: workspaceAttachmentPath({ attachmentId: attachment.id, messageId, originalName: attachment.name })
+    })),
+    runtimeSandboxId: onlineRuntimeId,
+    sessionId: onlineSessionId
+  });
+  assert.equal(stagedListing.length, 3);
+  assert.equal(
+    stagedListing.every((entry) => entry.checksum.length === 64 && entry.byteSize > 0),
+    true
+  );
+
+  const projectArchive = await runtime.createProjectArchive({
+    runtimeSandboxId: onlineRuntimeId,
+    sessionId: onlineSessionId
+  });
+  const projectBytes = await collect(projectArchive.body);
+  assert.equal(sha256(projectBytes), projectArchive.checksum);
+  assert.equal(tarContains(gunzipSync(projectBytes), "marker.txt"), true);
+  // Keep only one guest running while qualifying the second network policy.
+  await runtime.stopSession({ runtimeSandboxId: onlineRuntimeId, sessionId: onlineSessionId });
+  assert.equal((await Sandbox.get(onlineSandboxName)).status, "stopped");
 
   const offline = await runtime.ensureSession({
     cpus: config.cpus,
@@ -421,14 +508,6 @@ try {
   });
   assert.equal(noNetwork.success, true);
 
-  const projectArchive = await runtime.createProjectArchive({
-    runtimeSandboxId: onlineRuntimeId,
-    sessionId: onlineSessionId
-  });
-  const projectBytes = await collect(projectArchive.body);
-  assert.equal(sha256(projectBytes), projectArchive.checksum);
-  assert.equal(tarContains(gunzipSync(projectBytes), "marker.txt"), true);
-
   await cleanup();
   await absent(onlineSandboxName);
   await absent(offlineSandboxName);
@@ -436,7 +515,7 @@ try {
     archiveChecksum: projectArchive.checksum,
     catalogHash: catalog.hash,
     outputChecksum: outputs[0]!.checksum,
-    outputFile: outputs[0]!.relativePath,
+    outputCount: outputs.length,
     status: "passed"
   }) + "\n");
 } catch (error) {

@@ -26,6 +26,8 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
   "workspace_attachment_unavailable",
   "workspace_output_limit_exceeded",
   "workspace_output_export_failed",
+  "workspace_execution_cleanup_failed",
+  "workspace_shell_syntax_requires_shell",
   "workspace_reset_conflict",
   "workspace_archive_limit_exceeded",
   "workspace_not_started"
@@ -188,4 +190,296 @@ export function decodeWorkspacePolicyResponse(value: unknown): WorkspacePolicyWi
 
 export function isWorkspaceErrorCode(value: unknown): value is WorkspaceErrorCode {
   return (WORKSPACE_ERROR_CODES as readonly unknown[]).includes(value);
+}
+
+/**
+ * Client-safe Workspace activity. The server sends structure (kind, phase,
+ * bounded command/file facts); the client owns every human-readable label, so
+ * persisted entries never freeze English copy. Raw tool identifiers, runtime
+ * ids, host paths, and unbounded output never appear here.
+ */
+export const WORKSPACE_ACTIVITY_KINDS = Object.freeze([
+  "workspace_start",
+  "workspace_recreated",
+  "workspace_stopped",
+  "attachments_prepare",
+  "command",
+  "file_read",
+  "file_write",
+  "file_list",
+  "file_copy",
+  "file_move",
+  "file_remove",
+  "folder_create",
+  "file_check",
+  "outputs_export"
+] as const);
+
+export const WORKSPACE_ACTIVITY_PHASES = Object.freeze([
+  "requested",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled"
+] as const);
+
+export type WorkspaceActivityKind = (typeof WORKSPACE_ACTIVITY_KINDS)[number];
+export type WorkspaceActivityPhase = (typeof WORKSPACE_ACTIVITY_PHASES)[number];
+
+/** Total UTF-8 budget for one logical command's stdout+stderr preview. */
+export const WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES = 8 * 1_024;
+export const WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS = 2_048;
+export const WORKSPACE_ACTIVITY_PATH_MAX_CHARS = 512;
+export const WORKSPACE_ACTIVITY_MAX_ENTRIES = 512;
+
+export type ThreadWorkspaceActivityCommand = Readonly<{
+  cwd?: string;
+  exitCode?: number | null;
+  originalByteCount?: number;
+  /** Source event of the retained output snapshot, even after a later output-free update. */
+  outputSequence?: number;
+  preview: string;
+  stderrPreview?: string;
+  stdoutPreview?: string;
+  truncated?: boolean;
+}>;
+
+export type ThreadWorkspaceActivityFile = Readonly<{
+  byteSize?: number;
+  displayPath: string;
+  targetPath?: string;
+}>;
+
+export type ThreadWorkspaceActivityEntry = Readonly<{
+  command?: ThreadWorkspaceActivityCommand;
+  count?: number;
+  durationMs?: number;
+  errorCode?: WorkspaceErrorCode;
+  file?: ThreadWorkspaceActivityFile;
+  firstSequence?: number;
+  groupId?: string;
+  id: string;
+  kind: WorkspaceActivityKind;
+  phase: WorkspaceActivityPhase;
+  /** Run-outcome projection of an unfinished entry; does not assert a process exit. */
+  runOutcome?: "cancelled" | "failed";
+  /** Assigned by ModelRunEvent persistence and retained when this update is replayed. */
+  sequence?: number;
+  startedAt?: string;
+  updateId?: string;
+}>;
+
+export type ThreadWorkspaceOutputStatus = Readonly<{
+  errorCode?: WorkspaceErrorCode;
+  state: "complete" | "exporting" | "failed" | "retrying";
+}>;
+
+export type ThreadWorkspaceActivity = Readonly<{
+  entries: readonly ThreadWorkspaceActivityEntry[];
+  outputStatus?: ThreadWorkspaceOutputStatus;
+}>;
+
+const ACTIVITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,63}$/u;
+const ACTIVITY_ENTRY_KEYS = new Set([
+  "command",
+  "count",
+  "durationMs",
+  "errorCode",
+  "file",
+  "firstSequence",
+  "groupId",
+  "id",
+  "kind",
+  "phase",
+  "runOutcome",
+  "sequence",
+  "startedAt",
+  "updateId"
+]);
+const ACTIVITY_COMMAND_KEYS = new Set([
+  "cwd",
+  "exitCode",
+  "originalByteCount",
+  "outputSequence",
+  "preview",
+  "stderrPreview",
+  "stdoutPreview",
+  "truncated"
+]);
+const ACTIVITY_FILE_KEYS = new Set(["byteSize", "displayPath", "targetPath"]);
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function boundedText(value: unknown, maximum: number, allowEmpty = false): string | null {
+  if (typeof value !== "string" || value.length > maximum) return null;
+  if (!allowEmpty && value.length === 0) return null;
+  return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value) ? null : value;
+}
+
+function boundedCount(value: unknown, maximum: number): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
+    ? value
+    : null;
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ACTIVITY_COMMAND_KEYS)) return null;
+  const preview = boundedText(value.preview, WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS);
+  if (!preview) return null;
+  const cwd = value.cwd === undefined ? undefined : boundedText(value.cwd, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+  if (value.cwd !== undefined && !cwd) return null;
+  const stdoutPreview = value.stdoutPreview === undefined
+    ? undefined
+    : boundedText(value.stdoutPreview, WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES, true);
+  const stderrPreview = value.stderrPreview === undefined
+    ? undefined
+    : boundedText(value.stderrPreview, WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES, true);
+  if (
+    stdoutPreview === null ||
+    stderrPreview === null ||
+    utf8Bytes(stdoutPreview ?? "") + utf8Bytes(stderrPreview ?? "") > WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES
+  ) {
+    return null;
+  }
+  const exitCode = value.exitCode === undefined || value.exitCode === null
+    ? value.exitCode
+    : typeof value.exitCode === "number" && Number.isSafeInteger(value.exitCode) &&
+      value.exitCode >= -1_024 && value.exitCode <= 1_024
+      ? value.exitCode
+      : undefined;
+  if (value.exitCode !== undefined && value.exitCode !== null && exitCode === undefined) return null;
+  const originalByteCount = value.originalByteCount === undefined
+    ? undefined
+    : boundedCount(value.originalByteCount, Number.MAX_SAFE_INTEGER);
+  if (originalByteCount === null) return null;
+  const outputSequence = value.outputSequence === undefined ? undefined : boundedCount(value.outputSequence, Number.MAX_SAFE_INTEGER);
+  if (outputSequence === null) return null;
+  if (value.truncated !== undefined && typeof value.truncated !== "boolean") return null;
+  return {
+    ...(cwd ? { cwd } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(originalByteCount !== undefined ? { originalByteCount } : {}),
+    ...(outputSequence !== undefined ? { outputSequence } : {}),
+    preview,
+    ...(stderrPreview !== undefined ? { stderrPreview } : {}),
+    ...(stdoutPreview !== undefined ? { stdoutPreview } : {}),
+    ...(value.truncated !== undefined ? { truncated: value.truncated } : {})
+  };
+}
+
+function decodeActivityFile(value: unknown): ThreadWorkspaceActivityFile | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ACTIVITY_FILE_KEYS)) return null;
+  const displayPath = boundedText(value.displayPath, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+  if (!displayPath) return null;
+  const targetPath = value.targetPath === undefined
+    ? undefined
+    : boundedText(value.targetPath, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+  if (value.targetPath !== undefined && !targetPath) return null;
+  const byteSize = value.byteSize === undefined
+    ? undefined
+    : boundedCount(value.byteSize, Number.MAX_SAFE_INTEGER);
+  if (byteSize === null) return null;
+  return {
+    ...(byteSize !== undefined ? { byteSize } : {}),
+    displayPath,
+    ...(targetPath ? { targetPath } : {})
+  };
+}
+
+export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorkspaceActivityEntry | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ACTIVITY_ENTRY_KEYS)) return null;
+  const id = typeof value.id === "string" && ACTIVITY_ID_PATTERN.test(value.id) ? value.id : null;
+  const kind = (WORKSPACE_ACTIVITY_KINDS as readonly string[]).includes(String(value.kind))
+    ? value.kind as WorkspaceActivityKind
+    : null;
+  const phase = (WORKSPACE_ACTIVITY_PHASES as readonly string[]).includes(String(value.phase))
+    ? value.phase as WorkspaceActivityPhase
+    : null;
+  if (!id || !kind || !phase) return null;
+  const sequence = value.sequence === undefined ? undefined : boundedCount(value.sequence, Number.MAX_SAFE_INTEGER);
+  if (sequence === null) return null;
+  const firstSequence = value.firstSequence === undefined ? undefined : boundedCount(value.firstSequence, Number.MAX_SAFE_INTEGER);
+  if (firstSequence === null || firstSequence !== undefined && (sequence === undefined || firstSequence > sequence)) return null;
+  const updateId = value.updateId === undefined ? undefined
+    : typeof value.updateId === "string" && ACTIVITY_ID_PATTERN.test(value.updateId) ? value.updateId : null;
+  if (updateId === null) return null;
+  const runOutcome = value.runOutcome === undefined ? undefined
+    : value.runOutcome === "cancelled" || value.runOutcome === "failed" ? value.runOutcome : null;
+  if (runOutcome === null || runOutcome !== undefined && phase !== runOutcome) return null;
+  const groupId = value.groupId === undefined
+    ? undefined
+    : typeof value.groupId === "string" && ACTIVITY_ID_PATTERN.test(value.groupId) ? value.groupId : null;
+  if (value.groupId !== undefined && !groupId) return null;
+  const startedAt = value.startedAt === undefined
+    ? undefined
+    : typeof value.startedAt === "string" && value.startedAt.length <= 40 &&
+      Number.isFinite(Date.parse(value.startedAt))
+      ? value.startedAt
+      : null;
+  if (value.startedAt !== undefined && !startedAt) return null;
+  const durationMs = value.durationMs === undefined ? undefined : boundedCount(value.durationMs, 7 * 24 * 3_600_000);
+  if (durationMs === null) return null;
+  const count = value.count === undefined ? undefined : boundedCount(value.count, 1_000_000);
+  if (count === null) return null;
+  const errorCode = value.errorCode === undefined
+    ? undefined
+    : isWorkspaceErrorCode(value.errorCode) ? value.errorCode : null;
+  if (value.errorCode !== undefined && !errorCode) return null;
+  const command = value.command === undefined ? undefined : decodeActivityCommand(value.command);
+  if (value.command !== undefined && !command) return null;
+  if (command?.outputSequence !== undefined && (sequence === undefined || command.outputSequence > sequence)) return null;
+  const file = value.file === undefined ? undefined : decodeActivityFile(value.file);
+  if (value.file !== undefined && !file) return null;
+  return {
+    ...(command ? { command } : {}),
+    ...(count !== undefined ? { count } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(errorCode ? { errorCode } : {}),
+    ...(file ? { file } : {}),
+    ...(firstSequence !== undefined ? { firstSequence } : {}),
+    ...(groupId ? { groupId } : {}),
+    id,
+    kind,
+    phase,
+    ...(runOutcome ? { runOutcome } : {}),
+    ...(sequence !== undefined ? { sequence } : {}),
+    ...(startedAt ? { startedAt } : {}),
+    ...(updateId ? { updateId } : {})
+  };
+}
+
+export function decodeThreadWorkspaceOutputStatus(value: unknown): ThreadWorkspaceOutputStatus | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["errorCode", "state"]))) return null;
+  const state = value.state === "complete" || value.state === "exporting" ||
+    value.state === "failed" || value.state === "retrying"
+    ? value.state
+    : null;
+  if (!state) return null;
+  const errorCode = value.errorCode === undefined
+    ? undefined
+    : isWorkspaceErrorCode(value.errorCode) ? value.errorCode : null;
+  if (value.errorCode !== undefined && !errorCode) return null;
+  return { ...(errorCode ? { errorCode } : {}), state };
+}
+
+export function decodeThreadWorkspaceActivity(value: unknown): ThreadWorkspaceActivity | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["entries", "outputStatus"]))) return null;
+  if (!Array.isArray(value.entries) || value.entries.length > WORKSPACE_ACTIVITY_MAX_ENTRIES) return null;
+  const entries: ThreadWorkspaceActivityEntry[] = [];
+  for (const candidate of value.entries) {
+    const entry = decodeThreadWorkspaceActivityEntry(candidate);
+    if (!entry) return null;
+    entries.push(entry);
+  }
+  const outputStatus = value.outputStatus === undefined
+    ? undefined
+    : decodeThreadWorkspaceOutputStatus(value.outputStatus);
+  if (value.outputStatus !== undefined && !outputStatus) return null;
+  return { entries, ...(outputStatus ? { outputStatus } : {}) };
 }

@@ -410,6 +410,7 @@ function createMemoryRepository(
     appendRunOutputEvent: async (_runId, event) => {
       const sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
       state.events.push({ event, sequence });
+      return event;
     },
     beginPreparingRunAttempt: async () => false,
     beginToolLoopProviderRound: async () => "started",
@@ -2141,7 +2142,9 @@ describe("model run route handlers", () => {
     expect(state.completed?.estimatedCostMicros).toBe(
       state.completed!.usage.inputTokens * 2 + state.completed!.usage.outputTokens * 8
     );
-    expect(state.events).toEqual([]);
+    expect(state.events).toEqual([{ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
+    } }]);
   });
 
   it("passes accepted run defaults from the accepted send", async () => {
@@ -2510,7 +2513,9 @@ describe("model run route handlers", () => {
         reasoningTokens: 0
       }
     });
-    expect(state.events).toEqual([]);
+    expect(state.events).toEqual([{ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
+    } }]);
   });
 
   it.each([
@@ -2631,7 +2636,9 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.completed?.estimatedCostMicros).toBeNull();
-    expect(state.events).toEqual([]);
+    expect(state.events).toEqual([{ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
+    } }]);
   });
 
   it("trims oldest branch context for tiny context windows and emits a truncation artifact", async () => {
@@ -2711,7 +2718,9 @@ describe("model run route handlers", () => {
     expect(truncationEvent?.type).toBe("artifact");
     expect((truncationEvent?.data as { payload?: unknown } | undefined)?.payload)
       .toMatchObject({ droppedMessages: 2 });
-    expect(state.events).toEqual([]);
+    expect(state.events).toEqual([{ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
+    } }]);
   });
 
   it("fails before run creation when irreducible context exceeds the budget", async () => {
@@ -5564,6 +5573,26 @@ describe("model run route handlers", () => {
       code: "model_run_cancelled"
     });
     expect(state.events).toEqual([]);
+  });
+
+  it("settles Workspace when a cancelled PDF worker has a controller but no answer settlement promise", async () => {
+    const { repository } = createMemoryRepository();
+    const registration = activeRunControllerRegistry.register("run-1");
+    expect(registration).not.toBeNull();
+    expect(activeRunControllerRegistry.settled("run-1")).toBeNull();
+    const settle = vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: false }));
+    const POST = createCancelModelRunHandler({
+      ...authDeps, repository, providers: {},
+      workspaceCoordinator: { settle } as unknown as NonNullable<Parameters<typeof createCancelModelRunHandler>[0]["workspaceCoordinator"]>
+    });
+    try {
+      const response = await POST(new Request("http://app.local/api/model-runs/run-1/cancel", {
+        headers: { cookie: authCookie() }, method: "POST"
+      }), { params: { runId: "run-1" } });
+      expect(response.status).toBe(200);
+      expect(registration?.signal.aborted).toBe(true);
+      expect(settle).toHaveBeenCalledExactlyOnceWith({ outcome: "cancelled", runId: "run-1", userId: config.bootstrapUserId });
+    } finally { registration?.release(); }
   });
 
   it("cancels an owned streaming provider run through the provider adapter", async () => {

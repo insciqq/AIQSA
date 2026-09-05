@@ -200,6 +200,25 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     vi.useRealTimers();
   });
 
+  it("refreshes settled Project attachments through its existing invalidation source", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [projectChat({ id: "chat-1", title: "Plan" })], folders: [] });
+    const input = controllerInput();
+    const hook = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await hook.result.current.actions.selectProject("project-1");
+    });
+    await act(async () => { await hook.result.current.actions.selectChat("chat-1"); });
+    input.refreshActiveChat.mockClear();
+    await act(async () => {
+      FakeEventSource.instances.at(-1)?.emit("project_changed", { category: "attachment_changed", chatId: "chat-1", revision: "11" });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(input.refreshActiveChat).toHaveBeenCalledExactlyOnceWith("chat-1", { forceDetail: true, preserveControls: true, resumeRuns: false });
+    hook.unmount();
+  });
+
   it("merges a safe SSE chat delta without refetching the whole Project workspace", async () => {
     vi.stubGlobal("EventSource", FakeEventSource);
     apiMocks.loadProjectWorkspace.mockResolvedValue({

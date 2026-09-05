@@ -1,6 +1,7 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultKnowledgeUploadHandlerDeps } from "@/lib/server/knowledge/defaultKnowledgeUploads";
 import { createStartKnowledgeUploadItemHandler } from "@/lib/server/knowledge/uploadHandlers";
 
 export const runtime = "nodejs";
 
-export const POST = createStartKnowledgeUploadItemHandler(defaultKnowledgeUploadHandlerDeps);
+export const POST: AsyncRouteHandler<ReturnType<typeof createStartKnowledgeUploadItemHandler>> = createStartKnowledgeUploadItemHandler(defaultKnowledgeUploadHandlerDeps);

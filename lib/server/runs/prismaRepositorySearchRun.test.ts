@@ -168,6 +168,9 @@ describe("Prisma run repository search evidence", () => {
           include: expect.objectContaining({
             assistantModelRuns: expect.objectContaining({
               select: expect.objectContaining({
+                workspaceRunBinding: { select: {
+                  exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true
+                } },
                 knowledgeRetrievalSession: {
                   select: {
                     degradedFlags: true,

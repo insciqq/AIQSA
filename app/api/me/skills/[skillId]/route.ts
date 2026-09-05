@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultSkillHandlerDeps } from "@/lib/server/skills/defaultSkills";
 import {
   createDeleteSkillHandler,
@@ -7,6 +8,6 @@ import {
 
 export const runtime = "nodejs";
 
-export const DELETE = createDeleteSkillHandler(defaultSkillHandlerDeps);
-export const GET = createGetSkillHandler(defaultSkillHandlerDeps);
-export const PATCH = createUpdateSkillHandler(defaultSkillHandlerDeps);
+export const DELETE: AsyncRouteHandler<ReturnType<typeof createDeleteSkillHandler>> = createDeleteSkillHandler(defaultSkillHandlerDeps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetSkillHandler>> = createGetSkillHandler(defaultSkillHandlerDeps);
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createUpdateSkillHandler>> = createUpdateSkillHandler(defaultSkillHandlerDeps);

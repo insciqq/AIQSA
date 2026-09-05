@@ -2,6 +2,7 @@
 
 import {
   MarkdownMessage,
+  type MarkdownHrefResolver,
   type MarkdownCitationRenderer
 } from "@/components/chat/MarkdownMessage";
 import {
@@ -89,6 +90,7 @@ type ConversationTurnV2Props = Readonly<{
   hideEmptyContent?: boolean;
   role: "assistant" | "user";
   renderCitation?: MarkdownCitationRenderer;
+  resolveHref?: MarkdownHrefResolver;
   streaming?: boolean;
   toolbarLeading?: ReactNode;
 }>;
@@ -228,6 +230,7 @@ export function ConversationTurnV2({
   hideEmptyContent = false,
   role,
   renderCitation,
+  resolveHref,
   streaming = false,
   toolbarLeading = null
 }: ConversationTurnV2Props) {
@@ -380,6 +383,7 @@ export function ConversationTurnV2({
                 <MarkdownMessage
                   content={content}
                   renderCitation={role === "assistant" && !streaming ? renderCitation : undefined}
+                  resolveHref={role === "assistant" ? resolveHref : undefined}
                   streaming={streaming}
                 />
               ) : !hideEmptyContent ? (

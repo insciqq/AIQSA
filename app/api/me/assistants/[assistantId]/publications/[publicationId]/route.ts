@@ -1,6 +1,7 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultAssistantHandlerDeps } from "@/lib/server/assistants/defaultAssistants";
 import { createRevokeAssistantPublicationHandler } from "@/lib/server/assistants/handlers";
 
 export const runtime = "nodejs";
 
-export const DELETE = createRevokeAssistantPublicationHandler(defaultAssistantHandlerDeps);
+export const DELETE: AsyncRouteHandler<ReturnType<typeof createRevokeAssistantPublicationHandler>> = createRevokeAssistantPublicationHandler(defaultAssistantHandlerDeps);

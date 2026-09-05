@@ -73,7 +73,12 @@ export function createChatContinuationRepository(client: PrismaClient): Continua
         throw new ChatContinuationError("chat_summary_too_large", 413);
       }
       const messages = await tx.message.findMany({ where: { chatId: chat.id, id: { in: path.map((row) => row.id) } }, select: { id: true, content: true } });
-      const byId = new Map(messages.map((message) => [message.id, textFromContentBlocks(message.content)]));
+      const byId = new Map(messages.map((message) => {
+        const content = message.content;
+        const blocks = content && typeof content === "object" && !Array.isArray(content) && Array.isArray(content.blocks)
+          ? content.blocks : [];
+        return [message.id, textFromContentBlocks({ blocks })];
+      }));
       const transcript = path.flatMap((row) => {
         const text = byId.get(row.id)?.trim();
         return text && (row.role === "user" || row.role === "assistant")

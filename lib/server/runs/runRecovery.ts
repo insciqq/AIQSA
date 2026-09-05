@@ -143,6 +143,8 @@ import {
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { workspaceActivityEvent } from "../workspace/activityProjection";
+import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
   usageAttributionsWithEstimatedCost
@@ -391,6 +393,8 @@ class ToolLoopRecoveryError extends Error {
     if (report) this.report = report;
   }
 }
+
+class WorkspaceHandoffDeferred extends Error {}
 
 class ToolLoopRecoveryStopped extends Error {
   constructor() {
@@ -1479,6 +1483,10 @@ async function executePersistedToolCall(
       result = await context.deps.workspace!.execute({
         call,
         modelRunToolCallId: claim.call.id,
+        onActivity: async (entry) => {
+          const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+          if (event) await context.deps.repository.appendRunOutputEvent(context.run.id, event);
+        },
         runId: context.run.id,
         signal,
         userId: context.run.userId,
@@ -1624,6 +1632,23 @@ async function recoverCheckpointedToolLoop(
   let usageEvidenceTrusted = true;
   let currentProviderResponseId = run.providerResponseId;
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
+  // Terminal Workspace settlement for a recovered turn that stops or fails:
+  // best effort, never allowed to mask the run's own terminal persistence.
+  const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
+    const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+    if (event) await deps.repository.appendRunOutputEvent(run.id, event);
+  };
+  const settleRecoveredWorkspaceOnExit = async (outcome: "cancelled" | "failed") => {
+    const savedWorkspace = run.normalizedRequest.workspace;
+    if (!savedWorkspace || !deps.workspace) return;
+    await deps.workspace.settle({
+      onActivity: onWorkspaceActivity,
+      outcome,
+      runId: run.id,
+      userId: run.userId,
+      workspace: savedWorkspace
+    }).catch(() => undefined);
+  };
 
   function allUsageAttributions(): RunUsageAttribution[] {
     return [
@@ -1862,7 +1887,7 @@ async function recoverCheckpointedToolLoop(
       sessionRequest: {
         ...providerRequest,
         tools,
-        providerToolMessages: parseProviderToolLoopContinuation(run.checkpoint.providerContinuation).providerToolMessages
+        providerToolMessages: [...parseProviderToolLoopContinuation(run.checkpoint.providerContinuation).providerToolMessages]
       },
       providerRequest,
       run,
@@ -1883,12 +1908,17 @@ async function recoverCheckpointedToolLoop(
           "The saved Workspace runtime is unavailable."
         );
       }
-      await deps.workspace.finalize({
+      // Capture and receiver retirement are terminal prerequisites; object
+      // transfer belongs to the independent durable export worker.
+      const handoff = await deps.workspace.handoff({
+        onActivity: onWorkspaceActivity,
         runId: run.id,
         signal,
         userId: run.userId,
         workspace
       });
+      if (handoff.status === "busy") throw new WorkspaceHandoffDeferred();
+      signal.throwIfAborted();
     }
     tokenBuffer = createRunTokenPersistenceBuffer({
       allowErroredAssistant: true,
@@ -2693,10 +2723,15 @@ async function recoverCheckpointedToolLoop(
       );
     }
   } catch (error) {
+    // A predecessor's live capture lease is retried on a later recovery tick;
+    // it is neither provider failure nor permission to retire that owner.
+    if (error instanceof WorkspaceHandoffDeferred) return;
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
+      await settleRecoveredWorkspaceOnExit("cancelled");
       await tokenBuffer?.flush().catch(() => undefined);
       return;
     }
+    await settleRecoveredWorkspaceOnExit("failed");
     let recoveryError = error;
     const originalStreamSafetyReport = providerStreamSafetyReport(error);
     try {
@@ -4464,6 +4499,8 @@ export async function reconcileInstallationRuns(
       code: "run_orphaned",
       message: "Run stopped reporting progress and was marked failed."
     });
+    await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId })
+      .catch(() => undefined);
   }));
 }
 
@@ -4536,5 +4573,7 @@ export async function reconcileStaleRuns(
       message: "Run stopped reporting progress and was marked failed."
     };
     await deps.repository.failRun(run.id, run.assistantMessageId, payload);
+    await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId })
+      .catch(() => undefined);
   }
 }

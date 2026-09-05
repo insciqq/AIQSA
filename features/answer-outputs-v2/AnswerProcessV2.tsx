@@ -4,10 +4,16 @@ import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { UiV2Icon } from "@/components/ui-v2";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
+import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import {
   answerProcessLabelV2,
   describeToolCallV2
 } from "@/features/run-lifecycle-v2/runPresentation";
+import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
+import {
+  workspaceActivityHasFailureV2,
+  workspaceProcessLabelV2
+} from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { useId } from "react";
 import { MemorySourceRowV2 } from "./AnswerOutputsV2";
 
@@ -51,6 +57,8 @@ export type AnswerProcessV2Props = Readonly<{
   toolActivity?: ThreadToolActivity | null;
   /** Send → first answer token; null when the run recorded none. */
   workDurationMs?: number | null;
+  /** Workspace timeline; when present it owns the Workspace steps and the fold's label. */
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 }>;
 
 /**
@@ -64,18 +72,23 @@ export function AnswerProcessV2({
   memorySources = [],
   reasoningTexts = [],
   toolActivity = null,
-  workDurationMs = null
+  workDurationMs = null,
+  workspaceActivity = null
 }: AnswerProcessV2Props) {
   const memoryHeadingId = `answer-memory-sources-heading-${useId()}`;
   const reasoning = reasoningTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
-  const calls = toolActivity?.calls ?? [];
+  // Workspace steps are rendered by the timeline; the generic list keeps only
+  // other tools so no raw sandbox identifier can reach the thread.
+  const calls = (toolActivity?.calls ?? []).filter((call) => call.serverName !== "Workspace");
+  const timeline = workspaceActivity && workspaceActivity.entries.length > 0 ? workspaceActivity : null;
+  const workspaceFailed = workspaceActivityHasFailureV2(timeline);
   const warning = toolActivity?.warning ? (
     <div className="v2-tool-budget-warning" data-kind={toolActivity.warning.kind} role="status">
       Tool {toolActivity.warning.kind === "calls" ? "call" : "round"} limit ({toolActivity.warning.limit}) stopped further tool use.
     </div>
   ) : null;
 
-  if (liveLabel) {
+  if (liveLabel && !timeline) {
     return (
       <div className="v2-answer-process" data-live="true" data-testid="run-status-line">
         <span className="v2-answer-process-slot" aria-hidden="true">
@@ -86,24 +99,41 @@ export function AnswerProcessV2({
     );
   }
 
-  const label = answerProcessLabelV2({
-    hasReasoning: reasoning.length > 0,
-    memoryCount: memorySources.length,
-    stepCount: calls.length,
-    workDurationMs
-  });
+  const live = Boolean(liveLabel);
+  const label = timeline
+    ? workspaceProcessLabelV2({ live, workDurationMs })
+    : answerProcessLabelV2({
+        hasReasoning: reasoning.length > 0,
+        memoryCount: memorySources.length,
+        stepCount: calls.length,
+        workDurationMs
+      });
   if (!label) return warning;
 
   return (
     <>
-      <details className="v2-answer-process" data-testid="tool-activity-disclosure">
+      <details
+        className="v2-answer-process"
+        data-live={live || undefined}
+        data-testid="tool-activity-disclosure"
+        data-workspace={timeline ? "true" : undefined}
+        open={timeline && (live || workspaceFailed) ? true : undefined}
+      >
         <summary className="v2-focusable">
           <span className="v2-answer-process-slot" aria-hidden="true">
-            <span className="v2-answer-process-chevron" />
+            {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
-          <span className="v2-answer-process-label">{label}</span>
+          <span className={live ? "v2-run-shimmer v2-answer-process-label" : "v2-answer-process-label"}>
+            {live && liveLabel ? liveLabel : label}
+          </span>
         </summary>
         <div className="v2-answer-process-body">
+          {timeline ? (
+            <section className="v2-answer-process-section" data-testid="workspace-activity-section">
+              <h3>Workspace</h3>
+              <WorkspaceActivityTimelineV2 activity={timeline} />
+            </section>
+          ) : null}
           {reasoning ? (
             <section className="v2-answer-process-section" data-testid="answer-reasoning">
               <h3>Thinking</h3>

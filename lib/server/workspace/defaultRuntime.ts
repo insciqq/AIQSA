@@ -1,6 +1,7 @@
 import type { WorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
+import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import {
   WorkspaceRuntimeError,
   type WorkspaceRuntime,
@@ -17,18 +18,23 @@ class UnavailableWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async ensureSession(): Promise<never> { return this.unavailable(); }
+  async listStagedAttachments(): Promise<never> { return this.unavailable(); }
   async stageAttachments(): Promise<never> { return this.unavailable(); }
   async loadBoundTools(): Promise<never> { return this.unavailable(); }
   async callBoundTool(): Promise<never> { return this.unavailable(); }
   async cancelToolCall(): Promise<never> { return this.unavailable(); }
+  async terminateExecutions(): Promise<never> { return this.unavailable(); }
   async collectOutputs(): Promise<never> { return this.unavailable(); }
   async createProjectArchive(): Promise<never> { return this.unavailable(); }
   async stopSession(): Promise<never> { return this.unavailable(); }
   async removeSession(): Promise<never> { return this.unavailable(); }
 }
 
-export function createWorkspaceRuntime(config: WorkspaceConfig): WorkspaceRuntime {
-  if (config.runtimeMode === "deterministic") return new DeterministicWorkspaceRuntime(config);
+export function createWorkspaceRuntime(
+  config: WorkspaceConfig,
+  options: Readonly<{ sharedState?: boolean }> = {}
+): WorkspaceRuntime {
+  if (config.runtimeMode === "deterministic") return fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config, options), options.sharedState);
   if (config.runtimeMode === "remote") return new RemoteWorkspaceRuntime(config);
   return new UnavailableWorkspaceRuntime();
 }

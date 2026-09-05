@@ -45,6 +45,8 @@ export type StoredObjectInspection = Readonly<{
 export type StoredObjectStreamInput = Readonly<{
   body: ReadableStream<Uint8Array>;
   byteSize: number;
+  /** If supplied, a mismatch must fail before replacing a committed object. */
+  checksum?: string;
   contentType: string;
   signal?: AbortSignal;
   storageKey: string;
@@ -143,6 +145,11 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw abortReason(signal);
   }
+}
+
+function streamChecksum(value: string | undefined): string | undefined {
+  if (value !== undefined && !/^[a-f0-9]{64}$/u.test(value)) throw new RangeError("invalid_stored_object_checksum");
+  return value;
 }
 
 function assertWithinLimit(actualBytes: number, maxBytes: number | undefined): void {
@@ -324,6 +331,7 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
       if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
         throw new RangeError("invalid_stored_object_stream_size");
       }
+      const checksum = streamChecksum(input.checksum);
       throwIfAborted(input.signal);
       const path = join(root, input.storageKey);
       const temporaryPath = `${path}.upload-${randomUUID()}`;
@@ -345,7 +353,7 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
       });
       try {
         await pipeline(
-          Readable.from(input.body as unknown as AsyncIterable<Uint8Array>),
+          Readable.fromWeb(input.body as import("node:stream/web").ReadableStream<Uint8Array>),
           meter,
           createWriteStream(temporaryPath, { flags: "wx" }),
           ...(input.signal ? [{ signal: input.signal }] : [])
@@ -353,6 +361,17 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
         if (observedBytes !== input.byteSize) {
           throw new Error("stored_object_size_mismatch");
         }
+        if (checksum) {
+          const written = await inspectStoredObjectStream(createReadStream(temporaryPath), {
+            contentType: input.contentType,
+            maxBytes: input.byteSize,
+            sampleBytes: 1,
+            signal: input.signal,
+            storageKey: input.storageKey
+          });
+          if (written.byteSize !== input.byteSize || written.checksum !== checksum) throw new Error("stored_object_checksum_mismatch");
+        }
+        throwIfAborted(input.signal);
         await rename(temporaryPath, path);
       } catch (error) {
         await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -687,34 +706,82 @@ const S3_UPLOAD_STREAM_CHUNK_BYTES = 8 * 1_024 * 1_024;
 
 function createBoundedS3UploadBody(input: StoredObjectStreamInput): Readonly<{
   body: Readable;
-  observedBytes(): number;
+  failure(): unknown;
+  verified(): boolean;
+  signal: AbortSignal;
+  dispose(): Promise<void>;
 }> {
+  throwIfAborted(input.signal);
+  const checksum = streamChecksum(input.checksum);
+  const digest = checksum ? createHash("sha256") : null;
   let observedBytes = 0;
-  const source = input.body as unknown as AsyncIterable<Uint8Array>;
+  let verified = false;
+  let failure: unknown = null;
+  const abort = new AbortController();
+  const reader = input.body.getReader();
+  let stopped: Promise<void> | undefined;
+  const stopSource = () => stopped ??= reader.cancel().catch(() => {}).finally(() => {
+    reader.releaseLock();
+  });
 
   async function* chunks(): AsyncGenerator<Buffer> {
-    for await (const chunk of source) {
-      observedBytes += chunk.byteLength;
-      if (observedBytes > input.byteSize) {
-        throw new StoredObjectTooLargeError({
-          maxBytes: input.byteSize,
-          observedBytes
-        });
-      }
+    let pending: Buffer | undefined;
+    try {
+      for (;;) {
+        throwIfAborted(input.signal);
+        const { done, value: chunk } = await reader.read();
+        throwIfAborted(input.signal);
+        if (done) break;
+        observedBytes += chunk.byteLength;
+        if (observedBytes > input.byteSize) {
+          throw new StoredObjectTooLargeError({ maxBytes: input.byteSize, observedBytes });
+        }
 
-      const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-      for (let offset = 0; offset < bytes.byteLength; offset += S3_UPLOAD_STREAM_CHUNK_BYTES) {
-        yield bytes.subarray(
-          offset,
-          Math.min(offset + S3_UPLOAD_STREAM_CHUNK_BYTES, bytes.byteLength)
-        );
+        for (let offset = 0; offset < chunk.byteLength; offset += S3_UPLOAD_STREAM_CHUNK_BYTES) {
+          const bytes = Buffer.from(chunk.subarray(offset, offset + S3_UPLOAD_STREAM_CHUNK_BYTES));
+          digest?.update(bytes);
+          if (pending) yield pending;
+          pending = bytes;
+        }
       }
+      if (observedBytes !== input.byteSize) throw new Error("stored_object_size_mismatch");
+      if (digest && digest.digest("hex") !== checksum) throw new Error("stored_object_checksum_mismatch");
+      // A PUT may commit as soon as ContentLength bytes arrive. Withhold the
+      // final bounded chunk until EOF and integrity are proven, so rejection
+      // cannot replace an already verified object at the same key.
+      verified = true;
+      if (pending) yield pending;
+    } finally {
+      await stopSource();
     }
   }
 
+  const body = Readable.from(chunks());
+  const onAbort = () => {
+    const reason = abortReason(input.signal!);
+    abort.abort(reason);
+    body.destroy(reason instanceof Error ? reason : new Error("stored_object_upload_aborted"));
+    void stopSource();
+  };
+  input.signal?.addEventListener("abort", onAbort, { once: true });
+  // The SDK pipes the body without an error listener: a source that fails
+  // mid-transfer would otherwise raise an unhandled 'error' event and leave
+  // the PUT open until a socket timeout. Abort the request and surface the
+  // source failure instead.
+  body.on("error", (error) => {
+    failure = error;
+    abort.abort(error);
+  });
   return {
-    body: Readable.from(chunks()),
-    observedBytes: () => observedBytes
+    body,
+    failure: () => failure,
+    verified: () => verified,
+    signal: abort.signal,
+    async dispose() {
+      input.signal?.removeEventListener("abort", onAbort);
+      body.destroy();
+      await stopSource();
+    }
   };
 }
 
@@ -731,11 +798,16 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
     secretAccessKey: env.S3_SECRET_ACCESS_KEY
   };
   const region = env.S3_REGION || "us-east-1";
+  // Uploads carry an explicit ContentLength and are verified by size and
+  // SHA-256 after the fact; the SDK's default streaming CRC trailer adds a
+  // hasher whose digest promise rejects unobserved when the body fails
+  // mid-transfer (an unhandled rejection per faulted Workspace export).
   const client = new S3Client({
     credentials,
     endpoint,
     forcePathStyle: true,
-    region
+    region,
+    requestChecksumCalculation: "WHEN_REQUIRED"
   });
 
   const publicEndpoint = publicS3Endpoint(env.S3_PUBLIC_ENDPOINT);
@@ -905,6 +977,7 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
         throw new RangeError("invalid_stored_object_stream_size");
       }
       const upload = createBoundedS3UploadBody(input);
+      const abortSignal = input.signal ? AbortSignal.any([input.signal, upload.signal]) : upload.signal;
       try {
         const command = new PutObjectCommand({
           Body: upload.body,
@@ -913,12 +986,16 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
           ContentType: input.contentType,
           Key: input.storageKey
         });
-        if (input.signal) await client.send(command, { abortSignal: input.signal });
-        else await client.send(command);
-        if (upload.observedBytes() !== input.byteSize) throw new Error("stored_object_size_mismatch");
+        await client.send(command, { abortSignal });
+        throwIfAborted(input.signal);
+        if (!upload.verified()) throw new Error("stored_object_size_mismatch");
       } catch (error) {
+        const failure = upload.failure();
+        if (failure) throw failure;
         if (input.signal?.aborted) throw abortReason(input.signal);
         throw error;
+      } finally {
+        await upload.dispose();
       }
     },
     ...(directMultipartUpload ? { directMultipartUpload } : {})

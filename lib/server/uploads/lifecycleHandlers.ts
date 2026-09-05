@@ -41,7 +41,7 @@ export function serializeAttachmentLifecycle(record: AttachmentLifecycleRecord):
     extractedText: record.extractedText,
     fileName: record.fileName,
     id: record.id,
-    kind: record.kind === "image" || record.kind === "pdf" ? record.kind : "document",
+    kind: record.kind === "image" || record.kind === "pdf" || record.kind === "file" ? record.kind : "document",
     ...(record.kind === "pdf" ? {} : { metadata: record.metadata }),
     mimeType: record.mimeType,
     ...(pdf ? { processing: pdf } : {}),

@@ -35,6 +35,36 @@ type Dependencies = Omit<RunExecutionInput,
   storage: StorageAdapter;
 }>;
 
+export function createChatPdfRunFailure(deps: Readonly<{
+  repository: Pick<RunRepository, "settlePreparingRunFailure" | "getRunControlForRecovery" | "hasPendingPdfPreparation" | "failRun">;
+  workspace?: RunExecutionInput["workspace"];
+}>): ChatPdfCoordinatorDependencies["fail"] {
+  return async (claim, error) => {
+    const message = error.code === "pdf_local_text_unusable"
+      ? "This PDF could not be read. Try a different file."
+      : error.code === "pdf_preparation_context_limit" ? "This document does not fit the conversation context."
+      : "Document preparation could not finish. Try again.";
+    const settled = await deps.repository.settlePreparingRunFailure({
+      errorCode: error.code, message, retryable: error.retryable, runId: claim.runId, state: "FAILED", userId: claim.userId
+    });
+    let outcome: "failed" | "cancelled" | null = settled ? "failed" : null;
+    if (!settled) {
+      let run = await deps.repository.getRunControlForRecovery?.(claim.runId);
+      if (run?.status === "streaming" && run.assistantMessageId &&
+        await deps.repository.hasPendingPdfPreparation?.(claim.runId)) {
+        await deps.repository.failRun(claim.runId, run.assistantMessageId, { code: error.code, message });
+        run = await deps.repository.getRunControlForRecovery?.(claim.runId);
+      }
+      if (run?.status === "cancelled") outcome = "cancelled";
+      else if (run?.status === "error") outcome = "failed";
+    }
+    // Workspace authority is reserved at admission, before PDF preparation.
+    // Terminal PDF paths must release it even when no answer executor started.
+    if (outcome) await deps.workspace?.settle({ outcome, runId: claim.runId, userId: claim.userId })
+      .catch(() => undefined);
+  };
+}
+
 export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordinatorDependencies["continueRun"] {
   return async ({ claim, loaded, releaseRegistry, signal }) => {
     const snapshot = loaded.snapshot as unknown as ChatPdfRunSnapshot;

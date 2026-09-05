@@ -1,19 +1,23 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
 import { createCancelModelRunHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
+import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
+import { workspaceCoordinatorForStorage } from "@/lib/server/workspace/defaultServices";
 
 export const runtime = "nodejs";
 
 const repository = createPrismaRunRepository();
 
-export const POST = createCancelModelRunHandler({
+export const POST: AsyncRouteHandler<ReturnType<typeof createCancelModelRunHandler>> = createCancelModelRunHandler({
   getConfig: () => getAuthConfig(),
   knowledgeExecutor: knowledgeToolExecutor,
   providerRuntime: providerRuntimeResolver,
   providers: {},
   repository,
-  resolveAuth: resolveRequestAuth
+  resolveAuth: resolveRequestAuth,
+  workspaceCoordinator: workspaceCoordinatorForStorage(createS3StorageAdapter())
 });

@@ -9,7 +9,10 @@ import {
   workspaceMessageManifestPath,
   workspaceRunOutputDirectory,
   workspaceSandboxName,
-  workspaceToolIsAllowed
+  workspaceToolIsAllowed,
+  decodeWorkspaceInboxIndexAttachments,
+  isRetryableWorkspaceExportErrorCode,
+  isWorkspaceRuntimeExecSessionId
 } from "./workspace";
 
 describe("workspace domain", () => {
@@ -50,5 +53,50 @@ describe("workspace domain", () => {
     expect(workspaceToolIsAllowed("sandbox_shell")).toBe(true);
     expect(workspaceToolIsAllowed("sandbox_fs_copy_to_host")).toBe(false);
     expect(workspaceToolIsAllowed("sandbox_remove")).toBe(false);
+  });
+});
+
+describe("workspace inbox index decoding", () => {
+  const entry = {
+    attachmentId: "att_1",
+    byteSize: 12,
+    checksum: "a".repeat(64),
+    sandboxPath: "/workspace/inbox/messages/msg_1/att_1--data.bin"
+  };
+
+  it("accepts the exact bounded shape and rejects everything else", () => {
+    expect(decodeWorkspaceInboxIndexAttachments({ attachments: [entry], manifests: [], version: 1 }))
+      .toEqual([entry]);
+    expect(decodeWorkspaceInboxIndexAttachments({ attachments: [], version: 1 })).toEqual([]);
+    expect(decodeWorkspaceInboxIndexAttachments({ attachments: [entry], version: 2 })).toBeNull();
+    expect(decodeWorkspaceInboxIndexAttachments({ attachments: [entry, entry], version: 1 })).toBeNull();
+    expect(decodeWorkspaceInboxIndexAttachments({
+      attachments: [{ ...entry, sandboxPath: "/workspace/project/data.bin" }],
+      version: 1
+    })).toBeNull();
+    expect(decodeWorkspaceInboxIndexAttachments({
+      attachments: [{ ...entry, sandboxPath: "/workspace/inbox/messages/../etc/passwd" }],
+      version: 1
+    })).toBeNull();
+    expect(decodeWorkspaceInboxIndexAttachments({
+      attachments: [{ ...entry, byteSize: 0 }],
+      version: 1
+    })).toBeNull();
+    expect(decodeWorkspaceInboxIndexAttachments({
+      attachments: [{ ...entry, checksum: "not-a-hash" }],
+      version: 1
+    })).toBeNull();
+    expect(decodeWorkspaceInboxIndexAttachments("[]")).toBeNull();
+  });
+
+  it("classifies export errors and runtime execution ids", () => {
+    expect(isRetryableWorkspaceExportErrorCode(null)).toBe(true);
+    expect(isRetryableWorkspaceExportErrorCode("workspace_output_export_failed")).toBe(true);
+    expect(isRetryableWorkspaceExportErrorCode("workspace_output_limit_exceeded")).toBe(false);
+    expect(isRetryableWorkspaceExportErrorCode("workspace_session_lost")).toBe(false);
+    expect(isWorkspaceRuntimeExecSessionId("exec-abc_123")).toBe(true);
+    expect(isWorkspaceRuntimeExecSessionId("")).toBe(false);
+    expect(isWorkspaceRuntimeExecSessionId("bad\u0000id")).toBe(false);
+    expect(isWorkspaceRuntimeExecSessionId("x".repeat(257))).toBe(false);
   });
 });

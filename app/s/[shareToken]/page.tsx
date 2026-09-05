@@ -22,7 +22,7 @@ const repository = createPrismaShareRepository();
 export default async function PublicSharePage({
   params
 }: {
-  params: Promise<{ shareToken: string }> | { shareToken: string };
+  params: Promise<{ shareToken: string }>;
 }) {
   noStore();
   const resolved = await params;

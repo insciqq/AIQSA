@@ -2,6 +2,7 @@ import { prisma } from "@/lib/server/prisma";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
 import { getWorkspaceConfig } from "./config";
 import { createWorkspaceRuntime } from "./defaultRuntime";
+import type { WorkspaceRuntime } from "./runtime";
 import { createWorkspaceAvailabilityService } from "./availability";
 import { createWorkspaceHealthService } from "./health";
 import { createPrismaWorkspacePolicyRepository } from "./policyRepository";
@@ -14,10 +15,15 @@ import {
   createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator
 } from "./coordinator";
+import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { createWorkspaceLifecycleService } from "./lifecycle";
 
 export const workspaceConfig = getWorkspaceConfig();
-export const workspaceRuntime = createWorkspaceRuntime(workspaceConfig);
+// Each server bundle (route handlers, the instrumentation scheduler) builds
+// its own runtime instance: an instance shared across bundles would throw
+// errors from a foreign copy of `WorkspaceRuntimeError`, defeating every
+// `instanceof` check. Process-wide state lives inside the runtime instead.
+export const workspaceRuntime: WorkspaceRuntime = createWorkspaceRuntime(workspaceConfig, { sharedState: true });
 export const workspaceHealthService = createWorkspaceHealthService({ runtime: workspaceRuntime });
 export const workspacePolicyRepository = createPrismaWorkspacePolicyRepository(prisma);
 export const workspaceAvailabilityService = createWorkspaceAvailabilityService({
@@ -39,6 +45,7 @@ export const workspaceAdmissionService = createWorkspaceAdmissionService({
 export function workspaceCoordinatorForStorage(storage: StorageAdapter) {
   return createWorkspaceCoordinator({
     config: workspaceConfig,
+    registry: createPrismaWorkspaceExecutionRegistry(prisma),
     repository: createPrismaWorkspaceCoordinatorRepository(prisma),
     runtime: workspaceRuntime,
     storage

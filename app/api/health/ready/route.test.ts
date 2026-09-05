@@ -94,7 +94,7 @@ describe("/api/health/ready", () => {
   it("returns not-ready without dependency I/O for an invalid encryption key", async () => {
     stubProductionEnvironment(INVALID_KEY_CANARY);
 
-    const response = await GET();
+    const response = await GET(new Request("http://app.local/api/health/ready"));
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -108,7 +108,7 @@ describe("/api/health/ready", () => {
   it("checks dependencies and returns ready for a valid production configuration", async () => {
     stubProductionEnvironment(ENCRYPTION_KEY);
 
-    const response = await GET();
+    const response = await GET(new Request("http://app.local/api/health/ready"));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");

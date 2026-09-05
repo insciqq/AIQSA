@@ -8,14 +8,20 @@ import type {
 /**
  * Library navigation is only truthful for attachments whose source message is
  * on the chat's current active path. The recursive query applies that same DAG
- * projection before the global recency limit, and keeps Temporary chats out of
- * the durable personal library entirely.
+ * projection before the global recency limit. Explicitly saved independent
+ * copies remain available without a source chat. Temporary chats never enter
+ * this durable personal catalog.
  */
 export function createPrismaAttachmentLibraryRepository(
   prismaClient: PrismaClient = prisma
 ): AttachmentLibraryRepository {
   return {
-    async listSent({ limit, userId }) {
+    async listSent({ cursor = null, limit, userId }) {
+      const before = cursor ? await prismaClient.attachment.findFirst({
+        select: { createdAt: true, id: true, savedAt: true },
+        where: { id: cursor, projectId: null, userId }
+      }) : null;
+      if (cursor && !before) return [];
       return prismaClient.$queryRaw<AttachmentLibraryRecord[]>(Prisma.sql`
         WITH RECURSIVE "active_messages" AS (
           SELECT
@@ -49,18 +55,24 @@ export function createPrismaAttachmentLibraryRepository(
           attachment."fileName",
           attachment."id",
           attachment."messageId",
+          attachment."savedAt",
           attachment."status",
           chat."id" AS "chatId",
           chat."title" AS "chatTitle"
         FROM "Attachment" AS attachment
-        INNER JOIN "active_messages" AS active_message
+        LEFT JOIN "active_messages" AS active_message
           ON active_message."id" = attachment."messageId"
           AND active_message."chatId" = attachment."chatId"
-        INNER JOIN "Chat" AS chat
+        LEFT JOIN "Chat" AS chat
           ON chat."id" = attachment."chatId"
         WHERE attachment."userId" = ${userId}
           AND attachment."projectId" IS NULL
-        ORDER BY attachment."createdAt" DESC, attachment."id" DESC
+          AND (attachment."savedAt" IS NOT NULL OR active_message."id" IS NOT NULL)
+          ${before ? Prisma.sql`AND (
+            (attachment."savedAt" IS NOT NULL)::int, COALESCE(attachment."savedAt", attachment."createdAt"), attachment."id"
+          ) < (${before.savedAt ? 1 : 0}, ${before.savedAt ?? before.createdAt}, ${before.id})` : Prisma.empty}
+        ORDER BY (attachment."savedAt" IS NOT NULL) DESC,
+          COALESCE(attachment."savedAt", attachment."createdAt") DESC, attachment."id" DESC
         LIMIT ${limit}
       `);
     }

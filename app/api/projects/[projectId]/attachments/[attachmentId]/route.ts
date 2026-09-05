@@ -28,7 +28,7 @@ async function projectParams(
 
 export async function GET(
   request: Request,
-  context: { params: Promise<{ attachmentId: string; projectId: string }> | { attachmentId: string; projectId: string } }
+  context: { params: Promise<{ attachmentId: string; projectId: string }> }
 ): Promise<Response> {
   const auth = await resolveRequestAuth(request);
   if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -51,7 +51,7 @@ export async function GET(
 
 export async function POST(
   request: Request,
-  context: { params: Promise<{ attachmentId: string; projectId: string }> | { attachmentId: string; projectId: string } }
+  context: { params: Promise<{ attachmentId: string; projectId: string }> }
 ): Promise<Response> {
   const auth = await resolveRequestAuth(request);
   if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -125,7 +125,7 @@ export async function POST(
 
 export async function DELETE(
   request: Request,
-  context: { params: Promise<{ attachmentId: string; projectId: string }> | { attachmentId: string; projectId: string } }
+  context: { params: Promise<{ attachmentId: string; projectId: string }> }
 ): Promise<Response> {
   const auth = await resolveRequestAuth(request);
   if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });

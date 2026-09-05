@@ -1,4 +1,5 @@
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssistants";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
@@ -25,7 +26,7 @@ export const runtime = "nodejs";
 const repository = createPrismaRunRepository();
 const storage = createS3StorageAdapter();
 
-export const POST = createRegenerateModelRunHandler({
+export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunHandler>> = createRegenerateModelRunHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
   assistants: defaultAssistantRepository,
   getConfig: () => getAuthConfig(),

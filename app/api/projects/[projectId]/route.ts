@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultProjectHandlerDeps } from "@/lib/server/projects/defaultProjects";
 import {
   createDeleteProjectHandler,
@@ -7,6 +8,6 @@ import {
 
 export const runtime = "nodejs";
 
-export const GET = createGetProjectHandler(defaultProjectHandlerDeps);
-export const PATCH = createUpdateProjectHandler(defaultProjectHandlerDeps);
-export const DELETE = createDeleteProjectHandler(defaultProjectHandlerDeps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetProjectHandler>> = createGetProjectHandler(defaultProjectHandlerDeps);
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createUpdateProjectHandler>> = createUpdateProjectHandler(defaultProjectHandlerDeps);
+export const DELETE: AsyncRouteHandler<ReturnType<typeof createDeleteProjectHandler>> = createDeleteProjectHandler(defaultProjectHandlerDeps);

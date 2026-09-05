@@ -19,6 +19,7 @@ import {
   type KnowledgePlan
 } from "./knowledge";
 import {
+  MEMORY_ANSWER_SOURCE_MAX_ITEMS,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
   decodeMemoryActionFeedback,
   decodeMemoryAnswerSource,
@@ -29,8 +30,10 @@ import {
 import {
   decodeChatWorkspaceState,
   decodeThreadGeneratedFile,
+  decodeThreadWorkspaceActivity,
   type ChatWorkspaceState,
-  type ThreadGeneratedFile
+  type ThreadGeneratedFile,
+  type ThreadWorkspaceActivity
 } from "./workspace";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
@@ -59,6 +62,7 @@ export function boundedChatBranchPreview(value: string): string {
 export type {
   ThreadSearchSource
 };
+export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
   pdfPreparation?: readonly ChatPdfPreparationWire[];
@@ -75,6 +79,7 @@ export type ThreadMessage = {
   runId?: string | null;
   status: "cancelled" | "complete" | "error" | "streaming";
   toolActivity?: ThreadToolActivity | null;
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 };
 
 /**
@@ -229,6 +234,7 @@ export type ChatMessageWire = {
   role: string;
   status: string;
   toolActivity?: ThreadToolActivity | null;
+  workspaceActivity?: ThreadWorkspaceActivity | null;
 };
 
 export type ProjectMessageAuthorWire = Readonly<{
@@ -757,7 +763,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
 
   let memorySources: MemoryAnswerSource[] | undefined;
   if (value.memorySources !== undefined) {
-    if (!Array.isArray(value.memorySources) || value.memorySources.length > 13) return null;
+    if (!Array.isArray(value.memorySources) ||
+      value.memorySources.length > MEMORY_ANSWER_SOURCE_MAX_ITEMS) return null;
     const decoded = value.memorySources.map((source) => decodeMemoryAnswerSource(source));
     if (decoded.some((source) => !source.ok)) return null;
     memorySources = decoded.flatMap((source) => source.ok ? [source.value] : []);
@@ -901,6 +908,13 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     toolActivity = decodeThreadToolActivity(value.toolActivity);
     if (!toolActivity) return null;
   }
+  let workspaceActivity: ThreadWorkspaceActivity | null | undefined;
+  if (value.workspaceActivity === undefined || value.workspaceActivity === null) {
+    workspaceActivity = value.workspaceActivity;
+  } else {
+    workspaceActivity = decodeThreadWorkspaceActivity(value.workspaceActivity);
+    if (!workspaceActivity) return null;
+  }
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {
     author = value.author;
@@ -949,7 +963,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     provider,
     role,
     status,
-    ...(toolActivity !== undefined ? { toolActivity } : {})
+    ...(toolActivity !== undefined ? { toolActivity } : {}),
+    ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
   };
 }
 

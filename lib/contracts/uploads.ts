@@ -30,17 +30,19 @@ export type UploadAttachmentResponseWire = {
 
 export type AttachmentLibraryItemWire = Readonly<{
   byteSize: number;
-  chatId: string;
-  chatTitle: string;
+  chatId: string | null;
+  chatTitle: string | null;
   createdAt: string;
   fileName: string;
   id: string;
-  messageId: string;
+  messageId: string | null;
+  savedAt: string | null;
   status: "failed" | "processing" | "ready";
 }>;
 
 export type AttachmentLibraryResponseWire = Readonly<{
   files: AttachmentLibraryItemWire[];
+  nextCursor: string | null;
 }>;
 
 export type PdfUploadErrorCode =
@@ -106,16 +108,20 @@ function boundedDisplayString(value: unknown, maxLength: number): value is strin
 export function decodeAttachmentLibraryResponse(
   value: unknown
 ): AttachmentLibraryResponseWire | null {
-  if (!isRecord(value) || !Array.isArray(value.files) || value.files.length > 200) {
+  if (!isRecord(value) || !Array.isArray(value.files) || value.files.length > 200 ||
+    !(value.nextCursor === null || boundedDisplayString(value.nextCursor, 128))) {
     return null;
   }
   const files = value.files.map((file): AttachmentLibraryItemWire | null => {
     if (
       !isRecord(file) ||
       !boundedDisplayString(file.id, 128) ||
-      !boundedDisplayString(file.chatId, 128) ||
-      !boundedDisplayString(file.messageId, 128) ||
-      !boundedDisplayString(file.chatTitle, 240) ||
+      !(file.chatId === null || boundedDisplayString(file.chatId, 128)) ||
+      !(file.messageId === null || boundedDisplayString(file.messageId, 128)) ||
+      !(file.chatTitle === null || boundedDisplayString(file.chatTitle, 240)) ||
+      !(file.savedAt === null || (typeof file.savedAt === "string" && Number.isFinite(Date.parse(file.savedAt)))) ||
+      (file.savedAt === null && (!file.chatId || !file.messageId || !file.chatTitle)) ||
+      (file.savedAt !== null && (file.chatId !== null || file.messageId !== null || file.chatTitle !== null)) ||
       !boundedDisplayString(file.fileName, 512) ||
       !isNonNegativeSafeInteger(file.byteSize) ||
       (file.status !== "failed" && file.status !== "processing" && file.status !== "ready") ||
@@ -132,12 +138,13 @@ export function decodeAttachmentLibraryResponse(
       fileName: file.fileName,
       id: file.id,
       messageId: file.messageId,
+      savedAt: file.savedAt === null ? null : new Date(file.savedAt).toISOString(),
       status: file.status
     };
   });
   return files.some((file) => file === null)
     ? null
-    : { files: files as AttachmentLibraryItemWire[] };
+    : { files: files as AttachmentLibraryItemWire[], nextCursor: value.nextCursor };
 }
 
 export function decodePdfProcessing(value: unknown): PdfProcessingWire | null {

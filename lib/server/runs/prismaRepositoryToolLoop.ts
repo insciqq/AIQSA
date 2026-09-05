@@ -63,6 +63,7 @@ import {
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type { RunRepository } from "./runRepositoryContract";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { settleTerminalMemorySource } from "./prismaRepositoryPreparation";
 import {
   activeMessageStatuses,
@@ -76,40 +77,76 @@ export async function appendRunOutputEvents(
   tx: Prisma.TransactionClient,
   runId: string,
   events: readonly RunOutputArtifactEvent[]
-): Promise<void> {
-  if (events.length === 0) return;
+): Promise<RunOutputArtifactEvent[]> {
+  if (events.length === 0) return [];
   if (events.some((event) => !isRunOutputArtifactEvent(event))) {
     throw new Error("run_output_event_invalid");
   }
-  const pending: RunOutputArtifactEvent[] = [];
   let lastGrounding = events.some((event) => event.type === "grounding_display")
     ? (await tx.modelRunEvent.findFirst({
         orderBy: { sequence: "desc" }, select: { payload: true },
         where: { modelRunId: runId, eventType: "grounding_display" }
       }))?.payload
     : undefined;
-  for (const event of events) {
-    if (event.type === "grounding_display") {
-      if (lastGrounding && canonicalJson(lastGrounding as ToolLoopJsonValue) ===
-        canonicalJson(event.data)) continue;
-      lastGrounding = json(event.data) as Prisma.JsonValue;
-    }
-    pending.push(event);
-  }
-  if (pending.length === 0) return;
   const latest = await tx.modelRunEvent.aggregate({
     _max: { sequence: true },
     where: { modelRunId: runId }
   });
-  const firstSequence = (latest._max.sequence ?? -1) + 1;
-  await tx.modelRunEvent.createMany({
-    data: pending.map((event, offset) => ({
+  let sequence = (latest._max.sequence ?? -1) + 1;
+  const published: RunOutputArtifactEvent[] = [];
+  const pending: Prisma.ModelRunEventCreateManyInput[] = [];
+  const updates = new Map<string, RunOutputArtifactEvent>();
+  // Every caller holds the run row lock. Replayed tool results retain their
+  // first committed update, rather than republishing old state as a new event.
+  for (const event of events) {
+    if (event.type === "grounding_display") {
+      if (lastGrounding && canonicalJson(lastGrounding as ToolLoopJsonValue) ===
+        canonicalJson(event.data)) {
+        published.push(event);
+        continue;
+      }
+      lastGrounding = json(event.data) as Prisma.JsonValue;
+    }
+    const updateId = event.type === "artifact" && event.data.artifactType === "workspace_activity"
+      ? event.data.payload.updateId : undefined;
+    if (updateId) {
+      const buffered = updates.get(updateId);
+      if (buffered) {
+        published.push(buffered);
+        continue;
+      }
+      const previous = await tx.modelRunEvent.findFirst({
+        orderBy: { sequence: "asc" },
+        select: { payload: true },
+        where: {
+          eventType: "artifact",
+          modelRunId: runId,
+          payload: { equals: updateId, path: ["payload", "updateId"] }
+        }
+      });
+      if (previous) {
+        const replay = { data: previous.payload, type: "artifact" } as ModelRunSseEvent;
+        if (!isRunOutputArtifactEvent(replay)) throw new Error("run_output_event_invalid");
+        published.push(replay);
+        updates.set(updateId, replay);
+        continue;
+      }
+    }
+    const ordered: RunOutputArtifactEvent = event.type === "artifact" && event.data.artifactType === "workspace_activity"
+      ? { data: { artifactType: "workspace_activity", payload: { ...event.data.payload, sequence } }, type: "artifact" }
+      : event;
+    pending.push({
       eventType: event.type,
       modelRunId: runId,
-      payload: json(event.data),
-      sequence: firstSequence + offset
-    }))
-  });
+      payload: json(ordered.data),
+      sequence
+    });
+    published.push(ordered);
+    if (updateId) updates.set(updateId, ordered);
+    sequence += 1;
+  }
+  if (pending.length) await tx.modelRunEvent.createMany({ data: pending });
+  return published;
 }
 
 function canonicalJson(value: ToolLoopJsonValue): string {
@@ -1200,15 +1237,18 @@ export function createPrismaRunToolLoopOperations(
     }),
     appendRunOutputEvent: async (runId, event) => {
       if (!isRunOutputArtifactEvent(event)) throw new Error("run_output_event_invalid");
-      await prismaClient.$transaction(async (tx) => {
+      return prismaClient.$transaction(async (tx) => {
         const [run] = await tx.$queryRaw<Array<{
           id: string; status: ModelRunStatus; errorPayload: Prisma.JsonValue | null;
         }>>(Prisma.sql`
           SELECT "id", "status", "errorPayload" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE
         `);
         if (!run) throw new Error("model_run_not_found");
-        if (!activeToolLoopRun(run)) return;
-        await appendRunOutputEvents(tx, runId, [event]);
+        // Workspace settlement can finish after the answer. Provider output
+        // retains the terminal fence and cannot rewrite a settled answer.
+        if (!activeToolLoopRun(run) &&
+          !(event.type === "artifact" && event.data.artifactType === "workspace_activity")) return event;
+        const [published] = await appendRunOutputEvents(tx, runId, [event]);
         await tx.modelRun.update({
           data: {
             updatedAt: new Date()
@@ -1217,6 +1257,7 @@ export function createPrismaRunToolLoopOperations(
             id: runId
           }
         });
+        return published!;
       });
     },
     loadCheckpointedToolLoopRun: async (input) => {

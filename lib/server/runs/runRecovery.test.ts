@@ -13,6 +13,7 @@ import type {
   ProviderSearchRequest
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
+import { RunRecoveryScheduler } from "./recoveryScheduler";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
@@ -469,6 +470,7 @@ function createHarness(options: Readonly<{
       state.operations.push(`append:${event.type}`);
       state.events.push({ event, runId: eventRunId, sequence: nextSequence });
       nextSequence += 1;
+      return event;
     },
     completeRun: async (input) => {
       state.operations.push("complete");
@@ -1518,9 +1520,128 @@ function installCheckpointState(
   };
 }
 
+const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
+  enabled: true, imageRef: "test-image", inboxIndexPath: "/workspace/inbox/index.json",
+  internetEnabled: false, maxToolCalls: 20, maxToolRounds: 10, mcpVersion: "0.6.16",
+  messageManifestPath: "/workspace/inbox/messages/message-1/manifest.json",
+  outputDirectory: "/workspace/output/run-1", projectDirectory: "/workspace/project",
+  runtimeVersion: "0.6.16", sessionId: "workspace-1", syncToolTimeoutSeconds: 5,
+  toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300
+};
+
 describe("run recovery", () => {
+
+  it.each(["ready", "failed", "cancelled", "busy"] as const)("waits for recovered Workspace handoff and respects %s settlement", async (outcome) => {
+    const boundary = deferred();
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [], providerResponseId: "response-old", result: providerResult, status: "complete", terminal: true
+    }));
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const harness = createHarness({ providers: { openai: adapter } });
+    const saved = checkpointedRun({ phase: "provider_running", providerResponseId: "response-old", providerToolMessages: [] });
+    installCheckpointState(harness, { ...saved, normalizedRequest: { ...saved.normalizedRequest, workspace: completionWorkspace } });
+    const handoff = vi.fn(async (): Promise<{ status: "ready" | "busy" }> => {
+      await boundary.promise;
+      if (outcome === "failed") throw new Error("synthetic_handoff_failure");
+      return { status: outcome === "busy" ? "busy" : "ready" };
+    });
+    const workspace = {
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff, recoverExports: vi.fn(),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: async () => []
+    };
+    const deps = { ...harness.deps, workspace };
+    const recovery = refreshProviderRunIfNeeded(deps, runId, userId);
+    try {
+      await vi.waitFor(() => expect(handoff).toHaveBeenCalledOnce());
+      expect(harness.state.completed).toBeNull();
+      if (outcome === "cancelled") harness.setStoredRun({ status: "cancelled" });
+      boundary.resolve(); await recovery;
+      expect(harness.state.run.status).toBe(outcome === "ready" ? "complete" : outcome === "failed" ? "error" : outcome === "busy" ? "streaming" : "cancelled");
+      expect(harness.state.completed === null).toBe(outcome !== "ready");
+      expect(stream).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(workspace.finalize).not.toHaveBeenCalled();
+      if (outcome === "busy") {
+        expect(workspace.settle).not.toHaveBeenCalled();
+        harness.repository.loadRunUsageAttributions = async () => harness.state.usageAttributions.at(-1)!.map((entry) => ({ ...entry, recordedAt: "2026-07-12T10:00:00.000Z" }));
+        handoff.mockResolvedValue({ status: "ready" });
+        await refreshProviderRunIfNeeded(deps, runId, userId);
+        expect(harness.state.recoveredErrors).toEqual([]);
+        expect(harness.state.run.status).toBe("complete");
+        expect(harness.state.completed?.usage).toMatchObject(providerResult.usage);
+        expect(stream).not.toHaveBeenCalled();
+      }
+    } finally { boundary.resolve(); await recovery; }
+  });
+
+  it("completes a recovered Workspace answer before a held export without a new provider dispatch", async () => {
+    const transfer = deferred();
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [], providerResponseId: "response-old", result: providerResult, status: "complete", terminal: true
+    }));
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const harness = createHarness({ providers: { openai: adapter } });
+    const saved = checkpointedRun({ phase: "provider_running", providerResponseId: "response-old", providerToolMessages: [] });
+    installCheckpointState(harness, { ...saved, normalizedRequest: { ...saved.normalizedRequest, workspace: completionWorkspace } });
+    const finalize = vi.fn(async () => { await transfer.promise; return { code: "workspace_output_export_failed" as const, retryable: true, status: "failed" as const }; });
+    const handoff = vi.fn(async () => ({ status: "ready" as const }));
+    const workspace = {
+      accepts: () => false, execute: vi.fn(), finalize, handoff, recoverExports: vi.fn(),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: async () => []
+    };
+    const recovery = refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+    try {
+      await vi.waitFor(() => expect(harness.state.completed).not.toBeNull());
+      await recovery;
+      expect(handoff).toHaveBeenCalledOnce();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.completed).toMatchObject({ finalText: providerResult.finalText, usage: providerResult.usage });
+      const background = finalize(); transfer.resolve(); await background;
+      expect(harness.state.run.status).toBe("complete");
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(harness.state.operations.filter((operation) => operation === "complete")).toHaveLength(1);
+    } finally { transfer.resolve(); await recovery; }
+  });
+
   beforeEach(() => {
     resetBootOrphanSweepForTest(new Date("2026-07-12T10:00:00.000Z"));
+  });
+
+  it("discovers and reconciles unrelated runs on successive ticks while a Workspace export is held", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [], providerResponseId: "response-old", status: "in_progress", terminal: false
+    }));
+    const harness = createHarness({ providers: { openai: providerWithRefresh(refresh) } });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const recoverExports = vi.fn(async () => { await held; return { attempted: 1, completed: 1 }; });
+    const deps = { ...harness.deps, workspace: {
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(),
+      recoverExports, settle: vi.fn(), tools: vi.fn()
+    } satisfies NonNullable<RunRecoveryDeps["workspace"]> };
+    const discover = vi.fn(async () => [{ ...staleControl({ updatedAt: new Date("2026-07-12T09:59:59.000Z") }), userId }]);
+    harness.repository.findInstallationRecoverableRuns = discover;
+    const scheduler = new RunRecoveryScheduler({
+      reconcile: () => reconcileInstallationRuns(deps, { now: new Date("2026-07-12T10:00:01.000Z") }),
+      recoverWorkspaceExports: async () => { await recoverExports(); }
+    });
+    try {
+      scheduler.kick();
+      await vi.waitFor(() => expect(recoverExports).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+      await scheduler.reconcileNow();
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(refresh).toHaveBeenCalledTimes(2);
+      expect(recoverExports).toHaveBeenCalledOnce();
+    } finally {
+      const stopping = scheduler.stop();
+      release();
+      await stopping;
+    }
   });
 
   it("recovers installation-wide resumable runs without waiting for an owner request", async () => {

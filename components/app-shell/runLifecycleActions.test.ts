@@ -145,6 +145,49 @@ describe("active stream cleanup", () => {
 });
 
 describe("run lifecycle actions", () => {
+  it.each([true, false])("waits for reused-file preparation and preserves the draft when admission is %s", async (accepted) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ attachment: {
+      id: "new-copy", fileName: "generated.docx", kind: "document", extractedText: null, status: "ready"
+    } })));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    useComposerSessionStore.getState().setDraft("Fill this document");
+    let finish!: (value: boolean) => void;
+    const preparation = new Promise<boolean>((resolve) => { finish = resolve; });
+    const prepare = vi.fn(() => preparation);
+    const pending = actions.reuseFile("saved-original", prepare);
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    expect(composerSession("chat-1").attachments).toEqual([]);
+    finish(accepted);
+    expect(await pending).toBe(accepted);
+    expect(composerSession("chat-1")).toMatchObject({ draft: "Fill this document", pendingUploadGenerations: [] });
+    expect(composerSession("chat-1").attachments).toHaveLength(accepted ? 1 : 0);
+  });
+
+  it("adds a reused copy only to the source draft after chat navigation", async () => {
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((done) => { resolve = done; })));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    const pending = actions.reuseFile("saved-original");
+    useComposerSessionStore.getState().activateSession(composerSessionKey("chat-2"));
+    useComposerSessionStore.getState().setDraft("Keep this draft");
+    resolve(Response.json({ attachment: { id: "new-copy", fileName: "deck.pptx", kind: "file", status: "ready" } }));
+    expect(await pending).toBe(true);
+    expect(composerSession("chat-1").attachments).toEqual([expect.objectContaining({ id: "new-copy", kind: "file" })]);
+    expect(composerSession("chat-2")).toMatchObject({ attachments: [], draft: "Keep this draft" });
+    expect(composerSession("chat-1").pendingUploadGenerations).toEqual([]);
+  });
+
+  it("preserves a draft and displays an error when a Library file is unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "attachment_not_found" }, { status: 404 })));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    useComposerSessionStore.getState().setDraft("Use my template");
+    expect(await actions.reuseFile("removed-file")).toBe(false);
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [], draft: "Use my template", pendingUploadGenerations: [],
+      operationError: "This file could not be attached. Try again or choose another file."
+    });
+  });
+
   afterEach(() => {
     resetRunLifecycleStoreForTest();
     resetRunSurfaceStoreForTest();
