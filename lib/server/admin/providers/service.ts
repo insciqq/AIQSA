@@ -1,3 +1,5 @@
+import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
+import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AdminProviderConnectionConfiguration,
@@ -228,6 +230,10 @@ function validateEvidence(
     evidence.selectedProviders.length !== expectedProviders.length ||
     evidence.selectedProviders.some((provider, index) => provider !== expectedProviders[index]) ||
     (outcome.status === "available") !== (evidence.detail === "ok") ||
+    (evidence.embedding !== undefined && model.modelClass !== "embedding") ||
+    (evidence.reranking !== undefined && model.modelClass !== "reranker") ||
+    ((evidence.embedding !== undefined || evidence.reranking !== undefined) &&
+      !hasVerifiedDedicatedProtocol(evidence, model)) ||
     (hasCompatibility && !compatibility) ||
     (compatibility && (
       compatibility.modelAccess !== (outcome.status === "available"
@@ -265,6 +271,12 @@ function validateEvidence(
   }
   return {
     ...(compatibility ? { compatibility } : {}),
+    ...(evidence.embedding && hasVerifiedDedicatedProtocol(evidence, model) ? { embedding: {
+      probeVersion: 1 as const, document: true as const, query: true as const, dimensions: evidence.embedding.dimensions
+    } } : {}),
+    ...(evidence.reranking && hasVerifiedDedicatedProtocol(evidence, model) ? { reranking: {
+      probeVersion: 1 as const, completeScores: true as const
+    } } : {}),
     detail: evidence.detail,
     method: evidence.method,
     selectedProviders: [...evidence.selectedProviders],
@@ -492,6 +504,7 @@ export function createAdminProviderService(input: Readonly<{
     },
 
     async refreshActive(value: {
+      capabilityRole?: SystemModelVerificationRole;
       confirmPaidRequest?: boolean;
       connectionId: string;
       credentialId: string;
@@ -505,7 +518,7 @@ export function createAdminProviderService(input: Readonly<{
       const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
       const model = normalizeProviderModelConfiguration(candidate.model.configuration);
       validateFamily(candidate.connection.family, model);
-      const mode: AdminProviderDraftTestMode = candidate.connection.family === "openrouter"
+      const mode: AdminProviderDraftTestMode = !value.capabilityRole && candidate.connection.family === "openrouter"
         ? "account_catalog"
         : "tiny_generation";
       if (value.confirmPaidRequest !== true) {
@@ -519,6 +532,7 @@ export function createAdminProviderService(input: Readonly<{
       let outcome: AdminProviderDraftTestOutcome;
       try {
         outcome = await input.tester.test({
+          ...(value.capabilityRole ? { capabilityRole: value.capabilityRole } : {}),
           connection,
           connectionDisplayName: candidate.connection.displayName,
           connectionId: candidate.connection.id,
@@ -546,7 +560,7 @@ export function createAdminProviderService(input: Readonly<{
         evidence: validateEvidence(outcome, mode, model),
         status: outcome.status
       };
-      if (await input.repository.storeActiveRefreshCas(check) === "stale") {
+      if (await input.repository.storeActiveRefreshCas({ ...check, capabilityRole: value.capabilityRole }) === "stale") {
         throw new AdminProviderServiceError("provider_draft_stale");
       }
       return {

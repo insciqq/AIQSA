@@ -1,5 +1,7 @@
 "use client";
 
+import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
+
 import { AdminAccessRulesSection } from "@/components/admin/AdminAccessRulesSection";
 import { AdminAccessGroupsSection } from "@/components/admin/AdminAccessGroupsSection";
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
@@ -189,6 +191,8 @@ function AdminSectionContent({
           onMutationCommitted={onMutationCommitted}
         />
       );
+    case "system-models":
+      return <AdminProviderSystemModelTask active onMutationCommitted={onMutationCommitted} />;
     case "knowledge":
       return (
         <AdminKnowledgeSection

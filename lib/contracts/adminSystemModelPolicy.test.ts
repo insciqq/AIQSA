@@ -13,9 +13,13 @@ const response = {
       reasoningEfforts: ["low", "medium", "high", "xhigh"],
       structuredOutput: "verified"
     }],
+    documentCandidates: [],
+    verificationCandidates: [],
     rerankerCandidates: [],
     policy: {
       chatPdfPreparationAllowed: false,
+      chatPdfModel: null,
+      chatPdfReasoningEffort: null,
       reasoningEffort: null,
       rerankerModel: null,
       systemModel: null,

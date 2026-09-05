@@ -1212,7 +1212,7 @@ describe("admin provider service", () => {
     ]);
   });
 
-  it("preserves prior active authority and stores attention on transient refresh failure", async () => {
+  it.each([undefined, "memory", "vision"] as const)("preserves prior authority on transient %s refresh failure", async (capabilityRole) => {
     const envelope = encryptProviderCredentialSecret({
       credentialId: "credential-active",
       key: KEY,
@@ -1254,6 +1254,7 @@ describe("admin provider service", () => {
     }));
 
     await expect(providers.refreshActive({
+      capabilityRole,
       confirmPaidRequest: true,
       connectionId: "connection-1",
       credentialId: "credential-active",

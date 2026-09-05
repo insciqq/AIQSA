@@ -19,12 +19,6 @@ export type AdminKnowledgePdfProcessingDestination = Readonly<{
   upstreamModelId: string;
 }>;
 
-export type AdminKnowledgePdfProcessingOption = Readonly<{
-  available: boolean;
-  mode: AdminKnowledgePdfProcessingMode;
-  representation: "local_only" | "original_pdf_page_ranges" | "rendered_pdf_page_images";
-}>;
-
 export type AdminKnowledgeProfileRevision = Readonly<{
   activatedAt: string;
   destination: AdminKnowledgeProfileDestination;
@@ -65,9 +59,8 @@ export type AdminKnowledgeProfileSettings = Readonly<{
     profiledGenerations: number;
     totalBases: number;
   }>;
-  pdfProcessingOptions: readonly AdminKnowledgePdfProcessingOption[];
+  availablePdfDestinations: (AdminKnowledgePdfProcessingDestination & { directPdf: boolean; vision: boolean })[];
   recentRevisions: AdminKnowledgeProfileRevision[];
-  systemModelDestination: AdminKnowledgePdfProcessingDestination | null;
   updatedAt: string;
   updatedBy: { displayName: string; id: string } | null;
   version: number;
@@ -224,25 +217,6 @@ function decodePdfDestination(value: unknown): AdminKnowledgePdfProcessingDestin
   };
 }
 
-function decodePdfOption(value: unknown): AdminKnowledgePdfProcessingOption | null {
-  if (!record(value) || typeof value.available !== "boolean") return null;
-  const mode = pdfProcessingMode(value.mode);
-  const representations = new Set([
-    "local_only",
-    "original_pdf_page_ranges",
-    "rendered_pdf_page_images"
-  ]);
-  if (!mode || !representations.has(String(value.representation))) return null;
-  const expected = mode === "local"
-    ? "local_only"
-    : mode === "system_model_direct_pdf"
-      ? "original_pdf_page_ranges"
-      : "rendered_pdf_page_images";
-  return value.representation === expected
-    ? { available: value.available, mode, representation: expected }
-    : null;
-}
-
 function decodeRevision(value: unknown): AdminKnowledgeProfileRevision | null {
   if (!record(value) || !isoDate(value.activatedAt) || !safeString(value.id) ||
     !positiveInteger(value.revisionNumber) ||
@@ -276,16 +250,17 @@ function decodeRevision(value: unknown): AdminKnowledgeProfileRevision | null {
 function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
   if (!record(value) || !Array.isArray(value.availableDestinations) ||
     !record(value.egress) || !record(value.health) || !record(value.migration) ||
-    !Array.isArray(value.pdfProcessingOptions) || !Array.isArray(value.recentRevisions) ||
+    !Array.isArray(value.availablePdfDestinations) || !Array.isArray(value.recentRevisions) ||
     !isoDate(value.updatedAt) ||
     !positiveInteger(value.version)) return null;
   const activeRevision = value.activeRevision === null ? null : decodeRevision(value.activeRevision);
   const availableDestinations = value.availableDestinations.map(decodeDestination);
   const recentRevisions = value.recentRevisions.map(decodeRevision);
-  const pdfProcessingOptions = value.pdfProcessingOptions.map(decodePdfOption);
-  const systemModelDestination = value.systemModelDestination === null
-    ? null
-    : decodePdfDestination(value.systemModelDestination);
+  const availablePdfDestinations = value.availablePdfDestinations.map((entry: unknown) => {
+    const destination = decodePdfDestination(entry);
+    return destination && record(entry) && typeof entry.directPdf === "boolean" && typeof entry.vision === "boolean" &&
+      (entry.directPdf || entry.vision) ? { ...destination, directPdf: entry.directPdf, vision: entry.vision } : null;
+  });
   const updatedBy = value.updatedBy;
   const healthStates = new Set(["not_configured", "ready", "ready_with_warnings", "unavailable"]);
   const healthCodes = new Set([
@@ -296,13 +271,7 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
   if ((value.activeRevision !== null && activeRevision === null) ||
     availableDestinations.some((destination) => destination === null) ||
     recentRevisions.some((revision) => revision === null) ||
-    pdfProcessingOptions.some((option) => option === null) ||
-    pdfProcessingOptions.length !== 3 ||
-    pdfProcessingOptions[0]?.mode !== "local" ||
-    pdfProcessingOptions[0]?.available !== true ||
-    pdfProcessingOptions[1]?.mode !== "system_model_direct_pdf" ||
-    pdfProcessingOptions[2]?.mode !== "system_model_vision" ||
-    (value.systemModelDestination !== null && systemModelDestination === null) ||
+    availablePdfDestinations.some((entry) => entry === null) ||
     new Set(availableDestinations.map((destination) => destination?.deploymentId)).size !==
       availableDestinations.length ||
     value.egress.embeddingDestination !== null &&
@@ -366,9 +335,8 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
       profiledGenerations: Number(value.migration.profiledGenerations),
       totalBases: Number(value.migration.totalBases)
     },
-    pdfProcessingOptions: pdfProcessingOptions as AdminKnowledgePdfProcessingOption[],
+    availablePdfDestinations: availablePdfDestinations as AdminKnowledgeProfileSettings["availablePdfDestinations"],
     recentRevisions: recentRevisions as AdminKnowledgeProfileRevision[],
-    systemModelDestination,
     updatedAt: value.updatedAt,
     updatedBy: updatedBy as { displayName: string; id: string } | null,
     version: Number(value.version)

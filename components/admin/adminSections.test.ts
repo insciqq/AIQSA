@@ -16,6 +16,7 @@ describe("adminSections", () => {
   it("groups the approved destinations under static subject headings", () => {
     expect(adminSections.map(({ group, id, label }) => ({ group, id, label }))).toEqual([
       { group: "ai-setup", id: "providers", label: "Providers" },
+      { group: "ai-setup", id: "system-models", label: "System Models" },
       { group: "ai-setup", id: "search", label: "Search" },
       { group: "ai-setup", id: "knowledge", label: "Knowledge" },
       { group: "ai-setup", id: "memory", label: "Memory" },
@@ -35,7 +36,7 @@ describe("adminSections", () => {
         sections: adminSections.filter((section) => section.group === group.id).map((section) => section.label)
       }))
     ).toEqual([
-      { label: "AI setup", sections: ["Providers", "Search", "Knowledge", "Memory"] },
+      { label: "AI setup", sections: ["Providers", "System Models", "Search", "Knowledge", "Memory"] },
       { label: "Team & access", sections: ["Users", "Access & groups", "Invites", "Access rules"] },
       { label: "Operations", sections: ["Usage"] },
       { label: "Infrastructure", sections: ["MCP servers", "Workspace", "Email delivery"] },

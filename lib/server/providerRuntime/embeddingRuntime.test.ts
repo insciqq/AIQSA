@@ -96,7 +96,8 @@ function store(input: StoreOptions = {}) {
     },
     providerModelCredentialCheck: {
       findFirst: vi.fn(async () =>
-        input.checkAvailable === false ? null : { id: "check-1" })
+        input.checkAvailable === false ? null : { id: "check-1", evidence: { method: "tiny_generation", upstreamModelId: configuration.upstreamModelId,
+          selectedProviders: [], embedding: { probeVersion: 1, document: true, query: true, dimensions: 1536 } } })
     },
     providerCredentialVersion: {
       findFirst: vi.fn(async () => ({

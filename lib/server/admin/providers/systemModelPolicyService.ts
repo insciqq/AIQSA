@@ -1,16 +1,19 @@
+import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
+import type { AdminSystemModelPolicyCatalog, SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import {
   loadInstallationAnswerProviderRole,
   loadInstallationRerankerProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { systemModelRoleEligible } from "../../providerRuntime/systemModelCapabilities";
+import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
+import { pdfInputVerificationStatus } from "../../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 import {
-  adminAnswerModelAvailable,
   serializeAdminAnswerModel,
   type AdminAnswerModelRow
 } from "./modelPolicyService";
@@ -38,7 +41,8 @@ type SystemModelRow = AdminAnswerModelRow & {
   }>;
   connection: AdminAnswerModelRow["connection"] & {
     defaultCredential: null | {
-      activeVersion: null | { id: string };
+      activeVersion: null | { id: string; revokedAt?: Date | null };
+      enabled?: boolean;
       id: string;
     };
   };
@@ -63,6 +67,7 @@ type RerankerRoleLoader = typeof loadInstallationRerankerProviderRole;
 
 type ActiveRefresh = (input: Readonly<{
   confirmPaidRequest: true;
+  capabilityRole?: SystemModelVerificationRole;
   connectionId: string;
   credentialId: string;
   providerModelId: string;
@@ -73,6 +78,7 @@ type ActiveRefresh = (input: Readonly<{
 }>>;
 
 function serializeSystemModel(row: SystemModelRow) {
+  let pdfInput: ReturnType<typeof pdfInputVerificationStatus> = "not_verified";
   let visionInput: "not_verified" | "verified" = "not_verified";
   let reasoningEfforts: string[] = [];
   let defaultReasoningEffort: string | null = null;
@@ -89,7 +95,8 @@ function serializeSystemModel(row: SystemModelRow) {
         : null;
     }
     const credential = row.connection.defaultCredential;
-    const check = credential?.activeVersion
+    const check = credential?.activeVersion && credential.enabled !== false &&
+      !credential.activeVersion.revokedAt
       ? row.activeCredentialChecks.find((candidate) =>
           candidate.connectionVersion === row.connection.activeVersion &&
           candidate.credentialId === credential.id &&
@@ -97,6 +104,7 @@ function serializeSystemModel(row: SystemModelRow) {
           candidate.modelVersion === row.activeVersion &&
           candidate.status === "available")
       : null;
+    pdfInput = pdfInputVerificationStatus(check?.evidence, configuration);
     visionInput = hasVerifiedVisionInput(check?.evidence, configuration)
       ? "verified" : "not_verified";
     structuredOutput = structuredOutputVerificationStatus(
@@ -113,6 +121,7 @@ function serializeSystemModel(row: SystemModelRow) {
   }
   return {
     ...serializeAdminAnswerModel(row),
+    pdfInput,
     visionInput,
     defaultReasoningEffort,
     forcedToolCall,
@@ -157,12 +166,15 @@ export function createAdminSystemModelPolicyService(
     loadRerankerRole?: RerankerRoleLoader;
     refreshActive?: ActiveRefresh;
     resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
+    resolveChatPdfRole?: ReturnType<typeof createChatPdfModelRoleResolver>["resolve"];
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
   }> = {}
 ) {
   const loadRole = dependencies.loadRole ?? loadInstallationAnswerProviderRole;
   const resolveRole = dependencies.resolveRole ??
     createSystemModelRoleResolver(prisma, { loadRole }).resolve;
+  const resolveChatPdfRole = dependencies.resolveChatPdfRole ??
+    createChatPdfModelRoleResolver(prisma, loadRole).resolve;
   const loadRerankerRole = dependencies.loadRerankerRole ??
     loadInstallationRerankerProviderRole;
   const resolveRerankerRole = dependencies.resolveRerankerRole ??
@@ -172,11 +184,8 @@ export function createAdminSystemModelPolicyService(
 
   return {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
-      // Resolve the reranker role first: resolution performs one-time
-      // fresh-install default adoption, and the catalog read below must see
-      // the adopted selection rather than a pre-adoption snapshot.
       const rerankerResolution = await resolveRerankerRole();
-      const [policy, rows, rerankerRows, resolution] =
+      const [policy, rows, rerankerRows, resolution, chatPdfResolution] =
         await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
@@ -195,7 +204,28 @@ export function createAdminSystemModelPolicyService(
                 connection: {
                   include: {
                     defaultCredential: {
-                      include: { activeVersion: { select: { id: true } } }
+                      include: { activeVersion: { select: { id: true, revokedAt: true } } }
+                    }
+                  }
+                }
+              }
+            },
+            chatPdfProviderModel: {
+              include: {
+                activeCredentialChecks: {
+                  select: {
+                    connectionVersion: true,
+                    credentialId: true,
+                    credentialVersionId: true,
+                    evidence: true,
+                    modelVersion: true,
+                    status: true
+                  }
+                },
+                connection: {
+                  include: {
+                    defaultCredential: {
+                      include: { activeVersion: { select: { id: true, revokedAt: true } } }
                     }
                   }
                 }
@@ -223,7 +253,7 @@ export function createAdminSystemModelPolicyService(
             connection: {
               include: {
                 defaultCredential: {
-                  include: { activeVersion: { select: { id: true } } }
+                  include: { activeVersion: { select: { id: true, revokedAt: true } } }
                 }
               }
             }
@@ -244,7 +274,8 @@ export function createAdminSystemModelPolicyService(
           ],
           where: { modelClass: "reranker" }
         }),
-        resolveRole()
+        resolveRole(),
+        resolveChatPdfRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const models = rows as SystemModelRow[];
@@ -279,15 +310,35 @@ export function createAdminSystemModelPolicyService(
           role: position === 0 ? "primary" as const : "fallback" as const
         }];
       });
+      const deployments = models.filter((row) => {
+        if (!row.enabled || row.activeVersion < 1 || !row.activatedAt || !row.connection.enabled ||
+          row.connection.activeVersion < 1 || !row.connection.activatedAt || !row.connection.activeConfig) return false;
+        try { return normalizeProviderModelConfiguration(row.activeConfig).modelClass === "answer"; }
+        catch { return false; }
+      }).map(serializeSystemModel);
+      const rerankerCandidates = [];
+      for (const row of typedRerankerRows.filter(rerankerModelAvailable)) {
+        try {
+          await loadRerankerRole(prisma, { providerModelId: row.id });
+          rerankerCandidates.push(serializeRerankerModel(row));
+        } catch (error) {
+          if (!(error instanceof ProviderAdmissionError)) throw error;
+        }
+      }
       return {
-        candidates: models
-          .filter(adminAnswerModelAvailable)
-          .map(serializeSystemModel),
-        rerankerCandidates: typedRerankerRows
-          .filter(rerankerModelAvailable)
-          .map(serializeRerankerModel),
+        candidates: deployments.filter((model) => model.structuredOutput === "verified" &&
+          model.forcedToolCall === "verified"),
+        documentCandidates: deployments.filter((model) => model.pdfInput === "verified" || model.visionInput === "verified"),
+        verificationCandidates: deployments,
+        rerankerCandidates,
         policy: {
           chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed === true,
+          chatPdfReasoningEffort: policy.chatPdfReasoningEffort ?? null,
+          chatPdfModel: policy.chatPdfProviderModel ? {
+            ...serializeSystemModel(policy.chatPdfProviderModel as SystemModelRow),
+            available: chatPdfResolution.ok && chatPdfResolution.providerModelId === policy.chatPdfProviderModelId &&
+              chatPdfResolution.policyVersion === policy.version
+          } : null,
           reasoningEffort: policy.reasoningEffort,
           rerankerModel: policy.rerankerProviderModel
             ? {
@@ -321,122 +372,61 @@ export function createAdminSystemModelPolicyService(
       };
     },
 
-    async verifyStructuredOutput(input: Readonly<{
+    async verifyRole(input: Readonly<{
       providerModelId: string;
+      role: SystemModelVerificationRole;
       signal?: AbortSignal;
     }>): Promise<void> {
-      const policy = await prisma.systemModelPolicy.findUnique({
-        select: {
-          providerModel: {
-            select: {
-              activeConfig: true,
-              activeCredentialChecks: {
-                select: {
-                  connectionVersion: true,
-                  credentialId: true,
-                  credentialVersionId: true,
-                  evidence: true,
-                  modelVersion: true,
-                  status: true
-                }
-              },
-              activeVersion: true,
-              connection: {
-                select: {
-                  activeConfig: true,
-                  activeVersion: true,
-                  defaultCredential: {
-                    select: {
-                      activeVersion: { select: { id: true, revokedAt: true } },
-                      enabled: true,
-                      id: true
-                    }
-                  },
-                  enabled: true,
-                  id: true
-                }
-              },
-              enabled: true,
-              id: true
-            }
-          },
-          providerModelId: true
-        },
-        where: { id: "installation" }
+      const model = await prisma.providerModel.findUnique({
+        include: { activeCredentialChecks: true, connection: { include: { defaultCredential: { include: { activeVersion: true } } } } },
+        where: { id: input.providerModelId }
       });
-      const model = policy?.providerModel;
       const credential = model?.connection.defaultCredential;
-      if (
-        !policy || !model || policy.providerModelId !== input.providerModelId ||
-        model.id !== input.providerModelId || !model.enabled ||
-        !model.activeConfig || model.activeVersion < 1 ||
-        !model.connection.enabled || !model.connection.activeConfig ||
-        model.connection.activeVersion < 1 || !credential?.enabled ||
-        !credential.activeVersion || credential.activeVersion.revokedAt
-      ) {
-        throw new AdminSystemModelPolicyServiceError(
-          "system_model_policy_target_unavailable"
-        );
+      if (!model?.enabled || !model.connection.enabled || !model.activeConfig ||
+        !model.connection.activeConfig || model.activeVersion < 1 || model.connection.activeVersion < 1 ||
+        !credential?.enabled || !credential.activeVersion || credential.activeVersion.revokedAt) {
+        throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
       }
-
-      let configuration;
+      const configuration = normalizeProviderModelConfiguration(model.activeConfig);
+      if ((input.role === "memory" && (!supportsStructuredOutputAdapter(configuration.adapterKind) ||
+        !supportsForcedToolCallProbe(configuration.adapterKind))) ||
+        (input.role === "embedding" ? configuration.modelClass !== "embedding" :
+         input.role === "reranker" ? configuration.modelClass !== "reranker" : configuration.modelClass !== "answer")) {
+        throw new AdminSystemModelPolicyServiceError("system_model_policy_structured_output_unsupported");
+      }
+      const checked = model.activeCredentialChecks.find((check) => check.status === "available" &&
+        check.connectionVersion === model.connection.activeVersion && check.modelVersion === model.activeVersion &&
+        check.credentialId === credential.id && check.credentialVersionId === credential.activeVersion!.id);
+      const alreadyVerified = input.role === "memory"
+        ? structuredOutputVerificationStatus(checked?.evidence, configuration) === "verified" &&
+          forcedToolCallVerificationStatus(checked?.evidence, configuration) === "verified"
+        : input.role === "vision" ? hasVerifiedVisionInput(checked?.evidence, configuration)
+        : input.role === "direct_pdf" ? pdfInputVerificationStatus(checked?.evidence, configuration) === "verified"
+        : hasVerifiedDedicatedProtocol(checked?.evidence, configuration);
+      if (alreadyVerified) return;
       try {
-        configuration = normalizeProviderModelConfiguration(model.activeConfig);
-      } catch {
-        throw new AdminSystemModelPolicyServiceError(
-          "system_model_policy_target_unavailable"
-        );
-      }
-      if (!supportsStructuredOutputAdapter(configuration.adapterKind) ||
-        !supportsForcedToolCallProbe(configuration.adapterKind)) {
-        throw new AdminSystemModelPolicyServiceError(
-          "system_model_policy_structured_output_unsupported"
-        );
-      }
-
-      const existingCheck = model.activeCredentialChecks.find((check) =>
-        check.connectionVersion === model.connection.activeVersion &&
-        check.credentialId === credential.id &&
-        check.credentialVersionId === credential.activeVersion!.id &&
-        check.modelVersion === model.activeVersion &&
-        check.status === "available"
-      );
-      if (
-        structuredOutputVerificationStatus(existingCheck?.evidence, configuration) ===
-          "verified" &&
-        forcedToolCallVerificationStatus(existingCheck?.evidence, configuration) ===
-          "verified"
-      ) return;
-
-      if (!dependencies.refreshActive) {
-        throw new AdminSystemModelPolicyServiceError(
-          "system_model_policy_verification_failed"
-        );
-      }
-      try {
+        if (!dependencies.refreshActive) throw new Error("system_role_verifier_unavailable");
         const result = await dependencies.refreshActive({
-          confirmPaidRequest: true,
-          connectionId: model.connection.id,
-          credentialId: credential.id,
-          providerModelId: model.id,
-          signal: input.signal
+          capabilityRole: input.role, confirmPaidRequest: true,
+          connectionId: model.connectionId, credentialId: credential.id,
+          providerModelId: model.id, signal: input.signal
         });
-        if (
-          result.status !== "available" ||
-          structuredOutputVerificationStatus(result.evidence, configuration) !== "verified" ||
-          forcedToolCallVerificationStatus(result.evidence, configuration) !== "verified"
-        ) {
-          throw new Error("structured_output_not_verified");
-        }
+        const valid = input.role === "memory"
+          ? structuredOutputVerificationStatus(result.evidence, configuration) === "verified" &&
+            forcedToolCallVerificationStatus(result.evidence, configuration) === "verified"
+          : input.role === "vision" ? hasVerifiedVisionInput(result.evidence, configuration)
+          : input.role === "direct_pdf" ? pdfInputVerificationStatus(result.evidence, configuration) === "verified"
+          : result.status === "available" && hasVerifiedDedicatedProtocol(result.evidence, configuration);
+        if (!valid) throw new Error("system_role_not_verified");
       } catch {
-        throw new AdminSystemModelPolicyServiceError(
-          "system_model_policy_verification_failed"
-        );
+        throw new AdminSystemModelPolicyServiceError("system_model_policy_verification_failed");
       }
     },
 
     async update(input: Readonly<{
       chatPdfPreparationAllowed?: boolean;
+      chatPdfProviderModelId?: string | null;
+      chatPdfReasoningEffort?: string | null;
       expectedVersion: number;
       /** Utility fields are present together for an explicit utility-role
        * save/clear; absent preserves that independent role. */
@@ -451,10 +441,14 @@ export function createAdminSystemModelPolicyService(
       const providerModelId = input.providerModelId;
       const reasoningEffort = input.reasoningEffort;
       const rerankerProviderModelId = input.rerankerProviderModelId;
+      const hasPdfUpdate = input.chatPdfProviderModelId !== undefined;
+      if (hasPdfUpdate !== (input.chatPdfReasoningEffort !== undefined)) {
+        throw new Error("system_model_policy_update_invalid");
+      }
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && rerankerProviderModelId === undefined &&
+        !hasUtilityUpdate && !hasPdfUpdate && rerankerProviderModelId === undefined &&
           input.chatPdfPreparationAllowed === undefined ||
         input.chatPdfPreparationAllowed !== undefined &&
           typeof input.chatPdfPreparationAllowed !== "boolean") {
@@ -494,6 +488,9 @@ export function createAdminSystemModelPolicyService(
               const role = await loadRole(tx, {
                 providerModelId
               });
+              if (!systemModelRoleEligible(role, "memory")) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              }
               if (reasoningEffort !== undefined && reasoningEffort !== null &&
                 !supportsReasoningEffort(role, reasoningEffort)) {
                 throw new AdminSystemModelPolicyServiceError(
@@ -511,6 +508,21 @@ export function createAdminSystemModelPolicyService(
             }
           }
 
+          if (input.chatPdfProviderModelId === null && input.chatPdfReasoningEffort !== null) {
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+          }
+          if (input.chatPdfProviderModelId) {
+            try {
+              const role = await loadRole(tx, { providerModelId: input.chatPdfProviderModelId });
+              if (!systemModelRoleEligible(role, "vision") || input.chatPdfReasoningEffort &&
+                !supportsReasoningEffort(role, input.chatPdfReasoningEffort)) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              }
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw error;
+            }
+          }
           if (rerankerProviderModelId !== undefined &&
             rerankerProviderModelId !== null) {
             try {
@@ -532,6 +544,10 @@ export function createAdminSystemModelPolicyService(
               ...(input.chatPdfPreparationAllowed === undefined ? {} : {
                 chatPdfPreparationAllowed: input.chatPdfPreparationAllowed
               }),
+              ...(hasPdfUpdate ? {
+                chatPdfProviderModelId: input.chatPdfProviderModelId,
+                chatPdfReasoningEffort: input.chatPdfReasoningEffort
+              } : {}),
               ...(hasUtilityUpdate ? {
                 providerModelId,
                 reasoningEffort

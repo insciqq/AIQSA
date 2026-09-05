@@ -90,9 +90,11 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
           "action",
           "deploymentId",
           "expectedVersion",
-          "pdfProcessingMode"
+          "pdfProcessingMode",
+          "documentDeploymentId"
         ]) || !deploymentId || !mode || !Number.isSafeInteger(value.expectedVersion) ||
-          Number(value.expectedVersion) < 1) {
+          Number(value.expectedVersion) < 1 ||
+          (mode === "local" ? value.documentDeploymentId !== null : !boundedId(value.documentDeploymentId))) {
           return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
         }
         try {
@@ -100,6 +102,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
             deploymentId,
             expectedVersion: Number(value.expectedVersion),
             pdfProcessingMode: mode,
+            documentDeploymentId: mode === "local" ? null : boundedId(value.documentDeploymentId),
             userId: auth.session.userId
           });
           return Response.json({ knowledge: await input.service.list() });

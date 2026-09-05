@@ -1,3 +1,4 @@
+import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
   AdminProviderCheckStatus,
   AdminProviderCompatibilityStatus,
@@ -50,6 +51,7 @@ export type AdminProviderDraftTesterInput = Readonly<{
   credentialId: string;
   credentialVersionIdentity: string;
   mode: AdminProviderDraftTestMode;
+  capabilityRole?: SystemModelVerificationRole;
   model: ProviderModelConfiguration;
   modelDisplayName: string;
   providerFamily: string;
@@ -456,22 +458,25 @@ async function testEmbedding(
   const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
     configuration: input.connection
   });
-  const result = await createOpenAICompatibleEmbeddingAdapter({
+  const adapter = createOpenAICompatibleEmbeddingAdapter({
     connection: input.connection,
     model: input.model,
     network: { fetchFn },
     secret: input.secret
-  }).embed({
+  });
+  const result = await adapter.embed({
     mode: "document",
     signal: input.signal,
     texts: ["AIQSA provider compatibility check"]
   });
+  await adapter.embed({ mode: "query", signal: input.signal, texts: ["AIQSA provider compatibility query"] });
   const usage = result.usage.inputTokens !== null || result.usage.totalTokens !== null
     ? "verified"
     : "not_supported";
 
   return {
     evidence: {
+      embedding: { probeVersion: 1, document: true, query: true, dimensions: result.vectors[0]!.length },
       compatibility: {
         directPdf: "not_supported",
         modelAccess: "verified",
@@ -517,6 +522,7 @@ async function testReranker(
     : "not_supported";
   return {
     evidence: {
+      reranking: { probeVersion: 1, completeScores: true },
       compatibility: {
         directPdf: "not_supported",
         modelAccess: "verified",
@@ -534,16 +540,7 @@ async function testReranker(
   };
 }
 
-async function testAnswerModel(
-  input: AdminProviderDraftTesterInput,
-  options: ResolvedTesterOptions,
-  method: AdminProviderTestEvidence["method"],
-  selectedProviders: string[]
-): Promise<AdminProviderDraftTestOutcome> {
-  const access = await runGenerationProbe(input, options, false);
-  const structuredOutput = await testStructuredOutput(input, options);
-  const forcedToolCall = await testForcedToolCall(input, options);
-  const pdfInput = await testPdfInput(input, options);
+async function testVisionInput(input: AdminProviderDraftTesterInput, options: TesterOptions) {
   let visionInput: AdminProviderTestEvidence["visionInput"];
   if (input.model.capabilities.vision === true) {
     try {
@@ -567,6 +564,20 @@ async function testAnswerModel(
       preserveTestWideFailure(input, error);
     }
   }
+  return visionInput;
+}
+
+async function testAnswerModel(
+  input: AdminProviderDraftTesterInput,
+  options: ResolvedTesterOptions,
+  method: AdminProviderTestEvidence["method"],
+  selectedProviders: string[]
+): Promise<AdminProviderDraftTestOutcome> {
+  const access = await runGenerationProbe(input, options, false);
+  const structuredOutput = await testStructuredOutput(input, options);
+  const forcedToolCall = await testForcedToolCall(input, options);
+  const pdfInput = await testPdfInput(input, options);
+  const visionInput = await testVisionInput(input, options);
   const streaming = await runGenerationProbe(input, options, true);
 
   return {
@@ -600,6 +611,32 @@ async function testAnswerModel(
     },
     status: "available"
   };
+}
+
+async function testSystemRole(
+  input: AdminProviderDraftTesterInput,
+  options: ResolvedTesterOptions
+): Promise<AdminProviderDraftTestOutcome> {
+  if (input.capabilityRole === "embedding") return testEmbedding(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
+  if (input.capabilityRole === "reranker") return testReranker(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
+  const access = await runGenerationProbe(input, options, false);
+  const structured = input.capabilityRole === "memory" ? await testStructuredOutput(input, options) : null;
+  const forced = input.capabilityRole === "memory" ? await testForcedToolCall(input, options) : null;
+  const pdf = input.capabilityRole === "direct_pdf" ? await testPdfInput(input, options) : null;
+  const vision = input.capabilityRole === "vision" ? await testVisionInput(input, options) : undefined;
+  return { status: "available", evidence: {
+    compatibility: {
+      probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+      modelAccess: access.status, streaming: "not_supported", usage: access.usageSeen ? "verified" : "not_supported",
+      structuredOutput: structured?.status ?? "not_supported", forcedToolCall: forced?.status ?? "not_supported",
+      directPdf: pdf?.status ?? "not_supported", vision: vision ? "verified" : "not_supported"
+    },
+    detail: "ok", method: "tiny_generation", selectedProviders: input.model.openRouterRouting?.providers ?? [],
+    upstreamModelId: input.model.upstreamModelId,
+    ...(structured?.evidence ? { structuredOutput: structured.evidence } : {}),
+    ...(forced?.evidence ? { forcedToolCall: forced.evidence } : {}),
+    ...(pdf?.evidence ? { pdfInput: pdf.evidence } : {}), ...(vision ? { visionInput: vision } : {})
+  } };
 }
 
 async function runTinyGeneration(
@@ -698,6 +735,7 @@ export function createAdminProviderDraftTester(
   };
   return {
     async test(input) {
+      if (input.capabilityRole) return testSystemRole(input, resolvedOptions);
       return input.mode === "account_catalog"
         ? testOpenRouterCatalog(input, resolvedOptions)
         : runTinyGeneration(input, resolvedOptions);

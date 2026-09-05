@@ -24,6 +24,7 @@ export type AdminSectionId =
   | "memory"
   | "mcp"
   | "providers"
+  | "system-models"
   | "search"
   | "safety"
   | "usage"
@@ -60,6 +61,13 @@ export const adminSections = [
     label: "Providers"
   },
   {
+    Icon: BrainCircuit,
+    description: "Assign verified models to Memory, document processing, embeddings, and reranking.",
+    group: "ai-setup",
+    id: "system-models",
+    label: "System Models"
+  },
+  {
     Icon: Search,
     description: "Add, test, activate, publish, and inspect replaceable Search engines.",
     group: "ai-setup",
@@ -68,7 +76,7 @@ export const adminSections = [
   },
   {
     Icon: BookOpenText,
-    description: "Choose the installation embedding route and inspect fixed retrieval limits without exposing private bases.",
+    description: "Review processing health and manage Knowledge limits without exposing private bases.",
     group: "ai-setup",
     id: "knowledge",
     label: "Knowledge"

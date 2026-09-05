@@ -8,6 +8,8 @@ import {
 } from "./systemModelRole";
 
 const role = {
+  verifiedStructuredOutput: true,
+  verifiedForcedToolCall: true,
   credentialSource: "default",
   modelConfiguration: {
     adapterKind: "openai_responses_compatible",

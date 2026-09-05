@@ -106,6 +106,8 @@ export type AdminProviderCompatibilityEvidence = {
 };
 
 export type AdminProviderTestEvidence = {
+  embedding?: { probeVersion: 1; document: true; query: true; dimensions: number };
+  reranking?: { probeVersion: 1; completeScores: true };
   compatibility?: AdminProviderCompatibilityEvidence;
   visionInput?: {
     adapterKind: AdminProviderAdapterKind;

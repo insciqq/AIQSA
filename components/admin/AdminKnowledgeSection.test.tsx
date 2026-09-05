@@ -1,6 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
-  adminKnowledgeDestinationFixture,
   adminKnowledgeAnswerPolicyFixture,
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
@@ -207,76 +206,13 @@ describe("administrator Knowledge section", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
-  it("shows the content route and activates only a tested embedding destination", async () => {
-    const onMutationCommitted = vi.fn();
-    const remote = {
-      ...adminKnowledgeDestinationFixture,
-      connectionDisplayName: "Approved provider",
-      deploymentId: "embedding-model-2",
-      modelDisplayName: "Multilingual production"
-    };
-    const initial = {
-      ...settings,
-      profile: adminKnowledgeProfileFixture({
-        availableDestinations: [adminKnowledgeDestinationFixture, remote]
-      })
-    };
-    const activated = {
-      ...settings,
-      profile: adminKnowledgeProfileFixture({
-        activeRevision: {
-          activatedAt: "2026-08-18T01:00:00.000Z",
-          destination: remote,
-          executionAuthority: "installation",
-          id: "profile-revision-2",
-          pdfProcessing: {
-            destination: null,
-            mode: "local",
-            parserProfileVersion: 1
-          },
-          revisionNumber: 2
-        },
-        availableDestinations: [adminKnowledgeDestinationFixture, remote],
-        migration: {
-          activeProfileBases: 0,
-          buildingProfileBases: 1,
-          legacyGenerations: 0,
-          profiledGenerations: 1,
-          totalBases: 1
-        },
-        version: 2
-      })
-    };
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ knowledge: initial }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ knowledge: activated }), { status: 200 }));
-    vi.stubGlobal("fetch", fetcher);
-
-    render(<AdminKnowledgeSection active onMutationCommitted={onMutationCommitted} />);
-
-    const route = await screen.findByTestId("knowledge-profile-route");
-    expect(within(route).getByText("Documents")).toBeVisible();
-    expect(within(route).getByText("Local")).toBeVisible();
-    expect(within(route).getByText("Local embeddings / Multilingual embed")).toBeVisible();
-    fireEvent.change(screen.getByRole("combobox", { name: /Embedding destination/i }), {
-      target: { value: remote.deploymentId }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Activate for future processing" }));
-
-    await screen.findByText(
-      "Knowledge profile activated. Existing Bases are rebuilding safely in the background."
-    );
-    expect(screen.getByRole("status", { name: "Knowledge profile rollout" })).toHaveTextContent(
-      "0 / 1 Bases ready"
-    );
-    expect(screen.getByText(/Current snapshots stay online/)).toBeVisible();
-    const [, init] = fetcher.mock.calls[1] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({
-      action: "activate_profile",
-      deploymentId: remote.deploymentId,
-      expectedVersion: 1,
-      pdfProcessingMode: "local"
-    });
-    expect(onMutationCommitted).toHaveBeenCalledOnce();
+  it("shows assignments read-only and links to the sole System Models editor", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ knowledge: settings }))));
+    render(<AdminKnowledgeSection active />);
+    expect(await screen.findByTestId("knowledge-profile-route")).toHaveTextContent("Local embeddings / Multilingual embed");
+    expect(screen.getByRole("link", { name: "Manage assignments in System Models" }))
+      .toHaveAttribute("href", "/admin?section=system-models");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Activate|Restore profile/ })).not.toBeInTheDocument();
   });
 });

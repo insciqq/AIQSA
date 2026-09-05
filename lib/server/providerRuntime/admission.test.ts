@@ -547,7 +547,7 @@ describe("provider admission", () => {
     )).rejects.toEqual(new ProviderAdmissionError("credential_default_missing"));
   });
 
-  it("rejects unavailable and technical-only installation answer targets", async () => {
+  it("admits technical-only internal models independently of chat visibility and rejects unavailable targets", async () => {
     const unavailable = admissionDb({
       answer: officialOpenAiModel,
       options: [off],
@@ -560,12 +560,13 @@ describe("provider admission", () => {
 
     const technical = admissionDb({
       answer: { ...officialOpenAiModel, answerSelectable: false },
+      defaultCredentialIdByConnection: { [officialOpenAiModel.connectionId]: "credential:" + officialOpenAiModel.connectionId },
       options: [off]
     });
     await expect(loadInstallationAnswerProviderRole(
       technical.db as unknown as Prisma.TransactionClient,
       { providerModelId: officialOpenAiModel.id }
-    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+    )).resolves.toMatchObject({ snapshot: { providerModelId: officialOpenAiModel.id } });
   });
 
   it("keeps answer and reranker installation admission classes mutually exclusive", async () => {

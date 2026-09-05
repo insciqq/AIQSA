@@ -63,6 +63,34 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
 }
 
 describe("image input compatibility", () => {
+  it.each(["memory", "vision"] as const)("runs only the requested %s capability probes", async (capabilityRole) => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body));
+      bodies.push(body);
+      if (JSON.stringify(body.messages).includes("image_url")) return Response.json({
+        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "V4K8M2" } }]
+      });
+      const name = body.tools?.[0]?.function?.name;
+      if (name === "aiqsa_forced_tool_call_probe") return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
+      if (name === "aiqsa_structured_output_probe") return strictToolChatResponse(name,
+        { count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] });
+      return structuredChatResponse();
+    });
+    const base = input();
+    const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test({
+      ...base, capabilityRole, mode: "tiny_generation",
+      model: { ...base.model, capabilities: { ...base.model.capabilities, vision: true, nativePdfInput: true, toolCalling: true } }
+    });
+    expect(outcome.status).toBe("available");
+    expect(bodies).toHaveLength(capabilityRole === "memory" ? 3 : 2);
+    expect(bodies.every((body) => body.stream !== true)).toBe(true);
+    expect(Boolean(outcome.evidence.visionInput)).toBe(capabilityRole === "vision");
+    expect(Boolean(outcome.evidence.structuredOutput)).toBe(capabilityRole === "memory");
+    expect(Boolean(outcome.evidence.forcedToolCall)).toBe(capabilityRole === "memory");
+    expect(outcome.evidence.pdfInput).toBeUndefined();
+  });
+
   it.each([true, false])("records only a real image probe success (%s)", async (success) => {
     const fetchFn = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
