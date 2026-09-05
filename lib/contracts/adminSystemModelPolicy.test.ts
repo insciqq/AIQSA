@@ -15,6 +15,7 @@ const response = {
     }],
     rerankerCandidates: [],
     policy: {
+      chatPdfPreparationAllowed: false,
       reasoningEffort: null,
       rerankerModel: null,
       systemModel: null,

@@ -1,3 +1,4 @@
+import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
@@ -31,7 +32,10 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       storage: createS3StorageAdapter()
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
-      reconcile: () => reconcileInstallationRuns(deps)
+      reconcile: async () => {
+        getDefaultChatPdf().kick();
+        await reconcileInstallationRuns(deps);
+      }
     });
   }
   return globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler;

@@ -1,3 +1,4 @@
+import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
 import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssistants";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
@@ -33,6 +34,7 @@ export const POST = createRegenerateModelRunHandler({
   knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
+  chatPdf: getDefaultChatPdf(),
   providerAdmission: providerAdmissionService,
   providerRuntime: providerRuntimeResolver,
   providers: {},

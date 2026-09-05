@@ -203,6 +203,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     role: message.role === "assistant" ? "assistant" : "user",
     runId: message.modelRunId ?? null,
     status: normalizeThreadStatus(message.status),
+    ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     toolActivity: message.toolActivity ?? null
   };
 }

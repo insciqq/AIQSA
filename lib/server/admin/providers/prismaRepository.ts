@@ -32,6 +32,7 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
   countBlockingMemoryExecutionBindings,
@@ -76,6 +77,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const structuredOutput = decodeStructuredOutputVerificationEvidence(value.structuredOutput);
   const forcedToolCall = decodeForcedToolCallVerificationEvidence(value.forcedToolCall);
   const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
+  const visionInput = decodeVisionInputVerificationEvidence(value.visionInput);
   const compatibility = decodeAdminProviderCompatibilityEvidence(value.compatibility);
   return {
     ...(compatibility ? { compatibility } : {}),
@@ -83,6 +85,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     method: value.method,
     selectedProviders: value.selectedProviders as string[],
     ...(pdfInput ? { pdfInput } : {}),
+    ...(visionInput ? { visionInput } : {}),
     ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: value.upstreamModelId
@@ -185,6 +188,20 @@ function conflict(entries: AdminProviderDeleteBlocker[]): AdminProviderDeleteRes
 
 const activeRunStatuses = ["preparing", "in_progress", "queued", "streaming"] as const;
 
+async function countBlockingProviderRunBindings(tx: Prisma.TransactionClient, target: Readonly<{
+  connectionId?: string; credentialId?: string; providerModelId?: string;
+}>): Promise<number> {
+  const [ordinary, documents] = await Promise.all([
+    tx.providerRunBinding.count({ where: target }),
+    tx.chatPdfAttachmentPreparation.count({ where: {
+      ...(target.providerModelId ? { providerModelId: target.providerModelId } : {}),
+      ...(target.connectionId ? { providerModel: { connectionId: target.connectionId } } : {}),
+      ...(target.credentialId ? { credentialVersion: { credentialId: target.credentialId } } : {})
+    } })
+  ]);
+  return ordinary + documents;
+}
+
 async function cleanupProviderReferences(
   tx: Prisma.TransactionClient,
   target: Extract<
@@ -217,6 +234,9 @@ async function cleanupProviderReferences(
   await tx.$executeRaw(Prisma.sql`
     DELETE FROM "ProviderCredentialVersion" AS version
     WHERE NOT EXISTS (
+      SELECT 1 FROM "ChatPdfAttachmentPreparation" AS pdf
+      WHERE pdf."credentialVersionId" = version."id"
+    ) AND NOT EXISTS (
       SELECT 1 FROM "ProviderCredential" AS credential
       WHERE credential."id" = version."credentialId"
         AND credential."activeVersionId" = version."id"
@@ -1876,7 +1896,7 @@ export function createPrismaAdminProviderRepository(
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
           tx.searchIntegrationRevision.count({ where: { providerModelId: modelId } }),
           tx.assistantRevision.count({ where: { providerModelId: modelId } }),
-          tx.providerRunBinding.count({ where: { providerModelId: modelId } }),
+          countBlockingProviderRunBindings(tx, { providerModelId: modelId }),
           countBlockingMemoryExecutionBindings(tx, { providerModelId: modelId })
         ]);
         const blocked = blockers([
@@ -1922,7 +1942,7 @@ export function createPrismaAdminProviderRepository(
           tx.providerConnection.count({ where: { defaultCredentialId: credentialId } }),
           tx.providerGroupCredentialAssignment.count({ where: { credentialId } }),
           tx.providerUserCredentialAssignment.count({ where: { credentialId } }),
-          tx.providerRunBinding.count({ where: { credentialId } }),
+          countBlockingProviderRunBindings(tx, { credentialId }),
           countBlockingMemoryExecutionBindings(tx, { credentialId })
         ]);
         const blocked = blockers([
@@ -1974,7 +1994,7 @@ export function createPrismaAdminProviderRepository(
             tx.searchOption.count({
               where: { sourceConnectionId: connectionId }
             }),
-            tx.providerRunBinding.count({ where: { connectionId } }),
+            countBlockingProviderRunBindings(tx, { connectionId }),
             countBlockingMemoryExecutionBindings(tx, { connectionId })
           ]);
           const modelIds = models.map(({ id }) => id);
@@ -2080,7 +2100,7 @@ export function createPrismaAdminProviderRepository(
           tx.accessGrant.count({ where: { providerConnectionId: connectionId } }),
           tx.providerModel.count({ where: { activeVersion: { gt: 0 }, connectionId } }),
           tx.searchOption.count({ where: { sourceConnectionId: connectionId } }),
-          tx.providerRunBinding.count({ where: { connectionId } }),
+          countBlockingProviderRunBindings(tx, { connectionId }),
           countBlockingMemoryExecutionBindings(tx, { connectionId })
         ]);
         const blocked = blockers([

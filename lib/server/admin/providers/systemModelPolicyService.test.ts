@@ -193,9 +193,11 @@ describe("administrator system model policy service", () => {
         forcedToolCall: "not_verified",
         id: "model-1",
         reasoningEfforts: ["low", "medium", "high", "xhigh"],
-        structuredOutput: "not_verified"
+        structuredOutput: "not_verified",
+        visionInput: "not_verified"
       }],
       policy: {
+        chatPdfPreparationAllowed: false,
         reasoningEffort: "xhigh",
         rerankerModel: null,
         rerankerRoute: {
@@ -211,7 +213,8 @@ describe("administrator system model policy service", () => {
           forcedToolCall: "not_verified",
           id: "model-old",
           reasoningEfforts: ["low", "medium", "high", "xhigh"],
-          structuredOutput: "not_verified"
+          structuredOutput: "not_verified",
+          visionInput: "not_verified"
         },
         updatedAt: NOW.toISOString(),
         updatedBy: { displayName: "Administrator", id: "admin-1" },
@@ -480,6 +483,24 @@ describe("administrator system model policy service", () => {
         version: { increment: 1 }
       },
       where: { id: "installation" }
+    });
+  });
+
+  it("saves the PDF egress permission independently without changing either model role", async () => {
+    const update = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]),
+      systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
+    };
+    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) =>
+      operation(tx) } as unknown as PrismaClient;
+    await createAdminSystemModelPolicyService(prisma).update({
+      chatPdfPreparationAllowed: true, expectedVersion: 3, userId: "admin-1"
+    });
+    expect(update).toHaveBeenCalledWith({
+      data: { chatPdfPreparationAllowed: true, updatedByUserId: "admin-1",
+        version: { increment: 1 } }, where: { id: "installation" }
     });
   });
 

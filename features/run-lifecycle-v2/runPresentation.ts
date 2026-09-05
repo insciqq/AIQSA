@@ -1,3 +1,4 @@
+import type { ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import type {
   ModelRunStatus,
   RunEventView
@@ -14,6 +15,7 @@ export type RunFailureV2 = Readonly<{
 }>;
 
 export type RunLifecycleStateV2 = Readonly<{
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
   authoritativeMessageStatus?: "cancelled" | "complete" | "error" | null;
   connectionLost?: boolean;
   content: string;
@@ -391,13 +393,34 @@ export function presentRunLifecycleV2(
     return { kind: "cancelled", runId: state.runId };
   }
   if (terminal === "error") {
-    const failure = failureFromState(state, eventFailure);
-    const recoverable = state.content.trim().length > 0 && failure.recovery === "retry";
+    const pdfFailed = state.pdfPreparation?.some((item) => item.phase === "failed");
+    const failure = pdfFailed ? {
+      code: null,
+      message: state.pdfPreparation!.every((item) => item.route === "local_text")
+        ? "This PDF could not be read. Try a different file." : "Document preparation could not finish.",
+      recovery: state.pdfPreparation!.some((item) => item.retryable) ? "retry" as const : "change_parameters" as const
+    } : failureFromState(state, eventFailure);
+    const recoverable = (pdfFailed || state.content.trim().length > 0) && failure.recovery === "retry";
     return {
       failure,
       kind: recoverable ? "recoverable_error" : "terminal_error",
       runId: state.runId
     };
+  }
+
+  const pendingDocuments = state.pdfPreparation?.filter((item) =>
+    ["checking", "preparing", "assembling"].includes(item.phase));
+  if (pendingDocuments?.length) {
+    const documents = state.pdfPreparation!;
+    const known = documents.every((item) => item.pageCount !== null);
+    const completed = documents.reduce((sum, item) => sum + item.completedPages, 0);
+    const total = documents.reduce((sum, item) => sum + (item.pageCount ?? 0), 0);
+    const label = pendingDocuments.some((item) => item.phase === "checking")
+      ? "Checking document…"
+      : pendingDocuments.every((item) => item.phase === "assembling") ? "Assembling document…"
+      : known ? `Preparing ${documents.length === 1 ? "document" : "documents"} · ${completed} of ${total} pages…`
+      : "Preparing documents…";
+    return { activity: { kind: "preparing", label }, kind: "activity", runId: state.runId };
   }
 
   if (state.connectionLost) {

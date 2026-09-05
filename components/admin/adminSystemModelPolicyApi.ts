@@ -42,6 +42,7 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 }
 
 export function updateAdminSystemModelPolicy(input: Readonly<{
+  chatPdfPreparationAllowed?: boolean;
   expectedVersion: number;
   /** Omit both utility fields to preserve the independent utility role. */
   providerModelId?: string | null;

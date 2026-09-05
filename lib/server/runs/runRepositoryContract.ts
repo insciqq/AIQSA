@@ -1,3 +1,5 @@
+import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
+import type { ChatPdfAttachmentAdmission } from "../uploads/chatPdfAdmission";
 import type {
   ChatMessageWire,
   ChatContextStats,
@@ -104,6 +106,7 @@ export type ProjectRunAdmission = Readonly<{
 }>;
 
 export type RunAttachmentRecord = ProviderAttachment & {
+  preparedPdf?: Readonly<{ byteSize: number; checksum: string; pageCount: number; sourceChecksum: string; storageKey: string }>;
   checksum: string | null;
   processingErrorCode: string | null;
   storageKey: string;
@@ -151,7 +154,7 @@ export type DurableRunControlRecord = Omit<RunControlRecord, "status"> & {
   status: ModelRunStatus;
 };
 
-export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status">;
+export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status"> & { pdfPreparation?: readonly ChatPdfPreparationWire[] };
 
 export type StaleRunControlRecord = RunControlRecord & {
   updatedAt: Date | string;
@@ -179,6 +182,7 @@ export type RunChatUpdateRecord = {
     workspace?: ChatWorkspaceState;
   };
   messages: {
+    pdfPreparation?: readonly ChatPdfPreparationWire[];
     artifactSummary?: ThreadArtifactSummary | null;
     assistantIdentity?: ThreadAssistantIdentity | null;
     citationMessageId?: string | null;
@@ -310,6 +314,8 @@ export type PersistedRunUsageAttribution = RunUsageAttribution & {
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
 export type CreateRunInput = {
+  chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
+  deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
   chatId: string;
   content: { blocks: unknown[] };
@@ -343,6 +349,8 @@ export type CreateRunInput = {
 };
 
 export type CreateRegenerationRunInput = {
+  chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
+  deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
   chatId: string;
   defaults?: AcceptedRunDefaults;
@@ -370,6 +378,13 @@ export type PreparingRunAdmissionInput =
   | (CreateRegenerationRunInput & { admissionKind: "REGENERATE" });
 
 export type PreparingRunAdmissionResult = Readonly<{
+  deferredPdf?: true;
+  pdfMemorySource?: Readonly<{
+    activeLeafMessageId: string | null;
+    memoryBranchGeneration: number;
+    memorySourceRevision: number;
+    preSendActiveLeafMessageId: string | null;
+  }>;
   assistantMessageId: string;
   attemptId: string;
   chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
@@ -396,6 +411,7 @@ export type PreparingRunMemoryMaterializer = (
 ) => PreparingRunMaterializedRequest | null;
 
 export type CreatedRun = Readonly<{
+  deferredPdf?: true;
   assistantMessageId: string;
   materializedRequest?: PreparingRunMaterializedRequest;
   runId: string;
@@ -417,6 +433,7 @@ export type PreparingRunFinalizationInput = Readonly<{
 }>;
 
 export type PreparingRunRecoveryResult =
+  | "deferred"
   | "finalized"
   | "not_preparing"
   | "settled";
@@ -439,6 +456,12 @@ export type RunOwnedChatRecord = Readonly<{
 }>;
 
 export type RunRepository = {
+  hasPendingPdfPreparation?(runId: string): Promise<boolean>;
+  continuePdfPreparedRun?(input: Readonly<{
+    admission: PreparingRunAdmissionInput;
+    claimToken: string;
+    created: PreparingRunAdmissionResult;
+  }>): Promise<CreatedRun>;
   admitPreparingRun(input: PreparingRunAdmissionInput): Promise<PreparingRunAdmissionResult>;
   appendMcpDiscoveryEpoch?(input: {
     bindings: readonly McpRunPlanBinding[];
@@ -627,7 +650,7 @@ export type RunRepository = {
     userId: string;
   }): Promise<boolean>;
   isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
-  loadAttachments(userId: string, attachmentIds: string[], projectId?: string): Promise<RunAttachmentRecord[]>;
+  loadAttachments(userId: string, attachmentIds: string[], projectId?: string, runId?: string): Promise<RunAttachmentRecord[]>;
   loadKnowledgeFullContextPassages?(
     sources: readonly KnowledgeRunAdmissionSource[]
   ): Promise<readonly KnowledgeFullContextPassage[] | null>;
@@ -710,6 +733,7 @@ export type RunRepository = {
     settingsSnapshot: MemoryPreparingSettingsSnapshot;
   }> | null>;
   settlePreparingRunFailure(input: Readonly<{
+    retryable?: boolean;
     attemptId?: string;
     errorCode: string;
     message: string;

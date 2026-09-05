@@ -18,6 +18,7 @@ const activeRunStatuses = ["preparing", "queued", "streaming", "in_progress"] as
 const activeMessageStatuses = ["queued", "streaming"] as const;
 
 type TemporaryAttachment = Readonly<{
+  chatPdfArtifacts?: readonly Readonly<{ id: string; storageKey: string }>[];
   id: string;
   storageKey: string;
 }>;
@@ -292,7 +293,8 @@ async function prepareDeletionSnapshot(
     }
     const attachments = await tx.attachment.findMany({
       orderBy: { id: "asc" },
-      select: { id: true, storageKey: true, userId: true },
+      select: { id: true, storageKey: true, userId: true,
+        chatPdfArtifacts: { select: { id: true, storageKey: true }, orderBy: { id: "asc" } } },
       where: { chatId: claim.targetId }
     });
     if (attachments.some((attachment) => attachment.userId !== claim.userId)) {
@@ -302,7 +304,8 @@ async function prepareDeletionSnapshot(
       );
     }
     return {
-      attachments: attachments.map(({ id, storageKey }) => ({ id, storageKey })),
+      attachments: attachments.map(({ id, storageKey, chatPdfArtifacts }) => ({ id, storageKey,
+        ...(chatPdfArtifacts?.length ? { chatPdfArtifacts } : {}) })),
       chatExists: true,
       workspaceSession: workspaceSession
         ? { ...workspaceSession, cleanupClaimToken }
@@ -377,7 +380,7 @@ async function deleteExclusiveObjects(
   signal: AbortSignal
 ): Promise<readonly TemporaryObjectDisposition[]> {
   const attachmentIds = attachments.map((attachment) => attachment.id);
-  const keys = [...new Set(attachments.map((attachment) => attachment.storageKey))].sort();
+  const keys = [...new Set(attachments.flatMap(({ storageKey, chatPdfArtifacts }) => [storageKey, ...(chatPdfArtifacts ?? []).map((artifact) => artifact.storageKey)]))].sort();
   const dispositions: TemporaryObjectDisposition[] = [];
   for (const storageKey of keys) {
     throwIfAborted(signal);
@@ -395,7 +398,10 @@ async function deleteExclusiveObjects(
         ]
       }
     });
-    const shared = otherAttachments + knowledgeReferences > 0;
+    const pdfReferences = await client.chatPdfArtifact.count({
+      where: { attachmentId: { notIn: attachmentIds }, storageKey }
+    });
+    const shared = otherAttachments + knowledgeReferences + pdfReferences > 0;
     if (!shared) {
       try {
         await storage.deleteObject(storageKey);
@@ -417,7 +423,8 @@ function sameAttachments(
   right: readonly TemporaryAttachment[]
 ): boolean {
   return left.length === right.length && left.every((value, index) =>
-    value.id === right[index]?.id && value.storageKey === right[index]?.storageKey);
+    value.id === right[index]?.id && value.storageKey === right[index]?.storageKey &&
+    JSON.stringify(value.chatPdfArtifacts ?? []) === JSON.stringify(right[index]?.chatPdfArtifacts ?? []));
 }
 
 async function applyAggregateDeletion(
@@ -465,7 +472,8 @@ async function applyAggregateDeletion(
 
   const currentAttachments = await tx.attachment.findMany({
     orderBy: { id: "asc" },
-    select: { id: true, storageKey: true },
+    select: { id: true, storageKey: true,
+      chatPdfArtifacts: { select: { id: true, storageKey: true }, orderBy: { id: "asc" } } },
     where: { chatId: claim.targetId }
   });
   if (!sameAttachments(snapshot.attachments, currentAttachments)) {
@@ -488,7 +496,10 @@ async function applyAggregateDeletion(
         ]
       }
     });
-    if (otherAttachments + knowledgeReferences === 0) {
+    const pdfReferences = await tx.chatPdfArtifact.count({
+      where: { attachmentId: { notIn: attachmentIds }, storageKey: disposition.storageKey }
+    });
+    if (otherAttachments + knowledgeReferences + pdfReferences === 0) {
       throw new MemoryCoordinatorError(
         "memory_temporary_object_reference_changed",
         true
@@ -569,7 +580,7 @@ async function applyAggregateDeletion(
       where: { chatId: claim.targetId, userId: claim.userId }
     });
     const deletedObjectKeys = dispositions
-      .filter((disposition) => disposition.deleted)
+      .filter((disposition) => disposition.deleted && !disposition.storageKey.startsWith("chat-pdf/"))
       .map((disposition) => disposition.storageKey);
     if (deletedObjectKeys.length > 0) {
       await tx.attachmentDeletionJob.deleteMany({

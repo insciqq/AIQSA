@@ -38,6 +38,37 @@ describe("message run lifecycle", () => {
     resetRunSurfaceStoreForTest();
     resetThreadStoreForTest();
     vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("returns a committed PDF admission immediately and hands polling to the owning chat", async () => {
+    vi.useFakeTimers();
+    prepareThread();
+    const consumeRunStream = vi.fn();
+    const notifyAnswerReady = vi.fn();
+    const refreshActiveChat = vi.fn(async () => ({ id: "chat-1" }));
+    const pdfPreparation = [{ completedPages: 0, pageCount: 21, phase: "checking", retryable: false,
+      route: "local_text", limitedReadingQuality: true, longDocument: true }];
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" }, activeStreamAbortRef: { current: new Map() }, chatId: "chat-1",
+      consumeRunStream, createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() } as never),
+      failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady,
+      optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(),
+      reconcileMessageIds: ({ assistantMessageId }) => useThreadStore.getState().updateMessages("chat-1", (messages) =>
+        messages.map((message) => ({ ...message, id: assistantMessageId }))),
+      refreshActiveChat, request: async () => Response.json({ version: 1, userMessageId: "user-1",
+        assistantMessageId: "assistant-committed", run: { id: "run-1", status: "queued", pdfPreparation } }, { status: 202 })
+    });
+    expect(result).toMatchObject({ failed: false, cancelled: false, runId: "run-1", assistantMessageId: "assistant-committed" });
+    expect(consumeRunStream).not.toHaveBeenCalled();
+    expect(notifyAnswerReady).not.toHaveBeenCalled();
+    expect(refreshActiveChat).not.toHaveBeenCalled();
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      id: "assistant-committed", status: "streaming", runId: "run-1", pdfPreparation
+    });
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+    await vi.runOnlyPendingTimersAsync();
+    expect(refreshActiveChat).toHaveBeenCalledWith("chat-1", { forceDetail: true, preserveControls: true });
   });
 
   it("owns successful stream reconciliation, active-chat refresh, notification, and cleanup", async () => {

@@ -53,6 +53,7 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeVisionInputVerificationEvidence, hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import { isApprovedRerankerProviderModelId } from "./approvedRerankers";
 
@@ -217,6 +218,7 @@ function validateEvidence(
     evidence.forcedToolCall
   );
   const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
+  const visionInput = decodeVisionInputVerificationEvidence(evidence.visionInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(evidence.compatibility);
   const hasCompatibility = Object.prototype.hasOwnProperty.call(evidence, "compatibility");
@@ -232,6 +234,7 @@ function validateEvidence(
         ? "verified"
         : "not_supported") ||
       (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
+      (compatibility.vision === "verified") !== Boolean(visionInput) ||
       (compatibility.forcedToolCall === "verified") !== Boolean(forcedToolCall) ||
       (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput) ||
       (outcome.status === "unavailable" && (
@@ -244,6 +247,8 @@ function validateEvidence(
         compatibility.structuredOutput === "verified"
       ))
     )) ||
+    (Object.hasOwn(evidence, "visionInput") &&
+      (!visionInput || !hasVerifiedVisionInput(evidence, model) || model.modelClass !== "answer")) ||
     (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
@@ -264,6 +269,7 @@ function validateEvidence(
     method: evidence.method,
     selectedProviders: [...evidence.selectedProviders],
     ...(pdfInput ? { pdfInput } : {}),
+    ...(visionInput ? { visionInput } : {}),
     ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: evidence.upstreamModelId

@@ -96,6 +96,8 @@ export type AdminProviderCompatibilityEvidence = {
   /** Exact forced, strict function-call contract used by Memory action roles.
    * Omitted by pre-v1-extension evidence and therefore not verified. */
   forcedToolCall?: AdminProviderCompatibilityStatus;
+  /** Missing in legacy checks: image input has not been verified. */
+  vision?: AdminProviderCompatibilityStatus;
   modelAccess: AdminProviderCompatibilityStatus;
   probeVersion: 1;
   streaming: AdminProviderCompatibilityStatus;
@@ -105,6 +107,12 @@ export type AdminProviderCompatibilityEvidence = {
 
 export type AdminProviderTestEvidence = {
   compatibility?: AdminProviderCompatibilityEvidence;
+  visionInput?: {
+    adapterKind: AdminProviderAdapterKind;
+    probeVersion: 1;
+    upstreamModelId: string;
+    verified: true;
+  };
   detail: "model_missing" | "ok" | "route_missing";
   method: "models_catalog" | "openrouter_account_catalog" | "tiny_generation";
   selectedProviders: string[];

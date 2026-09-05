@@ -1,3 +1,5 @@
+import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
+import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -280,13 +282,35 @@ async function insertAcceptedWorkspaceRunBinding(
   });
 }
 
+async function insertRunPdfAdmissions(
+  tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput, runId: string
+): Promise<void> {
+  if (!input.chatPdfAdmissions?.length) {
+    if (input.deferredPdf) throw new ChatPdfPreparationError("pdf_preparation_invalid");
+    return;
+  }
+  if (!input.providerAdmissionPlan) throw new ProviderAdmissionConflictError();
+  const originals = await tx.attachment.findMany({ select: { id: true }, where: {
+    id: { in: input.normalizedRequest.attachmentIds }, kind: "pdf"
+  } });
+  if (originals.length !== input.chatPdfAdmissions.length ||
+    new Set(input.chatPdfAdmissions.map(({ attachmentId }) => attachmentId)).size !== originals.length ||
+    originals.some(({ id }) => !input.chatPdfAdmissions!.some(({ attachmentId }) => attachmentId === id))) {
+    throw new AttachmentLinkConflictError();
+  }
+  await insertChatPdfAdmissions(tx, {
+    admissions: input.chatPdfAdmissions, answer: input.providerAdmissionPlan.answer,
+    deferred: input.deferredPdf, runId
+  });
+}
+
 function attachmentLinkReadinessWhere(
   input: PreparingRunAdmissionInput
 ): Prisma.AttachmentWhereInput {
   if (input.normalizedRequest.workspace?.enabled === true) {
     return {};
   }
-  if (!input.normalizedRequest.modelCapabilities.nativePdfInput) {
+  if (!input.chatPdfAdmissions?.length && !input.normalizedRequest.modelCapabilities.nativePdfInput) {
     return { status: "ready" };
   }
 
@@ -360,6 +384,7 @@ const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
 });
 
 export type LockedPreparingRun = Readonly<{
+  pdfPreparationRequired?: boolean;
   assistantId: string | null;
   assistantMessageId: string | null;
   assistantRevisionId: string | null;
@@ -423,7 +448,10 @@ export async function lockPreparingRun(
     SELECT
       "assistantId", "assistantMessageId", "assistantRevisionId", "chatId", "id",
       "modelId", "normalizedRequest", "provider",
-      "status", "userId", "userMessageId"
+      "status", "userId", "userMessageId",
+      EXISTS (SELECT 1 FROM "ChatPdfRunPreparation" p
+        WHERE p."modelRunId" = "ModelRun"."id" AND p."state" IN ('pending','preparing','answer_ready'))
+        AS "pdfPreparationRequired"
     FROM "ModelRun"
     WHERE "id" = ${runId} AND "userId" = ${userId}
     FOR UPDATE
@@ -1002,9 +1030,9 @@ export async function admitProjectRunWithClient(
           chatId: input.chatId,
           ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
           modelId: input.modelId,
-          normalizedRequest: json(input.normalizedRequest),
+          ...(input.deferredPdf ? {} : { normalizedRequest: json(input.normalizedRequest) }),
           provider: input.provider,
-          status: "streaming",
+          status: input.deferredPdf ? "preparing" : "streaming",
           userId: input.userId,
           userMessageId
         }
@@ -1031,6 +1059,7 @@ export async function admitProjectRunWithClient(
         runId: run.id,
         userId: input.userId
       });
+      await insertRunPdfAdmissions(tx, input, run.id);
       await insertAcceptedSkillRunBindings(tx, {
         bindings: input.skillBindings,
         projectId: project.projectId,
@@ -1068,7 +1097,8 @@ export async function admitProjectRunWithClient(
       // Project Memory is intentionally dormant for Personal Memory v1.
       // Existing facts and run-item rows remain intact for compatibility, but
       // new Project runs neither read their text nor create run-item bindings.
-      return {
+      const admitted = {
+        ...(input.deferredPdf ? { deferredPdf: true as const } : {}),
         assistantMessageId,
         attemptId: "",
         chatMemoryMode: "EXCLUDED" as const,
@@ -1079,6 +1109,8 @@ export async function admitProjectRunWithClient(
         settingsSnapshot: memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS),
         userMessageId
       };
+      if (input.deferredPdf) await storeChatPdfAdmissionResult(tx, run.id, admitted);
+      return admitted;
     })
   );
   notifyProjectEvent(project.projectId);
@@ -1497,8 +1529,25 @@ export async function admitPreparingRunWithClient(
         runId: run.id,
         userId: input.userId
       });
+      await insertRunPdfAdmissions(tx, input, run.id);
       if (input.defaults) {
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
+      }
+      if (input.deferredPdf) {
+        const admitted: PreparingRunAdmissionResult = {
+          assistantMessageId, attemptId: "", chatMemoryMode: lockedChat.memoryMode,
+          deferredPdf: true, folderId: lockedChat.folderId,
+          memoryGeneration: settings.memoryGeneration, memoryRevision: settings.memoryRevision,
+          pdfMemorySource: {
+            activeLeafMessageId: admittedSourceSnapshot.activeLeafMessageId,
+            memoryBranchGeneration: admittedSourceSnapshot.memoryBranchGeneration,
+            memorySourceRevision: admittedSourceSnapshot.memorySourceRevision,
+            preSendActiveLeafMessageId
+          },
+          runId: run.id, settingsSnapshot: memoryPreparingSettingsSnapshot(settings), userMessageId
+        };
+        await storeChatPdfAdmissionResult(tx, run.id, admitted);
+        return admitted;
       }
 
       const temporaryResult = await finalizeTemporaryPreparingRunAdmission(tx, {
@@ -3485,6 +3534,7 @@ async function settlePreparingAttemptExecutions(
 }
 
 export type PreparingSettlementInput = Readonly<{
+  retryable?: boolean;
   attemptId?: string;
   errorCode: string;
   message: string;
@@ -3543,11 +3593,10 @@ export async function settlePreparingRunInTransaction(
     runId: input.runId,
     userId: input.userId
   });
-  if (!attempt || !["PENDING", "EXECUTING", "READY"].includes(attempt.state)) {
-    return false;
-  }
+  const activeAttempt = attempt && ["PENDING", "EXECUTING", "READY"].includes(attempt.state) ? attempt : null;
+  if (!activeAttempt && !run.pdfPreparationRequired) return false;
   const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
-    attempt.boundedPrivateBaseRequestSnapshot
+    activeAttempt?.boundedPrivateBaseRequestSnapshot
   );
   const normalizedRequest = baseSnapshot?.normalizedRequest ?? {};
   const now = input.now ?? new Date();
@@ -3555,23 +3604,26 @@ export async function settlePreparingRunInTransaction(
     ? input.errorCode
     : "memory_preparing_failed";
   const cancelled = input.state === "CANCELLED";
-  await settlePreparingAttemptExecutions(tx, {
-    attemptId: attempt.id,
-    cancelled,
-    now,
-    userId: input.userId
-  });
-  await tx.memoryRetrievalAttempt.update({
-    data: {
-      errorCode,
-      state: input.state,
-      updatedAt: now
-    },
-    where: { id: attempt.id }
-  });
+  if (activeAttempt) {
+    await settlePreparingAttemptExecutions(tx, {
+      attemptId: activeAttempt.id,
+      cancelled,
+      now,
+      userId: input.userId
+    });
+    await tx.memoryRetrievalAttempt.update({
+      data: {
+        errorCode,
+        state: input.state,
+        updatedAt: now
+      },
+      where: { id: activeAttempt.id }
+    });
+  }
   await tx.modelRun.update({
     data: {
-      errorPayload: json({ code: errorCode, message: input.message }),
+      errorPayload: json({ code: errorCode, message: input.message,
+        ...(input.retryable !== undefined ? { retryable: input.retryable } : {}) }),
       normalizedRequest: json(normalizedRequest),
       status: cancelled ? "cancelled" : "error"
     },
@@ -3616,6 +3668,7 @@ export async function recoverPreparingRunWithClient(
   const recovered = await prismaClient.$transaction(async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     if (!run) return "not_preparing";
+    if (run.pdfPreparationRequired) return "deferred";
     if (run.status !== "preparing") {
       const binding = await tx.modelRunMemoryBinding.findUnique({
         select: { id: true },
@@ -3693,9 +3746,20 @@ export async function createDormantPreparingRun(
       }
     );
   }
-  if (created.chatMemoryMode === "TEMPORARY") {
-    return created;
-  }
+  if (created.deferredPdf || created.chatMemoryMode === "TEMPORARY") return created;
+  return continuePreparingRunWithClient(prismaClient, admission, created, memoryRetrieval,
+    memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
+}
+
+async function continuePreparingRunWithClient(
+  prismaClient: PrismaClient,
+  admission: PreparingRunAdmissionInput,
+  created: PreparingRunAdmissionResult,
+  memoryRetrieval: MemoryRunRetrievalService,
+  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
+  memorySourceHooks: MemorySourceMutationHooks | undefined,
+  memoryAdmissionDeadlineAtMs: number
+): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
   let currentAttemptId = created.attemptId;
   let currentSettings = {
     memoryGeneration: created.memoryGeneration,
@@ -3989,4 +4053,106 @@ export async function createDormantPreparingRun(
     }, memorySourceHooks).catch(() => false);
     throw error;
   }
+}
+
+/** PDF owns the slow gate. Personal Memory receives its immutable base only
+ * after the document projection and final attachment budget exist. */
+export async function continuePdfPreparedRunWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{
+    admission: PreparingRunAdmissionInput;
+    claimToken: string;
+    created: PreparingRunAdmissionResult;
+  }>,
+  memoryRetrieval: MemoryRunRetrievalService,
+  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
+  memorySourceHooks?: MemorySourceMutationHooks,
+  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
+  const { admission, created } = input;
+  const admitted = await repeatableReadTransaction(prismaClient, async (tx) => {
+    if (!(await lockPreparingMemoryOwner(tx, admission.userId))) {
+      throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+    }
+    const chat = await tx.chat.findFirst({ where: {
+      id: admission.chatId, archived: false, permanentDeletionAt: null
+    } });
+    const run = await lockPreparingRun(tx, created.runId, admission.userId);
+    await assertChatPdfClaim(tx, { claimToken: input.claimToken, runId: created.runId, userId: admission.userId });
+    const pending = await tx.chatPdfAttachmentPreparation.count({ where: {
+      modelRunId: created.runId, state: { not: "ready" }
+    } });
+    if (!chat || !run || run.status !== "preparing" || pending ||
+      chat.activeLeafMessageId !== created.assistantMessageId) {
+      throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+    }
+    if (admission.project || created.chatMemoryMode === "TEMPORARY") {
+      // These scopes never create or read Personal Memory attempts.
+      if (admission.project ? chat.projectId !== admission.project.projectId : chat.memoryMode !== "TEMPORARY") {
+        throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      }
+      await tx.modelRun.update({ where: { id: created.runId }, data: {
+        normalizedRequest: json(admission.normalizedRequest), status: "streaming"
+      } });
+      return { created, ready: null, complete: true };
+    }
+    const source = created.pdfMemorySource;
+    if (!source || chat.userId !== admission.userId || chat.projectId ||
+      chat.memoryMode !== created.chatMemoryMode || chat.folderId !== created.folderId ||
+      chat.memoryBranchGeneration !== source.memoryBranchGeneration ||
+      chat.memorySourceRevision !== source.memorySourceRevision) {
+      throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+    }
+    const existing = await lockPreparingAttempt(tx, { runId: run.id, userId: admission.userId });
+    if (existing) {
+      if (!["PENDING", "READY"].includes(existing.state) || existing.expiresAt <= new Date() ||
+        existing.baseRequestHash !== memoryPreparingHash(createMemoryPreparingBaseSnapshot({
+          normalizedRequest: admission.normalizedRequest, providerRequestPreview: admission.providerRequestPreview
+        }))) {
+        // An executing Memory attempt may already own external effects. Its
+        // ordinary terminal settlement preserves those receipts; never replay.
+        throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
+      }
+      const settingsSnapshot = decodeMemoryPreparingSettingsSnapshot(existing.settingsSnapshot);
+      if (!settingsSnapshot) throw new ChatPdfPreparationError("pdf_preparation_invalid");
+      return { created: { ...created, attemptId: existing.id,
+        memoryGeneration: existing.memoryGenerationSnapshot,
+        memoryRevision: existing.retrievalRevisionSnapshot, settingsSnapshot },
+        ready: existing.state === "READY" ? existing : null, complete: false };
+    }
+    const settings = await loadPreparingSettings(tx, admission.userId);
+    const attemptId = await createPreparingAttempt(tx, {
+      admissionKind: admission.admissionKind, assistantIdSnapshot: admission.assistant?.assistantId ?? null,
+      assistantMessageId: created.assistantMessageId, attemptOrdinal: 0,
+      baseSnapshot: createMemoryPreparingBaseSnapshot({ normalizedRequest: admission.normalizedRequest,
+        providerRequestPreview: admission.providerRequestPreview }),
+      chatId: admission.chatId, chatMemoryMode: created.chatMemoryMode, folderIdSnapshot: created.folderId,
+      lifecycleSnapshot: source, now: new Date(), preSendActiveLeafMessageId: source.preSendActiveLeafMessageId,
+      runId: run.id, settings, userId: admission.userId, userMessageId: created.userMessageId
+    });
+    return { created: { ...created, attemptId, memoryGeneration: settings.memoryGeneration,
+      memoryRevision: settings.memoryRevision, settingsSnapshot: memoryPreparingSettingsSnapshot(settings) },
+      ready: null, complete: false };
+  });
+  if (admitted.complete) return admitted.created;
+  if (admitted.ready) {
+    const attempt = admitted.ready;
+    const itemCount = await prismaClient.memoryRetrievalAttemptItem.count({ where: { attemptId: attempt.id } });
+    const budget = isRecord(attempt.budgetSnapshot) ? attempt.budgetSnapshot : {};
+    const action = decodeMemoryActionAnswerResult(budget.memoryActionAnswerResult) ?? undefined;
+    const materializedRequest = admission.memoryMaterializer?.(
+      preparingAttemptCarriesProviderContext(attempt) ? {
+        approxTokens: attempt.preparedContextTokenCount!, itemCount,
+        memoryGeneration: attempt.memoryGenerationSnapshot, memoryRevision: attempt.retrievalRevisionSnapshot,
+        mode: "prefetched", text: attempt.preparedContextText!
+      } : null, action
+    );
+    if (!materializedRequest || !(await finalizePreparingRunWithClient(prismaClient, {
+      ...admission, ...materializedRequest, attemptId: attempt.id, runId: created.runId
+    }, memoryExecutionAuthority))) throw new ChatPdfPreparationError("pdf_preparation_unavailable", true);
+    return { ...admitted.created, materializedRequest };
+  }
+  return continuePreparingRunWithClient(prismaClient, admission, admitted.created,
+    memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
+    Date.now() + boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs));
 }

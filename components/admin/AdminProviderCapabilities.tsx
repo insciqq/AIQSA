@@ -170,6 +170,11 @@ function capabilityRows(
         : null
     )
   }, {
+    description: "The model read a code from an image through this exact deployment and credential.",
+    key: "vision-input",
+    label: "Image input",
+    status: configuration.capabilities.vision ? compatibility?.vision ?? null : "not_supported"
+  }, {
     description: "A streamed response completed with the terminal events required by the configured adapter.",
     key: "streaming",
     label: "Streaming protocol",
@@ -254,8 +259,8 @@ export function AdminProviderCapabilities({
         : isReranker
           ? "AIQSA will check the OpenRouter account catalog and send one small two-document ranking request. It may consume provider quota; returned scores are discarded."
         : connection.family === "openrouter"
-          ? "AIQSA will check the account catalog and configured route, then send up to five small requests for model access, Structured Output, forced strict tool calls, Direct PDF, streaming, and usage reporting. Requests may consume provider quota."
-          : "AIQSA will send up to five small requests for model access, Structured Output, forced strict tool calls, Direct PDF, streaming, and usage reporting. Requests may consume provider quota.",
+          ? "AIQSA will check the account catalog and configured route, then send up to six small requests for model access, Structured Output, forced strict tool calls, Direct PDF, image input, streaming, and usage reporting. Requests may consume provider quota."
+          : "AIQSA will send up to six small requests for model access, Structured Output, forced strict tool calls, Direct PDF, image input, streaming, and usage reporting. Requests may consume provider quota.",
       confirmLabel: "Run checks",
       dialogLabel: `Run ${model.displayName} compatibility checks`,
       onConfirm: runCompatibilityChecks,

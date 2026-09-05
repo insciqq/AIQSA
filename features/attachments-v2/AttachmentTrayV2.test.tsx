@@ -57,6 +57,13 @@ const criticalUsage: AttachmentLimitUsage = {
 };
 
 describe("AttachmentTrayV2", () => {
+  it.each([20, 21])("keeps a %i-page original sendable and advises only above the shared threshold", (pageCount) => {
+    const projected = attachmentItemsForV2([{ id: "pdf", fileName: "report.pdf", kind: "pdf", status: "ready", pageCount }]);
+    render(<AttachmentTrayV2 items={projected} />);
+    expect(attachmentSendBlockReasonV2(projected, null, false)).toBeNull();
+    expect(Boolean(screen.queryByText("This may take a while"))).toBe(pageCount > 20);
+  });
+
   it("renders every attachment lifecycle without collapsing rejected reasons", () => {
     const retry = vi.fn();
     const remove = vi.fn();

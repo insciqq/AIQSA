@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { PDFDocument } from "pdf-lib";
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
@@ -47,6 +48,33 @@ function created(
 }
 
 describe("upload handler", () => {
+  it("settles PDF originals and the safety page count without starting extraction", async () => {
+    const document = await PDFDocument.create();
+    for (let page = 0; page < 21; page += 1) document.addPage();
+    const bytes = await document.save();
+    const createAttachment = vi.fn(async (input) => created(input));
+    const kickProcessing = vi.fn();
+    const POST = createUploadHandler({ createAttachment, kickProcessing,
+      resolveAuth: auth.resolveAuth, storage: createMemoryStorageAdapter() });
+    const response = await POST(authenticatedUploadRequest(new File([bytes], "report.pdf", { type: "application/pdf" })));
+    expect(response.status).toBe(200);
+    expect((await response.json()).attachment).toMatchObject({ status: "ready", extractedText: null, pageCount: 21 });
+    expect(createAttachment.mock.calls[0][0]).toMatchObject({ metadata: { pdfPageCount: 21 }, status: "ready" });
+    expect(kickProcessing).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed PDF before creating an attachment or object", async () => {
+    const createAttachment = vi.fn();
+    const storage = createMemoryStorageAdapter();
+    const put = vi.spyOn(storage, "putObject");
+    const POST = createUploadHandler({ createAttachment, resolveAuth: auth.resolveAuth, storage });
+    const response = await POST(authenticatedUploadRequest(new File(["%PDF-1.4\nbroken"], "broken.pdf", { type: "application/pdf" })));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("pdf_invalid");
+    expect(createAttachment).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
   it("authenticates before consuming an upload body", async () => {
     let bodyReads = 0;
     const request = new Request("http://app.local/api/uploads", { method: "POST" });

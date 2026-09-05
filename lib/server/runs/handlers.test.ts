@@ -1379,6 +1379,70 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
+  it("returns the same committed PDF run on duplicate admission without starting the answer", async () => {
+    const { repository, state } = createMemoryRepository();
+    const bytes = Buffer.from("%PDF-settled-original");
+    repository.loadAttachments = async () => [{ byteSize: bytes.length,
+      checksum: createHash("sha256").update(bytes).digest("hex"), extractedText: null,
+      fileName: "report.pdf", id: "pdf-1", kind: "pdf", metadata: { pdfPageCount: 21 }, mimeType: "application/pdf",
+      processingErrorCode: null, status: "ready", storageKey: "private/original" }];
+    const createRun = repository.createRun;
+    repository.createRun = vi.fn(async (input) => ({ ...await createRun(input), deferredPdf: true }));
+    repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", pdfPreparation: [{
+      completedPages: 0, pageCount: 21, phase: "checking", retryable: false,
+      route: "local_text", limitedReadingQuality: true, longDocument: true
+    }] });
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const kick = vi.fn();
+    const POST = createSendMessageHandler({ ...authDeps, repository, providers: { fake: adapter },
+      chatPdf: { kick, resolve: async () => ({ route: "local_text", authority: null, snapshot: null, policyVersion: null }),
+        findAdmission: async (key) => state.created?.deferredPdf?.admissionKey === key ? {
+          assistantMessageId: "assistant-message-1", userMessageId: "user-message-1", version: 1,
+          run: (await repository.getRunOutcomeForUser("run-1", config.bootstrapUserId))!
+        } : null },
+      storage: { deleteObject: vi.fn(), putObject: vi.fn(), getObject: async (storageKey) => ({ body: bytes, contentType: "application/pdf", storageKey }) }
+    });
+    const request = () => new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
+        admissionId: "invocation-one", expectedActiveLeafId: null, provider: "fake", modelId: "fake-qsa",
+        searchPlan: { mode: "all_selected", optionIds: [] }, content: { blocks: [{ attachmentId: "pdf-1", type: "file" }] }
+      })
+    });
+    const first = await POST(request(), { params: { chatId: "chat-1" } });
+    expect(first.status).toBe(202);
+    const accepted = await first.json();
+    expect(accepted).toMatchObject({ run: { id: "run-1", status: "queued" }, userMessageId: "user-message-1" });
+    const second = await POST(request(), { params: { chatId: "chat-1" } });
+    expect(second.status).toBe(202);
+    expect(await second.json()).toEqual(accepted);
+    expect(repository.createRun).toHaveBeenCalledOnce();
+    expect(state.created?.chatPdfAdmissions).toMatchObject([{ attachmentId: "pdf-1", route: "local_text", pageCount: 21 }]);
+    expect(stream).not.toHaveBeenCalled();
+    expect(kick).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(accepted)).not.toMatch(/private|snapshot|checksum|credential/);
+
+    const saved = state.created!.deferredPdf!.snapshot as { prepared: import("./runPreparation").MaterializedPreparedRunData };
+    repository.createRegenerationRun = vi.fn(async () => ({ assistantMessageId: "retry-assistant", runId: "run-1",
+      userMessageId: "user-message-1", deferredPdf: true }));
+    const resolveCurrentRoute = vi.fn();
+    const retry = createRegenerateModelRunHandler({ ...authDeps, repository, providers: { fake: adapter },
+      chatPdf: { kick, findAdmission: async () => null, resolve: resolveCurrentRoute,
+        loadRetry: async () => ({ adapter, prepared: { ...saved.prepared, defaults: null, sourceKind: "regenerate" } }) } });
+    const retried = await retry(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
+        retryPdfPreparation: true, admissionId: "retry-invocation", provider: "changed-provider", modelId: "changed-model"
+      })
+    }), { params: { messageId: "assistant-message-1" } });
+    expect(retried.status).toBe(202);
+    expect(repository.createRegenerationRun).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: "fake-qsa", provider: "fake", chatPdfAdmissions: saved.prepared.chatPdfAdmissions,
+      normalizedRequest: saved.prepared.normalizedRequest
+    }));
+    expect(resolveCurrentRoute).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+  });
+
   it("rejects a direct-PDF checksum mismatch before request building or provider execution", async () => {
     const directCapabilities: ProviderModelCapabilities = {
       nativePdfInput: true,

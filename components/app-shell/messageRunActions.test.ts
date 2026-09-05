@@ -945,6 +945,7 @@ describe("message run actions", () => {
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toEqual({
+      admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       assistantId: "assistant-selected",
       content: {
         blocks: [{ text: "Question for the assistant", type: "text" }]
@@ -1999,6 +2000,7 @@ describe("message run actions", () => {
       RequestInit
     ];
     expect(JSON.parse(String(regenerateInit.body))).toEqual({
+      admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       controlDefaults: {
         backgroundMode: false,
         maxOutputTokens: "4096",
@@ -2965,6 +2967,7 @@ describe("message run actions", () => {
     );
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toEqual({
+      admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       controlDefaults: {
         backgroundMode: true,
         maxOutputTokens: "128000",

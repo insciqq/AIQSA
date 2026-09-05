@@ -358,6 +358,16 @@ export function useRunLifecycleActions({
     const outcome = await requestRunOutcome(runId, chatId);
     if (outcome.kind !== "found") return outcome;
     const { run } = outcome;
+    if (run.pdfPreparation) useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => {
+      if (message.runId !== run.id) return message;
+      const current = message.pdfPreparation;
+      const next = run.pdfPreparation!;
+      const currentCount = current?.reduce((sum, item) => sum + item.completedPages, 0) ?? 0;
+      const nextCount = next.reduce((sum, item) => sum + item.completedPages, 0);
+      const wasTerminal = current?.some((item) => item.phase === "failed" || item.phase === "cancelled");
+      if (nextCount < currentCount || wasTerminal && !next.some((item) => item.phase === "failed" || item.phase === "cancelled")) return message;
+      return { ...message, pdfPreparation: next };
+    }));
     const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
     if (activeStream && (!activeStream.runId || activeStream.runId === run.id)) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
@@ -391,7 +401,7 @@ export function useRunLifecycleActions({
 
     let retainResumeGate = false;
     try {
-      const startedAt = Date.now();
+      let startedAt = Date.now();
       let delayMs = RESUME_POLL_INITIAL_DELAY_MS;
 
       while (Date.now() - startedAt < RESUME_POLL_HORIZON_MS) {
@@ -404,6 +414,9 @@ export function useRunLifecycleActions({
         }
 
         const outcome = await inspectResumedRun(chat, runId);
+        if (outcome.kind === "found" && outcome.run.pdfPreparation &&
+          (outcome.run.status === "queued" || outcome.run.pdfPreparation.some((item) =>
+            ["checking", "preparing", "assembling"].includes(item.phase)))) startedAt = Date.now();
         if (isTerminalRunFetchOutcome(outcome)) {
           if (outcome.kind === "found" && outcome.run.status === "complete") {
             void notifyAnswerReady();

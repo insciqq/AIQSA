@@ -1,3 +1,6 @@
+import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
+import { getPdfExtractionConfig } from "./pdfConfig";
+import { DocumentParserError } from "../parsing/errors";
 import { createHash, randomUUID } from "node:crypto";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readBoundedFormData, RequestBodyTooLargeError } from "../http/requestBody";
@@ -179,6 +182,24 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         return Response.json({ error: validation.code }, { status: validation.code === "file_too_large" ? 413 : 400 });
       }
 
+      let pdfPageCount: number | undefined;
+      if (validation.kind === "pdf") {
+        const config = getPdfExtractionConfig();
+        try {
+          pdfPageCount = (await inspectPdfForModelProcessing({ bytes: buffer,
+            mode: "system_model_direct_pdf", signal: request.signal }, {
+            maxPages: config.maxPages, timeoutMs: config.timeoutMs
+          })).pageCount;
+        } catch (error) {
+          if (request.signal.aborted) throw error;
+          if (error instanceof DocumentParserError && error.code === "parser_output_too_large") {
+            return Response.json({ error: "pdf_page_limit_exceeded", maxPages: config.maxPages,
+              message: "The PDF exceeds the page limit." }, { status: 413 });
+          }
+          return Response.json({ error: "pdf_invalid", message: "The PDF is corrupted, encrypted, or unsupported." }, { status: 400 });
+        }
+      }
+
       const digest = checksum(buffer);
       const storageKey = `${target.projectId ? `projects/${target.projectId}` : auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(file.name)}`;
       const storage = deps.storage ?? createS3StorageAdapter();
@@ -189,7 +210,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       });
 
       let attachment: CreatedAttachment;
-      const status = validation.kind === "file" ? "ready" as const : "processing" as const;
+      const status = (validation.kind === "file" || validation.kind === "pdf") ? "ready" as const : "processing" as const;
       try {
         attachment = await deps.createAttachment({
           byteSize: buffer.byteLength,
@@ -197,7 +218,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           extractedText: null,
           fileName: file.name,
           kind: validation.kind,
-          metadata: {},
+          metadata: pdfPageCount === undefined ? {} : { pdfPageCount },
           mimeType: validation.mimeType,
           processingErrorCode: null,
           status,
@@ -247,7 +268,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           fileName: attachment.fileName,
           id: attachment.id,
           kind: attachment.kind,
-          metadata: attachment.metadata,
+          ...(attachment.kind === "pdf" ? { pageCount: pdfPageCount } : { metadata: attachment.metadata }),
           mimeType: attachment.mimeType,
           processingErrorCode: attachment.processingErrorCode,
           status: attachment.status,

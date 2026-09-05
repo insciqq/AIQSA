@@ -1,3 +1,5 @@
+import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
+import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
@@ -178,6 +180,7 @@ export type RunPreparationDeps = Readonly<{
       userId: string;
     }): Promise<ProviderAdmissionPlan>;
   }>;
+  chatPdf?: Readonly<{ resolve(answer: ProviderAdmissionRole): Promise<ChatPdfRouteAdmission> }>;
   repository: RunPreparationRepository;
   runPolicy?: Readonly<{
     load(): Promise<ToolRunBudgets>;
@@ -260,6 +263,7 @@ type PreparedRunDefaultsData = AcceptedRunDefaults;
 
 export type MaterializedPreparedRunData = {
   assistant?: { assistantId: string; revisionId: string };
+  chatPdfAdmissions?: ChatPdfAttachmentAdmission[];
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
@@ -478,6 +482,9 @@ function mutablePreparedData<Value>(value: DeepReadonly<Value>): Value {
 
 export function materializePreparedRunData(prepared: PreparedRun): MaterializedPreparedRunData {
   return {
+    ...(prepared.chatPdfAdmissions
+      ? { chatPdfAdmissions: mutablePreparedData<ChatPdfAttachmentAdmission[]>(prepared.chatPdfAdmissions) }
+      : {}),
     ...(prepared.assistant
       ? { assistant: mutablePreparedData<{ assistantId: string; revisionId: string }>(prepared.assistant) }
       : {}),
@@ -1561,10 +1568,14 @@ export async function prepareRun(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
+  const pdfRoute = deps.chatPdf && attachmentIds.length
+    ? await deps.chatPdf.resolve(admissionPlan.answer) : undefined;
+  let chatPdfAdmissions: ChatPdfAttachmentAdmission[] = [];
   let attachments: ProviderAttachment[];
   try {
     attachments = await loadProviderAttachments(deps, input.userId, attachmentIds, {
       capabilities: modelCapabilities,
+      ...(pdfRoute ? { pdfRoute, onPdfAdmissions: (items: ChatPdfAttachmentAdmission[]) => { chatPdfAdmissions = items; } } : {}),
       limits: attachmentLimits,
       ...(project ? { projectId: project.projectId } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
@@ -1582,14 +1593,14 @@ export async function prepareRun(
 
   const attachmentAccess = validateAttachmentCapabilities(
     attachments,
-    modelCapabilities,
+    pdfRoute ? { ...modelCapabilities, pdf: true } : modelCapabilities,
     workspaceEnabled
   );
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
   }
 
-  const pdfTextAvailability = validatePdfTextAvailability(
+  const pdfTextAvailability = pdfRoute ? null : validatePdfTextAvailability(
     attachments,
     modelCapabilities,
     workspaceEnabled
@@ -1724,7 +1735,8 @@ export async function prepareRun(
       knowledgeAdmissionPlan,
       modelCapabilities.contextWindow
     );
-    const passages = fullContextEligible && deps.repository.loadKnowledgeFullContextPassages &&
+    const passages = !chatPdfAdmissions.some(({ route }) => route !== "direct_pdf") &&
+      fullContextEligible && deps.repository.loadKnowledgeFullContextPassages &&
       knowledgeAdmissionPlan.sources
       ? await deps.repository.loadKnowledgeFullContextPassages(knowledgeAdmissionPlan.sources)
       : null;
@@ -1844,6 +1856,7 @@ export async function prepareRun(
       };
 
   const prepared = immutablePreparedData<MaterializedPreparedRunData>({
+    ...(chatPdfAdmissions.length ? { chatPdfAdmissions } : {}),
     ...(assistantRun
       ? {
           assistant: {

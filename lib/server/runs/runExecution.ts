@@ -392,6 +392,7 @@ function serializeChatUpdate(
       provider: message.provider,
       role: message.role,
       status: message.status,
+      ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
       toolActivity: message.toolActivity ?? null
     }))
   } satisfies ChatUpdateDataWire;

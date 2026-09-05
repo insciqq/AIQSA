@@ -387,6 +387,7 @@ export function useMessageRunActions({
       resetThreadToLatest();
     }
 
+    const admissionId = crypto.randomUUID();
     const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
@@ -421,6 +422,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
+            admissionId,
             ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId))
           }),
           headers: {
@@ -787,6 +789,7 @@ export function useMessageRunActions({
       }
 
       sendFailureLive = false;
+      const admissionId = crypto.randomUUID();
       const result = await executeMessageRunLifecycle({
         activeChatIdRef,
         activeStreamAbortRef,
@@ -839,6 +842,7 @@ export function useMessageRunActions({
         async request(signal) {
           const response = await shellFetch(`/api/chats/${chatIdForSend}/messages`, {
             body: JSON.stringify({
+              admissionId,
               content: {
                 blocks: contentBlocks
               },
@@ -1051,6 +1055,7 @@ export function useMessageRunActions({
         resetThreadToLatest();
       }
 
+      const admissionId = crypto.randomUUID();
       const result = await executeMessageRunLifecycle({
         activeChatIdRef,
         activeStreamAbortRef,
@@ -1094,6 +1099,7 @@ export function useMessageRunActions({
         async request(signal) {
           const response = await shellFetch(`/api/chats/${chatIdForSend}/messages`, {
             body: JSON.stringify({
+              admissionId,
               content: { blocks: contentBlocks },
               expectedActiveLeafId: parentLeafForSend,
               ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
@@ -1175,6 +1181,7 @@ export function useMessageRunActions({
       runControlSnapshot,
       Boolean(activeChat?.projectId)
     );
+    const retryPdfPreparation = original.pdfPreparation?.some(({ phase }) => phase === "failed" || phase === "cancelled") === true;
 
     const assistantId = `assistant-regen-${Date.now()}`;
     const assistantMessage: ThreadMessage = {
@@ -1191,6 +1198,7 @@ export function useMessageRunActions({
     updateStreamChatActiveLeaf(chatIdForRegenerate, assistantId);
     resetThreadToLatest();
 
+    const admissionId = crypto.randomUUID();
     const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
@@ -1225,7 +1233,8 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${messageId}/regenerate`, {
           body: JSON.stringify({
-            ...regenerateControlPayload
+            admissionId,
+            ...(retryPdfPreparation ? { retryPdfPreparation: true } : regenerateControlPayload)
           }),
           headers: {
             "content-type": "application/json"

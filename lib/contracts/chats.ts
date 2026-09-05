@@ -1,3 +1,4 @@
+import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
 import type {
   ErrorResponse,
   MutationOriginErrorCode,
@@ -59,6 +60,7 @@ export type {
 };
 
 export type ThreadMessage = {
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   author?: ProjectMessageAuthorWire | null;
@@ -212,6 +214,7 @@ export type ChatDetail = WorkspaceChatSummary & {
 };
 
 export type ChatMessageWire = {
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   author?: ProjectMessageAuthorWire | null;
@@ -871,6 +874,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     return null;
   }
 
+  const pdfPreparation = value.pdfPreparation === undefined ? undefined : decodeChatPdfPreparations(value.pdfPreparation);
+  if (pdfPreparation === null) return null;
   const id = requiredString(value.id);
   const citationMessageId = value.citationMessageId === undefined
     ? null
@@ -948,6 +953,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     return null;
   }
   return {
+    ...(pdfPreparation ? { pdfPreparation } : {}),
     artifactSummary,
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
     ...(author !== undefined ? { author } : {}),

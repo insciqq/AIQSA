@@ -1173,6 +1173,7 @@ async function objectIsReferenced(
   const rows = await tx.$queryRaw<Array<{ referenced: boolean }>>(Prisma.sql`
     SELECT (
       EXISTS (SELECT 1 FROM "Attachment" WHERE "storageKey" = ${storageKey}) OR
+      EXISTS (SELECT 1 FROM "ChatPdfArtifact" WHERE "storageKey" = ${storageKey}) OR
       EXISTS (
         SELECT 1 FROM "KnowledgeDocumentVersion"
         WHERE "originalStorageKey" = ${storageKey}

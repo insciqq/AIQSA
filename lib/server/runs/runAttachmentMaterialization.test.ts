@@ -1,3 +1,4 @@
+import { encodeChatPdfArtifact } from "../uploads/chatPdfCore";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderModelCapabilities } from "../providers/types";
@@ -59,6 +60,25 @@ function repository(records: readonly RunAttachmentRecord[]) {
 }
 
 describe("run attachment materialization", () => {
+  it("restores the exact run-owned PDF artifact without exposing private artifact references", async () => {
+    const encoded = encodeChatPdfArtifact({ text: "Accepted document text.", pageCount: 2 });
+    const source = { ...attachment("pdf", "pdf", 100), checksum: "a".repeat(64), extractedText: null,
+      preparedPdf: { byteSize: encoded.body.length, checksum: encoded.checksum, pageCount: 2,
+        sourceChecksum: "a".repeat(64), storageKey: "chat-pdf/accepted" } };
+    const store = repository([source]);
+    const getObject = vi.fn(async (storageKey: string) => ({ storageKey, contentType: "application/json", body: encoded.body }));
+    const result = await loadProviderAttachments({ repository: store, storage: { getObject } }, "user", ["pdf"], {
+      capabilities: baseCapabilities, limits: limits(), runId: "accepted-run"
+    });
+    expect(store.loadAttachments).toHaveBeenCalledWith("user", ["pdf"], undefined, "accepted-run");
+    expect(result[0]?.extractedText).toBe("Accepted document text.");
+    expect(result[0]).not.toHaveProperty("preparedPdf");
+    expect(JSON.stringify(result)).not.toContain("chat-pdf/accepted");
+    await expect(loadProviderAttachments({ repository: store, storage: { getObject } }, "user", ["pdf"], {
+      capabilities: baseCapabilities, limits: limits()
+    })).rejects.toMatchObject({ code: "attachment_object_read_failed" });
+  });
+
   it.each(["processing", "failed"])("rejects a %s attachment before object reads", async (status) => {
     const unsettled = { ...attachment("pending", "document", 10), status };
     const getObject = vi.fn();

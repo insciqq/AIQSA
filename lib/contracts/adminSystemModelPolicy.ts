@@ -1,6 +1,7 @@
 import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 
 export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
+  visionInput?: "not_verified" | "verified";
   defaultReasoningEffort: string | null;
   forcedToolCall: "not_verified" | "unsupported" | "verified";
   reasoningEfforts: string[];
@@ -20,6 +21,7 @@ export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
   rerankerCandidates: AdminRerankerModelCandidate[];
   policy: {
+    chatPdfPreparationAllowed: boolean;
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
     rerankerRoute?: {
       entries: AdminRerankerRouteEntry[];
@@ -54,6 +56,8 @@ function baseCandidate(value: unknown): boolean {
 
 function candidate(value: unknown): value is AdminSystemModelCandidate {
   if (!record(value) || !baseCandidate(value) ||
+    (value.visionInput !== undefined && value.visionInput !== "verified" &&
+      value.visionInput !== "not_verified") ||
     !Array.isArray(value.reasoningEfforts) ||
     value.reasoningEfforts.length > 16 ||
     !value.reasoningEfforts.every((effort) => boundedText(effort, 32)) ||
@@ -104,6 +108,7 @@ export function decodeAdminSystemModelPolicyResponse(
     (systemModel === null && reasoningEffort !== null) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
+    typeof policy.chatPdfPreparationAllowed !== "boolean" ||
     !(reasoningEffort === null || boundedText(reasoningEffort, 32)) ||
     typeof policy.updatedAt !== "string" || !Number.isFinite(Date.parse(policy.updatedAt)) ||
     !Number.isSafeInteger(policy.version) || Number(policy.version) < 1) return null;
@@ -113,6 +118,7 @@ export function decodeAdminSystemModelPolicyResponse(
       candidates: catalog.candidates,
       rerankerCandidates: catalog.rerankerCandidates,
       policy: {
+        chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed,
         reasoningEffort: reasoningEffort as string | null,
         rerankerModel: rerankerModel as
           (AdminRerankerModelCandidate & { available: boolean }) | null,

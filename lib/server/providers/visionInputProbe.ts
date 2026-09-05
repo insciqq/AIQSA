@@ -84,8 +84,9 @@ export function createProviderVisionInputProbe(input: Readonly<{
         return false;
       }
       const image = await fixture();
+      const deadline = AbortSignal.timeout(120_000);
       const result = await input.execute(snapshot, request(snapshot, image), {
-        ...(signal ? { signal } : {}),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
         timeoutMs: 120_000
       });
       return result.finalText.trim() === VISION_INPUT_PROBE_CODE;

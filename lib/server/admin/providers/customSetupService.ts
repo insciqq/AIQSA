@@ -11,6 +11,7 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeVisionInputVerificationEvidence, hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
   adminSearchExecutionDefaults,
@@ -190,6 +191,7 @@ function validatedEvidence(
     outcome.evidence.forcedToolCall
   );
   const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
+  const visionInput = decodeVisionInputVerificationEvidence(outcome.evidence.visionInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(
     outcome.evidence.compatibility
@@ -208,9 +210,12 @@ function validatedEvidence(
     (compatibility && (
       compatibility.modelAccess !== "verified" ||
       (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
+      (compatibility.vision === "verified") !== Boolean(visionInput) ||
       (compatibility.forcedToolCall === "verified") !== Boolean(forcedToolCall) ||
       (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput)
     )) ||
+    (Object.hasOwn(outcome.evidence, "visionInput") &&
+      (!visionInput || !hasVerifiedVisionInput(outcome.evidence, model) || model.modelClass !== "answer")) ||
     (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
@@ -233,6 +238,7 @@ function validatedEvidence(
     method: "tiny_generation",
     selectedProviders: [],
     ...(pdfInput ? { pdfInput } : {}),
+    ...(visionInput ? { visionInput } : {}),
     ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: model.upstreamModelId

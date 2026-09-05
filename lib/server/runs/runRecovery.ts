@@ -1720,6 +1720,8 @@ async function recoverCheckpointedToolLoop(
       attachmentIds,
       {
         capabilities: run.normalizedRequest.modelCapabilities,
+        runId: run.id,
+        ...(run.project ? { projectId: run.project.projectId } : {}),
         limits: attachmentLimits,
         signal,
         workspaceEnabled: run.normalizedRequest.workspace !== undefined
@@ -2857,6 +2859,7 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
     attachmentIds,
     {
       capabilities: normalizedRequest.modelCapabilities,
+      runId: input.runId,
       limits: attachmentLimits,
       ...(input.control.project ? { projectId: input.control.project.projectId } : {}),
       signal: input.signal
@@ -3790,6 +3793,7 @@ async function refreshProviderRunOnceRegistered(
         );
         const attachments = await loadProviderAttachments(deps, userId, attachmentIds, {
           capabilities: acceptedRequest.modelCapabilities,
+          runId,
           limits: attachmentLimits,
           ...(control.project ? { projectId: control.project.projectId } : {}),
           signal
@@ -4428,6 +4432,7 @@ export async function reconcileInstallationRuns(
       run.id,
       run.userId
     ))) return;
+    if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
     if (run.status === "preparing") {
       await deps.repository.recoverPreparingRun({
         now,
@@ -4491,6 +4496,7 @@ export async function reconcileStaleRuns(
       input.userId
     ))) continue;
 
+    if (await deps.repository.hasPendingPdfPreparation?.(run.id)) continue;
     if (run.status === "preparing") {
       await deps.repository.recoverPreparingRun({
         now,
