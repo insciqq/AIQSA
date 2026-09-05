@@ -6,6 +6,7 @@ import {
 } from "./fileLibraryStore";
 
 const response = () => Response.json({
+  nextCursor: null,
   files: [{
     byteSize: 2_048,
     chatId: "chat-1",
@@ -14,6 +15,7 @@ const response = () => Response.json({
     fileName: "brief.pdf",
     id: "attachment-1",
     messageId: "message-1",
+        savedAt: null,
     status: "ready"
   }]
 });
@@ -44,7 +46,7 @@ describe("fileLibraryStore", () => {
   });
 
   it("keeps an explicit retryable error state for malformed responses", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ files: [{ id: "broken" }] })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ nextCursor: null, files: [{ id: "broken" }] })));
 
     await expect(refreshFileLibrary()).rejects.toThrow("file_library_response_invalid");
     expect(useFileLibraryStore.getState()).toMatchObject({

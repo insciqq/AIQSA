@@ -16,7 +16,7 @@ import { prisma } from "@/lib/server/prisma";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type RouteContext = { params: Promise<{ projectId: string }> | { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 function frame(input: Readonly<{ data?: unknown; event?: string; id?: string }>): string {
   return [

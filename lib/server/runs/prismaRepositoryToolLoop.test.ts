@@ -1,10 +1,90 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
-import { createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import { appendRunOutputEvents, createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import type { RunOutputArtifactEvent } from "./runOutputEvents";
+
+describe("Workspace activity publication", () => {
+  it("deduplicates grounded output and Workspace replays within one ordered output stream", async () => {
+    const rows: { eventType: string; payload: RunOutputArtifactEvent["data"]; sequence: number }[] = [];
+    const tx = {
+      modelRunEvent: {
+        aggregate: async () => ({ _max: { sequence: rows.at(-1)?.sequence ?? null } }),
+        createMany: async ({ data }: { data: typeof rows }) => { rows.push(...data); },
+        findFirst: async ({ where }: { where: { eventType: string; payload?: { equals: string } } }) =>
+          where.eventType === "grounding_display"
+            ? [...rows].reverse().find((row) => row.eventType === "grounding_display") ?? null
+            : rows.find((row) => "artifactType" in row.payload &&
+              row.payload.artifactType === "workspace_activity" &&
+              row.payload.payload.updateId === where.payload?.equals) ?? null
+      }
+    } as unknown as Prisma.TransactionClient;
+    const display: RunOutputArtifactEvent = { type: "grounding_display", data: {
+      provider: "gemini", suggestionsHtml: '<a href="https://www.google.com/search?q=weather">Weather</a>',
+      citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.test/source" }]
+    } };
+    const activity: RunOutputArtifactEvent = { type: "artifact", data: {
+      artifactType: "workspace_activity",
+      payload: { id: "command", updateId: "started", kind: "command", phase: "running", command: { preview: "command" } }
+    } };
+    const first = await appendRunOutputEvents(tx, "run", [display, activity, display]);
+    const replay = await appendRunOutputEvents(tx, "run", [activity, display]);
+    expect(rows.map(({ eventType, sequence }) => ({ eventType, sequence }))).toEqual([
+      { eventType: "grounding_display", sequence: 0 }, { eventType: "artifact", sequence: 1 }
+    ]);
+    expect(first).toMatchObject([display, { data: { payload: { sequence: 1 } } }, display]);
+    expect(replay).toEqual([first[1], display]);
+  });
+
+  it.each(["complete", "error", "cancelled"] as const)("keeps provider output fenced after %s while allowing Workspace settlement", async (status) => {
+    const createMany = vi.fn();
+    const tx = {
+      $queryRaw: async () => [{ id: "run", status, errorPayload: { recoveryTerminal: true } }],
+      modelRun: { update: vi.fn() },
+      modelRunEvent: { aggregate: async () => ({ _max: { sequence: 3 } }), createMany }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      $transaction: async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await operations.appendRunOutputEvent("run", {
+      type: "artifact", data: { artifactType: "reasoning", payload: { text: "Late provider output" } }
+    });
+    expect(createMany).not.toHaveBeenCalled();
+    const published = await operations.appendRunOutputEvent("run", {
+      type: "artifact", data: { artifactType: "workspace_activity", payload: {
+        id: "stopped", kind: "workspace_stopped", phase: "succeeded"
+      } }
+    });
+    expect(published).toMatchObject({ data: { payload: { sequence: 4 } } });
+    expect(createMany).toHaveBeenCalledOnce();
+  });
+
+  it("reuses the first durable sequence and payload when a settled tool artifact is replayed", async () => {
+    const rows: { payload: RunOutputArtifactEvent["data"]; sequence: number }[] = [];
+    const tx = {
+      modelRunEvent: {
+        aggregate: async () => ({ _max: { sequence: rows.at(-1)?.sequence ?? null } }),
+        createMany: async ({ data }: { data: typeof rows }) => { rows.push(...data); },
+        findFirst: async ({ where }: { where: { payload: { equals: string; path: string[] } } }) =>
+          rows.find((row) => "artifactType" in row.payload && row.payload.artifactType === "workspace_activity" && row.payload.payload.updateId === where.payload.equals) ?? null
+      }
+    } as unknown as Prisma.TransactionClient;
+    const event = (updateId: string, phase: "running" | "succeeded"): RunOutputArtifactEvent => ({
+      data: { artifactType: "workspace_activity", payload: { command: { preview: "command" }, id: "command", kind: "command", phase, updateId } },
+      type: "artifact"
+    });
+    const first = await appendRunOutputEvents(tx, "run", [event("start", "running")]);
+    const last = await appendRunOutputEvents(tx, "run", [event("poll", "succeeded"), event("poll", "succeeded")]);
+    const replay = await appendRunOutputEvents(tx, "run", [event("start", "running")]);
+    expect(first).toMatchObject([{ data: { payload: { sequence: 0 } } }]);
+    expect(last).toMatchObject([{ data: { payload: { sequence: 1 } } }, { data: { payload: { sequence: 1 } } }]);
+    expect(replay).toEqual(first);
+    expect(rows).toHaveLength(2);
+  });
+});
 
 type ToolCallRow = {
   completedAt: Date | null;

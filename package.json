@@ -80,7 +80,8 @@
     "task:promote": "node scripts/task-ledger.mjs promote",
     "task:park": "node scripts/task-ledger.mjs park",
     "task:restore": "node scripts/task-ledger.mjs restore",
-    "task:complete": "node scripts/task-ledger.mjs complete"
+    "task:complete": "node scripts/task-ledger.mjs complete",
+    "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1063.0",

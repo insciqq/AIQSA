@@ -136,6 +136,21 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("chat PDF database lifecycle", () => {
+  it.each([false, true])("projects admitted PDF preparation as queued before answer dispatch (Workspace: %s)", async (workspace) => {
+    const h = await fixture(false, false, workspace);
+    const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
+    await expect(runs.getRunOutcomeForUser(h.runId, h.userId)).resolves.toEqual({
+      id: h.runId,
+      status: "queued",
+      pdfPreparation: [{ completedPages: 0, limitedReadingQuality: true, longDocument: false,
+        pageCount: 2, phase: "checking", retryable: false, route: "local_text" }]
+    });
+    await expect(runs.getRunOutcomeForUser(h.runId, randomUUID())).resolves.toBeNull();
+    expect(await prisma.modelRun.findUnique({ where: { id: h.runId }, select: { status: true } }))
+      .toEqual({ status: "preparing" });
+    expect(await repository.claim()).toBeNull();
+  });
+
   it("durably admits a Workspace original without a document artifact and preserves that outcome for recovery", async () => {
     const h = await fixture(false, true, true);
     await repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_local_text_unusable");

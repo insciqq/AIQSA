@@ -3,10 +3,38 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRunExecutionResponse } from "../runs/runExecution";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
-import { createChatPdfRunContinuation, chatPdfRunSnapshot } from "./chatPdfRunContinuation";
-import { CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, encodeChatPdfArtifact } from "./chatPdfCore";
+import { createChatPdfRunContinuation, createChatPdfRunFailure, chatPdfRunSnapshot } from "./chatPdfRunContinuation";
+import { CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, ChatPdfPreparationError, encodeChatPdfArtifact } from "./chatPdfCore";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
 
 vi.mock("../runs/runExecution", () => ({ createRunExecutionResponse: vi.fn(() => new Response("done")) }));
+
+describe("terminal PDF Workspace ownership", () => {
+  it.each(["preparing", "cancelled", "error", "streaming", "complete"] as const)(
+    "releases terminal PDF reservations from %s without retiring a successful answer", async (status) => {
+      let currentStatus: string = status;
+      const repository = {
+        settlePreparingRunFailure: vi.fn(async () => status === "preparing"),
+        getRunControlForRecovery: vi.fn(async () => ({
+          id: "run", chatId: "chat", assistantMessageId: "answer", modelId: "fake", provider: "fake",
+          providerResponseId: null, status: currentStatus
+        })),
+        hasPendingPdfPreparation: vi.fn(async () => true),
+        failRun: vi.fn(async () => { currentStatus = "error"; return true; })
+      };
+      const settle = vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: false }));
+      await createChatPdfRunFailure({ repository, workspace: { settle } as unknown as WorkspaceCoordinator })(
+        { claimToken: "claim", runId: "run", userId: "owner" },
+        new ChatPdfPreparationError("pdf_preparation_context_limit")
+      );
+      if (status === "complete") expect(settle).not.toHaveBeenCalled();
+      else expect(settle).toHaveBeenCalledExactlyOnceWith({
+        outcome: status === "cancelled" ? "cancelled" : "failed", runId: "run", userId: "owner"
+      });
+      expect(repository.failRun).toHaveBeenCalledTimes(status === "streaming" ? 1 : 0);
+    }
+  );
+});
 
 function fixture(workspace = false) {
   const adapter = createFakeProviderAdapter();

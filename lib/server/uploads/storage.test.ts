@@ -6,9 +6,11 @@ import {
   PutObjectCommand,
   UploadPartCommand
 } from "@aws-sdk/client-s3";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, type Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { presign, s3Send } = vi.hoisted(() => ({ presign: vi.fn(), s3Send: vi.fn() }));
@@ -176,6 +178,80 @@ describe("filesystem storage bounded reads", () => {
   });
 });
 
+describe("atomic streamed storage integrity", () => {
+  it.each((["filesystem", "S3"] as const).flatMap((kind) => (["short", "long", "source failure", "abort"] as const).map((fault) => ({ kind, fault }))))(
+    "$kind rejects $fault without replacing the object or retaining an upload", async ({ kind, fault }) => {
+      const root = await mkdtemp(join(tmpdir(), "aiqsa-storage-integrity-"));
+      temporaryRoots.push(root);
+      const storage = kind === "filesystem" ? createFileSystemStorageAdapter(root) : createS3StorageAdapter(s3Env);
+      let committed = Buffer.from("safe");
+      if (kind === "filesystem") await storage.putObject(object("safe"));
+      else s3Send.mockImplementation(async (command: PutObjectCommand) => {
+        const chunks: Buffer[] = [];
+        let received = 0;
+        for await (const chunk of command.input.Body as AsyncIterable<Uint8Array>) {
+          chunks.push(Buffer.from(chunk)); received += chunk.byteLength;
+          if (received === command.input.ContentLength) committed = Buffer.concat(chunks);
+        }
+        return {};
+      });
+      const cancel = vi.fn();
+      const abort = new AbortController();
+      let entered!: () => void;
+      const pending = new Promise<void>((resolve) => { entered = resolve; });
+      let pulls = 0;
+      const body = new ReadableStream<Uint8Array>({
+        cancel,
+        pull(controller) {
+          if (pulls++ === 0) { controller.enqueue(Buffer.from("go")); return; }
+          if (fault === "short") controller.close();
+          if (fault === "long") controller.enqueue(Buffer.from("too long"));
+          if (fault === "source failure") controller.error(new Error("synthetic_source_failure"));
+          if (fault === "abort") { entered(); return new Promise<void>(() => {}); }
+        }
+      }, { highWaterMark: 0 });
+      const write = storage.putObjectStream!({ body, byteSize: 4, checksum: createHash("sha256").update("good").digest("hex"), contentType: "application/octet-stream", signal: abort.signal, storageKey: "owned/object.bin" });
+      const rejection = expect(write).rejects.toThrow(fault === "abort" ? "synthetic_abort" : fault === "source failure" ? "synthetic_source_failure" : fault === "short" ? "stored_object_size_mismatch" : "stored_object_too_large");
+      if (fault === "abort") { await pending; abort.abort(new Error("synthetic_abort")); }
+      await rejection;
+      expect(kind === "filesystem" ? (await storage.getObject("owned/object.bin")).body : committed).toEqual(Buffer.from("safe"));
+      if (fault === "abort") expect(cancel).toHaveBeenCalledOnce();
+      if (kind === "filesystem") expect(await readdir(join(root, "owned"))).toEqual(["object.bin"]);
+    }
+  );
+
+  it.each(["filesystem", "S3"] as const)("%s preserves the previous object on digest mismatch and accepts a verified retry", async (kind) => {
+    const expected = Buffer.from("good");
+    let committed = Buffer.from("safe");
+    const root = await mkdtemp(join(tmpdir(), "aiqsa-storage-integrity-"));
+    temporaryRoots.push(root);
+    const storage = kind === "filesystem" ? createFileSystemStorageAdapter(root) : createS3StorageAdapter(s3Env);
+    if (kind === "filesystem") await storage.putObject(object("safe"));
+    else s3Send.mockImplementation(async (command: PutObjectCommand) => {
+      expect(command).toBeInstanceOf(PutObjectCommand);
+      const chunks: Buffer[] = [];
+      let received = 0;
+      for await (const chunk of command.input.Body as AsyncIterable<Uint8Array>) {
+        chunks.push(Buffer.from(chunk)); received += chunk.byteLength;
+        // An HTTP server can commit immediately at Content-Length, before
+        // the producer's iterator has been asked for its final EOF.
+        if (received === command.input.ContentLength) committed = Buffer.concat(chunks);
+      }
+      return {};
+    });
+    const write = (bytes: Buffer) => storage.putObjectStream!({
+      ...object("", "owned/object.bin"), checksum: createHash("sha256").update(expected).digest("hex"), byteSize: expected.length,
+      body: new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(bytes.subarray(0, 2)); controller.enqueue(bytes.subarray(2)); controller.close();
+      } })
+    });
+    await expect(write(Buffer.from("evil"))).rejects.toThrow("stored_object_checksum_mismatch");
+    expect(kind === "filesystem" ? (await storage.getObject("owned/object.bin")).body : committed).toEqual(Buffer.from("safe"));
+    await write(expected);
+    expect(kind === "filesystem" ? (await storage.getObject("owned/object.bin")).body : committed).toEqual(expected);
+  });
+});
+
 describe("S3 storage bounded reads", () => {
   it("re-chunks a coalesced proxy body below S3-compatible streaming limits", async () => {
     const source = Buffer.alloc(16 * 1_024 * 1_024 + 1, 0x61);
@@ -203,6 +279,38 @@ describe("S3 storage bounded reads", () => {
 
     expect(observedChunkBytes).toEqual([8 * 1_024 * 1_024, 8 * 1_024 * 1_024, 1]);
     expect((s3Send.mock.calls[0]?.[0] as PutObjectCommand).input.ContentLength).toBe(source.byteLength);
+  });
+
+  it("rejects a failing upload body with the source error and aborts the PUT", async () => {
+    const failure = new Error("source_stream_failed");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.error(failure);
+      }
+    });
+    // Like the SDK's node handler: the body is piped with no error listener
+    // and the request only settles through its abort signal.
+    s3Send.mockImplementationOnce(
+      (command: PutObjectCommand, options?: { abortSignal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.abortSignal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("transport aborted", "AbortError")),
+            { once: true }
+          );
+          (command.input.Body as Readable).pipe(new PassThrough());
+        })
+    );
+    const storage = createS3StorageAdapter(s3Env);
+
+    await expect(storage.putObjectStream!({
+      body,
+      byteSize: 4,
+      contentType: "application/octet-stream",
+      storageKey: "owned/faulted.bin"
+    })).rejects.toBe(failure);
+    expect((s3Send.mock.calls[0]?.[1] as { abortSignal?: AbortSignal }).abortSignal?.aborted).toBe(true);
   });
 
   it("requests only maxBytes plus one sentinel byte and accepts the exact boundary", async () => {

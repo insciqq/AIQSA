@@ -10,7 +10,8 @@ import { normalizeTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
   summarizeMessageRunArtifacts,
-  summarizeMessageRunToolActivity
+  summarizeMessageRunToolActivity,
+  summarizeMessageRunWorkspaceActivity
 } from "../chats/prismaRepository";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
@@ -1288,7 +1289,9 @@ export function createPrismaRunRepository(
                 ? { phase: run.status === "error" ? "failed" : "cancelled",
                     retryable: run.status === "error" && run.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
             id: run.id,
-            status: acceptedRunStatus(run.status)
+            status: run.status === "preparing" && run.chatPdfPreparation
+              ? "queued"
+              : acceptedRunStatus(run.status)
           }
         : null;
     },
@@ -1379,6 +1382,9 @@ export function createPrismaRunRepository(
                   },
                   normalizedRequest: true,
                   status: true,
+                  workspaceRunBinding: {
+                    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true }
+                  },
                   toolCalls: {
                     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
                     select: {
@@ -1513,7 +1519,8 @@ export function createPrismaRunRepository(
                 projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
                   ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
                       retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
-              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null
+              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null,
+              workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
             };
           })
         };
@@ -1567,6 +1574,7 @@ export function createPrismaRunRepository(
 
       const attachments = await prismaClient.attachment.findMany({
         where: {
+          savedAt: null,
           id: {
             in: attachmentIds
           },

@@ -20,7 +20,7 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
   await prisma.user.create({ data: { id: userId, displayName: "Summary test", status: "active" } });
   try {
     if (mode === "PROJECT") {
-      const result = await createPrismaProjectRepository(prisma).create({ userId, actorDisplayName: "Summary test", name: "Summary project" });
+      const result = await createPrismaProjectRepository(prisma).create({ userId, actorDisplayName: "Summary test", name: "Summary project", description: "" });
       if (result.kind !== "ok") throw new Error(result.kind);
       projectId = result.value.id;
     }
@@ -61,7 +61,7 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
 function service() {
   const repository = createChatContinuationRepository(prisma);
   const execute = vi.fn<Parameters<typeof createChatContinuationService>[0]["execute"]>(async (_role, _request, options) => {
-    options.onUsage?.({ inputTokens: 50, outputTokens: 12, totalTokens: 62 });
+    options.onUsage?.({ inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62 });
     return { summary: "## Goal\nRelease a small feature.\n## Decisions\nKeep find_tools unchanged." };
   });
   return { repository, execute, continueChat: createChatContinuationService({ repository, execute,
@@ -103,7 +103,7 @@ it("serves one visible summary from the active branch, preserving source, scope,
   expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/?chat=${chatId}`);
   expect(await continuationSourceHref(prisma, result.chatId, randomUUID())).toBeNull();
   expect(await prisma.usageEvent.findMany({ where: { chatId } })).toEqual([
-    expect.objectContaining({ userId, inputTokens: 50, outputTokens: 12, totalTokens: 62, modelId: "summary-test-model", estimatedCostMicros: null })
+    expect.objectContaining({ userId, inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62, modelId: "summary-test-model", estimatedCostMicros: null })
   ]);
 }));
 

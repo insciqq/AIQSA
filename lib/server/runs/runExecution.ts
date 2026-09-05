@@ -162,13 +162,19 @@ import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult"
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { workspaceActivityEvent } from "../workspace/activityProjection";
+import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 
 const globalForRuns = globalThis as unknown as {
   __aiqsaActiveRunControllers?: Map<string, AbortController>;
+  __aiqsaRunSettlements?: Map<string, Promise<void>>;
 };
 const activeRunControllers = globalForRuns.__aiqsaActiveRunControllers ?? new Map<string, AbortController>();
 globalForRuns.__aiqsaActiveRunControllers = activeRunControllers;
+// Shared with the cancel route's bundle for the same reason as the controllers.
+const runSettlements = globalForRuns.__aiqsaRunSettlements ?? new Map<string, Promise<void>>();
+globalForRuns.__aiqsaRunSettlements = runSettlements;
 
 export type ActiveRunControllerRegistry = Readonly<{
   abort(runId: string): boolean;
@@ -178,6 +184,12 @@ export type ActiveRunControllerRegistry = Readonly<{
     release(): void;
     signal: AbortSignal;
   }> | null;
+  /**
+   * Resolves once the run executing in this process finished its terminal
+   * handling (tool cancellation, Workspace settlement). Null when no such run
+   * is executing here.
+   */
+  settled(runId: string): Promise<void> | null;
 }>;
 
 export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.freeze({
@@ -198,6 +210,9 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
   },
   ids(): readonly string[] {
     return [...activeRunControllers.keys()];
+  },
+  settled(runId: string): Promise<void> | null {
+    return runSettlements.get(runId) ?? null;
   },
   register(runId: string) {
     if (activeRunControllers.has(runId)) return null;
@@ -385,7 +400,8 @@ function serializeChatUpdate(
       role: message.role,
       status: message.status,
       ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
-      toolActivity: message.toolActivity ?? null
+      toolActivity: message.toolActivity ?? null,
+      workspaceActivity: message.workspaceActivity ?? null
     }))
   } satisfies ChatUpdateDataWire;
 }
@@ -399,7 +415,8 @@ async function emit(
 ): Promise<void> {
   const outputEvent = projectRunOutputArtifactEvent(event);
   if (outputEvent) {
-    await repository.appendRunOutputEvent(runId, outputEvent);
+    const published = await repository.appendRunOutputEvent(runId, outputEvent);
+    if (published.type === "artifact" && published.data.artifactType === "workspace_activity") event = published;
   }
 
   if (event.type === "grounding_display" && !outputEvent) return;
@@ -646,6 +663,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const egressReceiptRequired = serverExternalToolMode || hostedSearchMode ||
     input.prepared.providerRequest.personalContext !== undefined;
   activeRunControllers.set(runId, abortController);
+  let resolveSettled: () => void = () => undefined;
+  runSettlements.set(runId, new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  }));
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -663,6 +684,27 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       const signal = workspaceTurnController
         ? AbortSignal.any([abortController.signal, workspaceTurnController.signal])
         : abortController.signal;
+      // Terminal Workspace settlement runs on every exit path so a stopped,
+      // timed-out, or failed turn never leaves a live guest process or a
+      // session stuck in RUNNING/CREATING. Best effort: it must not mask the
+      // run's own terminal persistence.
+      // Client-safe Workspace timeline entries ride the same emit path as
+      // every other durable artifact: persisted exactly, streamed live.
+      const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
+        await emit(controller, encoder, input.repository, runId, workspaceActivityEvent(entry));
+      };
+      const settleWorkspace = async (
+        outcome: "cancelled" | "completed" | "failed" | "timed_out"
+      ) => {
+        if (!normalizedRequest.workspace || !input.workspace) return;
+        await input.workspace.settle({
+          onActivity: onWorkspaceActivity,
+          outcome,
+          runId,
+          userId: input.userId,
+          workspace: normalizedRequest.workspace
+        }).catch(() => undefined);
+      };
       const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
         ...(input.prepared.project
@@ -2129,6 +2171,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   result = await input.workspace!.execute({
                     call,
                     modelRunToolCallId: claim.call.id,
+                    onActivity: onWorkspaceActivity,
                     runId,
                     signal: context.signal,
                     userId: input.userId,
@@ -2642,12 +2685,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               "Workspace execution is unavailable"
             );
           }
-          await input.workspace.finalize({
+          // Capture and receiver retirement must finish before completion.
+          // The durable pending obligation is picked up independently.
+          const handoff = await input.workspace.handoff({
+            onActivity: onWorkspaceActivity,
             runId,
             signal,
             userId: input.userId,
             workspace: normalizedRequest.workspace
           });
+          if (handoff.status !== "ready") throw new WorkspaceRuntimeError("workspace_operation_stale");
+          throwIfAborted(signal);
+          await assertProjectRunAccessCurrent(true);
         }
         const contextStatusEvent = {
           type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
@@ -2719,8 +2768,32 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           !abortController.signal.aborted;
         if (abortController.signal.aborted || isAbortError(error) && !workspaceTurnTimedOut) {
           await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
+          await settleWorkspace("cancelled");
           await tokenBuffer.flush().catch(() => undefined);
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
+          // A consumer still attached after Stop receives the settled
+          // projection and an explicit cancelled terminal frame instead of a
+          // bare stream end it would have to treat as a lost connection.
+          try {
+            const chatUpdate = await input.repository.getChatUpdateForRun({
+              assistantMessageId: input.created.assistantMessageId,
+              chatId: normalizedRequest.chatId,
+              userId: input.userId,
+              userMessageId: input.created.userMessageId
+            });
+            if (chatUpdate) {
+              emitTransient(controller, encoder, {
+                data: serializeChatUpdate(chatUpdate),
+                type: "chat_update"
+              });
+            }
+          } catch {
+            // The browser reconciles through its post-cancel detail refresh.
+          }
+          emitTransient(controller, encoder, {
+            data: { runId, status: "cancelled" },
+            type: "done"
+          });
           return;
         }
 
@@ -2730,6 +2803,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             userId: input.userId
           }).catch(() => undefined);
         }
+        await settleWorkspace(workspaceTurnTimedOut ? "timed_out" : "failed");
         let failure = workspaceTurnTimedOut
           ? workspaceTurnController.signal.reason
           : error;
@@ -2801,6 +2875,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);
         }
+        runSettlements.delete(runId);
+        resolveSettled();
 
         try {
           controller.close();

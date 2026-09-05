@@ -7,7 +7,8 @@ import type {
   ChatUsageStats,
   ThreadArtifactSummary,
   ThreadAssistantIdentity,
-  ThreadToolActivity
+  ThreadToolActivity,
+  ThreadWorkspaceActivity
 } from "../../contracts/chats";
 import type { ChatWorkspaceState } from "../../contracts/workspace";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
@@ -200,6 +201,7 @@ export type RunChatUpdateRecord = {
     role: string;
     status: string;
     toolActivity?: ThreadToolActivity | null;
+    workspaceActivity?: ThreadWorkspaceActivity | null;
   }[];
 };
 
@@ -489,7 +491,7 @@ export type RunRepository = {
     text: string,
     options: Readonly<{ allowErrored?: boolean; runId: string }>
   ): Promise<void>;
-  appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<void>;
+  appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
   beginToolLoopProviderRound(input: {
     providerContinuation: ToolLoopJsonValue | null;
     providerCursor?: number | string | null;

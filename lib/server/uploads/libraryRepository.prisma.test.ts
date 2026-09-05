@@ -37,6 +37,35 @@ describe("Prisma attachment Library repository", () => {
     await prisma.$disconnect();
   });
 
+  it("pages saved files before recent chat attachments without dropping a date tie", async () => {
+    const userId = `file-library-test-${randomUUID()}`;
+    await prisma.user.create({ data: { id: userId, displayName: "Library pagination" } });
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Recent files", userId } });
+      const message = await prisma.message.create({ data: { chatId: chat.id, role: "user", content: {} } });
+      await prisma.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: message.id } });
+      const recent = await createAttachment({ chatId: chat.id, messageId: message.id, fileName: "recent.txt", userId });
+      const saved = await Promise.all([1, 2].map((value) => prisma.attachment.create({ data: {
+        byteSize: 4, fileName: `saved-${value}.txt`, kind: "document", metadata: {}, mimeType: "text/plain",
+        savedAt: new Date("2020-01-01T00:00:00Z"), status: "ready", storageKey: `file-library-test/${randomUUID()}`, userId
+      } })));
+      const repository = createPrismaAttachmentLibraryRepository(prisma);
+      const expected = [...saved.map((file) => file.id).sort().reverse(), recent.id];
+      let cursor: string | null = null;
+      const actual: string[] = [];
+      for (let page = 0; page < 4; page += 1) {
+        const files = await repository.listSent({ cursor, limit: 1, userId });
+        if (!files.length) break;
+        cursor = files[0]!.id;
+        actual.push(cursor);
+      }
+      expect(actual).toEqual(expected);
+      expect(await repository.listSent({ cursor: recent.id, limit: 1, userId: "other-owner" })).toEqual([]);
+    } finally {
+      await prisma.user.delete({ where: { id: userId } });
+    }
+  });
+
   it("lists only sources on active paths of durable personal chats", async () => {
     const userId = `file-library-test-${randomUUID()}`;
     await prisma.user.create({

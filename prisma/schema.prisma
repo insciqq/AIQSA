@@ -148,6 +148,13 @@ enum WorkspaceCleanupState {
   FAILED
 }
 
+enum WorkspaceExecutionState {
+  ACTIVE
+  TERMINATING
+  CLOSED
+  LOST
+}
+
 enum McpOAuthConnectionState {
   ready
   reauthorization_required
@@ -2639,6 +2646,8 @@ model WorkspaceSession {
   internetEnabled  Boolean
   policyRevision   Int
   version          Int                   @default(1)
+  operationOwner   String?               @db.VarChar(160)
+  operationExpiresAt DateTime?
   lastErrorCode    String?               @db.VarChar(64)
   lastActiveAt     DateTime              @default(now())
   stoppedAt        DateTime?
@@ -2647,6 +2656,7 @@ model WorkspaceSession {
   updatedAt        DateTime              @updatedAt
   chat             Chat                  @relation(fields: [chatId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   cleanupJob       WorkspaceCleanupJob?
+  executions       WorkspaceExecution[]
   runBindings      WorkspaceRunBinding[]
 
   @@index([state, expiresAt])
@@ -2786,6 +2796,7 @@ model ModelRun {
   userMessage                  Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
   workspaceRunBinding          WorkspaceRunBinding?
+  workspaceExecutions          WorkspaceExecution[]
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
 
   @@unique([userId, id])
@@ -3133,6 +3144,7 @@ model ModelRunToolCall {
   memoryHistoryRun           MemoryHistoryRun?
   memoryToolEvents           MemoryToolEvent[]
   memoryToolEgressReceipts   MemoryToolEgressReceipt[]
+  workspaceExecution         WorkspaceExecution?
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
@@ -3559,6 +3571,7 @@ model Attachment {
   processingErrorCode String?                  @db.VarChar(64)
   byteSize            Int
   extractedText       String?
+  savedAt             DateTime?
   metadata            Json
   createdAt           DateTime                 @default(now())
   updatedAt           DateTime                 @default(now()) @updatedAt
@@ -3572,6 +3585,7 @@ model Attachment {
 
   @@unique([id, userId])
   @@index([userId, createdAt])
+  @@index([userId, savedAt])
   @@index([projectId, createdAt])
   @@index([producerModelRunId])
   @@index([uploaderUserId])
@@ -3590,18 +3604,24 @@ model WorkspaceRunBinding {
   toolCatalogHash     String               @db.Char(64)
   toolDefinitions     Json
   outputDirectory     String               @db.VarChar(255)
-  exportState         WorkspaceExportState @default(PENDING)
-  exportAttemptCount  Int                  @default(0)
-  lastExportErrorCode String?              @db.VarChar(64)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  modelRun            ModelRun             @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  workspaceSession    WorkspaceSession     @relation(fields: [workspaceSessionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  outputs             WorkspaceRunOutput[]
-  toolCalls           ModelRunToolCall[]
+  exportState          WorkspaceExportState @default(PENDING)
+  exportAttemptCount   Int                  @default(0)
+  lastExportErrorCode  String?              @db.VarChar(64)
+  exportLeaseToken     String?              @db.VarChar(64)
+  exportLeaseExpiresAt DateTime?
+  exportStartedAt      DateTime?
+  exportCompletedAt    DateTime?
+  outputCapture        Json?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  modelRun             ModelRun             @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  workspaceSession     WorkspaceSession     @relation(fields: [workspaceSessionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  outputs              WorkspaceRunOutput[]
+  toolCalls            ModelRunToolCall[]
 
   @@index([workspaceSessionId, createdAt])
   @@index([exportState, updatedAt])
+  @@index([exportState, exportLeaseExpiresAt])
 }
 
 model WorkspaceRunOutput {
@@ -3617,6 +3637,27 @@ model WorkspaceRunOutput {
 
   @@unique([workspaceRunBindingId, relativePath])
   @@index([workspaceRunBindingId, createdAt])
+}
+
+model WorkspaceExecution {
+  id                   String                  @id @default(uuid())
+  workspaceSessionId   String
+  modelRunId           String
+  modelRunToolCallId   String                  @unique
+  runtimeExecSessionId String                  @db.VarChar(256)
+  state                WorkspaceExecutionState @default(ACTIVE)
+  startedAt            DateTime                @default(now())
+  completedAt          DateTime?
+  lastErrorCode        String?                 @db.VarChar(64)
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  workspaceSession     WorkspaceSession        @relation(fields: [workspaceSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  modelRun             ModelRun                @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  modelRunToolCall     ModelRunToolCall        @relation(fields: [modelRunToolCallId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([workspaceSessionId, runtimeExecSessionId])
+  @@index([modelRunId, state])
+  @@index([workspaceSessionId, state])
 }
 
 model AttachmentProcessingJob {

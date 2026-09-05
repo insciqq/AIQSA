@@ -659,7 +659,9 @@ describe("Library resource panels", () => {
     render(
       <FilesPanelV2
         files={[{
+          canOpenChat: true,
           id: "upload",
+          saved: false,
           meta: "214 kB",
           name: "source.csv",
           private: true,
@@ -681,7 +683,9 @@ describe("Library resource panels", () => {
     const { rerender } = render(
       <FilesPanelV2
         files={[{
+          canOpenChat: true,
           id: "upload",
+          saved: false,
           meta: "214 kB",
           name: "source.csv",
           private: true,
@@ -689,7 +693,7 @@ describe("Library resource panels", () => {
         }]}
       />
     );
-    expect(screen.getByText("Processing failed. The original upload remains in its chat.")).toBeVisible();
+    expect(screen.getByText("Text processing failed. You can still download the file or use it in Workspace.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "More actions for source.csv" }));
     expect(screen.getByRole("menuitem", { name: "Open in chat" })).toBeDisabled();
 

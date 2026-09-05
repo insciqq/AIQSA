@@ -204,7 +204,8 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     runId: message.modelRunId ?? null,
     status: normalizeThreadStatus(message.status),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
-    toolActivity: message.toolActivity ?? null
+    toolActivity: message.toolActivity ?? null,
+    workspaceActivity: message.workspaceActivity ?? null
   };
 }
 

@@ -119,6 +119,8 @@ import {
   type ProjectRunAdmission
 } from "./runRepositoryContract";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
+import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
+import { workspaceRunOperationOwner } from "../workspace/sessionOperation";
 import {
   WORKSPACE_POLICY_ID,
   workspaceRunOutputDirectory
@@ -230,6 +232,7 @@ async function insertAcceptedWorkspaceRunBinding(
   if (!Number.isFinite(expiresAt.getTime())) {
     throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
   }
+  await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "chatId" = ${input.chatId} FOR UPDATE`;
   const existing = await tx.workspaceSession.findUnique({
     where: { chatId: input.chatId }
   });
@@ -239,13 +242,38 @@ async function insertAcceptedWorkspaceRunBinding(
       existing.sandboxName !== plan.sandboxName ||
       existing.imageRef !== plan.normalized.imageRef ||
       existing.internetEnabled !== plan.normalized.internetEnabled ||
+      existing.operationOwner !== null ||
+      existing.state === "FAILED" ||
+      existing.state === "RUNNING" ||
       existing.state === "CREATING" ||
       existing.state === "DELETING"
     ) {
       throw new WorkspaceRunConflictError("workspace_busy");
     }
+    // Session-operation fence: background export recovery claims its lease
+    // under this same row lock only while the chat has no active run, and a
+    // new run must not mutate the sandbox while such a lease streams outputs.
+    const openExecutions = await tx.workspaceExecution.count({
+      where: { workspaceSessionId: existing.id, state: { in: [...WORKSPACE_EXECUTION_OPEN_STATES] } }
+    });
+    const unregisteredCommands = await tx.modelRunToolCall.count({ where: {
+      ...UNREGISTERED_WORKSPACE_COMMAND_FILTER,
+      workspaceRunBinding: { workspaceSessionId: existing.id }
+    } });
+    if (openExecutions > 0 || unregisteredCommands > 0) throw new WorkspaceRunConflictError("workspace_busy");
+    const liveExports = await tx.workspaceRunBinding.count({
+      where: {
+        exportLeaseExpiresAt: { gt: new Date() },
+        exportState: "EXPORTING",
+        workspaceSessionId: existing.id
+      }
+    });
+    if (liveExports > 0) throw new WorkspaceRunConflictError("workspace_busy");
     await tx.workspaceSession.update({
-      data: { expiresAt, lastActiveAt: new Date() },
+      data: {
+        expiresAt, lastActiveAt: new Date(), operationOwner: workspaceRunOperationOwner(ids.runId),
+        operationExpiresAt: null, version: { increment: 1 }
+      },
       where: { id: existing.id }
     });
   } else {
@@ -256,6 +284,7 @@ async function insertAcceptedWorkspaceRunBinding(
         id: plan.sessionId,
         imageRef: plan.normalized.imageRef,
         internetEnabled: plan.normalized.internetEnabled,
+        operationOwner: workspaceRunOperationOwner(ids.runId),
         policyRevision: plan.policyRevision,
         sandboxName: plan.sandboxName,
         state: "PENDING"
@@ -943,6 +972,7 @@ export async function admitProjectRunWithClient(
               chatId: null,
               id: { in: attachmentIds },
               messageId: null,
+              savedAt: null,
               projectId: project.projectId
             }
           });
@@ -1328,6 +1358,7 @@ export async function admitPreparingRunWithClient(
               chatId: null,
               id: { in: attachmentIds },
               messageId: null,
+              savedAt: null,
               userId: input.userId
             }
           });

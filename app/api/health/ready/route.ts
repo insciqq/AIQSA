@@ -34,9 +34,7 @@ function unavailable() {
   );
 }
 
-export async function GET(
-  request: Request = new Request("http://localhost/api/health/ready")
-) {
+export async function GET(request: Request) {
   const configurationIssues = runtimeConfigurationIssues(process.env);
 
   if (configurationIssues.length > 0) {

@@ -3942,6 +3942,24 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("publishes one durable Workspace update when concurrent replay repeats its identity", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Workspace activity replay");
+      const event = {
+        data: { artifactType: "workspace_activity" as const, payload: { command: { preview: "command" }, id: "command", kind: "command" as const, phase: "running" as const, updateId: "start" } },
+        type: "artifact" as const
+      };
+      const [first, duplicate] = await Promise.all([
+        repository.appendRunOutputEvent(created.runId, event),
+        repository.appendRunOutputEvent(created.runId, event)
+      ]);
+      expect(first).toEqual(duplicate);
+      expect(first).toMatchObject({ data: { payload: { sequence: 0 } } });
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: created.runId } })).toBe(1);
+    });
+  });
+
   it("persists only reloadable output artifacts across streaming and completion", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

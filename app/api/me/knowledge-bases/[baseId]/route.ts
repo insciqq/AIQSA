@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultKnowledgeHandlerDeps } from "@/lib/server/knowledge/defaultKnowledge";
 import {
   createGetKnowledgeBaseHandler,
@@ -6,5 +7,5 @@ import {
 
 export const runtime = "nodejs";
 
-export const GET = createGetKnowledgeBaseHandler(defaultKnowledgeHandlerDeps);
-export const PATCH = createUpdateKnowledgeBaseHandler(defaultKnowledgeHandlerDeps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetKnowledgeBaseHandler>> = createGetKnowledgeBaseHandler(defaultKnowledgeHandlerDeps);
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createUpdateKnowledgeBaseHandler>> = createUpdateKnowledgeBaseHandler(defaultKnowledgeHandlerDeps);

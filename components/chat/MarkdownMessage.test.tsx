@@ -477,3 +477,26 @@ describe("MarkdownMessage", () => {
     );
   });
 });
+
+describe("MarkdownMessage link resolution", () => {
+  it("turns resolved links into downloads, unresolved ones into inert code, and leaves web links alone", () => {
+    render(
+      <MarkdownMessage
+        content="See [Report](sandbox:/workspace/output/run-1/report.md), [Missing](sandbox:/workspace/output/run-1/nope.md) and [Docs](https://example.com/docs)."
+        resolveHref={(href) =>
+          href === "sandbox:/workspace/output/run-1/report.md"
+            ? { download: "report.md", href: "/api/attachments/att-1/content" }
+            : href.startsWith("sandbox:") ? "text" : null}
+      />
+    );
+    const download = screen.getByTestId("markdown-resolved-link");
+    expect(download).toHaveAttribute("href", "/api/attachments/att-1/content");
+    expect(download).toHaveAttribute("download", "report.md");
+    expect(download).not.toHaveAttribute("target");
+    expect(screen.getByTestId("markdown-inert-link")).toHaveTextContent("Missing");
+    expect(screen.queryByRole("link", { name: "Missing" })).toBeNull();
+    const docs = screen.getByRole("link", { name: "Docs" });
+    expect(docs).toHaveAttribute("href", "https://example.com/docs");
+    expect(docs).toHaveAttribute("target", "_blank");
+  });
+});

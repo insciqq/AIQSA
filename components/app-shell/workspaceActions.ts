@@ -288,13 +288,14 @@ export function useWorkspaceActions({
 
   function fetchChatDetail(
     chatId: string,
-    options: { admitMissingPersonalSummary?: boolean; force?: boolean } = {}
+    options: { admitMissingPersonalSummary?: boolean; force?: boolean; signal?: AbortSignal; onUnavailable?(): void } = {}
   ): Promise<ChatDetail | null> {
+    if (options.signal?.aborted) return Promise.resolve(null);
     const pending = chatDetailRequestsRef.current.get(chatId);
     if (pending) {
       return options.force
         ? pending.then(() => fetchChatDetail(chatId, {
-            admitMissingPersonalSummary: options.admitMissingPersonalSummary
+            ...options, force: false
           }))
         : pending;
     }
@@ -305,12 +306,14 @@ export function useWorkspaceActions({
       .chats.find((candidate) => candidate.id === chatId);
     const request = (async () => {
       try {
-        const response = await shellFetch(`/api/chats/${chatId}`);
+        const response = await shellFetch(`/api/chats/${chatId}`, options.signal ? { signal: options.signal } : undefined);
         if (!response.ok) {
+          if ([401, 403, 404].includes(response.status)) options.onUnavailable?.();
           throw new Error(`chat_detail_failed_${response.status}`);
         }
 
         const chat = chatDetailBodyFromUnknown(await response.json());
+        if (options.signal?.aborted) return null;
         if (!chat || chat.id !== chatId) {
           throw new Error("chat_detail_malformed");
         }
@@ -331,7 +334,7 @@ export function useWorkspaceActions({
         });
       } catch (error) {
         const message = errorMessage(error);
-        if (loadingChatDetailIdRef.current === chatId && activeChatIdRef.current === chatId) {
+        if (!options.signal?.aborted && loadingChatDetailIdRef.current === chatId && activeChatIdRef.current === chatId) {
           useWorkspaceStore.getState().setActiveChatDetailError(message);
         }
         return null;
@@ -771,14 +774,16 @@ export function useWorkspaceActions({
       forceDetail?: boolean;
       preserveControls?: boolean;
       resumeRuns?: boolean;
+      signal?: AbortSignal;
+      onUnavailable?(): void;
     } = {}
   ) {
     if (!chatId) {
       return null;
     }
 
-    const detail = await fetchChatDetail(chatId, { force: options.forceDetail });
-    if (!detail) {
+    const detail = await fetchChatDetail(chatId, { force: options.forceDetail, signal: options.signal, onUnavailable: options.onUnavailable });
+    if (!detail || options.signal?.aborted) {
       return null;
     }
 

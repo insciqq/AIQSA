@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultProjectHandlerDeps } from "@/lib/server/projects/defaultProjects";
 import {
   createAddProjectResourceHandler,
@@ -6,5 +7,5 @@ import {
 
 export const runtime = "nodejs";
 
-export const GET = createListProjectResourcesHandler(defaultProjectHandlerDeps);
-export const POST = createAddProjectResourceHandler(defaultProjectHandlerDeps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createListProjectResourcesHandler>> = createListProjectResourcesHandler(defaultProjectHandlerDeps);
+export const POST: AsyncRouteHandler<ReturnType<typeof createAddProjectResourceHandler>> = createAddProjectResourceHandler(defaultProjectHandlerDeps);

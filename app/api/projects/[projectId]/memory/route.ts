@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultProjectMemoryHandlerDeps } from "@/lib/server/projects/defaultProjects";
 import {
   createProjectMemoryFactHandler,
@@ -6,5 +7,5 @@ import {
 
 export const runtime = "nodejs";
 
-export const GET = createProjectMemoryListHandler(defaultProjectMemoryHandlerDeps);
-export const POST = createProjectMemoryFactHandler(defaultProjectMemoryHandlerDeps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createProjectMemoryListHandler>> = createProjectMemoryListHandler(defaultProjectMemoryHandlerDeps);
+export const POST: AsyncRouteHandler<ReturnType<typeof createProjectMemoryFactHandler>> = createProjectMemoryFactHandler(defaultProjectMemoryHandlerDeps);

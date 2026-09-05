@@ -19,6 +19,7 @@ import {
 } from "@/components/ui-v2";
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
+import { SavedFilePickerV2 } from "@/features/attachments-v2/SavedFilePickerV2";
 import {
   attachmentItemBlocksSend,
   attachmentSendBlockReasonV2,
@@ -64,7 +65,7 @@ import {
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "add" | "knowledge" | "model" | "search" | "tools" | null;
+export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -78,6 +79,7 @@ export type ComposerV2LayerController = Readonly<{
 
 const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
+  files: "Saved files",
   knowledge: "Knowledge",
   model: "Choose model",
   search: "Web search",
@@ -85,6 +87,7 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
+  files: "Saved files",
   knowledge: "Knowledge",
   model: "Model",
   search: "Web search",
@@ -94,6 +97,7 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
    inside the composer frame. */
 const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   add: 300,
+  files: 380,
   knowledge: 380,
   model: 380,
   search: 330,
@@ -235,6 +239,7 @@ export type ComposerV2Props = Readonly<{
   /** @deprecated MCP availability is configured in Settings; runs use onSelectMcp. */
   onToggleMcpServer?(serverId: string, enabled: boolean): void;
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
+  onReuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   runId?: string | null;
   selectedAssistant?: (Pick<AssistantSummary, "id" | "name"> & {
     includedSkills?: readonly { id: string; name: string }[];
@@ -412,6 +417,7 @@ export function ComposerV2({
   onSend,
   onStop,
   onUploadFiles,
+  onReuseFile,
   runId = null,
   selectedAssistant = null,
   sendWithEnter = true,
@@ -640,6 +646,8 @@ export function ComposerV2({
       if (cancelled || !layerRef.current) return;
       const target = layer === "model"
         ? layerRef.current.querySelector<HTMLElement>("[data-v2-model-search]")
+        : layer === "files"
+          ? layerRef.current.querySelector<HTMLElement>("[data-v2-file-search]")
         : layer === "knowledge"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
             optionElements(layerRef.current)[0]
@@ -1320,7 +1328,7 @@ export function ComposerV2({
               data-kind={layer}
               data-placement={!externalAnchor && layerPlacement.below ? "below" : undefined}
               id={`${layerId}-${layer}`}
-              role={layer === "model" ? "dialog" : "menu"}
+              role={layer === "model" || layer === "files" ? "dialog" : "menu"}
               aria-label={LAYER_LABELS[layer]}
               style={{
                 "--v2-composer-layer-left": `${externalAnchor?.left ?? layerLeft}px`,
@@ -1404,6 +1412,12 @@ export function ComposerV2({
                   })}
                   <p className="v2-composer-privacy-note">Applies to your next message.</p>
                 </div>
+              ) : layer === "files" ? (
+                <SavedFilePickerV2
+                  disabled={inputDisabled || activeRun || uploading}
+                  onUse={async (id, fileName) => await onReuseFile?.(id, fileName) ?? false}
+                  onUsed={closeLayer}
+                />
               ) : layer === "tools" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">MCP tools</p>
@@ -1738,6 +1752,15 @@ export function ComposerV2({
                   >
                     Attach files
                   </CapabilityRow>
+                  {!sharedProject && onReuseFile ? (
+                    <CapabilityRow
+                      icon="library"
+                      disabled={inputDisabled || activeRun || uploading}
+                      reason="Reuse a file or template"
+                      selectionRole="item"
+                      onClick={(event) => openLayer("files", plusTriggerRef.current ?? event.currentTarget)}
+                    >Saved files…</CapabilityRow>
+                  ) : null}
                   <CapabilityRow
                     icon="book"
                     disabled={controlsLocked || activeRun || !knowledgeAvailable}

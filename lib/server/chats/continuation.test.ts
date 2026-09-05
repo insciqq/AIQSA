@@ -20,7 +20,7 @@ function fixture(transcript = "USER: Plan a trip.\nASSISTANT: Budget is 500.") {
     fail: vi.fn(async () => {}), recordUsage: vi.fn(async () => {})
   } satisfies ContinuationRepository;
   const execute = vi.fn<Parameters<typeof createChatContinuationService>[0]["execute"]>(async (_role, _request, options) => {
-    options.onUsage?.({ inputTokens: 80, outputTokens: 10, totalTokens: 90 });
+    options.onUsage?.({ inputTokens: 80, outputTokens: 10, reasoningTokens: 0, totalTokens: 90 });
     return { summary: "## Goal\nPlan a trip.\n## Decisions\nBudget: 500." };
   });
   const resolveSystemModel = vi.fn(async () => model());
@@ -37,7 +37,7 @@ describe("chat continuation service", () => {
     expect(request).not.toHaveProperty("tools");
     expect(request.systemPrompt).toContain("untrusted conversation data");
     expect(f.repository.recordUsage).toHaveBeenCalledWith(expect.objectContaining({
-      ordinal: 1, providerModelId: "fake", modelId: "fake", usage: { inputTokens: 80, outputTokens: 10, totalTokens: 90 }
+      ordinal: 1, providerModelId: "fake", modelId: "fake", usage: { inputTokens: 80, outputTokens: 10, reasoningTokens: 0, totalTokens: 90 }
     }));
     expect(f.repository.complete).toHaveBeenCalledOnce();
   });
@@ -86,11 +86,11 @@ describe("chat continuation service", () => {
   it("records usage on provider failure but never creates a chat or exposes raw errors", async () => {
     const f = fixture();
     f.execute.mockImplementation(async (_role, _request, options) => {
-      options.onUsage?.({ inputTokens: 80 });
+      options.onUsage?.({ inputTokens: 80, outputTokens: 0, reasoningTokens: 0 });
       throw new Error("private provider details");
     });
     await expect(createChatContinuationService(f)(input)).rejects.toThrow("chat_summary_failed");
-    expect(f.repository.recordUsage).toHaveBeenCalledWith(expect.objectContaining({ usage: { inputTokens: 80 } }));
+    expect(f.repository.recordUsage).toHaveBeenCalledWith(expect.objectContaining({ usage: { inputTokens: 80, outputTokens: 0, reasoningTokens: 0 } }));
     expect(f.repository.complete).not.toHaveBeenCalled();
   });
 

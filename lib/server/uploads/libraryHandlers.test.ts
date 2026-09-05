@@ -21,6 +21,7 @@ describe("attachment library handler", () => {
       fileName: "report.pdf",
       id: "attachment-1",
       messageId: "message-1",
+        savedAt: null,
       status: "ready" as const
     }]);
     const GET = createAttachmentLibraryHandler({
@@ -40,6 +41,7 @@ describe("attachment library handler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(body).toEqual({
+      nextCursor: null,
       files: [{
         byteSize: 4_096,
         chatId: "chat-1",
@@ -48,10 +50,11 @@ describe("attachment library handler", () => {
         fileName: "report.pdf",
         id: "attachment-1",
         messageId: "message-1",
+        savedAt: null,
         status: "ready"
       }]
     });
     expect(JSON.stringify(body)).not.toContain("storageKey");
-    expect(listSent).toHaveBeenCalledWith({ limit: 200, userId: config.bootstrapUserId });
+    expect(listSent).toHaveBeenCalledWith({ cursor: null, limit: 201, userId: config.bootstrapUserId });
   });
 });

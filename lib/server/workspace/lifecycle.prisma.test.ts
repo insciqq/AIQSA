@@ -8,6 +8,7 @@ import type { WorkspaceAvailabilityService } from "./availability";
 import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
 import { createWorkspaceLifecycleService } from "./lifecycle";
+import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceRuntime } from "./runtime";
 
@@ -56,10 +57,12 @@ describe("Prisma Workspace lifecycle", () => {
     const archive = Buffer.from("workspace archive fixture", "utf8");
     const checksum = createHash("sha256").update(archive).digest("hex");
     const storage = createMemoryStorageAdapter();
-    const runtime: WorkspaceRuntime = {
+    const runtime: WorkspaceRuntime = fenceDeterministicWorkspaceRuntime({
       callBoundTool: vi.fn(async () => { throw new Error("unused"); }),
       cancelToolCall: vi.fn(async () => undefined),
       collectOutputs: vi.fn(async () => []),
+      listStagedAttachments: vi.fn(async () => []),
+      terminateExecutions: vi.fn(async () => []),
       createProjectArchive: vi.fn(async () => ({
         body: stream(archive),
         byteSize: archive.byteLength,
@@ -78,7 +81,7 @@ describe("Prisma Workspace lifecycle", () => {
       removeSession: vi.fn(async () => undefined),
       stageAttachments: vi.fn(async () => undefined),
       stopSession: vi.fn(async () => undefined)
-    };
+    });
     const user = await prisma.user.create({
       data: { displayName: "Workspace Lifecycle Test", id: userId }
     });
@@ -89,7 +92,7 @@ describe("Prisma Workspace lifecycle", () => {
     const session = await prisma.workspaceSession.create({
       data: {
         chatId: chat.id,
-        expiresAt: new Date("2026-09-05T00:00:00.000Z"),
+        expiresAt: new Date(Date.now() + config.retentionSeconds * 1_000),
         imageRef: config.imageRef,
         internetEnabled: true,
         policyRevision: 1,
@@ -115,21 +118,23 @@ describe("Prisma Workspace lifecycle", () => {
         mimeType: "application/gzip"
       });
       await expect(prisma.workspaceSession.findUniqueOrThrow({
-        select: { state: true, stoppedAt: true },
+        select: { operationOwner: true, state: true, stoppedAt: true },
         where: { id: session.id }
-      })).resolves.toEqual({ state: "READY", stoppedAt: null });
+      })).resolves.toEqual({ operationOwner: null, state: "STOPPED", stoppedAt: expect.any(Date) });
       expect([...storage.objects.values()][0]?.body.equals(archive)).toBe(true);
 
-      await prisma.workspaceSession.update({
-        data: { state: "STOPPED", stoppedAt },
+      const claimed = await prisma.workspaceSession.update({
+        data: { operationOwner: "run:lifecycle_fixture", version: { increment: 1 }, state: "STOPPED", stoppedAt },
         where: { id: session.id }
       });
+      const operation = { generation: claimed.version, owner: claimed.operationOwner! };
       const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
       const startingAt = new Date();
       const startingExpiresAt = new Date(
         startingAt.getTime() + config.retentionSeconds * 1_000
       );
       await expect(repository.markSessionStarting({
+        operation,
         expiresAt: startingExpiresAt,
         lastActiveAt: startingAt,
         sessionId: session.id
@@ -148,6 +153,7 @@ describe("Prisma Workspace lifecycle", () => {
         readyAt.getTime() + config.retentionSeconds * 1_000
       );
       await repository.markSessionReady({
+        operation,
         expiresAt: readyExpiresAt,
         lastActiveAt: readyAt,
         sessionId: session.id

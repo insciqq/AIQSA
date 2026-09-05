@@ -7,6 +7,7 @@ import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { createS3StorageAdapter } from "../uploads/storage";
+import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { reconcileInstallationRuns } from "./runRecovery";
@@ -18,6 +19,9 @@ const globalForRecoveryScheduler = globalThis as unknown as {
 
 export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   if (!globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler) {
+    const storage = createS3StorageAdapter();
+    // The application owns export recovery and orphan settlement, using the
+    // same Workspace coordinator as run routes and independent worker slots.
     const deps = {
       knowledgeAdmission: knowledgeRunAdmissionService,
       knowledgeExecutor: knowledgeToolExecutor,
@@ -29,12 +33,16 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       providers: {},
       registry: activeRunControllerRegistry,
       repository: createPrismaRunRepository(),
-      storage: createS3StorageAdapter()
+      storage,
+      workspace: workspaceCoordinatorForStorage(storage)
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
       reconcile: async () => {
         getDefaultChatPdf().kick();
         await reconcileInstallationRuns(deps);
+      },
+      recoverWorkspaceExports: async (signal) => {
+        await deps.workspace.recoverExports({ limit: 10, signal });
       }
     });
   }

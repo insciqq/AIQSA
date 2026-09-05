@@ -1,8 +1,11 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { Readable } from "node:stream";
 import {
+  decodeWorkspaceInboxIndexAttachments,
+  WORKSPACE_INBOX_INDEX_VERSION,
+  WORKSPACE_INBOX_INDEX_MAX_ENTRIES,
   isWorkspaceOpaqueId,
   workspaceAttachmentPath,
   workspaceToolIsAllowed
@@ -12,16 +15,34 @@ import {
   type WorkspaceOutputStream,
   type WorkspaceRuntime
 } from "./runtime";
+import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
+import { parseOutputCaptureRequest } from "./outputManifest";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
-const PENDING_OUTPUT_TTL_MS = 5 * 60_000;
+/**
+ * Output handles live in batches. A batch stays valid while the application
+ * keeps opening its handles (inactivity lease, refreshed on every open and
+ * while a stream is active), never expires under an active stream, and is
+ * always discarded after an absolute safety lifetime so abandoned exports
+ * cannot pin guest streams forever. Each handle is still single-use.
+ */
+const PENDING_OUTPUT_INACTIVITY_MS = 10 * 60_000;
+const PENDING_OUTPUT_ABSOLUTE_MAX_MS = 6 * 60 * 60_000;
 const REQUEST_TIMEOUT_MS = 3_700_000;
 
 type PendingOutput = Readonly<{
-  expiresAt: number;
   output: WorkspaceOutputStream;
 }>;
+
+type PendingBatch = {
+  activeStreams: number;
+  readonly createdAt: number;
+  expiresAt: number;
+  readonly handles: Map<string, PendingOutput>;
+  readonly sessionId: string;
+  readonly operation: WorkspaceOperation;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -106,7 +127,7 @@ function incomingBody(request: IncomingMessage): ReadableStream<Uint8Array> {
   return Readable.toWeb(request) as unknown as ReadableStream<Uint8Array>;
 }
 
-async function pipeOutput(response: ServerResponse, pending: PendingOutput): Promise<void> {
+async function pipeOutput(response: ServerResponse, pending: PendingOutput, signal: AbortSignal): Promise<void> {
   const reader = pending.output.body.getReader();
   let written = 0;
   response.writeHead(200, {
@@ -118,7 +139,9 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput): Pro
   });
   const abort = () => void reader.cancel("client_disconnected").catch(() => undefined);
   response.on("close", abort);
+  signal.addEventListener("abort", abort, { once: true });
   try {
+    signal.throwIfAborted();
     while (true) {
       const next = await reader.read();
       if (next.done) break;
@@ -130,25 +153,55 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput): Pro
     response.end();
   } finally {
     response.off("close", abort);
+    signal.removeEventListener("abort", abort);
     reader.releaseLock();
   }
 }
 
 export function createWorkspaceRunnerServer(input: Readonly<{
+  /** Clock for pending-output expiry; tests inject a controllable clock. */
+  now?: () => number;
+  /** Private runtime-volume directory; omitted only by isolated unit fixtures. */
+  operationDirectory?: string;
   runtime: WorkspaceRuntime;
   token: string;
 }>): Server {
   if (input.token.length < 32) throw new Error("workspace_runner_token_invalid");
-  const pendingOutputs = new Map<string, PendingOutput>();
-  const key = (sessionId: string, opaqueFileId: string) => `${sessionId}:${opaqueFileId}`;
+  const clock = input.now ?? Date.now;
+  const fence = new WorkspaceOperationFence({
+    directory: input.operationDirectory,
+    stop: (request) => input.runtime.stopSession(request)
+  });
+  const batches = new Map<string, PendingBatch>();
+  const discardBatch = (batchId: string, reason: string) => {
+    const batch = batches.get(batchId);
+    if (!batch) return;
+    for (const pending of batch.handles.values()) {
+      void pending.output.body.cancel(reason).catch(() => undefined);
+    }
+    batches.delete(batchId);
+  };
   const prunePending = () => {
-    const now = Date.now();
-    for (const [id, pending] of pendingOutputs) {
-      if (pending.expiresAt <= now) {
-        void pending.output.body.cancel("expired").catch(() => undefined);
-        pendingOutputs.delete(id);
+    const now = clock();
+    for (const [batchId, batch] of batches) {
+      if (batch.activeStreams > 0) continue;
+      if (batch.expiresAt <= now || batch.createdAt + PENDING_OUTPUT_ABSOLUTE_MAX_MS <= now) {
+        discardBatch(batchId, "expired");
       }
     }
+  };
+  const registerBatch = (sessionId: string, operation: WorkspaceOperation, outputs: readonly WorkspaceOutputStream[]) => {
+    const now = clock();
+    const batchId = randomBytes(16).toString("hex");
+    batches.set(batchId, {
+      activeStreams: 0,
+      createdAt: now,
+      expiresAt: now + PENDING_OUTPUT_INACTIVITY_MS,
+      handles: new Map(outputs.map((output) => [output.opaqueFileId, { output }])),
+      operation,
+      sessionId
+    });
+    return batchId;
   };
 
   const server = createServer(async (request, response) => {
@@ -167,16 +220,20 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const body = await readJson(request);
         const sessionId = requiredString(body.sessionId, 128);
         if (!isWorkspaceOpaqueId(sessionId)) throw new Error("field_invalid");
-        sendJson(response, 200, await input.runtime.ensureSession({
+        const operation = parseWorkspaceOperation(body.operation);
+        const runtimeSandboxId = optionalString(body.runtimeSandboxId, 256);
+        const ensure = {
           cpus: integer(body.cpus, 1, 8),
           diskMiB: integer(body.diskMiB, 1_024, 131_072),
           imageRef: requiredString(body.imageRef),
           internetEnabled: boolean(body.internetEnabled),
           memoryMiB: integer(body.memoryMiB, 512, 32_768),
-          runtimeSandboxId: optionalString(body.runtimeSandboxId, 256),
+          runtimeSandboxId,
           sandboxName: requiredString(body.sandboxName, 160),
           sessionId
-        }));
+        };
+        await fence.claim({ operation, runtimeSandboxId, sessionId });
+        sendJson(response, 200, await fence.run({ operation, sessionId }, (signal) => input.runtime.ensureSession({ ...ensure, signal })));
         return;
       }
       const match = /^\/v1\/sessions\/([^/]+)(\/.*)?$/u.exec(url.pathname);
@@ -184,6 +241,17 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       const suffix = match?.[2] ?? "";
       if (!sessionId || !isWorkspaceOpaqueId(sessionId)) {
         sendJson(response, 404, { error: "workspace_session_lost" });
+        return;
+      }
+      const execute = <T>(operation: unknown, action: (signal: AbortSignal) => Promise<T>) =>
+        fence.run({ operation: parseWorkspaceOperation(operation), sessionId }, action);
+
+      if (request.method === "POST" && (suffix === "/operations/claim" || suffix === "/operations/retire")) {
+        const body = await readJson(request);
+        const claim = { operation: parseWorkspaceOperation(body.operation), runtimeSandboxId: optionalString(body.runtimeSandboxId, 256), sessionId };
+        if (suffix === "/operations/claim") await fence.claim(claim);
+        else await fence.retire(claim);
+        sendJson(response, 200, { ok: true });
         return;
       }
 
@@ -199,7 +267,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         }
         const checksum = requiredString(header(request, "x-aiqsa-checksum"), 64);
         if (!/^[a-f0-9]{64}$/u.test(checksum)) throw new Error("field_invalid");
-        await input.runtime.stageAttachments({
+        const operation = JSON.parse(header(request, "x-aiqsa-workspace-operation") ?? "null") as unknown;
+        await execute(operation, (signal) => input.runtime.stageAttachments({
           attachments: [{
             attachmentId,
             body: incomingBody(request),
@@ -214,10 +283,23 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           inboxIndex: { attachments: [] },
           manifests: [],
           runtimeSandboxId,
-          sessionId
-        });
+          sessionId, signal
+        }));
         response.writeHead(204);
         response.end();
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/stage/list") {
+        const body = await readJson(request);
+        const attachments = decodeWorkspaceInboxIndexAttachments({ version: WORKSPACE_INBOX_INDEX_VERSION, attachments: body.attachments });
+        if (!attachments) throw new Error("field_invalid");
+        const staged = await execute(body.operation, (signal) => input.runtime.listStagedAttachments({
+          attachments,
+          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
+          sessionId, signal
+        }));
+        sendJson(response, 200, { staged: staged.slice(0, WORKSPACE_INBOX_INDEX_MAX_ENTRIES) });
         return;
       }
 
@@ -233,7 +315,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
             messageId: requiredString(manifest.messageId, 128)
           };
         });
-        await input.runtime.stageAttachments({
+        await execute(body.operation, (signal) => input.runtime.stageAttachments({
           attachments: [],
           inboxIndex: body.inboxIndex,
           manifests,
@@ -241,18 +323,18 @@ export function createWorkspaceRunnerServer(input: Readonly<{
             ? {}
             : { outputDirectory: requiredString(body.outputDirectory, 255) }),
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId
-        });
+          sessionId, signal
+        }));
         sendJson(response, 200, { ok: true });
         return;
       }
 
       if (request.method === "POST" && suffix === "/tools/catalog") {
         const body = await readJson(request);
-        sendJson(response, 200, await input.runtime.loadBoundTools({
+        sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.loadBoundTools({
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId
-        }));
+          sessionId, signal
+        })));
         return;
       }
 
@@ -261,27 +343,50 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const toolName = decodeURIComponent(toolMatch[1]!);
         if (!workspaceToolIsAllowed(toolName)) throw new Error("field_invalid");
         const body = await readJson(request);
-        if (!isRecord(body.arguments)) throw new Error("field_invalid");
-        sendJson(response, 200, await input.runtime.callBoundTool({
-          arguments: body.arguments,
+        const toolArguments = body.arguments;
+        if (!isRecord(toolArguments)) throw new Error("field_invalid");
+        sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.callBoundTool({
+          arguments: toolArguments,
           modelRunId: requiredString(body.modelRunId, 128),
           modelRunToolCallId: requiredString(body.modelRunToolCallId, 128),
           originalName: toolName,
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId
-        }));
+          sessionId, signal
+        })));
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/executions/terminate") {
+        const body = await readJson(request);
+        if (!Array.isArray(body.executions) || body.executions.length > 256) {
+          throw new Error("field_invalid");
+        }
+        const executions = body.executions.map((execution) => {
+          if (!isRecord(execution)) throw new Error("field_invalid");
+          return {
+            modelRunId: requiredString(execution.modelRunId, 128),
+            runtimeExecSessionId: requiredString(execution.runtimeExecSessionId, 256)
+          };
+        });
+        sendJson(response, 200, {
+          results: await execute(body.operation, (signal) => input.runtime.terminateExecutions({
+            executions,
+            runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
+            sessionId, signal
+          }))
+        });
         return;
       }
 
       const abortMatch = /^\/tool-calls\/([^/]+)\/abort$/u.exec(suffix);
       if (request.method === "POST" && abortMatch) {
         const body = await readJson(request);
-        await input.runtime.cancelToolCall({
+        await execute(body.operation, () => input.runtime.cancelToolCall({
           modelRunId: requiredString(body.modelRunId, 128),
           modelRunToolCallId: requiredString(decodeURIComponent(abortMatch[1]!), 128),
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId
-        });
+        }));
         sendJson(response, 200, { ok: true });
         return;
       }
@@ -289,20 +394,20 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       if (request.method === "POST" && suffix === "/outputs/list") {
         prunePending();
         const body = await readJson(request);
-        const outputs = await input.runtime.collectOutputs({
+        const operation = parseWorkspaceOperation(body.operation);
+        const capture = body.capture === undefined ? undefined : parseOutputCaptureRequest(body.capture);
+        const outputs = await execute(operation, (signal) => input.runtime.collectOutputs({
+          ...(capture ? { capture } : {}),
           modelRunId: requiredString(body.modelRunId, 128),
           outputDirectory: requiredString(body.outputDirectory, 255),
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId
-        });
-        for (const output of outputs) {
-          pendingOutputs.set(key(sessionId, output.opaqueFileId), {
-            expiresAt: Date.now() + PENDING_OUTPUT_TTL_MS,
-            output
-          });
-        }
+          sessionId, signal
+        }));
+        const batchId = registerBatch(sessionId, operation, outputs);
         sendJson(response, 200, {
-          outputs: outputs.map(({ body: _body, ...metadata }) => metadata)
+          batchId,
+          ...(capture ? { captureId: capture.id } : {}),
+          outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId }))
         });
         return;
       }
@@ -310,56 +415,90 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       if (request.method === "GET" && suffix === "/outputs/stream") {
         prunePending();
         const opaqueFileId = url.searchParams.get("opaqueFileId") ?? "";
-        const outputKey = key(sessionId, opaqueFileId);
-        const pending = pendingOutputs.get(outputKey);
-        if (!pending) {
+        const batchId = url.searchParams.get("batchId") ?? "";
+        const batch = batches.get(batchId);
+        const pending = batch?.sessionId === sessionId ? batch.handles.get(opaqueFileId) : undefined;
+        if (!batch || !pending) {
           sendJson(response, 404, { error: "workspace_output_export_failed" });
           return;
         }
-        pendingOutputs.delete(outputKey);
-        await pipeOutput(response, pending);
+        // Single use: the handle is gone before the first byte is written, and
+        // the rest of the batch is kept alive by this activity.
+        batch.handles.delete(opaqueFileId);
+        batch.expiresAt = clock() + PENDING_OUTPUT_INACTIVITY_MS;
+        batch.activeStreams += 1;
+        try {
+          await execute(batch.operation, (signal) => pipeOutput(response, pending, signal));
+        } catch (error) {
+          // A stale operation is rejected before pipeOutput takes ownership
+          // of the body. Release that unopened handle as well.
+          await pending.output.body.cancel(error).catch(() => undefined);
+          throw error;
+        } finally {
+          batch.activeStreams -= 1;
+          batch.expiresAt = clock() + PENDING_OUTPUT_INACTIVITY_MS;
+          if (batch.handles.size === 0 && batch.activeStreams === 0) batches.delete(batchId);
+        }
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/outputs/capture/release") {
+        const body = await readJson(request);
+        const capture = parseOutputCaptureRequest({ id: body.captureId, create: false });
+        if (!input.runtime.releaseOutputCapture) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        await execute(body.operation, (signal) => input.runtime.releaseOutputCapture!({
+          captureId: capture.id, modelRunId: requiredString(body.modelRunId, 128),
+          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256), sessionId, signal
+        }));
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/outputs/release") {
+        const body = await readJson(request);
+        const batchId = requiredString(body.batchId, 64);
+        if (batches.get(batchId)?.sessionId === sessionId) discardBatch(batchId, "released");
+        sendJson(response, 200, { ok: true });
         return;
       }
 
       if (request.method === "POST" && suffix === "/project/archive") {
         prunePending();
         const body = await readJson(request);
-        const output = await input.runtime.createProjectArchive({
+        const operation = parseWorkspaceOperation(body.operation);
+        const output = await execute(operation, (signal) => input.runtime.createProjectArchive({
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId
-        });
-        pendingOutputs.set(key(sessionId, output.opaqueFileId), {
-          expiresAt: Date.now() + PENDING_OUTPUT_TTL_MS,
-          output
-        });
+          sessionId, signal
+        }));
+        const batchId = registerBatch(sessionId, operation, [output]);
         const { body: _body, ...metadata } = output;
-        sendJson(response, 200, metadata);
+        sendJson(response, 200, { ...metadata, batchId });
         return;
       }
 
       if (request.method === "POST" && suffix === "/stop") {
         const body = await readJson(request);
-        await input.runtime.stopSession({
+        await execute(body.operation, (signal) => input.runtime.stopSession({
           runtimeSandboxId: optionalString(body.runtimeSandboxId, 256),
-          sessionId
-        });
+          sessionId, signal
+        }));
         sendJson(response, 200, { ok: true });
         return;
       }
 
       if (request.method === "DELETE" && suffix === "") {
         const body = await readJson(request);
-        await input.runtime.removeSession({
+        await execute(body.operation, (signal) => input.runtime.removeSession({
           runtimeSandboxId: optionalString(body.runtimeSandboxId, 256),
-          sessionId
-        });
+          sessionId, signal
+        }));
         sendJson(response, 200, { ok: true });
         return;
       }
 
       sendJson(response, 404, { error: "workspace_runtime_unavailable" });
     } catch (error) {
-      if (!response.headersSent) sendJson(response, 400, { error: errorCode(error) });
+      if (!response.headersSent) sendJson(response, errorCode(error) === "workspace_operation_stale" ? 409 : 400, { error: errorCode(error) });
       else response.destroy();
     }
   });

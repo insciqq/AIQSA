@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test, type Download, type Page } from "@playwright/test";
+import { PDFDocument } from "pdf-lib";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import {
   LOCAL_MCP_MEMBER,
@@ -8,6 +9,7 @@ import {
 } from "../../prisma/local-seed-fixtures";
 import { selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
+import { disableMemoryRecall } from "./support/workspace";
 
 const prisma = new PrismaClient();
 const RESULT_ZIP = Buffer.from(
@@ -43,6 +45,7 @@ async function loginWithPassword(
   await page.getByLabel("Password", { exact: true }).fill(user.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
+  await disableMemoryRecall(page);
 }
 
 async function selectFakeModel(page: Page): Promise<void> {
@@ -72,6 +75,7 @@ async function activeChatId(page: Page): Promise<string> {
 async function sendAndExpect(page: Page, prompt: string, answer: string): Promise<void> {
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill(prompt);
+  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
   await composer.press("Enter");
   await expect(page.locator('article[data-role="assistant"]').last()).toContainText(answer, {
     timeout: 45_000
@@ -262,6 +266,8 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await turnWorkspaceOn(page);
     await expect(page.getByLabel("Internet in Workspace is enabled")).toBeVisible();
 
+    const pdfDocument = await PDFDocument.create();
+    pdfDocument.addPage();
     await page.getByLabel("Attach files").setInputFiles([
       {
         buffer: Buffer.from([0, 1, 2, 3, 254, 255]),
@@ -269,15 +275,15 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
         name: "opaque-input.aiqsa-e2e"
       },
       {
-        buffer: Buffer.from("%PDF-not-a-complete-document\n", "ascii"),
+        buffer: Buffer.from(await pdfDocument.save()),
         mimeType: "application/pdf",
-        name: "processing-evidence.pdf"
+        name: "original-evidence.pdf"
       }
     ]);
     const attachments = page.getByRole("region", { name: "Attachments" });
     await expect(attachments.getByRole("listitem")).toHaveCount(2);
-    const pdf = attachments.getByRole("listitem").filter({ hasText: "processing-evidence.pdf" });
-    await expect(pdf).toHaveAttribute("data-attachment-status", /^(processing|failed)$/u);
+    const pdf = attachments.getByRole("listitem").filter({ hasText: "original-evidence.pdf" });
+    await expect(pdf).toHaveAttribute("data-attachment-status", "ready");
     await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
 
     await sendAndExpect(
@@ -286,12 +292,16 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
       "Workspace read the staged input and created result.zip."
     );
     chatId = await activeChatId(page);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
     const activity = page.getByTestId("tool-activity-disclosure").last();
-    await activity.locator("summary").click();
-    await expect(activity.getByRole("listitem")).toHaveCount(4);
-    await expect(activity).toContainText("Used Workspace: sandbox fs read");
-    await expect(activity).toContainText("Used Workspace: sandbox fs write");
+    await activity.locator(":scope > summary").click();
+    await expect(activity).toContainText("Worked in Workspace");
+    await expect(activity).toContainText("Prepared 2 attachments");
+    await expect(activity).toContainText("Read inbox/index.json");
+    await expect(activity).toContainText(/Read inbox\/(?:opaque-input\.aiqsa-e2e|original-evidence\.pdf)/u);
+    await expect(activity).toContainText("Wrote project/persisted.txt");
+    await expect(activity).toContainText("Exported 1 file", { timeout: 30_000 });
+    expect(await activity.textContent()).not.toMatch(/sandbox_|Used Workspace/u);
 
     const first = await assertGeneratedZip(page);
     expect(first.checksum).toBe(sha256(RESULT_ZIP));

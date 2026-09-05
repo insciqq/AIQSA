@@ -45,6 +45,8 @@ ToolHive environment values are plaintext in controller/Docker state even when A
 
 Workspace executes untrusted user/model code only in the KVM-backed Microsandbox guest through an exact pinned runtime and official MCP catalog. The model receives a server-namespaced allowlist of execution/filesystem schemas; sandbox identity, lifecycle, host-copy, image, and network fields are stripped and injected by the server. The runner's bearer token is timing-safe checked on every request, bodies and streams are bounded, and the private runner endpoint has no browser route. Neither guest nor runner receives provider, PostgreSQL, object-storage, encryption, OAuth, or session credentials; the application alone streams checksum-verified originals in and outputs out.
 
+A private Workspace runtime disk has one receiver writer at a time. Session ownership must remain enforceable at the guest side-effect boundary across receiver restarts; ownership metadata never enters browser or model contracts.
+
 Workspace internet mode is an administrator policy frozen per session. Enabled mode permits public guest egress for package installation while blocking loopback, link-local/metadata, private, host, and installation networks; disabled mode retains shell/filesystem operation with egress denied. This is a minimum isolation baseline, not a promise that arbitrary hostile-code multi-tenancy is safe on an untrusted host. The runner alone receives `/dev/kvm`, drops ambient capabilities, uses a read-only root, no-new-privileges, bounded resources, and a dedicated operational disk volume. Symlink/path traversal, special-file output, archive bombs, excessive files/bytes/time, and unbounded tool output fail closed before publication.
 
 ## Deployment And Dependencies

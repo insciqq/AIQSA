@@ -14,7 +14,7 @@ export const revalidate = 0;
 export const runtime = "nodejs";
 
 type RouteContext = Readonly<{
-  params: Promise<{ sourceId: string }> | { sourceId: string };
+  params: Promise<{ sourceId: string }>;
 }>;
 
 const privateHeaders = {

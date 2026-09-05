@@ -273,6 +273,7 @@ export type ShellComposerView = {
   useOrganizationSearchDefault(): void;
   useOrganizationModelDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
+  reuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   uploading: boolean;
   workspace: {
     archive(): Promise<ThreadGeneratedFile | null>;

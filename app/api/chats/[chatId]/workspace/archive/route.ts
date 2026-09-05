@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 import { workspaceLifecycleForStorage } from "@/lib/server/workspace/defaultServices";
@@ -12,4 +13,4 @@ const handlers = createWorkspaceLifecycleHandlers({
   service: workspaceLifecycleForStorage(createS3StorageAdapter())
 });
 
-export const POST = handlers.archive;
+export const POST: AsyncRouteHandler<typeof handlers.archive> = handlers.archive;
