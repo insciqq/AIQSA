@@ -979,6 +979,9 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
       settlement = settleCapturedV20(snapshot, captured);
     } else {
       const result = await executeKnowledgeAnswerGroundingV21({
+        // This replay schema admits the frozen V39/Scope V6 contract. New-run
+        // defaults must not silently select a later contribution workflow.
+        snapshotVersion: 39,
         authorize,
         draft: snapshot.evidence,
         evidenceBindings,

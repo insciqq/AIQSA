@@ -32,6 +32,8 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
       dispatch.attempt.requestHash !== knowledgeAnswerHash(accepted) || accepted.evidenceReceiptHash !== dispatch.draft.manifestHash ||
       dispatch.attempt.evidenceReceiptHash !== dispatch.draft.manifestHash || dispatch.retrievalSessionId !== first.retrievalSessionId ||
       accepted.workflowVersion !== snapshot.workflowVersion ||
+      ("repairFeedbackVersion" in accepted ? accepted.repairFeedbackVersion : undefined) !==
+        ("repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined) ||
       snapshot.workflowVersion === undefined && knowledgeAnswerCanonicalJson(dispatch.draft) !== knowledgeAnswerCanonicalJson(first.draft)) throw Error("knowledge_evidence_answer_replay_invalid");
   }
   const unavailable = async (): Promise<never> => { throw Error("knowledge_evidence_answer_replay_io_forbidden"); };
@@ -45,7 +47,8 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
   };
   const executionInput = { authorize: unavailable, draft: first.draft, execute: unavailable,
     executionPolicy: snapshot.executionPolicy, forbiddenIdentityFragments: input.forbiddenIdentityFragments,
-    lifecycle, modelRunId: input.modelRunId, request, shouldAbort: () => true, transport: snapshot.transport };
+    lifecycle, modelRunId: input.modelRunId, request, shouldAbort: () => true, transport: snapshot.transport,
+    repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined };
   const result = snapshot.workflowVersion !== undefined
     ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput,
         ...(snapshot.workflowVersion === 10 || snapshot.workflowVersion === 11 ? { workflowVersion: snapshot.workflowVersion } : {}),

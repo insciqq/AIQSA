@@ -2936,7 +2936,7 @@ describe("run execution", () => {
       ["prepare", "dispatch", "settle"]));
   });
 
-  it.each([[8, undefined, undefined], [9, undefined, undefined], [9, 2, 2], [10, 2, 3], [11, 2, 3], [11, 3, 3], [11, 3, 4]] as const)("composes and reviews Knowledge with workflow %s, search instructions %s and packing %s", async (workflowVersion, knowledgeSearchInstructionVersion, knowledgeEvidencePackingVersion) => {
+  it.each([[8, undefined, undefined], [9, undefined, undefined], [9, 2, 2], [10, 2, 3], [11, 2, 3], [11, 3, 3], [11, 3, 4], [11, 3, 5], [11, 3, 5, 1]] as const)("composes and reviews Knowledge with workflow %s, search instructions %s, packing %s and review repair %s", async (workflowVersion, knowledgeSearchInstructionVersion, knowledgeEvidencePackingVersion, knowledgeReviewRepairFeedbackVersion) => {
     const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1].") });
     const finalize = vi.spyOn(repository.repository, "groundKnowledgeEvidenceAnswer");
     const legacy = vi.spyOn(repository.repository, "groundKnowledgeAnswerV21");
@@ -2959,14 +2959,19 @@ describe("run execution", () => {
     const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" });
     const searchPolicy = knowledgeSearchInstructionVersion === undefined ? {} : { knowledgeSearchInstructionVersion };
     const packingPolicy = knowledgeEvidencePackingVersion === undefined ? {} : { knowledgeEvidencePackingVersion };
-    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, knowledgeAnswerWorkflowVersion: workflowVersion, ...searchPolicy, ...packingPolicy },
-      providerRequest: { ...base.providerRequest, knowledgeAnswerWorkflowVersion: workflowVersion, ...searchPolicy, ...packingPolicy } };
+    const repairPolicy = knowledgeReviewRepairFeedbackVersion === undefined ? {} : { knowledgeReviewRepairFeedbackVersion };
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, knowledgeAnswerWorkflowVersion: workflowVersion, ...searchPolicy, ...packingPolicy, ...repairPolicy },
+      providerRequest: { ...base.providerRequest, knowledgeAnswerWorkflowVersion: workflowVersion, ...searchPolicy, ...packingPolicy, ...repairPolicy } };
     const response = await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
       knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle })).text();
     expect(execute).toHaveBeenCalledOnce();
     expect(requests).toHaveLength(4);
     expect(dispatch.prepare.mock.calls.map(([input]) => input.purpose)).toEqual(workflowVersion === 11
       ? ["knowledge_evidence_compose_v2", "knowledge_evidence_review_v2"] : ["knowledge_evidence_compose_v1", "knowledge_evidence_review_v1"]);
+    for (const [input] of dispatch.prepare.mock.calls) {
+      if (knowledgeReviewRepairFeedbackVersion === 1) expect(input.acceptedRequest).toMatchObject({ repairFeedbackVersion: 1 });
+      else expect(input.acceptedRequest).not.toHaveProperty("repairFeedbackVersion");
+    }
     for (const request of requests.slice(0, 2)) {
       expect(request.knowledgeSearchInstructionVersion).toBe(knowledgeSearchInstructionVersion);
       expect(request.knowledgeEvidencePackingVersion).toBe(knowledgeEvidencePackingVersion);

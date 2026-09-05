@@ -1522,9 +1522,10 @@ export async function prepareRun(
     context: { messages: contextMessages, mode: "branch_path" },
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
+      knowledgeReviewRepairFeedbackVersion: 1 as const,
       knowledgeSearchInstructionVersion: 3 as const,
       knowledgeQueryAnchorVersion: 2 as const,
-      knowledgeEvidencePackingVersion: 4 as const
+      knowledgeEvidencePackingVersion: 5 as const
     } : {}),
     knowledgePlan: decodedKnowledgePlan.plan,
     modelCapabilities,

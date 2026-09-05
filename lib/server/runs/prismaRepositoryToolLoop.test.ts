@@ -358,9 +358,11 @@ describe("provider dispatch recovery request loading", () => {
       [2, true],
       [3, true],
       [4, true],
+      [5, true],
       [1, false],
-      [5, false],
-      ["4", false]
+      [6, false],
+      ["4", false],
+      ["5", false]
     ] as const) {
       const request = {
         ...normalizedRequest,
@@ -413,6 +415,19 @@ describe("provider dispatch recovery request loading", () => {
       if (version === undefined || version === 2 || field === "knowledgeSearchInstructionVersion" && version === 3) await expect(loaded).resolves.toEqual(request);
       else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
     }
+  });
+
+  it.each([[11, undefined, true], [11, 1, true], [10, 1, false], [undefined, 1, false],
+    [11, 0, false], [11, 2, false], [11, "1", false]] as const)("recovers only an admitted review repair policy (%s, %s)", async (workflow, feedback, accepted) => {
+    const request = { ...normalizedRequest, ...(workflow === undefined ? {} : { knowledgeAnswerWorkflowVersion: workflow }),
+      ...(feedback === undefined ? {} : { knowledgeReviewRepairFeedbackVersion: feedback }) };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: request, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+    if (accepted) await expect(loaded).resolves.toEqual(request);
+    else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
   it("round-trips a frozen full-context request with its exact evidence envelope", async () => {

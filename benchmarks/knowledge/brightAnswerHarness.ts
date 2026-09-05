@@ -10,7 +10,27 @@ import { BRIGHT_STACKOVERFLOW_QUERY_COUNT } from "./brightStackOverflowContract"
 export const BRIGHT_ANSWER_CONTRACT_VERSION = 3;
 export const BRIGHT_ANSWER_MAX_PRIVATE_BYTES = 32 * 1024 * 1024;
 
+/** Shared by paid manifests and offline experiments; ignored run/corpus data
+ * and ordinary tests never change executable experiment identity. */
+export async function brightAnswerCodeFingerprint(repositoryRoot: string): Promise<string> {
+  const paths = ["instrumentation.ts", "prisma/schema.prisma", "package.json", "package-lock.json"];
+  const visit = async (path: string): Promise<void> => {
+    for (const entry of await readdir(resolve(repositoryRoot, path), { withFileTypes: true })) {
+      if (entry.name.startsWith(".") || ["results", "node_modules"].includes(entry.name)) continue;
+      const child = `${path}/${entry.name}`;
+      if (entry.isSymbolicLink()) throw new Error("bright_answer_source_symlink_forbidden");
+      if (entry.isDirectory()) await visit(child);
+      else if (/\.(?:ts|tsx|json)$/u.test(child) && !/\.test\.[^.]+$/u.test(child)) paths.push(child);
+    }
+  };
+  for (const root of ["app/api", "lib", "benchmarks/knowledge"]) await visit(root);
+  const hash = createHash("sha256");
+  for (const path of paths.sort()) hash.update(path).update("\0").update(await readFile(resolve(repositoryRoot, path))).update("\0");
+  return hash.digest("hex");
+}
+
 export type BrightAnswerOptions = Readonly<{
+  answerModel: string | null;
   batchSize: number;
   output: string;
   preflightOnly: boolean;
@@ -20,6 +40,7 @@ export type BrightAnswerOptions = Readonly<{
 }>;
 
 export function parseBrightAnswerCli(argv: readonly string[]): BrightAnswerOptions {
+  let answerModel: string | null = null;
   let paid = false;
   let output = "";
   let preflightOnly = false;
@@ -37,6 +58,12 @@ export function parseBrightAnswerCli(argv: readonly string[]): BrightAnswerOptio
     else if (key === "--confirm-paid") {
       paid = argv[++index] === "BRIGHT_ANSWER_JUDGE";
       if (!paid) throw new Error("bright_answer_paid_ack_required");
+    } else if (key === "--answer-model") {
+      const value = argv[++index];
+      if (!value || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/u.test(value)) {
+        throw new Error("bright_answer_model_invalid");
+      }
+      answerModel = value;
     } else if (key === "--output") {
       output = argv[++index] ?? "";
       if (!output || output.startsWith("--")) throw new Error("bright_answer_output_required");
@@ -58,7 +85,7 @@ export function parseBrightAnswerCli(argv: readonly string[]): BrightAnswerOptio
   if (!preflightOnly && !paid) throw new Error("bright_answer_paid_ack_required");
   if (!output) throw new Error("bright_answer_output_required");
   if (queryOffset + queryLimit > BRIGHT_STACKOVERFLOW_QUERY_COUNT) throw new Error("bright_answer_query_range_invalid");
-  return Object.freeze({ batchSize, output, preflightOnly, queryLimit, queryOffset, resume });
+  return Object.freeze({ answerModel, batchSize, output, preflightOnly, queryLimit, queryOffset, resume });
 }
 
 export function selectBrightAnswerQueries<T>(queries: readonly T[], options: Pick<BrightAnswerOptions, "queryLimit" | "queryOffset">): readonly T[] {
@@ -253,6 +280,8 @@ export async function createBrightAnswerStore(input: Readonly<{
   manifest: Readonly<Record<string, unknown>>;
   resume: boolean;
 }>) {
+  // Validate serialization before creating a lock or any campaign artifact.
+  const fingerprint = brightAnswerHash(input.manifest);
   const output = await assertOpenRagPrivatePathNoSymlinks(input.repositoryRoot, input.output);
   await mkdir(output, { recursive: true, mode: 0o700 });
   await chmod(output, 0o700);
@@ -276,7 +305,6 @@ export async function createBrightAnswerStore(input: Readonly<{
   });
   await lock.writeFile(JSON.stringify({ hostname: hostname(), pid: process.pid }));
   await lock.close();
-  const fingerprint = brightAnswerHash(input.manifest);
   const close = async () => { await unlink(lockPath); };
   try {
     const manifestPath = resolve(output, "manifest.json");

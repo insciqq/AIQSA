@@ -116,6 +116,30 @@ describe("requirement coverage and actionable evidence review", () => {
       requirements: [{ ...missing(), blockIds: [] }], followUps: [] }, { ...context, draft: draft() }).kind).toBe("rejected");
   });
 
+  it.each([
+    [null, "string_required"], ["", "nonempty_required"], [" Trailing space ", "trim_required"],
+    ["🙂".repeat(601), "length_exceeded"], ["Line\nbreak", "invalid_characters"], ["hidden\u202etext", "invalid_characters"],
+    ["[K1] inline citation", "citation_not_allowed"], ["citeK1", "citation_not_allowed"],
+    ["private-source-identity", "private_identity_not_allowed"]
+  ])("reports a closed requirement text rule without retaining the rejected value (%s)", (text, rule) => {
+    const value = { ...review(), requirements: [{ ...answered(), requirement: text }, missing()] };
+    const input = { ...context, draft: draft() };
+    expect(validateKnowledgeEvidenceAnswerReviewV2(value, input)).toEqual({ kind: "rejected", reason: "text_invalid" });
+    expect(validateKnowledgeEvidenceAnswerReviewV2(value, { ...input, repairFeedbackVersion: 1 })).toEqual({
+      kind: "rejected", reason: "text_invalid", repairHint: { field: "requirements.requirement", rule }
+    });
+  });
+
+  it("locates block reasons and answered gaps without changing their semantic constraints", () => {
+    const input = { ...context, draft: draft(), repairFeedbackVersion: 1 as const };
+    expect(validateKnowledgeEvidenceAnswerReviewV2({ ...review(), blocks: [{ ...review().blocks[0], reason: "Extra explanation." }] }, input))
+      .toEqual({ kind: "rejected", reason: "text_invalid", repairHint: { field: "blocks.reason", rule: "empty_required" } });
+    expect(validateKnowledgeEvidenceAnswerReviewV2({ ...review(), requirements: [{ ...answered(), gap: "Extra explanation." }, missing()] }, input))
+      .toEqual({ kind: "rejected", reason: "text_invalid", repairHint: { field: "requirements.gap", rule: "empty_required" } });
+    expect(validateKnowledgeEvidenceAnswerReviewV2({ ...review(), requirements: [{ ...answered(), requirement: "🙂".repeat(600) }, missing()] }, input).kind)
+      .toBe("accepted");
+  });
+
   it("does not hide unavailable selected resources behind complete requirement coverage", () => {
     const candidate = draft();
     const checked = validateKnowledgeEvidenceAnswerReviewV2({ ...review(), requirements: [answered()], followUps: [] }, { ...context, draft: candidate });

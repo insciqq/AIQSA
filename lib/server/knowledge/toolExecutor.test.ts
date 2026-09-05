@@ -693,7 +693,7 @@ describe("Knowledge executor surface", () => {
     expect(accepted.map((receipt) => receipt.results.map(({ documentId }) => documentId)))
       .toEqual([["source-1", "source-2"], ["source-2"], []]);
     expect(accepted[2]?.outcome).toBe("no_relevant_evidence");
-    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([8, 8]);
+    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([10, 10]);
     const results = accepted.flatMap((receipt) => receipt.results);
     const manifest = packKnowledgeEvidenceDispatchManifest({
       candidates: results.map((result, index) => ({ ambiguity: "none" as const,

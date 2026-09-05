@@ -308,7 +308,7 @@ describe("Knowledge executor hosted rerank wiring", () => {
       results: [{ ...evidence.results[0], ftsRank: 129 }] })).toBeNull();
     expect(decodeKnowledgeRetrievalEvidence({ ...evidence,
       results: [{ ...evidence.results[0], annRank: 101 }] })).toBeNull();
-    for (const rankingProfileVersion of [4, 5, 6, 7, 8]) {
+    for (const rankingProfileVersion of [4, 5, 6, 7, 8, 9, 10]) {
       const historical = decodeKnowledgeRetrievalEvidence({ ...evidence,
         lexicalBackend: { ...evidence.lexicalBackend, rankingProfileVersion } });
       expect(historical !== null).toBe(lexicalRank <= 100 || rankingProfileVersion >= 6);

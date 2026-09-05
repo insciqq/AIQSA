@@ -906,7 +906,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     }).finalText).toBe("Atlas retains exports for 30 days [K1].");
   });
 
-  it.each([undefined, 2, 3, 4] as const)("rebuilds full-context evidence with its accepted packing policy (%s)", async (knowledgeEvidencePackingVersion) => {
+  it.each([undefined, 2, 3, 4, 5] as const)("rebuilds full-context evidence with its accepted packing policy (%s)", async (knowledgeEvidencePackingVersion) => {
     const fixture = row();
     const evidenceRow = fixture.evidenceItems[0]!;
     const recovery = await loadKnowledgeFullContextDispatchRecovery(client(row({
@@ -932,7 +932,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
 
     expect(recovery).toMatchObject({
       draft: {
-        packingVersion: knowledgeEvidencePackingVersion === 3 || knowledgeEvidencePackingVersion === 4 ? "whole_source_item_occurrences_v3" : "whole_source_item_v1",
+        packingVersion: knowledgeEvidencePackingVersion === 3 || knowledgeEvidencePackingVersion === 4 || knowledgeEvidencePackingVersion === 5 ? "whole_source_item_occurrences_v3" : "whole_source_item_v1",
         exclusions: [],
         profileId: "test:answer-model",
         promptFragmentVersion: 18,

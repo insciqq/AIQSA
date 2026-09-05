@@ -15,9 +15,9 @@ import {
 } from "./evidenceAnswerSnapshotV1";
 import { createKnowledgeEvidenceAnswerSnapshotV2, isKnowledgeEvidenceAnswerOperationV2, KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "./evidenceAnswerSnapshotV2";
 import { isKnowledgeEvidenceComposeOperation, type KnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
-import { buildKnowledgeEvidenceAnswerPublicationV2, decodeKnowledgeEvidenceAnswerReviewV2,
+import { buildKnowledgeEvidenceAnswerPublicationV2, decodeKnowledgeEvidenceAnswerReviewV2, decodeKnowledgeEvidenceReviewRepairHintV1,
   knowledgeEvidenceAnswerDraftPromptV2, knowledgeEvidenceAnswerReviewPromptV2, validateKnowledgeEvidenceAnswerReviewV2,
-  type KnowledgeEvidenceAnswerReviewV2 } from "./evidenceAnswerReviewV2";
+  type KnowledgeEvidenceAnswerReviewV2, type KnowledgeEvidenceReviewRepairHintV1 } from "./evidenceAnswerReviewV2";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from "./groundingExecutionPolicy";
 import { EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 } from "./searchFailure";
 
@@ -34,6 +34,16 @@ export function decodeKnowledgeEvidenceAnswerFailureV1(value: unknown): Failure 
   if (record.kind === "rejected" && ["shape_invalid", "text_invalid", "capacity_exceeded", "evidence_invalid", "coverage_invalid"].includes(String(record.reason)) ||
     record.kind === "failed" && ["timeout", "refusal", "transport", "provider_error"].includes(String(record.reason))) return record as Failure;
   return null;
+}
+function decodeReviewFailure(value: OperationRecord, repairFeedbackVersion: 1 | undefined): Failure | Readonly<{
+  kind: "rejected"; reason: "text_invalid"; version: 2; repairHint: KnowledgeEvidenceReviewRepairHintV1;
+}> | null {
+  const legacy = decodeKnowledgeEvidenceAnswerFailureV1(value);
+  if (legacy) return legacy;
+  if (repairFeedbackVersion !== 1 || Object.keys(value).length !== 4 || value.kind !== "rejected" ||
+    value.reason !== "text_invalid" || value.version !== 2) return null;
+  const repairHint = decodeKnowledgeEvidenceReviewRepairHintV1(value.repairHint);
+  return repairHint ? Object.freeze({ kind: "rejected", reason: "text_invalid", version: 2, repairHint }) : null;
 }
 function providerFailure(error: unknown): Failure {
   const name = error instanceof Error ? error.name : "";
@@ -75,6 +85,7 @@ export type KnowledgeEvidenceAnswerExecutionV1Input = Readonly<{
   request: string;
   shouldAbort: OperationInput["shouldAbort"];
   transport: "native_strict" | "provider_neutral_json";
+  repairFeedbackVersion?: 1;
   onOperationAccepted?: (operation: KnowledgeEvidenceAnswerExecutionV1Result["operations"][number]) => void;
 }>;
 
@@ -86,6 +97,7 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
   const manifest = decodeKnowledgeEvidenceDispatchManifestDraft(input.draft);
   if (!manifest || !input.request.trim() || manifest.items.length === 0) failed("input_invalid");
   const reviewV2 = input.workflowVersion === 11;
+  if (input.repairFeedbackVersion !== undefined && (input.repairFeedbackVersion !== 1 || !reviewV2)) failed("repair_policy_invalid");
   const context = {
     availableHandles: manifest.items.map(item => item.handle),
     availableSourceAliases: [...new Set(manifest.items.map(item => item.sourceAlias))],
@@ -105,7 +117,8 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
     if (ordinal > 8 || input.workflowVersion === undefined && ordinal > 4) failed("operation_budget_exceeded");
     const snapshotInput = { evidenceReceiptHash: manifest!.manifestHash, executionPolicy: input.executionPolicy, transport: input.transport };
     const snapshot = isKnowledgeEvidenceAnswerOperationV2(inputOperation.operation)
-      ? createKnowledgeEvidenceAnswerSnapshotV2({ ...inputOperation, ...snapshotInput, operation: inputOperation.operation, workflowVersion: 11 })
+      ? createKnowledgeEvidenceAnswerSnapshotV2({ ...inputOperation, ...snapshotInput, operation: inputOperation.operation, workflowVersion: 11,
+          repairFeedbackVersion: input.repairFeedbackVersion })
       : createKnowledgeEvidenceAnswerSnapshotV1({ ...inputOperation, ...snapshotInput, operation: inputOperation.operation,
           workflowVersion: input.workflowVersion === 11 ? undefined : input.workflowVersion });
     const result = await acceptedOperation({ ...input, draft: manifest!, acceptedRequest: snapshot,
@@ -146,14 +159,16 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
   if (input.revision?.evidenceReceiptHash === manifest.manifestHash &&
     knowledgeAnswerHash(input.revision.draft) === knowledgeAnswerHash(draft)) failed("revision_unchanged");
   let review: KnowledgeEvidenceAnswerReviewV1 | KnowledgeEvidenceAnswerReviewV2 | null = null;
+  let repairHint: KnowledgeEvidenceReviewRepairHintV1 | undefined;
   repairReason = undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = await operation({ operation: reviewV2 ? "knowledge_evidence_review_v2" : "knowledge_evidence_review_v1", draftPayloadHash: knowledgeAnswerHash(draft),
       ...(reviewV2 ? knowledgeEvidenceAnswerReviewPromptV2 : knowledgeEvidenceAnswerReviewPromptV1)({ request: input.request, evidenceManifest: manifest.message,
-        draft, availableSourceAliases: context.availableSourceAliases, repairReason }),
+        draft, availableSourceAliases: context.availableSourceAliases, repairReason, repairHint, repairFeedbackVersion: input.repairFeedbackVersion }),
       accept(output) {
-        const validation = (reviewV2 ? validateKnowledgeEvidenceAnswerReviewV2 : validateKnowledgeEvidenceAnswerReviewV1)(output, { ...context, draft: draft! });
-        return validation.kind === "accepted" ? validation.value : { ...validation, version: 1 };
+        const validation = (reviewV2 ? validateKnowledgeEvidenceAnswerReviewV2 : validateKnowledgeEvidenceAnswerReviewV1)(output,
+          { ...context, draft: draft!, repairFeedbackVersion: input.repairFeedbackVersion });
+        return validation.kind === "accepted" ? validation.value : { ...validation, version: "repairHint" in validation ? 2 : 1 };
       } });
     if (reviewV2) review = decodeKnowledgeEvidenceAnswerReviewV2(result, { ...context, draft });
     else {
@@ -161,9 +176,10 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
       if (validation.kind === "accepted") review = validation.value;
     }
     if (review) break;
-    const failure = decodeKnowledgeEvidenceAnswerFailureV1(result);
+    const failure = decodeReviewFailure(result, input.repairFeedbackVersion);
     if (failure?.kind !== "rejected") failed(failure?.reason ?? "accepted_review_invalid");
     repairReason = failure.reason;
+    repairHint = "repairHint" in failure ? failure.repairHint : undefined;
   }
   if (!review) failed(repairReason ?? "review_invalid");
   const publicationInput = { ...context, draft, coverageLimitations: manifest.coverageLimitations ?? EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 };

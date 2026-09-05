@@ -176,7 +176,13 @@ export async function refineKnowledgeEvidence(input: Readonly<{
       if (!result) conflict();
       return result;
     });
-  const handles = new Set(input.result.publication.blocks.flatMap(block => block.evidenceHandles));
+  // A mixed review can need a correction from existing evidence and a search
+  // for a different missing fact. Reserve both kinds of known premises before
+  // new results compete for space; historical accepted packing stays unchanged.
+  const correctionHandles = run.normalizedRequest.knowledgeEvidencePackingVersion === 5 && input.result.review.version === 2
+    ? input.result.review.requirements.filter(requirement => requirement.status === "needs_correction")
+      .flatMap(requirement => requirement.correctionEvidenceHandles) : [];
+  const handles = new Set([...input.result.publication.blocks.flatMap(block => block.evidenceHandles), ...correctionHandles]);
   try {
     return toolLoopKnowledgeEvidenceDispatchDraft({ exclusions: run.knowledgeScope.exclusions, request: input.request, results: all,
       retainedItems: input.previousEvidence.items.filter(item => handles.has(item.handle)) });

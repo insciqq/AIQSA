@@ -2077,6 +2077,7 @@ async function recoverCheckpointedToolLoop(
         seed: {
           draft: dispatchDraft,
           ...(run.normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: run.normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
+          repairFeedbackVersion: run.normalizedRequest.knowledgeReviewRepairFeedbackVersion,
           modelCapabilities: run.normalizedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
             acceptedReasoningEffort: run.normalizedRequest.reasoningEffort,
@@ -2921,6 +2922,7 @@ type LoadedRecoveryControl = NonNullable<Awaited<ReturnType<typeof loadRecoveryR
 
 type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
   workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  repairFeedbackVersion?: 1;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
   executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
@@ -2965,6 +2967,7 @@ async function recoverKnowledgeAnswerGrounding(
       }
       pipeline = "evidence_answer_v1";
       seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8, draft: input.draftDispatch.draft,
+        repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined,
         evidenceBindings: [...input.draftDispatch.items, ...input.draftDispatch.exclusions].flatMap(item => item.evidenceItemId
           ? [{ dispatchEvidenceId: item.dispatchEvidenceId, evidenceItemId: item.evidenceItemId }] : []),
         forbiddenIdentityFragments: input.draftDispatch.draft.items.map(item => item.evidenceId),
@@ -3288,6 +3291,7 @@ async function recoverKnowledgeAnswerGrounding(
   } as const;
   const operationResult = seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
     ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...groundingInput, executionPolicy: seed.executionPolicy!,
+        repairFeedbackVersion: seed.repairFeedbackVersion,
         workflowVersion: seed.workflowVersion === 10 || seed.workflowVersion === 11 ? seed.workflowVersion : undefined,
         async refineEvidence(result, previousEvidence) {
           // Accepted child operations pin their exact manifest. Never rebuild
@@ -3554,6 +3558,7 @@ async function refreshProviderRunOnceRegistered(
         seed: {
           draft: recovered.draft,
           ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
+          repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
           evidenceBindings: recovered.evidenceBindings,
           modelCapabilities: acceptedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
@@ -3814,6 +3819,7 @@ async function refreshProviderRunOnceRegistered(
           seed: {
             draft,
             ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
+            repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
             forbiddenIdentityFragments: authorization.scope?.sources.flatMap((source) => [
               source.sourceId,
               source.sourceVersionId,

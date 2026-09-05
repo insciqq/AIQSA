@@ -268,10 +268,13 @@ answer-quality diagnostic, not an official BRIGHT retrieval score; it reports
 `pass/partial/fail` separately from source support. Judge output is an aid to
 manual inspection, not ground truth.
 
-The exact installation default answer model and System Model judge must both
-be available in the retained benchmark owner's ordinary catalog. Configure
-their credential assignment explicitly when a connection requires it; the
-runner does not grant access, change policies, or substitute another model.
+The answer model defaults to the installation default; `--answer-model` selects
+an explicit upstream model ID on that same connection for a controlled comparison.
+That exact answer model and the System Model judge must both be available in
+the retained benchmark owner's ordinary catalog. Configure their credential
+assignment explicitly when a connection requires it; the runner does not grant
+access, change policies, or silently substitute an unavailable model. The frozen
+manifest records the actual admitted models and rejects drift on resume.
 It creates a normal auth session, revokes it on exit, and keeps
 each answer/judge in a separate Memory-excluded chat. It neither reimports the
 corpus nor clears those diagnostic chats.
@@ -360,7 +363,99 @@ change, without changing paid checkpoints or contacting any service:
 npm run benchmark:knowledge:bright:report -- --output results/bright-answer-five
 ```
 
+### Iterating on a Knowledge failure
+
+Use the saved run before spending another full answer/judge cycle:
+
+```bash
+npm run benchmark:knowledge:bright:diagnose -- --output results/bright-answer-five
+npm run benchmark:knowledge:bright:diagnose -- --output results/bright-answer-next --baseline results/bright-answer-five
+```
+
+This offline command makes no database or provider calls. Run it after the paid
+runner has released the output lock. It verifies the saved manifest/checkpoint
+checksums and writes a derived private `diagnosis.json`; paid checkpoints remain
+unchanged. Stdout contains aggregates only. The report separates technical
+failures, degradation, retrieval counts and scope, repeated queries, evidence
+packing, review requirements, and observed stage durations. Nested durations
+overlap; do not sum them or label time before the first search as preparation.
+Missing primary handles do not prove missing relevant facts: an included parent
+can contain the same passage, and relevance requires separate inspection.
+
+New answer traces capture the minimal accepted packing inputs. Diagnosis uses
+the real product packer with saved settled tool results and compares exact
+message bytes, hashes and rendered items. Replay stops at the first changed
+context: later recorded reviews cannot evaluate a different context. A mismatch
+proves a behavior difference, not a quality improvement. Both the source run and
+the replay executable fingerprints are retained.
+
+Old traces without accepted inputs report replay as unavailable. If the original
+accepted run remains accessible, a separately reviewed private collector may use
+`captureBrightPackingReplaySupplement` to write `NNN/packing-replay-context.json`
+through the existing checksum store. Bind it to the original trace and manifest;
+never replace paid artifacts, infer model limits from today's catalog, or guess
+missing inputs. The report identifies supplements separately from native trace
+capture. Pre-rerank candidate texts/scores and semantic premise coverage absent
+from an export remain explicitly unavailable.
+
+For improvement work, keep the following sequence in the existing task record;
+do not create a second experiment journal:
+
+1. Freeze a baseline and name one suspected stage, the observed symptom, the
+   expected measurable change, and a condition that would reject the hypothesis.
+   Separate observed facts from explanations still needing evidence.
+2. Inspect the corresponding implementation in a mature production engine when
+   it addresses this mechanism. Record the primary source and the applicable
+   pattern; different defaults or a popular architecture do not prove a fix.
+3. Reproduce locally on the cheapest available boundary: a tiny neutral
+   regression, exact saved-input replay, or a bounded read-only stage probe.
+   Keep benchmark-specific fixtures and logic out of product code/tests, and
+   reference answers and evaluator labels out of answer/retrieval inputs. If
+   inputs are missing, capture them once at an
+   existing private benchmark boundary before repeating the experiment.
+4. Change one mechanism, run its focused checks, and compare the isolated result
+   with the frozen baseline plus a passing control. Preserve negative results;
+   do not reroll settled provider calls or repeat a rejected unchanged variant.
+   On a constrained host, use one worker and serialize expensive work.
+5. Only after the isolated check supports the change, run a fresh five-question
+   product batch under the same corpus, model and budget controls. Inspect every
+   regression and runtime degradation, then validate on previously unused cases.
+   A changed control confounds a code comparison; a small batch cannot establish
+   whole-benchmark quality. Judge correctness, grounding, latency and cost
+   separately. Keep retained data/indexes and reuse settled work where possible.
+
 ## OpenRAG answer reliability
+
+For a comparison of the current coherent-answer workflow with a retained
+historical full run, use `npm run benchmark:knowledge:openrag:current --
+--baseline .aiqsa/openrag-answer-runs/<baseline>/checkpoint.json --case-id
+<case> --output results/<new-run> --confirm-paid OPENRAG`. This adapter reuses
+the pinned question package and the original judge, coverage/citation ceilings,
+and cited-evidence budget. It requires identical admitted answer/judge models,
+controls, reranker, Base/source fingerprints and parsing profile. The old live
+and replay harness below retains its historical protocol guards.
+
+The current adapter requires `AIQSA_OPENRAG_RETAINED_ACK=RETAINED_OPENRAG_KB`,
+the existing OpenRAG loopback database, app URL, mutation origin and private
+profile attestation, plus the separate OpenRouter acknowledgement when used.
+Run against the retained isolated development services with a query-only app
+command. Apply reviewed forward schema migrations separately before starting
+the campaign. Preflight requires a complete migration ledger and an exact latest
+migration checksum, and pins source and applied history fingerprints separately.
+Historical checksum differences are reported; this ledger check does not replace
+reviewing and reconciling schema drift before the campaign.
+Do not bootstrap, seed, upload or reprocess the corpus.
+It creates and revokes its own temporary authenticated session. Outputs stay
+under ignored `results/`; stdout contains only aggregate counts and closed
+failure codes.
+
+Repeat `--case-id` for a diagnostic selection or use `--full` for all 100 pinned
+questions. `--batch-size 1..5` bounds newly executed questions (default one),
+and `--resume` reconciles the same frozen manifest without resending settled or
+ambiguous stages. Semantic nonpasses remain recorded and do not abort the
+batch. `--preflight-only` performs no provider calls. Only a completed full
+selection produces a scoreable aggregate; a smaller regression selection
+cannot qualify corpus-scale performance or yield a new overall benchmark score.
 
 `openRagAnswerRunner.ts` is the answer/judge and frozen-evidence harness for
 the pinned 100-PDF OpenRAG slice. Unlike the isolated public retrieval suites

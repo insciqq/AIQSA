@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnvConfig } from "@next/env";
@@ -22,7 +21,7 @@ import { verifyBrightPreparedDataset } from "./brightStackOverflowPrepared";
 import { activeImportProfile, assertDatabaseIdentity, importIdentity, preparedRoot } from "./stageBrightStackOverflowImport";
 import { admittedModelPin, controlDefaults, parseSse, pinModel } from "./openRagAnswerLive";
 import {
-  BRIGHT_ANSWER_CONTRACT_VERSION, assertBrightAnswerOperationScope, assertBrightAnswerMessageRoute, brightAnswerHash, brightAnswerJudgePrompt,
+  BRIGHT_ANSWER_CONTRACT_VERSION, brightAnswerCodeFingerprint, assertBrightAnswerOperationScope, assertBrightAnswerMessageRoute, brightAnswerHash, brightAnswerJudgePrompt,
   createBrightAnswerStore, decodeBrightAnswerJudgment, isRecord,
   parseBrightAnswerCli, readBrightBoundedResponse, safeBrightAnswerError, settleBrightChatStage,
   selectBrightAnswerQueries,
@@ -39,28 +38,6 @@ const emit = (value: Readonly<Record<string, unknown>>) => {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 };
 
-async function codeFingerprint(): Promise<string> {
-  // Git worktree metadata lives outside /app in the retained container.
-  // Traverse only executable source roots, never ignored corpus/run state.
-  const paths = ["instrumentation.ts", "prisma/schema.prisma", "package.json", "package-lock.json"];
-  const visit = async (path: string): Promise<void> => {
-    for (const entry of await readdir(resolve(repositoryRoot, path), { withFileTypes: true })) {
-      if (entry.name.startsWith(".") || ["results", "node_modules"].includes(entry.name)) continue;
-      const child = `${path}/${entry.name}`;
-      if (entry.isSymbolicLink()) throw new Error("bright_answer_source_symlink_forbidden");
-      if (entry.isDirectory()) await visit(child);
-      else if (/\.(?:ts|tsx|json)$/u.test(child) && !/\.test\.[^.]+$/u.test(child)) paths.push(child);
-    }
-  };
-  for (const root of ["app/api", "lib", "benchmarks/knowledge"]) await visit(root);
-  paths.sort();
-  const hash = createHash("sha256");
-  for (const path of paths) {
-    hash.update(path).update("\0").update(await readFile(resolve(repositoryRoot, path))).update("\0");
-  }
-  return hash.digest("hex");
-}
-
 function apiUrl(container: boolean): URL {
   // The corpus preflight and HTTP app have separate Compose memory budgets.
   // Use the retained web sibling so the CLI can run in benchmark-runner.
@@ -68,13 +45,13 @@ function apiUrl(container: boolean): URL {
   return url;
 }
 
-function apiClient(base: URL, cookie: string) {
+export function answerBenchmarkApi(base: URL, cookie: string, origin = "http://localhost:3147") {
   const request = async (route: string, body?: unknown) => {
     const response = await fetch(new URL(route, base), {
       method: body === undefined ? "GET" : "POST",
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       headers: {
-        cookie, origin: "http://localhost:3147", referer: "http://localhost:3147/",
+        cookie, origin, referer: `${origin}/`,
         "content-type": "application/json", "sec-fetch-site": "same-origin"
       },
       redirect: "error",
@@ -104,7 +81,7 @@ function apiClient(base: URL, cookie: string) {
 
 /** Consume only the product's normalized SSE. The trace is a bounded event
  * timeline, not a raw provider stream or an export of internal reasoning. */
-async function consumeSse(response: Response, store: BrightAnswerStore, prefix: string) {
+export async function consumeAnswerBenchmarkSse(response: Response, store: BrightAnswerStore, prefix: string) {
   if (!response.body) throw new Error("bright_answer_sse_missing");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -230,7 +207,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       secureCookie: false, sessions: createPrismaAuthSessionStore(prisma), userId
     });
     sessionId = session.sessionId;
-    const api = apiClient(apiUrl(database.hostname === "postgres"), session.cookie.split(";", 1)[0]!);
+    const api = answerBenchmarkApi(apiUrl(database.hostname === "postgres"), session.cookie.split(";", 1)[0]!);
     const me = await api.json("/api/me");
     const catalog = await api.json("/api/me/catalog");
     if (!isRecord(me) || !isRecord(me.user) || me.user.id !== userId ||
@@ -256,7 +233,10 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
         throw error;
       }
     };
-    const answerModel = selectModel("answer", policy.defaultProviderModel);
+    const answerModel = selectModel("answer", {
+      connectionId: policy.defaultProviderModel.connectionId,
+      modelId: options.answerModel ?? policy.defaultProviderModel.modelId
+    });
     const judgeModel = selectModel("judge", system.providerModel);
     const answer = await admittedModelPin({ model: answerModel, prisma, userId });
     const judge = await admittedModelPin({ model: judgeModel, prisma, userId });
@@ -284,7 +264,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       rerankerFingerprint: brightAnswerHash(reranker.snapshot),
       answerControls, judgeControls, knowledgePolicy,
       toolLimits: { calls: String(policy.maxToolCalls), rounds: String(policy.maxToolRounds) },
-      codeFingerprint: await codeFingerprint(), concurrency: 1
+      codeFingerprint: await brightAnswerCodeFingerprint(repositoryRoot), concurrency: 1
     };
     emit({ event: "bright_answer_preflight_complete", questionCount: cases.length,
       sourceCount: activation.readySources, answerModel: answer.pin.upstreamModelId,
@@ -341,7 +321,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
         async send(chatId) {
           await checkpoint.write(`${prefix}-request.json`, request);
           const response = await api.request(`/api/chats/${encodeURIComponent(chatId)}/messages`, request);
-          await consumeSse(response, checkpoint, prefix);
+          await consumeAnswerBenchmarkSse(response, checkpoint, prefix);
         },
         capture: (chatId) => captureBrightAnswerTrace({ prisma, chatId, userId, expectedPin: pin,
           question: prompt, baseId: selectedBase,

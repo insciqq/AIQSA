@@ -98,13 +98,19 @@ function keys(value: Record<string, unknown>, expected: readonly string[]): bool
   return Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
 }
 function unique(values: readonly string[]): boolean { return new Set(values).size === values.length; }
+export function knowledgeEvidenceAnswerLiteralIssueV1(value: unknown, maximum: number, forbidden: readonly string[], multiline = false, code = false) {
+  if (typeof value !== "string") return "string_required";
+  if (!value.trim().length) return "nonempty_required";
+  if (!code && value.trim() !== value) return "trim_required";
+  if ([...value].length > maximum) return "length_exceeded";
+  if (/\p{Cs}/u.test(value) || (multiline ? /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u
+    : /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u).test(value)) return "invalid_characters";
+  if (!code && /(?:\[(?:K|S)\d+(?:\s*,\s*(?:K|S)?\d+)*\]|||)/iu.test(value)) return "citation_not_allowed";
+  if (forbidden.some(fragment => fragment.length > 0 && value.includes(fragment))) return "private_identity_not_allowed";
+  return null;
+}
 function literal(value: unknown, maximum: number, forbidden: readonly string[], multiline = false, code = false): value is string {
-  return typeof value === "string" && value.trim().length > 0 && (code || value.trim() === value) &&
-    [...value].length <= maximum && !/\p{Cs}/u.test(value) &&
-    !(multiline ? /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u
-      : /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u).test(value) &&
-    (code || !/(?:\[(?:K|S)\d+(?:\s*,\s*(?:K|S)?\d+)*\]|||)/iu.test(value)) &&
-    !forbidden.some(fragment => fragment.length > 0 && value.includes(fragment));
+  return knowledgeEvidenceAnswerLiteralIssueV1(value, maximum, forbidden, multiline, code) === null;
 }
 function handles(value: unknown, allowed: ReadonlySet<string>, minimum: number): value is string[] {
   return Array.isArray(value) && value.length >= minimum && value.length <= limits.handlesPerBlock &&

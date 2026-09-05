@@ -72,6 +72,71 @@ function execution(outputs: readonly unknown[]) {
 }
 
 describe("evidence answer execution and recovery", () => {
+  it.each([undefined, 1] as const)("repairs an invalid review field using only the admitted feedback policy (%s)", async repairFeedbackVersion => {
+    const accepted = { version: 2, analysisComplete: true,
+      blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }],
+      requirements: [{ requirement: request, status: "missing_evidence", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "The mass of Beta." }],
+      followUps: [] };
+    const rejectedGap = "The mass of Beta.\nRejected-only commentary.";
+    const malformed = { ...accepted, requirements: [{ ...accepted.requirements[0], gap: rejectedGap }] };
+    const fixture = execution([compose(), malformed, accepted]);
+    const input = { ...fixture.input, workflowVersion: 11 as const, repairFeedbackVersion, refineEvidence: async () => null };
+    if (repairFeedbackVersion === 1) {
+      const inspect = vi.mocked(fixture.store.lifecycle.inspect).getMockImplementation()!;
+      let interrupted = false;
+      vi.mocked(fixture.store.lifecycle.inspect).mockImplementation(async operation => {
+        if (operation.ordinal === 3 && !interrupted) {
+          interrupted = true;
+          throw Error("restart_before_repair_dispatch");
+        }
+        return inspect(operation);
+      });
+      await expect(executeKnowledgeEvidenceAnswerWithRefinementV1(input)).rejects.toThrow("restart_before_repair_dispatch");
+      expect(fixture.execute).toHaveBeenCalledTimes(2);
+    }
+    const result = await executeKnowledgeEvidenceAnswerWithRefinementV1(input);
+    const stored = fixture.store.stored();
+    const repairedRequest = decodeKnowledgeEvidenceAnswerSnapshot(stored[2]?.attempt.acceptedRequest);
+    if (!repairedRequest) throw Error("missing_repair_request");
+    const payload = JSON.parse(repairedRequest.userPrompt);
+    expect(payload.repairReason).toBe("text_invalid");
+    if (repairFeedbackVersion === 1) {
+      expect(stored[1]?.attempt.acceptedResult).toEqual({ kind: "rejected", reason: "text_invalid", version: 2,
+        repairHint: { field: "requirements.gap", rule: "invalid_characters" } });
+      expect(payload.repairHint).toEqual({ field: "requirements.gap", rule: "invalid_characters" });
+      expect(repairedRequest.systemPrompt).toContain("single-line");
+      for (const entry of stored) expect(entry.attempt.acceptedRequest).toMatchObject({ repairFeedbackVersion: 1 });
+    } else {
+      expect(stored[1]?.attempt.acceptedResult).toEqual({ kind: "rejected", reason: "text_invalid", version: 1 });
+      expect(payload).not.toHaveProperty("repairHint");
+      for (const entry of stored) expect(entry.attempt.acceptedRequest).not.toHaveProperty("repairFeedbackVersion");
+    }
+    expect(JSON.stringify(stored)).not.toContain("Rejected-only commentary.");
+    expect(result.publication).toMatchObject({ coverage: "partial", blocks: [{ text: compose().blocks[0]!.text }] });
+    expect(result.reviewRepairAttempted).toBe(true);
+    expect(result.operations).toHaveLength(3);
+    expect(await replayKnowledgeEvidenceAnswerV1({ dispatches: stored, forbiddenIdentityFragments: [], modelRunId: "fixture-run" })).toEqual(result);
+    expect(fixture.execute).toHaveBeenCalledTimes(3);
+    if (repairFeedbackVersion === 1) {
+      for (const repairHint of [{ field: "raw private text", rule: "invalid_characters" },
+        { field: ["requirements.gap"], rule: "invalid_characters" },
+        { field: "requirements.gap", rule: "unknown_rule" },
+        { field: "requirements.gap", rule: "invalid_characters", value: rejectedGap }]) {
+        const altered = fixture.store.stored();
+        altered[1]!.attempt.acceptedResult = { kind: "rejected", reason: "text_invalid", version: 2, repairHint };
+        altered[1]!.attempt.resultHash = knowledgeAnswerHash(altered[1]!.attempt.acceptedResult);
+        await expect(replayKnowledgeEvidenceAnswerV1({ dispatches: altered, forbiddenIdentityFragments: [], modelRunId: "fixture-run" }))
+          .rejects.toThrow("accepted_review_invalid");
+      }
+      const mixed = fixture.store.stored();
+      delete (mixed[1]!.attempt.acceptedRequest as Record<string, unknown>).repairFeedbackVersion;
+      mixed[1]!.attempt.requestHash = knowledgeAnswerHash(mixed[1]!.attempt.acceptedRequest);
+      await expect(replayKnowledgeEvidenceAnswerV1({ dispatches: mixed, forbiddenIdentityFragments: [], modelRunId: "fixture-run" }))
+        .rejects.toThrow("knowledge_evidence_answer_replay_invalid");
+      for (const policy of [0, 2, "1"]) expect(decodeKnowledgeEvidenceAnswerSnapshot({ ...repairedRequest, repairFeedbackVersion: policy })).toBeNull();
+    }
+  });
+
   it("corrects a known-operand calculation once without another search and replays the accepted critique", async () => {
     const wrong = { version: 1, blocks: [{ kind: "paragraph", text: "Alpha and Beta total 12 kg (4 + 6).", evidenceHandles: ["K1", "K2"] }] };
     const critique = { version: 2, analysisComplete: true, followUps: [],

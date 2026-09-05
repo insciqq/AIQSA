@@ -30,9 +30,14 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
  * Version 8 carries scoped exact-match specificity into fusion and reserves
  * pre-rerank slots only for discriminating exact evidence. Common literals
  * remain eligible without displacing stronger passage evidence by default.
+ * Version 9 uses a fixed reciprocal-rank scale for the learned signal, so
+ * unrelated additions to the pool cannot change its weight against query
+ * coverage merely by changing the number of scored candidates.
+ * Version 10 keeps diversity within the combined relevance band as well as
+ * the learned-score band, preserving stronger query coverage in final results.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 8 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 10 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
@@ -441,20 +446,21 @@ function hostedRerankFusionScores(
     score: candidate.rerankScore!
   })));
   const coverage = tokenCoverageScores(scored, query);
-  const rankDenominator = Math.max(1, scored.length - 1);
   return new Map(scored.map((candidate) => [
     candidate.chunkId,
-    KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT * (scored.length === 1
-      ? 1
-      : 1 - (rerankRanks.get(candidate.chunkId)! - 1) / rankDenominator) +
+    // Normalize the first reciprocal rank to one without using pool size.
+    // A percentile rank would dilute the same learned ordering whenever
+    // lower-scoring background passages extend the candidate list.
+    KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT * (KNOWLEDGE_RRF_K + 1) /
+      (KNOWLEDGE_RRF_K + rerankRanks.get(candidate.chunkId)!) +
     KNOWLEDGE_RERANK_TOKEN_COVERAGE_RANK_WEIGHT *
       (coverage.get(candidate.chunkId) ?? 0)
   ]));
 }
 
 /**
- * Final ranking after hosted reranking: descending rerank score, exact signal
- * as tie-breaker, fused RRF score next, deterministic chunk id last. Scored
+ * Final ranking after hosted reranking: combined learned-rank/token-coverage
+ * score, then raw rerank score, exact signal, fused RRF score, and chunk id. Scored
  * candidates retain the accepted hosted-rerank semantics. Candidates omitted
  * by the provider rejoin only through the same signal eligibility as the
  * deterministic path, with their weighted RRF recomputed from eligible
@@ -499,12 +505,13 @@ export function orderRerankedKnowledgeCandidates(input: Readonly<{
 
 /**
  * Post-rerank final selection: canonical occurrence deduplication, then soft
- * Source diversity applied only inside the narrow relative score band, then
+ * Source diversity inside both the combined relevance and learned-score bands, then
  * the final broad/scoped result limit. Diversity never promotes an unscored
  * candidate above a scored one and never lifts a candidate outside the band.
  */
 export function selectRerankedKnowledgeCandidates(input: Readonly<{
   candidates: readonly KnowledgeRerankedCandidate[];
+  query: string;
   resultLimit: number;
 }>): KnowledgeRerankedCandidate[] {
   const selectedOccurrences = new Set<string>();
@@ -514,6 +521,9 @@ export function selectRerankedKnowledgeCandidates(input: Readonly<{
     selectedOccurrences.add(key);
     return true;
   });
+  const fusionScores = hostedRerankFusionScores(remaining, input.query);
+  const relevanceScore = (candidate: KnowledgeRerankedCandidate): number =>
+    fusionScores.get(candidate.chunkId) ?? candidate.fusedScore;
   const bandScore = (candidate: KnowledgeRerankedCandidate): number =>
     candidate.rerankScore ?? candidate.fusedScore;
   const selected: KnowledgeRerankedCandidate[] = [];
@@ -522,13 +532,16 @@ export function selectRerankedKnowledgeCandidates(input: Readonly<{
     const strongest = remaining[0]!;
     const strongestSourceCount = counts.get(sourceKey(strongest)) ?? 0;
     const bandFloor = bandScore(strongest) * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
+    const relevanceFloor = relevanceScore(strongest) * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
     const alternative = remaining
       .filter((candidate) =>
         (candidate.rerankScore === null) === (strongest.rerankScore === null) &&
         bandScore(candidate) >= bandFloor &&
+        relevanceScore(candidate) >= relevanceFloor &&
         (counts.get(sourceKey(candidate)) ?? 0) < strongestSourceCount)
       .sort((left, right) =>
         (counts.get(sourceKey(left)) ?? 0) - (counts.get(sourceKey(right)) ?? 0) ||
+        relevanceScore(right) - relevanceScore(left) ||
         bandScore(right) - bandScore(left) ||
         left.chunkId.localeCompare(right.chunkId))[0];
     const chosen = alternative ?? strongest;
