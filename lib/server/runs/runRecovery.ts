@@ -241,6 +241,7 @@ export type RunRecoveryRepository = Pick<
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
   | "groundKnowledgeAnswerV21"
+  | "hasPendingPdfPreparation"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"

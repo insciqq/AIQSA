@@ -1,3 +1,4 @@
+import type { AssistantIdentity } from "../../contracts/assistants";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
 import type { ChatPdfAttachmentAdmission } from "../uploads/chatPdfAdmission";
 import type {
@@ -271,7 +272,8 @@ export class SkillRunConflictError extends Error {
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
-  revisionId: string;
+  definitionVersion: number;
+  identity: AssistantIdentity;
 };
 
 export type AcceptedSkillRun = {
