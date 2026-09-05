@@ -68,12 +68,12 @@ describe("admin provider browser API", () => {
     });
   });
 
-  it("names an assistant-revision deletion blocker in readable administrator feedback", () => {
+  it("names an Assistant deletion blocker in readable administrator feedback", () => {
     expect(adminProviderErrorMessage({
-      blockers: [{ count: 1, kind: "assistant_revisions" }],
+      blockers: [{ count: 1, kind: "assistants" }],
       code: "provider_delete_conflict",
       resourceIds: []
-    })).toContain("assistant revisions: 1");
+    })).toContain("assistants: 1");
   });
 
   it("names an installation-default deletion blocker in readable administrator feedback", () => {

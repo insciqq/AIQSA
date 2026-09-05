@@ -239,7 +239,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByText("1 connection · 0 configured")).toBeVisible();
   });
 
-  it("describes Assistant revision blockers when deleting a provider connection", () => {
+  it("describes Assistant blockers when deleting a provider connection", () => {
     const view = controller();
     const requestConfirmation = vi.fn();
     mocks.useController.mockReturnValue(view);
@@ -256,7 +256,7 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete OpenRouter connection" }));
 
     expect(requestConfirmation).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining("Assistant revisions")
+      body: expect.stringContaining("Assistants")
     }));
     expect(requestConfirmation.mock.calls[0]![0].body).not.toMatch(/profiles/i);
   });
@@ -1480,7 +1480,7 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Configured model model" }));
 
     expect(requestConfirmation).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining("Assistant revisions"),
+      body: expect.stringContaining("Assistants"),
       testId: "admin-confirm-delete-provider-model",
       title: "Delete “Configured model”?"
     }));

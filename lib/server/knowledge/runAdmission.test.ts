@@ -222,7 +222,20 @@ function store(options: StoreOptions = {}) {
     },
     providerModelCredentialCheck: {
       findFirst: vi.fn(async () =>
-        options.checkAvailable === false ? null : { id: "check-1" })
+        options.checkAvailable === false ? null : {
+          id: "check-1",
+          evidence: {
+            method: "tiny_generation",
+            upstreamModelId: embeddingConfiguration.upstreamModelId,
+            selectedProviders: [],
+            embedding: {
+              probeVersion: 1,
+              document: true,
+              query: true,
+              dimensions: embeddingConfiguration.embedding.targetDimension
+            }
+          }
+        })
     },
     providerUserCredentialAssignment: {
       findUnique: vi.fn(async () => null)
