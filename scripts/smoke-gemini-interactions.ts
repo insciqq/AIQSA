@@ -293,13 +293,11 @@ async function main(): Promise<void> {
   if (searchEnabled) {
     const stream = runtime.adapter.stream(request);
     let groundingDisplayEvents = 0;
-    let searchCallCount = 0;
     let suggestionsPresent = false;
     let next = await stream.next();
     while (!next.done) {
       if (next.value.type === "grounding_display") {
         groundingDisplayEvents += 1;
-        searchCallCount = Math.max(searchCallCount, next.value.data.runSearch.callCount);
         suggestionsPresent ||= next.value.data.suggestionsHtml.length > 0;
       }
       next = await stream.next();
@@ -308,11 +306,11 @@ async function main(): Promise<void> {
     const preview = isRecord(next.value.finalProviderResponsePreview)
       ? next.value.finalProviderResponsePreview
       : {};
-    const stepTypes = new Set(Array.isArray(preview.steps)
-      ? preview.steps.flatMap((step) => isRecord(step) && typeof step.type === "string"
+    const steps = Array.isArray(preview.steps) ? preview.steps : [];
+    const searchCallCount = steps.filter((step) => isRecord(step) && step.type === "google_search_call").length;
+    const stepTypes = new Set(steps.flatMap((step) => isRecord(step) && typeof step.type === "string"
         ? [step.type]
-        : [])
-      : []);
+        : []));
     const passed = finalOutputPresent && searchCallCount > 0 && suggestionsPresent;
     console.log(JSON.stringify({
       finalOutputPresent,
