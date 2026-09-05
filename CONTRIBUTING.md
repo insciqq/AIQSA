@@ -1,6 +1,6 @@
 # Contributing to AIQSA
 
-Thanks for helping improve AIQSA. For a substantial product or architecture change, please open an issue first so the intended behavior and scope are clear.
+Thanks for helping improve AIQSA. For a substantial product or architecture change, please open an issue first so the intended behavior and scope are clear. Everyone participating in the project is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
