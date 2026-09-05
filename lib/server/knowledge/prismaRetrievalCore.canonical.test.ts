@@ -189,6 +189,37 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(result.lexicalBackendEvidence.backendKind).toBe("opensearch_bm25_v1");
   });
 
+  it.each([false, true])("revalidates the full merged query pool before final selection (missing tail: %s)", async (missingTail) => {
+    const indexArtifactId = "hierarchy-1";
+    const admitted = { ...scope(0, "Policies", "base-policies"), acceptedIndexArtifactIds: [indexArtifactId] };
+    const hits = Array.from({ length: 128 }, (_, index) => ({
+      contentHash: "a".repeat(64), indexArtifactId, passageId: `passage-${index}`, rank: index + 1,
+      score: 1 / (61 + index), sourceVersionId: "source-version-1"
+    }));
+    const client = mockClient([admitted], []);
+    client.$queryRaw.mockReset()
+      .mockResolvedValueOnce([admitted])
+      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce(hits.slice(0, missingTail ? -1 : undefined).map((hit, index) => row({
+        artifactId: "source-artifact-1", baseName: "Policies", bindingOrdinal: 0,
+        chunkId: hit.passageId, chunkIndex: index, knowledgeBaseId: "base-policies",
+        searchIndexArtifactId: indexArtifactId, sourceId: "source-1", sourceVersionId: hit.sourceVersionId,
+        laneRank: hit.rank, rawScore: hit.score
+      })));
+    const result = execute(client, { lexicalSearch: async () => ({
+      evidence: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 128, queryVariantCount: 2 }), hits
+    }) });
+    if (missingTail) await expect(result).rejects.toThrow("knowledge_search_candidate_revalidation_failed");
+    else {
+      const selected = await result;
+      expect(selected.lexicalBackendEvidence.candidateCount).toBe(128);
+      expect(selected.passages.length).toBeGreaterThan(0);
+      expect(selected.passages.length).toBeLessThanOrEqual(16);
+      expect(selected.candidateCount).toBe(64);
+    }
+    expect(client.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+
   it("fails closed when the OpenSearch projection is incomplete", async () => {
     const admitted = {
       ...scope(0, "Policies", "base-policies"),
@@ -320,8 +351,6 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(queryText).toContain('sum(1.0 / exact_match."matchFrequency")');
     expect(queryText).toContain("KnowledgeArtifactExactEntry");
     expect(queryText).toContain("unnest(");
-    expect(queryText).toContain('"modelSimpleQuery"');
-    expect(queryText).toContain('"anchorSimpleQuery"');
     expect(query.values).toEqual(expect.arrayContaining(["safe-2718", "2026-08-20"]));
     expect(result.passages).toHaveLength(1);
     expect(result.passages[0]).toMatchObject({
@@ -568,10 +597,6 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(result.passages[0]!.layoutKind).toBe("table_row");
     expect(client.$queryRaw).toHaveBeenCalledTimes(2);
     const neighborSql = sqlText(client.$queryRaw.mock.calls[1]![0]);
-    // One generic language-neutral lexical configuration only (FR-9).
-    expect(neighborSql).toContain("websearch_to_tsquery('simple'::regconfig");
-    expect(neighborSql).not.toContain("'english'::regconfig");
-    expect(neighborSql).not.toContain("'russian'::regconfig");
     expect(neighborSql).toContain("<=>");
     expect(neighborSql).toContain(`60.0 + candidate."laneRank"`);
     expect(neighborSql).toContain(

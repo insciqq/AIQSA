@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import {
   knowledgeRetrievalTool,
+  knowledgeRetrievalToolV2,
+  knowledgeRetrievalToolsForRequest,
+  normalizeKnowledgeAnchorQuery,
+  normalizeKnowledgeQuery,
   parseKnowledgeExecutionRequest
 } from "./knowledgeTools";
 import {
@@ -13,6 +17,44 @@ import {
 } from "./retrievalTypes";
 
 describe("Knowledge request parsing", () => {
+  it("retains both ends of a long original question without relaxing model-query validation", () => {
+    const question = `Explain the sensor behavior.\n${"🧠測定 ".repeat(800)}\nThe required output is an ordered list.`;
+    const anchor = normalizeKnowledgeAnchorQuery(question, 2)!;
+    expect([...anchor]).toHaveLength(3_000);
+    expect(anchor).toMatch(/^Explain the sensor behavior\./u);
+    expect(anchor).toMatch(/The required output is an ordered list\.$/u);
+    expect(anchor).toContain("\n[...]\n");
+    expect(anchor).not.toMatch(/\p{Surrogate}/u);
+    expect(normalizeKnowledgeQuery(question)).toBeNull();
+    expect(normalizeKnowledgeAnchorQuery(question)).toBeNull();
+    expect(normalizeKnowledgeAnchorQuery("  Ａ short question 🧠  ", 2)).toBe("A short question 🧠");
+    expect(normalizeKnowledgeAnchorQuery("a".repeat(3_000), 2)).toBe("a".repeat(3_000));
+  });
+
+  it("rejects unsafe controls in omitted original text and unknown anchor policies", () => {
+    const question = `${"a".repeat(2_000)}\u0000${"z".repeat(2_000)}`;
+    expect(normalizeKnowledgeAnchorQuery(question, 2)).toBeNull();
+    expect(normalizeKnowledgeAnchorQuery("  \n  ", 2)).toBeNull();
+    expect(() => normalizeKnowledgeAnchorQuery("valid", 3 as 2))
+      .toThrow("knowledge_query_anchor_version_invalid");
+  });
+
+  it.each([2, 3] as const)("pins search instructions %s without mutating historical or other tool descriptors", knowledgeSearchInstructionVersion => {
+    const original = structuredClone(knowledgeRetrievalTool);
+    const other = { ...knowledgeRetrievalTool, capability: "search" as const, name: "search_engine_1" };
+    const tools = [knowledgeRetrievalTool, other];
+    expect(knowledgeRetrievalToolsForRequest({}, tools)).toBe(tools);
+    const revised = knowledgeRetrievalToolsForRequest({ knowledgeSearchInstructionVersion }, tools);
+    expect(revised[0]).toEqual({ ...original, description: knowledgeRetrievalToolV2.description });
+    expect(revised[0]?.description).not.toBe(original.description);
+    expect(revised[1]).toBe(other);
+    expect(knowledgeRetrievalTool).toEqual(original);
+    expect(knowledgeRetrievalToolsForRequest({}, tools)[0]).toEqual(original);
+    expect(() => knowledgeRetrievalToolsForRequest({
+      knowledgeSearchInstructionVersion: 4 as 2 | 3
+    }, tools)).toThrow("knowledge_search_instruction_version_invalid");
+  });
+
   it("advertises and accepts only the strict model-facing query shape", () => {
     expect(knowledgeRetrievalTool).toMatchObject({
       capability: "knowledge",

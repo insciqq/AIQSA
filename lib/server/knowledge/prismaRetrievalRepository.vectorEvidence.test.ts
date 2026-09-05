@@ -180,13 +180,13 @@ describe("Prisma Knowledge vector evidence projection", () => {
 
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       maxWait: 5_000,
-      timeout: 35_000
+      timeout: 50_000
     });
     expect(executeRaw).toHaveBeenCalledTimes(2);
     const [timeoutStrings, ...timeoutValues] = executeRaw.mock.calls[0]!;
     expect(Array.from(timeoutStrings as TemplateStringsArray).join("?"))
       .toContain("statement_timeout");
-    expect(timeoutValues).toContain("30000");
+    expect(timeoutValues).toContain("45000");
     expect(executeRaw.mock.invocationCallOrder[0])
       .toBeLessThan(queryRaw.mock.invocationCallOrder[0]!);
     expect(executeRaw.mock.invocationCallOrder[1])

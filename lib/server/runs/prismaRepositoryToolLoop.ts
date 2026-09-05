@@ -431,9 +431,12 @@ const normalizedRequestKeys = new Set([
   "content",
   "context",
   "knowledgeAnswering",
+  "knowledgeAnswerWorkflowVersion",
   "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
   "knowledgePlan",
+  "knowledgeSearchInstructionVersion",
+  "knowledgeQueryAnchorVersion",
   "memoryActionTools",
   "memoryHistoryTool",
   "modelCapabilities",
@@ -730,8 +733,11 @@ function decodeProviderDispatchRecoveryRequest(
     !isRecord(value.content) || !onlyKnownKeys(value.content, new Set(["blocks"])) ||
     !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
+    value.knowledgeAnswerWorkflowVersion !== undefined && value.knowledgeAnswerWorkflowVersion !== 2 && value.knowledgeAnswerWorkflowVersion !== 3 && value.knowledgeAnswerWorkflowVersion !== 4 && value.knowledgeAnswerWorkflowVersion !== 5 && value.knowledgeAnswerWorkflowVersion !== 6 && value.knowledgeAnswerWorkflowVersion !== 7 && value.knowledgeAnswerWorkflowVersion !== 8 && value.knowledgeAnswerWorkflowVersion !== 9 && value.knowledgeAnswerWorkflowVersion !== 10 && value.knowledgeAnswerWorkflowVersion !== 11 ||
     value.knowledgeEvidencePackingVersion !== undefined &&
-      value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 ||
+      value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 ||
+    value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
+    value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
     !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&

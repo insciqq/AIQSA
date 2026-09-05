@@ -1263,7 +1263,7 @@ async function main(): Promise<void> {
         const result = await store.hybridSearch({
           anchorQuery: query.text,
           candidateLimit: KNOWLEDGE_LANE_CANDIDATE_LIMIT,
-          excludedContentHashes: [],
+          excludedOccurrenceKeys: [],
           operation: "automatic_search",
           query: query.text,
           ...(rerankExecutor ? { rerank: { executor: rerankExecutor } } : {}),

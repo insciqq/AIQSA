@@ -10,8 +10,15 @@ services:
     profiles: ["answer"]
     # Retained answer runs must not reseed or recreate the imported corpus.
     # Bootstrap/migrations remain an explicit preparation operation.
-    command: ["npm", "run", "dev"]
+    # Discard generated route state on restart; corpus and database state live
+    # outside this disposable compilation cache.
+    # Benchmark code stays frozen between explicit restarts. Disable server
+    # Fast Refresh after observed dev route-registration loss; HTTP preflight
+    # still proves the required handlers are available before paid admission.
+    command: ["sh", "-c", "find /app/.next -mindepth 1 -delete && exec npm run dev -- --no-server-fast-refresh"]
     environment:
+      # Leave room for the native development compiler and request buffers.
+      NODE_OPTIONS: --max-old-space-size=1536
       AIQSA_APP_BASE_URL: http://localhost:${AIQSA_KNOWLEDGE_BENCHMARK_APP_PORT:-3147}
       AIQSA_KNOWLEDGE_BENCHMARK_TARGET: public-retrieval
       DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@postgres:5432/aiqsa_knowledge_benchmark?schema=public

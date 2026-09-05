@@ -78,6 +78,7 @@ import {
   groundKnowledgeRunAnswer,
   groundKnowledgeRunAnswerV5,
   groundKnowledgeRunAnswerV21,
+  groundKnowledgeEvidenceRunAnswerV1,
   loadKnowledgeFullContextDispatchRecovery,
   settleKnowledgeGrounding
 } from "../knowledge/evidenceRepository";
@@ -393,6 +394,7 @@ export function createPrismaRunRepository(
     groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input),
     groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input),
     groundKnowledgeAnswerV21: (input) => groundKnowledgeRunAnswerV21(prismaClient, input),
+    groundKnowledgeEvidenceAnswer: (input) => groundKnowledgeEvidenceRunAnswerV1(prismaClient, input),
     loadKnowledgeFullContextDispatchRecovery: (input) =>
       loadKnowledgeFullContextDispatchRecovery(prismaClient, input),
     admitPreparingRun: (input) =>

@@ -106,9 +106,12 @@ type RetrievalPrisma = Pick<
   | "modelRunToolCall"
 > & AcceptedEmbeddingRuntimeStore;
 
-const KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS = 30_000;
+// Whole-Base admission permits large immutable scopes. Leave room for the
+// exact, lexical and dense lanes on a small installation, with a separate
+// transaction margin so PostgreSQL owns the classified statement timeout.
+const KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS = 45_000;
 const KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS = 5_000;
-const KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS = 35_000;
+const KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS = 50_000;
 
 function retrievalQueryTimedOut(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && (

@@ -5,8 +5,9 @@ import { dirname, resolve } from "node:path";
 import { canonicalJson } from "./contract";
 import { assertOpenRagPrivatePathNoSymlinks } from "./openRagAnswerRunner";
 import { decodeKnowledgeOperationRequestV3 } from "../../lib/server/knowledge/knowledgeOperationRequest";
+import { BRIGHT_STACKOVERFLOW_QUERY_COUNT } from "./brightStackOverflowContract";
 
-export const BRIGHT_ANSWER_CONTRACT_VERSION = 1;
+export const BRIGHT_ANSWER_CONTRACT_VERSION = 3;
 export const BRIGHT_ANSWER_MAX_PRIVATE_BYTES = 32 * 1024 * 1024;
 
 export type BrightAnswerOptions = Readonly<{
@@ -14,6 +15,7 @@ export type BrightAnswerOptions = Readonly<{
   output: string;
   preflightOnly: boolean;
   queryLimit: number;
+  queryOffset: number;
   resume: boolean;
 }>;
 
@@ -22,7 +24,8 @@ export function parseBrightAnswerCli(argv: readonly string[]): BrightAnswerOptio
   let output = "";
   let preflightOnly = false;
   let queryLimit = 5;
-  let batchSize = 10;
+  let queryOffset = 0;
+  let batchSize = 5;
   let resume = false;
   const seen = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
@@ -37,9 +40,15 @@ export function parseBrightAnswerCli(argv: readonly string[]): BrightAnswerOptio
     } else if (key === "--output") {
       output = argv[++index] ?? "";
       if (!output || output.startsWith("--")) throw new Error("bright_answer_output_required");
+    } else if (key === "--query-offset") {
+      const value = argv[++index];
+      if (!value || !/^(?:0|[1-9]\d{0,2})$/u.test(value) || Number(value) >= BRIGHT_STACKOVERFLOW_QUERY_COUNT) {
+        throw new Error("bright_answer_query_offset_invalid");
+      }
+      queryOffset = Number(value);
     } else if (key === "--query-limit" || key === "--batch-size") {
       const value = argv[++index];
-      if (!value || !/^(?:[1-9]|10)$/u.test(value)) {
+      if (!value || !/^[1-5]$/u.test(value)) {
         throw new Error("bright_answer_canary_limit_invalid");
       }
       if (key === "--query-limit") queryLimit = Number(value);
@@ -48,7 +57,17 @@ export function parseBrightAnswerCli(argv: readonly string[]): BrightAnswerOptio
   }
   if (!preflightOnly && !paid) throw new Error("bright_answer_paid_ack_required");
   if (!output) throw new Error("bright_answer_output_required");
-  return Object.freeze({ batchSize, output, preflightOnly, queryLimit, resume });
+  if (queryOffset + queryLimit > BRIGHT_STACKOVERFLOW_QUERY_COUNT) throw new Error("bright_answer_query_range_invalid");
+  return Object.freeze({ batchSize, output, preflightOnly, queryLimit, queryOffset, resume });
+}
+
+export function selectBrightAnswerQueries<T>(queries: readonly T[], options: Pick<BrightAnswerOptions, "queryLimit" | "queryOffset">): readonly T[] {
+  if (!Number.isSafeInteger(options.queryOffset) || options.queryOffset < 0 ||
+    !Number.isSafeInteger(options.queryLimit) || options.queryLimit < 1 || options.queryLimit > 5 ||
+    queries.length !== BRIGHT_STACKOVERFLOW_QUERY_COUNT || options.queryOffset + options.queryLimit > queries.length) {
+    throw new Error("bright_answer_query_range_invalid");
+  }
+  return queries.slice(options.queryOffset, options.queryOffset + options.queryLimit);
 }
 
 export function brightAnswerHash(value: unknown): string {
@@ -80,6 +99,17 @@ export function safeBrightAnswerError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   return /^[a-z][a-z0-9_]{0,127}$/u.test(message)
     ? message : "bright_answer_unclassified_failure";
+}
+
+/** A missing cursor is rejected by the real messages handler before any chat
+ * lookup or run admission. A framework HTML 404 is not route readiness. */
+export async function assertBrightAnswerMessageRoute(probe: () => Promise<unknown>): Promise<void> {
+  try { await probe(); }
+  catch (error) {
+    if (error instanceof Error && error.message === "chat_page_cursor_invalid") return;
+    throw new Error("bright_answer_message_route_unavailable");
+  }
+  throw new Error("bright_answer_message_route_unavailable");
 }
 
 export async function readBrightBoundedResponse(response: Response, maximumBytes: number): Promise<string> {
@@ -298,6 +328,12 @@ export async function createBrightAnswerStore(input: Readonly<{
 
 export type BrightAnswerStore = Awaited<ReturnType<typeof createBrightAnswerStore>>;
 
+function settledKnowledgeFailure(trace: Readonly<{ status: unknown; error: unknown }>): boolean {
+  return trace.status === "error" && typeof trace.error === "string" && [
+    "knowledge_answer_contract_failed", "knowledge_retrieval_failed", "knowledge_retrieval_query_timed_out"
+  ].includes(trace.error);
+}
+
 export async function settleBrightChatStage<T extends Readonly<{
   id: string; status: string; answer: string; error: string | null;
 }>>(input: Readonly<{
@@ -311,6 +347,7 @@ export async function settleBrightChatStage<T extends Readonly<{
   wait(): Promise<void>;
   progress(trace: T): void;
   deadlineMs: number;
+  continueKnowledgeFailures?: boolean;
 }>): Promise<T> {
   const requestHash = brightAnswerHash(input.request);
   const rawState = await input.store.read(`${input.prefix}-state.json`);
@@ -319,8 +356,9 @@ export async function settleBrightChatStage<T extends Readonly<{
   }
   const settled = await input.store.read(`${input.prefix}.json`);
   if (settled !== null) {
-    if (!isRecord(settled) || settled.status !== "complete" ||
-      typeof settled.answer !== "string" || !settled.answer.trim() || rawState === null ||
+    if (!isRecord(settled) || typeof settled.answer !== "string" ||
+      !(settled.status === "complete" && settled.answer.trim() || input.continueKnowledgeFailures &&
+        settledKnowledgeFailure({ status: settled.status, error: settled.error })) || rawState === null ||
       decodeBrightChatStage(rawState).runId !== settled.id) {
       throw new Error("bright_answer_settled_trace_invalid");
     }
@@ -368,6 +406,11 @@ export async function settleBrightChatStage<T extends Readonly<{
       await input.store.write(`${input.prefix}-failure.json`, {
         code: trace.error ?? "bright_answer_product_run_failed", state
       });
+      if (input.continueKnowledgeFailures && settledKnowledgeFailure(trace)) {
+        await input.store.write(`${input.prefix}.json`, trace);
+        await input.store.write(`${input.prefix}-state.json`, { ...state, state: "settled" });
+        return trace;
+      }
       throw new Error(trace.error ?? "bright_answer_product_run_failed");
     }
     if (Date.now() >= deadline) throw new Error("bright_answer_run_still_pending");

@@ -190,7 +190,7 @@ describe("additive target-local correction", () => {
     const validation = validateKnowledgeCorrectionDeltaV2({ ...delta([]), targets: {
       D1: { addContributionIds: [], status: "missing" }, D2: { addContributionIds: [literalId], status: "covered" }
     } }, { ...input, selector, supplement: EMPTY_KNOWLEDGE_CORRECTION_SUPPLEMENT_V3 });
-    expect(validation).toMatchObject({ kind: "rejected", reason: "selector_literal_shape_invalid" });
+    expect(validation).toMatchObject({ kind: "rejected", reason: "selector_literal_count_exceeded" });
     expect(JSON.stringify(selector)).toBe(before);
   });
 

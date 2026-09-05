@@ -95,6 +95,11 @@ describe("Knowledge reranker binding evidence V2", () => {
     expect(decodeKnowledgeRerankerBindingEvidenceV2(skip)).toEqual(skip);
   });
 
+  it.each([4, 5, 6, 7, 8, 9])("decodes only accepted ranking profiles (%s)", (rankingProfileVersion) => {
+    const evidence = completeEvidence({ rankingProfileVersion });
+    expect(decodeKnowledgeRerankerBindingEvidenceV2(evidence)).toEqual(rankingProfileVersion === 9 ? null : evidence);
+  });
+
   it("is strictly content-free and shape-exact", () => {
     expect(decodeKnowledgeRerankerBindingEvidenceV2(null)).toBeNull();
     expect(decodeKnowledgeRerankerBindingEvidenceV2({})).toBeNull();

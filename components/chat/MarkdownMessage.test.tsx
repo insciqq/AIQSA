@@ -86,6 +86,28 @@ describe("MarkdownMessage", () => {
     expect(screen.queryByText("## Answer")).not.toBeInTheDocument();
   });
 
+  it("renders escaped literal punctuation and encoded angle brackets as text", () => {
+    const { container } = render(<MarkdownMessage content={[
+      "Keep \\_\\_entry\\_\\_ and \\`token\\` with \\*\\*markers\\*\\* and \\~\\~markers\\~\\~.",
+      "Typed value &lt;Item&gt; preserves &amp;lt;literal&amp;gt; and \\$value\\$."
+    ].join(" ")} />);
+    expect(container.textContent).toBe(
+      "Keep __entry__ and `token` with **markers** and ~~markers~~. " +
+      "Typed value <Item> preserves &lt;literal&gt; and $value$."
+    );
+    expect(container.querySelector("em, strong, code, del, [data-math-display]")).toBeNull();
+  });
+
+  it("keeps an escaped citation opener literal beside an active citation", () => {
+    const renderCitation = vi.fn((handle: string, key: string) =>
+      <button key={key} type="button">[{handle}]</button>);
+    const { container } = render(<MarkdownMessage
+      content={"Literal \\[K1] and active [K1]."} renderCitation={renderCitation} />);
+    expect(container.textContent).toBe("Literal [K1] and active [K1].");
+    expect(screen.getAllByRole("button", { name: "[K1]" })).toHaveLength(1);
+    expect(renderCitation).toHaveBeenCalledTimes(1);
+  });
+
   it("activates only known citations after safe Markdown parsing", () => {
     const renderCitation = vi.fn((handle: string, key: string) =>
       handle === "K1" || handle === "K12.1"
@@ -169,7 +191,7 @@ describe("MarkdownMessage", () => {
     expect(container.querySelectorAll('[data-math-display="true"]')).toHaveLength(1);
     expect(screen.getByText("$not_math$")).toBeVisible();
     expect(container).toHaveTextContent("price $5 literal");
-    expect(container).toHaveTextContent(String.raw`\\(not math\\)`);
+    expect(container).toHaveTextContent(String.raw`\(not math\)`);
   });
 
   it("keeps malformed and hostile TeX inert when KaTeX refuses or restricts it", async () => {
@@ -321,6 +343,19 @@ describe("MarkdownMessage", () => {
 
     expect(writeText).toHaveBeenCalledWith("const answer = 42;\n");
     await waitFor(() => expect(screen.getAllByText("Copied").length).toBeGreaterThan(0));
+  });
+
+  it("keeps shorter embedded fences and citation-shaped data inside a longer code block", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const renderCitation = vi.fn((handle: string, key: string) => <button key={key}>[{handle}]</button>);
+    const code = 'const __entry__: Archive<Row> = source;\n```\n[K2]\n```\n';
+    render(<MarkdownMessage content={`\`\`\`\`\n${code}\`\`\`\`\n\n[K1]`} renderCitation={renderCitation} />);
+    expect(screen.getAllByRole("button", { name: "Copy code" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "[K2]" })).toBeNull();
+    expect(screen.getByRole("button", { name: "[K1]" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    expect(writeText).toHaveBeenCalledWith(code);
   });
 
   it("keeps tables and fenced code in explicit local overflow surfaces", () => {

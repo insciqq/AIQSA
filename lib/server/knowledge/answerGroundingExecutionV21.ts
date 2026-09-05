@@ -1,4 +1,6 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
+import { decodeKnowledgeEvidenceAnswerSnapshot, type KnowledgeEvidenceAnswerSnapshot,
+  type KnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
 import { normalizeTokenUsage } from "../../domain/usage";
 import type {
   ProviderStructuredOutputRequest
@@ -144,8 +146,8 @@ function storedUsage(value: Readonly<{
 }
 
 function exactSnapshot(
-  left: KnowledgeAnswerOperationRequestSnapshotV21,
-  right: KnowledgeAnswerOperationRequestSnapshotV21
+  left: KnowledgeAnswerOperationRequestSnapshotV21 | KnowledgeEvidenceAnswerSnapshot,
+  right: KnowledgeAnswerOperationRequestSnapshotV21 | KnowledgeEvidenceAnswerSnapshot
 ): boolean {
   return knowledgeAnswerCanonicalJson(left) === knowledgeAnswerCanonicalJson(right);
 }
@@ -181,7 +183,7 @@ function auditFallbackReason(error: unknown): KnowledgeCoverageAuditFailureReaso
 export async function acceptedOperation(input: Readonly<{
   acceptedFailure(error: unknown): OperationAcceptedResult;
   acceptedOutput(output: Readonly<Record<string, unknown>>): OperationAcceptedResult;
-  acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21;
+  acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21 | KnowledgeEvidenceAnswerSnapshot;
   authorize(): Promise<void>;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
@@ -191,7 +193,7 @@ export async function acceptedOperation(input: Readonly<{
   ): Promise<KnowledgeAnswerOperationExecutionV21>;
   lifecycle: KnowledgeProviderDispatchLifecycle;
   modelRunId: string;
-  operation: KnowledgeAnswerOperationV21;
+  operation: KnowledgeAnswerOperationV21 | KnowledgeEvidenceAnswerOperation;
   ordinal: OperationOrdinal | 7 | 8;
   recoveryProviderResponseId?: string | null;
   shouldAbort(error: unknown): boolean;
@@ -208,7 +210,7 @@ export async function acceptedOperation(input: Readonly<{
   let dispatchRequired = true;
   let recoveryProviderResponseId: string | null = null;
   if (existing) {
-    const storedRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+    const storedRequest = decodeKnowledgeEvidenceAnswerSnapshot(existing.attempt.acceptedRequest) ?? decodeKnowledgeAnswerOperationRequestSnapshotV21(
       existing.attempt.acceptedRequest
     );
     if (!storedRequest || !exactSnapshot(storedRequest, input.acceptedRequest) ||

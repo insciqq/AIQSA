@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  assertBrightAnswerOperationScope, brightAnswerHash, brightAnswerJudgePrompt, createBrightAnswerStore,
+  assertBrightAnswerOperationScope, assertBrightAnswerMessageRoute, brightAnswerHash, brightAnswerJudgePrompt, createBrightAnswerStore,
   decodeBrightAnswerJudgment, decodeBrightChatStage, parseBrightAnswerCli,
-  readBrightBoundedResponse, safeBrightAnswerError, settleBrightChatStage
+  readBrightBoundedResponse, safeBrightAnswerError, selectBrightAnswerQueries, settleBrightChatStage
 } from "./brightAnswerHarness";
 
 const temporaryRoots: string[] = [];
@@ -14,10 +14,20 @@ afterEach(async () => {
 });
 
 describe("BRIGHT answer canary", () => {
+  it.each(["chat_page_cursor_invalid", "http_404", "unauthorized", null])(
+    "requires the real message-route response before paid admission (%s)", async (code) => {
+      const probe = vi.fn(async () => { if (code) throw new Error(code); return {}; });
+      const result = assertBrightAnswerMessageRoute(probe);
+      if (code === "chat_page_cursor_invalid") await expect(result).resolves.toBeUndefined();
+      else await expect(result).rejects.toThrow("bright_answer_message_route_unavailable");
+      expect(probe).toHaveBeenCalledOnce();
+    }
+  );
+
   it("requires separate paid authority and refuses a full run", () => {
     expect(() => parseBrightAnswerCli(["--output", "results/test"])).toThrow("paid_ack");
     expect(parseBrightAnswerCli(["--output", "results/test", "--preflight-only"]).queryLimit).toBe(5);
-    for (const count of ["0", "11", "117", "-1"]) {
+    for (const count of ["0", "6", "10", "11", "117", "-1"]) {
       expect(() => parseBrightAnswerCli(["--output", "results/test", "--query-limit", count])).toThrow("canary_limit");
     }
     expect(() => parseBrightAnswerCli(["--full"])).toThrow("argument_unknown");
@@ -26,6 +36,25 @@ describe("BRIGHT answer canary", () => {
       "--batch-size", "1", "--output", "results/test", "--resume"])).toMatchObject({
       queryLimit: 5, batchSize: 1, resume: true
     });
+  });
+
+  it("selects successive five-question batches with stable official ordinals", () => {
+    const args = ["--output", "results/test", "--preflight-only"];
+    const queries = Array.from({ length: 117 }, (_, ordinal) => ({ ordinal, query: "Synthetic question" }));
+    const first = parseBrightAnswerCli(args);
+    const second = parseBrightAnswerCli([...args, "--query-offset", "5"]);
+    expect(first).toMatchObject({ batchSize: 5, queryLimit: 5, queryOffset: 0 });
+    expect(selectBrightAnswerQueries(queries, first).map(({ ordinal }) => ordinal)).toEqual([0, 1, 2, 3, 4]);
+    expect(selectBrightAnswerQueries(queries, second).map(({ ordinal }) => ordinal)).toEqual([5, 6, 7, 8, 9]);
+    const tail = parseBrightAnswerCli([...args, "--query-offset", "115", "--query-limit", "2"]);
+    expect(selectBrightAnswerQueries(queries, tail).map(({ ordinal }) => ordinal)).toEqual([115, 116]);
+    for (const offset of ["-1", "117", "05", "1.5"]) {
+      expect(() => parseBrightAnswerCli([...args, "--query-offset", offset])).toThrow("query_offset_invalid");
+    }
+    expect(() => parseBrightAnswerCli([...args, "--query-offset", "115"])).toThrow("query_range_invalid");
+    expect(() => selectBrightAnswerQueries(queries.slice(0, 10), first)).toThrow("query_range_invalid");
+    expect(() => selectBrightAnswerQueries(queries, { queryOffset: 116, queryLimit: 2 })).toThrow("query_range_invalid");
+    expect(() => parseBrightAnswerCli([...args, "--batch-size", "6"])).toThrow("canary_limit_invalid");
   });
 
   it("separates answer correctness from grounding and rejects inconsistent passes", () => {
@@ -117,15 +146,46 @@ describe("durable paid stage boundary", () => {
     fixture.files.set("001/answer-state.json", {
       chatId: "chat-1", state: "submitted", runId: null, requestHash: brightAnswerHash(fixture.request)
     });
-    await expect(settleBrightChatStage({ ...fixture, capture: async () => null })).rejects.toThrow("dispatch_ambiguous");
+    await expect(settleBrightChatStage({ ...fixture, continueKnowledgeFailures: true, capture: async () => null })).rejects.toThrow("dispatch_ambiguous");
     expect(fixture.send).not.toHaveBeenCalled();
   });
 
-  it("preserves a technical failure trace and stops scheduling", async () => {
+  it("preserves a provider failure trace and stops scheduling", async () => {
     const fixture = stageFixture();
     fixture.capture.mockResolvedValue({ ...fixture.trace, status: "error", answer: "", error: "provider_timeout" } as never);
     await expect(settleBrightChatStage(fixture)).rejects.toThrow("provider_timeout");
     expect(fixture.files.get("001/answer-trace.json")).toMatchObject({ status: "error" });
+    expect(fixture.files.has("001/answer.json")).toBe(false);
+  });
+
+  it.each(["knowledge_answer_contract_failed", "knowledge_retrieval_failed", "knowledge_retrieval_query_timed_out"])
+    ("settles classified Knowledge failure %s without another paid send on resume", async (error) => {
+      const fixture = stageFixture();
+      const failed = { ...fixture.trace, status: "error", answer: "", error };
+      fixture.capture.mockResolvedValue(failed as never);
+      await expect(settleBrightChatStage({ ...fixture, continueKnowledgeFailures: true })).resolves.toEqual(failed);
+      expect(fixture.files.get("001/answer-state.json")).toMatchObject({ state: "settled", runId: failed.id });
+      fixture.capture.mockRejectedValue(new Error("unexpected_capture"));
+      await expect(settleBrightChatStage({ ...fixture, continueKnowledgeFailures: true })).resolves.toEqual(failed);
+      expect(fixture.send).toHaveBeenCalledTimes(1);
+      expect(fixture.createChat).toHaveBeenCalledTimes(1);
+      await expect(settleBrightChatStage(fixture)).rejects.toThrow("settled_trace_invalid");
+      const next = { ...fixture.trace, id: "run-2" };
+      fixture.capture.mockResolvedValue(next);
+      fixture.createChat.mockResolvedValue("chat-2");
+      await expect(settleBrightChatStage({ ...fixture, prefix: "002/answer", continueKnowledgeFailures: true }))
+        .resolves.toEqual(next);
+      expect(fixture.send).toHaveBeenCalledTimes(2);
+    });
+
+  it.each([
+    { status: "cancelled", error: "knowledge_answer_contract_failed" },
+    { status: "error", error: "provider_timeout" },
+    { status: "error", error: "run_access_denied" }
+  ])("does not continue a cancelled or unclassified terminal run: $error", async (failure) => {
+    const fixture = stageFixture();
+    fixture.capture.mockResolvedValue({ ...fixture.trace, ...failure, answer: "" } as never);
+    await expect(settleBrightChatStage({ ...fixture, continueKnowledgeFailures: true })).rejects.toThrow(failure.error);
     expect(fixture.files.has("001/answer.json")).toBe(false);
   });
 

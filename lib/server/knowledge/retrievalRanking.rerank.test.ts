@@ -60,9 +60,9 @@ function candidate(input: Readonly<{
   };
 }
 
-describe("Knowledge ranking profile v5", () => {
+describe("Knowledge ranking profile v8", () => {
   it("versions the widened candidate and rerank pool constants", () => {
-    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(5);
+    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(8);
     expect(KNOWLEDGE_LANE_CANDIDATE_LIMIT).toBe(64);
     expect(KNOWLEDGE_BROAD_RERANK_INPUT_MAX).toBe(96);
     expect(KNOWLEDGE_SCOPED_RERANK_INPUT_MAX).toBe(48);
@@ -99,22 +99,36 @@ describe("Pre-rerank pool selection", () => {
     expect(pool).toHaveLength(1);
     expect(pool[0]?.signals.some(({ lane }) => lane === "exact")).toBe(true);
   });
-  it("caps the merged pool and keeps every exact candidate regardless of dense strength", () => {
+  it.each([0.001, 1])("reserves bounded pool space only for discriminating exact evidence (%s)", (rawScore) => {
     const strong = Array.from({ length: 120 }, (_, index) => candidate({
       chunkId: `dense-${String(index).padStart(3, "0")}`,
       signals: [signal("passage_semantic", index + 1, { rawScore: 0.9, vectorDistance: 0.1 })]
     }));
-    const weakExact = candidate({
-      chunkId: "weak-exact",
-      signals: [signal("exact", 500, { rawScore: 0.001 })]
+    const exact = candidate({
+      chunkId: "exact",
+      signals: [signal("exact", 500, { rawScore })]
     });
     const pool = selectKnowledgePreRerankPool({
       bindingOrdinals: [0],
-      candidates: [...strong, weakExact],
+      candidates: [...strong, exact],
       maximum: KNOWLEDGE_BROAD_RERANK_INPUT_MAX
     });
     expect(pool).toHaveLength(KNOWLEDGE_BROAD_RERANK_INPUT_MAX);
-    expect(pool.some((entry) => entry.chunkId === "weak-exact")).toBe(true);
+    expect(pool.some((entry) => entry.chunkId === "exact")).toBe(rawScore >= 1);
+  });
+
+  it("keeps passage relevance ahead of repeated literals without banning exact-only retrieval", async () => {
+    const repeated = ["sample-a", "sample-b", "sample-c"].map((chunkId, index) => candidate({
+      chunkId, signals: [signal("exact", index + 1, { rawScore: 0.002 })]
+    }));
+    const relevant = candidate({ chunkId: "passage", signals: [signal("passage_bm25", 1)] });
+    const pool = selectKnowledgePreRerankPool({ candidates: [...repeated, relevant], bindingOrdinals: [0], maximum: 2 });
+    expect(pool).toHaveLength(2);
+    expect(pool[0]!.chunkId).toBe("passage");
+    expect(pool.filter(item => item.chunkId.startsWith("sample-"))).toHaveLength(1);
+    const exactOnly = await rankKnowledgeCandidates({ candidates: repeated, resultLimit: 8 });
+    expect(exactOnly.selected).toHaveLength(3);
+    expect(exactOnly.selected.every(item => item.signals.some(signal => signal.lane === "exact"))).toBe(true);
   });
 
   it("respects the scoped forty-eight cap", () => {

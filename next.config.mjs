@@ -29,7 +29,12 @@ const nextConfig = {
     // Next 16 persistent Turbopack caches can enter a CPU/RSS growth loop
     // after broad bind-mount changes. Keep incremental in-process compilation,
     // but rebuild the disposable dev cache on each container start.
-    turbopackFileSystemCacheForDev: false
+    turbopackFileSystemCacheForDev: false,
+    // The native compiler cache is outside V8's heap ceiling. Bound its
+    // development target so repeated route compilation fits small containers.
+    ...(process.env.NODE_ENV === "development"
+      ? { turbopackMemoryLimit: 768 * 1024 * 1024 }
+      : {})
   },
   output: "standalone",
   serverExternalPackages: ["@napi-rs/canvas", "pdf-lib", "unpdf"],

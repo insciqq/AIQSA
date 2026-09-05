@@ -5,6 +5,7 @@ const messages = {
   knowledge_search_projection_incomplete: "Knowledge search is not ready. Wait for indexing to finish, then retry; contact an administrator if it remains unavailable.",
   knowledge_retrieval_scope_changed: "Knowledge search readiness changed during this request. Retry after indexing finishes.",
   knowledge_search_candidate_revalidation_failed: "Knowledge search could not verify its index. Contact an administrator.",
+  knowledge_retrieval_query_timed_out: "Knowledge search timed out. Try again later.",
   opensearch_timeout: "Knowledge search timed out. Try again later.",
   opensearch_connection_failed: "Knowledge search could not connect to its service. Try again later or contact an administrator.",
   opensearch_rate_limited: "Knowledge search is busy. Try again later.",

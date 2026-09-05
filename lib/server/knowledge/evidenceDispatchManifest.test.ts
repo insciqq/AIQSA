@@ -7,6 +7,8 @@ import {
   KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_EVIDENCE_SHORTENING_VERSION,
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidencePackingVersion
@@ -43,9 +45,13 @@ function pack(input: Readonly<{
   maximumBytes?: number;
   maximumTokens?: number;
   packingVersion?: KnowledgeEvidencePackingVersion;
+  retainedItems?: Parameters<typeof packKnowledgeEvidenceDispatchManifest>[0]["retainedItems"];
+  allowExpandedContextOmission?: boolean;
 }> = {}) {
   return packKnowledgeEvidenceDispatchManifest({
     candidates: input.candidates ?? [candidate()],
+    retainedItems: input.retainedItems,
+    allowExpandedContextOmission: input.allowExpandedContextOmission,
     coverageStatement: "Coverage verified: no.",
     footer: "</private_knowledge_evidence>",
     header: "<private_knowledge_evidence version=\"2\">",
@@ -161,6 +167,72 @@ describe("Knowledge evidence dispatch manifest", () => {
     expect(decodeKnowledgeEvidenceDispatchManifestDraft(interleaved)).toEqual(interleaved);
   });
 
+  it("reserves previously supported passages before new ranked results compete for the same context budget", () => {
+    const candidates = [
+      candidate({ evidenceId: "alpha", handle: "K1", exactExcerpt: "a".repeat(1200), resultOrdinal: 1 }),
+      candidate({ evidenceId: "beta", handle: "K2", exactExcerpt: "b".repeat(1200), resultOrdinal: 2 }),
+      candidate({ evidenceId: "gamma", handle: "K3", exactExcerpt: "c".repeat(1200), operationOrdinal: 2, resultOrdinal: 1 })
+    ];
+    const previous = pack({ candidates: candidates.slice(0, 2) });
+    const options = { candidates, maximumBytes: previous.messageBytes, packingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION };
+    expect(pack(options).items.map(item => item.handle)).toEqual(["K1", "K3"]);
+    const retained = pack({ ...options, retainedItems: [previous.items[1]!] });
+    expect(retained.items.map(item => item.handle)).toEqual(["K1", "K2"]);
+    expect(retained.items[1]!.itemHash).toBe(previous.items[1]!.itemHash);
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(retained)).toEqual(retained);
+    expect(pack({ ...options, candidates: [...candidates].reverse(), retainedItems: [previous.items[1]!] })).toEqual(retained);
+  });
+
+  it.each(["bytes", "tokens"] as const)("keeps later primary evidence before optional neighbor expansion (%s)", (bound) => {
+    const first = candidate({ exactExcerpt: "A signed receipt authorizes the transfer.",
+      expandedContext: "Additional background. ".repeat(100) });
+    const second = candidate({ evidenceId: "second-result", handle: "K2", sourceAlias: "S2", operationOrdinal: 2,
+      exactExcerpt: "The destination must acknowledge the receipt. ".repeat(15) });
+    const oneExpanded = pack({ candidates: [first] });
+    const options = { candidates: [first, second],
+      ...(bound === "bytes" ? { maximumBytes: oneExpanded.messageBytes } : { maximumTokens: oneExpanded.messageTokens }),
+      packingVersion: KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION };
+    const manifest = pack(options);
+    expect(manifest.items.map(item => item.handle)).toEqual(["K1", "K2"]);
+    expect(manifest.items[0]).toMatchObject({ exactExcerpt: first.exactExcerpt, expandedContextState: "omitted",
+      expandedContextOriginalBytes: Buffer.byteLength(first.expandedContext!, "utf8") });
+    expect(manifest.items[0]!.text).toContain("shortened; expanded context omitted");
+    expect(manifest.items[1]!.exactExcerpt).toBe(second.exactExcerpt);
+    expect(manifest.messageBytes).toBeLessThanOrEqual(manifest.limits.maximumBytes);
+    expect(manifest.messageTokens).toBeLessThanOrEqual(manifest.limits.maximumTokens);
+    expect(pack({ ...options, candidates: [second, first] })).toEqual(manifest);
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(manifest)).toEqual(manifest);
+    expect(pack({ ...options, packingVersion: KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION })
+      .items.map(item => item.handle)).toEqual(["K1"]);
+    expect(pack({ ...options, allowExpandedContextOmission: false }).items.map(item => item.handle)).toEqual(["K1"]);
+  });
+
+  it("keeps a short expansion when omitting it would cost more than the complete evidence", () => {
+    const candidates = [candidate({ exactExcerpt: "The fee is 5.", expandedContext: "USD." })];
+    const previous = pack({ candidates, packingVersion: KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION });
+    const current = pack({ candidates, packingVersion: KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION,
+      maximumBytes: previous.messageBytes, maximumTokens: previous.messageTokens });
+    expect(current.message).toBe(previous.message);
+    expect(current.items[0]?.expandedContext).toBe("USD.");
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(current)).toEqual(current);
+  });
+
+  it.each([KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION, KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION])(
+    "never trims context already used by a reviewed answer or substitutes a modified passage (%s)", (packingVersion) => {
+    const supported = candidate({ expandedContext: "Essential condition. ".repeat(100) });
+    const previous = pack({ candidates: [supported], packingVersion });
+    expect(previous.items[0]?.expandedContextState).toBe("included");
+    expect(() => pack({ candidates: [supported], retainedItems: previous.items, maximumBytes: 800, packingVersion }))
+      .toThrow("knowledge_evidence_retention_exceeds_budget");
+    expect(() => pack({ candidates: [{ ...supported, exactExcerpt: "Changed premise." }], retainedItems: previous.items, packingVersion }))
+      .toThrow("knowledge_evidence_retention_invalid");
+    const shortened = pack({ candidates: [supported], maximumBytes: 800, packingVersion });
+    expect(shortened.items[0]?.expandedContextState).toBe("omitted");
+    const repacked = pack({ candidates: [supported], retainedItems: shortened.items, packingVersion });
+    expect(repacked.items[0]?.itemHash).toBe(shortened.items[0]?.itemHash);
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(repacked)).toEqual(repacked);
+  });
+
   it("deduplicates handles before rendering and never leaks the later poison item", () => {
     const manifest = pack({
       candidates: [
@@ -235,13 +307,15 @@ describe("Knowledge evidence dispatch manifest", () => {
     expect(decodeKnowledgeEvidenceDispatchManifestDraft(manifest)).not.toBeNull();
   });
 
-  it("fits the downstream atom budget before any answer-model request", () => {
+  it.each([KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION, KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION])(
+    "fits the downstream atom budget before any answer-model request (%s)", (packingVersion) => {
     const expandedContext = Array.from(
       { length: 1_024 },
       (_, index) => `table-row-${index + 1}`
     ).join("\n");
     const manifest = pack({
       candidates: [candidate({ expandedContext })],
+      packingVersion,
       maximumBytes: 128 * 1_024,
       maximumTokens: 128 * 1_024
     });

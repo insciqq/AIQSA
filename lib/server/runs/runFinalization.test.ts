@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
+import { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1 } from "../knowledge/evidenceAnswerSnapshotV1";
+import { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAnswerSnapshotV2";
 import type { RunRepository } from "./runRepositoryContract";
 import {
   finalizeRunCompletion,
@@ -35,6 +37,26 @@ function completionInput(repository: Pick<RunRepository, "completeRun" | "loadMo
 }
 
 describe("run finalization", () => {
+  it.each([KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1, KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2])("routes $pipeline to its settled finalizer and rejects altered contracts", async contracts => {
+    const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
+    const grounding = { finalText: "Reviewed answer [K1].", finalAnswerHash: "a".repeat(64),
+      originalAnswerHash: "b".repeat(64), receiptHash: "c".repeat(64), sessionId: "session-1", outcome: "answered" as const, version: 5 as const };
+    const groundKnowledgeEvidenceAnswer = vi.fn(async () => ({ grounding }));
+    const groundKnowledgeAnswerV21 = vi.fn();
+    const repository = { completeRun, groundKnowledgeEvidenceAnswer, groundKnowledgeAnswerV21, loadModelPricing: async () => null };
+    const input = { ...completionInput(repository), knowledgeAnswerContracts: contracts };
+    expect(await finalizeRunCompletion(input)).toMatchObject({ finalText: grounding.finalText, status: "completed" });
+    expect(groundKnowledgeEvidenceAnswer).toHaveBeenCalledWith({ runId: "run-1", userId: "user-1" });
+    expect(groundKnowledgeAnswerV21).not.toHaveBeenCalled();
+    await expect(finalizeRunCompletion({ ...input, knowledgeAnswerContracts: {
+      ...contracts, extra: true
+    } as typeof contracts })).rejects.toThrow("knowledge_answer_finalization_snapshot_invalid");
+    await expect(finalizeRunCompletion({ ...input, knowledgeAnswerContracts: {
+      ...contracts, reviewVersion: contracts.reviewVersion === 1 ? 2 : 1
+    } as typeof contracts })).rejects.toThrow("knowledge_answer_finalization_snapshot_invalid");
+    expect(completeRun).toHaveBeenCalledOnce();
+  });
+
   it("normalizes usage and records null cost when pricing is unavailable", async () => {
     const loadModelPricing = vi.fn(async () => null);
 

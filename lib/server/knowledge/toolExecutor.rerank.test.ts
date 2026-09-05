@@ -24,6 +24,9 @@ import {
   knowledgeEvidenceFromToolResult
 } from "./toolResult";
 import type { ProviderRunRequest } from "../providers/types";
+import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 
 const embeddingConfiguration = {
   adapterKind: "openai_embeddings_compatible",
@@ -275,6 +278,43 @@ function context(persistedToolCallId = "tool-call-1") {
 }
 
 describe("Knowledge executor hosted rerank wiring", () => {
+  it.each([1, 128])("persists a single eligible passage at lexical rank %s when reranking skips provider I/O", async (lexicalRank) => {
+    const passage = rerankedSearchResult().passages[0]!;
+    const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
+      eligibleRows: 1, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
+      projectionComplete: true, targetDimension: 1_024 };
+    const row = { ...passage, rerankScore: undefined, contributingBindingOrdinals: [0],
+      documentContext: null, exactKind: null, lane: "passage_bm25", laneRank: lexicalRank,
+      rawScore: 1, vectorDistance: null, vectorMode: null };
+    const client = { $queryRaw: vi.fn().mockResolvedValueOnce([scope])
+      .mockResolvedValueOnce([{ candidates: [row], scopes: [scope] }]) };
+    const { store: retrievalStore } = store(async input => {
+      const core = await executeKnowledgeRetrievalCore(
+        client as unknown as Parameters<typeof executeKnowledgeRetrievalCore>[0], input);
+      return { ...core, passages: core.passages.map(({ signals, ...candidate }) => ({ ...candidate, signalProvenance: signals })) };
+    });
+    const rerank = vi.fn();
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: embeddingRuntime(), store: retrievalStore,
+      rerankerRuntime: { resolve: async () => ({ adapter: { rerank }, kind: "ready", pin }) } });
+    const result = await runtime.execute(call(), context());
+    expect(rerank).not.toHaveBeenCalled();
+    expect(result.status).toBe("complete");
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    expect(snapshot).not.toBeNull();
+    expect(parsePersistedToolExecutionResult(call(), snapshot)).toEqual(result);
+    const evidence = knowledgeEvidenceFromToolResult(result)!;
+    expect(evidence.results).toMatchObject([{ rerankScore: null, ftsRank: lexicalRank }]);
+    expect(decodeKnowledgeRetrievalEvidence({ ...evidence,
+      results: [{ ...evidence.results[0], ftsRank: 129 }] })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({ ...evidence,
+      results: [{ ...evidence.results[0], annRank: 101 }] })).toBeNull();
+    for (const rankingProfileVersion of [4, 5, 6, 7, 8]) {
+      const historical = decodeKnowledgeRetrievalEvidence({ ...evidence,
+        lexicalBackend: { ...evidence.lexicalBackend, rankingProfileVersion } });
+      expect(historical !== null).toBe(lexicalRank <= 100 || rankingProfileVersion >= 6);
+    }
+  });
+
   it("resolves the role once, passes one rerank executor, and persists the pinned evidence", async () => {
     const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(
       async () => rerankedSearchResult()

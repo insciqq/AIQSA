@@ -91,9 +91,19 @@ export type KnowledgeCoverageScopeV6 = Readonly<{
 
 export type KnowledgeCoverageScopeValidationFailureReasonV6 =
   | "coverage_scope_anchor_invalid"
+  | "coverage_scope_atom_count_invalid"
+  | "coverage_scope_atom_duplicate"
+  | "coverage_scope_atom_id_invalid"
+  | "coverage_scope_atom_source_mismatch"
+  | "coverage_scope_description_control_character"
+  | "coverage_scope_description_duplicate"
   | "coverage_scope_description_invalid"
+  | "coverage_scope_description_too_long"
+  | "coverage_scope_finding_duplicate"
   | "coverage_scope_finding_invalid"
+  | "coverage_scope_finding_shape_invalid"
   | "coverage_scope_joint_invalid"
+  | "coverage_scope_joint_sources_invalid"
   | "coverage_scope_shape_invalid"
   | "coverage_scope_unit_map_invalid";
 
@@ -150,9 +160,19 @@ function rejected(
 
 const validationFailureReasons = new Set<KnowledgeCoverageScopeValidationFailureReasonV6>([
   "coverage_scope_anchor_invalid",
+  "coverage_scope_atom_count_invalid",
+  "coverage_scope_atom_duplicate",
+  "coverage_scope_atom_id_invalid",
+  "coverage_scope_atom_source_mismatch",
+  "coverage_scope_description_control_character",
+  "coverage_scope_description_duplicate",
   "coverage_scope_description_invalid",
+  "coverage_scope_description_too_long",
+  "coverage_scope_finding_duplicate",
   "coverage_scope_finding_invalid",
+  "coverage_scope_finding_shape_invalid",
   "coverage_scope_joint_invalid",
+  "coverage_scope_joint_sources_invalid",
   "coverage_scope_shape_invalid",
   "coverage_scope_unit_map_invalid"
 ]);
@@ -335,17 +355,35 @@ function comparePendingScopeItems(left: PendingScopeItem, right: PendingScopeIte
   return left.inputOrder - right.inputOrder;
 }
 
+/** Occurrence atoms distinguish equal task labels without any semantic merge.
+ * Older atom protocols retain their historical description-only identity. */
+export function knowledgeCoverageFindingIdentityV1(item: Readonly<{
+  description: string; requestAnchor: string; evidenceAtomIds: readonly string[];
+}>, atomIndexVersion?: KnowledgeCoverageEvidenceAtomIndexVersion): string {
+  return atomIndexVersion === 3 ? knowledgeAnswerCanonicalJson([
+    item.description.normalize("NFC"), item.requestAnchor.normalize("NFC"), [...item.evidenceAtomIds].sort()
+  ]) : item.description.normalize("NFC");
+}
+
 function validateDescriptionAndAnchor(
   candidate: Record<string, unknown>,
   request: string,
-  descriptions: Set<string>
+  descriptions: Set<string>,
+  evidenceAtomIds?: readonly string[]
 ): KnowledgeCoverageScopeValidationFailureReasonV6 | null {
-  if (!validPrivateText(
-    candidate.description,
-    KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDescriptionCodePoints
-  )) return "coverage_scope_description_invalid";
-  const descriptionKey = candidate.description.normalize("NFC");
-  if (descriptions.has(descriptionKey)) return "coverage_scope_description_invalid";
+  if (typeof candidate.description !== "string" || !candidate.description.trim()) {
+    return "coverage_scope_description_invalid";
+  }
+  if (codePoints(candidate.description) > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDescriptionCodePoints) {
+    return "coverage_scope_description_too_long";
+  }
+  if (controlCharacterPattern.test(candidate.description)) return "coverage_scope_description_control_character";
+  if (evidenceAtomIds !== undefined && typeof candidate.requestAnchor !== "string") return "coverage_scope_anchor_invalid";
+  const descriptionKey = evidenceAtomIds === undefined ? candidate.description.normalize("NFC") :
+    knowledgeCoverageFindingIdentityV1({ description: candidate.description,
+      requestAnchor: candidate.requestAnchor as string, evidenceAtomIds }, 3);
+  if (descriptions.has(descriptionKey)) return evidenceAtomIds === undefined
+    ? "coverage_scope_description_duplicate" : "coverage_scope_finding_duplicate";
   if (!validPrivateText(
     candidate.requestAnchor,
     KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxAnchorCodePoints
@@ -407,6 +445,7 @@ export function validateKnowledgeCoverageScopeV6(
     [atom.id, Object.freeze({ ...atom, index })] as const));
   const descriptions = new Set<string>();
   const pending: PendingScopeItem[] = [];
+  const occurrenceScoped = input.atomIndexVersion === 3;
   const appendFinding = (
     candidate: unknown,
     expectedHandle: string | null,
@@ -416,25 +455,32 @@ export function validateKnowledgeCoverageScopeV6(
       "description",
       "requestAnchor",
       "evidenceAtomIds"
-    ]) || !Array.isArray(candidate.evidenceAtomIds)) return failureReason;
-    const textFailure = validateDescriptionAndAnchor(candidate, input.request, descriptions);
-    if (textFailure) return textFailure;
-    const rawAtomIds = candidate.evidenceAtomIds as unknown[];
-    if (rawAtomIds.length < 1 ||
-      rawAtomIds.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxAtomsPerDimension ||
-      !rawAtomIds.every((id): id is string => typeof id === "string" &&
-        atomIdPattern.test(id) && atomById.has(id)) || !uniqueStrings(rawAtomIds)) {
-      return failureReason;
+    ]) || !Array.isArray(candidate.evidenceAtomIds)) return occurrenceScoped ? "coverage_scope_finding_shape_invalid" : failureReason;
+    if (input.atomIndexVersion !== 3) {
+      const textFailure = validateDescriptionAndAnchor(candidate, input.request, descriptions);
+      if (textFailure) return textFailure;
     }
+    const rawAtomIds = candidate.evidenceAtomIds as unknown[];
+    if (rawAtomIds.length < 1 || rawAtomIds.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxAtomsPerDimension) {
+      return occurrenceScoped ? "coverage_scope_atom_count_invalid" : failureReason;
+    }
+    if (!rawAtomIds.every((id): id is string => typeof id === "string" && atomIdPattern.test(id) && atomById.has(id))) {
+      return occurrenceScoped ? "coverage_scope_atom_id_invalid" : failureReason;
+    }
+    if (!uniqueStrings(rawAtomIds)) return occurrenceScoped ? "coverage_scope_atom_duplicate" : failureReason;
     const evidenceAtomIds = [...rawAtomIds].sort((left, right) =>
       atomById.get(left)!.index - atomById.get(right)!.index);
+    if (input.atomIndexVersion === 3) {
+      const textFailure = validateDescriptionAndAnchor(candidate, input.request, descriptions, evidenceAtomIds);
+      if (textFailure) return textFailure;
+    }
     const evidenceHandles = [...new Set(evidenceAtomIds.map((id) =>
       atomById.get(id)!.handle))];
     if (expectedHandle !== null
       ? (evidenceHandles.length !== 1 || evidenceHandles[0] !== expectedHandle)
       : (evidenceHandles.length < 2 ||
         evidenceHandles.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxEvidenceHandles)) {
-      return failureReason;
+      return occurrenceScoped ? expectedHandle === null ? "coverage_scope_joint_sources_invalid" : "coverage_scope_atom_source_mismatch" : failureReason;
     }
     pending.push(Object.freeze({
       anchorPosition: input.request.indexOf(candidate.requestAnchor as string),
@@ -467,9 +513,10 @@ export function validateKnowledgeCoverageScopeV6(
   }
   for (const candidate of value.unsupportedDimensions) {
     if (!record(candidate) || !exactKeys(candidate, ["description", "requestAnchor"])) {
-      return rejected("coverage_scope_finding_invalid");
+      return rejected(occurrenceScoped ? "coverage_scope_finding_shape_invalid" : "coverage_scope_finding_invalid");
     }
-    const textFailure = validateDescriptionAndAnchor(candidate, input.request, descriptions);
+    const textFailure = validateDescriptionAndAnchor(candidate, input.request, descriptions,
+      input.atomIndexVersion === 3 ? [] : undefined);
     if (textFailure) return rejected(textFailure);
     pending.push(Object.freeze({
       anchorPosition: input.request.indexOf(candidate.requestAnchor as string),
@@ -544,7 +591,7 @@ export function validateDecodedKnowledgeCoverageScopeV6(
       !validPrivateText(
         candidate.description,
         KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxDescriptionCodePoints
-      ) || descriptions.has(candidate.description.normalize("NFC")) ||
+      ) || input.atomIndexVersion !== 3 && descriptions.has(candidate.description.normalize("NFC")) ||
       !validPrivateText(
         candidate.requestAnchor,
         KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxAnchorCodePoints
@@ -552,7 +599,6 @@ export function validateDecodedKnowledgeCoverageScopeV6(
       !Array.isArray(candidate.evidenceAtomIds) ||
       !Array.isArray(candidate.evidenceHandles)) return false;
     const anchorPosition = input.request.indexOf(candidate.requestAnchor);
-    descriptions.add(candidate.description.normalize("NFC"));
     const atomIds = candidate.evidenceAtomIds as unknown[];
     const evidenceHandles = candidate.evidenceHandles as unknown[];
     if (atomIds.length > KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS.maxAtomsPerDimension ||
@@ -577,6 +623,9 @@ export function validateDecodedKnowledgeCoverageScopeV6(
       inputOrder: index,
       requestAnchor: candidate.requestAnchor
     });
+    const identity = knowledgeCoverageFindingIdentityV1(currentItem, input.atomIndexVersion);
+    if (descriptions.has(identity)) return false;
+    descriptions.add(identity);
     if (previousItem && comparePendingScopeItems(previousItem, currentItem) > 0) return false;
     previousItem = currentItem;
     return true;
