@@ -5,6 +5,8 @@ export const KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS = 4_096;
 export const KNOWLEDGE_TABLE_HEADER_LINEAGE_MAX_CHARS = 1_024;
 export const KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS = 8;
 export const KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES = 32 * 1_024;
+export type KnowledgeObservationNormalizationVersion = 1 | 2;
+const exactDecimalLimit = 4_096;
 
 export type KnowledgeObservationRole =
   | "header"
@@ -345,7 +347,7 @@ function canonicalDecimal(value: string): Readonly<{
   };
 }
 
-function canonicalScientificDecimal(value: string): Readonly<{
+function canonicalScientificDecimalLegacyV1(value: string): Readonly<{
   ambiguityReasons: readonly KnowledgeDocumentAmbiguityReason[];
   value: string | null;
 }> | null {
@@ -366,6 +368,37 @@ function canonicalScientificDecimal(value: string): Readonly<{
     ambiguityReasons: [],
     value: `${Object.is(numeric, -0) ? 0 : numeric}${match[4] ?? ""}`
   };
+}
+
+/** Shift an exact decimal string. Only the bounded exponent/offset is an
+ * integer Number; no observed value or mantissa passes through binary float. */
+function canonicalScientificDecimalV2(value: string): ReturnType<typeof canonicalDecimal> {
+  const ambiguous = () => ({ ambiguityReasons: ["ambiguous_number" as const], value: null });
+  if (value.length > exactDecimalLimit) return ambiguous();
+  const match = /^(.+?)([eE]([+-]?\d+))?(%)?$/u.exec(value);
+  if (!match) return null;
+  if (!match[2]) return canonicalDecimal(value);
+  const mantissa = canonicalDecimal(match[1]!);
+  if (!mantissa || mantissa.value === null || mantissa.ambiguityReasons.length) return ambiguous();
+  const exponentDigits = match[3]!.replace(/^[+-]/u, "").replace(/^0+/u, "") || "0";
+  if (exponentDigits.length > 4) return ambiguous();
+  const exponent = Number(exponentDigits) * (match[3]!.startsWith("-") ? -1 : 1);
+  if (Math.abs(exponent) > exactDecimalLimit) return ambiguous();
+  const sign = /^[+-]/u.exec(mantissa.value)?.[0] ?? "";
+  const [integer, fraction = ""] = mantissa.value.replace(/^[+-]/u, "").split(".");
+  const allDigits = `${integer}${fraction}`;
+  const digits = allDigits.replace(/^0+/u, "");
+  const suffix = match[4] ?? "";
+  if (!digits) return { ambiguityReasons: [], value: `${sign === "+" ? "+" : ""}0${suffix}` };
+  const point = integer!.length + exponent - (allDigits.length - digits.length);
+  const length = sign.length + suffix.length + (point <= 0 ? 2 - point + digits.length
+    : point >= digits.length ? point : digits.length + 1);
+  if (length > exactDecimalLimit) return ambiguous();
+  const decimal = point <= 0 ? `0.${"0".repeat(-point)}${digits}`
+    : point >= digits.length ? `${digits}${"0".repeat(point - digits.length)}`
+    : `${digits.slice(0, point)}.${digits.slice(point)}`;
+  const normalized = decimal.includes(".") ? decimal.replace(/0+$/u, "").replace(/\.$/u, "") : decimal;
+  return { ambiguityReasons: [], value: `${sign}${normalized}${suffix}` };
 }
 
 const knownUnitAtoms = new Set([
@@ -412,8 +445,20 @@ export function normalizeKnowledgeTableHeaderPeriodV1(
   });
 }
 
-export function normalizeKnowledgeObservationValue(value: string): NormalizedObservationValue {
-  const rawValue = canonicalText(value, 4_096).replace(/\u2212/gu, "-");
+export function normalizeKnowledgeObservationValue(
+  value: string,
+  normalizationVersion: KnowledgeObservationNormalizationVersion = 2
+): NormalizedObservationValue {
+  const prepared = canonicalText(normalizationVersion === 1 ? value : value.slice(0, exactDecimalLimit + 1),
+    normalizationVersion === 1 ? exactDecimalLimit : exactDecimalLimit + 1).replace(/\u2212/gu, "-");
+  const rawValue = prepared.slice(0, exactDecimalLimit);
+  if (normalizationVersion === 2 && (value.length > exactDecimalLimit || prepared.length > exactDecimalLimit) &&
+    /^[+-]?\d/u.test(rawValue)) return Object.freeze({
+      ambiguityReasons: Object.freeze(["ambiguous_number" as const]), date: null, kind: "number",
+      normalizedValue: null, rawValue, unit: null
+    });
+  const canonicalScientificDecimal = normalizationVersion === 1
+    ? canonicalScientificDecimalLegacyV1 : canonicalScientificDecimalV2;
   const date = canonicalDate(rawValue);
   if (date) {
     return Object.freeze({
@@ -434,6 +479,8 @@ export function normalizeKnowledgeObservationValue(value: string): NormalizedObs
       const reasons = sortedReasons([
         ...start.ambiguityReasons,
         ...end.ambiguityReasons,
+        ...(normalizationVersion === 2 && start.value && end.value &&
+          start.value.length + end.value.length + 2 > exactDecimalLimit ? ["ambiguous_number" as const] : []),
         ...(range[3] && !unit ? ["ambiguous_number" as const] : [])
       ]);
       return Object.freeze({
@@ -532,6 +579,15 @@ function descriptor(value: string): Descriptor {
   });
 }
 
+/** Existing role grammar can corroborate a column schema; an arbitrary text
+ * value (for example a person's name) is not a header merely because later
+ * rows contain numbers. Unknown schemas remain available as raw evidence. */
+export function knowledgeTableHeaderRoleIsExplicitV1(value: string): boolean {
+  const details = descriptor(value);
+  return details.ambiguityReasons.length === 0 &&
+    (details.kind !== "value" || details.role !== "metadata" || details.unit !== null);
+}
+
 function minimumConfidence(values: readonly (number | null)[]): number | null {
   return values.some((value) => value === null) ? null : Math.min(...values as number[]);
 }
@@ -576,7 +632,8 @@ type InlinePairEvidence = "singleton_table" | "sparse_row";
  */
 function observationForInlinePair(
   cells: readonly ColumnObservationCell[],
-  evidence: InlinePairEvidence
+  evidence: InlinePairEvidence,
+  normalizationVersion: KnowledgeObservationNormalizationVersion
 ): KnowledgeDocumentObservationV1 | null {
   if (cells.length !== 2 || cells.some((cell) => cell.header !== null ||
     cell.origin.kind !== "table_cell")) return null;
@@ -593,11 +650,11 @@ function observationForInlinePair(
   const label = canonicalText(labelCell.text, 256);
   if (!label || label.length > 160 || label.split(/\s+/u).length > 12 ||
     !/[\p{L}\p{M}]/u.test(label)) return null;
-  const normalizedLabel = normalizeKnowledgeObservationValue(label);
+  const normalizedLabel = normalizeKnowledgeObservationValue(label, normalizationVersion);
   if (normalizedLabel.kind !== "text" || normalizedLabel.ambiguityReasons.length > 0) return null;
 
   const details = descriptor(label);
-  const value = normalizeKnowledgeObservationValue(valueCell.text);
+  const value = normalizeKnowledgeObservationValue(valueCell.text, normalizationVersion);
   const unit = details.kind === "unit"
     ? Object.freeze({ ambiguous: false, value: canonicalText(valueCell.text, 128) || null })
     : resolvedObservationUnit([value.unit, details.unit]);
@@ -629,12 +686,13 @@ function observationForInlinePair(
 
 function observationsForColumns(input: Readonly<{
   cells: readonly ColumnObservationCell[];
+  normalizationVersion: KnowledgeObservationNormalizationVersion;
 }>): readonly KnowledgeDocumentObservationV1[] {
   const described = input.cells.map((cell) => ({
     cell,
     descriptor: cell.header ? descriptor(cell.header) : null,
     period: cell.header ? normalizeKnowledgeTableHeaderPeriodV1(cell.header) : null,
-    value: normalizeKnowledgeObservationValue(cell.text)
+    value: normalizeKnowledgeObservationValue(cell.text, input.normalizationVersion)
   }));
   const sharedSubject = singleShared(described.filter(({ descriptor }) => descriptor?.kind === "subject")
     .map(({ cell }) => cell.text));
@@ -714,6 +772,7 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
   columnStart?: number;
   headerLineage: readonly KnowledgeTableHeaderLineageV1[];
   inlinePairEvidence?: InlinePairEvidence;
+  normalizationVersion?: KnowledgeObservationNormalizationVersion;
   projectionCount?: number;
   projectionIndex?: number;
   rowIndex: number;
@@ -755,11 +814,11 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
   }));
   const inlinePair = rowKind === "data" && input.inlinePairEvidence !== undefined &&
     input.headerLineage.length === 0
-    ? observationForInlinePair(columnCells, input.inlinePairEvidence)
+    ? observationForInlinePair(columnCells, input.inlinePairEvidence, input.normalizationVersion ?? 2)
     : null;
   const observations = rowKind === "header"
     ? Object.freeze(input.cells.filter((cell) => canonicalText(cell.text, 4_096)).map((cell) => {
-        const value = normalizeKnowledgeObservationValue(cell.text);
+        const value = normalizeKnowledgeObservationValue(cell.text, input.normalizationVersion ?? 2);
         return Object.freeze({
           ambiguityReasons: value.ambiguityReasons,
           confidence: null,
@@ -782,7 +841,7 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
       }))
     : inlinePair
       ? Object.freeze([inlinePair])
-      : observationsForColumns({ cells: columnCells });
+      : observationsForColumns({ cells: columnCells, normalizationVersion: input.normalizationVersion ?? 2 });
   const reasons = sortedReasons(observations.flatMap((observation) => observation.ambiguityReasons));
   const common = {
     blockId: input.blockId,
@@ -825,7 +884,8 @@ function fieldPairKey(labelId: number, valueId: number): string {
 }
 
 export function createKnowledgeFieldContextSegments(
-  group: KnowledgeFieldGroupContextInput
+  group: KnowledgeFieldGroupContextInput,
+  normalizationVersion: KnowledgeObservationNormalizationVersion = 2
 ): readonly KnowledgeFieldContextSegment[] {
   const cells = new Map(group.cells.map((cell) => [cell.id, cell]));
   const candidates = new Map<number, Set<number>>();
@@ -884,7 +944,7 @@ export function createKnowledgeFieldContextSegments(
   const pairDescriptors = resolvedPairs.map((pair) => ({
     pair,
     descriptor: descriptor(pair.label.text),
-    value: normalizeKnowledgeObservationValue(pair.value.text)
+    value: normalizeKnowledgeObservationValue(pair.value.text, normalizationVersion)
   }));
   const sharedSubject = singleShared(pairDescriptors.filter(({ descriptor }) => descriptor.kind === "subject")
     .map(({ pair }) => pair.value.text));
@@ -973,7 +1033,7 @@ export function createKnowledgeFieldContextSegments(
         ? ["unspecified_role" as const]
         : [])
     ]);
-    const value = normalizeKnowledgeObservationValue(cell.text);
+    const value = normalizeKnowledgeObservationValue(cell.text, normalizationVersion);
     const observation: KnowledgeDocumentObservationV1 = Object.freeze({
       ambiguityReasons: sortedReasons([...reasons, ...value.ambiguityReasons]),
       confidence: minimumConfidence([group.confidence, cell.confidence]),

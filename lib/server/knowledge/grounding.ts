@@ -1,3 +1,4 @@
+import { decodeKnowledgeCoverageLimitationsV1 } from "./searchFailure";
 import { createHash } from "node:crypto";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import {
@@ -74,6 +75,12 @@ import {
 import {
   KNOWLEDGE_TARGETED_SUPPLEMENT_ATOMIC_BUDGET_V1
 } from "./answerGroundingCorrectionV21";
+import {
+  KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1,
+  type KnowledgeAnswerOperationV40,
+  type KnowledgeAnswerOperationRequestSnapshotV40
+} from "./answerGroundingSnapshotV40";
+import type { KnowledgeContributionExecutionReceiptV1 } from "./answerGroundingExecutionV40";
 
 export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7 = 7 as const;
@@ -125,6 +132,7 @@ export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V52 = 52 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V53 = 53 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V54 = 54 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55 = 55 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V56 = 56 as const;
 
 export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -1015,6 +1023,20 @@ export type KnowledgeGroundingEvidenceV55 = Omit<
   version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55;
 }>;
 
+export type KnowledgeGroundingOperationEvidenceV56 = Omit<KnowledgeGroundingOperationEvidenceV55, "contractVersion" | "purpose"> & Readonly<{
+  contractVersion: KnowledgeAnswerOperationRequestSnapshotV40["contractVersion"];
+  purpose: KnowledgeAnswerOperationV40;
+}>;
+export type KnowledgeGroundingEvidenceV56 = Omit<KnowledgeGroundingEvidenceV55,
+  "contracts" | "coverageScope" | "crossTargetExactRepeatCount" | "operations" | "version"> & Readonly<{
+  contracts: typeof KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1;
+  coverageLimitations: KnowledgeContributionExecutionReceiptV1["coverageLimitations"];
+  coverageScope: KnowledgeContributionExecutionReceiptV1["coverageScope"];
+  operations: readonly KnowledgeGroundingOperationEvidenceV56[];
+  publicationPlanHash: string;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V56;
+}>;
+
 export type KnowledgeGroundingResult =
   | LegacyKnowledgeGroundingResult
   | KnowledgeGroundingEvidenceV7
@@ -1065,7 +1087,8 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV52
   | KnowledgeGroundingEvidenceV53
   | KnowledgeGroundingEvidenceV54
-  | KnowledgeGroundingEvidenceV55;
+  | KnowledgeGroundingEvidenceV55
+  | KnowledgeGroundingEvidenceV56;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3771,6 +3794,125 @@ export function groundSettledKnowledgeAnswerV55(
   return Object.freeze({
     ...grounded,
     version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55
+  });
+}
+
+/** Snapshot V40 publication receipt. Contribution coverage is measured from
+ * the actual final publication checkpoint, including useful missing facets.
+ * No historical covered-only settlement or text reduction is applied here. */
+export function groundSettledKnowledgeAnswerV56(input: Readonly<{
+  answerBindingFingerprint: string;
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
+  modelPinFingerprint: string;
+  operations: readonly KnowledgeGroundingOperationEvidenceV56[];
+  providerPinFingerprint: string;
+  receipt: KnowledgeContributionExecutionReceiptV1;
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV56 {
+  const roles = input.operations.map(({ role }) => role);
+  const rolePattern = /^primary,scope(?:,scope_repair)?,scope_completeness(?:,scope_completeness_repair)?,initial(?:,repair)?(?:,scope_closure(?:,scope_closure_repair)?)?(?:,supplement)?(?:,final(?:,final)?)?$/u;
+  const purposeForRole: Record<KnowledgeGroundingOperationEvidenceV56["role"], KnowledgeAnswerOperationV40> = {
+    primary: "knowledge_answer_draft_v21",
+    scope: "knowledge_coverage_scope_v7", scope_repair: "knowledge_coverage_scope_v7",
+    scope_completeness: "knowledge_coverage_scope_completeness_v2", scope_completeness_repair: "knowledge_coverage_scope_completeness_v2",
+    initial: "knowledge_grounded_selector_v22", repair: "knowledge_grounded_selector_v22",
+    scope_closure: "knowledge_coverage_scope_closure_v3", scope_closure_repair: "knowledge_coverage_scope_closure_v3",
+    supplement: "knowledge_answer_draft_supplement_v22", final: "knowledge_grounded_selector_final_v22"
+  };
+  const operationsValid = input.operations.length <= 8 && rolePattern.test(roles.join(",")) &&
+    input.operations.every((operation, index) => {
+      const usage = decodeKnowledgeProviderAttemptUsage(operation.usage);
+      return operation.ordinal === index + 1 && operation.purpose === purposeForRole[operation.role] &&
+        operation.contractVersion === Number(operation.purpose.match(/_v(\d+)$/u)?.[1]) &&
+        validOperationId(operation.operationId) && validDuration(operation.durationMs) &&
+        /^[0-9a-f]{64}$/u.test(operation.acceptedRequestHash) && /^[0-9a-f]{64}$/u.test(operation.acceptedResultHash) &&
+        (operation.providerRequestId === null || operation.providerRequestId.length <= 1024) &&
+        usage && usage.inputTokens !== null && usage.outputTokens !== null;
+    });
+  const receipt = input.receipt;
+  const coverageLimitations = decodeKnowledgeCoverageLimitationsV1(receipt.coverageLimitations);
+  const counter = (value: number, max: number) => Number.isSafeInteger(value) && value >= 0 && value <= max;
+  const completeness = input.operations.find(({ role }) => role === "scope_completeness_repair") ??
+    input.operations.find(({ role }) => role === "scope_completeness");
+  const closureOperation = input.operations.find(({ role }) => role === "scope_closure_repair") ??
+    input.operations.find(({ role }) => role === "scope_closure");
+  const closure = receipt.closure;
+  const closureValid = closure === null || Boolean(closureOperation && closure.payloadHash === closureOperation.acceptedResultHash &&
+    counter(closure.initialCoveredDimensionCount, 8) && counter(closure.initialExcludedDimensionCount, 8) &&
+    closure.initialCoveredDimensionCount + closure.initialExcludedDimensionCount <= receipt.coverageScope.dimensionCount &&
+    counter(closure.reopenedCoveredDimensionCount, closure.initialCoveredDimensionCount) &&
+    counter(closure.reopenedExcludedDimensionCount, closure.initialExcludedDimensionCount) &&
+    closure.reopenedDimensionCount === closure.reopenedCoveredDimensionCount + closure.reopenedExcludedDimensionCount);
+  const executionPolicy = decodeKnowledgeGroundingEffectiveExecutionPolicyV1(input.executionPolicy);
+  const hasContent = input.settlement.supportedClaimCount > 0 || input.settlement.finalizationMode === "evidence_only" ||
+    input.settlement.finalizationMode === "selected_claims_with_evidence";
+  const coverage = hasContent ? receipt.coverage.missingDimensionCount > 0 ||
+    receipt.coverageScope.pendingRequirementCount > 0 || receipt.coverageScope.requestAnalysisIncomplete ||
+    (coverageLimitations?.excludedResources ?? 0) > 0 || (coverageLimitations?.retrievalFailures.length ?? 0) > 0
+    ? "partial" : "complete" : "none";
+  if (!operationsValid || !executionPolicy || !closureValid || !coverageLimitations ||
+    ![input.evidenceReceiptHash, input.modelPinFingerprint, input.providerPinFingerprint, input.answerBindingFingerprint,
+      receipt.publicationPlanHash, receipt.coverage.selectorPayloadHash, receipt.coverageScope.payloadHash,
+      receipt.completeness.initialScopePayloadHash, receipt.completeness.payloadHash].every((hash) => /^[0-9a-f]{64}$/u.test(hash)) ||
+    !counter(receipt.coverageScope.dimensionCount, 8) || receipt.coverageScope.dimensionCount < 1 ||
+    !counter(receipt.coverageScope.pendingRequirementCount, 8) || typeof receipt.coverageScope.requestAnalysisIncomplete !== "boolean" ||
+    !counter(receipt.completeness.initialDimensionCount, 8) || receipt.completeness.initialDimensionCount < 1 ||
+    !counter(receipt.completeness.addedDimensionCount, 8) ||
+    receipt.completeness.initialDimensionCount + receipt.completeness.addedDimensionCount !== receipt.coverageScope.dimensionCount ||
+    receipt.completeness.payloadHash !== completeness?.acceptedResultHash ||
+    !counter(receipt.coverage.coveredDimensionCount, 8) || !counter(receipt.coverage.excludedDimensionCount, 8) ||
+    !counter(receipt.coverage.missingDimensionCount, 8) ||
+    receipt.coverage.coveredDimensionCount + receipt.coverage.excludedDimensionCount + receipt.coverage.missingDimensionCount !== receipt.coverageScope.dimensionCount ||
+    !counter(receipt.draftClaimCount, 24) || !counter(input.settlement.supportedClaimCount, receipt.draftClaimCount) ||
+    !counter(input.settlement.unsupportedClaimCount, receipt.draftClaimCount) || !counter(input.settlement.contradictedClaimCount, receipt.draftClaimCount) ||
+    input.settlement.supportedClaimCount + input.settlement.unsupportedClaimCount + input.settlement.contradictedClaimCount > receipt.draftClaimCount ||
+    receipt.correctionAccepted && !roles.includes("final") || input.settlement.requestCoverage !== coverage) {
+    throw new KnowledgeAnswerContractError("knowledge_answer_contract_failed", "The accepted contribution publication receipt is invalid");
+  }
+  const scopeRepairAttempted = roles.includes("scope_repair");
+  const completenessRepairAttempted = roles.includes("scope_completeness_repair");
+  const selectorRepairAttempted = roles.includes("repair");
+  const closureRepairAttempted = roles.includes("scope_closure_repair");
+  return Object.freeze({
+    answerBindingFingerprint: input.answerBindingFingerprint,
+    closure: closure && Object.freeze({ ...closure }),
+    closureRepairAttempted,
+    closureRepairSucceeded: closureRepairAttempted && closure !== null,
+    completeness: Object.freeze({ ...receipt.completeness }),
+    completenessRepairAttempted,
+    completenessRepairSucceeded: completenessRepairAttempted,
+    contracts: KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1,
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    correctionAttempted: roles.includes("supplement") || roles.includes("final"),
+    correctionSucceeded: receipt.correctionAccepted,
+    coverage: Object.freeze({ ...receipt.coverage }),
+    coverageScope: Object.freeze({ ...receipt.coverageScope }),
+    coverageLimitations,
+    draftClaimCount: receipt.draftClaimCount,
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    executionPolicy,
+    executionPolicyFingerprint: knowledgeAnswerHash(executionPolicy),
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    modelPinFingerprint: input.modelPinFingerprint,
+    operations: Object.freeze(input.operations.map((operation) => Object.freeze({ ...operation, usage: Object.freeze({ ...operation.usage }) }))),
+    originalAnswerHash: input.operations[0]!.acceptedResultHash,
+    outcome: input.settlement.outcome,
+    providerPinFingerprint: input.providerPinFingerprint,
+    publicationPlanHash: receipt.publicationPlanHash,
+    receiptHash: knowledgeEvidenceReceiptHash(input.evidence),
+    requestCoverage: input.settlement.requestCoverage,
+    scopeRepairAttempted, scopeRepairSucceeded: scopeRepairAttempted,
+    selectorRepairAttempted, selectorRepairSucceeded: selectorRepairAttempted,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V56
   });
 }
 

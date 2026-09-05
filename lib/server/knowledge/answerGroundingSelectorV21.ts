@@ -431,6 +431,9 @@ export function knowledgeSelectorScopeEvidenceAtomIndexV21(input: Readonly<{
     input.evidence,
     input.atomIndexVersion ?? 1
   );
+  if (atomIndex.version === 3) return Object.freeze({
+    items: Object.freeze(atomIndex.items.filter(({ id }) => assignedIds.has(id))), version: 3
+  });
   return atomIndex.version === 2
     ? Object.freeze({
         items: Object.freeze(atomIndex.items.filter(({ id }) => assignedIds.has(id))),

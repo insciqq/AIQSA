@@ -1,5 +1,6 @@
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
 import { formatKnowledgeRerankCandidate } from "./rerankCandidateFormatter";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
@@ -19,9 +20,11 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
  * hosted reranking instead of allowing an uncalibrated provider score to
  * erase every first-stage lexical signal. Version 4 replaces only the
  * passage-level PostgreSQL lexical vote with the OpenSearch BM25 projection.
+ * Version 5 changes only deduplication to immutable occurrence identity,
+ * including bounded novelty history. Scoring and model bindings are unchanged.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 4 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 5 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
@@ -269,7 +272,7 @@ export function knowledgeCandidateHasExactSignal(
 
 /**
  * Builds the merged pre-rerank candidate pool: weighted RRF pre-order,
- * canonical content deduplication, guaranteed exact-candidate survival, and
+ * canonical occurrence deduplication, guaranteed exact-candidate survival, and
  * soft balancing across accepted bindings, capped at the versioned rerank
  * input maximum. Relevance floors are deliberately not applied here — the
  * hosted reranker sees every authority-scoped candidate.
@@ -284,22 +287,18 @@ export function selectKnowledgePreRerankPool(input: Readonly<{
     throw new Error("knowledge_prererank_pool_invalid");
   }
   const fused = fuseKnowledgeCandidates(input.candidates);
-  const representativeByContent = new Map<string, KnowledgeRankedCandidate>();
-  const seenChunks = new Set<string>();
+  const representativeByOccurrence = new Map<string, KnowledgeRankedCandidate>();
   for (const candidate of fused) {
-    if (seenChunks.has(candidate.chunkId)) continue;
-    seenChunks.add(candidate.chunkId);
-    const existing = representativeByContent.get(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    const existing = representativeByOccurrence.get(key);
     if (!existing || knowledgeCandidateHasExactSignal(candidate) &&
       !knowledgeCandidateHasExactSignal(existing)) {
-      // Canonical content dedup must not erase the exact signal merely
-      // because another Source's duplicate happened to have stronger dense
-      // evidence. Keep the exact-bearing representative; ties retain the
-      // deterministic fused pre-order.
-      representativeByContent.set(candidate.contentHash, candidate);
+      // Repeated lane delivery cannot erase this occurrence's exact signal.
+      // Equal text from a different occurrence retains its own slot.
+      representativeByOccurrence.set(key, candidate);
     }
   }
-  const deduped = [...representativeByContent.values()].sort((left, right) =>
+  const deduped = [...representativeByOccurrence.values()].sort((left, right) =>
     right.fusedScore - left.fusedScore || left.chunkId.localeCompare(right.chunkId));
   if (deduped.length <= input.maximum) return deduped;
   const selected: KnowledgeRankedCandidate[] = [];
@@ -482,7 +481,7 @@ export function orderRerankedKnowledgeCandidates(input: Readonly<{
 }
 
 /**
- * Post-rerank final selection: canonical content deduplication, then soft
+ * Post-rerank final selection: canonical occurrence deduplication, then soft
  * Source diversity applied only inside the narrow relative score band, then
  * the final broad/scoped result limit. Diversity never promotes an unscored
  * candidate above a scored one and never lifts a candidate outside the band.
@@ -491,14 +490,11 @@ export function selectRerankedKnowledgeCandidates(input: Readonly<{
   candidates: readonly KnowledgeRerankedCandidate[];
   resultLimit: number;
 }>): KnowledgeRerankedCandidate[] {
-  const selectedChunks = new Set<string>();
-  const selectedContent = new Set<string>();
+  const selectedOccurrences = new Set<string>();
   const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
-    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
-      return false;
-    }
-    selectedChunks.add(candidate.chunkId);
-    selectedContent.add(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    if (selectedOccurrences.has(key)) return false;
+    selectedOccurrences.add(key);
     return true;
   });
   const bandScore = (candidate: KnowledgeRerankedCandidate): number =>
@@ -531,14 +527,11 @@ export function selectSourceDiverseKnowledgeCandidates(input: Readonly<{
   candidates: readonly KnowledgeRankedCandidate[];
   resultLimit: number;
 }>): KnowledgeRankedCandidate[] {
-  const selectedChunks = new Set<string>();
-  const selectedContent = new Set<string>();
+  const selectedOccurrences = new Set<string>();
   const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
-    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
-      return false;
-    }
-    selectedChunks.add(candidate.chunkId);
-    selectedContent.add(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    if (selectedOccurrences.has(key)) return false;
+    selectedOccurrences.add(key);
     return true;
   });
   const selected: KnowledgeRankedCandidate[] = [];

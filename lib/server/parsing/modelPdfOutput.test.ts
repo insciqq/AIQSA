@@ -35,7 +35,8 @@ describe("model PDF transcription contract", () => {
     expect(prompt).toContain(modelPdfPageStartMarker(2));
     expect(prompt).toContain("every non-empty table cell");
     expect(prompt).toContain(MODEL_PDF_ROW_CONTINUATION_CELL);
-    expect(MODEL_PDF_PROMPT_VERSION).toBe(6);
+    expect(MODEL_PDF_PROMPT_VERSION).toBe(7);
+    expect(prompt).toContain("never establish a span");
     expect(MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION).toBe(14);
     expect(prompt).toContain("Start the record with exactly `Visual data:`");
     expect(prompt).toContain("cover every visible series");
@@ -227,13 +228,13 @@ describe("model PDF transcription contract", () => {
       .toMatchObject({ rowSpan: 2, text: "Field C" });
     expect(table?.cells.some(({ text }) => text === MODEL_PDF_ROW_CONTINUATION_CELL)).toBe(false);
     expect(document.blocks[0]?.text).toBe([
-      "Table heading",
+      "\tTable heading",
       "Field A\tField B\tField C",
       "Field A\tSubfield\tField C"
     ].join("\n"));
   });
 
-  it("recovers a repeated regular multi-row record pattern without label vocabulary", () => {
+  it.each([false, true])("preserves blank cells unless reproducing legacy inference (%s)", (legacyTableInference) => {
     const pages = decodeModelPdfBatchOutput({
       mode: "system_model_vision",
       pageEnd: 1,
@@ -254,6 +255,7 @@ describe("model PDF transcription contract", () => {
       ].join("\n")
     });
     const document = modelPdfPagesToDocument({
+      legacyTableInference,
       maxBlocks: 100,
       maxCharacters: 10_000,
       mode: "system_model_vision",
@@ -264,9 +266,11 @@ describe("model PDF transcription contract", () => {
     const table = document.blocks[0]?.table;
 
     expect(table?.cells.filter(({ column, rowSpan }) => column === 0 && rowSpan === 3))
-      .toHaveLength(3);
-    expect(document.blocks[0]?.text).toContain("Alpha\tExpiry\t2040-01-15");
-    expect(document.blocks[0]?.text).toContain("Gamma\tSerial\tS-3");
+      .toHaveLength(legacyTableInference ? 3 : 0);
+    expect(document.blocks[0]?.text).toContain(legacyTableInference
+      ? "Alpha\tExpiry\t2040-01-15" : "\n\tExpiry\t2040-01-15");
+    expect(document.blocks[0]?.text).toContain(legacyTableInference
+      ? "Gamma\tSerial\tS-3" : "\n\tSerial\tS-3");
   });
 
   it("leaves sparse rows unchanged without three repeated record groups", () => {
@@ -297,7 +301,7 @@ describe("model PDF transcription contract", () => {
     expect(document.blocks[0]?.text).toContain("\n\tSerial\tS-1");
   });
 
-  it("repairs a regular leading-empty TSV group after an upstream trim shifted its cells", () => {
+  it.each([false, true])("keeps ambiguous column positions unless reproducing legacy shifts (%s)", (legacyTableInference) => {
     const pages = decodeModelPdfBatchOutput({
       mode: "system_model_vision",
       pageEnd: 1,
@@ -318,6 +322,7 @@ describe("model PDF transcription contract", () => {
       ].join("\n")
     });
     const document = modelPdfPagesToDocument({
+      legacyTableInference,
       maxBlocks: 100,
       maxCharacters: 10_000,
       mode: "system_model_vision",
@@ -327,8 +332,27 @@ describe("model PDF transcription contract", () => {
     });
 
     expect(document.blocks[0]?.table?.cells.filter(({ column, rowSpan }) =>
-      column === 0 && rowSpan === 3)).toHaveLength(3);
-    expect(document.blocks[0]?.text).toContain("Beta\tExpiry\t2041-02-16");
+      column === 0 && rowSpan === 3)).toHaveLength(legacyTableInference ? 3 : 0);
+    expect(document.blocks[0]?.text).toContain(legacyTableInference
+      ? "Beta\tExpiry\t2041-02-16" : "\nExpiry\t2041-02-16");
+  });
+
+  it("preserves genuine leading tabs and never continues across a blank table boundary or page", () => {
+    const pages = decodeModelPdfBatchOutput({ mode: "system_model_vision", pageStart: 1, pageEnd: 2,
+      text: [modelPdfPageStartMarker(1), "\tValue\tUnit", "Alpha\t19\tkg", "",
+        `${MODEL_PDF_ROW_CONTINUATION_CELL}\t21\tkg`, modelPdfPageEndMarker(1),
+        modelPdfPageStartMarker(2), `${MODEL_PDF_ROW_CONTINUATION_CELL}\t23\tkg`,
+        "Beta\t25\tkg", modelPdfPageEndMarker(2)].join("\n") });
+    expect(pages[0]!.text).toMatch(/^\tValue\tUnit/u);
+    const document = modelPdfPagesToDocument({ maxBlocks: 100, maxCharacters: 10_000,
+      mode: "system_model_vision", pageCount: 2, pages, tableContinuationMarkers: true });
+    const tables = document.blocks.filter(({ table }) => table);
+    expect(tables).toHaveLength(3);
+    expect(tables.every(({ table }) => table!.cells.every(({ rowSpan }) => rowSpan === 1))).toBe(true);
+    expect(tables[0]!.table?.cells.find(({ row, column }) => row === 0 && column === 0)?.text).toBe("");
+    expect(tables[1]!.text).toBe("\t21\tkg");
+    expect(tables[2]!.text).toBe("\t23\tkg\nBeta\t25\tkg");
+    expect(tables[2]!.page).toBe(2);
   });
 
   it("rejects prose outside the exact page contract", () => {

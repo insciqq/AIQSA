@@ -8,6 +8,13 @@ import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 import { decodeKnowledgeRetrievalEvidence } from "./toolResult";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
+import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
+import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
+import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
+import { validateKnowledgeCoverageScopeV6 } from "./coverageScopeV6";
+import { settleKnowledgeAnswerV22, validateKnowledgeAnswerDraftContributionsV1,
+  validateKnowledgeGroundedSelectorV22 } from "./answerGroundingSelectorV22";
 import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
   KNOWLEDGE_EXACT_TOOL_NAME,
@@ -264,7 +271,7 @@ describe("Knowledge executor surface", () => {
           evidenceCount: 0,
           invocationOrdinal: 1,
           policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-          priorContentHashes: [],
+          priorOccurrenceKeys: [],
           priorSourceAliases: [],
           stopReason: null,
           usage: {
@@ -380,7 +387,7 @@ describe("Knowledge executor surface", () => {
           excludedResources: 1,
           invocationOrdinal: 1,
           policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-          priorContentHashes: ["c".repeat(64)],
+          priorOccurrenceKeys: ["occurrence_v1:" + "c".repeat(64)],
           priorSourceAliases: [],
           stopReason: null,
           usage: {
@@ -436,7 +443,7 @@ describe("Knowledge executor surface", () => {
     expect(hybridSearch).toHaveBeenCalledOnce();
     expect(hybridSearch).toHaveBeenCalledWith(expect.objectContaining({
       candidateLimit: 64,
-      excludedContentHashes: ["c".repeat(64)],
+      excludedOccurrenceKeys: ["occurrence_v1:" + "c".repeat(64)],
       operation: "automatic_search",
       query: "Question",
       resultLimit: 16,
@@ -581,6 +588,115 @@ describe("Knowledge executor surface", () => {
     }));
   });
 
+  it("keeps equal-text Beta after Alpha across stored history, retrieval, tool delivery and publication", async () => {
+    const sources = [1, 2].map((index) => ({
+      ...lexicalSearchResult().passages[0]!, chunkId: `chunk-${index}`, chunkIndex: 0,
+      documentId: `source-${index}`, documentVersionId: `source-version-${index}`,
+      expandedContext: undefined, sectionId: null, sourceArtifactId: `artifact-${index}`,
+      sourceName: index === 1 ? "Alpha" : "Beta", text: "The approved value is 19."
+    }));
+    const betaIntro = { ...sources[1]!, chunkId: "beta-introduction", contentHash: "c".repeat(64),
+      text: "Beta has an approved-value section." };
+    const receipts: Record<string, unknown>[] = [];
+    const historyStore = createPrismaKnowledgeRetrievalStore({
+      $queryRaw: vi.fn(async () => [{ invocationOrdinal: receipts.length + 1, operations: receipts.length + 1 }]),
+      knowledgeRun: { findMany: vi.fn(async () => JSON.parse(JSON.stringify(receipts))) },
+      knowledgeRunScope: { findFirst: vi.fn(async () => ({ budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY, exclusions: [] })) }
+    } as never);
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(async (input) => {
+      expect(input.sourceIds).toEqual(receipts.length === 0 ? undefined : [receipts.length === 1 ? "source-2" : "source-1"]);
+      const delivered = receipts.length === 0 ? [sources[0]!, betaIntro]
+        : sources.filter((source) => input.sourceIds?.includes(source.documentId));
+      const rows = delivered.map((source) => ({
+        ...source, contributingBindingOrdinals: [0], documentContext: null,
+        exactKind: null, lane: "passage_bm25", laneRank: source === sources[0] ? 1 : 2, rawScore: 1, vectorMode: null
+      }));
+      const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
+        eligibleRows: 0, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
+        projectionComplete: true, targetDimension: 1_024 };
+      const core = await executeKnowledgeRetrievalCore({
+        $queryRaw: vi.fn().mockResolvedValueOnce([scope]).mockResolvedValueOnce([{ candidates: rows, scopes: [scope] }])
+      } as never, { ...input, lexicalSearch: async () => ({ evidence: knowledgeLexicalBackendEvidenceFixture(), hits: [] }) });
+      return { ...core, passages: core.passages.map((passage) => ({ ...passage, signalProvenance: passage.signals })) };
+    });
+    const base = automaticStore(hybridSearch).store;
+    const persistReceipt = vi.fn<KnowledgeRetrievalStore["persistReceipt"]>(async ({ evidence }) => {
+      receipts.push({ candidateCount: evidence.candidateCount, durationMs: evidence.durationMs,
+        embeddingUsage: evidence.embeddingExecutions, results: evidence.results });
+      return evidence;
+    });
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve: vi.fn(async () => ({
+        adapter: { embed: vi.fn(async () => ({ model: "embedding-upstream", requestId: null,
+          usage: { inputTokens: 1, totalTokens: 1 }, vectors: [Array.from({ length: 1_024 }, () => 0)] })) },
+        configuration: embeddingConfiguration, provider: "openai_compatible", providerModelId: "embedding-model-1"
+      })) },
+      store: { ...base, budgetState: historyStore.budgetState!, persistReceipt,
+        loadScopeAliases: vi.fn(async () => sources.map((source, index) => ({
+          alias: `S${index + 1}`, bindingOrdinal: 0, kind: "source" as const,
+          label: source.sourceName, sourceArtifactId: source.sourceArtifactId,
+          sourceId: source.documentId, sourceVersionId: source.documentVersionId
+        }))) }
+    });
+    for (const [index, aliases] of [[], ["S2"], ["S1"]].entries()) {
+      const result = await runtime.execute({ arguments: { query: "Question", sourceAliases: aliases },
+        id: `call-${index + 1}`, name: KNOWLEDGE_SEARCH_TOOL_NAME }, {
+        persistedToolCallId: `tool-call-${index + 1}`, request: request(), runId: "run-1", userId: "user-1"
+      });
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "complete" });
+    }
+    expect(hybridSearch.mock.calls[1]?.[0].excludedOccurrenceKeys).toEqual([sources[0]!, betaIntro].map(knowledgeEvidenceOccurrenceKeyV1));
+    expect(hybridSearch.mock.calls[2]?.[0].excludedOccurrenceKeys).toEqual([sources[0]!, betaIntro, sources[1]!].map(knowledgeEvidenceOccurrenceKeyV1));
+    const accepted = persistReceipt.mock.calls.map(([input]) => input.evidence);
+    expect(accepted.map((receipt) => receipt.results.map(({ documentId }) => documentId)))
+      .toEqual([["source-1", "source-2"], ["source-2"], []]);
+    expect(accepted[2]?.outcome).toBe("no_relevant_evidence");
+    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([5, 5]);
+    const results = accepted.flatMap((receipt) => receipt.results);
+    const manifest = packKnowledgeEvidenceDispatchManifest({
+      candidates: results.map((result, index) => ({ ambiguity: "none" as const,
+        evidenceId: result.chunkId, exactExcerpt: result.includedText, fileName: result.fileName,
+        handle: result.handle, locator: "page=1", operationOrdinal: index + 1, resultOrdinal: 1,
+        sourceAlias: result.sourceAlias!, sourceLabel: result.sourceName!, sourceTruncated: false,
+        sourceVersionNumber: result.documentVersionNumber, state: "available" as const })),
+      coverageStatement: "The admitted sources are Alpha and Beta.", footer: "</evidence>", header: "<evidence>",
+      maximumBytes: 32_000, maximumTokens: 8_000, profileId: "fake:answer", promptFragmentVersion: 1, runtimeVersion: 1
+    });
+    expect(manifest.items.map(({ handle }) => handle)).toEqual(["K1", "K2", "K3"]);
+    expect(manifest.exclusions).toEqual([]);
+    const exactRequest = "Report Alpha and Beta separately.";
+    const evidence = manifest.items.map(({ exactExcerpt, handle }) => ({ exactExcerpt, handle }));
+    const scope = validateKnowledgeCoverageScopeV6({
+      evidenceUnits: evidence.map(({ handle }, index) => ({ handle, findings: handle === "K2" ? [] : [{
+        description: `Report ${results[index]!.sourceName}'s value.`, evidenceAtomIds: [`A${index + 1}`],
+        requestAnchor: results[index]!.sourceName
+      }] })), jointFindings: [], unsupportedDimensions: [], version: 6
+    }, { atomIndexVersion: 2, evidence, request: exactRequest });
+    const values = results.filter(({ handle }) => handle !== "K2");
+    const draft = validateKnowledgeAnswerDraftContributionsV1({ claims: values.map((result) => ({
+      citationHints: [result.handle], text: result.includedText
+    })), version: 1 }, { availableHandles: ["K1", "K2", "K3"] });
+    if (scope.kind !== "accepted" || draft.kind !== "accepted") throw new Error("fixture_invalid");
+    const input = { atomIndexVersion: 2 as const, draft: draft.value, evidence, request: exactRequest, scope: scope.value };
+    const selector = validateKnowledgeGroundedSelectorV22({
+      claims: values.map((result, index) => ({ id: `C${index + 1}`, supportHandles: [result.handle], verdict: "supported" })),
+      coverage: scope.value.scope.map(({ id }, index) => ({ contributionIds: [`C${index + 1}`], id, status: "covered" })),
+      insufficientReason: "not_applicable", version: 2
+    }, input);
+    if (selector.kind !== "accepted") throw new Error(selector.reason);
+    const settlement = settleKnowledgeAnswerV22({ ...input, selector: selector.value });
+    expect(settlement).toMatchObject({ requestCoverage: "complete", supportedClaimCount: 2 });
+    expect(settlement.finalText).toContain("Alpha: The approved value is 19. [K1]");
+    expect(settlement.finalText).toContain("Beta: The approved value is 19. [K3]");
+    expect(settlement.finalText).not.toContain("[K2]");
+    const before = hybridSearch.mock.calls.length;
+    await expect(runtime.execute({ arguments: { query: "Question", sourceAliases: ["S3"] },
+      id: "forbidden-source", name: KNOWLEDGE_SEARCH_TOOL_NAME }, {
+      persistedToolCallId: "forbidden-source", request: request(), runId: "run-1", userId: "user-1"
+    })).resolves.toMatchObject({ status: "error" });
+    expect(hybridSearch).toHaveBeenCalledTimes(before);
+  });
+
   it("keeps the current-question anchor inside disclosed follow-up Source scope", async () => {
     const hybridSearch = vi.fn(async (input) => {
       expect(input).toMatchObject({
@@ -595,7 +711,7 @@ describe("Knowledge executor surface", () => {
       excludedResources: 0,
       invocationOrdinal: 2,
       policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-      priorContentHashes: ["a".repeat(64)],
+      priorOccurrenceKeys: ["occurrence_v1:" + "a".repeat(64)],
       priorSourceAliases: ["S1"],
       stopReason: null,
       usage: {
@@ -640,7 +756,7 @@ describe("Knowledge executor surface", () => {
     expect(hybridSearch).toHaveBeenCalledOnce();
     expect(hybridSearch).toHaveBeenCalledWith(expect.objectContaining({
       anchorQuery: "Question",
-      excludedContentHashes: ["a".repeat(64)],
+      excludedOccurrenceKeys: ["occurrence_v1:" + "a".repeat(64)],
       resultLimit: 8
     }));
     expect(embed).toHaveBeenCalledWith({
@@ -652,7 +768,7 @@ describe("Knowledge executor surface", () => {
       ...(await budgetState.mock.results[0]!.value),
       evidenceCount: 0,
       invocationOrdinal: 1,
-      priorContentHashes: [],
+      priorOccurrenceKeys: [],
       priorSourceAliases: [],
       usage: {
         cumulativeCandidates: 0,

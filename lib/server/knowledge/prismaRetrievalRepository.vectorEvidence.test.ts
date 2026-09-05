@@ -65,7 +65,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
     const store = createPrismaKnowledgeRetrievalStore({} as never);
     const result = await store.hybridSearch({
       candidateLimit: 8,
-      excludedContentHashes: [],
+      excludedOccurrenceKeys: [],
       operation: operation as KnowledgeOperationKind,
       query: "local deterministic query",
       resultLimit: 4,
@@ -126,7 +126,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
     const store = createPrismaKnowledgeRetrievalStore({} as never);
     const result = await store.hybridSearch({
       candidateLimit: 8,
-      excludedContentHashes: [],
+      excludedOccurrenceKeys: [],
       operation: "automatic_search",
       query: "policy row",
       resultLimit: 4,
@@ -169,7 +169,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
 
     await store.hybridSearch({
       candidateLimit: 8,
-      excludedContentHashes: [],
+      excludedOccurrenceKeys: [],
       operation: "automatic_search",
       query: "bounded retrieval",
       resultLimit: 4,

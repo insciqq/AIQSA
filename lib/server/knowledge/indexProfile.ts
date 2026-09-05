@@ -4,6 +4,10 @@ import type { ProviderModelConfiguration } from "../providers/providerConfigurat
 
 export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
 /**
+ * Version 12 requires independent table-header evidence and normalizes
+ * decimal observations exactly within fixed string bounds. Older artifact
+ * profiles retain their original projection and numeric semantics.
+ *
  * Version 11: a headerless table row may expose one explicit inline
  * label/value association only when the complete bounded row contains exactly
  * two non-empty cells, the leading cell has a conservative label shape, and
@@ -46,7 +50,7 @@ export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
  * resolved identity label (name:version[:asset fingerprint]) is additionally
  * recorded in retrieval evidence next to the vector-space fingerprint.
  */
-export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 11;
+export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 12;
 export const KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION = 3;
 export const KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION = 4;
 export const KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION = 5;
@@ -63,6 +67,10 @@ export const KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION = 9;
 export const KNOWLEDGE_CANONICAL_FURNITURE_PROFILE_MIN_VERSION = 10;
 /** Profiles recognizing one structurally explicit inline label/value row. */
 export const KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION = 11;
+/** Header interpretation needs corroborating schema roles or dated-series
+ * structure. Headerless forms retain raw cells and association ambiguity. */
+export const KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION = 12;
+export const KNOWLEDGE_EXACT_OBSERVATION_NORMALIZATION_PROFILE_MIN_VERSION = 12;
 
 export type KnowledgeIndexDimension = (typeof KNOWLEDGE_INDEX_DIMENSIONS)[number];
 

@@ -202,6 +202,41 @@ function adaptiveDocling(geometry: NativePdfGeometry) {
 }
 
 describe("Knowledge System Model PDF parser", () => {
+  it.each([14, 15])("pins table interpretation at profile %s when native geometry is unavailable", async (parserProfileVersion) => {
+    const output = [modelPdfPageStartMarker(1), "Group\tField\tValue",
+      ...["Alpha", "Beta", "Gamma"].flatMap((name) => [
+        `${name}\tIdentifier\tID-${name}`, "\tSerial\t19", "\tExpiry\t2040-01-01"
+      ]), modelPdfPageEndMarker(1)].join("\n");
+    const execute = vi.fn(async (_snapshot, request) => {
+      expect(request.content.blocks[0].text.includes("alone never establish a span")).toBe(parserProfileVersion === 15);
+      return { finalProviderResponsePreview: {}, finalText: output,
+        usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 0, totalTokens: 120 } };
+    });
+    const geometry = vi.fn(async () => { throw new Error("native_geometry_unavailable"); });
+    const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+      attemptRepository: {
+        markAmbiguous: vi.fn(async () => undefined), markDispatched: vi.fn(async () => true),
+        reserve: vi.fn(async () => ({ attemptId: "attempt-tables", kind: "dispatch" as const })),
+        settle: vi.fn(async (input: Record<string, unknown>) => ({ ...input, resultText: input.resultText }))
+      } as never,
+      execute: execute as never, extractGeometry: geometry,
+      inspect: vi.fn(async () => ({ pageCount: 1 })),
+      prepare: vi.fn(async () => ({ images: [{ bytes: Buffer.from("synthetic-page"), height: 3_200,
+        mimeType: "image/png" as const, page: 1, sourceHeight: 800, sourceWidth: 600, width: 2_400 }],
+        kind: "images" as const, pageEnd: 1, pageStart: 1 }))
+    });
+    const document = await parser.parse({ artifactId: `artifact-table-${parserProfileVersion}`,
+      bytes: Buffer.from("%PDF-synthetic"), maxBlocks: 100, maxCharacters: 10_000, maxPages: 10,
+      mode: "system_model_vision", ownerUserId: "owner-1", parserProfileVersion, processingGeneration: 0,
+      profileRevisionId: `profile-table-${parserProfileVersion}`, sourceVersionId: "table-version",
+      systemModelPolicyVersion: 3, systemModelSnapshot: snapshot() });
+    expect(geometry).toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
+    const cells = document.blocks.find(({ table }) => table)?.table?.cells ?? [];
+    expect(cells.filter(({ rowSpan }) => rowSpan === 3)).toHaveLength(parserProfileVersion === 14 ? 3 : 0);
+    if (parserProfileVersion === 15) expect(document.blocks[0]!.text).toContain("\n\tSerial\t19");
+  });
+
   it("skips proven native pages and calls Vision only for the suspicious source page", async () => {
     const geometry = adaptiveGeometry(2);
     const reserve = vi.fn(async (input: Record<string, unknown>) => ({

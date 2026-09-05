@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { decodeKnowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   decodeKnowledgeCitationHandle,
@@ -180,19 +181,18 @@ function embeddingTokens(value: unknown): number {
 }
 
 function resultMetrics(value: unknown): Readonly<{
-  contentHashes: readonly string[];
+  occurrenceKeys: readonly string[];
   retrievedTokens: number;
   sourceAliases: readonly string[];
 }> {
-  if (!Array.isArray(value)) return { contentHashes: [], retrievedTokens: 0, sourceAliases: [] };
-  const contentHashes: string[] = [];
+  if (!Array.isArray(value)) return { occurrenceKeys: [], retrievedTokens: 0, sourceAliases: [] };
+  const occurrenceKeys: string[] = [];
   const sourceAliases: string[] = [];
   let bytes = 0;
   for (const entry of value) {
     if (!record(entry)) continue;
-    if (typeof entry.contentHash === "string" && /^[0-9a-f]{64}$/u.test(entry.contentHash)) {
-      contentHashes.push(entry.contentHash);
-    }
+    const occurrenceKey = decodeKnowledgeEvidenceOccurrenceKeyV1(entry);
+    if (occurrenceKey) occurrenceKeys.push(occurrenceKey);
     if (typeof entry.sourceAlias === "string" && /^S[1-9]\d{0,2}$/u.test(entry.sourceAlias)) {
       sourceAliases.push(entry.sourceAlias);
     }
@@ -200,7 +200,7 @@ function resultMetrics(value: unknown): Readonly<{
     bytes += includedTextBytes ?? 0;
   }
   return {
-    contentHashes,
+    occurrenceKeys,
     retrievedTokens: Math.ceil(bytes / 4),
     sourceAliases: [...new Set(sourceAliases)].sort()
   };
@@ -521,7 +521,7 @@ export function createPrismaKnowledgeRetrievalStore(
       let queryEmbeddingCalls = 0;
       let retrievedTokens = 0;
       let totalEmbeddingTokens = 0;
-      const priorContentHashes: string[] = [];
+      const priorOccurrenceKeys: string[] = [];
       const priorSourceAliases: string[] = [];
       for (const receipt of receipts) {
         cumulativeCandidates += receipt.candidateCount;
@@ -532,7 +532,7 @@ export function createPrismaKnowledgeRetrievalStore(
         const result = resultMetrics(receipt.results);
         evidenceCount += Array.isArray(receipt.results) ? receipt.results.length : 0;
         retrievedTokens += result.retrievedTokens;
-        priorContentHashes.push(...result.contentHashes);
+        priorOccurrenceKeys.push(...result.occurrenceKeys);
         priorSourceAliases.push(...result.sourceAliases);
       }
       const usage: KnowledgeBudgetUsage = {
@@ -551,7 +551,7 @@ export function createPrismaKnowledgeRetrievalStore(
         excludedResources,
         invocationOrdinal: summary.invocationOrdinal,
         policy,
-        priorContentHashes: [...new Set(priorContentHashes)],
+        priorOccurrenceKeys: [...new Set(priorOccurrenceKeys)],
         priorSourceAliases: [...new Set(priorSourceAliases)].sort(),
         stopReason: knowledgeBudgetStopReason(policy, usage),
         usage
@@ -574,7 +574,7 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
-        excludedContentHashes: input.excludedContentHashes,
+        excludedOccurrenceKeys: input.excludedOccurrenceKeys,
         lexicalSearch,
         // FR-14/FR-15: child-to-parent expansion applies only to automatic
         // search results; bounded exact reads and metadata discovery never

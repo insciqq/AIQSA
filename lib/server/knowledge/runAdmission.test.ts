@@ -355,6 +355,50 @@ function readySource(ownerUserId = "user-1", knowledgeBaseIds: readonly string[]
 }
 
 describe("Knowledge run admission", () => {
+  it.each(["base", "all_my_knowledge", "inherited", "explicit"].flatMap((mode) =>
+    [999, 1_000, 1_001].map((count) => ({ mode, count }))
+  ))("accounts for every requested Source in $mode scope at $count", async ({ mode, count }) => {
+    const client = store(mode === "base" ? { sourceSummary: {
+      normalizedTextByteSize: 4, passageCount: 1, sourceCount: count
+    } } : {});
+    const sources = Array.from({ length: count }, (_, index) => {
+      const original = readySource();
+      const id = `item-${String(index + 1).padStart(4, "0")}`;
+      return { ...original, id, currentVersion: { ...original.currentVersion,
+        id: `version-${id}`, artifacts: [{ ...original.currentVersion.artifacts[0]!, id: `artifact-${id}` }] } };
+    });
+    if (mode !== "base") {
+      client.knowledgeSource.count.mockResolvedValue(count);
+      client.knowledgeSource.findMany.mockImplementation(async (value) => {
+        const query = value as { take?: number; where?: { id?: { in?: string[] } } };
+        const selected = query.where?.id?.in;
+        return sources.filter(({ id }) => !selected || selected.includes(id)).slice(0, query.take ?? count);
+      });
+      client.projectKnowledgeSourceBinding.count.mockResolvedValue(count);
+      client.projectKnowledgeSourceBinding.findMany.mockResolvedValue(sources.slice(0, 999).map(({ id }) => ({ sourceId: id })));
+    }
+    const knowledgePlan: KnowledgeRunAdmissionPlan["knowledgePlan"] = mode === "base"
+      ? { baseIds: ["base-1"], sourceIds: [], mode: "explicit", version: 1 }
+      : mode === "inherited" ? { baseIds: [], sourceIds: [], mode: "inherited", inheritedFrom: "project", version: 1 }
+      : mode === "all_my_knowledge" ? { baseIds: [], sourceIds: [], mode: "all_my_knowledge", version: 1 }
+      : { baseIds: [], sourceIds: sources.map(({ id }) => id), mode: "explicit", version: 1 };
+    const loading = loadKnowledgeRunAdmissionPlan(client as unknown as KnowledgeRunAdmissionStore, {
+      knowledgePlan, userId: "user-1", ...(mode === "inherited" ? { executionScope: "project" as const, projectId: "project-1" } : {})
+    });
+    // Explicit selection has its own stricter public bound (128 resources).
+    if (mode === "explicit") { await expect(loading).rejects.toBeInstanceOf(KnowledgeRunAdmissionError); return; }
+    const accepted = await loading;
+    const admittedCount = mode === "base" ? count : Math.min(count, 999);
+    expect(accepted.sources).toHaveLength(admittedCount);
+    expect(accepted.resolvedSourceCount).toBe(admittedCount);
+    expect(accepted.exclusions).toEqual(count === admittedCount ? [] : [{ resourceType: "source", reason: "binding_budget", count: count - admittedCount }]);
+    expect(accepted.resolvedSourceCount + accepted.exclusions.reduce((sum, item) => sum + item.count, 0)).toBe(count);
+    if (mode !== "base") {
+      expect(accepted.sources?.map(({ sourceId }) => sourceId)).toEqual(sources.slice(0, admittedCount).map(({ id }) => id));
+      expect(JSON.parse(JSON.stringify(accepted)).exclusions).toEqual(accepted.exclusions);
+    }
+  });
+
   it("admits Off without consulting mutable base or provider state", async () => {
     const client = store();
     const plan = await loadKnowledgeRunAdmissionPlan(

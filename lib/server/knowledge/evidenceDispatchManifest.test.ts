@@ -1,14 +1,19 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { knowledgeAnswerHash } from "./answerGroundingV5";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
+  KNOWLEDGE_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_EVIDENCE_SHORTENING_VERSION,
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
-  type CurrentKnowledgeEvidenceDispatchCandidate
+  type CurrentKnowledgeEvidenceDispatchCandidate,
+  type KnowledgeEvidencePackingVersion
 } from "./evidenceDispatchManifest";
 import {
   knowledgeCoverageEvidenceAtomIndexV2,
+  knowledgeCoverageEvidenceAtomIndexV3,
   knowledgeCoverageEvidenceFromManifestV4
 } from "./coverageScopeV4";
 
@@ -37,7 +42,7 @@ function pack(input: Readonly<{
   candidates?: readonly CurrentKnowledgeEvidenceDispatchCandidate[];
   maximumBytes?: number;
   maximumTokens?: number;
-  packingVersion?: typeof KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION;
+  packingVersion?: KnowledgeEvidencePackingVersion;
 }> = {}) {
   return packKnowledgeEvidenceDispatchManifest({
     candidates: input.candidates ?? [candidate()],
@@ -54,6 +59,25 @@ function pack(input: Readonly<{
 }
 
 describe("Knowledge evidence dispatch manifest", () => {
+  it.each([1_024, 1_025])("bounds repeated row occurrences before Scope (%i rows)", (count) => {
+    const candidates = [candidate({ exactExcerpt: Array.from({ length: count }, () => "A\tX\t10").join("\n") })];
+    const manifest = pack({ candidates });
+    expect(manifest.packingVersion).toBe(KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION);
+    expect(manifest.items).toHaveLength(count <= 1_024 ? 1 : 0);
+    expect(manifest.exclusions.map(({ reason }) => reason)).toEqual(count <= 1_024 ? [] : ["budget"]);
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(manifest)).toEqual(manifest);
+    if (manifest.items.length) expect(knowledgeCoverageEvidenceAtomIndexV3(
+      knowledgeCoverageEvidenceFromManifestV4(manifest)).items).toHaveLength(count);
+    const legacy = pack({ candidates, packingVersion: KNOWLEDGE_EVIDENCE_PACKING_VERSION });
+    expect(legacy.items).toHaveLength(1);
+    expect(decodeKnowledgeEvidenceDispatchManifestDraft(legacy)).toEqual(legacy);
+    if (count > 1_024) {
+      const body = { ...legacy, coverageLimitations: manifest.coverageLimitations, packingVersion: KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION };
+      const { manifestHash: _oldHash, ...unsigned } = body;
+      expect(decodeKnowledgeEvidenceDispatchManifestDraft({ ...unsigned, manifestHash: knowledgeAnswerHash(unsigned) })).toBeNull();
+    }
+  });
+
   it("counts and hashes exact UTF-8 bytes and decodes the immutable draft", () => {
     const excerpt = "Привет, мир 🌍";
     const manifest = pack({ candidates: [candidate({ exactExcerpt: excerpt })] });

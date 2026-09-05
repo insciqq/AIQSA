@@ -356,8 +356,9 @@ describe("provider dispatch recovery request loading", () => {
     for (const [packingVersion, accepted] of [
       [undefined, true],
       [2, true],
+      [3, true],
       [1, false],
-      [3, false]
+      [4, false]
     ] as const) {
       const request = {
         ...normalizedRequest,

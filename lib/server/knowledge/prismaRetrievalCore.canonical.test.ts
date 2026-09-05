@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import {
   KNOWLEDGE_SIGNAL_RANK_MAX,
   type KnowledgeRetrievalLane
@@ -116,7 +117,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query: "canonical source evidence",
     resultLimit: 8,
     runId: "run-1",
@@ -201,23 +202,38 @@ describe("Prisma retrieval core canonical Source identity", () => {
       "knowledge_search_projection_incomplete"
     );
     expect(lexicalSearch).not.toHaveBeenCalled();
-    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(client.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
-  it("fails closed on an unavailable OpenSearch request without a PostgreSQL lexical retry", async () => {
+  it.each(["opensearch_timeout", "opensearch_connection_failed", "opensearch_authentication_failed",
+    "opensearch_configuration_invalid", "opensearch_index_incompatible", "opensearch_rate_limited"])(
+    "preserves %s without a lexical or dense-only fallback", async (code) => {
     const admitted = {
       ...scope(0, "Policies", "base-policies"),
       acceptedIndexArtifactIds: ["hierarchy-1"]
     };
     const client = mockClient([admitted], []);
     const lexicalSearch = vi.fn(async () => {
-      throw new Error("opensearch_connection_failed");
+      throw new Error(code);
     });
 
     await expect(execute(client, { lexicalSearch })).rejects.toThrow(
-      "opensearch_connection_failed"
+      code
     );
     expect(lexicalSearch).toHaveBeenCalledOnce();
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks readiness before external search and never accepts a changed scope", async () => {
+    const admitted = { ...scope(0, "Policies", "base-1"), acceptedIndexArtifactIds: ["hierarchy-1"] };
+    const client = mockClient([admitted], []);
+    client.$queryRaw.mockReset().mockResolvedValueOnce([admitted])
+      .mockResolvedValueOnce([{ candidates: [], scopes: [{ ...admitted, projectionComplete: false }] }]);
+    const lexicalSearch = vi.fn();
+    await expect(execute(client, { lexicalSearch })).rejects.toMatchObject({
+      code: "knowledge_retrieval_scope_changed", scopeFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+    expect(lexicalSearch).not.toHaveBeenCalled();
     expect(client.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
@@ -404,7 +420,10 @@ describe("Prisma retrieval core canonical Source identity", () => {
     ]);
 
     const result = await execute(client, {
-      excludedContentHashes: ["a".repeat(64)]
+      excludedOccurrenceKeys: [knowledgeEvidenceOccurrenceKeyV1({
+        chunkId: "chunk-prior", documentId: "source-policy",
+        documentVersionId: "version-policy", sourceArtifactId: "artifact-policy"
+      })]
     });
 
     expect(result).toMatchObject({
@@ -414,7 +433,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     });
     expect(result.passages[0]).not.toHaveProperty("expandedContext");
     await expect(execute(client, {
-      excludedContentHashes: ["not-a-content-hash"]
+      excludedOccurrenceKeys: ["not-a-content-hash"]
     })).rejects.toThrow("knowledge_retrieval_exclusion_invalid");
   });
 

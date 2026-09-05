@@ -83,6 +83,46 @@ describe("Knowledge document context v1", () => {
     });
   });
 
+  it.each([
+    ["1.1e2", "110", null],
+    ["9007199254740993e0 mg", "9007199254740993", "mg"],
+    ["0.00000000000000001e-308", `0.${"0".repeat(324)}1`, null],
+    ["6.27", "6.27", null],
+    ["1.2e3", "1200", null],
+    ["-1.1e2kg", "-110", "kg"],
+    ["+1.1e2", "+110", null],
+    ["0e-300", "0", null],
+    ["-0e20", "0", null],
+    ["1e+000002", "100", null],
+    ["1.1e2%", "110%", null],
+    ["0.0005e5", "50", null],
+    ["100e-1", "10", null]
+  ])("preserves exact decimal observations without floating-point loss: %s", (rawValue, normalizedValue, unit) => {
+    expect(normalizeKnowledgeObservationValue(rawValue!)).toMatchObject({
+      ambiguityReasons: [], kind: "number", normalizedValue, rawValue, unit
+    });
+  });
+
+  it.each(["1e4096", "1e-4096", "1e999999999", "1e-999999999", "9".repeat(4_097),
+    "1e3000..2e3000", "1,234e2", "1.2.3", "1e+"])("bounds or rejects unsafe numeric normalization", (value) => {
+    const normalized = normalizeKnowledgeObservationValue(value);
+    expect(normalized.normalizedValue).toBeNull();
+    expect(normalized.ambiguityReasons).toContain("ambiguous_number");
+    expect(normalized.rawValue.length).toBeLessThanOrEqual(4_096);
+  });
+
+  it("keeps exact output bounds, range components and accepted historical numeric semantics", () => {
+    expect(normalizeKnowledgeObservationValue("1e4095").normalizedValue).toHaveLength(4_096);
+    expect(normalizeKnowledgeObservationValue("-1e4094").normalizedValue).toHaveLength(4_096);
+    expect(normalizeKnowledgeObservationValue("9007199254740993e0..9007199254740994e0 kg")).toMatchObject({
+      ambiguityReasons: [], kind: "number_range", normalizedValue: "9007199254740993..9007199254740994", unit: "kg"
+    });
+    expect(normalizeKnowledgeObservationValue("1.1e2", 1).normalizedValue).toBe("110.00000000000001");
+    expect(normalizeKnowledgeObservationValue("9007199254740993e0", 1).normalizedValue).toBe("9007199254740992");
+    expect(normalizeKnowledgeObservationValue("0.00000000000000001e-308", 1).normalizedValue).toBe("0");
+    for (const value of ["NaN", "Infinity"]) expect(normalizeKnowledgeObservationValue(value).kind).toBe("text");
+  });
+
   it("separates raw-value normalization uncertainty from association ambiguity", () => {
     const lexical = createKnowledgeTableDocumentContext({
       blockId: "block-identifier",

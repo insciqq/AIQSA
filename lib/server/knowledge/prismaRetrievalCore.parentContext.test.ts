@@ -95,7 +95,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query: "canonical source evidence",
     resultLimit: 8,
     runId: "run-1",

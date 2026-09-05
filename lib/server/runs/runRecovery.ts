@@ -5,6 +5,8 @@ import {
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
 import { textMessageContent } from "../../domain/content";
+import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
+  knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import {
   normalizeTokenUsage,
   subtractTokenUsage,
@@ -399,6 +401,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 type FocusedKnowledgeFailureCode =
+  | KnowledgeSearchFailureCode
   | "sources_processing"
   | "no_retrieval_candidates"
   | "knowledge_retrieval_failed"
@@ -409,13 +412,13 @@ type FocusedKnowledgeFailureCode =
 function focusedKnowledgeFailure(
   code: FocusedKnowledgeFailureCode
 ): Readonly<{ code: FocusedKnowledgeFailureCode; message: string }> {
-  const messages: Record<FocusedKnowledgeFailureCode, string> = {
+  if (isKnowledgeSearchFailureCode(code)) return { code, message: knowledgeSearchFailureMessage(code) };
+  const messages: Record<Exclude<FocusedKnowledgeFailureCode, KnowledgeSearchFailureCode>, string> = {
     knowledge_answer_contract_failed:
       "The Knowledge answer did not satisfy the required output contract.",
     knowledge_answer_failed: "The Knowledge answer provider failed.",
     knowledge_citation_contract_failed:
       "The Knowledge answer cited evidence outside the final manifest.",
-    knowledge_retrieval_failed: "Knowledge retrieval failed.",
     no_retrieval_candidates:
       "No retrieval candidates were found in the ready Knowledge sources.",
     sources_processing: "The selected Knowledge sources are still processing."
@@ -430,7 +433,8 @@ function recoveryErrorCode(error: unknown): string | null {
 }
 
 function focusedRetrievalFailure(error: unknown): ReturnType<typeof focusedKnowledgeFailure> {
-  const code = recoveryErrorCode(error);
+  const code = knowledgeSearchFailureCode(error) ?? recoveryErrorCode(error);
+  if (isKnowledgeSearchFailureCode(code)) return focusedKnowledgeFailure(code);
   if (code === "no_retrieval_candidates") {
     return focusedKnowledgeFailure("no_retrieval_candidates");
   }
@@ -490,15 +494,12 @@ function toolExecutionErrorResult(
   error: unknown,
   label: "Knowledge" | "Search" | "Tool" = "Tool"
 ): ToolExecutionResult {
-  const overflowResult = label === "Knowledge"
-    ? null
-    : mcpResponseOverflowToolExecutionResult(call, error, label);
+  if (label === "Knowledge") return knowledgeSearchFailureToolResult(call, error);
+  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
   const rawMessage = error instanceof Error ? error.message : `${label} execution failed`;
-  const message = label === "Knowledge"
-    ? "knowledge_retrieval_failed"
-    : rawMessage.slice(0, 512);
+  const message = rawMessage.slice(0, 512);
   return {
     callId: call.id,
     content: [{ text: `${label} failed: ${message}`, type: "text" }],
@@ -1379,7 +1380,8 @@ async function executePersistedToolCall(
     if (externalReceipt) {
       await context.deps.memoryEgress!.failDispatch(
         externalReceipt.id,
-        error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
+        isRecoveredKnowledgeCall(context, call.name) ? knowledgeSearchFailureCode(error) ?? "knowledge_retrieval_failed"
+          : error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
           ? error.message
           : "external_tool_dispatch_failed"
       ).catch(() => undefined);
@@ -1419,6 +1421,9 @@ async function executePersistedToolCall(
       "tool_call_settle_conflict",
       "A recovered tool result could not be durably settled."
     );
+  }
+  if (isRecoveredKnowledgeCall(context, call.name) && result.status === "error") {
+    recordRecoveredKnowledgeResult({ callId: call.id, context, includeUsage: false, result });
   }
   if (fatalToolError) throw fatalToolError;
   return {
@@ -2007,13 +2012,14 @@ async function recoverCheckpointedToolLoop(
         return result;
       });
       try {
-        return toolLoopKnowledgeEvidenceDispatchDraft({ request: providerRequest, results });
+        return toolLoopKnowledgeEvidenceDispatchDraft({ exclusions: run.knowledgeScope?.exclusions, request: providerRequest, results });
       } catch (error) {
+        const failureCode = knowledgeSearchFailureCode(error);
         throw new ToolLoopRecoveryError(
-          error instanceof Error && error.message === "no_retrieval_candidates"
+          failureCode ?? (error instanceof Error && error.message === "no_retrieval_candidates"
             ? "no_retrieval_candidates"
-            : "knowledge_retrieval_failed",
-          "The recovered Knowledge evidence manifest is invalid."
+            : "knowledge_retrieval_failed"),
+          failureCode ? knowledgeSearchFailureMessage(failureCode) : "The recovered Knowledge evidence manifest is invalid."
         );
       }
     }
@@ -2032,7 +2038,7 @@ async function recoverCheckpointedToolLoop(
           knowledgeZeroEvidence: true,
           repository: deps.repository,
           result: {
-            finalText: KNOWLEDGE_INSUFFICIENT_MESSAGE,
+            finalText: knowledgeScopeLimitedMessage(KNOWLEDGE_INSUFFICIENT_MESSAGE, run.knowledgeScope?.exclusions),
             ...(currentProviderResponseId
               ? { providerResponseId: currentProviderResponseId }
               : {}),
@@ -2938,7 +2944,7 @@ async function recoverKnowledgeAnswerGrounding(
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
   let pipeline: "v20_v16" | "v21_scope_v6";
-  let scopeV6SnapshotVersion: 37 | 38 | 39 | undefined;
+  let scopeV6SnapshotVersion: 37 | 38 | 39 | 40 | undefined;
   if (input.draftDispatch) {
     if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
       if (input.draftDispatch.attempt.ordinal !== 1 ||
@@ -3266,7 +3272,9 @@ async function recoverKnowledgeAnswerGrounding(
               3: input.control.providerResponseId,
               4: input.control.providerResponseId,
               5: input.control.providerResponseId,
-              6: input.control.providerResponseId
+              6: input.control.providerResponseId,
+              7: input.control.providerResponseId,
+              8: input.control.providerResponseId
             }
           : undefined
       })
@@ -3464,6 +3472,8 @@ async function refreshProviderRunOnceRegistered(
         );
       }
       const recovered = await deps.repository.loadKnowledgeFullContextDispatchRecovery({
+        ...(acceptedRequest.knowledgeEvidencePackingVersion !== undefined
+          ? { knowledgeEvidencePackingVersion: acceptedRequest.knowledgeEvidencePackingVersion } : {}),
         maximumTokens,
         modelId: acceptedRequest.modelId,
         provider: acceptedRequest.provider,
@@ -3688,9 +3698,10 @@ async function refreshProviderRunOnceRegistered(
         }
         const evidence = knowledgeEvidenceFromToolResult(result);
         if (result.status !== "complete" || !evidence) {
+          const code = knowledgeSearchFailureFromToolResult(result) ?? "knowledge_retrieval_failed";
           throw new ToolLoopRecoveryError(
-            "knowledge_retrieval_failed",
-            "Focused Knowledge retrieval failed."
+            code,
+            knowledgeSearchFailureMessage(code)
           );
         }
         if (evidence.results.length < 1) {

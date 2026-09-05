@@ -601,6 +601,7 @@ export type RunRepository = {
   /** Purpose-bound recovery loader for a full-context manifest accepted into
    * the evidence session before any current Draft provider operation exists. */
   loadKnowledgeFullContextDispatchRecovery?(input: {
+    knowledgeEvidencePackingVersion?: 2 | 3;
     maximumTokens: number;
     modelId: string;
     provider: string;

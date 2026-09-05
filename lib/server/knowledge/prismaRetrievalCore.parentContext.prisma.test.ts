@@ -390,7 +390,7 @@ describe("Prisma Knowledge child-to-parent context expansion", () => {
     try {
       const result = await executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         parentContextLoader: createPrismaKnowledgeParentContextLoader(prisma),
         query: "anchor evidence",
         resultLimit: 8,
@@ -438,7 +438,7 @@ describe("Prisma Knowledge child-to-parent context expansion", () => {
     try {
       const result = await executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         parentContextLoader: async () => {
           throw new KnowledgeParentContextError("parent_context_load_failed");
         },

@@ -1,3 +1,4 @@
+import { decodeKnowledgeCoverageLimitationsV1 } from "./searchFailure";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
@@ -82,6 +83,10 @@ export type KnowledgeProviderAttemptUsage = Readonly<{
 
 export type KnowledgeProviderAttemptPurpose =
   | "answer"
+  | "knowledge_grounded_selector_v22"
+  | "knowledge_grounded_selector_final_v22"
+  | "knowledge_answer_draft_supplement_v22"
+  | "knowledge_coverage_scope_closure_v3"
   | "knowledge_answer_draft_v21"
   | "knowledge_answer_draft_supplement_v21"
   | "knowledge_grounded_selector_v17"
@@ -97,6 +102,8 @@ export type KnowledgeProviderAttemptPurpose =
   | "knowledge_grounded_selector_v20"
   | "knowledge_grounded_selector_final_v20"
   | "knowledge_coverage_scope_v6"
+  | "knowledge_coverage_scope_v7"
+  | "knowledge_coverage_scope_completeness_v2"
   | "knowledge_coverage_scope_completeness_v1"
   | "knowledge_coverage_scope_closure_v1"
   | "knowledge_coverage_scope_closure_v2"
@@ -384,6 +391,7 @@ export type KnowledgeProviderAttemptTransition = Readonly<{
 }>;
 
 type StoredDispatchRootBase = Readonly<{
+  coverageLimitations?: import("./searchFailure").KnowledgeCoverageLimitationsV1;
   coverageStatement: string;
   footer: string;
   header: string;
@@ -502,6 +510,10 @@ function canonicalJsonHash(value: unknown): string {
 function answerOperationContractVersion(
   purpose: LegacyKnowledgeProviderAttemptPurpose
 ): number | null {
+  if (purpose === "knowledge_grounded_selector_v22" ||
+    purpose === "knowledge_grounded_selector_final_v22" ||
+    purpose === "knowledge_answer_draft_supplement_v22") return 22;
+  if (purpose === "knowledge_coverage_scope_closure_v3") return 3;
   if (purpose === "knowledge_answer_draft_v21" ||
     purpose === "knowledge_answer_draft_supplement_v21") return 21;
   if (purpose === "knowledge_grounded_selector_v17" ||
@@ -518,6 +530,8 @@ function answerOperationContractVersion(
   if (purpose === "knowledge_coverage_scope_v4") return 4;
   if (purpose === "knowledge_coverage_scope_v5") return 5;
   if (purpose === "knowledge_coverage_scope_v6") return 6;
+  if (purpose === "knowledge_coverage_scope_v7") return 7;
+  if (purpose === "knowledge_coverage_scope_completeness_v2") return 2;
   if (purpose === "knowledge_coverage_scope_completeness_v1") return 1;
   if (purpose === "knowledge_coverage_scope_closure_v1") return 1;
   if (purpose === "knowledge_coverage_scope_closure_v2") return 2;
@@ -617,6 +631,10 @@ function repositoryError(code: KnowledgeEvidenceDispatchRepositoryErrorCode): ne
 }
 
 function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPurpose {
+  if (value === "knowledge_grounded_selector_v22" ||
+    value === "knowledge_grounded_selector_final_v22" ||
+    value === "knowledge_answer_draft_supplement_v22" ||
+    value === "knowledge_coverage_scope_closure_v3") return true;
   return value === "answer" || value === "answer_citation_retry" ||
     value === "citation_repair" || value === "tool_follow_up" ||
     value === "knowledge_answer_draft_v21" ||
@@ -636,6 +654,8 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
     value === "knowledge_coverage_scope_v4" ||
     value === "knowledge_coverage_scope_v5" ||
     value === "knowledge_coverage_scope_v6" ||
+    value === "knowledge_coverage_scope_v7" ||
+    value === "knowledge_coverage_scope_completeness_v2" ||
     value === "knowledge_coverage_scope_completeness_v1" ||
     value === "knowledge_coverage_scope_closure_v1" ||
     value === "knowledge_coverage_scope_closure_v2" ||
@@ -693,6 +713,10 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
 }
 
 function validReservationPurpose(value: unknown): value is KnowledgeProviderAttemptPurpose {
+  if (value === "knowledge_grounded_selector_v22" ||
+    value === "knowledge_grounded_selector_final_v22" ||
+    value === "knowledge_answer_draft_supplement_v22" ||
+    value === "knowledge_coverage_scope_closure_v3") return true;
   return value === "answer" || value === "knowledge_answer_draft_v21" ||
     value === "knowledge_answer_draft_supplement_v21" ||
     value === "knowledge_grounded_selector_v17" ||
@@ -710,6 +734,8 @@ function validReservationPurpose(value: unknown): value is KnowledgeProviderAtte
     value === "knowledge_coverage_scope_v4" ||
     value === "knowledge_coverage_scope_v5" ||
     value === "knowledge_coverage_scope_v6" ||
+    value === "knowledge_coverage_scope_v7" ||
+    value === "knowledge_coverage_scope_completeness_v2" ||
     value === "knowledge_coverage_scope_completeness_v1" ||
     value === "knowledge_coverage_scope_closure_v1" ||
     value === "knowledge_coverage_scope_closure_v2" ||
@@ -819,8 +845,10 @@ function decodeStoredRoot(value: unknown): StoredDispatchRoot | null {
     "manifestHash",
     versionField,
     "profileId",
-    "shorteningPolicy"
-  ]) || typeof value.coverageStatement !== "string" || !safeString(value.footer, 64_000) ||
+    "shorteningPolicy",
+    ...(Object.hasOwn(value, "coverageLimitations") ? ["coverageLimitations"] : [])
+  ]) || Object.hasOwn(value, "coverageLimitations") && !decodeKnowledgeCoverageLimitationsV1(value.coverageLimitations) ||
+    typeof value.coverageStatement !== "string" || !safeString(value.footer, 64_000) ||
     !safeString(value.header, 64_000) || !record(value.limits) ||
     !exactKeys(value.limits, ["maximumBytes", "maximumTokens"]) ||
     !integer(value.limits.maximumBytes, 1) || !integer(value.limits.maximumTokens, 1) ||
@@ -1244,6 +1272,7 @@ function storedDispatch(row: AttemptRow): StoredKnowledgeEvidenceDispatch {
     repositoryError("stored_manifest_invalid");
   }
   const draft = decodeKnowledgeEvidenceDispatchManifestDraft({
+    ...(metadata.root.coverageLimitations ? { coverageLimitations: metadata.root.coverageLimitations } : {}),
     coverageStatement: metadata.root.coverageStatement,
     exclusions,
     footer: metadata.root.footer,
@@ -1483,13 +1512,16 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     answerOperationContractVersion(row.purpose) !== null);
   const dispatches = operationRows.map(storedDispatch);
   const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
+  const contributions = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+    dispatches[0]?.attempt.acceptedRequest
+  )?.version === 40;
   const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
-  const scope = KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION;
-  const completeness = KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION;
-  const selector = KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21;
-  const closure = KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION;
-  const supplement = KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
-  const finalSelector = KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
+  const scope = contributions ? "knowledge_coverage_scope_v7" : KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION;
+  const completeness = contributions ? "knowledge_coverage_scope_completeness_v2" : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION;
+  const selector = contributions ? "knowledge_grounded_selector_v22" : KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21;
+  const closure = contributions ? "knowledge_coverage_scope_closure_v3" : KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION;
+  const supplement = contributions ? "knowledge_answer_draft_supplement_v22" : KNOWLEDGE_ANSWER_DRAFT_SUPPLEMENT_OPERATION_V21;
+  const finalSelector = contributions ? "knowledge_grounded_selector_final_v22" : KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21;
   const allowedSequences: KnowledgeAnswerOperationV21[][] = [];
   for (const scopeCount of [1, 2] as const) {
     for (const completenessCount of [1, 2] as const) {
@@ -1508,6 +1540,10 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
           if (closureGated.length <=
             KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2) {
             allowedSequences.push(closureGated);
+          }
+          if (contributions && closureGated.length < 8) {
+            allowedSequences.push([...closureGated, finalSelector]);
+            if (closureGated.length < 7) allowedSequences.push([...closureGated, finalSelector, finalSelector]);
           }
           if (knowledgeAnswerScopeV6CorrectionFitsV2(closureGated.length)) {
             allowedSequences.push(
@@ -1702,6 +1738,7 @@ function storedMetadata(draft: KnowledgeEvidenceDispatchManifestDraft): StoredDi
       resultOrdinal: item.resultOrdinal
     })),
     root: {
+      ...(draft.coverageLimitations ? { coverageLimitations: draft.coverageLimitations } : {}),
       coverageStatement: draft.coverageStatement,
       footer: draft.footer,
       header: draft.header,

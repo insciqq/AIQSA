@@ -53,7 +53,7 @@ export const KNOWLEDGE_CANDIDATE_LIMIT = 40;
  * smaller so later rounds trade breadth for row-level precision. */
 export const KNOWLEDGE_RESULT_LIMIT = 16;
 export const KNOWLEDGE_SCOPED_RESULT_LIMIT = 8;
-export const KNOWLEDGE_PRIOR_CONTENT_HASH_MAX = 256;
+export const KNOWLEDGE_PRIOR_OCCURRENCE_MAX = 256;
 export const KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES = 48 * 1024;
 export const KNOWLEDGE_SCOPE_MAX_BINDINGS = 128;
 export const KNOWLEDGE_SCOPE_MAX_SOURCES = 999;

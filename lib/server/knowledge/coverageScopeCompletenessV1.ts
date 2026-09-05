@@ -4,7 +4,8 @@ import {
 } from "./answerGroundingV5";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
-  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
+  knowledgeCoverageAtomContextContract,
+  knowledgeCoverageAtomProjectionName,
   validateDecodedKnowledgeCoverageScopeV6,
   validateKnowledgeCoverageScopeV6,
   type KnowledgeCoverageEvidenceV6,
@@ -483,15 +484,15 @@ export function knowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
     throw new Error("knowledge_coverage_scope_completeness_v1_prompt_invalid");
   }
   return Object.freeze({
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
       acceptedScope: input.acceptedScope,
       acceptedScopePayloadHash: knowledgeAnswerHash(input.acceptedScope),
-      ...(input.atomIndexVersion === 2
-        ? { atomProjection: "source_ordered_context_v2" as const }
+      ...((input.atomIndexVersion ?? 1) !== 1
+        ? { atomProjection: knowledgeCoverageAtomProjectionName(input.atomIndexVersion ?? 1) }
         : {}),
       completenessPass: input.completenessPass,
       evidenceContext: knowledgeCoverageEvidenceContextV1(input.evidence),
@@ -525,9 +526,9 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
   repairReason: KnowledgeCoverageScopeCompletenessValidationFailureReasonV1 | null;
 }> | null {
   const atomIndexVersion = input.atomIndexVersion ?? 1;
-  const expectedSystemPrompt = atomIndexVersion === 2
+  const expectedSystemPrompt = atomIndexVersion !== 1
     ? `${KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1}\n\n` +
-      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      knowledgeCoverageAtomContextContract(atomIndexVersion)
     : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1;
   if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
@@ -539,7 +540,7 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
   if (!record(value) || !exactKeys(value, [
     "acceptedScope",
     "acceptedScopePayloadHash",
-    ...(atomIndexVersion === 2 ? ["atomProjection"] : []),
+    ...(atomIndexVersion !== 1 ? ["atomProjection"] : []),
     "completenessPass",
     "evidenceContext",
     "evidenceManifestHash",
@@ -551,8 +552,7 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
     "version"
   ]) || knowledgeAnswerCanonicalJson(value.acceptedScope) !==
       knowledgeAnswerCanonicalJson(input.acceptedScope) ||
-    (atomIndexVersion === 2) !==
-      (value.atomProjection === "source_ordered_context_v2") ||
+    value.atomProjection !== knowledgeCoverageAtomProjectionName(atomIndexVersion) ||
     value.acceptedScopePayloadHash !== knowledgeAnswerHash(input.acceptedScope) ||
     value.evidenceManifestHash !== knowledgeAnswerHash(input.evidenceManifest) ||
     knowledgeAnswerCanonicalJson(value.evidenceContext) !==

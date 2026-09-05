@@ -33,6 +33,16 @@ afterEach(() => {
 });
 
 describe("AIQSA OpenSearch transport", () => {
+  it("distinguishes invalid local configuration before any network request", () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    for (const env of [{ AIQSA_OPENSEARCH_URL: "not a URL" },
+      { AIQSA_OPENSEARCH_URL: "http://user:PRIVATE@search.example.test" },
+      { AIQSA_OPENSEARCH_URL: "http://search.example.test", AIQSA_OPENSEARCH_USERNAME: "user" }]) {
+      expect(() => new AiqsaOpenSearchTransport({ env, namespace: "knowledge" })).toThrow("opensearch_configuration_invalid");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("creates and validates the exact versioned Knowledge index", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))

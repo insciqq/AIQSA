@@ -13,7 +13,9 @@ import {
   KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES,
   normalizeKnowledgeObservationValue,
   normalizeKnowledgeTableHeaderPeriodV1,
+  knowledgeTableHeaderRoleIsExplicitV1,
   type KnowledgeDocumentContextV1,
+  type KnowledgeObservationNormalizationVersion,
   type KnowledgeTableContextCell,
   type KnowledgeTableHeaderLineageV1
 } from "./documentContext";
@@ -22,11 +24,13 @@ import {
   KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION,
   KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION,
+  KNOWLEDGE_EXACT_OBSERVATION_NORMALIZATION_PROFILE_MIN_VERSION,
   KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION,
   KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION,
   KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION,
   KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION,
+  KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION,
   KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import { isInlineReferenceMarkerText } from "./layoutInlineReferences";
@@ -376,17 +380,17 @@ function tableRowSignature(grid: TableGrid, rowIndex: number): string {
     .toLocaleLowerCase("und");
 }
 
-function tableRowHasNumericOrDateObservation(grid: TableGrid, rowIndex: number): boolean {
+function tableRowHasNumericOrDateObservation(grid: TableGrid, rowIndex: number, normalizationVersion: KnowledgeObservationNormalizationVersion): boolean {
   if (/(?<![\p{L}\p{N}])(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|[+-]?\d+(?:[.,]\d+)?%?)(?![\p{L}\p{N}])/u
     .test(tableRowLine(grid, rowIndex, 0, grid.columnCount - 1))) return true;
   return cellsForRange(grid, rowIndex, 0, grid.columnCount - 1).some((cell) => {
-    const value = normalizeKnowledgeObservationValue(cell.text);
+    const value = normalizeKnowledgeObservationValue(cell.text, normalizationVersion);
     return value.ambiguityReasons.length === 0 && value.normalizedValue !== null &&
       (value.kind === "date" || value.kind === "number" || value.kind === "number_range");
   });
 }
 
-function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean {
+function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number, normalizationVersion: KnowledgeObservationNormalizationVersion): boolean {
   const cells = cellsForRange(grid, rowIndex, 0, grid.columnCount - 1);
   if (cells.length < 3) return false;
   const label = cells[0]!.text.normalize("NFKC").replace(/\s+/gu, " ").trim();
@@ -394,7 +398,7 @@ function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean
   // bounded year/quarter periods (or one slash-separated pair). No English/
   // Russian vocabulary is allowed to decide the chunking path.
   if (!label || !/[\p{L}\p{M}]/u.test(label) ||
-    normalizeKnowledgeObservationValue(label).kind !== "text") return false;
+    normalizeKnowledgeObservationValue(label, normalizationVersion).kind !== "text") return false;
   return cells.slice(1).every((cell) => {
     const periods = cell.text.normalize("NFKC").replace(/\s+/gu, " ").trim()
       .split(/\s*\/\s*/u);
@@ -688,7 +692,9 @@ function profile4TableSegments(
   block: KnowledgeNormalizedBlock,
   currentSizing: boolean,
   repeatedHeaderRow: number | null,
-  inlinePairs: boolean
+  inlinePairs: boolean,
+  safeHeaders: boolean,
+  normalizationVersion: KnowledgeObservationNormalizationVersion
 ): Segment[] {
   const grid = tableGrid(block);
   const nonEmptyRows = Array.from({ length: grid.rowCount }, (_, rowIndex) => rowIndex)
@@ -696,12 +702,18 @@ function profile4TableSegments(
   if (nonEmptyRows.length === 0) return [];
   const firstRow = nonEmptyRows[0]!;
   const hasFollowingObservation = nonEmptyRows.slice(1)
-    .some((rowIndex) => tableRowHasNumericOrDateObservation(grid, rowIndex));
-  const canonicalHeaderRow = repeatedHeaderRow === firstRow
+    .some((rowIndex) => tableRowHasNumericOrDateObservation(grid, rowIndex, normalizationVersion));
+  const firstCells = cellsForRange(grid, firstRow, 0, grid.columnCount - 1);
+  const headerCorroborated = !safeHeaders || repeatedHeaderRow === firstRow ||
+    tableRowIsDatedSeriesHeader(grid, firstRow, normalizationVersion) ||
+    firstCells.filter(({ text }) => knowledgeTableHeaderRoleIsExplicitV1(text))
+      .reduce((count, cell) => count + cell.columnEnd - cell.columnStart + 1, 0) >=
+      Math.min(2, grid.columnCount);
+  const canonicalHeaderRow = !headerCorroborated ? null : repeatedHeaderRow === firstRow
     ? firstRow
     : hasFollowingObservation && (
-      !tableRowHasNumericOrDateObservation(grid, firstRow) ||
-      tableRowIsDatedSeriesHeader(grid, firstRow)
+      !tableRowHasNumericOrDateObservation(grid, firstRow, normalizationVersion) ||
+      tableRowIsDatedSeriesHeader(grid, firstRow, normalizationVersion)
     )
       ? firstRow
       : null;
@@ -731,6 +743,7 @@ function profile4TableSegments(
         blockIds: Object.freeze([block.id]),
         blockStart: block.order,
         documentContext: tableDocumentContext({
+          normalizationVersion,
           blockId: block.id,
           cells,
           headerLineage: activeHeaderRow === null
@@ -780,6 +793,7 @@ function profile4TableSegments(
       blockIds: Object.freeze([block.id]),
       blockStart: block.order,
       documentContext: tableDocumentContext({
+        normalizationVersion,
         blockId: block.id,
         cells: projection.cells,
         columnEnd: projection.columnEnd,
@@ -990,7 +1004,8 @@ function fieldHeadingPath(
 function profile4FieldSegments(
   document: StoredKnowledgeNormalizedDocument,
   group: KnowledgeNormalizedFieldGroup,
-  currentSizing: boolean
+  currentSizing: boolean,
+  normalizationVersion: KnowledgeObservationNormalizationVersion
 ): Segment[] {
   const headingPath = fieldHeadingPath(document, group);
   const blockOrder = Math.min(group.readingOrder, Math.max(0, document.blocks.length - 1));
@@ -1035,7 +1050,7 @@ function profile4FieldSegments(
     const candidates = candidateCellIds(cell.id);
     const reasons = Object.freeze(["ambiguous_role" as const]);
     return parts.map((text) => {
-      const rawValue = normalizeKnowledgeObservationValue(text).rawValue;
+      const rawValue = normalizeKnowledgeObservationValue(text, normalizationVersion).rawValue;
       if (!rawValue) throw new KnowledgeChunkingError("chunking_failed");
       const documentContext: KnowledgeDocumentContextV1 = Object.freeze({
         ambiguityReasons: reasons,
@@ -1087,7 +1102,7 @@ function profile4FieldSegments(
   }
   let fields: ReturnType<typeof createKnowledgeFieldContextSegments>;
   try {
-    fields = createKnowledgeFieldContextSegments(group);
+    fields = createKnowledgeFieldContextSegments(group, normalizationVersion);
   } catch {
     throw new KnowledgeChunkingError("chunking_failed");
   }
@@ -1122,6 +1137,7 @@ function structuralSegments(
 ): Segment[] {
   const blocks = document.blocks;
   const excluded = repeatedFurniture(document, profileVersion);
+  const normalizationVersion = profileVersion >= KNOWLEDGE_EXACT_OBSERVATION_NORMALIZATION_PROFILE_MIN_VERSION ? 2 : 1;
   const result: Segment[] = [];
   const currentSizing = profileVersion >= KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
   const repeatedHeaderRows = profileVersion >=
@@ -1138,7 +1154,7 @@ function structuralSegments(
   }
   for (let readingOrder = 0; readingOrder <= blocks.length; readingOrder += 1) {
     for (const group of fieldGroupsByReadingOrder.get(readingOrder) ?? []) {
-      result.push(...profile4FieldSegments(document, group, currentSizing));
+      result.push(...profile4FieldSegments(document, group, currentSizing, normalizationVersion));
     }
     const block = blocks[readingOrder];
     if (!block) continue;
@@ -1152,7 +1168,9 @@ function structuralSegments(
               block,
               currentSizing,
               repeatedHeaderRows.get(block.id) ?? null,
-              profileVersion >= KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION
+              profileVersion >= KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION,
+              profileVersion >= KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION,
+              normalizationVersion
             )
           : profile3TableSegments(block)
         : profileVersion >= KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
