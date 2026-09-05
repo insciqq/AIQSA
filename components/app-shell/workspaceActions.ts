@@ -132,6 +132,7 @@ export function useWorkspaceActions({
 }: WorkspaceActionsInput) {
   function summaryFromDetail(detail: ChatDetail): WorkspaceChatSummary {
     return {
+      ...(detail.hasContinuationSource ? { hasContinuationSource: true } : {}),
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
       defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,
@@ -1279,6 +1280,11 @@ export function useWorkspaceActions({
   }
 
   return {
+    openContinuedChat: (chat: ChatDetail) => {
+      mergeChatIntoList(chat);
+      cacheChatDetail(chat);
+      return activateChat(chat);
+    },
     activateBlankWorkspace,
     activateChat,
     activatePersonalChatById,

@@ -210,6 +210,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
 
 export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceChatSummary {
   return {
+    ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,

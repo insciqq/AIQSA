@@ -4,11 +4,17 @@ import { useState } from "react";
 import { composerContextGauge, type ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import { UiV2Button } from "@/components/ui-v2";
+import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
 
-export function ChatContextIndicatorV2({ stats }: Readonly<{ stats: ComposerContextStats }>) {
-  const [open, setOpen] = useState(false);
+export function ChatContextIndicatorV2({ stats, continuation }: Readonly<{
+  stats: ComposerContextStats; continuation?: ChatContinuationControl | null;
+}>) {
+  const [manualOpen, setOpen] = useState(false);
+  const open = manualOpen || Boolean(continuation?.suggested);
+  const close = () => { setOpen(false); continuation?.onDismiss(); };
   const { menuRef, triggerRef } = useMenuDismissalV2<HTMLButtonElement, HTMLElement>({
-    onClose: () => setOpen(false), open
+    onClose: close, open
   });
   const gauge = composerContextGauge(stats);
   const label = gauge.percent === null
@@ -31,7 +37,7 @@ export function ChatContextIndicatorV2({ stats }: Readonly<{ stats: ComposerCont
         data-testid="header-context-indicator"
         title={label}
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => { if (open) close(); else setOpen(true); }}
       >
         <svg aria-hidden="true" viewBox="0 0 24 24">
           <circle className="v2-chat-context-track" cx="12" cy="12" fill="none" r="9" strokeWidth="3" />
@@ -46,6 +52,17 @@ export function ChatContextIndicatorV2({ stats }: Readonly<{ stats: ComposerCont
         <section ref={menuRef} aria-label="Chat context" className="v2-chat-context-popover" role="dialog">
           <strong>{label}.</strong>
           <p>This is how much of the conversation the model can keep in view. Space for its next answer is reserved.</p>
+          {continuation ? <div className="v2-chat-context-continuation">
+            <p>Continue in a new chat with a short summary of this conversation. Files and Workspace won’t be carried over.</p>
+            {continuation.error ? <p role="alert">{continuation.error}</p> : null}
+            {continuation.busy ? <>
+              <p role="status">Preparing your summary…</p>
+              <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
+            </> : <div className="v2-chat-context-actions">
+              <UiV2Button tone="primary" onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
+              <UiV2Button onClick={close}>Stay here</UiV2Button>
+            </div>}
+          </div> : null}
           {stats.session?.droppedMessages ? <p>Some earlier messages no longer fit in the model’s context.</p> : null}
           <details>
             <summary>Advanced details</summary>

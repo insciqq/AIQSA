@@ -717,6 +717,7 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
+  chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -2562,6 +2563,8 @@ model SearchIntegrationRevision {
 }
 
 model Chat {
+  continuations      ChatContinuation[] @relation("SourceChatContinuation")
+  continuationSource ChatContinuation?  @relation("ContinuedChat")
   id                              String               @id @default(uuid())
   userId                          String?
   projectId                       String?
@@ -2671,6 +2674,7 @@ model WorkspaceCleanupJob {
 }
 
 model Message {
+  continuations ChatContinuation[] @relation("SourceMessageContinuation")
   id                     String            @id @default(uuid())
   chatId                 String
   role                   String
@@ -2704,6 +2708,28 @@ model Message {
   @@index([chatId, createdAt])
   @@index([authorUserId])
   @@index([branchSourceModelRunId])
+}
+
+/// Content-free claim/result identity. Provider work is never replayed automatically.
+model ChatContinuation {
+  id                String   @id @default(uuid())
+  sourceChatId      String
+  sourceMessageId   String
+  snapshotUpdatedAt DateTime
+  actorUserId       String?
+  attemptId         String   @unique
+  status            String   @db.VarChar(16)
+  errorCode         String?  @db.VarChar(64)
+  newChatId         String?  @unique
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  actor             User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  sourceChat        Chat     @relation("SourceChatContinuation", fields: [sourceChatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  sourceMessage     Message  @relation("SourceMessageContinuation", fields: [sourceChatId, sourceMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  newChat           Chat?    @relation("ContinuedChat", fields: [newChatId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+
+  @@unique([sourceChatId, sourceMessageId, snapshotUpdatedAt], map: "ChatContinuation_source_snapshot_key")
+  @@index([actorUserId])
 }
 
 model ModelRun {

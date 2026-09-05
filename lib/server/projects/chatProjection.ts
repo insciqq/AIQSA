@@ -10,6 +10,7 @@ import {
 } from "./chatDefaults";
 
 export const projectChatSelect = {
+  continuationSource: { select: { id: true } },
   _count: {
     select: {
       messages: true,
@@ -75,6 +76,7 @@ export function projectChatWire(
   });
   return {
     activeRun: chat._count.modelRuns > 0,
+    ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     archived: chat.archived,
     createdAt: chat.createdAt.toISOString(),
