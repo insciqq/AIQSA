@@ -93,6 +93,8 @@ When the answer model rewrites an automatic Knowledge query, its single embeddin
 
 ## Streaming, Recovery, And Settlement
 
+Chat context visibility is an estimate of the current model envelope, including answer reserve, rather than cumulative billing usage. A bounded, content-free snapshot may persist with completed answers so the header survives reload and branch changes; unknown model limits remain unknown. The read-only `get_session_status` tool uses the same calculation and is built into ordinary tool-capable answering independently of MCP mode. It grants no external access and does not change discovery, tool selection, or context-budget enforcement. Internal strict-schema utility calls remain tool-free.
+
 Normalized SSE publishes live lifecycle, answer deltas, a bounded semantic tool-activity projection, safe sources/artifacts, actionable warnings/errors, usage, and terminal completion. Presentation-only synchronization stays transient. Text may stream per token, while durable partial text/checkpoints are batched. The visible assistant message contains the answer and may summarize tool name, server name, round, state, duration, and reached-limit warning; it never exposes request previews, Search traces, provider parameters, tool arguments/results, internal identifiers/errors, raw event timelines, or usage receipts.
 
 Authenticated Project members may read the same client-safe persisted chat projection regardless of which member initiated a turn. That projection includes author attribution, durable partial answer text, normalized active/terminal lifecycle, semantic tool activity, and safe sources/artifacts; it does not broaden the SSE contract or expose private execution evidence.

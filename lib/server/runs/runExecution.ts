@@ -121,7 +121,8 @@ import {
   type RunTool,
   type ToolExecutionResult
 } from "../tools/types";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
+import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import {
   memoryEgressRequestEvidence,
@@ -673,6 +674,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       let persistedProviderResponseId: string | null = null;
       let answerStartMarked = false;
       let knowledgeAnswerAttempted = groundedKnowledgeAnswer;
+      let lastSessionRequest = input.prepared.providerRequest;
       let projectAccessCheck: Promise<boolean> | null = null;
       let projectAccessRevoked = false;
       let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
@@ -777,6 +779,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         event: ModelRunSseEvent,
         options: Readonly<{ includeTokenEvents?: boolean }> = {}
       ): Promise<void> {
+        // Capacity is minted by the server, never by provider output.
+        if (event.type === "artifact" && event.data.artifactType === "context_status") return;
         await assertProjectRunAccessCurrent();
         const includeTokenEvents = options.includeTokenEvents ?? true;
         const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
@@ -1556,6 +1560,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        lastSessionRequest = request;
         let preview: Record<string, unknown> | null = null;
         const requestPreview = () => {
           preview ??= input.adapter.buildRequestPreview(request);
@@ -1701,12 +1706,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const isMcpDiscoveryCall = (name: string) =>
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
         const tools: RunTool[] = [
+          ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
           ...(clientToolsEnabled ? mcpRunTools(activeMcpSnapshot) : []),
           ...workspaceTools
         ];
+        let sessionRequest = request;
+        const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
         }
@@ -1946,7 +1954,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name);
+                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2045,6 +2053,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (preflightResult) {
                   result = preflightResult;
+                } else if (isSessionCall(call.name)) {
+                  result = executeSessionStatus(call, sessionRequest, toolBridge);
                 } else if (isMcpDiscoveryCall(call.name)) {
                   const batch = mcpDiscoveryBatches.get(call.id);
                   if (batch) {
@@ -2252,7 +2262,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isWorkspaceCall(call.name)) {
+                  !isWorkspaceCall(call.name) && !isSessionCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2354,7 +2364,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
-              const builtInServer = call.name === "find_tools"
+              const builtInServer = isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
@@ -2401,6 +2411,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             if (!budgeted.ok) {
               throw new RunPipelineError("context_too_large", budgeted.error.message);
             }
+            sessionRequest = budgeted.request;
             if (budgeted.contextTruncation) {
               await emit(
                 controller,
@@ -2528,7 +2539,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;
@@ -2536,6 +2547,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           input.prepared.providerRequest
         );
         const providerRequest = preparedProviderRequest.request;
+        lastSessionRequest = groundedKnowledgeAnswer ? { ...providerRequest, tools: [] } : providerRequest;
         assertPersonalContextEgressSafe(providerRequest);
         let knowledgeZeroEvidence = false;
         let knowledgeAnswerExecution = groundedKnowledgeAnswer
@@ -2637,7 +2649,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             workspace: normalizedRequest.workspace
           });
         }
+        const contextStatusEvent = {
+          type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
+            answerText: providerResult.finalText,
+            bridge: input.toolBridge ?? providerToolBridges[lastSessionRequest.provider as keyof typeof providerToolBridges],
+            request: lastSessionRequest
+          }) }
+        } as const;
         const finalization = await finalizeRunCompletion({
+          outputEvents: [contextStatusEvent],
           ...(knowledgeAnswerExecution
             ? { knowledgeAnswerContracts: knowledgeAnswerExecution.contracts }
             : {}),
@@ -2657,6 +2677,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
         }
+
+        emitTransient(controller, encoder, contextStatusEvent);
 
         if (knowledgeCitationAnswer && finalization.finalText) {
           emitTransient(controller, encoder, {

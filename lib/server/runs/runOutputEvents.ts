@@ -4,6 +4,7 @@ import { decodeThreadSearchSource, type ThreadSearchSource } from "../../contrac
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { safeExternalHref } from "../../domain/links";
 import { projectThreadSearchSources } from "../../domain/searchSources";
+import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 
 const citationTitleLimit = 500;
 const citationSnippetLimit = 2_000;
@@ -21,6 +22,7 @@ type RunOutputCitation = {
 };
 
 export type RunOutputArtifactEvent =
+  | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
@@ -219,6 +221,10 @@ export function isRunOutputArtifactEvent(
   }
   if (event.type !== "artifact" ||
     !hasOnlyKeys(event.data, ["artifactType", "payload"])) return false;
+
+  if (event.data.artifactType === "context_status") {
+    return decodeSessionContextStatus(event.data.payload) !== null;
+  }
 
   if (event.data.artifactType === "citation") {
     return isExactCitation(event.data.payload);

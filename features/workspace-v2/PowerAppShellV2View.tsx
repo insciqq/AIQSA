@@ -598,7 +598,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       )}
       config={config}
       configError={Boolean(composer.catalogError)}
-      contextStats={session.activeChatId ? composer.composerContextStats : null}
       disabledReason={thread.editingMessageId
         ? "Finish or cancel the inline edit first."
         : composer.composerDisabledHint}
@@ -662,7 +661,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
       sharedProject={projectContext}
       uploading={composer.uploading}
-      usageStats={composer.composerUsageStats}
       workspace={{
         available: composer.workspace.available,
         busy: composer.workspace.busy,
@@ -1184,6 +1182,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
+              contextStats={composer.composerContextStats}
               crumb={activeChatCrumb}
               archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
                 projectContext && (

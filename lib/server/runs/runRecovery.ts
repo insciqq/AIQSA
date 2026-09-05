@@ -152,7 +152,9 @@ import {
   runProviderToolLoop,
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
+import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
+import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import {
   memoryEgressRequestEvidence,
@@ -697,6 +699,8 @@ type RecoveryToolContext = {
   }>>;
   mcpDiscoveryQueue: Promise<void>;
   providerRequest: ProviderRunRequest;
+  sessionRequest?: ProviderRunRequest;
+  sessionToolBridge?: ProviderToolBridge;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
   searchExecutor: RecoverySearchExecutor | null;
@@ -1337,7 +1341,8 @@ async function executePersistedToolCall(
         preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
       }
     }
-    const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name);
+    const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
+    const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -1429,6 +1434,8 @@ async function executePersistedToolCall(
     }
     if (preflightResult) {
       result = preflightResult;
+    } else if (isSessionCall) {
+      result = executeSessionStatus(call, context.sessionRequest ?? context.providerRequest, context.sessionToolBridge);
     } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
@@ -1817,6 +1824,7 @@ async function recoverCheckpointedToolLoop(
         })
       : [];
     const tools: RunTool[] = [
+      ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(recoveredKnowledgeEnabled ? deps.knowledgeExecutor?.tools ?? [] : []),
       ...(searchExecutor?.tools ?? []),
       ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
@@ -1829,7 +1837,7 @@ async function recoverCheckpointedToolLoop(
         "The saved run has no recoverable tools."
       );
     }
-    const externalToolsPresent = tools.some((tool) => tool.capability !== "memory");
+    const externalToolsPresent = tools.some((tool) => tool.capability !== "memory" && tool.capability !== "session");
     const hostedSearchPresent = requestHasHostedSearchCapability(providerRequest);
     const egressReceiptRequired = externalToolsPresent ||
       hostedSearchPresent ||
@@ -1850,6 +1858,12 @@ async function recoverCheckpointedToolLoop(
       knowledgeResults: new Map(),
       mcpDiscoveryBatches: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
+      sessionToolBridge: bridge,
+      sessionRequest: {
+        ...providerRequest,
+        tools,
+        providerToolMessages: parseProviderToolLoopContinuation(run.checkpoint.providerContinuation).providerToolMessages
+      },
       providerRequest,
       run,
       runtime() {
@@ -2056,6 +2070,7 @@ async function recoverCheckpointedToolLoop(
     }
 
     async function appendEvent(event: ModelRunSseEvent): Promise<void> {
+      if (event.type === "artifact" && event.data.artifactType === "context_status") return;
       const effectiveEvent = withPinnedHostedSearchIdentity(event, run.normalizedRequest);
       if (effectiveEvent.type === "token") {
         if (recoveredKnowledgeEnabled) return;
@@ -2106,6 +2121,7 @@ async function recoverCheckpointedToolLoop(
       if (!budgeted.ok) {
         throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
       }
+      context.sessionRequest = budgeted.request;
       if (budgeted.contextTruncation) {
         await appendEvent({
           data: {
@@ -2241,7 +2257,8 @@ async function recoverCheckpointedToolLoop(
           if (!route && !isRecoveredKnowledgeCall(context, call.name) &&
             searchExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name) &&
-            !isRecoveredWorkspaceCall(context, call.name)) {
+            !isRecoveredWorkspaceCall(context, call.name) &&
+            !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
@@ -2398,7 +2415,11 @@ async function recoverCheckpointedToolLoop(
         const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
         await finalizeRecoveredWorkspace();
         const completion = await finalizeRunCompletion({
-          outputEvents: runOutputArtifactEvents(refreshed.events),
+          outputEvents: [...runOutputArtifactEvents(refreshed.events), {
+            type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
+              answerText: refreshed.result.finalText, bridge, request: context.sessionRequest ?? providerRequest
+            }) }
+          }],
           repository: deps.repository,
           result: {
             ...refreshed.result,
@@ -2644,6 +2665,11 @@ async function recoverCheckpointedToolLoop(
     const usage = sumTokenUsage(groupedAttributions.map((attribution) => attribution.usage));
     await finalizeRecoveredWorkspace();
     const completion = await finalizeRunCompletion({
+      outputEvents: [{
+        type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
+          answerText: outcome.final.finalText, bridge, request: context.sessionRequest ?? providerRequest
+        }) }
+      }],
       repository: deps.repository,
       result: {
         ...outcome.final,

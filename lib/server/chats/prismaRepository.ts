@@ -1,4 +1,5 @@
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
+import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { Prisma } from "@prisma/client";
 import {
@@ -186,11 +187,35 @@ const hydratedMessageSelect = {
   status: true
 } satisfies Prisma.MessageSelect;
 
+const sessionStatusEventsSelect = {
+  orderBy: { sequence: "desc" as const },
+  select: { payload: true },
+  take: 1,
+  where: { eventType: "artifact", payload: { path: ["artifactType"], equals: "context_status" } }
+};
+
+function latestSessionStatus(messages: readonly {
+  role: string;
+  assistantModelRuns?: readonly { events?: readonly { payload: unknown }[] }[];
+  branchSourceModelRun?: { events?: readonly { payload: unknown }[] } | null;
+}[]): SessionContextStatus | null {
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const run = lastAssistant?.assistantModelRuns?.[0] ?? lastAssistant?.branchSourceModelRun;
+  for (const event of run?.events ?? []) {
+    if (isRecord(event.payload) && event.payload.artifactType === "context_status") {
+      const status = decodeSessionContextStatus(event.payload.payload);
+      if (status) return status;
+    }
+  }
+  return null;
+}
+
 const lightweightMessageSelect = {
   assistantModelRuns: {
     orderBy: { createdAt: "desc" },
     select: {
       cachedInputTokens: true,
+      events: sessionStatusEventsSelect,
       cacheWriteInputTokens: true,
       inputTokens: true,
       outputTokens: true,
@@ -200,6 +225,7 @@ const lightweightMessageSelect = {
     take: 1
   },
   id: true,
+  branchSourceModelRun: { select: { events: sessionStatusEventsSelect } },
   parentMessageId: true,
   role: true
 } satisfies Prisma.MessageSelect;
@@ -745,7 +771,8 @@ function serializeChatDetail(input: {
     folderId: chat.projectFolderId ?? chat.folderId,
     id: chat.id,
     contextStats: {
-      approximateActiveBranchInputTokens: input.contextInputTokens
+      approximateActiveBranchInputTokens: input.contextInputTokens,
+      session: latestSessionStatus(activeBranchPath(input.lightweightMessages, chat.activeLeafMessageId))
     },
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
@@ -1340,7 +1367,8 @@ export async function loadChatBranchSnapshotStats(
       approximateActiveBranchInputTokens: await approximateActiveBranchInputTokens(
         tx,
         activeMessages
-      )
+      ),
+      session: latestSessionStatus(activeMessages)
     },
     usageStats: summarizeChatUsageStats({
       activeLeafMessageId: input.activeLeafMessageId,

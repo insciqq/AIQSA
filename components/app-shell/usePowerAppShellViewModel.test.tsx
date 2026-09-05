@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
+import { defaultParameterControls } from "./controlDefaults";
+import type { SessionContextStatus } from "@/lib/contracts/sessionStatus";
 import type { Catalog, FolderSummary, WorkspaceChatSummary } from "./types";
 
 function chat(id: string): WorkspaceChatSummary {
@@ -24,7 +26,6 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
     usePowerAppShellViewModel({
       activeChatId: "chat-a",
       activeChatStreaming: false,
-      activeThreadUsageStats: null,
       attachments: [],
       catalog: null,
       chats: [chat("chat-a")],
@@ -65,6 +66,28 @@ const emptyCatalog: Catalog = {
 };
 
 describe("usePowerAppShellViewModel", () => {
+  it("uses the server snapshot for its selected model and rejects a stale model snapshot", () => {
+    const snapshot: SessionContextStatus = {
+      approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
+      safetyMarginTokens: 1000, version: 1
+    };
+    const catalog: Catalog = { ...emptyCatalog, models: [{
+      capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+      contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
+      parameterControls: defaultParameterControls(), searchStrategyIds: []
+    }] };
+    const current = renderViewModel({ catalog, maxOutputTokens: "1024",
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot }
+    });
+    expect(current.result.current.composerContextStats.session).toEqual(snapshot);
+    expect(current.result.current.composerContextStats.approximateInputTokens).toBe(6000);
+    const stale = renderViewModel({ catalog,
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: { ...snapshot, modelId: "other-model" } }
+    });
+    expect(stale.result.current.composerContextStats.session).toBeUndefined();
+  });
   it("does not mark a blank workspace as streaming while another chat runs", () => {
     const { result } = renderViewModel({
       activeChatId: null,

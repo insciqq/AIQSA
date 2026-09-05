@@ -64,6 +64,7 @@ import type {
 } from "../mcp/runPlan";
 import type { McpSemanticRouter } from "../mcp/router";
 import { mcpFindToolsTool } from "../mcp/discovery";
+import { sessionStatusTool } from "../tools/sessionStatus";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
 import type {
@@ -1375,7 +1376,8 @@ export async function prepareRun(
 
   const mcpToolsEnabled = mcpDiscoveryEnabled ||
     Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const requiresClientToolCoexistence = knowledgeRequested || mcpToolsEnabled || workspaceEnabled;
+  const requiresClientToolCoexistence = knowledgeRequested || mcpToolsEnabled || workspaceEnabled ||
+    modelConfiguration.capabilities.toolCalling === true;
   if (
     requiresClientToolCoexistence &&
     admissionPlan.searches.some((candidate) =>
@@ -1648,6 +1650,9 @@ export async function prepareRun(
   }
 
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
+      modelId: executionModelId, provider: executionProvider
+    }) === true ? { sessionStatusTool: true as const } : {}),
     attachmentIds,
     chatId: chat.id,
     content,
@@ -1721,14 +1726,15 @@ export async function prepareRun(
     plan: baseNormalizedRequest.searchPlan,
     runtimes: {}
   })?.tools ?? [];
-  const nonKnowledgeClientTools = baseNormalizedRequest.toolMode === "none"
-    ? []
-    : [
+  const nonKnowledgeClientTools = [
+    ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
+    ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(baseNormalizedRequest.mcp),
         ...workspaceTools
-      ];
+      ])
+  ];
 
   let answeringPlan: KnowledgeAnsweringPlan | undefined;
   if (knowledgeAdmissionPlan) {
@@ -1760,10 +1766,8 @@ export async function prepareRun(
     const requiresInitialKnowledgeCall = Boolean(
       plan && !fullContext && knowledgeRequested
     );
-    const clientTools = baseNormalizedRequest.toolMode === "none"
-      ? []
-      : [
-          ...(!fullContext && knowledgeRequested ? [knowledgeRetrievalTool] : []),
+    const clientTools = [
+          ...(baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested ? [knowledgeRetrievalTool] : []),
           ...nonKnowledgeClientTools
         ];
     const normalized: NormalizedRunRequest = {

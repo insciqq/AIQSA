@@ -1,3 +1,4 @@
+import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
 import type {
   ErrorResponse,
@@ -193,6 +194,7 @@ export type ChatUsageStats = {
 
 export type ChatContextStats = {
   approximateActiveBranchInputTokens: number;
+  session?: SessionContextStatus | null;
 };
 
 export type ChatMessagePageInfo = {
@@ -541,15 +543,17 @@ function isoTimestamp(value: unknown): string | null {
 }
 
 function decodeContextStats(value: unknown): ChatContextStats | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["approximateActiveBranchInputTokens"])) {
+  if (!isRecord(value) || !hasExactKeys(value, ["approximateActiveBranchInputTokens", ...("session" in value ? ["session"] : [])])) {
     return null;
   }
   const approximateActiveBranchInputTokens = nonNegativeInteger(
     value.approximateActiveBranchInputTokens
   );
+  const session = value.session == null ? null : decodeSessionContextStatus(value.session);
+  if (value.session != null && session === null) return null;
   return approximateActiveBranchInputTokens === null
     ? null
-    : { approximateActiveBranchInputTokens };
+    : { approximateActiveBranchInputTokens, ...(session ? { session } : {}) };
 }
 
 function decodeMessagePageInfo(value: unknown): ChatMessagePageInfo | null {

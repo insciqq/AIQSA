@@ -4599,6 +4599,33 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
+  it("recovers a pending session-status call without MCP or external tool dispatch", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; }
+    };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const base = checkpointedRun({
+      calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: "get_session_status" }],
+      phase: "tools_pending", providerToolMessages: []
+    });
+    const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
+    const installed = installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: { ...normalizedRequest, sessionStatusTool: true, toolMode: "none", searchPlan: { mode: "all_selected", options: [] } }
+    });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(installed.calls()).toEqual([expect.objectContaining({ state: "complete", toolName: "get_session_status" })]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
+    expect(requests[0]?.providerToolMessages).toEqual([
+      expect.objectContaining({ output: expect.stringContaining('"loadedTools":1') })
+    ]);
+    expect(harness.state.completed).not.toBeNull();
+  });
+
   it("continues a checkpointed OpenAI background tool round from its response id", async () => {
     const requests: ProviderRunRequest[] = [];
     const egress = createRecoveryMemoryEgressRecorder();
@@ -4674,7 +4701,9 @@ describe("run recovery", () => {
     expect(installed.calls()).toEqual([
       expect.objectContaining({ result: expect.any(Object), state: "complete" })
     ]);
-    expect(harness.state.events.map(({ event }) => event)).toEqual([providerEvent]);
+    expect(harness.state.events.map(({ event }) => event).filter((event) =>
+      !(event.type === "artifact" && event.data.artifactType === "context_status")
+    )).toEqual([providerEvent]);
     expect(requests).toHaveLength(1);
     expect(requests[0]?.previousProviderResponseId).toBeUndefined();
     expect(requests[0]).toMatchObject({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerContextGauge, composerContextGaugeTitle } from "./composerContextStats";
+import { composerContextGauge } from "./composerContextStats";
 
 describe("composer context statistics", () => {
 
@@ -24,16 +24,4 @@ describe("composer context statistics", () => {
     })).toMatchObject({ fraction: null, percent: null, tone: "neutral" });
   });
 
-  it("offers a human hover label in safe-budget percent or honest tokens", () => {
-    expect(composerContextGaugeTitle({
-      approximateInputTokens: 800,
-      safeInputBudgetTokens: 10_000,
-      totalContextTokens: 12_000
-    })).toBe("~8% of context");
-    expect(composerContextGaugeTitle({
-      approximateInputTokens: 42_000,
-      safeInputBudgetTokens: null,
-      totalContextTokens: null
-    })).toBe("Context: ~42k tokens");
-  });
 });

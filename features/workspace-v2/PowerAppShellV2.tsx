@@ -550,7 +550,6 @@ export function PowerAppShellV2({
     activeChatTitle,
     composerDisabledHint,
     composerContextStats,
-    composerUsageStats,
     currentModel,
     currentParameterControls,
     liveArtifactSummary,
@@ -561,7 +560,6 @@ export function PowerAppShellV2({
     activeChatId,
     activeChatStreaming: Boolean(activeChatStream),
     activeThreadContextStats: activeThread.contextStats ?? null,
-    activeThreadUsageStats: activeThread.usageStats,
     attachments,
     catalog,
     chats,
@@ -1810,7 +1808,6 @@ export function PowerAppShellV2({
       projectContext,
       projectHint: projectComposerDisabledHint
     }),
-    composerUsageStats,
     currentModel: effectiveCurrentModel,
     currentParameterControls: effectiveParameterControls,
     draft,

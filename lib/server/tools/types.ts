@@ -12,7 +12,7 @@ export function hasInvalidProviderToolArguments(value: unknown): boolean {
     (value as Record<string, unknown>)[invalidProviderToolArgumentsKey] === true;
 }
 
-export type RunToolCapability = "knowledge" | "mcp" | "memory" | "web_search" | "workspace";
+export type RunToolCapability = "knowledge" | "mcp" | "memory" | "session" | "web_search" | "workspace";
 
 export type RunTool = {
   capability: RunToolCapability;
