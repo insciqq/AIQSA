@@ -1386,7 +1386,9 @@ describe("model run route handlers", () => {
       fileName: "report.pdf", id: "pdf-1", kind: "pdf", metadata: { pdfPageCount: 21 }, mimeType: "application/pdf",
       processingErrorCode: null, status: "ready", storageKey: "private/original" }];
     const createRun = repository.createRun;
-    repository.createRun = vi.fn(async (input) => ({ ...await createRun(input), deferredPdf: true }));
+    repository.createRun = vi.fn<typeof repository.createRun>(async (input) => ({
+      ...await createRun(input), deferredPdf: true
+    }));
     repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", pdfPreparation: [{
       completedPages: 0, pageCount: 21, phase: "checking", retryable: false,
       route: "local_text", limitedReadingQuality: true, longDocument: true
@@ -1422,7 +1424,7 @@ describe("model run route handlers", () => {
     expect(JSON.stringify(accepted)).not.toMatch(/private|snapshot|checksum|credential/);
 
     const saved = state.created!.deferredPdf!.snapshot as { prepared: import("./runPreparation").MaterializedPreparedRunData };
-    repository.createRegenerationRun = vi.fn(async () => ({ assistantMessageId: "retry-assistant", runId: "run-1",
+    repository.createRegenerationRun = vi.fn<typeof repository.createRegenerationRun>(async () => ({ assistantMessageId: "retry-assistant", runId: "run-1",
       userMessageId: "user-message-1", deferredPdf: true }));
     const resolveCurrentRoute = vi.fn();
     const retry = createRegenerateModelRunHandler({ ...authDeps, repository, providers: { fake: adapter },

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../../domain/content";
+import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryJobClaim } from "../coordinator/types";
@@ -1270,7 +1271,22 @@ describe("Prisma Memory safety reclassification", () => {
         data: { name: "Legacy reclassification folder", userId }
       });
       const assistant = await prisma.assistantDefinition.create({
-        data: { ownerUserId: userId }
+        data: {
+          ownerUserId: userId,
+          avatar: {
+            accents: [0, 4],
+            backgroundShape: "circle",
+            foregroundShape: "diamond",
+            kind: "generated",
+            paletteId: "ocean",
+            recipeVersion: 1,
+            rotations: [0, 2]
+          },
+          name: "Legacy reclassification Assistant",
+          providerModelId: providerTemplateIds.fakeModel,
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          systemPrompt: "Answer directly."
+        }
       });
       assistantId = assistant.id;
       const chat = await prisma.chat.create({

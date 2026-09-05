@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createPrismaExplicitMemoryRepository } from "./explicit/repository";
 import {
@@ -90,7 +91,22 @@ describe("Memory scoped-target lifecycle", () => {
         data: { name: "Dormant folder", userId }
       });
       const assistant = await prisma.assistantDefinition.create({
-        data: { ownerUserId: userId }
+        data: {
+          ownerUserId: userId,
+          avatar: {
+            accents: [0, 4],
+            backgroundShape: "circle",
+            foregroundShape: "diamond",
+            kind: "generated",
+            paletteId: "ocean",
+            recipeVersion: 1,
+            rotations: [0, 2]
+          },
+          name: "Dormant scope Assistant",
+          providerModelId: providerTemplateIds.fakeModel,
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          systemPrompt: "Answer directly."
+        }
       });
       assistantId = assistant.id;
       const chat = await prisma.chat.create({

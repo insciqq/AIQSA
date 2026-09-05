@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
+import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import {
   fuseMemoryRetrievalCandidates,
@@ -920,7 +921,22 @@ describe("local Memory retrieval on PostgreSQL", () => {
       data: { name: "Current folder", userId }
     });
     const assistant = await prisma.assistantDefinition.create({
-      data: { ownerUserId: userId }
+      data: {
+        ownerUserId: userId,
+        avatar: {
+          accents: [0, 4],
+          backgroundShape: "circle",
+          foregroundShape: "diamond",
+          kind: "generated",
+          paletteId: "ocean",
+          recipeVersion: 1,
+          rotations: [0, 2]
+        },
+        name: "Retrieval scope Assistant",
+        providerModelId: providerTemplateIds.fakeModel,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        systemPrompt: "Answer directly."
+      }
     });
     const current = await createChatWithLeaf({
       folderId: currentFolder.id,

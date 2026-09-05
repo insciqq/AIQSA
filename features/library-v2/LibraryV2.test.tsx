@@ -346,8 +346,7 @@ describe("Library resource panels", () => {
           id: "assistant",
           name: "API Reviewer",
           owned: true,
-          pinned: false,
-          revision: 2
+          pinned: false
         }]}
         onOpen={onOpen}
         onPinToggle={onPinToggle}
@@ -372,7 +371,6 @@ describe("Library resource panels", () => {
           id: "assistant",
           name: "Release helper",
           owned: true,
-          revision: 2,
           unavailable: {
             action: { kind: "mcp-settings", label: "Fix in Settings…" },
             explanation: "GitHub is turned off or needs attention.",

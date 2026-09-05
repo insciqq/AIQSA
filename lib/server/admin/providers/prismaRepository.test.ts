@@ -29,7 +29,7 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
   });
 }
 
-function candidate(): ProviderDraftTestCandidate {
+function candidate() {
   return {
     connection: {
       configuration: {
@@ -75,7 +75,7 @@ function candidate(): ProviderDraftTestCandidate {
       draftVersion: 4,
       id: "model-1"
     }
-  };
+  } satisfies ProviderDraftTestCandidate;
 }
 
 function storedCheck(): StoredProviderDraftCheck {
@@ -98,7 +98,7 @@ function storedCheck(): StoredProviderDraftCheck {
   };
 }
 
-function activeCandidate(): ProviderActiveRefreshCandidate {
+function activeCandidate() {
   return {
     connection: {
       configuration: {
@@ -123,7 +123,7 @@ function activeCandidate(): ProviderActiveRefreshCandidate {
       id: "model-1",
       version: 4
     }
-  };
+  } satisfies ProviderActiveRefreshCandidate;
 }
 
 describe("Prisma admin provider repository", () => {
