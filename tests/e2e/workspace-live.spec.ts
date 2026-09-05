@@ -5,6 +5,7 @@ import { expect, test, type Download, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { createWorkspaceRuntime } from "../../lib/server/workspace/defaultRuntime";
 import { runWorkspaceMaintenance } from "../../lib/server/workspace/cleanup";
+import { removeWorkspaceForDeletion } from "../../lib/server/workspace/removal";
 import { getWorkspaceConfig } from "../../lib/server/workspace/config";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { selectModel } from "./shell/composer";
@@ -95,8 +96,24 @@ async function sendAndExpect(
 ): Promise<void> {
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill(prompt);
-  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
-  await composer.press("Enter");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
+    const response = page.waitForResponse((value) => value.request().method() === "POST" &&
+      /\/api\/chats\/[^/]+\/messages$/u.test(new URL(value.url()).pathname));
+    await composer.press("Enter");
+    const admitted = await response;
+    if (admitted.ok()) break;
+    // Published files can precede the exporter retiring its receiver. Retry
+    // only this explicit, non-admitted conflict and preserve the user's draft.
+    expect(admitted.status()).toBe(409);
+    expect(await admitted.json()).toMatchObject({ error: "workspace_busy" });
+    await expect(composer).toHaveValue(prompt);
+    expect(attempt).toBeLessThan(2);
+    const chatId = await activeChatId(page);
+    await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({
+      select: { operationOwner: true }, where: { chatId }
+    })).operationOwner, { timeout: 45_000 }).toBeNull();
+  }
   await expect(page.locator('article[data-role="assistant"]').last()).toContainText(answer, {
     timeout
   });
@@ -172,7 +189,7 @@ async function generatedArchive(page: Page, chatId: string): Promise<Readonly<{
   return { bytes, href };
 }
 
-test("real KVM Workspace survives idle stop, exports after restart, resets, and enforces no-network", async ({ browser }) => {
+test("real KVM Workspace preserves its disk across terminal stop, exports, resets, and enforces no-network", async ({ browser }) => {
   const config = getWorkspaceConfig({
     ...process.env,
     AIQSA_TEST_MODE: "1",
@@ -221,12 +238,12 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
     );
     const onlineChatId = await activeChatId(page);
     createdChatIds.push(onlineChatId);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
     const activity = page.getByTestId("tool-activity-disclosure").last();
     await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Worked in Workspace");
     await expect(activity).toContainText("Ran set -eu && test -s /workspace/inbox/index.json");
-    await expect(activity).toContainText("Exported 1 file");
+    await expect(activity).toContainText("Exported 1 file", { timeout: 30_000 });
     expect(await activity.textContent()).not.toMatch(/sandbox_|mcp_workspace|Used Workspace/u);
     await sendAndExpect(
       page,
@@ -267,7 +284,7 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
       select: { id: true, state: true },
       where: { chatId: onlineChatId }
     });
-    expect(["READY", "STOPPED"]).toContain(stoppedSession.state);
+    expect(stoppedSession.state).toBe("STOPPED");
     await expect.poll(async () => prisma.workspaceExecution.count({
       where: { state: { in: ["ACTIVE", "TERMINATING"] }, workspaceSessionId: stoppedSession.id }
     })).toBe(0);
@@ -291,7 +308,10 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
       where: { id: onlineSession.id }
     });
     const maintenance = await runWorkspaceMaintenance({ config, prisma, runtime });
-    expect(maintenance.idleStopped).toBe(1);
+    // Terminal retirement has already stopped this disk. Idle maintenance
+    // must leave that proven state alone before the archive resumes it.
+    expect(onlineSession.state).toBe("STOPPED");
+    expect(maintenance.idleStopped).toBe(0);
     await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({
       select: { state: true },
       where: { id: onlineSession.id }
@@ -374,14 +394,8 @@ test("real KVM Workspace survives idle stop, exports after restart, resets, and 
     for (const chatId of createdChatIds) {
       const session = await prisma.workspaceSession.findUnique({ where: { chatId } });
       if (session?.runtimeSandboxId) {
-        await runtime.removeSession({
-          runtimeSandboxId: session.runtimeSandboxId,
-          sessionId: session.id
-        }).catch(() => undefined);
-        await prisma.workspaceSession.updateMany({
-          data: { runtimeSandboxId: null, state: "PENDING" },
-          where: { id: session.id }
-        }).catch(() => undefined);
+        await page.request.delete(`/api/chats/${chatId}`);
+        await removeWorkspaceForDeletion({ now: new Date(), prisma, runtime, sessionId: session.id });
       }
       await page.request.delete(`/api/chats/${chatId}`).catch(() => undefined);
     }

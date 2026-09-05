@@ -108,6 +108,7 @@ import { useShellAppearanceController } from "@/components/app-shell/useShellApp
 import { useShellOverlayController } from "@/components/app-shell/useShellOverlayController";
 import { useShellUiActions } from "@/components/app-shell/useShellUiActions";
 import { useWorkspaceInteractionController } from "@/components/app-shell/useWorkspaceInteractionController";
+import { useWorkspaceOutputReconciliation } from "@/components/app-shell/useWorkspaceOutputReconciliation";
 import { useWorkspaceActions } from "@/components/app-shell/workspaceActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
@@ -793,6 +794,10 @@ export function PowerAppShellV2({
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
   });
+  useWorkspaceOutputReconciliation({
+    accountId, chatId: activeChatId, messages: visibleMessages,
+    projectId: activeChat?.projectId, streaming: Boolean(activeChatStream), refreshActiveChat
+  });
   const pruneThreadCacheEvent = useEventCallback(pruneThreadCache);
   const activatePersonalChatDeepLink = useEventCallback(async (chatId: string) =>
     Boolean(await activatePersonalChatById(chatId))
@@ -1198,7 +1203,7 @@ export function PowerAppShellV2({
     refreshActiveChat,
     setNotice
   });
-  const { fetchRun, retryAttachment, stopCurrentRun, uploadFiles } = runLifecycleActions;
+  const { fetchRun, retryAttachment, reuseFile, stopCurrentRun, uploadFiles } = runLifecycleActions;
 
   // A selected Project is a local blank context until the first send.  Route
   // that send through the Project chat endpoint so opening the Project never
@@ -1712,6 +1717,32 @@ export function PowerAppShellV2({
     await uploadFiles(selected);
   }
 
+  async function reuseComposerFile(attachmentId: string, fileName: string): Promise<boolean> {
+    if (projectContext || activeChatStreaming) return false;
+    const sourceKey = useComposerSessionStore.getState().activeSessionKey;
+    const currentCount = composerSession.attachments.length;
+    const maxCount = catalog?.attachmentLimits?.maxCount;
+    if (maxCount !== undefined && currentCount >= maxCount) {
+      composerActions.rejectAttachmentCount({ attemptedCount: currentCount + 1, currentCount, maxCount });
+      return false;
+    }
+    const requiresWorkspace = partitionAttachmentSelection(
+      [new File([], fileName)], attachmentPolicyForModel(effectiveCurrentModel)
+    ).rejected.length > 0;
+    if (requiresWorkspace && !workspaceEnabled && !(await setWorkspaceEnabled(true, "file_selection"))) return false;
+    if (useComposerSessionStore.getState().activeSessionKey !== sourceKey) return false;
+    const used = await reuseFile(attachmentId, async (file) => {
+      // A generated Office file can have a familiar extension but no extracted
+      // text. Admit its actual bytes through Workspace before making it ready
+      // to send, rather than attaching an unreadable document to an ordinary run.
+      const needsWorkspace = file.kind === "file" || (file.kind !== "image" && !file.extractedText);
+      if (!needsWorkspace || selectComposerSession(useComposerSessionStore.getState(), sourceKey).workspaceEnabled) return true;
+      if (useComposerSessionStore.getState().activeSessionKey !== sourceKey) return false;
+      return await setWorkspaceEnabled(true, "file_selection") && useComposerSessionStore.getState().activeSessionKey === sourceKey;
+    });
+    return used && useComposerSessionStore.getState().activeSessionKey === sourceKey;
+  }
+
   async function resetWorkspace(): Promise<boolean> {
     if (!activeChat || workspaceCapabilityMutationRef.current || activeChatStreaming) return false;
     workspaceCapabilityMutationRef.current = true;
@@ -1898,6 +1929,7 @@ export function PowerAppShellV2({
     useOrganizationSearchDefault,
     useOrganizationModelDefault,
     uploadFiles: uploadComposerFiles,
+    reuseFile: projectContext ? undefined : reuseComposerFile,
     uploading,
     workspace: {
       archive: archiveWorkspace,

@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { createTestAuthMailHandlers } from "./route";
+import { createTestAuthMailHandlers } from "@/lib/server/auth/testMailHandlers";
 
 describe("test auth mail route", () => {
   it("returns not found when deterministic local test auth is disabled", async () => {

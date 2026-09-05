@@ -28,7 +28,7 @@ import {
   decodeRunOutcomeResponse,
   type RunOutcome
 } from "@/lib/contracts/runs";
-import { decodeUploadAttachmentResponse, decodeUploadErrorResponse } from "@/lib/contracts/uploads";
+import { decodeUploadAttachmentResponse, decodeUploadErrorResponse, type UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import type { Dispatch, SetStateAction } from "react";
 
 type MutableRef<T> = {
@@ -280,6 +280,32 @@ export function useRunLifecycleActions({
       useComposerSessionStore
         .getState()
         .finishUpload(sourceSessionKey, generation, operationError);
+    }
+  }
+
+  async function reuseFile(
+    attachmentId: string,
+    prepareAttachment?: (attachment: UploadedAttachmentWire) => Promise<boolean>
+  ): Promise<boolean> {
+    const store = useComposerSessionStore.getState();
+    const sourceKey = store.activeSessionKey;
+    if (projectIdFromComposerSessionKey(sourceKey) || projectIdForChat(chatIdFromComposerSessionKey(sourceKey))) return false;
+    const generation = store.beginUpload(sourceKey);
+    if (generation === null) return false;
+    let failure: string | null = null;
+    try {
+      const response = await shellFetch(`/api/uploads/${encodeURIComponent(attachmentId)}/reuse`, { method: "POST" });
+      const body = decodeUploadAttachmentResponse(await response.json().catch(() => null));
+      if (!response.ok || !body) throw new Error("file_reuse_failed");
+      if (prepareAttachment && !(await prepareAttachment(body.attachment))) throw new Error("file_reuse_unavailable");
+      const appended = useComposerSessionStore.getState().appendUploadedAttachment(sourceKey, generation, body.attachment);
+      if (appended && body.attachment.status === "processing") startAttachmentPoll(sourceKey, body.attachment.id);
+      return appended;
+    } catch {
+      failure = "This file could not be attached. Try again or choose another file.";
+      return false;
+    } finally {
+      useComposerSessionStore.getState().finishUpload(sourceKey, generation, failure);
     }
   }
 
@@ -536,6 +562,7 @@ export function useRunLifecycleActions({
   return {
     fetchRun,
     retryAttachment,
+    reuseFile,
     resumeChatRun,
     stopCurrentRun,
     uploadFiles

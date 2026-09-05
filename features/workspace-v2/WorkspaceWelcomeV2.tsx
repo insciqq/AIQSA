@@ -24,6 +24,9 @@ import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuar
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import {
   refreshFileLibrary,
+  loadMoreFileLibrary,
+  removeFileFromLibrary,
+  saveFileToLibrary,
   useFileLibraryStore
 } from "@/components/app-shell/fileLibraryStore";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
@@ -83,6 +86,7 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
   const setMemoryQuery = useMemoryManagerStore((state) => state.setQueryInput);
   const fileData = useFileLibraryStore((state) => state.data);
   const fileLoadState = useFileLibraryStore((state) => state.loadState);
+  const fileMutations = useFileLibraryStore((state) => state.mutations);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const assistantView = settings.library;
@@ -173,10 +177,13 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
     task: knowledgeTask
   });
   const files: FileSummaryV2[] = (fileData?.files ?? []).map((file) => ({
+    canOpenChat: Boolean(file.chatId && file.messageId),
     id: file.id,
-    meta: `${formatAttachmentBytes(file.byteSize)} · ${file.chatTitle} · ${formatLibraryDate(file.createdAt)}`,
+    meta: `${formatAttachmentBytes(file.byteSize)} · ${file.savedAt ? "Saved" : file.chatTitle} · ${formatLibraryDate(file.savedAt ?? file.createdAt)}`,
+    mutation: fileMutations[file.id],
     name: file.fileName,
     private: true,
+    saved: Boolean(file.savedAt),
     status: file.status
   }));
   const memory: MemoryOverviewV2 = memoryData ? {
@@ -264,7 +271,7 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
           loadState={fileLoadState}
           onOpen={(id) => {
             const file = fileData?.files.find((candidate) => candidate.id === id);
-            if (!file) return;
+            if (!file?.chatId || !file.messageId) return;
             void props.workspace.pane.actions.openChatMessage(file.chatId, file.messageId)
               .then((opened) => {
                 if (!opened) return;
@@ -273,6 +280,20 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
                 settings.closeMemory();
               });
           }}
+          onSave={(id) => void saveFileToLibrary(id)}
+          onRemove={(id) => void removeFileFromLibrary(id)}
+          onUse={composer.reuseFile ? (id) => {
+            const file = fileData?.files.find((candidate) => candidate.id === id);
+            if (!file) return;
+            void composer.reuseFile?.(id, file.fileName).then((used) => {
+              if (!used) return;
+              assistantView?.onBackToChat();
+              knowledgeView?.onBackToChat();
+              settings.closeMemory();
+            });
+          } : undefined}
+          useDisabled={composer.uploading || props.thread.activeChatStreaming}
+          onLoadMore={fileData?.nextCursor ? () => void loadMoreFileLibrary()?.catch(() => undefined) : undefined}
           onRetry={() => void refreshFileLibrary(true).catch(() => undefined)}
         />
       ),

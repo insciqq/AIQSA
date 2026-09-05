@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { prisma } from "@/lib/server/prisma";
 import { kickDefaultAttachmentProcessing } from "@/lib/server/uploads/defaultProcessing";
@@ -89,12 +90,12 @@ const repository: AttachmentLifecycleRepository = {
   }
 };
 
-export const GET = createAttachmentStatusHandler({
+export const GET: AsyncRouteHandler<ReturnType<typeof createAttachmentStatusHandler>> = createAttachmentStatusHandler({
   repository,
   resolveAuth: resolveRequestAuth
 });
 
-export const POST = createAttachmentRetryHandler({
+export const POST: AsyncRouteHandler<ReturnType<typeof createAttachmentRetryHandler>> = createAttachmentRetryHandler({
   kickProcessing: kickDefaultAttachmentProcessing,
   repository,
   resolveAuth: resolveRequestAuth

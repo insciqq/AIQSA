@@ -19,8 +19,8 @@ const globalForRecoveryScheduler = globalThis as unknown as {
 export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   if (!globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler) {
     const storage = createS3StorageAdapter();
-    // The sweep owns export recovery and orphan settlement, so it needs the
-    // same Workspace coordinator the run routes use.
+    // The application owns export recovery and orphan settlement, using the
+    // same Workspace coordinator as run routes and independent worker slots.
     const deps = {
       knowledgeAdmission: knowledgeRunAdmissionService,
       knowledgeExecutor: knowledgeToolExecutor,
@@ -36,7 +36,10 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       workspace: workspaceCoordinatorForStorage(storage)
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
-      reconcile: () => reconcileInstallationRuns(deps)
+      reconcile: () => reconcileInstallationRuns(deps),
+      recoverWorkspaceExports: async (signal) => {
+        await deps.workspace.recoverExports({ limit: 10, signal });
+      }
     });
   }
   return globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler;

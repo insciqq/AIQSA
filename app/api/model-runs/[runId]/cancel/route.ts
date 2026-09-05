@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
@@ -11,7 +12,7 @@ export const runtime = "nodejs";
 
 const repository = createPrismaRunRepository();
 
-export const POST = createCancelModelRunHandler({
+export const POST: AsyncRouteHandler<ReturnType<typeof createCancelModelRunHandler>> = createCancelModelRunHandler({
   getConfig: () => getAuthConfig(),
   knowledgeExecutor: knowledgeToolExecutor,
   providerRuntime: providerRuntimeResolver,

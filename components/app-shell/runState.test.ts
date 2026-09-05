@@ -50,6 +50,17 @@ describe("run state helpers", () => {
     expect(events.map((event) => event.type)).toEqual(["token", "artifact", "token"]);
   });
 
+  it("merges activity by sequence independently of the chosen message content", () => {
+    const running = message({ content: "Live tokens", id: "assistant", runId: "run", workspaceActivity: { entries: [{ command: { preview: "npm test" }, id: "command", kind: "command", phase: "running", sequence: 1 }] } });
+    const finished = { ...running, content: "Older text", workspaceActivity: { entries: [{ command: { exitCode: 0, preview: "…", stdoutPreview: "passed" }, id: "command", kind: "command" as const, phase: "succeeded" as const, sequence: 2 }] } };
+    for (const [current, update] of [[running, finished], [finished, running]]) {
+      const merged = mergeThreadMessages([current!], [update!])[0]!;
+      expect(merged.content).toBe(update!.content);
+      expect(merged.workspaceActivity?.entries).toMatchObject([{ command: { exitCode: 0, preview: "npm test", stdoutPreview: "passed" }, phase: "succeeded", sequence: 2 }]);
+    }
+    expect(mergeThreadMessages([finished], [{ ...running, runId: "other-run" }])[0]?.workspaceActivity).toEqual(running.workspaceActivity);
+  });
+
   it("preserves optimistic in-flight rows when stale chat detail is merged", () => {
     const persistedUser = message({ content: "Before", id: "user-1" });
     const optimisticUser = message({ content: "Question", id: "user-optimistic", parentMessageId: "user-1" });

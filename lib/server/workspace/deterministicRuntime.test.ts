@@ -45,6 +45,33 @@ async function collect(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 }
 
 describe("deterministic Workspace runtime", () => {
+  it.each(["export-list-once", "export-stream-once", "deferred-export-stream-once"])("recovers a captured %s transport fault without recapturing guest bytes", async (fault) => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "ws_" + "8".repeat(40);
+    const session = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, memoryMiB: 1024, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId });
+    const identity = { runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "capture_fault" };
+    const outputDirectory = workspaceRunOutputDirectory(identity.modelRunId);
+    const write = (content: string) => runtime.callBoundTool({ ...identity, modelRunToolCallId: "write",
+      originalName: "sandbox_fs_write", arguments: { path: `${outputDirectory}/report.txt`, content } });
+    try {
+      await write("original");
+      await runtime.callBoundTool({ ...identity, modelRunToolCallId: "fault", originalName: "sandbox_shell", arguments: { command: `aiqsa-test fault ${fault.replace("deferred-", "")}` } });
+      const request = { ...identity, outputDirectory, capture: { create: true, id: "b".repeat(32) } };
+      if (fault === "export-list-once") await expect(runtime.collectOutputs(request)).rejects.toThrow();
+      else {
+        if (fault === "deferred-export-stream-once") {
+          const captured = await runtime.collectOutputs(request);
+          await Promise.all(captured.map((output) => output.body.cancel()));
+        }
+        await expect(collect((await runtime.collectOutputs({ ...request, capture: { ...request.capture, create: fault !== "deferred-export-stream-once" } }))[0]!.body)).rejects.toThrow();
+      }
+      await write("replaced");
+      const recovered = await runtime.collectOutputs({ ...request, capture: { ...request.capture, create: false } });
+      expect(new TextDecoder().decode(await collect(recovered[0]!.body))).toBe("original");
+    } finally { await runtime.removeSession(identity); }
+  });
+
   it("uses the official catalog and preserves staged/project state across stop/start", async () => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     await expect(runtime.health()).resolves.toMatchObject({ state: "ready" });
@@ -301,7 +328,7 @@ describe("deterministic Workspace harness", () => {
     }
   });
 
-  it("cancels a synchronous sleep on abort without writing its marker", async () => {
+  it.each([false, true])("does not confuse a cancelled sync request with VM termination (stop=%s)", async (stop) => {
     vi.useFakeTimers();
     try {
       const runtime = new DeterministicWorkspaceRuntime(config);
@@ -320,6 +347,7 @@ describe("deterministic Workspace harness", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       controller.abort();
       await expect(pending).rejects.toThrow("workspace_tool_cancelled");
+      if (stop) await runtime.stopSession({ runtimeSandboxId: created.runtimeSandboxId, sessionId });
       await vi.advanceTimersByTimeAsync(400_000);
       await expect(runtime.callBoundTool({
         arguments: { path: "/workspace/project/late.txt" },
@@ -328,7 +356,7 @@ describe("deterministic Workspace harness", () => {
         originalName: "sandbox_fs_exists",
         runtimeSandboxId: created.runtimeSandboxId,
         sessionId
-      })).resolves.toMatchObject({ content: [{ text: expect.stringContaining("\"exists\":false") }] });
+      })).resolves.toMatchObject({ content: [{ text: expect.stringContaining(`"exists":${!stop}`) }] });
     } finally {
       vi.useRealTimers();
     }
@@ -418,8 +446,17 @@ describe("deterministic Workspace harness", () => {
     const healthy = await outputs();
     expect(new TextDecoder().decode(await collect(healthy[1]!.body))).toBe("second");
 
+    await expect(shell("aiqsa-test stop-session", "call_stop")).resolves.toMatchObject({ exitCode: 0 });
+    await expect(shell("pwd", "call_after_stop")).resolves.toMatchObject({ exitCode: 0 });
+    const resumed = await outputs();
+    expect(new TextDecoder().decode(await collect(resumed[0]!.body))).toBe("first");
+    expect(new TextDecoder().decode(await collect(resumed[1]!.body))).toBe("second");
+    expect(runtime.metrics(sessionId)).toMatchObject({ stageCalls: 2, stagedAttachmentBodies: 1 });
+
     await expect(shell("aiqsa-test lose-session", "call_lose")).resolves.toMatchObject({ exitCode: 0 });
-    await expect(shell("pwd", "call_after_loss")).rejects.toThrow("workspace_session_lost");
+    await expect(shell("pwd", "call_after_loss")).rejects.toMatchObject({
+      code: "workspace_session_lost_before_dispatch"
+    });
     const recreated = await session(runtime, sessionId);
     expect(recreated.runtimeSandboxId).not.toBe(created.runtimeSandboxId);
     expect(runtime.metrics(sessionId)).toMatchObject({ stageCalls: 0 });
@@ -495,6 +532,20 @@ describe("deterministic Workspace execution termination", () => {
 });
 
 describe("deterministic Workspace staged index", () => {
+  it("models mutation between output metadata and its lazy transfer", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "integrity_output_fixture";
+    const created = await runtime.ensureSession({ cpus: 1, memoryMiB: 1024, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId });
+    const path = "/workspace/output/integrity_run/result.txt";
+    const identity = { runtimeSandboxId: created.runtimeSandboxId, sessionId, modelRunId: "integrity_run", originalName: "sandbox_fs_write" as const };
+    await runtime.callBoundTool({ ...identity, modelRunToolCallId: "write_original", arguments: { content: "good", path } });
+    const outputs = await runtime.collectOutputs({ ...identity, outputDirectory: "/workspace/output/integrity_run" });
+    await runtime.callBoundTool({ ...identity, modelRunToolCallId: "write_changed", arguments: { content: "evil", path } });
+    expect(outputs[0]!.checksum).toBe(createHash("sha256").update("good").digest("hex"));
+    expect(new TextDecoder().decode(await collect(outputs[0]!.body))).toBe("evil");
+  });
+
   it("lists intact staged originals and ignores corrupt or partial indexes", async () => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "0199aabc-12ef-7abc-8abc-0123456789b5";
@@ -509,6 +560,7 @@ describe("deterministic Workspace staged index", () => {
       sessionId
     });
     await expect(runtime.listStagedAttachments({
+      attachments: [],
       runtimeSandboxId: created.runtimeSandboxId,
       sessionId
     })).resolves.toEqual([]);
@@ -548,9 +600,17 @@ describe("deterministic Workspace staged index", () => {
       sessionId
     });
     await expect(runtime.listStagedAttachments({
+      attachments: [entry, missing],
       runtimeSandboxId: created.runtimeSandboxId,
       sessionId
     })).resolves.toEqual([entry]);
+
+    await runtime.callBoundTool({
+      arguments: { content: "tampered bytes", path: entry.sandboxPath },
+      modelRunId: "run_index", modelRunToolCallId: "call_same_size_change", originalName: "sandbox_fs_write",
+      runtimeSandboxId: created.runtimeSandboxId, sessionId
+    });
+    await expect(runtime.listStagedAttachments({ attachments: [entry, missing], runtimeSandboxId: created.runtimeSandboxId, sessionId })).resolves.toEqual([]);
 
     await runtime.callBoundTool({
       arguments: { content: "{not json", path: "/workspace/inbox/index.json" },
@@ -561,6 +621,7 @@ describe("deterministic Workspace staged index", () => {
       sessionId
     });
     await expect(runtime.listStagedAttachments({
+      attachments: [entry, missing],
       runtimeSandboxId: created.runtimeSandboxId,
       sessionId
     })).resolves.toEqual([]);
@@ -611,5 +672,66 @@ describe("deterministic Workspace VM stop after forgotten executions", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe("deterministic Workspace uncertain termination", () => {
+  async function fixture() {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "process_fault_fixture";
+    const created = await runtime.ensureSession({
+      cpus: 1, memoryMiB: 1024, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId
+    });
+    const identity = { runtimeSandboxId: created.runtimeSandboxId, sessionId };
+    let ordinal = 0;
+    const call = (originalName: Parameters<typeof runtime.callBoundTool>[0]["originalName"], args: Record<string, unknown>) =>
+      runtime.callBoundTool({ ...identity, arguments: args, originalName, modelRunId: "fault_run", modelRunToolCallId: `call_${ordinal++}` });
+    return { call, identity, runtime };
+  }
+
+  it.each(["kill-unobserved-once", "descendant-once", "reader-error-once"])("requires a VM stop for %s even after handle close", async (fault) => {
+    vi.useFakeTimers();
+    try {
+      const value = await fixture();
+      await value.call("sandbox_shell", { command: `aiqsa-test fault ${fault}` });
+      const started = await value.call("sandbox_exec_start", { command: "sleep 10; touch /workspace/project/late.txt" });
+      const id = started.execSessionId!;
+      if (fault === "reader-error-once") {
+        const polled = await value.call("sandbox_exec_poll", { execSessionId: id });
+        expect(JSON.parse(polled.content[0]!.text!).data).toMatchObject({ done: true, exitStatus: null });
+      }
+      await value.call("sandbox_exec_signal", { execSessionId: id, signal: "kill" });
+      await value.call("sandbox_exec_close", { execSessionId: id });
+      await expect(value.runtime.terminateExecutions({
+        ...value.identity, executions: [{ modelRunId: "fault_run", runtimeExecSessionId: id }]
+      })).resolves.toEqual([{ outcome: "unknown", runtimeExecSessionId: id }]);
+      await value.runtime.stopSession(value.identity);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(value.call("sandbox_fs_exists", { path: "/workspace/project/late.txt" })).resolves.toMatchObject({
+        content: [{ text: expect.stringContaining('"exists":false') }]
+      });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("models TERM resistance until terminal KILL cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      const value = await fixture();
+      await value.call("sandbox_shell", { command: "aiqsa-test fault term-resistant-once" });
+      const started = await value.call("sandbox_exec_start", { command: "sleep 10; touch /workspace/project/late.txt" });
+      const id = started.execSessionId!;
+      await value.call("sandbox_exec_signal", { execSessionId: id, signal: "term" });
+      const polled = await value.call("sandbox_exec_poll", { execSessionId: id });
+      expect(JSON.parse(polled.content[0]!.text!).data).toMatchObject({ done: false, exitStatus: null });
+      await expect(value.runtime.terminateExecutions({
+        ...value.identity, executions: [{ modelRunId: "fault_run", runtimeExecSessionId: id }]
+      })).resolves.toEqual([{ outcome: "closed", runtimeExecSessionId: id }]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(value.call("sandbox_fs_exists", { path: "/workspace/project/late.txt" })).resolves.toMatchObject({
+        content: [{ text: expect.stringContaining('"exists":false') }]
+      });
+    } finally { vi.useRealTimers(); }
   });
 });

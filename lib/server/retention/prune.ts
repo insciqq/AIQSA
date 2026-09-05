@@ -251,6 +251,7 @@ type LockedAttachment = {
   createdAt: Date;
   id: string;
   messageId: string | null;
+  savedAt: Date | null;
 };
 
 type LockedKnowledgeUploadSession = {
@@ -764,7 +765,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           createdAt: {
             lt: cutoff
           },
-          messageId: null
+          messageId: null,
+          savedAt: null
         }
       });
 
@@ -1036,7 +1038,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             createdAt: {
               lt: cutoff
             },
-            messageId: null
+            messageId: null,
+            savedAt: null
           }
         });
         const candidatesByStorageKey = new Map<string, Set<string>>();
@@ -1055,7 +1058,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             SELECT pg_advisory_xact_lock(hashtextextended(${storageKey}, 260))::text AS "lock"
           `;
           const references = await tx.$queryRaw<LockedAttachment[]>`
-            SELECT "id", "messageId", "createdAt"
+            SELECT "id", "messageId", "createdAt", "savedAt"
             FROM "Attachment"
             WHERE "storageKey" = ${storageKey}
             ORDER BY "id"
@@ -1067,6 +1070,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               (reference) =>
                 candidateIds.has(reference.id) &&
                 reference.messageId === null &&
+                reference.savedAt === null &&
                 reference.createdAt < cutoff
             )
             .map((reference) => reference.id);
@@ -1125,7 +1129,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               id: {
                 in: deletableIds
               },
-              messageId: null
+              messageId: null,
+              savedAt: null
             }
           });
           rowsDeleted += deleted.count;

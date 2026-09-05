@@ -6,7 +6,7 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./t
 const DETERMINISTIC_RESULT_ZIP_BASE64 =
   "UEsDBBQAAAAAAAAAIQDtsuv+JQAAACUAAAAKAAAAcmVzdWx0LnR4dEFJUVNBIGRldGVybWluaXN0aWMgd29ya3NwYWNlIHJlc3VsdApQSwECFAMUAAAAAAAAACEA7bLr/iUAAAAlAAAACgAAAAAAAAAAAAAApIEAAAAAcmVzdWx0LnR4dFBLBQYAAAAAAQABADgAAABNAAAAAAA=";
 const WORKSPACE_TEST_DIRECTIVE =
-  /^\[AIQSA_WORKSPACE_E2E:(activity_probe|async_stop|export_fault|forget_executions_stop|deterministic_prepare|live_async_stop|live_marker_probe|live_prepare|live_quiesce_probe|live_staging_probe|long_command|lose_session|marker_probe|network_off_probe|recreate_probe|reset_probe|staging_probe|state_probe)\]$/u;
+  /^\[AIQSA_WORKSPACE_E2E:(activity_probe|async_stop|descendant_stop|export_fault|forget_executions_stop|deterministic_prepare|live_async_stop|live_marker_probe|live_prepare|live_quiesce_probe|live_staging_probe|long_command|lose_session|marker_probe|network_off_probe|recreate_probe|reset_probe|resume_probe|staging_probe|state_probe)\]$/u;
 
 type FakeToolResultMessage = Readonly<{
   content: readonly Readonly<{ text?: string; type: "json" | "text"; value?: unknown }>[];
@@ -231,15 +231,18 @@ function scriptedWorkspaceResult(
           `last=${Array.isArray(metrics.lastStagedAttachmentIds) ? metrics.lastStagedAttachmentIds.length : "?"}.`
         : "Staging metrics unavailable.";
     }
-  } else if (scenario === "async_stop" || scenario === "forget_executions_stop") {
+  } else if (scenario === "async_stop" || scenario === "forget_executions_stop" || scenario === "descendant_stop") {
     // A long-lived execution whose delayed side effect must never happen
     // after Stop; the trailing synchronous sleep keeps the run stoppable.
-    if (step === 0) {
+    const offset = scenario === "descendant_stop" ? 1 : 0;
+    if (scenario === "descendant_stop" && step === 0) {
+      call = toolCall(request, "sandbox_shell", step, { command: "aiqsa-test fault descendant-once" });
+    } else if (step === offset) {
       call = toolCall(request, "sandbox_exec_start", step, {
         command: "sleep 12 && echo late > /workspace/project/after-stop.txt",
         shell: true
       });
-    } else if (step === 1) {
+    } else if (step === offset + 1) {
       const data = lastToolData(results);
       call = isRecord(data) && typeof data.execSessionId === "string"
         ? toolCall(request, "sandbox_exec_poll", step, { execSessionId: data.execSessionId, limit: 10 })
@@ -247,19 +250,22 @@ function scriptedWorkspaceResult(
       if (!call) finalText = "Workspace async execution did not start.";
     } else if (step === 2 && scenario === "forget_executions_stop") {
       call = toolCall(request, "sandbox_shell", step, { command: "aiqsa-test forget-executions" });
-    } else if (step === (scenario === "forget_executions_stop" ? 3 : 2)) {
-      call = toolCall(request, "sandbox_shell", step, { command: "sleep 300" });
+    } else if (step === (scenario === "forget_executions_stop" ? 3 : offset + 2)) {
+      call = toolCall(request, "sandbox_shell", step, { command: "sleep 300; echo late > /workspace/project/sync-after-stop.txt" });
     } else {
       finalText = "The long Workspace command ended.";
     }
   } else if (scenario === "marker_probe" || scenario === "live_marker_probe") {
     if (step === 0) {
       call = toolCall(request, "sandbox_fs_exists", step, { path: "/workspace/project/after-stop.txt" });
+    } else if (step === 1) {
+      call = toolCall(request, "sandbox_fs_exists", step, { path: "/workspace/project/sync-after-stop.txt" });
     } else {
-      const data = lastToolData(results);
-      finalText = isRecord(data) && data.exists === false
-        ? "Late marker absent after Stop."
-        : "Late marker present after Stop.";
+      const markersAbsent = results.length === 2 && results.every((result) => {
+        const data = lastToolData([result]);
+        return isRecord(data) && data.exists === false;
+      });
+      finalText = markersAbsent ? "Late marker absent after Stop." : "Late marker present after Stop.";
     }
   } else if (scenario === "export_fault") {
     if (step === 0) {
@@ -278,6 +284,26 @@ function scriptedWorkspaceResult(
       call = toolCall(request, "sandbox_shell", step, { command: "aiqsa-test fault export-stream-once" });
     } else {
       finalText = "Two outputs were written; the export fault is armed.";
+    }
+  } else if (scenario === "resume_probe") {
+    if (step === 0) {
+      call = toolCall(request, "sandbox_fs_write", step, {
+        content: "workspace-state-v1\n", encoding: "utf8", path: "/workspace/project/persisted.txt"
+      });
+    } else if (step === 1) {
+      call = toolCall(request, "sandbox_shell", step, { command: "aiqsa-test stop-session" });
+    } else if (step === 2) {
+      call = toolCall(request, "sandbox_fs_read", step, { encoding: "utf8", path: "/workspace/project/persisted.txt" });
+    } else if (step === 3) {
+      call = toolCall(request, "sandbox_fs_read", step, { encoding: "utf8", path: request.workspace.inboxIndexPath });
+    } else {
+      const originalIndex = lastToolData(results);
+      const project = lastToolDataAt(results, 2);
+      finalText = results.every((result) => result.status === "complete") &&
+        isRecord(project) && project.content === "workspace-state-v1\n" &&
+        isRecord(originalIndex) && typeof originalIndex.content === "string" && originalIndex.content.includes("attachmentId")
+        ? "Workspace resumed the same disk with its originals."
+        : "Workspace resume probe failed.";
     }
   } else if (scenario === "lose_session") {
     if (step === 0) {
@@ -334,7 +360,7 @@ function scriptedWorkspaceResult(
         : null;
       if (!call) finalText = "Live Workspace async execution did not start.";
     } else if (step === 2) {
-      call = toolCall(request, "sandbox_shell", step, { command: "sleep 300" });
+      call = toolCall(request, "sandbox_shell", step, { command: "sleep 300; echo late > /workspace/project/sync-after-stop.txt" });
     } else {
       finalText = "The long Workspace command ended.";
     }

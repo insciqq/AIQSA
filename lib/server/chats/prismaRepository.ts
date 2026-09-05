@@ -7,6 +7,7 @@ import { safeExternalHref } from "../../domain/links";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
   WORKSPACE_MCP_TOOL_ALLOWLIST,
+  WORKSPACE_EXPORT_MAX_ATTEMPTS,
   isRetryableWorkspaceExportErrorCode
 } from "../../domain/workspace";
 import {
@@ -161,7 +162,7 @@ const assistantRunDetailSelect = {
   },
   updatedAt: true,
   workspaceRunBinding: {
-    select: { exportState: true, lastExportErrorCode: true }
+    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true }
   },
   workspaceProducedAttachments: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -1057,6 +1058,8 @@ type WorkspaceActivityRun = {
   events: { payload: unknown }[];
   status: string;
   workspaceRunBinding?: {
+    exportAttemptCount: number;
+    exportLeaseExpiresAt: Date | null;
     exportState: string;
     lastExportErrorCode: string | null;
   } | null;
@@ -1067,14 +1070,14 @@ function workspaceOutputStatus(run: WorkspaceActivityRun): ThreadWorkspaceOutput
   if (!binding) return undefined;
   const code = isWorkspaceErrorCode(binding.lastExportErrorCode) ? binding.lastExportErrorCode : undefined;
   if (binding.exportState === "COMPLETE") return { state: "complete" };
-  if (binding.exportState === "EXPORTING") return { state: "exporting" };
-  if (binding.exportState === "FAILED") {
-    return isRetryableWorkspaceExportErrorCode(binding.lastExportErrorCode)
-      ? { ...(code ? { errorCode: code } : {}), state: "retrying" }
-      : { ...(code ? { errorCode: code } : {}), state: "failed" };
-  }
-  // PENDING: the export is owed once the answer is complete; before that it has not started.
-  return run.status === "complete" ? { state: "retrying" } : undefined;
+  if (binding.exportState === "EXPORTING" && binding.exportLeaseExpiresAt &&
+    binding.exportLeaseExpiresAt > new Date()) return { state: "exporting" };
+  if (binding.exportState === "PENDING" && run.status !== "complete" &&
+    run.status !== "cancelled" && run.status !== "error") return undefined;
+  const retryable = run.status === "complete" &&
+    binding.exportAttemptCount < WORKSPACE_EXPORT_MAX_ATTEMPTS &&
+    isRetryableWorkspaceExportErrorCode(binding.lastExportErrorCode);
+  return { ...(code ? { errorCode: code } : {}), state: retryable ? "retrying" : "failed" };
 }
 
 /**
@@ -1096,7 +1099,14 @@ export function summarizeMessageRunWorkspaceActivity(
     ? "cancelled" as const
     : run.status === "error" ? "failed" as const : null;
   return {
-    entries: foldWorkspaceActivityEntries(entries, terminal).slice(0, WORKSPACE_ACTIVITY_MAX_ENTRIES),
+    entries: foldWorkspaceActivityEntries(entries, terminal).map((entry) => {
+      // Background export settles after answer SSE closes, so its durable
+      // binding can be newer than the last recorded lifecycle event.
+      if (entry.kind !== "outputs_export") return entry;
+      if (outputStatus?.state === "complete") return { ...entry, phase: "succeeded" as const };
+      if (outputStatus?.state === "failed") return { ...entry, phase: "failed" as const };
+      return entry;
+    }).slice(0, WORKSPACE_ACTIVITY_MAX_ENTRIES),
     ...(outputStatus ? { outputStatus } : {})
   };
 }

@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   WORKSPACE_INBOX_INDEX_MAX_BYTES,
   WORKSPACE_INBOX_INDEX_PATH,
@@ -11,6 +14,7 @@ import {
   workspaceToolIsAllowed
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
+import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 import {
   WorkspaceRuntimeError,
@@ -22,9 +26,11 @@ import {
 } from "./runtime";
 
 type DeterministicExec = {
+  alive: boolean;
   closed: boolean;
   done: boolean;
   exitCode: number | null;
+  fault: ExecutionFault | null;
   modelRunId: string;
   output: string;
   timer: ReturnType<typeof setTimeout> | null;
@@ -34,7 +40,9 @@ type DeterministicExec = {
  * Test-only faults a deterministic scenario can arm through the
  * `aiqsa-test fault <name>` shell directive. Each fires once.
  */
-type DeterministicFault = "export_list_once" | "export_stream_once";
+const EXECUTION_FAULTS = ["term-resistant-once", "kill-unobserved-once", "descendant-once", "reader-error-once"] as const;
+type ExecutionFault = (typeof EXECUTION_FAULTS)[number];
+type DeterministicFault = "export_list_once" | "export_stream_once" | ExecutionFault;
 
 /** Content-free counters that scenarios read back through `aiqsa-test metrics`. */
 export type DeterministicWorkspaceMetrics = Readonly<{
@@ -116,6 +124,7 @@ function waitOrAbort(delayMs: number, signal: AbortSignal | undefined): Promise<
 }
 
 function terminateExec(exec: DeterministicExec, exitCode: number): void {
+  exec.alive = false;
   if (exec.timer) {
     clearTimeout(exec.timer);
     exec.timer = null;
@@ -124,6 +133,10 @@ function terminateExec(exec: DeterministicExec, exitCode: number): void {
     exec.done = true;
     exec.exitCode = exitCode;
   }
+}
+
+function uncertainExec(exec: DeterministicExec): boolean {
+  return exec.fault !== null && exec.fault !== "term-resistant-once";
 }
 
 function shellResult(stdout: string, exitCode = 0, stderr = ""): WorkspaceToolResult {
@@ -312,12 +325,13 @@ async function readRequestBody(stream: ReadableStream<Uint8Array>, maximum: numb
 }
 
 type DeterministicState = Readonly<{
+  captures: { store?: WorkspaceOutputCaptureStore };
   generations: Map<string, number>;
   sessions: Map<string, DeterministicSession>;
 }>;
 
 function createDeterministicState(): DeterministicState {
-  return { generations: new Map(), sessions: new Map() };
+  return { captures: {}, generations: new Map(), sessions: new Map() };
 }
 
 const globalForDeterministic = globalThis as unknown as {
@@ -333,6 +347,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   private catalogPromise: Promise<WorkspaceToolCatalog> | null = null;
   private readonly generations: Map<string, number>;
   private readonly sessions: Map<string, DeterministicSession>;
+  private readonly captures: DeterministicState["captures"];
 
   constructor(
     private readonly config: WorkspaceConfig,
@@ -345,6 +360,11 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     const state = options.sharedState ? sharedDeterministicState() : createDeterministicState();
     this.generations = state.generations;
     this.sessions = state.sessions;
+    this.captures = state.captures;
+  }
+
+  private outputCaptures(): WorkspaceOutputCaptureStore {
+    return this.captures.store ??= new WorkspaceOutputCaptureStore(mkdtempSync(join(tmpdir(), "aiqsa-test-output-captures-")), this.config);
   }
 
   /** Content-free staging/write counters for the session, for focused tests. */
@@ -424,7 +444,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       session.sandboxName !== input.sandboxName ||
       (input.runtimeSandboxId !== null && input.runtimeSandboxId !== session.runtimeSandboxId)
     ) {
-      throw new WorkspaceRuntimeError("workspace_session_lost");
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     session.state = "ready";
     return {
@@ -453,7 +473,13 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       return [];
     }
     if (!entries) return [];
-    return entries.filter((entry) => session.files.get(entry.sandboxPath)?.byteLength === entry.byteSize);
+    const indexed = new Map(entries.map((entry) => [entry.attachmentId, entry]));
+    return input.attachments.filter((entry) => {
+      const hint = indexed.get(entry.attachmentId);
+      if (!hint || hint.sandboxPath !== entry.sandboxPath || hint.byteSize !== entry.byteSize || hint.checksum !== entry.checksum) return false;
+      const content = session.files.get(entry.sandboxPath);
+      return content?.byteLength === entry.byteSize && hash(content) === entry.checksum;
+    });
   }
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {
@@ -478,6 +504,35 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     session.metrics.indexWrites += 1;
   }
 
+  private startExec(session: DeterministicSession, modelRunId: string, delayed: DelayedCommand | null): DeterministicExec {
+    const fault = EXECUTION_FAULTS.find((candidate) => session.faults.delete(candidate)) ?? null;
+    const exec: DeterministicExec = {
+      alive: delayed !== null,
+      closed: false,
+      done: delayed === null || fault === "descendant-once" || fault === "reader-error-once",
+      exitCode: fault === "reader-error-once" ? null : delayed === null || fault === "descendant-once" ? 0 : null,
+      fault, modelRunId, output: "", timer: null
+    };
+    if (delayed) {
+      // Guest work outlives a cancelled observation; only process/VM cleanup
+      // clears this timer. A descendant can outlive a terminal leader report.
+      exec.timer = setTimeout(() => {
+        exec.timer = null;
+        if (!exec.alive || session.state !== "ready") return;
+        if (delayed.write) {
+          session.files.set(safePath(delayed.write.path), bytes(delayed.write.content));
+          session.metrics.guestFileWrites += 1;
+        }
+        exec.alive = false;
+        exec.done = true;
+        if (fault !== "reader-error-once") exec.exitCode = 0;
+      }, delayed.delayMs);
+      exec.timer.unref?.();
+    }
+    session.allExecs.add(exec);
+    return exec;
+  }
+
   private directive(
     sessionId: string,
     session: DeterministicSession,
@@ -489,6 +544,10 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     }
     if (name === "fault" && (argument === "export-list-once" || argument === "export-stream-once")) {
       session.faults.add(argument === "export-list-once" ? "export_list_once" : "export_stream_once");
+      return shellResult("armed\n");
+    }
+    if (name === "fault" && EXECUTION_FAULTS.some((fault) => fault === argument)) {
+      session.faults.add(argument as ExecutionFault);
       return shellResult("armed\n");
     }
     if (name === "forget-executions") {
@@ -504,6 +563,11 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       this.sessions.delete(sessionId);
       return shellResult("lost\n");
     }
+    if (name === "stop-session") {
+      for (const exec of session.allExecs) terminateExec(exec, 137);
+      session.state = "stopped";
+      return shellResult("stopped\n");
+    }
     return shellResult("", 127, `aiqsa-test: unknown directive\n`);
   }
 
@@ -513,11 +577,20 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    const session = this.sessions.get(input.sessionId);
+    if (!session) {
+      throw new WorkspaceRuntimeError("workspace_session_lost_before_dispatch");
+    }
+    if (session.runtimeSandboxId !== input.runtimeSandboxId) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    // Match the real runtime's exact-disk preflight without recreating files
+    // or making already-terminated executions live again.
+    session.state = "ready";
     const args = input.arguments;
     switch (input.originalName) {
       case "sandbox_fs_write": {
@@ -615,12 +688,9 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         if (directive) return this.directive(input.sessionId, session, directive[1]!, directive[2]);
         const delayed = parseDelayedCommand(command);
         if (delayed) {
+          const exec = this.startExec(session, input.modelRunId, delayed);
           await waitOrAbort(delayed.delayMs, input.signal);
-          if (delayed.write) {
-            session.files.set(safePath(delayed.write.path), bytes(delayed.write.content));
-            session.metrics.guestFileWrites += 1;
-          }
-          return shellResult("");
+          return shellResult("", exec.exitCode ?? 1);
         }
         return shellResult(command === "pwd" ? `${WORKSPACE_PROJECT_DIRECTORY}\n` : "");
       }
@@ -631,31 +701,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
           .digest("hex")
           .slice(0, 32);
         const delayed = parseDelayedCommand(command);
-        const exec: DeterministicExec = {
-          closed: false,
-          done: delayed === null,
-          exitCode: delayed === null ? 0 : null,
-          modelRunId: input.modelRunId,
-          output: "",
-          timer: null
-        };
-        if (delayed) {
-          // The delayed side effect models a still-running guest process; it
-          // must never fire once the execution was quiesced or the VM stopped.
-          exec.timer = setTimeout(() => {
-            exec.timer = null;
-            if (exec.done || session.state !== "ready") return;
-            if (delayed.write) {
-              session.files.set(safePath(delayed.write.path), bytes(delayed.write.content));
-              session.metrics.guestFileWrites += 1;
-            }
-            exec.done = true;
-            exec.exitCode = 0;
-          }, delayed.delayMs);
-          exec.timer.unref?.();
-        }
+        const exec = this.startExec(session, input.modelRunId, delayed);
         session.execs.set(execSessionId, exec);
-        session.allExecs.add(exec);
         return {
           ...toolResult({ execSessionId, sandbox: session.sandboxName, stopSandboxOnExit: null }),
           execSessionId
@@ -667,9 +714,9 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         if (!exec || exec.modelRunId !== input.modelRunId || exec.closed) return toolResult(null, "error");
         return toolResult({
           done: exec.done,
-          error: null,
+          error: exec.fault === "reader-error-once" ? "synthetic observation failure" : null,
           events: [],
-          exitStatus: exec.done ? { code: exec.exitCode ?? 0 } : null,
+          exitStatus: exec.done && exec.exitCode !== null ? { code: exec.exitCode } : null,
           nextCursor: 0
         });
       }
@@ -684,7 +731,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         const exec = session.execs.get(execSessionId);
         if (!exec || exec.modelRunId !== input.modelRunId || exec.closed) return toolResult(null, "error");
         const signal = typeof args.signal === "string" ? args.signal.toLowerCase() : "";
-        if (signal === "term" || signal === "kill" || signal === "int") {
+        if (!uncertainExec(exec) && (signal === "kill" ||
+          (exec.fault !== "term-resistant-once" && (signal === "term" || signal === "int")))) {
           terminateExec(exec, signal === "kill" ? 137 : 143);
         }
         return toolResult({ execSessionId, accepted: true });
@@ -693,7 +741,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         const execSessionId = stringArgument(args.execSessionId);
         const exec = session.execs.get(execSessionId);
         if (!exec || exec.modelRunId !== input.modelRunId) return toolResult(null, "error");
-        terminateExec(exec, 137);
+        if (!uncertainExec(exec)) terminateExec(exec, 137);
         exec.closed = true;
         return toolResult({ closed: true, execSessionId });
       }
@@ -704,7 +752,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     return input.executions.map(({ runtimeExecSessionId }) => {
       const exec = session.execs.get(runtimeExecSessionId);
-      if (!exec) return { outcome: "unknown" as const, runtimeExecSessionId };
+      if (!exec || exec.closed || uncertainExec(exec)) return { outcome: "unknown" as const, runtimeExecSessionId };
       terminateExec(exec, 137);
       exec.closed = true;
       return { outcome: "closed" as const, runtimeExecSessionId };
@@ -714,12 +762,56 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   async cancelToolCall(input: Parameters<WorkspaceRuntime["cancelToolCall"]>[0]): Promise<void> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     for (const exec of session.execs.values()) {
-      if (exec.modelRunId === input.modelRunId) terminateExec(exec, 143);
+      if (exec.modelRunId === input.modelRunId && exec.fault !== "term-resistant-once" && !uncertainExec(exec)) {
+        terminateExec(exec, 143);
+      }
     }
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+    if (input.capture) {
+      const session = this.session(input.sessionId, input.runtimeSandboxId);
+      // These opt-in faults model lost transport after capture. Failure to
+      // create the capture itself has no safe source to retry later.
+      const listFault = session.faults.delete("export_list_once");
+      const streamFault = session.faults.delete("export_stream_once");
+      const outputs = await this.outputCaptures().collect(input, () => this.collectCurrentOutputs(input));
+      if (listFault) {
+        await Promise.allSettled(outputs.map((output) => output.body.cancel()));
+        throw new WorkspaceRuntimeError("workspace_output_export_failed");
+      }
+      if (streamFault && outputs.length > 0) {
+        await outputs.at(-1)!.body.cancel();
+        let consumed = false;
+        return outputs.map((output, index) => index === outputs.length - 1 ? { ...output,
+          body: new ReadableStream<Uint8Array>({
+            pull(controller) {
+              consumed = true;
+              controller.error(new WorkspaceRuntimeError("workspace_output_export_failed"));
+            },
+            cancel() {
+              // Capture handoff releases unopened transport handles. The
+              // one-shot fault belongs to the first actual file transfer.
+              if (!consumed) session.faults.add("export_stream_once");
+            }
+          }, { highWaterMark: 0 }) } : output);
+      }
+      return outputs;
+    }
+    return this.collectCurrentOutputs(input);
+  }
+
+  async releaseOutputCapture(input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]): Promise<void> {
+    await this.captures.store?.release(input);
+  }
+
+  private async collectCurrentOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const observed = new Set(session.execs.values());
+    if ([...session.allExecs].some((exec) => exec.modelRunId === input.modelRunId && exec.alive &&
+      (!observed.has(exec) || exec.closed || uncertainExec(exec)))) {
+      throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+    }
     for (const exec of session.execs.values()) {
       if (exec.modelRunId === input.modelRunId) {
         terminateExec(exec, 137);
@@ -750,7 +842,11 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     return candidates.map((candidate, index) => ({
       body: streamFault && index === candidates.length - 1
         ? faultedBody(candidate.content)
-        : body(candidate.content),
+        : new ReadableStream<Uint8Array>({ pull(controller) {
+          const current = session.files.get(`${prefix}${candidate.relativePath}`);
+          if (!current) { controller.error(new WorkspaceRuntimeError("workspace_output_export_failed")); return; }
+          controller.enqueue(current.slice()); controller.close();
+        } }, { highWaterMark: 0 }),
       byteSize: candidate.content.byteLength,
       checksum: hash(candidate.content),
       mimeType: mimeTypeForPath(candidate.relativePath),
@@ -802,11 +898,12 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
 
   async removeSession(input: Parameters<WorkspaceRuntime["removeSession"]>[0]): Promise<void> {
     const session = this.sessions.get(input.sessionId);
-    if (!session) return;
+    if (!session) { await this.captures.store?.removeSession(input); return; }
     if (input.runtimeSandboxId && input.runtimeSandboxId !== session.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
     for (const exec of session.allExecs) terminateExec(exec, 137);
+    await this.captures.store?.removeSession({ ...input, runtimeSandboxId: session.runtimeSandboxId });
     this.sessions.delete(input.sessionId);
   }
 }

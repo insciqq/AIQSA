@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import {
   defaultPermanentChatDeletionHandlerDeps
 } from "@/lib/server/chats/permanentDeletion/default";
@@ -9,6 +10,6 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
-export const GET = createPermanentChatDeleteStatusHandler(
+export const GET: AsyncRouteHandler<ReturnType<typeof createPermanentChatDeleteStatusHandler>> = createPermanentChatDeleteStatusHandler(
   defaultPermanentChatDeletionHandlerDeps
 );

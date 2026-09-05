@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
 import { kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
@@ -11,5 +12,5 @@ const deps = {
   resolveAuth: resolveRequestAuth
 };
 
-export const DELETE = createAdminMcpDeleteHandler(deps);
-export const PATCH = createAdminMcpUpdateHandler(deps);
+export const DELETE: AsyncRouteHandler<ReturnType<typeof createAdminMcpDeleteHandler>> = createAdminMcpDeleteHandler(deps);
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createAdminMcpUpdateHandler>> = createAdminMcpUpdateHandler(deps);

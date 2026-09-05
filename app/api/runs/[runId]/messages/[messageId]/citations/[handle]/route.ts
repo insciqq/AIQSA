@@ -21,8 +21,7 @@ export const runtime = "nodejs";
 
 type RouteContext = Readonly<{
   params:
-    | Promise<{ handle: string; messageId: string; runId: string }>
-    | { handle: string; messageId: string; runId: string };
+    Promise<{ handle: string; messageId: string; runId: string }>;
 }>;
 
 const privateHeaders = {

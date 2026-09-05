@@ -1,3 +1,5 @@
+import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "../../../contracts/memoryClient";
+
 export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v68";
 export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v16";
 export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v38";
@@ -85,7 +87,7 @@ export const MEMORY_CONTEXT_UNIVERSAL_HARD_CAP_TOKENS =
   MEMORY_CONTEXT_COMPLEX_HARD_CAP_TOKENS;
 export const MEMORY_CORE_MAX_FACTS = 4;
 export const MEMORY_CONTEXT_MAX_ITEMS = 20;
-export const MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS = 40;
+export const MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS = MEMORY_ANSWER_SOURCE_MAX_ITEMS;
 export const MEMORY_CONTEXT_MAX_DYNAMIC_FACTS = 6;
 export const MEMORY_CONTEXT_PROFILE_MAX_FACTS = 12;
 export const MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS = 3;

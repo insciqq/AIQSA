@@ -393,6 +393,8 @@ class ToolLoopRecoveryError extends Error {
   }
 }
 
+class WorkspaceHandoffDeferred extends Error {}
+
 class ToolLoopRecoveryStopped extends Error {
   constructor() {
     super("tool_loop_recovery_stopped");
@@ -1897,28 +1899,17 @@ async function recoverCheckpointedToolLoop(
           "The saved Workspace runtime is unavailable."
         );
       }
-      // Export trouble never fails the recovered answer; the binding keeps
-      // a retryable state for background export recovery.
-      await deps.workspace.finalize({
+      // Capture and receiver retirement are terminal prerequisites; object
+      // transfer belongs to the independent durable export worker.
+      const handoff = await deps.workspace.handoff({
         onActivity: onWorkspaceActivity,
         runId: run.id,
         signal,
         userId: run.userId,
         workspace
       });
-      await settleRecoveredWorkspace("completed");
-    }
-    async function settleRecoveredWorkspace(
-      outcome: "cancelled" | "completed" | "failed"
-    ): Promise<void> {
-      if (!workspace || !deps.workspace) return;
-      await deps.workspace.settle({
-        onActivity: onWorkspaceActivity,
-        outcome,
-        runId: run.id,
-        userId: run.userId,
-        workspace
-      }).catch(() => undefined);
+      if (handoff.status === "busy") throw new WorkspaceHandoffDeferred();
+      signal.throwIfAborted();
     }
     tokenBuffer = createRunTokenPersistenceBuffer({
       allowErroredAssistant: true,
@@ -2728,6 +2719,9 @@ async function recoverCheckpointedToolLoop(
       );
     }
   } catch (error) {
+    // A predecessor's live capture lease is retried on a later recovery tick;
+    // it is neither provider failure nor permission to retire that owner.
+    if (error instanceof WorkspaceHandoffDeferred) return;
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
       await settleRecoveredWorkspaceOnExit("cancelled");
       await tokenBuffer?.flush().catch(() => undefined);
@@ -4450,9 +4444,6 @@ export async function reconcileInstallationRuns(
   input: Readonly<{ now?: Date }> = {}
 ): Promise<void> {
   await sweepBootOrphanedRunsOnce(deps);
-  // Owed Workspace exports of completed runs are retried here, in the app
-  // process that owns object storage, never by the runner or maintenance role.
-  await deps.workspace?.recoverExports({ limit: 10 }).catch(() => undefined);
   if (!deps.repository.findInstallationRecoverableRuns) return;
 
   const now = input.now ?? new Date();

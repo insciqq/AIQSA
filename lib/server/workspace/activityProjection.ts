@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import {
   WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS,
   WORKSPACE_ACTIVITY_PATH_MAX_CHARS,
@@ -227,11 +228,11 @@ export function applyExecPoll(buffer: ExecOutputBuffer, result: ToolExecutionRes
     }
   }
   if (payload.done === true) {
-    next.done = true;
     const status = isRecord(payload.exitStatus) ? payload.exitStatus : null;
-    next.exitCode = status && typeof status.code === "number" && Number.isSafeInteger(status.code)
-      ? status.code
-      : next.exitCode;
+    if (status && typeof status.code === "number" && Number.isSafeInteger(status.code)) {
+      next.done = true;
+      next.exitCode = status.code;
+    }
   }
   return next;
 }
@@ -241,6 +242,7 @@ export type WorkspaceActivityProjectionInput = Readonly<{
   callId: string;
   durationMs?: number;
   execOutputs?: Map<string, ExecOutputBuffer>;
+  executionStartCallId?: string;
   inboxNames?: ReadonlyMap<string, string>;
   originalName: WorkspaceMcpToolName;
   result?: ToolExecutionResult;
@@ -349,7 +351,7 @@ function execSessionIdOf(input: WorkspaceActivityProjectionInput): string | null
  * Returns null for calls that are not user-visible steps on their own
  * (`write_stdin`, and polls that add nothing new).
  */
-export function projectWorkspaceActivity(
+function projectActivity(
   input: WorkspaceActivityProjectionInput,
   phase: "running" | "settled"
 ): ThreadWorkspaceActivityEntry | null {
@@ -365,12 +367,12 @@ export function projectWorkspaceActivity(
     const preview = commandPreview({ args: input.arguments.args, command: input.arguments.command });
     if (!execSessionId || !preview) return null;
     const groupId = workspaceExecutionGroupId(input.runId, execSessionId);
-    input.execOutputs?.set(groupId, emptyBuffer());
+    if (!input.execOutputs?.has(groupId)) input.execOutputs?.set(groupId, emptyBuffer());
     const cwd = displayPath(input.arguments.cwd) ?? undefined;
     return {
       command: { ...(cwd ? { cwd } : {}), preview },
       groupId,
-      id: groupId,
+      id: workspaceActivityEntryId(input.callId),
       kind: "command",
       phase: "running",
       ...(input.startedAt ? { startedAt: input.startedAt.toISOString() } : {})
@@ -379,16 +381,14 @@ export function projectWorkspaceActivity(
   if (name === "sandbox_exec_poll" || name === "sandbox_exec_close" || name === "sandbox_exec_signal") {
     if (phase === "running" || !input.result) return null;
     const execSessionId = execSessionIdOf(input);
-    if (!execSessionId) return null;
+    if (!execSessionId || !input.executionStartCallId) return null;
     const groupId = workspaceExecutionGroupId(input.runId, execSessionId);
     const previous = input.execOutputs?.get(groupId) ?? emptyBuffer();
     const buffer = name === "sandbox_exec_poll" ? applyExecPoll(previous, input.result) : previous;
-    const closed = name === "sandbox_exec_close" && input.result.status === "complete";
-    const signal = typeof input.arguments.signal === "string" ? input.arguments.signal.toLowerCase() : "";
-    const terminated = name === "sandbox_exec_signal" && input.result.status === "complete" &&
-      (signal === "kill" || signal === "term" || signal === "int");
-    const settled = buffer.done || closed || terminated;
-    input.execOutputs?.set(groupId, { ...buffer, done: settled });
+    // Signal/close acknowledgements carry no observed process exit. Terminal
+    // command evidence comes from poll; run-outcome folding handles Stop.
+    const settled = buffer.done;
+    input.execOutputs?.set(groupId, buffer);
     if (!settled && buffer.stdout === previous.stdout && buffer.stderr === previous.stderr) {
       // A poll that produced neither output nor completion is transport noise.
       return null;
@@ -404,9 +404,9 @@ export function projectWorkspaceActivity(
         ...(output.truncated ? { truncated: true } : {})
       },
       groupId,
-      id: groupId,
+      id: workspaceActivityEntryId(input.executionStartCallId),
       kind: "command",
-      phase: !settled ? "running" : failed ? "failed" : !buffer.done ? "cancelled" : "succeeded"
+      phase: !settled ? "running" : failed ? "failed" : "succeeded"
     };
   }
   if (name === "sandbox_exec_write_stdin") return null;
@@ -414,21 +414,15 @@ export function projectWorkspaceActivity(
   return kind ? fileEntry(input, kind, phase === "running" ? "running" : "succeeded") : null;
 }
 
-/** Async group updates carry a placeholder preview; keep the command text from the start entry. */
-export function mergeWorkspaceActivityEntry(
-  previous: ThreadWorkspaceActivityEntry | undefined,
-  next: ThreadWorkspaceActivityEntry
-): ThreadWorkspaceActivityEntry {
-  if (!previous || !next.command || next.command.preview !== "…") return next;
-  return {
-    ...next,
-    command: {
-      ...next.command,
-      ...(previous.command?.cwd ? { cwd: previous.command.cwd } : {}),
-      preview: previous.command?.preview ?? next.command.preview
-    },
-    ...(previous.startedAt && !next.startedAt ? { startedAt: previous.startedAt } : {})
-  };
+export function projectWorkspaceActivity(
+  input: WorkspaceActivityProjectionInput,
+  phase: "running" | "settled"
+): ThreadWorkspaceActivityEntry | null {
+  const entry = projectActivity(input, phase);
+  return entry ? {
+    ...entry,
+    updateId: `update:${createHash("sha256").update(`${input.callId}\0${phase}`).digest("hex").slice(0, 24)}`
+  } : null;
 }
 
 export type WorkspaceLifecycleKind = Extract<
@@ -470,13 +464,9 @@ export function foldWorkspaceActivityEntries(
   entries: readonly ThreadWorkspaceActivityEntry[],
   runTerminal: "cancelled" | "failed" | null
 ): ThreadWorkspaceActivityEntry[] {
-  const byId = new Map<string, ThreadWorkspaceActivityEntry>();
-  for (const entry of entries) {
-    byId.set(entry.id, mergeWorkspaceActivityEntry(byId.get(entry.id), entry));
-  }
-  return [...byId.values()].map((entry) =>
+  return (mergeWorkspaceActivity(null, { entries })?.entries ?? []).map((entry) =>
     runTerminal && (entry.phase === "running" || entry.phase === "requested")
-      ? { ...entry, phase: runTerminal === "cancelled" ? "cancelled" : "failed" }
+      ? { ...entry, phase: runTerminal, runOutcome: runTerminal }
       : entry
   );
 }

@@ -410,6 +410,7 @@ function createMemoryRepository(
     appendRunOutputEvent: async (_runId, event) => {
       const sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
       state.events.push({ event, sequence });
+      return event;
     },
     beginPreparingRunAttempt: async () => false,
     beginToolLoopProviderRound: async () => "started",

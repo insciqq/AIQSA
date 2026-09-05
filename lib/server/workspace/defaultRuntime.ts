@@ -1,6 +1,7 @@
 import type { WorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
+import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import {
   WorkspaceRuntimeError,
   type WorkspaceRuntime,
@@ -33,7 +34,7 @@ export function createWorkspaceRuntime(
   config: WorkspaceConfig,
   options: Readonly<{ sharedState?: boolean }> = {}
 ): WorkspaceRuntime {
-  if (config.runtimeMode === "deterministic") return new DeterministicWorkspaceRuntime(config, options);
+  if (config.runtimeMode === "deterministic") return fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config, options), options.sharedState);
   if (config.runtimeMode === "remote") return new RemoteWorkspaceRuntime(config);
   return new UnavailableWorkspaceRuntime();
 }

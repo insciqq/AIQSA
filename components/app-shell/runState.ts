@@ -1,6 +1,7 @@
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { RunEventView, ThreadMessage } from "@/components/app-shell/types";
+import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 
 export function mergeThreadMessages(current: ThreadMessage[], updates: ThreadMessage[]): ThreadMessage[] {
   if (updates.length === 0) {
@@ -8,7 +9,16 @@ export function mergeThreadMessages(current: ThreadMessage[], updates: ThreadMes
   }
 
   const updatesById = new Map(updates.map((message) => [message.id, message]));
-  const merged = current.map((message) => updatesById.get(message.id) ?? message);
+  const merged = current.map((message) => {
+    const update = updatesById.get(message.id);
+    if (!update) return message;
+    if (!message.runId || message.runId !== update.runId ||
+      !message.workspaceActivity && !update.workspaceActivity) return update;
+    return {
+      ...update,
+      workspaceActivity: mergeWorkspaceActivity(message.workspaceActivity, update.workspaceActivity)
+    };
+  });
   const currentIds = new Set(current.map((message) => message.id));
   for (const update of updates) {
     if (!currentIds.has(update.id)) {
