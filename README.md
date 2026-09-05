@@ -326,7 +326,7 @@ The architecture is intended to grow from tool-enabled chat toward agent workflo
 
 ## Contributing
 
-Contributions are welcome. For a substantial product or architecture change, please open an issue first so the intended behavior and scope are clear. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
+Contributions are welcome. For a substantial product or architecture change, please open an issue first so the intended behavior and scope are clear. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and [SECURITY.md](SECURITY.md) for private vulnerability reporting. Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
