@@ -1,4 +1,5 @@
 import { decodeKnowledgeCoverageLimitationsV1 } from "./searchFailure";
+import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
@@ -21,6 +22,7 @@ import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion"
 import type { KnowledgeExpandedContextOrderV1 } from "./retrievalTypes";
 import {
   decodeKnowledgeAnswerOperationRequestSnapshotV1,
+  decodeKnowledgeAnswerDraftMalformed,
   KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES,
   type KnowledgeAnswerContractPair
 } from "./answerGroundingV5";
@@ -83,6 +85,10 @@ export type KnowledgeProviderAttemptUsage = Readonly<{
 
 export type KnowledgeProviderAttemptPurpose =
   | "answer"
+  | "knowledge_evidence_compose_v1"
+  | "knowledge_evidence_review_v1"
+  | "knowledge_evidence_compose_v2"
+  | "knowledge_evidence_review_v2"
   | "knowledge_grounded_selector_v22"
   | "knowledge_grounded_selector_final_v22"
   | "knowledge_answer_draft_supplement_v22"
@@ -249,6 +255,7 @@ export type StoredKnowledgeAnswerGroundingOperationsV21 = Readonly<{
   completeness: StoredKnowledgeEvidenceDispatch;
   completenessRepair: StoredKnowledgeEvidenceDispatch | null;
   draft: StoredKnowledgeEvidenceDispatch;
+  draftRepair?: StoredKnowledgeEvidenceDispatch;
   finalSelector: StoredKnowledgeEvidenceDispatch | null;
   finalSelectorRepair: StoredKnowledgeEvidenceDispatch | null;
   initialCompleteness: StoredKnowledgeEvidenceDispatch;
@@ -510,6 +517,8 @@ function canonicalJsonHash(value: unknown): string {
 function answerOperationContractVersion(
   purpose: LegacyKnowledgeProviderAttemptPurpose
 ): number | null {
+  if (purpose === "knowledge_evidence_compose_v1" || purpose === "knowledge_evidence_review_v1") return 1;
+  if (purpose === "knowledge_evidence_compose_v2" || purpose === "knowledge_evidence_review_v2") return 2;
   if (purpose === "knowledge_grounded_selector_v22" ||
     purpose === "knowledge_grounded_selector_final_v22" ||
     purpose === "knowledge_answer_draft_supplement_v22") return 22;
@@ -631,6 +640,7 @@ function repositoryError(code: KnowledgeEvidenceDispatchRepositoryErrorCode): ne
 }
 
 function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPurpose {
+  if (isKnowledgeEvidenceAnswerOperation(value)) return true;
   if (value === "knowledge_grounded_selector_v22" ||
     value === "knowledge_grounded_selector_final_v22" ||
     value === "knowledge_answer_draft_supplement_v22" ||
@@ -713,6 +723,7 @@ function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPu
 }
 
 function validReservationPurpose(value: unknown): value is KnowledgeProviderAttemptPurpose {
+  if (isKnowledgeEvidenceAnswerOperation(value)) return true;
   if (value === "knowledge_grounded_selector_v22" ||
     value === "knowledge_grounded_selector_final_v22" ||
     value === "knowledge_answer_draft_supplement_v22" ||
@@ -1512,10 +1523,17 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     answerOperationContractVersion(row.purpose) !== null);
   const dispatches = operationRows.map(storedDispatch);
   const purposeSequence = dispatches.map(({ attempt }) => attempt.purpose);
-  const contributions = decodeKnowledgeAnswerOperationRequestSnapshotV21(
+  const initialRequest = decodeKnowledgeAnswerOperationRequestSnapshotV21(
     dispatches[0]?.attempt.acceptedRequest
-  )?.version === 40;
+  );
+  const contributions = initialRequest?.version === 40;
   const draft = KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21;
+  const hasDraftRepair = purposeSequence[1] === draft;
+  const initialDraftFailure = decodeKnowledgeAnswerDraftMalformed(dispatches[0]?.attempt.acceptedResult);
+  if (hasDraftRepair && (initialRequest?.version !== 40 || initialRequest.workflowVersion !== 3 && initialRequest.workflowVersion !== 4 && initialRequest.workflowVersion !== 5 && initialRequest.workflowVersion !== 6 && initialRequest.workflowVersion !== 7 ||
+    !initialDraftFailure || !("reason" in initialDraftFailure) || !initialDraftFailure.reason)) {
+    repositoryError("stored_manifest_invalid");
+  }
   const scope = contributions ? "knowledge_coverage_scope_v7" : KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION;
   const completeness = contributions ? "knowledge_coverage_scope_completeness_v2" : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION;
   const selector = contributions ? "knowledge_grounded_selector_v22" : KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21;
@@ -1527,7 +1545,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     for (const completenessCount of [1, 2] as const) {
       for (const selectorCount of [1, 2] as const) {
         const base: KnowledgeAnswerOperationV21[] = [
-          draft,
+          ...(hasDraftRepair ? [draft, draft] : [draft]),
           ...Array.from({ length: scopeCount }, () => scope),
           ...Array.from({ length: completenessCount }, () => completeness),
           ...Array.from({ length: selectorCount }, () => selector)
@@ -1604,7 +1622,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
   const scopeRepairDispatch = scopeRepairIndex === null
     ? null
     : dispatches[scopeRepairIndex] ?? null;
-  if (!initialScopeDispatch || initialScopeIndex !== 1 ||
+  if (!initialScopeDispatch || initialScopeIndex !== (hasDraftRepair ? 2 : 1) ||
     scopeIndexes.length < 1 || scopeIndexes.length > 2 ||
     scopeRepairIndex !== null && scopeRepairIndex !== initialScopeIndex + 1) {
     repositoryError("stored_manifest_invalid");
@@ -1665,6 +1683,7 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     completeness: completenessDispatch,
     completenessRepair: completenessRepairDispatch,
     draft: dispatches[0]!,
+    ...(hasDraftRepair ? { draftRepair: dispatches[1]! } : {}),
     finalSelector: finalSelectorDispatches.at(-1) ?? null,
     finalSelectorRepair: finalSelectorRepairDispatch,
     initialCompleteness: initialCompletenessDispatch,
@@ -1677,6 +1696,25 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
     selectorRepair: selectorDispatches[1] ?? null,
     supplementalDraft: supplementDispatch
   });
+}
+
+export async function loadSettledKnowledgeEvidenceAnswerOperationsV1(
+  client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
+  input: Readonly<{ modelRunId: string }>
+): Promise<readonly StoredKnowledgeEvidenceDispatch[]> {
+  if (!safeString(input.modelRunId)) repositoryError("invalid_input");
+  const rows = await client.knowledgeProviderAttempt.findMany({ include: attemptInclude, orderBy: { ordinal: "asc" },
+    take: 257, where: { modelRunId: input.modelRunId } });
+  const operations = rows.filter(row => answerOperationContractVersion(row.purpose as LegacyKnowledgeProviderAttemptPurpose) !== null);
+  if (operations.length < 2 || operations.length > 8 || operations.some(row => !isKnowledgeEvidenceAnswerOperation(row.purpose))) repositoryError("stored_manifest_invalid");
+  const dispatches = operations.map(storedDispatch);
+  if (dispatches.some((dispatch, index) => {
+    const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(dispatch.attempt.acceptedRequest);
+    return !snapshot || dispatch.attempt.ordinal !== index + 1 || dispatch.attempt.providerBindingKey !== "answer" ||
+      dispatch.attempt.state !== "settled" || snapshot.operation !== dispatch.attempt.purpose ||
+      snapshot.evidenceReceiptHash !== dispatch.draft.manifestHash;
+  })) repositoryError("stored_manifest_invalid");
+  return Object.freeze(dispatches);
 }
 
 function assertAttemptIdentity(row: AttemptRow, input: AttemptIdentity): void {

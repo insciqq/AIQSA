@@ -12,6 +12,7 @@ import {
   MEMORY_CONTEXT_UNIVERSAL_HARD_CAP_TOKENS,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_PLANNER_VERSION,
+  MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS,
   type MemoryRetrievalItemType,
   type MemorySafeProjectionKind
 } from "../../domain/memory/retrieval";
@@ -38,7 +39,6 @@ const safeSelectionReason = /^[a-z][a-z0-9_.:+-]{0,127}$/u;
 // JSON escaping and multibyte text make a token-derived byte ceiling unsafe.
 const MEMORY_PREPARING_CONTEXT_MAX_BYTES = 512 * 1024;
 const MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES = 64 * 1024;
-const MEMORY_PREPARING_SAFE_QUERY_MAX_LENGTH = 2_000;
 
 export type MemoryPreparingSettingsSnapshot = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
@@ -436,7 +436,7 @@ export function validateMemoryPreparingAttemptResult(
   }
   if (input.querySnapshot !== undefined && input.querySnapshot !== null && (
     input.querySnapshot.length === 0 ||
-    input.querySnapshot.length > MEMORY_PREPARING_SAFE_QUERY_MAX_LENGTH ||
+    input.querySnapshot.length > MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS ||
     input.querySnapshot.includes("\u0000") ||
     memoryExplicitStatementContainsSecret(input.querySnapshot)
   )) {

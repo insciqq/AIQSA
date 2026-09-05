@@ -89,9 +89,10 @@ export function knowledgeCoverageRequestAnchorIndexV1(
  * remain unchanged and therefore fail closed there. */
 export function resolveKnowledgeCoverageRequestAnchorIdsV1(
   value: unknown,
-  request: string
+  request: string,
+  suppliedIndex?: Readonly<{ items: readonly Readonly<{ id: string; text: string }>[] }>
 ): unknown {
-  const index = knowledgeCoverageRequestAnchorIndexV1(request);
+  const index = suppliedIndex ?? knowledgeCoverageRequestAnchorIndexV1(request);
   const textById = new Map(index.items.map(({ id, text }) => [id, text] as const));
   const resolve = (candidate: unknown, key: string | null = null): unknown => {
     if (key === "requestAnchor" && typeof candidate === "string") {

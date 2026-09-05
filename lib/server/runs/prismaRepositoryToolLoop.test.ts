@@ -357,8 +357,10 @@ describe("provider dispatch recovery request loading", () => {
       [undefined, true],
       [2, true],
       [3, true],
+      [4, true],
       [1, false],
-      [4, false]
+      [5, false],
+      ["4", false]
     ] as const) {
       const request = {
         ...normalizedRequest,
@@ -386,6 +388,30 @@ describe("provider dispatch recovery request loading", () => {
       else await expect(loaded).rejects.toThrow(
         "provider_dispatch_recovery_request_invalid_in_storage"
       );
+    }
+  });
+
+  it.each([undefined, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 12])("preserves only known accepted Knowledge workflow policies (%s)", async (version) => {
+    const request = { ...normalizedRequest, ...(version === undefined ? {} : { knowledgeAnswerWorkflowVersion: version }) };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: request, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+    if (version === undefined || version === 2 || version === 3 || version === 4 || version === 5 || version === 6 || version === 7 || version === 8 || version === 9 || version === 10 || version === 11) await expect(loaded).resolves.toEqual(request);
+    else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  it.each(["knowledgeSearchInstructionVersion", "knowledgeQueryAnchorVersion"] as const)("preserves only known %s policies", async (field) => {
+    for (const version of [undefined, 2, 3, 0, 1, 4, "2", "3"]) {
+      const request = { ...normalizedRequest, ...(version === undefined ? {} : { [field]: version }) };
+      const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+        chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+        normalizedRequest: request, provider: "provider-one"
+      })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+      const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+      if (version === undefined || version === 2 || field === "knowledgeSearchInstructionVersion" && version === 3) await expect(loaded).resolves.toEqual(request);
+      else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
     }
   });
 

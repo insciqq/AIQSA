@@ -22,9 +22,10 @@ import { verifyBrightPreparedDataset } from "./brightStackOverflowPrepared";
 import { activeImportProfile, assertDatabaseIdentity, importIdentity, preparedRoot } from "./stageBrightStackOverflowImport";
 import { admittedModelPin, controlDefaults, parseSse, pinModel } from "./openRagAnswerLive";
 import {
-  BRIGHT_ANSWER_CONTRACT_VERSION, assertBrightAnswerOperationScope, brightAnswerHash, brightAnswerJudgePrompt,
+  BRIGHT_ANSWER_CONTRACT_VERSION, assertBrightAnswerOperationScope, assertBrightAnswerMessageRoute, brightAnswerHash, brightAnswerJudgePrompt,
   createBrightAnswerStore, decodeBrightAnswerJudgment, isRecord,
   parseBrightAnswerCli, readBrightBoundedResponse, safeBrightAnswerError, settleBrightChatStage,
+  selectBrightAnswerQueries,
   type BrightAnswerStore
 } from "./brightAnswerHarness";
 import { assertOpenRagPrivatePathNoSymlinks } from "./openRagAnswerRunner";
@@ -61,7 +62,9 @@ async function codeFingerprint(): Promise<string> {
 }
 
 function apiUrl(container: boolean): URL {
-  const url = new URL(container ? "http://127.0.0.1:3000" : "http://127.0.0.1:3147");
+  // The corpus preflight and HTTP app have separate Compose memory budgets.
+  // Use the retained web sibling so the CLI can run in benchmark-runner.
+  const url = new URL(container ? "http://benchmark-web:3000" : "http://127.0.0.1:3147");
   return url;
 }
 
@@ -183,7 +186,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       .map(decodeBrightPreparedRuntimeQueryRow);
     const evaluatorRows = parseJsonLines(await readFile(resolve(preparedRoot, prepared.queries.evaluatorFile.path), "utf8"), "bright_answer_evaluator_invalid")
       .map(decodeBrightPreparedEvaluationQueryRow);
-    const cases = runtimeRows.slice(0, options.queryLimit);
+    const cases = selectBrightAnswerQueries(runtimeRows, options);
     const evaluators = new Map(evaluatorRows.map((row) => [row.officialId, row]));
     if (cases.length !== options.queryLimit || new Set(cases.map(({ officialId }) => officialId)).size !== cases.length ||
       cases.some(({ officialId }) => !evaluators.has(officialId))) throw new Error("bright_answer_cases_invalid");
@@ -232,6 +235,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
     const catalog = await api.json("/api/me/catalog");
     if (!isRecord(me) || !isRecord(me.user) || me.user.id !== userId ||
       !isRecord(catalog) || !isRecord(catalog.catalog)) throw new Error("bright_answer_http_identity_mismatch");
+    await assertBrightAnswerMessageRoute(() => api.request("/api/chats/bright-route-preflight/messages"));
     atPhase("model_pins");
     const policy = await prisma.modelPolicy.findUnique({ where: { id: "installation" }, select: {
       defaultProviderModel: { select: { connectionId: true, modelId: true } },
@@ -270,7 +274,9 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       scoreable: false, protocol: "aiqsa_authenticated_bright_answer_diagnostic",
       dataset: prepared.dataset, datasetFingerprint: prepared.manifestFingerprint,
       casesFingerprint: brightAnswerHash(cases), evaluatorFingerprint: prepared.queries.evaluatorFile.sha256,
-      queryCount: cases.length, queryOrdinals: cases.map((_, index) => index),
+      queryCount: cases.length, queryOffset: options.queryOffset,
+      queryOrdinals: cases.map((_, index) => options.queryOffset + index),
+      terminalAnswerFailurePolicy: "continue_classified_knowledge_errors_v1",
       sourceCount: activation.readySources, rawGpt2Tokens: prepared.corpus.rawGpt2Tokens,
       baseId, snapshot, baseFingerprint: brightAnswerHash(base),
       profileFingerprint: brightAnswerHash(profile), embeddingModel: profile.upstreamModelId,
@@ -323,6 +329,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       };
       return settleBrightChatStage({
         store: checkpoint, prefix, request, beforeSend: assertPins, deadlineMs: runDeadlineMs,
+        continueKnowledgeFailures: stage === "answer",
         async createChat() {
           const payload = await api.json("/api/chats", {
             folderId: null, memoryMode: "EXCLUDED", title: `BRIGHT ${index + 1} ${stage}`
@@ -350,7 +357,8 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
     const outcomes: Array<Record<string, unknown>> = [];
     let newlySettled = 0;
     atPhase("answer_campaign");
-    for (const [index, benchmarkCase] of cases.entries()) {
+    for (const [caseIndex, benchmarkCase] of cases.entries()) {
+      const index = options.queryOffset + caseIndex;
       const casePrefix = String(index + 1).padStart(3, "0");
       const existing = await checkpoint.read(`${casePrefix}/outcome.json`);
       if (existing !== null) {
@@ -362,6 +370,19 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       emit({ event: "bright_answer_case_started", ordinal: index + 1, total: cases.length });
       // Runtime receives only the official query; evaluator fields stay below.
       const answerTrace = await executeStage(index, "answer", benchmarkCase.text);
+      if (answerTrace.status === "error") {
+        const outcome = { ordinal: index + 1, answerStatus: "error", verdict: null, grounding: null,
+          ...brightAnswerDiagnostics(answerTrace),
+          degradedFlags: answerTrace.knowledgeRetrievalSession?.degradedFlags ?? [],
+          groundingOperations: answerTrace.knowledgeProviderAttempts.length,
+          inputTokens: answerTrace.inputTokens, outputTokens: answerTrace.outputTokens,
+          judgeInputTokens: 0, judgeOutputTokens: 0 };
+        await checkpoint.write(`${casePrefix}/outcome.json`, outcome);
+        outcomes.push(outcome);
+        newlySettled += 1;
+        emit({ event: "bright_answer_case_failed", ...outcome });
+        continue;
+      }
       const reference = evaluators.get(benchmarkCase.officialId)!;
       const judgeInput = { question: benchmarkCase.text, referenceAnswer: reference.goldAnswer,
         answer: answerTrace.answer, evidence: brightJudgeEvidence(answerTrace) };
@@ -370,7 +391,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       const judgment = decodeBrightAnswerJudgment(judged.answer);
       await checkpoint.write(`${casePrefix}/judgment.json`, judgment);
       const outcome = {
-        ordinal: index + 1, verdict: judgment.verdict, grounding: judgment.grounding,
+        ordinal: index + 1, answerStatus: "complete", verdict: judgment.verdict, grounding: judgment.grounding,
         ...brightAnswerDiagnostics(answerTrace),
         degradedFlags: answerTrace.knowledgeRetrievalSession?.degradedFlags ?? [],
         groundingOperations: answerTrace.knowledgeProviderAttempts.length,
@@ -385,13 +406,15 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
     const summary = {
       scoreable: false, complete: outcomes.length === cases.length, requested: cases.length,
       total: outcomes.length, pass: outcomes.filter(({ verdict }) => verdict === "pass").length,
+      evaluated: outcomes.filter(({ verdict }) => verdict !== null).length,
+      terminalAnswerFailures: outcomes.filter(({ answerStatus }) => answerStatus === "error").length,
       partial: outcomes.filter(({ verdict }) => verdict === "partial").length,
       fail: outcomes.filter(({ verdict }) => verdict === "fail").length,
       groundedPass: outcomes.filter(({ verdict, grounding }) => verdict === "pass" && grounding === "supported").length,
       evaluator: "reference_answer_llm_judge_not_official_bright_metric", outcomes
     };
     await checkpoint.write("summary.json", summary);
-    await buildBrightAnswerReport(checkpoint, cases.length);
+    await buildBrightAnswerReport(checkpoint, cases.length, options.queryOffset);
     emit({ event: "bright_answer_summary", ...summary });
   } catch (error) {
     const name = error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,99}$/u.test(error.name) ? error.name : "unknown";

@@ -93,4 +93,17 @@ describe("Knowledge OpenSearch contract", () => {
       sourceVersionId: "source-version-1"
     }]])).toThrow("knowledge_search_variant_hits_invalid");
   });
+
+  it("retains each query's unique candidates until the shared retrieval pool is selected", () => {
+    const variant = (prefix: string) => Array.from({ length: 64 }, (_, index) => ({
+      contentHash: "a".repeat(64), indexArtifactId: "artifact-1", sourceVersionId: "source-version-1",
+      passageId: `${prefix}-${index}`, rank: index + 1, score: 64 - index
+    }));
+    const first = variant("first");
+    const second = variant("second");
+    const merged = mergeKnowledgeBm25Variants([first, second]);
+    expect(new Set(merged.map(hit => hit.passageId))).toEqual(new Set([...first, ...second].map(hit => hit.passageId)));
+    expect(merged.map(hit => hit.rank)).toEqual(Array.from({ length: 128 }, (_, index) => index + 1));
+    expect(mergeKnowledgeBm25Variants([first, first])).toHaveLength(64);
+  });
 });

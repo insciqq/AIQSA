@@ -672,6 +672,26 @@ describe("Knowledge grounding operational metrics", () => {
     expect(JSON.stringify(metrics)).not.toContain("PRIVATE");
   });
 
+  it("loads V2 answer metrics and rejects a mismatched operation protocol", async () => {
+    const evidence = { version: 58, draftBlockCount: 2, supportedBlockCount: 1, unsupportedBlockCount: 1,
+      contradictedBlockCount: 0, missingRequirementCount: 1, analysisComplete: true, compositionRepairAttempted: false,
+      reviewRepairAttempted: false, requestCoverage: "partial", finalText: "PRIVATE ANSWER",
+      operations: ["knowledge_evidence_compose_v2", "knowledge_evidence_review_v2"].map(purpose => ({
+        purpose, durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 }
+      })) };
+    const metrics = await loadKnowledgeGroundingOperationalMetrics({ knowledgeGroundingResult: {
+      findMany: async (query: unknown) => {
+        expect(query).toMatchObject({ where: { version: { in: expect.arrayContaining([57, 58]) } } });
+        return [{ evidence }, { evidence: { ...evidence, version: 57 } },
+          { evidence: { ...evidence, operations: [{ ...evidence.operations[0], purpose: "knowledge_evidence_compose_v1" }, evidence.operations[1]] } }];
+      }
+    } } as never, { limit: 5 });
+    expect(metrics).toMatchObject({ answers: 1, modelOperations: 2,
+      evidenceAnswers: { draftBlocks: 2, supportedBlocks: 1, unsupportedBlocks: 1, missingRequirements: 1 },
+      stages: { compose: { calls: 1, totalInputTokens: 10 }, review: { calls: 1, totalOutputTokens: 5 } } });
+    expect(JSON.stringify(metrics)).not.toContain("PRIVATE ANSWER");
+  });
+
   it("loads only structurally valid versioned metric receipts", async () => {
     const findMany = async (query: unknown) => {
       expect(query).toMatchObject({
@@ -679,7 +699,7 @@ describe("Knowledge grounding operational metrics", () => {
           version: {
             in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
               34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
-              50, 51, 52, 53, 54, 55, 56]
+              50, 51, 52, 53, 54, 55, 56, 57, 58]
           }
         }
       });

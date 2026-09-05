@@ -20,7 +20,8 @@ import {
 } from "./automaticEvidence";
 import {
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
-  KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION
+  KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION
 } from "./evidenceDispatchManifest";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
@@ -299,6 +300,11 @@ describe("focused Knowledge evidence", () => {
       request: { ...request(), knowledgeEvidencePackingVersion: 3 }, results: [toolResult]
     });
     expect(occurrences?.packingVersion).toBe(KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION);
+    const primaryFirst = toolLoopKnowledgeEvidenceDispatchDraft({
+      request: { ...request(), knowledgeEvidencePackingVersion: 4 }, results: [toolResult]
+    });
+    expect(primaryFirst?.packingVersion).toBe(KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION);
+    expect(primaryFirst?.message).toBe(occurrences?.message);
   });
 
   it("keeps excluded scope and failed retrieval explicit in a useful persisted manifest", () => {
@@ -563,7 +569,7 @@ describe("focused Knowledge evidence", () => {
     expect(draft.message).not.toContain("Alice");
   });
 
-  it("preserves parsed table rows, headers, dates and locators through RAG and full-context Scope", () => {
+  it.each([3, 4] as const)("preserves parsed table rows, headers, dates and locators through RAG and full-context Scope (%s)", (knowledgeEvidencePackingVersion) => {
     const { data, header, rows } = tableOccurrenceFixture();
     expect(data.map(({ text }) => text)).toEqual(rows.map((row) => `${header}\n${row}`));
     const base = evidence();
@@ -576,7 +582,7 @@ describe("focused Knowledge evidence", () => {
         handle: `K${index + 1}`, documentContext: chunk.documentContext, includedText: chunk.text,
         includedTextBytes: Buffer.byteLength(chunk.text), layoutKind: chunk.layoutKind,
         sourceTextBytes: Buffer.byteLength(chunk.text), documentVersionNumber: 3 })) };
-    const rag = toolLoopKnowledgeEvidenceDispatchDraft({ request: { ...request(), knowledgeEvidencePackingVersion: 3 },
+    const rag = toolLoopKnowledgeEvidenceDispatchDraft({ request: { ...request(), knowledgeEvidencePackingVersion },
       results: [{ ...result({ ...updated, providerText: knowledgeToolResultText(updated) }), name: KNOWLEDGE_SEARCH_TOOL_NAME }] })!;
     const presentation = knowledgeFullContextDispatchPresentation(data.map((chunk, index) => ({
       documentContext: chunk.documentContext, exactExcerpt: chunk.text, handle: `K${index + 1}`,

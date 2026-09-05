@@ -669,7 +669,22 @@ describe("Knowledge Answer Draft V19 and Grounded Selector V15 contracts", () =>
       text: "The result is _emphasized_."
     }]), { availableHandles: ["K1"] })).toEqual({
       kind: "rejected",
-      reason: "draft_claim_text_invalid"
+      reason: "draft_claim_emphasis_invalid"
+    });
+  });
+
+  it.each([
+    "The __pending_value counter is unchanged.",
+    "Two open tokens __first_value and __second_value remain distinct.",
+    "An unmatched **marker is literal."
+  ])("preserves unmatched delimiter runs as current plain claim text", (text) => {
+    const candidate = rawCandidateDraft([{ hints: ["K1"], text }]);
+    const input = { availableHandles: ["K1"] };
+    expect(validateKnowledgeAnswerDraftV7(candidate, input)).toMatchObject({
+      kind: "accepted", value: { claims: [{ text }] }
+    });
+    expect(validateKnowledgeAnswerDraftV6(candidate, input)).toEqual({
+      kind: "rejected", reason: "draft_claim_text_invalid"
     });
   });
 

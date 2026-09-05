@@ -14,6 +14,7 @@ import {
   type KnowledgeCoverageScopeCompletenessValidationFailureReasonV1
 } from "./coverageScopeCompletenessV1";
 import { resolveKnowledgeCoverageRequestAnchorIdsV1 } from "./coverageScopeRequestAnchorIdsV1";
+import { knowledgeCoverageRequestAnchorIndexV2 } from "./coverageScopeRequestAnchorIdsV2";
 import { knowledgeCoverageScopePromptV7, knowledgeCoverageScopeCompletenessPromptV2 } from "./coverageScopePromptV7";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_OPERATION_V7, KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION_V2,
@@ -21,6 +22,7 @@ import {
   validateKnowledgeCoverageScopeV7, validateKnowledgeCoverageScopeCompletenessV2, type KnowledgeCoverageScopeV7
 } from "./coverageScopeV7";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from "./groundingExecutionPolicy";
+import { KnowledgeAnswerContractError } from "./grounding";
 
 function providerFailureSuffix(error: unknown) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
@@ -46,6 +48,8 @@ export async function executeKnowledgeCoverageScopeV7(input: Readonly<{
   const operations = [...input.operations];
   const evidence = knowledgeCoverageEvidenceFromManifestV6(execution.draft);
   const validationInput = { evidence, request: execution.request };
+  const workflow = execution.workflowVersion !== undefined ? { workflowVersion: execution.workflowVersion } : {};
+  const anchorIndex = execution.workflowVersion !== undefined ? knowledgeCoverageRequestAnchorIndexV2(execution.request) : undefined;
   const run = async (step: Readonly<{
     accept(output: unknown): Readonly<Record<string, unknown>>;
     failure(error: unknown): Readonly<Record<string, unknown>>;
@@ -59,11 +63,12 @@ export async function executeKnowledgeCoverageScopeV7(input: Readonly<{
     if (operations.length >= 8) throw new Error("knowledge_answer_operation_limit_exceeded");
     const ordinal = (operations.length + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
     const acceptedRequest = createKnowledgeAnswerOperationRequestSnapshotV40({ ...step.prompt,
+      ...workflow,
       contractVersion: step.contractVersion, coverageScopePayloadHash: step.coverageScopePayloadHash ?? null,
       evidenceReceiptHash: execution.draft.manifestHash, executionPolicy: input.executionPolicy,
       maxOutputTokens: step.maxOutputTokens, operation: step.operation, schema: step.schema, transport: execution.transport });
     const result = await acceptedOperation({ acceptedFailure: step.failure,
-      acceptedOutput: (output) => step.accept(resolveKnowledgeCoverageRequestAnchorIdsV1(output, execution.request)),
+      acceptedOutput: (output) => step.accept(resolveKnowledgeCoverageRequestAnchorIdsV1(output, execution.request, anchorIndex)),
       acceptedRequest, authorize: execution.authorize, draft: execution.draft,
       evidenceBindings: execution.evidenceBindings, execute: execution.execute, lifecycle: execution.lifecycle,
       modelRunId: execution.modelRunId, operation: step.operation, ordinal,
@@ -74,7 +79,7 @@ export async function executeKnowledgeCoverageScopeV7(input: Readonly<{
   const runScope = (repairReason?: KnowledgeCoverageScopeValidationFailureReasonV6) => run({
     contractVersion: 7, maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_V6_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_COVERAGE_SCOPE_OPERATION_V7, schema: KNOWLEDGE_COVERAGE_SCOPE_SCHEMA_V7,
-    prompt: knowledgeCoverageScopePromptV7({ ...validationInput, evidenceManifest: execution.draft.message,
+    prompt: knowledgeCoverageScopePromptV7({ ...validationInput, ...workflow, evidenceManifest: execution.draft.message,
       scopePass: repairReason ? "repair" : "initial", ...(repairReason ? { repairReason } : {}) }),
     failure: (error) => knowledgeCoverageScopeFailureV6(`coverage_scope_${providerFailureSuffix(error)}`),
     accept: (output) => {
@@ -86,7 +91,14 @@ export async function executeKnowledgeCoverageScopeV7(input: Readonly<{
   const scopeFailure = decodeKnowledgeCoverageScopeFailureV6(scopeOutput);
   if (scopeFailure && isKnowledgeCoverageScopeValidationFailureReasonV6(scopeFailure.reason)) scopeOutput = await runScope(scopeFailure.reason);
   const acceptedScope = validateKnowledgeCoverageScopeV7(scopeOutput, validationInput);
-  if (acceptedScope.kind !== "accepted") throw new Error("knowledge_coverage_scope_unaccepted");
+  if (acceptedScope.kind !== "accepted") {
+    const failure = decodeKnowledgeCoverageScopeFailureV6(scopeOutput);
+    if (failure && !isKnowledgeCoverageScopeValidationFailureReasonV6(failure.reason)) {
+      throw new Error("knowledge_coverage_scope_unaccepted");
+    }
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed", "The Knowledge answer scope could not be verified.");
+  }
   const scope = acceptedScope.value;
   const initialScopePayloadHash = knowledgeAnswerHash(scope);
   const completenessInput = { ...validationInput, acceptedScope: scope };
@@ -94,7 +106,7 @@ export async function executeKnowledgeCoverageScopeV7(input: Readonly<{
     contractVersion: 2, coverageScopePayloadHash: initialScopePayloadHash,
     maxOutputTokens: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_MAX_OUTPUT_TOKENS,
     operation: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION_V2, schema: KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_SCHEMA_V2,
-    prompt: knowledgeCoverageScopeCompletenessPromptV2({ ...completenessInput, evidenceManifest: execution.draft.message,
+    prompt: knowledgeCoverageScopeCompletenessPromptV2({ ...completenessInput, ...workflow, evidenceManifest: execution.draft.message,
       completenessPass: repairReason ? "repair" : "initial", ...(repairReason ? { repairReason } : {}) }),
     failure: (error) => knowledgeCoverageScopeCompletenessFailureV1(`coverage_scope_completeness_${providerFailureSuffix(error)}`),
     accept: (output) => {
@@ -108,7 +120,14 @@ export async function executeKnowledgeCoverageScopeV7(input: Readonly<{
     completenessOutput = await runCompleteness(completenessFailure.reason);
   }
   const complete = validateKnowledgeCoverageScopeCompletenessV2(completenessOutput, completenessInput);
-  if (complete.kind !== "accepted") throw new Error("knowledge_coverage_scope_completeness_unaccepted");
+  if (complete.kind !== "accepted") {
+    const failure = decodeKnowledgeCoverageScopeCompletenessFailureV1(completenessOutput);
+    if (failure && !isKnowledgeCoverageScopeCompletenessValidationFailureReasonV1(failure.reason)) {
+      throw new Error("knowledge_coverage_scope_completeness_unaccepted");
+    }
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed", "The Knowledge answer scope completeness could not be verified.");
+  }
   return Object.freeze({ completeness: Object.freeze({ addedDimensionCount: complete.additionCount,
     initialDimensionCount: scope.scope.length, initialScopePayloadHash,
     payloadHash: knowledgeAnswerHash(completenessOutput), status: "accepted" }),

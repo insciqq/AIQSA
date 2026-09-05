@@ -502,6 +502,10 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }>): Promise<KnowledgeRunFinalizationEnvelope>;
+  groundKnowledgeEvidenceAnswer?(input: Readonly<{
+    runId: string;
+    userId: string;
+  }>): Promise<KnowledgeRunFinalizationEnvelope>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -601,7 +605,7 @@ export type RunRepository = {
   /** Purpose-bound recovery loader for a full-context manifest accepted into
    * the evidence session before any current Draft provider operation exists. */
   loadKnowledgeFullContextDispatchRecovery?(input: {
-    knowledgeEvidencePackingVersion?: 2 | 3;
+    knowledgeEvidencePackingVersion?: 2 | 3 | 4;
     maximumTokens: number;
     modelId: string;
     provider: string;

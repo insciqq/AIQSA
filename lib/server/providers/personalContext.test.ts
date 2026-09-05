@@ -8,6 +8,9 @@ import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V2,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V3,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V4,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V5,
   MEMORY_READER_CONTRACT_CURRENT,
   MEMORY_READER_CONTRACT_V2,
   MEMORY_READER_CONTRACT_V3,
@@ -316,6 +319,56 @@ describe("provider-neutral personal context", () => {
     expect(instructions).toContain("do not translate or normalize them");
     expect(instructions).toContain("AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE");
     expect(instructions).toContain("no answer, claim, citation, rationale, Markdown");
+  });
+
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const)("freezes retrieval instructions across provider adapters for workflow %s", (knowledgeAnswerWorkflowVersion) => {
+    const accepted = request({ knowledgeAnswerWorkflowVersion, tools: [{
+      capability: "knowledge", description: "Search selected Knowledge",
+      inputSchema: { type: "object" }, name: "search_knowledge"
+    }] });
+    const projections = [
+      buildOpenAIResponsesRequest(accepted), buildOpenAICompatibleChatRequest(accepted),
+      buildOpenRouterChatRequest(accepted), buildAnthropicMessagesRequest(accepted),
+      buildGeminiInteractionsRequest(accepted)
+    ];
+    for (const projection of projections) {
+      const serialized = JSON.stringify(projection);
+      expect(serialized).toContain(JSON.stringify(knowledgeAnswerWorkflowVersion >= 5 && knowledgeAnswerWorkflowVersion <= 9 ? KNOWLEDGE_TOOL_LOOP_CONTRACT_V5
+        : knowledgeAnswerWorkflowVersion === 4 ? KNOWLEDGE_TOOL_LOOP_CONTRACT_V4 : KNOWLEDGE_TOOL_LOOP_CONTRACT_V3).slice(1, -1));
+      expect(serialized.includes("An empty result from a restricted call does not establish absence elsewhere"))
+        .toBe(knowledgeAnswerWorkflowVersion >= 5 && knowledgeAnswerWorkflowVersion <= 9);
+      expect(serialized).not.toContain(JSON.stringify(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2).slice(1, -1));
+    }
+    expect(buildOpenAIResponsesRequest({ ...accepted, tools: [] }).instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V3);
+    expect(buildOpenAIResponsesRequest({ ...accepted, tools: [] }).instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V4);
+    expect(buildOpenAIResponsesRequest({ ...accepted, tools: [] }).instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V5);
+    expect(buildOpenAIResponsesRequest({ ...accepted, knowledgeAnswerWorkflowVersion: undefined }).instructions)
+      .toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2);
+  });
+
+  it.each([undefined, 4, 9, 10, 11] as const)("pins the retrieval system contract independently of answer workflow %s", knowledgeAnswerWorkflowVersion => {
+    const accepted = request({ knowledgeAnswerWorkflowVersion, knowledgeSearchInstructionVersion: 3, tools: [{
+      capability: "knowledge", description: "Search selected Knowledge",
+      inputSchema: { type: "object" }, name: "search_knowledge"
+    }] });
+    const adapters = [buildOpenAIResponsesRequest, buildOpenAICompatibleChatRequest,
+      buildOpenRouterChatRequest, buildAnthropicMessagesRequest, buildGeminiInteractionsRequest];
+    for (const build of adapters) {
+      const serialized = JSON.stringify(build(accepted));
+      expect(serialized).toContain(JSON.stringify(KNOWLEDGE_TOOL_LOOP_CONTRACT_V5).slice(1, -1));
+      expect(serialized).toContain("An empty result from a restricted call does not establish absence elsewhere");
+      expect(serialized).toContain("An operation or argument used in the failing attempt is not automatically a requirement");
+      expect(JSON.stringify(build({ ...accepted, tools: [] })))
+        .not.toContain("aiqsa_knowledge_tool_loop_contract");
+      // The old tool-only policy must not change the historical system prompt.
+      expect(build({ ...accepted, knowledgeSearchInstructionVersion: 2 }))
+        .toEqual(build({ ...accepted, knowledgeSearchInstructionVersion: undefined }));
+    }
+  });
+
+  it("rejects an unknown retrieval instruction policy before building a provider request", () => {
+    expect(() => buildOpenAIResponsesRequest(request({ knowledgeSearchInstructionVersion: 4 as 2 | 3 })))
+      .toThrow("knowledge_search_instruction_version_invalid");
   });
 
   it.each([

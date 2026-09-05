@@ -21,10 +21,18 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
  * erase every first-stage lexical signal. Version 4 replaces only the
  * passage-level PostgreSQL lexical vote with the OpenSearch BM25 projection.
  * Version 5 changes only deduplication to immutable occurrence identity,
- * including bounded novelty history. Scoring and model bindings are unchanged.
+ * including bounded novelty history. Version 6 retains the bounded union of
+ * BM25 query variants until the common pre-rerank pool is selected. Scoring,
+ * per-query limits, rerank input limits and model bindings are unchanged.
+ * Version 7 uses passage BM25/dense candidates with exact and metadata lanes;
+ * section/document text contributes through bounded context expansion rather
+ * than corpus-wide PostgreSQL full-text ranking and duplicate fusion votes.
+ * Version 8 carries scoped exact-match specificity into fusion and reserves
+ * pre-rerank slots only for discriminating exact evidence. Common literals
+ * remain eligible without displacing stronger passage evidence by default.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 5 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 8 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
@@ -210,7 +218,8 @@ export function fuseKnowledgeCandidates(
       }
     }
     const fusedScore = clamp([...bestByLane.values()].reduce((sum, signal) =>
-      sum + KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS[signal.lane] /
+      sum + KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS[signal.lane] *
+        (signal.lane === "exact" ? clamp(signal.rawScore) : 1) /
         (KNOWLEDGE_RRF_K + signal.rank), 0) / maximum);
     return Object.freeze({
       ...candidate,
@@ -270,12 +279,20 @@ export function knowledgeCandidateHasExactSignal(
   return candidate.signals.some((signal) => signal.lane === "exact");
 }
 
+/** SQL sums inverse scoped passage frequencies for the matched literals.
+ * One unique match (or equally discriminating combined matches) reaches one;
+ * a ubiquitous literal must not reserve a slot merely because it is exact.
+ * Eligibility and exact attribution remain independent of this preference. */
+function hasDiscriminatingExactSignal(candidate: KnowledgeRetrievalCandidate): boolean {
+  return candidate.signals.some(signal => signal.lane === "exact" && signal.rawScore >= 1);
+}
+
 /**
  * Builds the merged pre-rerank candidate pool: weighted RRF pre-order,
- * canonical occurrence deduplication, guaranteed exact-candidate survival, and
+ * canonical occurrence deduplication, discriminating exact preservation, and
  * soft balancing across accepted bindings, capped at the versioned rerank
- * input maximum. Relevance floors are deliberately not applied here — the
- * hosted reranker sees every authority-scoped candidate.
+ * input maximum. Relevance floors are deliberately not applied here; the
+ * hosted reranker judges the selected authority-scoped pool.
  */
 export function selectKnowledgePreRerankPool(input: Readonly<{
   bindingOrdinals: readonly number[];
@@ -312,11 +329,11 @@ export function selectKnowledgePreRerankPool(input: Readonly<{
       (perBinding.get(candidate.bindingOrdinal) ?? 0) + 1
     );
   };
-  // Exact candidates survive pre-rerank bounding regardless of dense or
-  // lexical strength and regardless of binding quotas.
+  // Preserve discriminating literals. Common exact matches compete through
+  // specificity-weighted fusion instead of exhausting the pool reservation.
   for (const candidate of deduped) {
     if (selected.length >= input.maximum) break;
-    if (knowledgeCandidateHasExactSignal(candidate)) take(candidate);
+    if (hasDiscriminatingExactSignal(candidate)) take(candidate);
   }
   const quota = Math.max(1, Math.floor(input.maximum / bindingCount));
   for (const candidate of deduped) {

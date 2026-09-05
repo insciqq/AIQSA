@@ -7,6 +7,7 @@ import { decodeKnowledgeAnswerOperationRequestSnapshotV21 } from "./answerGround
 import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchRepository";
 import type { KnowledgeProviderDispatchLifecycle, PreparedKnowledgeProviderDispatch } from "./providerDispatchLifecycle";
 import { knowledgeCoverageRequestAnchorIndexV1 } from "./coverageScopeRequestAnchorIdsV1";
+import { knowledgeCoverageRequestAnchorIndexV2 } from "./coverageScopeRequestAnchorIdsV2";
 import type { KnowledgeCoverageLimitationsV1 } from "./searchFailure";
 
 const usage = { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 };
@@ -89,7 +90,7 @@ function recorder() {
   ) as StoredKnowledgeEvidenceDispatch[];
   return { entries, lifecycle, stored };
 }
-async function run(outputs: readonly unknown[], options: { request?: string; texts?: string[]; coverageLimitations?: KnowledgeCoverageLimitationsV1 } = {}) {
+async function run(outputs: readonly unknown[], options: { request?: string; texts?: string[]; coverageLimitations?: KnowledgeCoverageLimitationsV1; workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 } = {}) {
   const store = recorder();
   let cursor = 0;
   const execute = vi.fn(async () => {
@@ -101,6 +102,7 @@ async function run(outputs: readonly unknown[], options: { request?: string; tex
   const result = await executeKnowledgeAnswerGroundingV21({
     authorize: async () => undefined, draft: manifest(options.texts, undefined, options.coverageLimitations), execute,
     lifecycle: store.lifecycle, modelRunId: "synthetic-run", request: options.request ?? request,
+    ...(options.workflowVersion !== undefined ? { workflowVersion: options.workflowVersion } : {}),
     routeInstruction: "Answer only from supplied Knowledge evidence.", shouldAbort: () => false, transport: "native_strict"
   });
   expect(execute).toHaveBeenCalledTimes(outputs.length);
@@ -113,6 +115,170 @@ async function run(outputs: readonly unknown[], options: { request?: string; tex
 const start = (count = 2, texts = primaryTexts) => [draftOutput(count, texts), scopeOutput(), { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 }];
 
 describe("V40 contribution execution and durable replay", () => {
+  it("preserves exact literal claim spelling and inert rendering through workflow 7 replay", async () => {
+    const texts = ["__entry__", "A<Box> stores $token$ and ~~state~~."];
+    const { result, store } = await run([...start(2, texts),
+      selectorOutput(2, ["covered", "covered"], [["C1"], ["C2"]]),
+      { decisions: [{ id: "D1", status: "closed" }, { id: "D2", status: "closed" }], version: 3 }
+    ], { texts, workflowVersion: 7 });
+    expect(result.settlement).toMatchObject({ requestCoverage: "complete", supportedClaimCount: 2 });
+    expect(result.settlement.finalText).toContain("\\_\\_entry\\_\\_ [K1]");
+    expect(result.settlement.finalText).toContain("A&lt;Box&gt; stores \\$token\\$ and \\~\\~state\\~\\~. [K2]");
+    expect(store.stored()[0]!.attempt.acceptedResult).toEqual(draftOutput(2, texts));
+  });
+
+  it("retains literal text through target-local supplement validation, merging and replay", async () => {
+    const texts = ["Alpha measured 42 on June 1 and uses __entry__.", "Beta measured 35 on June 2 and uses <Box>."];
+    const { result } = await run([...start(), selectorOutput(),
+      { targets: { D1: ["Alpha uses __entry__."], D2: ["Beta uses <Box>."] }, version: 3 },
+      { claims: [{ id: "C3", supportHandles: ["K1"], verdict: "supported" },
+        { id: "C4", supportHandles: ["K2"], verdict: "supported" }],
+      targets: { D1: { addContributionIds: ["C3"], status: "covered" },
+        D2: { addContributionIds: ["C2", "C4"], status: "covered" } }, version: 2 }
+    ], { texts, workflowVersion: 7 });
+    expect(result.operations).toHaveLength(6);
+    expect(result.contributionReceipt?.correctionAccepted).toBe(true);
+    expect(result.settlement).toMatchObject({ requestCoverage: "complete", supportedClaimCount: 4 });
+    expect(result.settlement.finalText).toContain("Alpha uses \\_\\_entry\\_\\_. [K1]");
+    expect(result.settlement.finalText).toContain("Beta uses &lt;Box&gt;. [K2]");
+  });
+
+  it.each([
+    { request: "Compare readings on day Alpha and day Beta.", texts: ["The reading on day Alpha is 18 units."] },
+    { request: "Calculate the combined mass of crates Alpha, Beta and Gamma.",
+      texts: ["Crate Alpha mass is 4 kg.", "Crate Beta mass is 5 kg."] }
+  ])("publishes known operands without inventing the incomplete result: $request", async ({ request, texts }) => {
+    const finding = { description: request, requestAnchor: "Q1", evidenceAtomIds: texts.map((_, index) => `A${index + 1}`) };
+    const scope = { version: 7, overflow: { pending: [], unparsedRemainder: false, version: 1 },
+      evidenceUnits: texts.map((_, index) => ({ handle: `K${index + 1}`,
+        findings: texts.length === 1 ? [finding] : [] })),
+      jointFindings: texts.length > 1 ? [finding] : [], unsupportedDimensions: [] };
+    const selection = { ...selectorOutput(texts.length), coverage: [{ id: "D1", status: "missing",
+      contributionIds: texts.map((_, index) => `C${index + 1}`) }] };
+    const { result } = await run([draftOutput(texts.length, texts), scope,
+      { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
+      selection, { targets: { D1: [] }, version: 3 },
+      { claims: [], targets: { D1: { addContributionIds: [], status: "missing" } }, version: 2 }
+    ], { request, texts, workflowVersion: 7 });
+    expect(result.operations).toHaveLength(6);
+    expect(result.settlement).toMatchObject({ requestCoverage: "partial", supportedClaimCount: texts.length, outcome: "answered" });
+    for (const text of texts) expect(result.settlement.finalText).toContain(text);
+    expect(result.settlement.finalText).toContain(request);
+    expect(result.contributionReceipt?.coverage).toMatchObject({ coveredDimensionCount: 0, missingDimensionCount: 1 });
+    expect(result.contributionReceipt?.closure).toBeNull();
+  });
+
+  it("publishes and replays separate evidence bindings with the same Scope description", async () => {
+    const scope = scopeOutput();
+    scope.evidenceUnits.forEach((unit) => { unit.findings[0]!.description = "Report the reading."; });
+    const { result } = await run([draftOutput(), scope,
+      { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
+      selectorOutput(2, ["covered", "covered"], [["C1"], ["C2"]]),
+      { decisions: [{ id: "D1", status: "closed" }, { id: "D2", status: "closed" }], version: 3 }
+    ], { workflowVersion: 6 });
+    expect(result.settlement).toMatchObject({ requestCoverage: "complete", supportedClaimCount: 2 });
+    expect(result.settlement.finalText).toContain(`- Report the reading: ${primaryTexts[0]} [K1]`);
+    expect(result.settlement.finalText).toContain(`- Report the reading: ${primaryTexts[1]} [K2]`);
+  });
+
+  it.each([3, 4, 5, 6, 7] as const)("repairs a malformed Draft within eight operations under workflow %s", async (workflowVersion) => {
+    const selection = selectorOutput(2, ["covered", "covered"], [["C1"], ["C2"]]);
+    const malformedSelection = { ...selection, coverage: [{ ...selection.coverage[0]!, id: "D99" }, selection.coverage[1]!] };
+    const reason = workflowVersion === 7 ? "draft_claim_citation_invalid" : "draft_claim_backtick_invalid";
+    const malformedText = workflowVersion === 7 ? "Alpha [K1] measured 42." : "`Alpha` measured 42.";
+    const malformedDraft = { claims: [{ citationHints: ["K1"], text: malformedText }], version: 1 };
+    const { result, store } = await run([malformedDraft, draftOutput(), {}, scopeOutput(),
+      { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
+      malformedSelection, selection,
+      { decisions: [{ id: "D1", status: "closed" }, { id: "D2", status: "closed" }], version: 3 }
+    ], { workflowVersion });
+    expect(result.operations).toHaveLength(8);
+    expect(result.settlement).toMatchObject({ supportedClaimCount: 2, requestCoverage: "complete" });
+    const stored = store.stored();
+    expect(stored[0]!.attempt.acceptedResult).toEqual({ kind: "draft_malformed", reason });
+    expect(stored[1]!.attempt.purpose).toBe("knowledge_answer_draft_v21");
+    const initial = JSON.parse(stored[0]!.attempt.acceptedRequest!.userPrompt);
+    const repair = JSON.parse(stored[1]!.attempt.acceptedRequest!.userPrompt);
+    expect(repair).toEqual({ ...initial, draftRepairReason: reason });
+    if (workflowVersion !== 7) expect(stored[1]!.attempt.acceptedRequest!.systemPrompt).toContain("including inline code wrappers");
+    expect(JSON.stringify(stored)).not.toContain(malformedText);
+    expect(stored.every(({ attempt }) => attempt.acceptedRequest?.version === 40 && attempt.acceptedRequest.workflowVersion === workflowVersion)).toBe(true);
+  });
+
+  it("stops after one failed Draft repair before spending Scope or Selector calls", async () => {
+    const store = recorder();
+    const execute = vi.fn(async () => ({ output: {}, usage, providerResponseId: "synthetic-response" }));
+    await expect(executeKnowledgeAnswerGroundingV21({ authorize: async () => undefined,
+      draft: manifest(), execute, lifecycle: store.lifecycle, modelRunId: "synthetic-run", request,
+      routeInstruction: "Answer only from supplied Knowledge evidence.", shouldAbort: () => false,
+      transport: "native_strict", workflowVersion: 3
+    })).rejects.toMatchObject({ code: "knowledge_answer_contract_failed" });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(store.stored().map(({ attempt }) => attempt.purpose)).toEqual([
+      "knowledge_answer_draft_v21", "knowledge_answer_draft_v21"
+    ]);
+  });
+
+  it.each([2, 3, 4, 5, 6, 7] as const)("freezes anchors, task labels and instructions through workflow %s replay", async (workflowVersion) => {
+    const request = Array.from({ length: 12 }, (_, index) => `Explain item${index + 1} with its exact dated reading.`).join("\n");
+    const anchors = knowledgeCoverageRequestAnchorIndexV2(request);
+    const scope = scopeOutput();
+    scope.evidenceUnits.forEach((unit, index) => { unit.findings[0]!.requestAnchor = anchors.items[index]!.id; });
+    const { result, store } = await run([draftOutput(), scope,
+      { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
+      selectorOutput(2, ["covered", "covered"], [["C1"], ["C2"]]),
+      { decisions: [{ id: "D1", status: "closed" }, { id: "D2", status: "closed" }], version: 3 }
+    ], { request, workflowVersion });
+    expect(result.settlement.finalText).toContain(`- Explain alpha: ${primaryTexts[0]}`);
+    expect(result.settlement.finalText).not.toContain(anchors.items[0]!.text);
+    const stored = store.stored();
+    for (const dispatch of stored) expect(dispatch.attempt.acceptedRequest).toMatchObject({ workflowVersion });
+    expect(JSON.parse(stored[1]!.attempt.acceptedRequest!.userPrompt).requestAnchorIndex).toEqual(anchors);
+    expect(stored[1]!.attempt.acceptedRequest!.systemPrompt.includes("The primary requested outcome belongs in active Scope"))
+      .toBe(workflowVersion === 4 || workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7);
+    expect(stored[3]!.attempt.acceptedRequest!.systemPrompt.includes("Equivalent text elsewhere is not transferable provenance"))
+      .toBe(workflowVersion === 4 || workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7);
+    expect(Object.hasOwn(JSON.parse(stored[3]!.attempt.acceptedRequest!.userPrompt), "contributionSourceIndex"))
+      .toBe(workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7);
+    expect(stored[1]!.attempt.acceptedRequest!.systemPrompt.includes("Scope descriptions must be unique"))
+      .toBe(workflowVersion !== 6 && workflowVersion !== 7);
+    expect(stored[2]!.attempt.acceptedRequest!.systemPrompt.includes("Descriptions must be unique across acceptedScope and additions"))
+      .toBe(workflowVersion !== 6 && workflowVersion !== 7);
+    expect(stored[1]!.attempt.acceptedRequest!.systemPrompt.includes("Descriptions are human-readable task labels, not identities"))
+      .toBe(workflowVersion === 6 || workflowVersion === 7);
+    const tampered = store.stored();
+    const acceptedRequest = { ...tampered[0]!.attempt.acceptedRequest, workflowVersion: 8 };
+    tampered[0] = { ...tampered[0]!, attempt: { ...tampered[0]!.attempt,
+      acceptedRequest: acceptedRequest as never, requestHash: knowledgeAnswerHash(acceptedRequest) } };
+    await expect(replayKnowledgeAnswerGroundingV40({ dispatches: tampered,
+      forbiddenIdentityFragments: [], modelRunId: "synthetic-run" })).rejects.toThrow("knowledge_answer_replay_invalid");
+  });
+
+  it.each([
+    { stage: "scope", outputs: [draftOutput(), {}, {}] },
+    { stage: "selector after malformed Draft", outputs: [{}, scopeOutput(), { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 }, {}] }
+  ])("classifies unaccepted $stage as a Knowledge contract failure", async ({ outputs }) => {
+    await expect(run(outputs)).rejects.toMatchObject({ code: "knowledge_answer_contract_failed" });
+  });
+
+  it("repairs selection with the exact validation reason and replays the accepted feedback", async () => {
+    const selection = selectorOutput(2, ["covered", "covered"], [["C1"], ["C2"]]);
+    const malformed = { ...selection, coverage: [{ ...selection.coverage[0]!, id: "D99" }, selection.coverage[1]!] };
+    const { result, store } = await run([...start(), malformed, selection,
+      { decisions: [{ id: "D1", status: "closed" }, { id: "D2", status: "closed" }], version: 3 }]);
+    expect(result.operations).toHaveLength(6);
+    expect(result.settlement).toMatchObject({ finalizationMode: "selected_claims", requestCoverage: "complete", supportedClaimCount: 2 });
+    expect(result.settlement.finalText).toContain(primaryTexts[0]);
+    expect(result.settlement.finalText).toContain(primaryTexts[1]);
+    expect(store.stored()[3]!.attempt.acceptedResult).toEqual({ kind: "contribution_operation_failed",
+      reason: "invalid_output", validationReason: "selector_dimension_id_invalid", version: 1 });
+    expect(JSON.parse(store.stored()[4]!.attempt.acceptedRequest!.userPrompt)).toMatchObject({
+      repairReason: "selector_dimension_id_invalid", selectorPass: "repair"
+    });
+    expect(store.stored()[4]!.attempt.acceptedRequest!.systemPrompt)
+      .toContain("Do not invent, reorder, omit or repeat a D ID");
+  });
+
   it.each([
     { excludedResources: 1, retrievalFailures: [], version: 1 },
     { excludedResources: 0, retrievalFailures: ["opensearch_timeout"], version: 1 }
@@ -324,13 +490,21 @@ describe("V40 contribution execution and durable replay", () => {
     expect(result.settlement).toMatchObject({ supportedClaimCount: 2, requestCoverage: "complete" });
   });
 
-  it("replays an accepted Scope repair without requiring process-local rejected output", async () => {
+  it.each(["atom", "description"])("replays an accepted Scope repair without process-local rejected output (%s)", async (defect) => {
     const malformedScope = scopeOutput();
-    malformedScope.evidenceUnits[0]!.findings[0]!.evidenceAtomIds = ["A99"];
-    const { result } = await run([draftOutput(24), malformedScope, scopeOutput(), { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
+    if (defect === "atom") malformedScope.evidenceUnits[0]!.findings[0]!.evidenceAtomIds = ["A99"];
+    else malformedScope.evidenceUnits[0]!.findings.push({ ...malformedScope.evidenceUnits[0]!.findings[0]! });
+    const { result, store } = await run([draftOutput(24), malformedScope, scopeOutput(), { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
       selectorOutput(24), deltaOutput()]);
     expect(result.operations).toHaveLength(6);
     expect(result.settlement).toMatchObject({ supportedClaimCount: 2, requestCoverage: "partial" });
+    if (defect === "description") {
+      expect(store.stored()[1]!.attempt.acceptedResult).toEqual({
+        kind: "coverage_scope_failed", reason: "coverage_scope_finding_duplicate"
+      });
+      const repair = store.stored()[2]!.attempt.acceptedRequest!;
+      expect(JSON.parse(repair.userPrompt)).toMatchObject({ repairReason: "coverage_scope_finding_duplicate" });
+    }
   });
 
   it("rejects missing, reordered and forged accepted checkpoints during replay", async () => {

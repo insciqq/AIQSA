@@ -42,7 +42,7 @@ type DisplayMathBlock = {
 
 function splitMarkdown(markdown: string): MarkdownPart[] {
   const parts: MarkdownPart[] = [];
-  const codeBlock = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+  const codeBlock = /^ {0,3}(`{3,})([a-zA-Z0-9_-]*)[ \t]*\r?\n([\s\S]*?)^ {0,3}\1`*[ \t]*(?=\r?$)/gm;
   let lastIndex = 0;
   let match = codeBlock.exec(markdown);
 
@@ -52,8 +52,8 @@ function splitMarkdown(markdown: string): MarkdownPart[] {
     }
 
     parts.push({
-      code: match[2],
-      language: match[1],
+      code: match[3],
+      language: match[2],
       type: "code"
     });
     lastIndex = match.index + match[0].length;
@@ -113,18 +113,27 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
 
 export type MarkdownCitationRenderer = (handle: string, key: string) => ReactNode | null;
 
+function decodePlainTextEntities(text: string): string {
+  // Decode the literal encoder's entities once, after Markdown recognition.
+  // These remain React text and cannot create HTML or an active citation.
+  return text.replace(/&(amp|lt|gt);/g, (entity) => {
+    if (entity === "&amp;") return "&";
+    return entity === "&lt;" ? "<" : ">";
+  });
+}
+
 function renderPlainInline(
   text: string,
   keyPrefix: string,
   renderCitation?: MarkdownCitationRenderer
 ): ReactNode[] {
-  if (!renderCitation) return [text];
+  if (!renderCitation) return [decodePlainTextEntities(text)];
   const nodes: ReactNode[] = [];
   const citationPattern = /\[(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\]/gu;
   let lastIndex = 0;
   let match = citationPattern.exec(text);
   while (match) {
-    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    if (match.index > lastIndex) nodes.push(decodePlainTextEntities(text.slice(lastIndex, match.index)));
     const nestedLinkLabel = text[match.index - 1] === "[" &&
       text.slice(match.index + match[0].length, match.index + match[0].length + 2) === "](";
     const rendered = nestedLinkLabel
@@ -134,7 +143,7 @@ function renderPlainInline(
     lastIndex = match.index + match[0].length;
     match = citationPattern.exec(text);
   }
-  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  if (lastIndex < text.length) nodes.push(decodePlainTextEntities(text.slice(lastIndex)));
   return nodes;
 }
 
@@ -145,7 +154,7 @@ function renderInline(
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   const inlinePattern =
-    /(`[^`]+`|\[[^\]]+\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*[^*]+\*\*|(?<!\\)\\\((?:[^\\\n`]|\\(?!\)))*\\\)|(?<!\\)\$(?![$\s])(?:\\.|[^$\\\n`])*?(?<![\s\\])\$(?!\d)|~~[^~]+~~|\*[^*\n]+\*|(?<![A-Za-z0-9])_[^_\n]+_(?![A-Za-z0-9]))/g;
+    /((?<!\\)\\\((?:[^\\\n`]|\\(?!\)))*\\\)|\\[\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e]|`[^`]+`|\[[^\]]+\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*[^*]+\*\*|(?<!\\)\$(?![$\s])(?:\\.|[^$\\\n`])*?(?<![\s\\])\$(?!\d)|~~[^~]+~~|\*[^*\n]+\*|(?<![A-Za-z0-9])_[^_\n]+_(?![A-Za-z0-9]))/g;
   let lastIndex = 0;
   let match = inlinePattern.exec(text);
 
@@ -160,7 +169,10 @@ function renderInline(
 
     const token = match[0];
 
-    if (token.startsWith("\\(") && token.endsWith("\\)")) {
+    if (/^\\[\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e]$/.test(token)) {
+      // An escaped marker is a text node, never another parser input.
+      nodes.push(token.slice(1));
+    } else if (token.startsWith("\\(") && token.endsWith("\\)")) {
       nodes.push(
         <MathExpression
           displayMode={false}

@@ -58,7 +58,7 @@ import type {
 import type { KnowledgeBudgetReservationStopReason } from "./knowledgeBudgetReservation";
 import {
   knowledgeRetrievalTool,
-  normalizeKnowledgeQuery,
+  normalizeKnowledgeAnchorQuery,
   parseKnowledgeExecutionRequest
 } from "./knowledgeTools";
 import {
@@ -71,7 +71,7 @@ import {
   type KnowledgeDocumentLocatorV1
 } from "./documentContext";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
-import { KNOWLEDGE_LANE_CANDIDATE_LIMIT } from "./retrievalRanking";
+import { KNOWLEDGE_LANE_CANDIDATE_LIMIT, KNOWLEDGE_RANKING_PROFILE_VERSION } from "./retrievalRanking";
 import {
   createKnowledgeRerankStage,
   knowledgeRerankerDisabledEvidence,
@@ -94,7 +94,7 @@ export { knowledgeRetrievalTool } from "./knowledgeTools";
  * are sequential stages; this must leave headroom beyond the reranker's own
  * bounded fallback deadline instead of racing it at the same wall clock.
  */
-export const KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS = 60_000 as const;
+export const KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS = 90_000 as const;
 
 export type KnowledgeAcceptedEmbeddingRuntime = Readonly<{
   adapter: EmbeddingAdapter;
@@ -679,8 +679,8 @@ function currentUserAnchorQuery(
     request.operation !== "automatic_search" ||
     request.focused
   ) return null;
-  const currentUserQuery = normalizeKnowledgeQuery(
-    textFromContentBlocks(context.request.content)
+  const currentUserQuery = normalizeKnowledgeAnchorQuery(
+    textFromContentBlocks(context.request.content), context.request.knowledgeQueryAnchorVersion
   );
   return currentUserQuery && currentUserQuery !== request.query
     ? currentUserQuery
@@ -1643,7 +1643,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ranking.candidateOrder.length !== search.candidateCount ||
         (search.candidateCount > 0 && search.passages.length === 0) ||
         lexicalBackend?.backendKind !== "opensearch_bm25_v1" ||
-        lexicalBackend.rankingProfileVersion !== 5 ||
+        lexicalBackend.rankingProfileVersion !== KNOWLEDGE_RANKING_PROFILE_VERSION ||
         lexicalBackend.status !== "complete") {
         throw new Error("knowledge_hybrid_ranking_invalid");
       }

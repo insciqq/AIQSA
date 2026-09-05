@@ -1,3 +1,4 @@
+import type { KnowledgeGroundingEvidenceV57, KnowledgeGroundingEvidenceV58 } from "./evidenceAnswerGroundingV1";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { KnowledgeAnswerSettlementV5 } from "./answerGroundingV5";
 import {
@@ -9,6 +10,8 @@ import {
 } from "./answerGroundingCorrectionV21";
 
 const groundingStages = Object.freeze([
+  "compose",
+  "review",
   "primary",
   "initial",
   "repair",
@@ -81,7 +84,9 @@ type KnowledgeGroundingMetricsEvidenceV19 = Readonly<{
 }>;
 
 type KnowledgeGroundingMetricsEvidence = KnowledgeGroundingMetricsEvidenceV18 |
-  KnowledgeGroundingMetricsEvidenceV19;
+  KnowledgeGroundingMetricsEvidenceV19 | Pick<KnowledgeGroundingEvidenceV57 | KnowledgeGroundingEvidenceV58,
+    "version" | "draftBlockCount" | "supportedBlockCount" | "unsupportedBlockCount" | "contradictedBlockCount" |
+    "missingRequirementCount" | "analysisComplete" | "compositionRepairAttempted" | "reviewRepairAttempted" | "requestCoverage" | "operations">;
 
 export type KnowledgeGroundingStageOperationalMetrics = Readonly<{
   calls: number;
@@ -95,6 +100,10 @@ export type KnowledgeGroundingStageOperationalMetrics = Readonly<{
 /** Content-free aggregate backing the PRD's grounding counters/histograms. */
 export type KnowledgeGroundingOperationalMetrics = Readonly<{
   answers: number;
+  evidenceAnswers: Readonly<{
+    answers: number; draftBlocks: number; supportedBlocks: number; unsupportedBlocks: number; contradictedBlocks: number;
+    missingRequirements: number; incompleteAnalyses: number; compositionRepairs: number; reviewRepairs: number;
+  }>;
   auditAccepted: number;
   coverageScopeAccepted: number;
   coverage: Readonly<{ complete: number; none: number; partial: number }>;
@@ -148,8 +157,29 @@ export function aggregateKnowledgeGroundingMetrics(
   let totalMissingCoverageDimensions = 0;
   let totalScopeCompletenessAdditions = 0;
   let totalScopeClosureReopenedDimensions = 0;
+  const evidenceAnswers = { answers: 0, draftBlocks: 0, supportedBlocks: 0, unsupportedBlocks: 0, contradictedBlocks: 0,
+    missingRequirements: 0, incompleteAnalyses: 0, compositionRepairs: 0, reviewRepairs: 0 };
   for (const evidence of evidences) {
     coverage[evidence.requestCoverage] += 1;
+    if (evidence.version === 57 || evidence.version === 58) {
+      evidenceAnswers.answers++;
+      evidenceAnswers.draftBlocks += evidence.draftBlockCount;
+      evidenceAnswers.supportedBlocks += evidence.supportedBlockCount;
+      evidenceAnswers.unsupportedBlocks += evidence.unsupportedBlockCount;
+      evidenceAnswers.contradictedBlocks += evidence.contradictedBlockCount;
+      evidenceAnswers.missingRequirements += evidence.missingRequirementCount;
+      evidenceAnswers.incompleteAnalyses += Number(!evidence.analysisComplete);
+      evidenceAnswers.compositionRepairs += Number(evidence.compositionRepairAttempted);
+      evidenceAnswers.reviewRepairs += Number(evidence.reviewRepairAttempted);
+      modelOperations += evidence.operations.length;
+      for (const operation of evidence.operations) {
+        const stage = stageValues[(operation.purpose === "knowledge_evidence_compose_v1" || operation.purpose === "knowledge_evidence_compose_v2") ? "compose" : "review"];
+        stage.durations.push(operation.durationMs);
+        stage.inputTokens += operation.usage.inputTokens ?? 0;
+        stage.outputTokens += operation.usage.outputTokens ?? 0;
+      }
+      continue;
+    }
     correctionAttempted += Number(evidence.correctionAttempted);
     correctionSucceeded += Number(evidence.correctionSucceeded);
     draftClaims += evidence.draftClaimCount;
@@ -225,15 +255,16 @@ export function aggregateKnowledgeGroundingMetrics(
   })) as Record<KnowledgeGroundingStage, KnowledgeGroundingStageOperationalMetrics>;
   return Object.freeze({
     answers: evidences.length,
+    evidenceAnswers: Object.freeze(evidenceAnswers),
     auditAccepted: evidences.filter(({ version }) => version === 18).length,
-    coverageScopeAccepted: evidences.filter(({ version }) => version >= 19).length,
+    coverageScopeAccepted: evidences.filter(({ version }) => version >= 19 && version <= 56).length,
     coverage: Object.freeze(coverage),
     correctionAttempted,
     correctionSucceeded,
     draftClaims,
     modelOperations,
-    pipelineVersion21: evidences.length,
-    scopeCompletenessAccepted: evidences.filter(({ version }) => version >= 24).length,
+    pipelineVersion21: evidences.length - evidenceAnswers.answers,
+    scopeCompletenessAccepted: evidences.filter(({ version }) => version >= 24 && version <= 56).length,
     scopeClosureAccepted: evidences.filter((evidence) =>
       (evidence.version === 34 || evidence.version === 35 || evidence.version === 36 ||
         evidence.version === 37 || evidence.version === 38 || evidence.version === 39 ||
@@ -268,6 +299,17 @@ function counter(value: unknown): value is number {
 /** Narrow stored-row guard. It validates every field consumed by the metrics
  * projection and never returns arbitrary JSON fields. */
 function metricsEvidence(value: unknown): value is KnowledgeGroundingMetricsEvidence {
+  if (record(value) && (value.version === 57 || value.version === 58)) {
+    return ["draftBlockCount", "supportedBlockCount", "unsupportedBlockCount", "contradictedBlockCount", "missingRequirementCount"]
+      .every(key => counter(value[key])) && typeof value.analysisComplete === "boolean" &&
+      typeof value.compositionRepairAttempted === "boolean" && typeof value.reviewRepairAttempted === "boolean" &&
+      ["complete", "partial", "none"].includes(String(value.requestCoverage)) && Array.isArray(value.operations) &&
+      value.operations.length >= 2 && value.operations.length <= (value.refinementAttempted === true ? 8 : 4) && value.operations.every(operation => record(operation) &&
+        (value.version === 58 ? ["knowledge_evidence_compose_v2", "knowledge_evidence_review_v2"] : ["knowledge_evidence_compose_v1", "knowledge_evidence_review_v1"]).includes(String(operation.purpose)) &&
+        counter(operation.durationMs) && record(operation.usage) &&
+        (operation.usage.inputTokens === null || counter(operation.usage.inputTokens)) &&
+        (operation.usage.outputTokens === null || counter(operation.usage.outputTokens)));
+  }
   if (!record(value) || value.version !== 18 && value.version !== 19 &&
     value.version !== 20 && value.version !== 21 && value.version !== 22 &&
     value.version !== 23 && value.version !== 24 && value.version !== 25 &&
@@ -367,7 +409,7 @@ export async function loadKnowledgeGroundingOperationalMetrics(
       version: {
         in: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
           34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-          51, 52, 53, 54, 55, 56]
+          51, 52, 53, 54, 55, 56, 57, 58]
       },
       ...(input.since ? { createdAt: { gte: input.since } } : {})
     }

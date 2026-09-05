@@ -8,7 +8,6 @@ import {
   type KnowledgeCanonicalSourceProvenance
 } from "./canonicalSourceCandidates";
 import { decodeKnowledgeDocumentContext } from "./documentContext";
-import { knowledgeBroadLexicalQuerySql } from "./lexicalQuerySql";
 import {
   KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS,
   knowledgeExactNormalizedValue,
@@ -26,7 +25,6 @@ import {
   knowledgeCandidateSignalEligible,
   KNOWLEDGE_BROAD_RERANK_INPUT_MAX,
   KNOWLEDGE_LANE_CANDIDATE_LIMIT,
-  KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR,
   KNOWLEDGE_METADATA_RELEVANCE_FLOOR,
   KNOWLEDGE_RERANK_OMITTED_ADMISSION_VERSION,
   KNOWLEDGE_RETRIEVAL_FUSION,
@@ -66,7 +64,7 @@ import type {
   KnowledgeParentExpansion,
   KnowledgeParentExpansionUnit
 } from "./retrievalTypes";
-import type { KnowledgeBm25Hit } from "../search/opensearch/contract";
+import { KNOWLEDGE_SEARCH_MAX_MERGED_HITS, type KnowledgeBm25Hit } from "../search/opensearch/contract";
 import {
   createKnowledgePassageBm25Search,
   KnowledgeLexicalBackendEvidenceV1,
@@ -721,67 +719,15 @@ function knowledgeVectorLaneSql(input: Readonly<{
   `;
 }
 
-/**
- * One generic language-neutral lexical lane: Unicode-normalized queries
- * against the PostgreSQL `simple` configuration only. No script detection,
- * no per-language algorithm selection, no per-language rank summing.
- */
-type LexicalQueryColumns = Readonly<{
-  simple: Prisma.Sql;
-  simpleStrict: Prisma.Sql;
-}>;
-
-const MODEL_LEXICAL_QUERY_COLUMNS: LexicalQueryColumns = Object.freeze({
-  simple: Prisma.sql`query_terms."modelSimpleQuery"`,
-  simpleStrict: Prisma.sql`query_terms."modelSimpleStrictQuery"`
-});
-
-const ANCHOR_LEXICAL_QUERY_COLUMNS: LexicalQueryColumns = Object.freeze({
-  simple: Prisma.sql`query_terms."anchorSimpleQuery"`,
-  simpleStrict: Prisma.sql`query_terms."anchorSimpleStrictQuery"`
-});
-
-function lexicalRank(
-  alias: string,
-  queries: LexicalQueryColumns,
-  strict = true
-): Prisma.Sql {
-  const row = Prisma.raw(alias);
-  return Prisma.sql`(
-    ts_rank_cd(${row}."simpleSearchVector", ${queries.simple}) +
-      ${strict ? Prisma.sql`CASE WHEN ${row}."simpleSearchVector" @@ ${queries.simpleStrict} THEN 1 ELSE 0 END` : Prisma.sql`0`}
-  )`;
-}
-
-function lexicalMatch(alias: string, queries: LexicalQueryColumns): Prisma.Sql {
-  const row = Prisma.raw(alias);
-  return Prisma.sql`${row}."simpleSearchVector" @@ ${queries.simple}`;
-}
-
-function combinedLexicalRank(alias: string, hasDistinctAnchor: boolean): Prisma.Sql {
-  const modelRank = lexicalRank(alias, MODEL_LEXICAL_QUERY_COLUMNS);
-  return hasDistinctAnchor
-    ? Prisma.sql`GREATEST(${modelRank}, ${lexicalRank(alias, ANCHOR_LEXICAL_QUERY_COLUMNS)})`
-    : modelRank;
-}
-
-function combinedLexicalMatch(
-  alias: string,
-  hasDistinctAnchor: boolean
-): Prisma.Sql {
-  const modelMatch = lexicalMatch(alias, MODEL_LEXICAL_QUERY_COLUMNS);
-  return hasDistinctAnchor
-    ? Prisma.sql`(${modelMatch} OR ${lexicalMatch(alias, ANCHOR_LEXICAL_QUERY_COLUMNS)})`
-    : modelMatch;
-}
-
-function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
-  acceptedScopes: readonly ScopeRow[];
+/** BM25 owns global full-text candidate generation. PostgreSQL adds exact
+ * identifiers and metadata, then revalidates canonical passage authority.
+ * Section/document context is expanded around selected passages; globally
+ * ranking those duplicate text representations scales with corpus matches. */
+function knowledgeExactAndMetadataSearchSql(input: Readonly<{
   anchorQuery?: string;
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   query: string;
-  relaxRelevanceFloors?: boolean;
   runId: string;
   sharedScope?: boolean;
   sourceIds?: readonly string[];
@@ -802,55 +748,13 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       scoped_chunks AS NOT MATERIALIZED (SELECT * FROM scoped_passages),
     `;
   const literalQuery = input.anchorQuery ?? input.query;
-  const hasDistinctAnchor = literalQuery !== input.query;
   const normalizedQuery = knowledgeExactNormalizedValue(input.query);
   const exactValues = knowledgeExactQueryValues(literalQuery);
   const exactValuesSql = exactValues.length > 0
     ? Prisma.sql`ARRAY[${Prisma.join(exactValues)}]::text[]`
     : Prisma.sql`ARRAY[]::text[]`;
-  const sectionRank = combinedLexicalRank("section", hasDistinctAnchor);
-  const sectionMatch = combinedLexicalMatch("section", hasDistinctAnchor);
-  const documentRank = combinedLexicalRank("document_index", hasDistinctAnchor);
-  const documentMatch = combinedLexicalMatch("document_index", hasDistinctAnchor);
-  const lexicalMatches = (kind: "section" | "document") => {
-    const ordinals = input.acceptedScopes
-      .filter((scope) => scope.acceptedIndexArtifactIds.length > 0)
-      .map((scope) => scope.bindingOrdinal);
-    if (ordinals.length === 0) return Prisma.sql`
-      SELECT NULL::integer AS "bindingOrdinal", NULL::text AS "chunkId",
-        NULL::text AS lane, NULL::double precision AS "rawScore",
-        NULL::text AS "exactKind" WHERE false
-    `;
-    const row = Prisma.raw(kind === "section" ? "section" : "document_index");
-    const table = Prisma.raw(kind === "section"
-      ? '"KnowledgeArtifactSectionIndex"' : '"KnowledgeArtifactDocumentIndex"');
-    return Prisma.join(ordinals.map((ordinal) => Prisma.sql`(
-      SELECT ${ordinal}::integer AS "bindingOrdinal",
-        passage."id" AS "chunkId",
-        ${kind === "section" ? "section_lexical" : "document_lexical"}::text AS lane,
-        ${kind === "section" ? sectionRank : documentRank}::double precision AS "rawScore",
-        NULL::text AS "exactKind"
-      FROM ${table} AS ${row}
-      INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
-        ON passage."indexArtifactId" = ${row}."indexArtifactId"
-       AND ${kind === "section"
-         ? Prisma.sql`passage."sectionId" = section."id"
-           AND passage."ordinal" = section."passageStart"`
-         : Prisma.sql`passage."ordinal" = 0`}
-      CROSS JOIN query_terms
-      WHERE COALESCE((
-        SELECT scope."indexArtifactMap" FROM accepted_scope_maps AS scope
-        WHERE scope."bindingOrdinal" = ${ordinal}
-      ) ? ${row}."indexArtifactId", false)
-        AND ${kind === "section" ? sectionMatch : documentMatch}
-      ORDER BY "rawScore" DESC, passage."id"
-      LIMIT ${input.candidateLimit}
-    )`), " UNION ALL ");
-  };
   const laneRows = Prisma.sql`
-      SELECT * FROM section_matches
-      UNION ALL SELECT * FROM document_matches
-      UNION ALL SELECT * FROM metadata_matches
+      SELECT * FROM metadata_matches
       UNION ALL SELECT * FROM exact_raw
     `;
   // `%>` uses pg_trgm's GIN operator class whereas a bare
@@ -868,19 +772,6 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
         true
       )`}
     ),
-    model_broad_query AS MATERIALIZED (${knowledgeBroadLexicalQuerySql(input.query)}),
-    anchor_broad_query AS MATERIALIZED (
-      ${hasDistinctAnchor
-        ? knowledgeBroadLexicalQuerySql(literalQuery)
-        : Prisma.sql`SELECT query FROM model_broad_query`}
-    ),
-    query_terms AS NOT MATERIALIZED (
-      SELECT
-        websearch_to_tsquery('simple'::regconfig, ${input.query}) AS "modelSimpleStrictQuery",
-        (SELECT query FROM model_broad_query) AS "modelSimpleQuery",
-        websearch_to_tsquery('simple'::regconfig, ${literalQuery}) AS "anchorSimpleStrictQuery",
-        (SELECT query FROM anchor_broad_query) AS "anchorSimpleQuery"
-    ),
     exact_query_values AS MATERIALIZED (
       SELECT query_value."normalizedValue", query_value."queryOrdinal"::integer
       FROM unnest(${exactValuesSql}) WITH ORDINALITY
@@ -892,12 +783,6 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
         jsonb_object_agg(artifact."indexArtifactId", true) AS "indexArtifactMap"
       FROM scoped_index_artifacts AS artifact
       GROUP BY artifact."bindingOrdinal"
-    ),
-    section_matches AS MATERIALIZED (
-      ${lexicalMatches("section")}
-    ),
-    document_matches AS MATERIALIZED (
-      ${lexicalMatches("document")}
     ),
     metadata_matches AS MATERIALIZED (
       SELECT hit.*
@@ -973,7 +858,11 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
         ON scope."indexArtifactMap" ? entry."indexArtifactId"
       LEFT JOIN "KnowledgeArtifactSectionIndex" AS exact_section
         ON exact_section."indexArtifactId" = entry."indexArtifactId"
-       AND exact_section."id" = entry."sectionId"
+       -- A passage-bound entry needs no section fallback. A separate join
+       -- filter still reads the section index before discarding that row.
+       AND exact_section."id" = CASE
+         WHEN entry."passageId" IS NULL THEN entry."sectionId"
+       END
       INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
         ON passage."indexArtifactId" = entry."indexArtifactId"
        AND (
@@ -1035,12 +924,6 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       FROM lane_rows
       WHERE lane = 'exact'
         OR lane = 'metadata' AND "rawScore" >= ${KNOWLEDGE_METADATA_RELEVANCE_FLOOR}
-        OR lane IN (
-          'document_lexical', 'section_lexical'
-        )
-          ${input.relaxRelevanceFloors
-            ? Prisma.empty
-            : Prisma.sql`AND "rawScore" >= ${KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR}`}
     ),
     ranked AS (
       SELECT eligible_lane_rows.*,
@@ -1107,7 +990,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
   const bindings = retrievalBindingsSql(input);
   const scopedIndexArtifacts = scopedIndexArtifactsSql();
   const scopedPassages = sharedScopedPassagesSql();
-  const lexicalQuery = knowledgeMultiLaneLexicalSearchSql({
+  const lexicalQuery = knowledgeExactAndMetadataSearchSql({
     ...input,
     sharedScope: true
   });
@@ -1172,7 +1055,8 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
         sum(
           CASE candidate.lane
             WHEN 'document_lexical' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.document_lexical}
-            WHEN 'exact' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.exact}
+            WHEN 'exact' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.exact} *
+              LEAST(1.0, GREATEST(0.0, candidate."rawScore"))
             WHEN 'metadata' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.metadata}
             WHEN 'passage_bm25' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.passage_bm25}
             WHEN 'passage_semantic' THEN ${KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.passage_semantic}
@@ -1301,7 +1185,7 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
   sourceIds?: readonly string[];
   userId: string;
 }>): Prisma.Sql {
-  if (input.hits.length < 1 || input.hits.length > KNOWLEDGE_LANE_CANDIDATE_LIMIT) {
+  if (input.hits.length < 1 || input.hits.length > KNOWLEDGE_SEARCH_MAX_MERGED_HITS) {
     throw new Error("knowledge_bm25_hits_invalid");
   }
   const bindings = retrievalBindingsSql(input);
@@ -2078,7 +1962,10 @@ export async function executeKnowledgeRetrievalCore(
       });
       candidates = executionPool;
       rankingEvidence = ranking.evidence;
-      selected = ranking.selected;
+      // A configured stage skipped for a singleton still has a rerank receipt.
+      // Preserve its explicit unscored value for result persistence/replay;
+      // absence of this field means that no reranker was configured.
+      selected = ranking.selected.map(candidate => Object.freeze({ ...candidate, rerankScore: null }));
     } else if (stage.status === "degraded") {
       // Deterministic weighted RRF fallback: no retrieval or embedding is
       // repeated, today's named relevance floors apply, and exact candidates

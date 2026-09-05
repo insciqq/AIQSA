@@ -609,6 +609,20 @@ export function createPrismaKnowledgeSourceIngestionRepository(
       now: Date;
       staleBefore: Date;
     }): Promise<KnowledgeWorkClaim | null> {
+      // An empty processing queue must not acquire the global fairness lock
+      // and join the ready corpus on every worker poll. This is only a cheap
+      // existence probe: a nonempty queue still gets the complete locked
+      // owner, membership, generation and lease checks below.
+      const pending = await client.knowledgeSourceIndexArtifact.findFirst({
+        select: { id: true },
+        where: {
+          state: { in: ["pending", "processing"] },
+          processingStage: { not: null },
+          nextAttemptAt: { lte: input.now },
+          OR: [{ claimedAt: null }, { claimedAt: { lt: input.staleBefore } }]
+        }
+      });
+      if (!pending) return null;
       return client.$transaction(async (tx) => {
         const cursor = await lockFairnessCursor(tx);
         const ownerUserId = await eligibleOwner(tx, input, cursor);

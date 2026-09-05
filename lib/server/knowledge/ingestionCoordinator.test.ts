@@ -299,6 +299,94 @@ describe("Knowledge ingestion coordinator", () => {
 
     expect(processed).toEqual(["version-clamped"]);
   });
+
+  it("keeps polling new work while an unchanged recovery sweep waits for its next interval", async () => {
+    vi.useFakeTimers();
+    const queue: KnowledgeSourceWorkClaim[] = [];
+    const reconcile = vi.fn(async () => false);
+    const process = vi.fn(async (_work: KnowledgeSourceWorkClaim) => undefined);
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: 1,
+      process,
+      repository: {
+        claim: vi.fn(async () => queue.shift() ?? null),
+        heartbeat: vi.fn(async () => true),
+        reconcile,
+        retryLater: vi.fn(async () => true),
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+    try {
+      coordinator.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      queue.push(claim("new-arrival", 1));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(process).toHaveBeenCalledWith(expect.objectContaining({
+        sourceVersionId: "version-new-arrival"
+      }), expect.any(AbortSignal));
+      // Processing can unblock publication/migration and requires an immediate
+      // sweep even before the idle sweep interval has elapsed.
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reconcile).toHaveBeenCalledTimes(3);
+      await coordinator.reconcileNow();
+      expect(reconcile).toHaveBeenCalledTimes(4);
+      reconcile.mockRejectedValueOnce(new Error("reconciliation_unavailable"));
+      await coordinator.reconcileNow();
+      expect(reconcile).toHaveBeenCalledTimes(5);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reconcile).toHaveBeenCalledTimes(6);
+    } finally {
+      coordinator.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces periodic ticks during a slow idle sweep and retains explicit kicks", async () => {
+    vi.useFakeTimers();
+    let finish: (changed: boolean) => void = () => undefined;
+    const reconcile = vi.fn(async () => false).mockImplementationOnce(() =>
+      new Promise<boolean>(resolve => { finish = resolve; }));
+    const claimWork = vi.fn(async () => null);
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: 1,
+      process: async () => undefined,
+      repository: {
+        claim: claimWork,
+        heartbeat: vi.fn(async () => true),
+        reconcile,
+        retryLater: vi.fn(async () => true),
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+    try {
+      coordinator.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      finish(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(claimWork).toHaveBeenCalledTimes(1);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+
+      reconcile.mockImplementationOnce(() =>
+        new Promise<boolean>(resolve => { finish = resolve; }));
+      coordinator.kick();
+      await vi.advanceTimersByTimeAsync(0);
+      coordinator.kick();
+      await vi.advanceTimersByTimeAsync(5_000);
+      finish(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reconcile).toHaveBeenCalledTimes(3);
+    } finally {
+      finish(false);
+      coordinator.stop();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Knowledge ingestion parallelism clamp", () => {

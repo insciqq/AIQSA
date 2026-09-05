@@ -67,7 +67,7 @@ Knowledge changes use small co-located tests through the same narrow, hermetic, 
 - Search, Knowledge, MCP, attachments, Assistants, and Personal Memory context remain independently composable;
 - one query embedding per compatible Profile and one hybrid repository operation per accepted Knowledge call, with at most sixteen broad-map results and eight Source-scoped reduce results;
 - installation-scoped Knowledge-search limits (default `12`, bounded `1..32`), pre-I/O rejection of the next over-budget call, authority/egress rechecks, and bounded timeout;
-- normal hybrid retrieval plus classified query-embedding degradation to exact, metadata, and `simple`/English/Russian lexical lanes, while database, authority, SQL, and invariant failures remain visible;
+- normal hybrid retrieval plus classified query-embedding degradation that retains authorized nonsemantic candidates, while database, lexical-backend, authority, SQL, and invariant failures remain visible;
 - named relevance eligibility before weighted reciprocal-rank fusion, exact preservation, weak-nearest-neighbor rejection, occurrence deduplication, cross-call evidence novelty, soft Source diversity, and same-Source neighbor bounds;
 - completed result replay in execution/recovery and normal `no_relevant_evidence` continuation after every generated candidate is ineligible;
 - real PostgreSQL `pg_trgm` evidence for query-first containment-like metadata matching, including beginning, middle, and irrelevant stored values;

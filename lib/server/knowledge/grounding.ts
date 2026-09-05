@@ -81,6 +81,7 @@ import {
   type KnowledgeAnswerOperationRequestSnapshotV40
 } from "./answerGroundingSnapshotV40";
 import type { KnowledgeContributionExecutionReceiptV1 } from "./answerGroundingExecutionV40";
+import type { KnowledgeGroundingEvidenceV57, KnowledgeGroundingEvidenceV58 } from "./evidenceAnswerGroundingV1";
 
 export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
 export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V7 = 7 as const;
@@ -1088,7 +1089,9 @@ export type KnowledgeGroundingResult =
   | KnowledgeGroundingEvidenceV53
   | KnowledgeGroundingEvidenceV54
   | KnowledgeGroundingEvidenceV55
-  | KnowledgeGroundingEvidenceV56;
+  | KnowledgeGroundingEvidenceV56
+  | KnowledgeGroundingEvidenceV57
+  | KnowledgeGroundingEvidenceV58;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -3812,7 +3815,7 @@ export function groundSettledKnowledgeAnswerV56(input: Readonly<{
   settlement: KnowledgeAnswerSettlementV5;
 }>): KnowledgeGroundingEvidenceV56 {
   const roles = input.operations.map(({ role }) => role);
-  const rolePattern = /^primary,scope(?:,scope_repair)?,scope_completeness(?:,scope_completeness_repair)?,initial(?:,repair)?(?:,scope_closure(?:,scope_closure_repair)?)?(?:,supplement)?(?:,final(?:,final)?)?$/u;
+  const rolePattern = /^primary(?:,primary)?,scope(?:,scope_repair)?,scope_completeness(?:,scope_completeness_repair)?,initial(?:,repair)?(?:,scope_closure(?:,scope_closure_repair)?)?(?:,supplement)?(?:,final(?:,final)?)?$/u;
   const purposeForRole: Record<KnowledgeGroundingOperationEvidenceV56["role"], KnowledgeAnswerOperationV40> = {
     primary: "knowledge_answer_draft_v21",
     scope: "knowledge_coverage_scope_v7", scope_repair: "knowledge_coverage_scope_v7",

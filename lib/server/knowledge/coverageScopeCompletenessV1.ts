@@ -7,6 +7,7 @@ import {
   knowledgeCoverageAtomContextContract,
   knowledgeCoverageAtomProjectionName,
   validateDecodedKnowledgeCoverageScopeV6,
+  knowledgeCoverageFindingIdentityV1,
   validateKnowledgeCoverageScopeV6,
   type KnowledgeCoverageEvidenceV6,
   type KnowledgeCoverageFindingOutputV1,
@@ -307,10 +308,10 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
   if (merged.kind !== "accepted") {
     return rejected("coverage_scope_completeness_addition_invalid");
   }
-  const additionDescriptions = new Set(additions.map(({ description }) =>
-    description.normalize("NFC")));
-  const canonicalAdditions = merged.value.scope.filter(({ description }) =>
-    additionDescriptions.has(description.normalize("NFC")));
+  const additionIdentities = new Set(additions.map((item) =>
+    knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion)));
+  const canonicalAdditions = merged.value.scope.filter((item) =>
+    additionIdentities.has(knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion)));
   if (canonicalAdditions.length !== additions.length) {
     return rejected("coverage_scope_completeness_addition_invalid");
   }
@@ -415,13 +416,13 @@ export function validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(
   if (canonical.kind !== "accepted" || canonical.value.scope.length !== value.scope.length) {
     return false;
   }
-  const canonicalByDescription = new Map(canonical.value.scope.map((item) => [
-    item.description.normalize("NFC"),
+  const canonicalByIdentity = new Map(canonical.value.scope.map((item) => [
+    knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion),
     item
   ] as const));
   return value.scope.every((candidate) => {
     const item = candidate as KnowledgeCoverageScopeV6["scope"][number];
-    const expected = canonicalByDescription.get(item.description.normalize("NFC"));
+    const expected = canonicalByIdentity.get(knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion));
     return Boolean(expected) && knowledgeAnswerCanonicalJson({
       description: item.description,
       evidenceAtomIds: item.evidenceAtomIds,

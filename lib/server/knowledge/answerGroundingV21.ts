@@ -1628,6 +1628,7 @@ export function knowledgeAnswerOperationExecutionRoleV21(
 }
 
 export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly<{
+  workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7;
   auditPayloadHash?: string | null;
   contractVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 17 | 18 | 19 | 20 | 21 | 22;
   coverageScopePayloadHash?: string | null;
@@ -1678,6 +1679,7 @@ export function createKnowledgeAnswerOperationRequestSnapshotV21(input: Readonly
     if (input.auditPayloadHash !== undefined) throw new Error("knowledge_answer_operation_request_invalid");
     return createKnowledgeAnswerOperationRequestSnapshotV40(input);
   }
+  if (input.workflowVersion !== undefined) throw new Error("knowledge_answer_operation_request_invalid");
   const scopeProtocol = input.protocol ?? null;
   const scopedProtocol = scopeProtocol !== null;
   const metadata = scopeProtocol ===

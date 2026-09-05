@@ -1,4 +1,6 @@
 import type { ChatUpdateDataWire } from "../../contracts/chats";
+import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
+import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
@@ -113,6 +115,7 @@ import {
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
 } from "../knowledge/answerGroundingV5";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import {
   knowledgeEvidenceFromToolResult,
@@ -231,9 +234,11 @@ export type RunExecutionRepository = Pick<
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
   | "groundKnowledgeAnswerV21"
+  | "groundKnowledgeEvidenceAnswer"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
+  | "loadCheckpointedToolLoopRun"
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadModelPricing"
   | "markAssistantMessageGroundedLiveOnly"
@@ -1380,9 +1385,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         result: ProviderRunResult & { usageAttributions: RunUsageAttribution[] };
       }>> {
         const pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: runId });
+        const evidenceAnswer = normalizedRequest.knowledgeAnswerWorkflowVersion === 8 || normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11;
         const groundingUnavailable = !input.knowledgeProviderDispatch ||
-          (pipeline === "v20_v16" && !input.repository.groundKnowledgeAnswerV5) ||
-          (pipeline === "v21_scope_v6" && !input.repository.groundKnowledgeAnswerV21);
+          (evidenceAnswer ? !input.repository.groundKnowledgeEvidenceAnswer :
+            (pipeline === "v20_v16" && !input.repository.groundKnowledgeAnswerV5) ||
+            (pipeline === "v21_scope_v6" && !input.repository.groundKnowledgeAnswerV21));
         if (groundingUnavailable) {
           throw new RunPipelineError(
             pipeline === "v20_v16"
@@ -1404,7 +1411,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           acceptedReasoningEffort: normalizedRequest.reasoningEffort,
           params: normalizedRequest.params
         });
-        const groundingExecutionPolicy = pipeline === "v21_scope_v6"
+        const groundingExecutionPolicy = evidenceAnswer || pipeline === "v21_scope_v6"
           ? resolveKnowledgeGroundingExecutionPolicyV1({
               inheritedReasoningEffort: reasoningEffort,
               modelCapabilities: normalizedRequest.modelCapabilities,
@@ -1431,6 +1438,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ],
           lifecycle: input.knowledgeProviderDispatch,
           modelRunId: runId,
+          ...(normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined && normalizedRequest.knowledgeAnswerWorkflowVersion < 8
+            ? { workflowVersion: normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
           ...(groundingExecutionPolicy
             ? { executionPolicy: groundingExecutionPolicy }
             : { reasoningEffort }),
@@ -1443,6 +1452,37 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             ? "native_strict"
             : "provider_neutral_json"
         } as const;
+        if (evidenceAnswer) {
+          const evidenceInput = { ...executionInput, executionPolicy: groundingExecutionPolicy!,
+            onOperationAccepted(operation: { usage: ModelRunUsage }) {
+              rememberReportedUsage(normalizedRequest.provider, normalizedRequest.modelId, operation.usage);
+            } };
+          const operationResult = normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11
+            ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...evidenceInput,
+                workflowVersion: normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11 ? normalizedRequest.knowledgeAnswerWorkflowVersion : undefined,
+                refineEvidence: (result, previousEvidence) => fullContextPlan ? Promise.resolve(null) : refineKnowledgeEvidence({
+                  authorize: authorizeKnowledgeAnswerOperation, executor: input.knowledgeExecutor,
+                  memoryEgress: input.memoryEgress, repository: input.repository,
+                  previousEvidence,
+                  request: input.prepared.providerRequest, result, runId, signal, userId: input.userId,
+                  async onResult(toolResult) {
+                    for (const attribution of knowledgeUsageAttributionsFromToolResult(toolResult)) {
+                      rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
+                    }
+                    for (const artifact of toolResult.artifacts ?? []) await emit(controller, encoder, input.repository, runId, artifact);
+                  }
+                }) })
+            : await executeKnowledgeEvidenceAnswerV1(evidenceInput);
+          const usageAttributions = operationResult.operations.map(operation => ({
+            modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, usage: operation.usage
+          }));
+          const providerResponseId = operationResult.operations.at(-1)?.providerResponseId;
+          return Object.freeze({ contracts: operationResult.contracts, result: {
+            finalText: "", finalProviderResponsePreview: { ...operationResult.contracts, structuredKnowledgeAnswer: true },
+            ...(providerResponseId ? { providerResponseId } : {}),
+            usage: sumTokenUsage(usageAttributions.map(entry => entry.usage)), usageAttributions
+          } });
+        }
         const operationResult = pipeline === "v21_scope_v6"
           ? await executeKnowledgeAnswerGroundingV21(executionInput)
           : await executeKnowledgeAnswerGroundingV8(executionInput);
@@ -1647,7 +1687,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const isSearchCall = (name: string) =>
           searchPlanRouter?.accepts(name) === true;
         const knowledgeTools = clientToolsEnabled && admittedKnowledgeReady
-          ? input.knowledgeExecutor?.tools ?? []
+          ? knowledgeRetrievalToolsForRequest(normalizedRequest, input.knowledgeExecutor?.tools ?? [])
           : [];
         const isKnowledgeCall = (name: string) =>
           knowledgeTools.length > 0 && input.knowledgeExecutor?.accepts(name) === true;

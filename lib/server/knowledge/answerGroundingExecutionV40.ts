@@ -1,7 +1,8 @@
 import {
   isKnowledgeDraftMalformed,
   knowledgeAnswerHash,
-  type KnowledgeAnswerDraftSelectorInput
+  type KnowledgeAnswerDraftSelectorInput,
+  type KnowledgeSelectorValidationFailureReason
 } from "./answerGroundingV5";
 import { acceptedOperation } from "./answerGroundingExecutionV21";
 import type {
@@ -50,8 +51,11 @@ import {
 import { KNOWLEDGE_GROUNDED_SELECTOR_V21_MAX_OUTPUT_TOKENS } from "./answerGroundingSelectorV21";
 import { KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS } from "./answerGroundingV21";
 import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_MAX_OUTPUT_TOKENS } from "./coverageScopeClosureV2";
+import { KnowledgeAnswerContractError } from "./grounding";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from "./groundingExecutionPolicy";
 import type { KnowledgeCoverageLimitationsV1 } from "./searchFailure";
+import { decodeKnowledgeContributionOperationFailureV1,
+  knowledgeContributionOperationFailureV1 as failure } from "./answerGroundingOperationFailureV1";
 
 export type KnowledgeContributionExecutionReceiptV1 = Readonly<{
   coverageLimitations: KnowledgeCoverageLimitationsV1;
@@ -85,17 +89,8 @@ export type KnowledgeContributionExecutionReceiptV1 = Readonly<{
   publicationPlanHash: string;
 }>;
 
-const failureReasons = ["invalid_output", "timeout", "refusal", "transport", "provider_error"] as const;
-type FailureReason = typeof failureReasons[number];
-function failure(reason: FailureReason): Readonly<Record<string, unknown>> {
-  return Object.freeze({ kind: "contribution_operation_failed", reason, version: 1 });
-}
-function failureReason(value: unknown): FailureReason | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const fields = value as Record<string, unknown>;
-  return Object.keys(fields).length === 3 && fields.kind === "contribution_operation_failed" &&
-    fields.version === 1 && failureReasons.includes(fields.reason as FailureReason)
-    ? fields.reason as FailureReason : null;
+function failureReason(value: unknown) {
+  return decodeKnowledgeContributionOperationFailureV1(value)?.reason ?? null;
 }
 function providerFailure(error: unknown): Readonly<Record<string, unknown>> {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
@@ -121,7 +116,8 @@ export async function executeKnowledgeAnswerContributionsV40(input: Readonly<{
 }>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const operations = [...input.operations];
   const execution = input.execution;
-  const selectorInput = { ...input.selectorInput, coverageLimitations: execution.draft.coverageLimitations, draft: input.primaryDraft };
+  const selectorInput = { ...input.selectorInput, coverageLimitations: execution.draft.coverageLimitations, draft: input.primaryDraft,
+    ...(execution.workflowVersion === 7 ? { literalClaimText: true as const } : {}) };
   const coverageScopePayloadHash = knowledgeAnswerHash(selectorInput.scope);
   const run = async (step: Readonly<{
     operation: KnowledgeAnswerOperationV40;
@@ -135,6 +131,7 @@ export async function executeKnowledgeAnswerContributionsV40(input: Readonly<{
     const ordinal = (operations.length + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
     const request = createKnowledgeAnswerOperationRequestSnapshotV40({
       ...step.prompt,
+      ...(execution.workflowVersion !== undefined ? { workflowVersion: execution.workflowVersion } : {}),
       contractVersion: step.contractVersion,
       coverageScopePayloadHash,
       evidenceReceiptHash: execution.draft.manifestHash,
@@ -165,6 +162,7 @@ export async function executeKnowledgeAnswerContributionsV40(input: Readonly<{
   };
 
   let selector: KnowledgeGroundedSelectorV22 | null = null;
+  let selectorRepairReason: KnowledgeSelectorValidationFailureReason = "selector_malformed";
   for (const selectorPass of ["initial", "repair"] as const) {
     const output = await run({
       contractVersion: 22,
@@ -172,28 +170,35 @@ export async function executeKnowledgeAnswerContributionsV40(input: Readonly<{
       operation: KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V22,
       prompt: knowledgeGroundedSelectorPromptV22({
         ...selectorInput,
+        ...(execution.workflowVersion !== undefined ? { workflowVersion: execution.workflowVersion } : {}),
         evidenceManifest: execution.draft.message,
-        ...(selectorPass === "repair" ? { repairReason: "selector_malformed" as const } : {}),
+        ...(selectorPass === "repair" ? { repairReason: selectorRepairReason } : {}),
         selectorPass
       }),
       schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V22,
       accept: (output) => {
         const validation = validateKnowledgeGroundedSelectorV22(output, selectorInput);
-        return validation.kind === "accepted" ? knowledgeSelectorPayloadV22(validation.value) : failure("invalid_output");
+        return validation.kind === "accepted" ? knowledgeSelectorPayloadV22(validation.value) : failure("invalid_output", validation.reason);
       }
     });
     const reason = failureReason(output);
     if (reason) {
+      if (reason !== "invalid_output") throw new Error("knowledge_grounded_selector_result_invalid");
       if (reason === "invalid_output" && selectorPass === "initial" && operations.length < 8 &&
-        !isKnowledgeDraftMalformed(input.primaryDraft)) continue;
-      throw new Error("knowledge_grounded_selector_result_invalid");
+        !isKnowledgeDraftMalformed(input.primaryDraft)) {
+        selectorRepairReason = decodeKnowledgeContributionOperationFailureV1(output)?.validationReason ?? "selector_malformed";
+        continue;
+      }
+      throw new KnowledgeAnswerContractError("knowledge_answer_contract_failed", "The Knowledge answer contributions could not be verified.");
     }
     const validation = validateKnowledgeGroundedSelectorV22(output, selectorInput);
-    if (validation.kind !== "accepted") throw new Error("knowledge_grounded_selector_result_invalid");
+    if (validation.kind !== "accepted") throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed", "The Knowledge answer contributions could not be verified.");
     selector = validation.value;
     break;
   }
-  if (!selector) throw new Error("knowledge_grounded_selector_result_invalid");
+  if (!selector) throw new KnowledgeAnswerContractError(
+    "knowledge_answer_contract_failed", "The Knowledge answer contributions could not be verified.");
   let checkpoint: KnowledgePublicationInputV1 = { ...selectorInput, selector };
   let closureReceipt: KnowledgeContributionExecutionReceiptV1["closure"] = null;
   let correctionAccepted = false;
@@ -322,6 +327,7 @@ export async function executeKnowledgeAnswerContributionsV40(input: Readonly<{
     contracts: KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1,
     crossTargetExactRepeatCount: 0,
     operations: Object.freeze(operations),
-    settlement: renderKnowledgePublicationPlanV1({ ...checkpoint, plan: publicationPlan })
+    settlement: renderKnowledgePublicationPlanV1({ ...checkpoint, plan: publicationPlan,
+      ...(execution.workflowVersion !== undefined ? { labelVersion: execution.workflowVersion === 7 ? 3 as const : 2 as const } : {}) })
   });
 }

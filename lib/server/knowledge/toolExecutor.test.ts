@@ -588,6 +588,48 @@ describe("Knowledge executor surface", () => {
     }));
   });
 
+  it.each([undefined, 2] as const)("applies the admitted long-question anchor policy before embedding and hybrid retrieval (%s)", async (knowledgeQueryAnchorVersion) => {
+    const question = `Explain the sensor behavior.\n${"🧠測定 ".repeat(800)}\nThe required output is an ordered list.`;
+    const modelQuery = "sensor processing order";
+    const embed = vi.fn(async ({ texts }: { texts: readonly string[] }) => ({
+      model: "embedding-upstream", requestId: "embedding-anchor-policy",
+      usage: { inputTokens: texts.length, totalTokens: texts.length },
+      vectors: texts.map(() => Array.from({ length: 1_024 }, () => 0.03125))
+    }));
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(async () => lexicalSearchResult());
+    const { store } = automaticStore(hybridSearch);
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve: vi.fn(async () => ({
+        adapter: { embed }, configuration: embeddingConfiguration,
+        provider: "openai_compatible", providerModelId: "embedding-model-1"
+      })) }, store
+    });
+    const acceptedRequest = request({
+      content: { blocks: [{ text: question, type: "text" }] },
+      ...(knowledgeQueryAnchorVersion ? { knowledgeQueryAnchorVersion } : {})
+    });
+    const result = await runtime.execute({
+      arguments: { query: modelQuery, sourceAliases: [] }, id: "long-anchor-call", name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, { persistedToolCallId: "long-anchor-tool-call", request: acceptedRequest, runId: "run-anchor", userId: "user-1" });
+    expect(result.status).toBe("complete");
+    expect(embed).toHaveBeenCalledTimes(1);
+    expect(hybridSearch).toHaveBeenCalledTimes(1);
+    const retrieval = hybridSearch.mock.calls[0]![0];
+    expect(retrieval.query).toBe(modelQuery);
+    if (knowledgeQueryAnchorVersion === 2) {
+      expect([...retrieval.anchorQuery!]).toHaveLength(3_000);
+      expect(retrieval.anchorQuery).toMatch(/^Explain the sensor behavior\./u);
+      expect(retrieval.anchorQuery).toMatch(/The required output is an ordered list\.$/u);
+      expect(embed).toHaveBeenCalledWith({ mode: "query", texts: [retrieval.anchorQuery, modelQuery] });
+      expect(retrieval.vectors).toHaveLength(2);
+    } else {
+      expect(retrieval).not.toHaveProperty("anchorQuery");
+      expect(embed).toHaveBeenCalledWith({ mode: "query", texts: [modelQuery] });
+      expect(retrieval.vectors).toHaveLength(1);
+    }
+    expect(acceptedRequest.content.blocks).toEqual([{ text: question, type: "text" }]);
+  });
+
   it("keeps equal-text Beta after Alpha across stored history, retrieval, tool delivery and publication", async () => {
     const sources = [1, 2].map((index) => ({
       ...lexicalSearchResult().passages[0]!, chunkId: `chunk-${index}`, chunkIndex: 0,
@@ -651,7 +693,7 @@ describe("Knowledge executor surface", () => {
     expect(accepted.map((receipt) => receipt.results.map(({ documentId }) => documentId)))
       .toEqual([["source-1", "source-2"], ["source-2"], []]);
     expect(accepted[2]?.outcome).toBe("no_relevant_evidence");
-    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([5, 5]);
+    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([8, 8]);
     const results = accepted.flatMap((receipt) => receipt.results);
     const manifest = packKnowledgeEvidenceDispatchManifest({
       candidates: results.map((result, index) => ({ ambiguity: "none" as const,

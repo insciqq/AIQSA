@@ -258,7 +258,7 @@ as zero failures or complete reliability measurements.
 
 ### BRIGHT end-to-end answer diagnostic
 
-`benchmark:knowledge:bright:answer` runs the first 1–10 official questions
+`benchmark:knowledge:bright:answer` runs 1–5 consecutive official questions
 (five by default) through ordinary authenticated chat with the whole retained
 Base. The answer model chooses its own Knowledge searches and uses the normal
 grounding pipeline. A separate, no-Knowledge judge chat compares the final
@@ -282,14 +282,18 @@ without provider calls:
 ```bash
 docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml --profile answer up -d --no-deps benchmark-web
 docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
-  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-web \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
   npm run benchmark:knowledge:bright:answer -- --query-limit 5 --preflight-only \
   --output results/bright-answer-five
 ```
 
 The retained PostgreSQL/MinIO/OpenSearch services must already be running and
 migrations current. `benchmark-web` has a two-CPU/3-GiB limit and runs the
-ordinary app, including its background coordinators. Stop just this sibling
+ordinary app, including its background coordinators. Run the answer CLI in
+the separate two-CPU/2-GiB `benchmark-runner`: corpus preflight and the app's
+development compiler can exceed the web memory limit when combined. The CLI
+uses the retained web service over the private Compose network.
+Stop just the web sibling
 when returning to a retrieval-only stand; never delete retained volumes.
 Run the CLI with the workspace owner's numeric UID/GID (`exec -T --user
 1000:1000` on the supplied local stand) so private exports stay owner-readable.
@@ -301,30 +305,40 @@ judge provider work, settle one question first, then continue the same five:
 
 ```bash
 docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
-  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-web \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
   npm run benchmark:knowledge:bright:answer -- --query-limit 5 --batch-size 1 \
   --confirm-paid BRIGHT_ANSWER_JUDGE --output results/bright-answer-five
 
 docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f benchmarks/knowledge/docker-compose.yml exec -T \
-  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-web \
+  -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
   npm run benchmark:knowledge:bright:answer -- --query-limit 5 --resume \
   --confirm-paid BRIGHT_ANSWER_JUDGE --output results/bright-answer-five
 ```
 
-Concurrency is fixed at one; no full-run flag exists. The manifest freezes
+Use `--query-offset 5`, then `10`, etc. with a fresh output directory for each
+successive batch. The offset is zero-based; the final two questions use
+`--query-offset 115 --query-limit 2`. Keep the offset and limit unchanged on
+resume. Concurrency is fixed at one; no full-run flag exists. The manifest freezes
 dataset, selected queries/evaluator, Source snapshot, profile, model execution
 hashes, reranker, controls, policies, and executable source fingerprint. A
 changed pin requires a new output directory. Each stage is reserved before
 HTTP dispatch and checkpointed independently. A resumed submitted request is
-reconciled against its exact owned chat, never automatically resent. A failed
-or ambiguous chat stage stops new scheduling and preserves the available trace.
-Completed answers containing tool errors remain explicit diagnostic failures.
+reconciled against its exact owned chat, never automatically resent. A confirmed
+terminal Knowledge answer-contract or retrieval error settles that case without
+a judge and continues to the next question in the same bounded batch. Its
+verdict remains null and its technical failure is counted. Cancellation,
+unclassified/provider errors, ambiguity, access loss and pin drift stop new
+scheduling and preserve the available trace. Completed answers containing tool
+errors remain explicit diagnostic failures. Summary `complete` means every
+requested case has settled; `evaluated` counts only judged answers, and
+`terminalAnswerFailures` remains separate from correctness verdicts.
 
 Unlike aggregate-only retrieval results, this explicitly requested diagnostic
 has a **private content-bearing export** beneath ignored `results/` only:
 directories are `0700`, JSON files `0600`, with checksum envelopes and a
 single-writer lock. Per-question `001/` etc. contain the request, normalized
 SSE timeline, answer trace, evaluator input, judge trace, judgment, and outcome;
+directories keep the original one-based question ordinal across batches.
 `summary.json` has aggregate correctness and grounding counts. JSON checkpoint
 payloads are under `value`. The trace includes admitted instructions, Knowledge
 queries/results, exact delivered excerpts, accepted grounding requests/results,
@@ -336,7 +350,10 @@ Do not commit, publish, or attach these exports without separate review.
 `report.json` brings each question, reference, answer, judgment, and technical
 diagnosis together. It distinguishes failed tool calls from persisted retrieval
 receipts: a completed chat with a pre-retrieval failure is not a healthy
-zero-result search. Rebuild this derived report offline, including after a code
+zero-result search. Accepted malformed Draft, Scope, completeness, and
+contribution-operation failure markers count even when provider transport
+succeeded. Historical version-1/2 manifests remain readable by the offline
+reporter; new paid batches use version 3. Rebuild this derived report offline, including after a code
 change, without changing paid checkpoints or contacting any service:
 
 ```bash

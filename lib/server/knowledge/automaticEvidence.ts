@@ -9,6 +9,7 @@ import {
   KNOWLEDGE_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -205,13 +206,14 @@ function toolLoopKnowledgeEvidenceHeader(): string {
 
 export function toolLoopKnowledgeEvidenceDispatchDraft(input: Readonly<{
   exclusions?: readonly KnowledgeRunAdmissionExclusion[];
+  retainedItems?: KnowledgeEvidenceDispatchManifestDraft["items"];
   request: ProviderRunRequest;
   results: readonly ToolExecutionResult[];
 }>): KnowledgeEvidenceDispatchManifestDraft | null {
   const retrievalFailures = [...new Set(input.results.map(knowledgeSearchFailureFromToolResult).filter((code) => code !== null))].sort();
   const coverageLimitations = { excludedResources: (input.exclusions ?? []).reduce((sum, item) => sum + item.count, 0),
     retrievalFailures, version: 1 as const };
-  const candidates = input.request.knowledgeEvidencePackingVersion === 3
+  const candidates = input.request.knowledgeEvidencePackingVersion === 3 || input.request.knowledgeEvidencePackingVersion === 4
     ? occurrenceDispatchCandidates(input.results)
     : input.results.flatMap((result, index) => knowledgeEvidenceDispatchCandidatesFromToolResult(result, index + 1));
   if (candidates.every((candidate) => candidate.state !== "available")) {
@@ -222,6 +224,7 @@ export function toolLoopKnowledgeEvidenceDispatchDraft(input: Readonly<{
   const draft = packKnowledgeEvidenceDispatchManifest({
     allowExpandedContextOmission: true,
     candidates,
+    retainedItems: input.retainedItems,
     coverageLimitations,
     coverageStatement: ["Coverage is limited to the final settled Knowledge tool evidence supplied below.",
       ...knowledgeCoverageLimitationNotes(coverageLimitations)].join("\n"),
@@ -229,7 +232,9 @@ export function toolLoopKnowledgeEvidenceDispatchDraft(input: Readonly<{
     header: toolLoopKnowledgeEvidenceHeader(),
     maximumBytes,
     maximumTokens: Math.max(1, Math.floor(maximumBytes / 4)),
-    packingVersion: input.request.knowledgeEvidencePackingVersion === 3
+    packingVersion: input.request.knowledgeEvidencePackingVersion === 4
+      ? KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION
+      : input.request.knowledgeEvidencePackingVersion === 3
       ? KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION
       : input.request.knowledgeEvidencePackingVersion === 2
       ? KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION : KNOWLEDGE_EVIDENCE_PACKING_VERSION,

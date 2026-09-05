@@ -23,6 +23,14 @@ describe("safe Knowledge search failure projection", () => {
     expect(knowledgeSearchFailureToolResult(call, new OpenSearchTransportError("opensearch_authentication_failed")))
       .toMatchObject({ rawPreview: { knowledgeFailure: { code: "opensearch_authentication_failed" } } });
   });
+  it("retains the bounded SQL timeout classification without its underlying query or cause", () => {
+    const result = knowledgeSearchFailureToolResult({ id: "call-1", name: "search_knowledge", arguments: {} },
+      new Error("knowledge_retrieval_query_timed_out", { cause: new Error("PRIVATE_DATABASE_QUERY") }));
+    expect(result).toMatchObject({ status: "error", rawPreview: { knowledgeFailure: {
+      code: "knowledge_retrieval_query_timed_out", stage: "search", version: 1
+    } } });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_DATABASE_QUERY");
+  });
   it("rejects malformed or private coverage limitations", () => {
     const valid = { excludedResources: 1, retrievalFailures: ["opensearch_timeout"], version: 1 };
     expect(decodeKnowledgeCoverageLimitationsV1(JSON.parse(JSON.stringify(valid)))).toEqual(valid);

@@ -66,6 +66,7 @@ import {
   KNOWLEDGE_SEARCH_ANALYZER_PROFILE,
   KNOWLEDGE_SEARCH_BACKEND_KIND,
   KNOWLEDGE_SEARCH_MAPPING_VERSION,
+  KNOWLEDGE_SEARCH_MAX_MERGED_HITS,
   KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION
 } from "../search/opensearch/contract";
 import type { KnowledgeLexicalBackendEvidenceV1 } from "./searchRetrieval";
@@ -110,7 +111,7 @@ function decodeKnowledgeLexicalBackendEvidence(
     value.physicalIndexVersion !== KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION ||
     value.mappingVersion !== KNOWLEDGE_SEARCH_MAPPING_VERSION ||
     value.analyzerProfile !== KNOWLEDGE_SEARCH_ANALYZER_PROFILE ||
-    value.rankingProfileVersion !== 4 && value.rankingProfileVersion !== 5 || value.status !== "complete" ||
+    value.rankingProfileVersion !== 4 && value.rankingProfileVersion !== 5 && value.rankingProfileVersion !== 6 && value.rankingProfileVersion !== 7 && value.rankingProfileVersion !== 8 || value.status !== "complete" ||
     value.projectionCompleteness !== "complete" || value.timedOut !== false ||
     value.canonicalRejectionCount !== 0 ||
     nonNegativeInteger(value.candidateCount) === null ||
@@ -1322,6 +1323,9 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     .filter((entry) => entry.status === "error")
     .flatMap((entry) => entry.bindingOrdinals));
   const advanced = fusion === "weighted_rrf_v2";
+  const ftsRankLimit = advanced && (lexicalBackend?.rankingProfileVersion === 6 || lexicalBackend?.rankingProfileVersion === 7 || lexicalBackend?.rankingProfileVersion === 8)
+    ? KNOWLEDGE_SEARCH_MAX_MERGED_HITS
+    : advanced ? 100 : candidateLimit;
   const resultHandles = decodedResults.map((result) =>
     decodeKnowledgeCitationHandle(result.handle));
   const sourceAliases = scopeAliases?.filter((alias): alias is KnowledgeEvidenceScopeAlias =>
@@ -1426,7 +1430,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     new Set(decodedResults.map((result) => result.handle)).size !== decodedResults.length ||
     decodedResults.some((result) =>
       result.annRank !== null && result.annRank > (advanced ? 100 : candidateLimit) ||
-      result.ftsRank !== null && result.ftsRank > (advanced ? 100 : candidateLimit) ||
+      result.ftsRank !== null && result.ftsRank > ftsRankLimit ||
       result.structuredAnalysis !== undefined || result.visualAnalysis !== undefined ||
       (deterministicRead || deterministicExact
         ? false

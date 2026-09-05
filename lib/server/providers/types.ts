@@ -109,7 +109,17 @@ export type NormalizedRunRequest = {
   }>;
   /** Durable evidence-packing policy for Knowledge tool-loop recovery. Older
    * accepted requests omit it and retain chronological V1 packing. */
-  knowledgeEvidencePackingVersion?: 2 | 3;
+  knowledgeEvidencePackingVersion?: 2 | 3 | 4;
+  /** Frozen instructions, Scope anchor projection and publication rendering.
+   * Omission preserves the previously accepted Knowledge workflow. */
+  knowledgeAnswerWorkflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  /** Frozen retrieval instructions, independent of answer-stage versions.
+   * V2 pins the tool descriptor; V3 also pins the retrieval system contract.
+   * Omission retains historical descriptor and workflow-based selection. */
+  knowledgeSearchInstructionVersion?: 2 | 3;
+  /** Bounded original-question projection for retrieval. Omission retains
+   * historical rejection of overlong anchors during execution/recovery. */
+  knowledgeQueryAnchorVersion?: 2;
   knowledgePlan: KnowledgePlan;
   /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
    * admission rejects it and execution/recovery terminalize it. */

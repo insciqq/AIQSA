@@ -450,7 +450,17 @@ export type KnowledgeAnswerDraftV5 = Readonly<{
 export type KnowledgeAnswerDraftValidationFailureReason =
   | "draft_citation_shape_invalid"
   | "draft_claim_shape_invalid"
+  | "draft_claim_citation_invalid"
+  | "draft_claim_control_character"
+  | "draft_claim_identity_invalid"
+  | "draft_claim_markup_invalid"
+  | "draft_claim_backtick_invalid"
+  | "draft_claim_emphasis_invalid"
+  | "draft_claim_html_invalid"
+  | "draft_claim_link_invalid"
+  | "draft_claim_block_prefix_invalid"
   | "draft_claim_text_invalid"
+  | "draft_claim_too_long"
   | "draft_duplicate_claim"
   | "draft_duplicate_handle"
   | "draft_shape_invalid"
@@ -577,9 +587,19 @@ export type KnowledgeSelectorValidationFailureReason =
   | "selector_claim_set_invalid"
   | "selector_coverage_invalid"
   | "selector_dimension_invalid"
+  | "selector_dimension_id_invalid"
+  | "selector_contribution_shape_invalid"
+  | "selector_contribution_not_supported"
+  | "selector_contribution_provenance_invalid"
+  | "selector_covered_contributions_empty"
+  | "selector_excluded_contributions_nonempty"
+  | "selector_excluded_required_dimension"
+  | "selector_unknown_contribution_id"
   | "selector_draft_incompatible"
   | "selector_literal_budget_invalid"
+  | "selector_literal_count_exceeded"
   | "selector_literal_duplicate"
+  | "selector_literal_id_invalid"
   | "selector_literal_format_invalid"
   | "selector_literal_not_contiguous"
   | "selector_literal_shape_invalid"
@@ -593,9 +613,19 @@ const selectorValidationFailureReasons = new Set<KnowledgeSelectorValidationFail
   "selector_claim_set_invalid",
   "selector_coverage_invalid",
   "selector_dimension_invalid",
+  "selector_dimension_id_invalid",
+  "selector_contribution_shape_invalid",
+  "selector_contribution_not_supported",
+  "selector_contribution_provenance_invalid",
+  "selector_covered_contributions_empty",
+  "selector_excluded_contributions_nonempty",
+  "selector_excluded_required_dimension",
+  "selector_unknown_contribution_id",
   "selector_draft_incompatible",
   "selector_literal_budget_invalid",
+  "selector_literal_count_exceeded",
   "selector_literal_duplicate",
+  "selector_literal_id_invalid",
   "selector_literal_format_invalid",
   "selector_literal_not_contiguous",
   "selector_literal_shape_invalid",
@@ -1985,7 +2015,9 @@ function validPlainClaimTextCommonMarkV1(
     !citationMarkerPattern.test(value) &&
     !rawHtmlPattern.test(value) &&
     !markdownLinkPattern.test(value) &&
-    !markdownFencePattern.test(value) &&
+    !/`/u.test(value) &&
+    // An unmatched emphasis opener is literal text. The legacy fence
+    // expression also rejects such openers before delimiter pairing runs.
     !containsKnowledgeClaimMarkdownEmphasisV1(value) &&
     !/~~[^~\n]+~~/u.test(value) &&
     !markdownLinePrefixPattern.test(value) &&
@@ -2084,7 +2116,17 @@ export type KnowledgeAnswerDraftValidationV6 =
 const draftValidationFailureReasons = new Set<KnowledgeAnswerDraftValidationFailureReason>([
   "draft_citation_shape_invalid",
   "draft_claim_shape_invalid",
+  "draft_claim_citation_invalid",
+  "draft_claim_control_character",
+  "draft_claim_identity_invalid",
+  "draft_claim_markup_invalid",
+  "draft_claim_backtick_invalid",
+  "draft_claim_emphasis_invalid",
+  "draft_claim_html_invalid",
+  "draft_claim_link_invalid",
+  "draft_claim_block_prefix_invalid",
   "draft_claim_text_invalid",
+  "draft_claim_too_long",
   "draft_duplicate_claim",
   "draft_duplicate_handle",
   "draft_shape_invalid",
@@ -2095,6 +2137,22 @@ function rejectedDraftV6(
   reason: KnowledgeAnswerDraftValidationFailureReason
 ): KnowledgeAnswerDraftValidationV6 {
   return Object.freeze({ kind: "rejected", reason });
+}
+
+/** Refines a known rejection without retaining any rejected provider text. */
+function rejectedClaimTextReason(value: unknown, forbidden: readonly string[]): KnowledgeAnswerDraftValidationFailureReason {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) return "draft_claim_text_invalid";
+  if (codePoints(value) > KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaimCodePoints) return "draft_claim_too_long";
+  if (controlCharacterPattern.test(value)) return "draft_claim_control_character";
+  if (citationMarkerPattern.test(value)) return "draft_claim_citation_invalid";
+  if (containsForbiddenIdentity(value, forbidden)) return "draft_claim_identity_invalid";
+  if (rawHtmlPattern.test(value)) return "draft_claim_html_invalid";
+  if (markdownLinkPattern.test(value)) return "draft_claim_link_invalid";
+  if (/`/u.test(value)) return "draft_claim_backtick_invalid";
+  if (containsKnowledgeClaimMarkdownEmphasisV1(value) ||
+    /~~[^~\n]+~~/u.test(value)) return "draft_claim_emphasis_invalid";
+  if (markdownLinePrefixPattern.test(value)) return "draft_claim_block_prefix_invalid";
+  return "draft_claim_markup_invalid";
 }
 
 /** Validates the semantic candidate payload and assigns all prompt-local
@@ -2108,7 +2166,8 @@ function validateKnowledgeAnswerDraftWithTextV1(
   validText: (
     value: unknown,
     forbiddenIdentityFragments: readonly string[]
-  ) => value is string
+  ) => value is string,
+  preciseTextFailure = false
 ): KnowledgeAnswerDraftValidationV6 {
   if (!record(value) || !exactKeys(value, ["version", "claims"]) ||
     value.version !== KNOWLEDGE_ANSWER_DRAFT_PAYLOAD_VERSION ||
@@ -2126,7 +2185,7 @@ function validateKnowledgeAnswerDraftWithTextV1(
       return rejectedDraftV6("draft_claim_shape_invalid");
     }
     if (!validText(candidate.text, forbidden)) {
-      return rejectedDraftV6("draft_claim_text_invalid");
+      return rejectedDraftV6(preciseTextFailure ? rejectedClaimTextReason(candidate.text, forbidden) : "draft_claim_text_invalid");
     }
     if (claimTexts.has(candidate.text)) {
       return rejectedDraftV6("draft_duplicate_claim");
@@ -2185,8 +2244,22 @@ export function validateKnowledgeAnswerDraftV7(
   return validateKnowledgeAnswerDraftWithTextV1(
     value,
     input,
-    validPlainClaimTextCommonMarkV1
+    validPlainClaimTextCommonMarkV1,
+    true
   );
+}
+
+/** Workflow 7 claim strings are literal data. Punctuation cannot grant
+ * formatting authority; publication escapes it after independent support. */
+export function validateKnowledgeAnswerLiteralDraftV1(
+  value: unknown,
+  input: Parameters<typeof validateKnowledgeAnswerDraftV7>[1]
+): KnowledgeAnswerDraftValidationV6 {
+  return validateKnowledgeAnswerDraftWithTextV1(value, input, (text, forbidden): text is string =>
+    typeof text === "string" && text.length > 0 && text.trim() === text &&
+    codePoints(text) <= KNOWLEDGE_ANSWER_DRAFT_LIMITS.maxClaimCodePoints &&
+    !controlCharacterPattern.test(text) && !citationMarkerPattern.test(text) &&
+    !containsForbiddenIdentity(text, forbidden), true);
 }
 
 export function decodeKnowledgeAnswerDraftV6(
@@ -3764,6 +3837,14 @@ export function escapeKnowledgeAnswerLiteral(value: string): string {
     .replaceAll(">", "&gt;");
   const markdownSafe = htmlSafe.replace(/[\\`*_\[\]()]/gu, "\\$&");
   return markdownSafe.replace(/^(\s{0,3})(#{1,6}|>|[-+]|\d+[.)])(?=\s)/u, "$1\\$2");
+}
+
+/** Literal policy V2 also neutralizes math, strikethrough, tables and block
+ * syntax on every line. Encode entities after punctuation, never twice. */
+export function escapeKnowledgeAnswerLiteralV2(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replace(/[\\`*_~$\[\]()|#+=\-]/gu, "\\$&")
+    .replace(/^(\s{0,3}\d+)\.(?=\s)/gmu, "$1\\.");
 }
 
 function citations(handles: readonly string[]): string {

@@ -14,6 +14,7 @@ import {
   knowledgeAnswerDraftMalformed,
   knowledgeAnswerHash,
   type KnowledgeAnswerDraftSelectorInput,
+  type KnowledgeAnswerDraftValidationFailureReason,
   type KnowledgeAnswerSettlementV5,
   type KnowledgeSelectorValidationFailureReason
 } from "./answerGroundingV5";
@@ -177,6 +178,7 @@ import {
   type KnowledgeContributionExecutionReceiptV1
 } from "./answerGroundingExecutionV40";
 import { validateKnowledgeAnswerDraftContributionsV1 } from "./answerGroundingSelectorV22";
+import { KnowledgeAnswerContractError } from "./grounding";
 
 type OperationOrdinalScopeV6 = OperationOrdinalV21 | 7 | 8;
 
@@ -283,6 +285,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
   snapshotVersion?: 37 | 38 | 39 | 40;
+  workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7;
   transport: "native_strict" | "provider_neutral_json";
 }>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const inheritedReasoningEffort = input.reasoningEffort ?? null;
@@ -299,6 +302,8 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     })
   );
   if (!executionPolicy ||
+    input.workflowVersion !== undefined && (input.workflowVersion !== 2 && input.workflowVersion !== 3 && input.workflowVersion !== 4 && input.workflowVersion !== 5 && input.workflowVersion !== 6 && input.workflowVersion !== 7 ||
+      input.snapshotVersion !== undefined && input.snapshotVersion !== 40) ||
     (input.executionPolicy !== undefined && input.reasoningEffort !== undefined) ||
     (input.snapshotVersion !== undefined && input.snapshotVersion !== 37 &&
       input.snapshotVersion !== 38 && input.snapshotVersion !== 39 && input.snapshotVersion !== 40)) {
@@ -354,51 +359,66 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     ? settleKnowledgeAnswerV21FromFinalSelectorV38(settlementInput)
     : settleKnowledgeAnswerV21FromFinalSelector(settlementInput);
 
-  const draftPrompt = (contributions ? knowledgeAnswerDraftPromptV40 : knowledgeAnswerDraftPromptV21GlobalReducerV1)({
+  const draftPromptInput = {
     draftPass: "primary",
     evidenceManifest: input.draft.message,
     request: input.request,
     routeInstruction: input.routeInstruction
-  });
-  const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
-    contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
-    evidenceReceiptHash: input.draft.manifestHash,
-    maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
-    operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-    ...requestExecutionPolicy,
-    protocol,
-    schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
-    systemPrompt: draftPrompt.systemPrompt,
-    transport: input.transport,
-    userPrompt: draftPrompt.userPrompt
-  });
-  const draftOperation = await acceptedOperation({
-    acceptedFailure: () => operationRecord(KNOWLEDGE_DRAFT_MALFORMED),
-    acceptedOutput: (output) => {
-      const normalizedOutput = normalizeKnowledgeClaimPayloadV1(output);
-      const validation = (contributions ? validateKnowledgeAnswerDraftContributionsV1 : validateKnowledgeAnswerDraftV21CommonMarkV1)(normalizedOutput, {
-        availableHandles: handles,
-        forbiddenIdentityFragments: input.forbiddenIdentityFragments
-      });
-      return operationRecord(validation.kind === "accepted"
-        ? normalizedOutput
-        : knowledgeAnswerDraftMalformed(validation.reason));
-    },
-    acceptedRequest: draftRequest,
-    authorize: input.authorize,
-    draft: input.draft,
-    evidenceBindings: input.evidenceBindings,
-    execute: input.execute,
-    lifecycle: input.lifecycle,
-    modelRunId: input.modelRunId,
-    operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-    ordinal: 1,
-    recoveryProviderResponseId: input.recoveryProviderResponseIds?.[1],
-    shouldAbort: input.shouldAbort
-  });
-  pushOperation(1, KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21, draftOperation);
+  } as const;
+  const runPrimaryDraft = async (ordinal: 1 | 2, repairReason?: KnowledgeAnswerDraftValidationFailureReason) => {
+    const draftPrompt = contributions ? knowledgeAnswerDraftPromptV40({ ...draftPromptInput,
+      ...(input.workflowVersion !== undefined ? { workflowVersion: input.workflowVersion } : {}),
+      ...(repairReason !== undefined ? { repairReason } : {}) })
+      : knowledgeAnswerDraftPromptV21GlobalReducerV1(draftPromptInput);
+    const draftRequest = createKnowledgeAnswerOperationRequestSnapshotV21({
+      contractVersion: KNOWLEDGE_ANSWER_DRAFT_V21_CONTRACT_VERSION,
+      evidenceReceiptHash: input.draft.manifestHash,
+      maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
+      operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      ...requestExecutionPolicy,
+      ...(input.workflowVersion !== undefined ? { workflowVersion: input.workflowVersion } : {}),
+      protocol,
+      schema: KNOWLEDGE_ANSWER_DRAFT_SCHEMA_V21,
+      systemPrompt: draftPrompt.systemPrompt,
+      transport: input.transport,
+      userPrompt: draftPrompt.userPrompt
+    });
+    const draftOperation = await acceptedOperation({
+      acceptedFailure: () => operationRecord(KNOWLEDGE_DRAFT_MALFORMED),
+      acceptedOutput: (output) => {
+        const normalizedOutput = input.workflowVersion === 7 ? output : normalizeKnowledgeClaimPayloadV1(output);
+        const validation = (contributions ? validateKnowledgeAnswerDraftContributionsV1 : validateKnowledgeAnswerDraftV21CommonMarkV1)(normalizedOutput, {
+          availableHandles: handles,
+          forbiddenIdentityFragments: input.forbiddenIdentityFragments,
+          ...(input.workflowVersion === 7 ? { literalClaimText: true as const } : {})
+        });
+        return operationRecord(validation.kind === "accepted"
+          ? normalizedOutput
+          : knowledgeAnswerDraftMalformed(validation.reason));
+      },
+      acceptedRequest: draftRequest,
+      authorize: input.authorize,
+      draft: input.draft,
+      evidenceBindings: input.evidenceBindings,
+      execute: input.execute,
+      lifecycle: input.lifecycle,
+      modelRunId: input.modelRunId,
+      operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
+      ordinal,
+      recoveryProviderResponseId: input.recoveryProviderResponseIds?.[ordinal],
+      shouldAbort: input.shouldAbort
+    });
+    pushOperation(ordinal, KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21, draftOperation);
+    return draftOperation;
+  };
+  let draftOperation = await runPrimaryDraft(1);
+  const firstDraftFailure = decodeKnowledgeAnswerDraftMalformed(draftOperation.acceptedResult);
+  if ((input.workflowVersion === 3 || input.workflowVersion === 4 || input.workflowVersion === 5 || input.workflowVersion === 6 || input.workflowVersion === 7) && firstDraftFailure && "reason" in firstDraftFailure && firstDraftFailure.reason) {
+    draftOperation = await runPrimaryDraft(2, firstDraftFailure.reason);
+  }
   const primaryValidation = contributions ? validateKnowledgeAnswerDraftContributionsV1(draftOperation.acceptedResult, {
-    availableHandles: handles, forbiddenIdentityFragments: input.forbiddenIdentityFragments
+    availableHandles: handles, forbiddenIdentityFragments: input.forbiddenIdentityFragments,
+    ...(input.workflowVersion === 7 ? { literalClaimText: true as const } : {})
   }) : null;
   const primaryDraft = decodeKnowledgeAnswerDraftMalformed(draftOperation.acceptedResult) ??
     (contributions ? primaryValidation?.kind === "accepted" ? primaryValidation.value : null
@@ -407,6 +427,10 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       forbiddenIdentityFragments: input.forbiddenIdentityFragments
     }));
   if (!primaryDraft) throw new Error("knowledge_answer_draft_result_invalid");
+  if ((input.workflowVersion === 3 || input.workflowVersion === 4 || input.workflowVersion === 5 || input.workflowVersion === 6 || input.workflowVersion === 7) && isKnowledgeDraftMalformed(primaryDraft)) {
+    if (!("reason" in primaryDraft) || !primaryDraft.reason) throw new Error("knowledge_answer_draft_result_invalid");
+    throw new KnowledgeAnswerContractError("knowledge_answer_contract_failed", "The Knowledge answer draft could not be verified.");
+  }
 
   if (contributions) {
     const scoped = await executeKnowledgeCoverageScopeV7({ execution: input, executionPolicy, operations });

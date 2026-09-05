@@ -1,4 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { loadSettledKnowledgeEvidenceAnswerOperationsV1 } from "./evidenceDispatchRepository";
+import { decodeKnowledgeEvidenceAnswerSnapshot } from "./evidenceAnswerSnapshot";
+import { replayKnowledgeEvidenceAnswerV1 } from "./evidenceAnswerReplayV1";
+import { groundSettledKnowledgeEvidenceAnswerV1, type KnowledgeEvidenceAnswerOperationReceiptV1 } from "./evidenceAnswerGroundingV1";
 import { KNOWLEDGE_CITATION_V2_MAX } from "../../contracts/knowledge";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
@@ -774,7 +778,7 @@ export async function loadKnowledgeEvidencePackage(
 export async function loadKnowledgeFullContextDispatchRecovery(
   client: EvidenceClient,
   input: Readonly<{
-    knowledgeEvidencePackingVersion?: 2 | 3;
+    knowledgeEvidencePackingVersion?: 2 | 3 | 4;
     maximumTokens: number;
     modelId: string;
     provider: string;
@@ -871,7 +875,7 @@ export async function loadKnowledgeFullContextDispatchRecovery(
   let draft: KnowledgeEvidenceDispatchManifestDraft;
   try {
     draft = packKnowledgeFullContextDispatchManifest({
-      atomIndexVersion: input.knowledgeEvidencePackingVersion === 3 ? 3 : 2,
+      atomIndexVersion: input.knowledgeEvidencePackingVersion === 3 || input.knowledgeEvidencePackingVersion === 4 ? 3 : 2,
       candidates,
       excludedResources: evidence.readiness.excludedResources,
       maximumTokens: input.maximumTokens,
@@ -1655,7 +1659,7 @@ function knowledgeAnswerOperationRole(
   dispatch: StoredKnowledgeEvidenceDispatch,
   operations: StoredKnowledgeAnswerGroundingOperationsV21
 ): KnowledgeGroundingOperationEvidenceV56["role"] {
-  if (dispatch === operations.draft) return "primary";
+  if (dispatch === operations.draft || dispatch === operations.draftRepair) return "primary";
   if (dispatch === operations.initialScope) return "scope";
   if (dispatch === operations.scopeRepair) return "scope_repair";
   if (dispatch === operations.initialCompleteness) return "scope_completeness";
@@ -1691,6 +1695,36 @@ async function loadKnowledgeAnswerBindingFingerprints(client: EvidenceClient, ru
   });
 }
 
+export async function groundKnowledgeEvidenceRunAnswerV1(
+  client: EvidenceClient,
+  input: Readonly<{ runId: string; userId: string }>
+): Promise<KnowledgeRunFinalizationEnvelope> {
+  const authorization = await loadKnowledgeGroundingEvidencePackage(client, input);
+  if (!authorization) throw Error("knowledge_evidence_receipt_invalid");
+  const dispatches = await loadSettledKnowledgeEvidenceAnswerOperationsV1(client, { modelRunId: input.runId });
+  if (dispatches.some(dispatch => dispatch.retrievalSessionId !== authorization.evidence.sessionId)) throw Error("knowledge_evidence_dispatch_grounding_mismatch");
+  // A provider receipt proves dispatch, but publication must also bind each
+  // excerpt back to evidence authorized and delivered by this run.
+  for (const dispatch of dispatches) knowledgeEvidencePackageForGroundingDispatch(authorization.evidence, dispatch);
+  const forbiddenIdentityFragments = [input.runId, authorization.evidence.sessionId,
+    ...dispatches.map(dispatch => dispatch.manifestId),
+    ...authorization.evidence.items.flatMap(item => [item.id, item.sourceId, item.sourceVersionId, item.sourceArtifactId,
+      item.documentId, item.documentVersionId, item.sectionId, item.passageId].filter((value): value is string => value !== null))];
+  const result = await replayKnowledgeEvidenceAnswerV1({ dispatches, forbiddenIdentityFragments, modelRunId: input.runId });
+  const operations = dispatches.map((dispatch): KnowledgeEvidenceAnswerOperationReceiptV1 => {
+    const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(dispatch.attempt.acceptedRequest);
+    if (!snapshot || !dispatch.attempt.resultHash || !dispatch.attempt.actualUsage || !dispatch.attempt.dispatchedAt || !dispatch.attempt.settledAt) throw Error("knowledge_answer_operation_timing_invalid");
+    return Object.freeze({ operationId: dispatch.attempt.id, ordinal: dispatch.attempt.ordinal, purpose: snapshot.operation,
+      acceptedRequestHash: dispatch.attempt.requestHash, acceptedResultHash: dispatch.attempt.resultHash,
+      durationMs: dispatch.attempt.settledAt.valueOf() - dispatch.attempt.dispatchedAt.valueOf(),
+      providerRequestId: dispatch.attempt.providerResponseId, usage: dispatch.attempt.actualUsage });
+  });
+  const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(dispatches[0]!.attempt.acceptedRequest)!;
+  const pins = await loadKnowledgeAnswerBindingFingerprints(client, input.runId);
+  return Object.freeze({ grounding: groundSettledKnowledgeEvidenceAnswerV1({ ...pins, evidence: authorization.evidence,
+    evidenceReceiptHash: result.evidenceReceiptHash, executionPolicy: snapshot.executionPolicy, operations, result }) });
+}
+
 export async function groundKnowledgeRunAnswerV21(
   client: EvidenceClient,
   input: Readonly<{ runId: string; userId: string }>
@@ -1702,6 +1736,7 @@ export async function groundKnowledgeRunAnswerV21(
   });
   const operationDispatches = [
     operations.draft,
+    ...(operations.draftRepair ? [operations.draftRepair] : []),
     operations.initialScope,
     ...(operations.scopeRepair ? [operations.scopeRepair] : []),
     operations.initialCompleteness,
@@ -2612,31 +2647,7 @@ export async function groundKnowledgeRunAnswerV21(
 }
 
 function groundingEvidenceProjection(
-  grounding: KnowledgeGroundingEvidenceV7 | KnowledgeGroundingEvidenceV8 |
-    KnowledgeGroundingEvidenceV9 | KnowledgeGroundingEvidenceV10 |
-    KnowledgeGroundingEvidenceV11 | KnowledgeGroundingEvidenceV12 |
-    KnowledgeGroundingEvidenceV13 | KnowledgeGroundingEvidenceV14 |
-    KnowledgeGroundingEvidenceV15 | KnowledgeGroundingEvidenceV16 |
-    KnowledgeGroundingEvidenceV17 | KnowledgeGroundingEvidenceV18 |
-    KnowledgeGroundingEvidenceV19 | KnowledgeGroundingEvidenceV20 |
-    KnowledgeGroundingEvidenceV21 | KnowledgeGroundingEvidenceV22 |
-    KnowledgeGroundingEvidenceV23 | KnowledgeGroundingEvidenceV24 |
-    KnowledgeGroundingEvidenceV25 | KnowledgeGroundingEvidenceV26 |
-    KnowledgeGroundingEvidenceV27 | KnowledgeGroundingEvidenceV28 |
-    KnowledgeGroundingEvidenceV29 | KnowledgeGroundingEvidenceV30 |
-    KnowledgeGroundingEvidenceV31 | KnowledgeGroundingEvidenceV32 |
-    KnowledgeGroundingEvidenceV33 | KnowledgeGroundingEvidenceV34 |
-    KnowledgeGroundingEvidenceV35 | KnowledgeGroundingEvidenceV36 |
-    KnowledgeGroundingEvidenceV37 | KnowledgeGroundingEvidenceV38 |
-    KnowledgeGroundingEvidenceV39 | KnowledgeGroundingEvidenceV40 |
-    KnowledgeGroundingEvidenceV41 | KnowledgeGroundingEvidenceV42 |
-    KnowledgeGroundingEvidenceV43 | KnowledgeGroundingEvidenceV44 |
-    KnowledgeGroundingEvidenceV45 | KnowledgeGroundingEvidenceV46 |
-    KnowledgeGroundingEvidenceV47 | KnowledgeGroundingEvidenceV48 |
-    KnowledgeGroundingEvidenceV49 | KnowledgeGroundingEvidenceV50 |
-    KnowledgeGroundingEvidenceV51 | KnowledgeGroundingEvidenceV52 |
-    KnowledgeGroundingEvidenceV53 | KnowledgeGroundingEvidenceV54 |
-    KnowledgeGroundingEvidenceV55 | KnowledgeGroundingEvidenceV56
+  grounding: Exclude<KnowledgeGroundingResult, { version: 5 }>
 ): Readonly<Record<string, unknown>> {
   const { finalText: _finalText, ...contentFree } = grounding;
   void _finalText;
