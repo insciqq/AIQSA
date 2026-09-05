@@ -481,6 +481,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               AND NOT EXISTS (
                 SELECT 1 FROM "Attachment" AS attachment
                 WHERE attachment."storageKey" = job."storageKey"
+                UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
+                WHERE pdf_artifact."storageKey" = job."storageKey"
               )
               AND NOT EXISTS (
                 SELECT 1 FROM "KnowledgeDocumentVersion" AS version
@@ -648,6 +650,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           AND NOT EXISTS (
             SELECT 1 FROM "Attachment" AS attachment
             WHERE attachment."storageKey" = job."storageKey"
+            UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
+            WHERE pdf_artifact."storageKey" = job."storageKey"
           )
           AND NOT EXISTS (
             SELECT 1 FROM "KnowledgeDocumentVersion" AS version
@@ -788,6 +792,10 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       const sharedKeys = new Set(
         references.filter((reference) => !candidateIds.has(reference.id)).map((reference) => reference.storageKey)
       );
+      const pdfReferences = await prisma.chatPdfArtifact.findMany({
+        select: { storageKey: true }, where: { storageKey: { in: storageKeys } }
+      });
+      for (const reference of pdfReferences) sharedKeys.add(reference.storageKey);
       const knowledgeReferences = await prisma.knowledgeDocumentVersion.findMany({
         select: { normalizedTextStorageKey: true, originalStorageKey: true },
         where: {
@@ -1076,6 +1084,9 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           }
 
           const remainingReferenceCount = references.length - deletableIds.length;
+          const pdfReferences = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM "ChatPdfArtifact" WHERE "storageKey" = ${storageKey} FOR SHARE
+          `;
           const knowledgeDocumentReferences = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id" FROM "KnowledgeDocumentVersion"
             WHERE "originalStorageKey" = ${storageKey} OR "normalizedTextStorageKey" = ${storageKey}
@@ -1098,6 +1109,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           `;
           if (
             remainingReferenceCount === 0 &&
+            pdfReferences.length === 0 &&
             knowledgeDocumentReferences.length === 0 &&
             knowledgeSourceVersionReferences.length === 0 &&
             knowledgeSourceArtifactReferences.length === 0 &&

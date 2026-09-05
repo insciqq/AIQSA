@@ -270,6 +270,7 @@ describe("Prisma admin provider repository", () => {
         findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
       },
       providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
@@ -318,6 +319,7 @@ describe("Prisma admin provider repository", () => {
         findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
       },
       providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
@@ -352,6 +354,7 @@ describe("Prisma admin provider repository", () => {
         delete: remove,
         findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
       },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
@@ -536,6 +539,7 @@ describe("Prisma admin provider repository", () => {
         createMany: createChecks,
         deleteMany: vi.fn(async () => ({ count: 0 }))
       },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: { updateMany: vi.fn(async () => ({ count: 0 })) },
       searchIntegrationRevision: {
         create: createSearchRevision,
@@ -781,6 +785,7 @@ describe("Prisma admin provider repository", () => {
       },
       providerGroupCredentialAssignment: { count: vi.fn(async () => 0) },
       providerUserCredentialAssignment: { count: vi.fn(async () => 0) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: detach
@@ -829,6 +834,7 @@ describe("Prisma admin provider repository", () => {
       providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       providerGroupCredentialAssignment: { count: vi.fn(async () => 0) },
       providerUserCredentialAssignment: { count: vi.fn(async () => 1) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
@@ -1029,6 +1035,7 @@ describe("Prisma admin provider repository", () => {
       providerModelCredentialCheck: {
         deleteMany: vi.fn(async () => ({ count: 1 }))
       },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
@@ -1100,6 +1107,7 @@ describe("Prisma admin provider repository", () => {
       providerCredential: { findMany: vi.fn(async () => [{ id: "credential-1" }]) },
       providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       providerModel: { findMany: vi.fn(async () => [{ id: "model-1" }]) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
@@ -1143,6 +1151,7 @@ describe("Prisma admin provider repository", () => {
       providerCredential: { findMany: vi.fn(async () => []) },
       providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       providerModel: { findMany: vi.fn(async () => []) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))

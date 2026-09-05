@@ -1,4 +1,4 @@
-import { decodePdfProcessing, type UploadedAttachmentWire } from "../../contracts/uploads";
+import { pdfPageCountFromMetadata, decodePdfProcessing, type UploadedAttachmentWire } from "../../contracts/uploads";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 
 export type AttachmentLifecycleRecord = Readonly<{
@@ -34,7 +34,9 @@ export function serializeAttachmentLifecycle(record: AttachmentLifecycleRecord):
     "pdf" in record.metadata
     ? decodePdfProcessing((record.metadata as { pdf?: unknown }).pdf)
     : null;
+  const pageCount = record.kind === "pdf" ? pdfPageCountFromMetadata(record.metadata) : null;
   return {
+    ...(pageCount ? { pageCount } : {}),
     byteSize: record.byteSize,
     extractedText: record.extractedText,
     fileName: record.fileName,

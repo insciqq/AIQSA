@@ -6,6 +6,7 @@ import {
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 import {
@@ -72,6 +73,7 @@ type ActiveRefresh = (input: Readonly<{
 }>>;
 
 function serializeSystemModel(row: SystemModelRow) {
+  let visionInput: "not_verified" | "verified" = "not_verified";
   let reasoningEfforts: string[] = [];
   let defaultReasoningEffort: string | null = null;
   let forcedToolCall: "not_verified" | "unsupported" | "verified" = "unsupported";
@@ -95,6 +97,8 @@ function serializeSystemModel(row: SystemModelRow) {
           candidate.modelVersion === row.activeVersion &&
           candidate.status === "available")
       : null;
+    visionInput = hasVerifiedVisionInput(check?.evidence, configuration)
+      ? "verified" : "not_verified";
     structuredOutput = structuredOutputVerificationStatus(
       check?.evidence,
       configuration
@@ -109,6 +113,7 @@ function serializeSystemModel(row: SystemModelRow) {
   }
   return {
     ...serializeAdminAnswerModel(row),
+    visionInput,
     defaultReasoningEffort,
     forcedToolCall,
     reasoningEfforts,
@@ -282,6 +287,7 @@ export function createAdminSystemModelPolicyService(
           .filter(rerankerModelAvailable)
           .map(serializeRerankerModel),
         policy: {
+          chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed === true,
           reasoningEffort: policy.reasoningEffort,
           rerankerModel: policy.rerankerProviderModel
             ? {
@@ -430,6 +436,7 @@ export function createAdminSystemModelPolicyService(
     },
 
     async update(input: Readonly<{
+      chatPdfPreparationAllowed?: boolean;
       expectedVersion: number;
       /** Utility fields are present together for an explicit utility-role
        * save/clear; absent preserves that independent role. */
@@ -447,7 +454,10 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && rerankerProviderModelId === undefined &&
+          input.chatPdfPreparationAllowed === undefined ||
+        input.chatPdfPreparationAllowed !== undefined &&
+          typeof input.chatPdfPreparationAllowed !== "boolean") {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -519,6 +529,9 @@ export function createAdminSystemModelPolicyService(
 
           await tx.systemModelPolicy.update({
             data: {
+              ...(input.chatPdfPreparationAllowed === undefined ? {} : {
+                chatPdfPreparationAllowed: input.chatPdfPreparationAllowed
+              }),
               ...(hasUtilityUpdate ? {
                 providerModelId,
                 reasoningEffort

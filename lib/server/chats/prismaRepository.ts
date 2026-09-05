@@ -1,3 +1,4 @@
+import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { Prisma } from "@prisma/client";
 import {
   estimateApproxTokensFromProjectedParts,
@@ -85,6 +86,10 @@ import {
 } from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
+  chatPdfPreparation: { select: { retryable: true, state: true } },
+  chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
+    completedPages: true, pageCount: true, retryable: true, route: true, state: true
+  } },
   answerStartedAt: true,
   assistantId: true,
   assistantMessageId: true,
@@ -670,6 +675,10 @@ function serializeHydratedMessage(
       )
     : null;
   return {
+    ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
+      projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
+        ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
+            retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
     artifactSummary,
     assistantIdentity: serializeAssistantIdentity(modelRun),
     author: message.authorDisplayName && message.authorProjectRole

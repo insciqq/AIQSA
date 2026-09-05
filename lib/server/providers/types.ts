@@ -38,6 +38,9 @@ export type NormalizedSearchPlan = Readonly<{
 }>;
 
 export type ProviderModelCapabilities = {
+  /** Installation-declared limits for this exact model configuration. They
+   * constrain document requests and never grant image-input authority. */
+  imageInputLimits?: Readonly<{ imageBytes: number; imageCount: number; imagePixels: number; payloadBytes: number }>;
   backgroundStreaming?: boolean;
   contextWindow?: number;
   defaultMaxOutputTokens?: number;

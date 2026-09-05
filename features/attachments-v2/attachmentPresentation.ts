@@ -1,3 +1,4 @@
+import { CHAT_PDF_LONG_DOCUMENT_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, isLongChatPdf, type ChatPdfRoute } from "@/lib/contracts/chatPdfPreparation";
 import {
   attachmentRetryAvailable,
   clientAttachmentFailureMessage
@@ -11,6 +12,7 @@ import { attachmentBlocksSend } from "@/components/app-shell/attachmentCapabilit
 import type { CatalogModel } from "@/components/app-shell/types";
 
 export type ComposerAttachmentItemV2 = Readonly<{
+  notices?: readonly string[];
   byteSize?: number;
   blocksSend?: boolean;
   detail?: string | null;
@@ -57,7 +59,8 @@ export function attachmentItemsForV2(
   attachments: readonly ComposerAttachment[],
   warnings: readonly ComposerAttachmentWarning[] = [],
   model?: CatalogModel,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  pdfRoute: ChatPdfRoute | null = null
 ): ComposerAttachmentItemV2[] {
   const warningById = new Map(warnings.map((warning) => [warning.attachmentId, warning]));
   return attachments.map((attachment) => {
@@ -79,6 +82,10 @@ export function attachmentItemsForV2(
           : null;
     return {
       ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
+      ...(attachment.kind === "pdf" ? { notices: [
+        ...(isLongChatPdf(attachment.pageCount ?? attachment.processing?.pageCount) ? [CHAT_PDF_LONG_DOCUMENT_NOTICE] : []),
+        ...(pdfRoute === "local_text" ? [CHAT_PDF_LOCAL_TEXT_NOTICE] : [])
+      ] } : {}),
       blocksSend,
       ...(detail ? { detail } : {}),
       fileName: attachment.fileName,

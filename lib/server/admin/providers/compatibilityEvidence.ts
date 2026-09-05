@@ -33,9 +33,11 @@ export function decodeAdminProviderCompatibilityEvidence(
   if (value.forcedToolCall !== undefined && !status(value.forcedToolCall)) {
     return null;
   }
+  if (value.vision !== undefined && !status(value.vision)) return null;
 
   return {
     directPdf: value.directPdf,
+    ...(value.vision === undefined ? {} : { vision: value.vision }),
     ...(value.forcedToolCall === undefined
       ? {}
       : { forcedToolCall: value.forcedToolCall }),

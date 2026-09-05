@@ -24,7 +24,9 @@ const activeRunStatuses = [
   "streaming"
 ] as const;
 
-type AttachmentSnapshot = Readonly<{ id: string; storageKey: string }>;
+type AttachmentSnapshot = Readonly<{ id: string; storageKey: string;
+  chatPdfArtifacts?: readonly Readonly<{ id: string; storageKey: string }>[];
+}>;
 type ObjectDisposition = Readonly<{ deleted: boolean; storageKey: string }>;
 type CleanupSnapshot = Readonly<{
   attachments: readonly AttachmentSnapshot[];
@@ -114,7 +116,8 @@ async function prepareSnapshot(
     }
     const attachments = await tx.attachment.findMany({
       orderBy: { id: "asc" },
-      select: { id: true, storageKey: true, userId: true },
+      select: { id: true, storageKey: true, userId: true,
+        chatPdfArtifacts: { select: { id: true, storageKey: true }, orderBy: { id: "asc" } } },
       where: { chatId: claim.targetId }
     });
     if (attachments.some(({ userId }) => userId !== claim.userId)) {
@@ -124,7 +127,8 @@ async function prepareSnapshot(
       );
     }
     return {
-      attachments: attachments.map(({ id, storageKey }) => ({ id, storageKey })),
+      attachments: attachments.map(({ id, storageKey, chatPdfArtifacts }) => ({ id, storageKey,
+        ...(chatPdfArtifacts?.length ? { chatPdfArtifacts } : {}) })),
       chatExists: Boolean(chat)
     };
   });
@@ -137,11 +141,11 @@ async function deleteExclusiveObjects(
   signal: AbortSignal
 ): Promise<readonly ObjectDisposition[]> {
   const attachmentIds = attachments.map(({ id }) => id);
-  const keys = [...new Set(attachments.map(({ storageKey }) => storageKey))].sort();
+  const keys = [...new Set(attachments.flatMap(({ storageKey, chatPdfArtifacts }) => [storageKey, ...(chatPdfArtifacts ?? []).map((artifact) => artifact.storageKey)]))].sort();
   const dispositions: ObjectDisposition[] = [];
   for (const storageKey of keys) {
     throwIfAborted(signal);
-    const [otherAttachments, knowledgeReferences] = await Promise.all([
+    const [otherAttachments, knowledgeReferences, pdfReferences] = await Promise.all([
       client.attachment.count({
         where: { id: { notIn: attachmentIds }, storageKey }
       }),
@@ -152,9 +156,10 @@ async function deleteExclusiveObjects(
             { originalStorageKey: storageKey }
           ]
         }
-      })
+      }),
+      client.chatPdfArtifact.count({ where: { attachmentId: { notIn: attachmentIds }, storageKey } })
     ]);
-    const shared = otherAttachments + knowledgeReferences > 0;
+    const shared = otherAttachments + knowledgeReferences + pdfReferences > 0;
     if (!shared) {
       try {
         await storage.deleteObject(storageKey);
@@ -176,7 +181,8 @@ function sameAttachments(
   right: readonly AttachmentSnapshot[]
 ): boolean {
   return left.length === right.length && left.every((entry, index) =>
-    entry.id === right[index]?.id && entry.storageKey === right[index]?.storageKey);
+    entry.id === right[index]?.id && entry.storageKey === right[index]?.storageKey &&
+    JSON.stringify(entry.chatPdfArtifacts ?? []) === JSON.stringify(right[index]?.chatPdfArtifacts ?? []));
 }
 
 async function aggregateIds(
@@ -532,7 +538,8 @@ async function applyAggregateDeletion(
   }
   const currentAttachments = await tx.attachment.findMany({
     orderBy: { id: "asc" },
-    select: { id: true, storageKey: true },
+    select: { id: true, storageKey: true,
+      chatPdfArtifacts: { select: { id: true, storageKey: true }, orderBy: { id: "asc" } } },
     where: { chatId: claim.targetId, userId: claim.userId }
   });
   if (!sameAttachments(snapshot.attachments, currentAttachments)) {
@@ -541,7 +548,7 @@ async function applyAggregateDeletion(
   const attachmentIds = currentAttachments.map(({ id }) => id);
   for (const disposition of dispositions) {
     if (disposition.deleted) continue;
-    const [otherAttachments, knowledgeReferences] = await Promise.all([
+    const [otherAttachments, knowledgeReferences, pdfReferences] = await Promise.all([
       tx.attachment.count({
         where: { id: { notIn: attachmentIds }, storageKey: disposition.storageKey }
       }),
@@ -552,9 +559,10 @@ async function applyAggregateDeletion(
             { originalStorageKey: disposition.storageKey }
           ]
         }
-      })
+      }),
+      tx.chatPdfArtifact.count({ where: { attachmentId: { notIn: attachmentIds }, storageKey: disposition.storageKey } })
     ]);
-    if (otherAttachments + knowledgeReferences === 0) {
+    if (otherAttachments + knowledgeReferences + pdfReferences === 0) {
       throw new MemoryCoordinatorError(
         "memory_permanent_chat_object_reference_changed",
         true
@@ -685,7 +693,7 @@ async function applyAggregateDeletion(
       where: { chatId: claim.targetId, userId: claim.userId }
     });
     const deletedKeys = dispositions
-      .filter(({ deleted }) => deleted)
+      .filter(({ deleted, storageKey }) => deleted && !storageKey.startsWith("chat-pdf/"))
       .map(({ storageKey }) => storageKey);
     if (deletedKeys.length > 0) {
       await tx.attachmentDeletionJob.deleteMany({

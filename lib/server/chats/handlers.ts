@@ -1,3 +1,4 @@
+import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -49,6 +50,7 @@ export type ChatMessageRecord = {
   id: string;
   modelId: string | null;
   modelRunId?: string | null;
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
   parentMessageId: string | null;
   provider: string | null;
   role: string;
@@ -262,6 +264,7 @@ function iso(value: Date | string): string {
 
 function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   return {
+    ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     artifactSummary: message.artifactSummary ?? null,
     assistantIdentity: message.assistantIdentity ?? null,
     author: message.author ?? null,

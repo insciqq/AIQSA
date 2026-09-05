@@ -205,6 +205,9 @@ SET
   "lastErrorCode" = '"'"'knowledge_backup_fenced'"'"',
   "updatedAt" = CURRENT_TIMESTAMP
 WHERE "state" = '"'"'RUNNING'"'"'::"KnowledgeDeletionState";
+UPDATE "ChatPdfRunPreparation"
+SET "claimToken" = NULL, "claimedAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+WHERE "claimToken" IS NOT NULL;
 UPDATE "AttachmentDeletionJob"
 SET
   "claimToken" = NULL,

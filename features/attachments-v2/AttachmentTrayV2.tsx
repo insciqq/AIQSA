@@ -159,6 +159,7 @@ export function AttachmentTrayV2({
               <span>{itemStatus(item)}</span>
               {item.detail && item.status !== "rejected" ? <small>{item.detail}</small> : null}
               {item.warning ? <small>{item.warning.message}</small> : null}
+              {item.notices?.map((notice) => <small key={notice}>{notice}</small>)}
             </span>
             <span className="v2-attachment-actions">
               {item.status === "failed" && item.retryable && onRetry ? (

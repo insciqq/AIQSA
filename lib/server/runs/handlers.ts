@@ -1,3 +1,9 @@
+import { randomUUID } from "node:crypto";
+import { chatPdfFingerprint } from "../uploads/chatPdfAdmission";
+import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
+import { chatPdfRunSnapshot } from "../uploads/chatPdfRunContinuation";
+import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
+import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { getAuthConfig, type AuthConfig } from "../auth/config";
 import type {
   CancelModelRunNotCancelableResponse,
@@ -13,9 +19,7 @@ import {
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type {
-  NormalizedRunRequest,
   ProviderAdapter,
-  ProviderRunRequest,
   ProviderSearchAdapter
 } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
@@ -30,6 +34,7 @@ import {
   materializePreparedRunData,
   prepareRun,
   type RunPreparationDeps,
+  type MaterializedPreparedRunData,
   type RunPreparationFailure
 } from "./runPreparation";
 import {
@@ -51,10 +56,8 @@ import {
 import type { RunRepository } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
 import type {
-  CreatedRun,
-  PreparingRunMemoryMaterializer
+  CreatedRun
 } from "./runRepositoryContract";
 
 export { ActiveLeafConflictError, ActiveRunConflictError };
@@ -71,6 +74,15 @@ export type RunHandlerDeps = {
   allowFakeProvider?: boolean;
   assistants?: RunPreparationDeps["assistants"];
   chatTitleGenerator?: ChatTitleGenerator;
+  chatPdf?: NonNullable<RunPreparationDeps["chatPdf"]> & Readonly<{
+    findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
+    kick(): void;
+    loadRetry?(input: Readonly<{ assistantMessageId: string; chatId: string; userId: string; userMessageId: string }>): Promise<Readonly<{
+      adapter: ProviderAdapter;
+      prepared: MaterializedPreparedRunData;
+      toolBridge?: ProviderToolBridge;
+    }> | null>;
+  }>;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
   knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
@@ -264,63 +276,6 @@ function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConfl
     (error instanceof Error && error.name === "WorkspaceRunConflictError");
 }
 
-function createPreparingMemoryMaterializer(
-  prepared: ReturnType<typeof materializePreparedRunData>,
-  adapter: ProviderAdapter,
-  bridge: ProviderToolBridge | undefined
-): PreparingRunMemoryMaterializer {
-  return (personalContext, memoryActionAnswerResult) => {
-    const normalizedRequest: NormalizedRunRequest = {
-      ...prepared.normalizedRequest,
-      ...(personalContext ? { personalContext } : {}),
-      prompt: {
-        ...prepared.normalizedRequest.prompt,
-        ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
-      }
-    };
-    const request: ProviderRunRequest = {
-      ...prepared.providerRequest,
-      ...normalizedRequest,
-      ...(personalContext ? { personalContext } : {})
-    };
-    const budgeted = applyProviderRequestContextBudget({
-      ...(bridge ? { bridge } : {}),
-      request
-    });
-    if (!budgeted.ok || !budgeted.request.context) return null;
-    const finalNormalizedRequest: NormalizedRunRequest = {
-      ...normalizedRequest,
-      context: budgeted.request.context
-    };
-    const providerRequest: ProviderRunRequest = {
-      ...budgeted.request,
-      ...finalNormalizedRequest,
-      attachments: budgeted.request.attachments
-    };
-    return {
-      contextTruncation: budgeted.contextTruncation ?? prepared.contextTruncation,
-      normalizedRequest: finalNormalizedRequest,
-      providerRequest,
-      providerRequestPreview: adapter.buildRequestPreview(providerRequest)
-    };
-  };
-}
-
-function applyPreparingMaterialization(
-  prepared: ReturnType<typeof materializePreparedRunData>,
-  created: CreatedRun
-): ReturnType<typeof materializePreparedRunData> {
-  return created.materializedRequest
-    ? {
-        ...prepared,
-        contextTruncation: created.materializedRequest.contextTruncation,
-        normalizedRequest: created.materializedRequest.normalizedRequest,
-        providerRequest: created.materializedRequest.providerRequest,
-        providerRequestPreview: { ...created.materializedRequest.providerRequestPreview }
-      }
-    : prepared;
-}
-
 async function acceptedRuntimeBinding(
   deps: RunHandlerDeps,
   runId: string,
@@ -411,6 +366,29 @@ async function activeRunInsertConflictResponse(
   );
 }
 
+function pdfAdmissionKey(kind: "send" | "regenerate", sourceId: string, userId: string, body: Record<string, unknown> | null) {
+  // Current composers send an invocation identity; explicit expected-leaf
+  // clients also retain duplicate Send semantics across a lost response.
+  return chatPdfFingerprint({ body, kind, sourceId, userId,
+    nonce: body?.admissionId ?? (kind === "send" && body && "expectedActiveLeafId" in body ? null : randomUUID()) });
+}
+
+function deferredPdfInput(prepared: ReturnType<typeof materializePreparedRunData>, admissionKey: string, sourceMessageId?: string) {
+  return prepared.chatPdfAdmissions?.length ? {
+    chatPdfAdmissions: prepared.chatPdfAdmissions,
+    ...(prepared.chatPdfAdmissions.some(({ route }) => route !== "direct_pdf")
+      ? { deferredPdf: { admissionKey, snapshot: chatPdfRunSnapshot(prepared, sourceMessageId) } } : {})
+  } : {};
+}
+
+async function admittedPdfResponse(deps: RunHandlerDeps, created: CreatedRun, userId: string): Promise<Response> {
+  const run = await deps.repository.getRunOutcomeForUser(created.runId, userId);
+  if (!run) return Response.json({ error: "model_run_not_found" }, { status: 404 });
+  deps.chatPdf?.kick();
+  return Response.json({ assistantMessageId: created.assistantMessageId, userMessageId: created.userMessageId,
+    ...serializeRunOutcome(run) }, { status: 202, headers: { "Cache-Control": "no-store" } });
+}
+
 export function createSendMessageHandler(deps: RunHandlerDeps) {
   return async function POST(
     request: Request,
@@ -439,6 +417,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     });
 
     const params = await context.params;
+    const admissionKey = pdfAdmissionKey("send", params.chatId, auth.userId, body);
+    const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
+    if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
     let chat = await deps.repository.findOwnedChat(params.chatId, auth.userId);
     let personalChat: Readonly<{
       defaultProviderModelId: string | null;
@@ -548,6 +529,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
+        ...deferredPdfInput(preparedData, admissionKey),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         content: preparedData.normalizedRequest.content,
@@ -589,6 +571,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         userId: auth.userId
       });
     } catch (error) {
+      const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
+      if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      if (error instanceof ChatPdfPreparationError) return Response.json({ error: error.code }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(chat.id, deps.repository, auth.userId);
       }
@@ -635,6 +620,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       throw error;
     }
+    if (created.deferredPdf) return admittedPdfResponse(deps, created, auth.userId);
     preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,
@@ -694,6 +680,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     });
 
     const params = await context.params;
+    const admissionKey = pdfAdmissionKey("regenerate", params.messageId, auth.userId, body);
+    const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
+    if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
     const source = await deps.repository.findRegenerationSource(params.messageId, auth.userId);
     if (!source) {
       return Response.json({ error: "message_not_found_or_not_regeneratable" }, { status: 404 });
@@ -704,7 +693,14 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       return activeRunResponse;
     }
 
-    const preparation = await prepareRun(deps, {
+    const retry = body?.retryPdfPreparation === true && source.assistantMessage
+      ? await deps.chatPdf?.loadRetry?.({ assistantMessageId: source.assistantMessage.id,
+          chatId: source.chat.id, userId: auth.userId, userMessageId: source.userMessage.id })
+      : null;
+    if (body?.retryPdfPreparation === true && !retry) {
+      return Response.json({ error: "pdf_preparation_unavailable" }, { status: 409 });
+    }
+    const preparation = retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
       body,
       signal: request.signal,
       source: {
@@ -721,6 +717,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
+        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         ...(preparedData.defaults
@@ -757,6 +754,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         userMessageId: source.userMessage.id
       });
     } catch (error) {
+      const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
+      if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      if (error instanceof ChatPdfPreparationError) return Response.json({ error: error.code }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(source.chat.id, deps.repository, auth.userId);
       }
@@ -799,6 +799,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       throw error;
     }
+    if (created.deferredPdf) return admittedPdfResponse(deps, created, auth.userId);
     preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,

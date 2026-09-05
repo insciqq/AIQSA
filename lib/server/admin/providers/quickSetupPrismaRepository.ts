@@ -28,6 +28,7 @@ import {
 } from "../../search/probeBinding";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import type {
   AdminProviderQuickSetupActor,
   AdminProviderQuickSetupClearPlan,
@@ -1446,6 +1447,8 @@ async function applyQuickSetupPlan(
       check.evidence.selectedProviders.some(
         (provider, index) => provider !== expectedProviders[index]
       ) ||
+      (Object.hasOwn(check.evidence, "visionInput") &&
+        !hasVerifiedVisionInput(check.evidence, candidate.configuration)) ||
       (hasPdfInput && (!pdfInput ||
         !candidate.configuration.capabilities.nativePdfInput ||
         pdfInput.adapterKind !== candidate.configuration.adapterKind ||

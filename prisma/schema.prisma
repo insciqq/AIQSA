@@ -1041,6 +1041,7 @@ model ModelPolicy {
 
 model SystemModelPolicy {
   id                      String         @id
+  chatPdfPreparationAllowed Boolean       @default(false)
   providerModelId         String?
   rerankerProviderModelId String?
   /// Set only by an explicit administrator save or clear of the reranker role.
@@ -2239,6 +2240,7 @@ model KnowledgeBasePublication {
 }
 
 model ProviderModel {
+  chatPdfPreparations ChatPdfAttachmentPreparation[]
   id                          String                          @id @default(uuid())
   connectionId                String
   templateKey                 String?                         @unique
@@ -2364,6 +2366,7 @@ model ProviderCredential {
 }
 
 model ProviderCredentialVersion {
+  chatPdfPreparations ChatPdfAttachmentPreparation[]
   id                          String                         @id @default(uuid())
   credentialId                String
   version                     Int
@@ -2732,6 +2735,8 @@ model Message {
 }
 
 model ModelRun {
+  chatPdfPreparation           ChatPdfRunPreparation?
+  chatPdfAttachments           ChatPdfAttachmentPreparation[]
   id                           String                              @id @default(uuid())
   chatId                       String
   userId                       String
@@ -3536,6 +3541,8 @@ model DocumentProcessingFairnessCursor {
 }
 
 model Attachment {
+  chatPdfPreparations  ChatPdfAttachmentPreparation[]
+  chatPdfArtifacts     ChatPdfArtifact[]
   id                  String                   @id @default(uuid())
   userId              String?
   projectId           String?
@@ -3672,6 +3679,9 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
+  chatPdfPreparation              Boolean                        @default(false)
+  chatPdfPageAttemptId             String?                        @unique
+  chatPdfPageAttempt               ChatPdfPageAttempt?            @relation(fields: [chatPdfPageAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   id                              String                         @id @default(uuid())
   userId                          String
   chatId                          String?
@@ -5523,4 +5533,108 @@ model MemoryToolEgressReceipt {
   @@unique([modelRunId, modelRunToolCallId])
   @@index([userId, dispatchState, createdAt])
   @@index([modelRunId, mode])
+}
+
+/// Private pre-answer continuation. Snapshot fields never enter browser reads.
+model ChatPdfRunPreparation {
+  modelRunId        String   @id
+  admissionKey      String   @unique @db.Char(64)
+  snapshot          Json
+  admissionResult   Json?
+  state             String   @default("pending") @db.VarChar(24)
+  claimToken        String?
+  claimedAt         DateTime?
+  lastWorkedAt      DateTime @default(now())
+  errorCode         String?  @db.VarChar(64)
+  retryable         Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  modelRun          ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([state, lastWorkedAt, modelRunId])
+}
+
+model ChatPdfAttachmentPreparation {
+  id                 String    @id @default(uuid())
+  modelRunId         String
+  attachmentId       String
+  route              String    @db.VarChar(32)
+  sourceChecksum     String    @db.Char(64)
+  sourceByteSize     Int
+  providerModelId    String?
+  credentialVersionId String?
+  bindingSnapshot    Json?
+  bindingAuthority   Json?
+  policyVersion      Int?
+  compatibilityKey   String    @db.Char(64)
+  state              String    @default("checking") @db.VarChar(24)
+  pageCount          Int?
+  completedPages     Int       @default(0)
+  workPlan           Json?
+  localArtifactId    String?
+  documentArtifactId String?
+  errorCode          String?   @db.VarChar(64)
+  retryable          Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  modelRun           ModelRun  @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  attachment         Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  providerModel      ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  credentialVersion  ProviderCredentialVersion? @relation(fields: [credentialVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  localArtifact      ChatPdfArtifact? @relation("ChatPdfLocalArtifact", fields: [localArtifactId], references: [id], onDelete: NoAction, onUpdate: Restrict)
+  documentArtifact   ChatPdfArtifact? @relation("ChatPdfDocumentArtifact", fields: [documentArtifactId], references: [id], onDelete: NoAction, onUpdate: Restrict)
+  attempts           ChatPdfPageAttempt[]
+
+  @@unique([modelRunId, attachmentId])
+  @@index([attachmentId, compatibilityKey, state])
+  @@index([providerModelId])
+  @@index([credentialVersionId])
+  @@index([localArtifactId])
+  @@index([documentArtifactId])
+}
+
+/// Reserved before writing bytes; accepted objects and identities are immutable.
+model ChatPdfArtifact {
+  id                     String   @id @default(uuid())
+  attachmentId           String
+  preparationGeneration  String
+  kind                   String   @db.VarChar(16)
+  route                  String   @db.VarChar(32)
+  sourceChecksum         String   @db.Char(64)
+  pageCount              Int
+  state                  String   @default("reserved") @db.VarChar(16)
+  storageKey             String   @unique
+  checksum               String   @db.Char(64)
+  byteSize               Int
+  createdAt              DateTime @default(now())
+  attachment             Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  localPreparations      ChatPdfAttachmentPreparation[] @relation("ChatPdfLocalArtifact")
+  documentPreparations   ChatPdfAttachmentPreparation[] @relation("ChatPdfDocumentArtifact")
+  pageAttempts           ChatPdfPageAttempt[]
+
+  @@index([attachmentId, preparationGeneration])
+}
+
+model ChatPdfPageAttempt {
+  id                     String   @id @default(uuid())
+  preparationId          String
+  page                   Int
+  workKey                String   @db.Char(64)
+  requestDigest          String   @db.Char(64)
+  state                  String   @default("reserved") @db.VarChar(16)
+  resultArtifactId       String?
+  reusedFromAttemptId    String?
+  usage                  Json?
+  errorCode              String?  @db.VarChar(64)
+  dispatchedAt           DateTime?
+  settledAt              DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  preparation            ChatPdfAttachmentPreparation @relation(fields: [preparationId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  resultArtifact         ChatPdfArtifact? @relation(fields: [resultArtifactId], references: [id], onDelete: NoAction, onUpdate: Restrict)
+  usageEvent             UsageEvent?
+
+  @@unique([preparationId, page])
+  @@index([workKey, requestDigest, state])
+  @@index([resultArtifactId])
 }

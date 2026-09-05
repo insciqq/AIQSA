@@ -1,3 +1,4 @@
+import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
 import type { ErrorResponse, SessionErrorCode } from "./http";
 
 export const MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE =
@@ -25,6 +26,7 @@ export const RUN_OUTCOME_RESPONSE_VERSION = 1 as const;
  * Answer content and outputs are reconciled through the chat projection.
  */
 export type RunOutcome = Readonly<{
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
   id: string;
   status: ModelRunStatus;
 }>;
@@ -137,5 +139,22 @@ export function decodeRunOutcomeResponse(value: unknown): RunOutcome | null {
 
   const id = nonEmptyString(value.run.id);
   const status = modelRunStatus(value.run.status);
-  return id && status ? { id, status } : null;
+  const pdfPreparation = value.run.pdfPreparation === undefined ? undefined : decodeChatPdfPreparations(value.run.pdfPreparation);
+  return id && status && pdfPreparation !== null
+    ? { id, status, ...(pdfPreparation ? { pdfPreparation } : {}) } : null;
+}
+
+export type PreparingRunAdmissionResponse = Readonly<{
+  assistantMessageId: string;
+  run: RunOutcome;
+  userMessageId: string;
+  version: 1;
+}>;
+
+export function decodePreparingRunAdmission(value: unknown): PreparingRunAdmissionResponse | null {
+  if (!isRecord(value) || value.version !== 1) return null;
+  const run = decodeRunOutcomeResponse(value);
+  const assistantMessageId = nonEmptyString(value.assistantMessageId);
+  const userMessageId = nonEmptyString(value.userMessageId);
+  return run && assistantMessageId && userMessageId ? { assistantMessageId, run, userMessageId, version: 1 } : null;
 }

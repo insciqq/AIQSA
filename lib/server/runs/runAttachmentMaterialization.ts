@@ -1,3 +1,8 @@
+import { CHAT_PDF_ARTIFACT_MAX_BYTES, decodeChatPdfArtifact } from "../uploads/chatPdfCore";
+import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
+import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
+import { DocumentParserError } from "../parsing/errors";
+import { getPdfExtractionConfig } from "../uploads/pdfConfig";
 import { createHash } from "node:crypto";
 import type {
   ProviderAttachment,
@@ -21,6 +26,8 @@ export type AttachmentMaterializationErrorCode =
   | "attachment_object_size_mismatch"
   | "attachment_not_ready"
   | "attachment_reference_invalid"
+  | "pdf_invalid"
+  | "pdf_page_limit_exceeded"
   | "content_block_limit_exceeded";
 
 export type AttachmentLimitNumericFacts = Readonly<Record<string, number>>;
@@ -246,7 +253,8 @@ type MaterializationPlanEntry = Readonly<{
 function materializationPlan(
   records: readonly RunAttachmentRecord[],
   capabilities: ProviderModelCapabilities,
-  limits: RunAttachmentLimits
+  limits: RunAttachmentLimits,
+  pdfRoute?: ChatPdfRouteAdmission
 ): Readonly<{
   binaryById: ReadonlyMap<string, MaterializationPlanEntry>;
   encodedBytes: number;
@@ -257,13 +265,14 @@ function materializationPlan(
   const binaryById = new Map<string, MaterializationPlanEntry>();
 
   for (const record of records) {
-    if (!requiresBinaryMaterialization(record, capabilities)) {
+    if (!requiresBinaryMaterialization(record, capabilities) && !(pdfRoute && record.kind === "pdf")) {
       continue;
     }
     safeStorageKey(record);
     if (record.kind === "pdf") safeDirectPdfChecksum(record);
     const recordSourceBytes = safeByteSize(record);
-    const recordEncodedBytes = estimatedEncodedBytes(record);
+    const recordEncodedBytes = record.kind === "pdf" && pdfRoute && pdfRoute.route !== "direct_pdf"
+      ? 0 : estimatedEncodedBytes(record);
     // Reserve the metadata-sized objects in stable order. Each concurrent read
     // is capped by both its settled object size and the budget remaining at its
     // reservation point, so their aggregate cannot outrun the admitted total.
@@ -368,7 +377,9 @@ function providerAttachment(
 async function materializeOne(
   storage: Pick<StorageAdapter, "getObject">,
   entry: MaterializationPlanEntry,
-  signal: AbortSignal
+  signal: AbortSignal,
+  pdfRoute?: ChatPdfRouteAdmission,
+  admissions?: Map<string, ChatPdfAttachmentAdmission>
 ): Promise<ProviderAttachment> {
   const { record } = entry;
   let object: Awaited<ReturnType<StorageAdapter["getObject"]>>;
@@ -400,8 +411,29 @@ async function materializeOne(
   if (record.kind === "pdf") {
     const actualChecksum = createHash("sha256").update(object.body).digest("hex");
     if (actualChecksum !== safeDirectPdfChecksum(record)) throw checksumMismatch();
+    if (pdfRoute && admissions) {
+      const config = getPdfExtractionConfig();
+      const metadata = record.metadata as Record<string, unknown> | null;
+      const knownCount = metadata?.pdfPageCount;
+      let pageCount: number;
+      try {
+        pageCount = Number.isSafeInteger(knownCount) && Number(knownCount) > 0 && Number(knownCount) <= config.maxPages
+          ? Number(knownCount)
+          : (await inspectPdfForModelProcessing({ bytes: object.body, mode: "system_model_direct_pdf", signal }, {
+              maxPages: config.maxPages, timeoutMs: config.timeoutMs
+            })).pageCount;
+      } catch (error) {
+        signal?.throwIfAborted();
+        const exceeded = error instanceof DocumentParserError && error.code === "parser_output_too_large";
+        throw new AttachmentMaterializationError({ code: exceeded ? "pdf_page_limit_exceeded" : "pdf_invalid",
+          message: exceeded ? "This PDF exceeds the page limit." : "This PDF could not be checked.",
+          status: exceeded ? 413 : 400 });
+      }
+      admissions.set(record.id, { ...pdfRoute, attachmentId: record.id, byteSize: record.byteSize,
+        pageCount, sourceChecksum: safeDirectPdfChecksum(record) });
+    }
     return providerAttachment(record, {
-      base64Data: object.body.toString("base64"),
+      ...(pdfRoute && pdfRoute.route !== "direct_pdf" ? {} : { base64Data: object.body.toString("base64") }),
       extractedText: null
     });
   }
@@ -422,13 +454,14 @@ const directPdfBlockingErrorCodes = new Set([
 function validateAttachmentReadiness(
   record: RunAttachmentRecord,
   capabilities: ProviderModelCapabilities,
-  workspaceEnabled: boolean
+  workspaceEnabled: boolean,
+  pdfRoute?: ChatPdfRouteAdmission
 ): void {
   // A Workspace run consumes the settled original object directly. Parser
   // progress/failure therefore cannot block admission, while integrity and
   // ownership checks remain mandatory.
   if (workspaceEnabled) return;
-  const directPdf = record.kind === "pdf" && capabilities.nativePdfInput;
+  const directPdf = record.kind === "pdf" && (capabilities.nativePdfInput || Boolean(pdfRoute));
   if (directPdf) {
     if (record.processingErrorCode === "attachment_checksum_mismatch") {
       throw checksumMismatch();
@@ -466,8 +499,11 @@ export async function loadProviderAttachments(
   attachmentIds: readonly string[],
   options: Readonly<{
     capabilities: ProviderModelCapabilities;
+    pdfRoute?: ChatPdfRouteAdmission;
+    onPdfAdmissions?: (admissions: ChatPdfAttachmentAdmission[]) => void;
     limits: RunAttachmentLimits;
     projectId?: string;
+    runId?: string;
     signal?: AbortSignal;
     workspaceEnabled?: boolean;
   }>
@@ -489,7 +525,8 @@ export async function loadProviderAttachments(
   const loadedRecords = await deps.repository.loadAttachments(
     userId,
     [...attachmentIds],
-    options.projectId
+    options.projectId,
+    ...(options.runId ? [options.runId] : [])
   );
   if (options.signal?.aborted) throw abortReason(options.signal);
   const loadedIds = new Set(loadedRecords.map(({ id }) => id));
@@ -508,17 +545,31 @@ export async function loadProviderAttachments(
     });
   }
   const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
+  for (const record of records) {
+    const artifact = record.preparedPdf;
+    if (!artifact) continue;
+    if (!options.runId || !deps.storage || record.kind !== "pdf" ||
+      artifact.sourceChecksum !== record.checksum || artifact.byteSize < 1 || artifact.byteSize > CHAT_PDF_ARTIFACT_MAX_BYTES) {
+      throw objectReadFailed();
+    }
+    const object = await deps.storage.getObject(artifact.storageKey, { maxBytes: artifact.byteSize, signal: options.signal });
+    const document = decodeChatPdfArtifact(object.body, artifact) as { pageCount?: unknown; text?: unknown };
+    if (document.pageCount !== artifact.pageCount || typeof document.text !== "string") throw objectReadFailed();
+    record.extractedText = document.text;
+    record.status = "ready";
+  }
   records.forEach((record) => validateAttachmentReadiness(
     record,
     options.capabilities,
-    options.workspaceEnabled === true
+    options.workspaceEnabled === true, options.pdfRoute
   ));
-  const plan = materializationPlan(records, options.capabilities, options.limits);
+  const plan = materializationPlan(records, options.capabilities, options.limits, options.pdfRoute);
   if (plan.binaryById.size === 0) {
     return records.map((record) => providerAttachment(record));
   }
   if (!deps.storage) throw objectReadFailed();
 
+  const pdfAdmissions = new Map<string, ChatPdfAttachmentAdmission>();
   const internalController = new AbortController();
   let firstError: unknown;
   let nextIndex = 0;
@@ -543,7 +594,7 @@ export async function loadProviderAttachments(
       }
 
       try {
-        results[index] = await materializeOne(deps.storage!, entry, internalController.signal);
+        results[index] = await materializeOne(deps.storage!, entry, internalController.signal, options.pdfRoute, pdfAdmissions);
       } catch (error) {
         if (firstError === undefined) {
           firstError = error;
@@ -573,5 +624,6 @@ export async function loadProviderAttachments(
       status: 409
     });
   }
+  options.onPdfAdmissions?.(records.flatMap(({ id }) => pdfAdmissions.has(id) ? [pdfAdmissions.get(id)!] : []));
   return results as ProviderAttachment[];
 }

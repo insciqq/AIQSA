@@ -62,6 +62,35 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
   };
 }
 
+describe("image input compatibility", () => {
+  it.each([true, false])("records only a real image probe success (%s)", async (success) => {
+    const fetchFn = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (JSON.stringify(body.messages).includes("image_url")) return Response.json({
+        choices: [{ finish_reason: "stop", message: {
+          content: success ? "V4K8M2" : "WRONG", role: "assistant"
+        } }],
+        usage: { completion_tokens: 4, prompt_tokens: 10, total_tokens: 14 }
+      });
+      return body.stream ? streamedChatResponse() : structuredChatResponse();
+    });
+    const base = input();
+    const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test({
+      ...base,
+      mode: "tiny_generation",
+      model: { ...base.model, capabilities: { ...base.model.capabilities, vision: true } }
+    });
+    expect(outcome.status).toBe("available");
+    expect(outcome.evidence.compatibility?.vision).toBe(success ? "verified" : "not_supported");
+    expect(Boolean(outcome.evidence.visionInput)).toBe(success);
+    const calls = fetchFn.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    const vision = calls.filter((body) => JSON.stringify(body.messages).includes("image_url"));
+    expect(vision).toHaveLength(1);
+    expect(vision[0].stream).toBe(false);
+    expect(vision[0].tools ?? []).toEqual([]);
+  });
+});
+
 function structuredChatResponse(toolCall = false) {
   const result = {
     count: 2,

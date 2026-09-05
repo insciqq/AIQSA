@@ -284,3 +284,22 @@ describe("answer process label", () => {
     })).toBe(2_200);
   });
 });
+
+describe("PDF preparation presentation", () => {
+  it("uses only durable aggregate page counts before any answer activity", () => {
+    const document = { completedPages: 4, pageCount: 10, phase: "preparing" as const, retryable: false,
+      route: "selected_model_vision" as const, limitedReadingQuality: false, longDocument: false };
+    expect(presentRunLifecycleV2({ content: "", events: [], runId: "run-pdf", status: "streaming",
+      pdfPreparation: [document, { ...document, completedPages: 2 }] })).toMatchObject({
+      kind: "activity", activity: { kind: "preparing", label: "Preparing documents · 6 of 20 pages…" }
+    });
+  });
+
+  it("offers retry for a failed document even when no answer text exists", () => {
+    expect(presentRunLifecycleV2({ content: "", events: [], runId: "run-pdf", status: "error",
+      pdfPreparation: [{ completedPages: 4, pageCount: 10, phase: "failed", retryable: true,
+        route: "selected_model_vision", limitedReadingQuality: false, longDocument: false }] })).toMatchObject({
+      kind: "recoverable_error", failure: { recovery: "retry", message: "Document preparation could not finish." }
+    });
+  });
+});

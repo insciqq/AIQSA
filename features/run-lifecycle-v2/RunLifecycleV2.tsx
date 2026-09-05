@@ -1,5 +1,7 @@
 "use client";
 
+import { CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
+  type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
@@ -94,12 +96,14 @@ function RunErrorV2({
   onRetry,
   onSelectModel,
   onUseLoadAll,
+  pdfPreparation,
   presentation
 }: {
   onRegenerate?(): void;
   onRetry?(): void;
   onSelectModel?(): void;
   onUseLoadAll?(): void;
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
   presentation: RunPresentationV2;
 }) {
   if (
@@ -110,6 +114,7 @@ function RunErrorV2({
   }
 
   const recoverable = presentation.kind === "recoverable_error";
+  const pdfFailed = pdfPreparation?.some((item) => item.phase === "failed");
   const autoDiscoveryUnavailable =
     presentation.failure.code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE;
   // The card is a neutral surface: an alert glyph plus a plain-language
@@ -127,7 +132,7 @@ function RunErrorV2({
         <UiV2Icon name="alert" />
         <h2>{autoDiscoveryUnavailable
           ? "Automatic tool discovery is unavailable"
-          : recoverable ? "Answer interrupted by a provider error" : "Request not completed"}</h2>
+          : pdfFailed ? "Document preparation stopped" : recoverable ? "Answer interrupted by a provider error" : "Request not completed"}</h2>
       </div>
       <p>{presentation.failure.message}</p>
       <div className="v2-run-error-actions">
@@ -143,7 +148,7 @@ function RunErrorV2({
         {!autoDiscoveryUnavailable && !recoverable && onRegenerate ? (
           <UiV2Button icon="regenerate" tone="primary" onClick={onRegenerate}>Regenerate</UiV2Button>
         ) : null}
-        {!autoDiscoveryUnavailable && !recoverable && onSelectModel ? (
+        {!pdfFailed && !autoDiscoveryUnavailable && !recoverable && onSelectModel ? (
           <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
         {presentation.failure.code ? (
@@ -157,6 +162,8 @@ function RunErrorV2({
 }
 
 export type RunAnswerV2Props = Readonly<{
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
+  onStop?(): void;
   actions?: ConversationMessageActionsV2;
   /** Quiet status lines between the body and the actions row. */
   actionsSlot?: ReactNode;
@@ -199,6 +206,8 @@ export function RunAnswerV2({
   onSelectModel,
   onUseLoadAll,
   presentation,
+  pdfPreparation,
+  onStop,
   renderCitation,
   showReasoning = true,
   toolbarLeading = null,
@@ -240,6 +249,7 @@ export function RunAnswerV2({
         onSelectModel={onSelectModel}
         onUseLoadAll={onUseLoadAll}
         presentation={presentation}
+        pdfPreparation={pdfPreparation}
       />
       {actionsSlot}
     </>
@@ -255,6 +265,16 @@ export function RunAnswerV2({
         <>
           {leadingSlot}
           {process}
+          {pdfPreparation?.length ? (
+            <div className="v2-pdf-preparation" data-testid="pdf-preparation-notices">
+              {presentation.kind === "activity" && presentation.activity?.kind === "preparing" && onStop ? (
+                <UiV2Button icon="stop" onClick={onStop}>Stop</UiV2Button>
+              ) : null}
+              {pdfPreparation.some((item) => item.longDocument) ? <p>{CHAT_PDF_LONG_DOCUMENT_NOTICE}</p> : null}
+              {pdfPreparation.some((item) => item.limitedReadingQuality) ? <p>{pdfPreparation.length === 1
+                ? CHAT_PDF_LOCAL_TEXT_NOTICE : CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE}</p> : null}
+            </div>
+          ) : null}
           {noticeSlot}
         </>
       )}

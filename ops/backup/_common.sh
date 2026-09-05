@@ -139,6 +139,10 @@ SELECT CASE
     AND to_regclass('public."MemoryLexicalProjectionState"') IS NOT NULL
     AND to_regclass('public."KnowledgeDeletionJob"') IS NOT NULL
     AND to_regclass('public."KnowledgeDeletionObject"') IS NOT NULL
+    AND to_regclass('public."ChatPdfRunPreparation"') IS NOT NULL
+    AND to_regclass('public."ChatPdfAttachmentPreparation"') IS NOT NULL
+    AND to_regclass('public."ChatPdfArtifact"') IS NOT NULL
+    AND to_regclass('public."ChatPdfPageAttempt"') IS NOT NULL
   THEN '$AIQSA_BACKUP_SCHEMA'
   ELSE 'incompatible'
 END;
@@ -158,6 +162,10 @@ validate_current_schema_archive_listing() {
     MemoryExecutionBinding
     KnowledgeDeletionJob
     KnowledgeDeletionObject
+    ChatPdfRunPreparation
+    ChatPdfAttachmentPreparation
+    ChatPdfArtifact
+    ChatPdfPageAttempt
   )
 
   for required in "${required_relations[@]}"; do

@@ -1,3 +1,5 @@
+import { AttachmentLinkConflictError } from "./runRepositoryContract";
+import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import {
   Prisma,
   type ModelRunStatus
@@ -43,6 +45,7 @@ import {
   beginPreparingRunAttemptWithClient,
   completePreparingRunAttemptWithClient,
   createDormantPreparingRun,
+  continuePdfPreparedRunWithClient,
   finalizePreparingRunWithClient,
   lockPreparingRun,
   recoverPreparingRunWithClient,
@@ -410,6 +413,9 @@ export function createPrismaRunRepository(
       completePreparingRunAttemptWithClient(prismaClient, input),
     finalizePreparingRun: (input) =>
       finalizePreparingRunWithClient(prismaClient, input, memoryExecutionAuthority),
+    hasPendingPdfPreparation: async (runId) => Boolean(await prismaClient.chatPdfRunPreparation.findFirst({
+      select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["pending", "preparing", "answer_ready"] } }
+    })),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     retryPreparingRunAttempt: (input) =>
@@ -453,6 +459,7 @@ export function createPrismaRunRepository(
             // The generic boot orphan sweep cannot make that authorization
             // decision and must not mask it with run_orphaned_on_boot.
             projectRunBinding: null,
+            NOT: { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
             providerResponseId: null,
             toolLoopState: { equals: Prisma.DbNull }
           }
@@ -733,6 +740,7 @@ export function createPrismaRunRepository(
         }, memorySourceHooks);
         await tx.usageEvent.deleteMany({
           where: {
+            chatPdfPreparation: false,
             modelRunId: input.runId
           }
         });
@@ -775,6 +783,14 @@ export function createPrismaRunRepository(
         return true;
       });
     },
+    continuePdfPreparedRun: async (input) => {
+      const created = await continuePdfPreparedRunWithClient(prismaClient, input,
+        memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
+        await loadMemoryAdmissionDeadlineMs());
+      return { assistantMessageId: created.assistantMessageId, runId: created.runId,
+        userMessageId: created.userMessageId,
+        ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
+    },
     createRun: async (input) => {
       const memoryAdmissionDeadlineMs = input.project
         ? MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
@@ -786,6 +802,7 @@ export function createPrismaRunRepository(
         memoryAdmissionDeadlineMs);
       return {
         assistantMessageId: created.assistantMessageId,
+        ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.materializedRequest
           ? { materializedRequest: created.materializedRequest }
           : {}),
@@ -804,6 +821,7 @@ export function createPrismaRunRepository(
         memoryAdmissionDeadlineMs);
       return {
         assistantMessageId: created.assistantMessageId,
+        ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.materializedRequest
           ? { materializedRequest: created.materializedRequest }
           : {}),
@@ -1280,6 +1298,10 @@ export function createPrismaRunRepository(
       const run = await prismaClient.modelRun.findFirst({
         select: {
           chatId: true,
+          chatPdfPreparation: { select: { retryable: true, state: true } },
+          chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
+            completedPages: true, pageCount: true, retryable: true, route: true, state: true
+          } },
           id: true,
           status: true
         },
@@ -1295,6 +1317,10 @@ export function createPrismaRunRepository(
 
       return run
         ? {
+            ...(run.chatPdfAttachments?.length ? { pdfPreparation: run.chatPdfAttachments.map((row) =>
+              projectChatPdfPreparation(row, run.chatPdfPreparation?.state === "failed" || run.chatPdfPreparation?.state === "cancelled"
+                ? { phase: run.status === "error" ? "failed" : "cancelled",
+                    retryable: run.status === "error" && run.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
             id: run.id,
             status: acceptedRunStatus(run.status)
           }
@@ -1337,6 +1363,10 @@ export function createPrismaRunRepository(
                   createdAt: "desc"
                 },
                 select: {
+                  chatPdfPreparation: { select: { retryable: true, state: true } },
+                  chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
+                    completedPages: true, pageCount: true, retryable: true, route: true, state: true
+                  } },
                   answerStartedAt: true,
                   assistantId: true,
                   assistantMessageId: true,
@@ -1519,6 +1549,10 @@ export function createPrismaRunRepository(
               provider: message.provider,
               role: message.role,
               status: message.status,
+              ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
+                projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
+                  ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
+                      retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
               toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null
             };
           })
@@ -1566,7 +1600,7 @@ export function createPrismaRunRepository(
       });
       return context.messages;
     },
-    loadAttachments: async (userId, attachmentIds, projectId) => {
+    loadAttachments: async (userId, attachmentIds, projectId, runId) => {
       if (attachmentIds.length === 0) {
         return [];
       }
@@ -1580,8 +1614,19 @@ export function createPrismaRunRepository(
         }
       });
 
+      const preparedPdfs = runId ? await prismaClient.chatPdfAttachmentPreparation.findMany({ where: {
+        modelRunId: runId, attachmentId: { in: attachmentIds }, route: { not: "direct_pdf" },
+        modelRun: { userId }
+      }, select: { attachmentId: true, state: true, sourceChecksum: true, documentArtifact: { select: {
+        byteSize: true, checksum: true, pageCount: true, sourceChecksum: true, storageKey: true, state: true
+      } } } }) : [];
+      if (preparedPdfs.some((row) => row.state !== "ready" || row.documentArtifact?.state !== "ready")) {
+        throw new AttachmentLinkConflictError();
+      }
+      const documents = new Map(preparedPdfs.map((row) => [row.attachmentId, row.documentArtifact!]));
       return attachments.map(
         (attachment): RunAttachmentRecord => ({
+          ...(documents.has(attachment.id) ? { preparedPdf: documents.get(attachment.id)! } : {}),
           byteSize: attachment.byteSize,
           checksum: attachment.checksum,
           extractedText: attachment.extractedText,
@@ -1711,7 +1756,7 @@ export function createPrismaRunRepository(
           reasoningTokens: true,
           totalTokens: true
         },
-        where: { modelRunId: input.runId, userId: input.userId }
+        where: { chatPdfPreparation: false, modelRunId: input.runId, userId: input.userId }
       });
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,

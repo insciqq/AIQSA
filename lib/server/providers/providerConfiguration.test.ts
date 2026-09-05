@@ -17,6 +17,22 @@ function normalizeProviderModelConfiguration(value: Record<string, unknown>) {
   });
 }
 
+describe("exact model image limits", () => {
+  it("retains positive model limits without granting Vision and rejects invalid bounds", () => {
+    const imageInputLimits = { imageBytes: 1000000, imageCount: 1, imagePixels: 2000000, payloadBytes: 2000000 };
+    const configuration = { adapterKind: "openai_responses_compatible", upstreamModelId: "fixture", defaultParams: {},
+      capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: true, imageInputLimits } };
+    expect(normalizeProviderModelConfiguration(configuration).capabilities.imageInputLimits).toEqual(imageInputLimits);
+    for (const invalid of [{ ...imageInputLimits, imageCount: 0 }, { ...imageInputLimits, payloadBytes: -1 },
+      { ...imageInputLimits, imagePixels: 1.5 }, { ...imageInputLimits, extra: 1 }]) {
+      expect(() => normalizeProviderModelConfiguration({ ...configuration,
+        capabilities: { ...configuration.capabilities, imageInputLimits: invalid } })).toThrow("provider_model_capabilities_invalid");
+    }
+    expect(() => normalizeProviderModelConfiguration({ ...configuration,
+      capabilities: { ...configuration.capabilities, vision: false } })).toThrow("provider_model_capabilities_invalid");
+  });
+});
+
 const capabilities = {
   nativePdfInput: false,
   nativeSearch: false,

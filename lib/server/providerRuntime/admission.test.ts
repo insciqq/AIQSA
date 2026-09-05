@@ -431,6 +431,25 @@ function expectSearch(plan: ProviderAdmissionPlan) {
 }
 
 describe("provider admission", () => {
+  it.each([undefined, "another-model", officialOpenAiModel.upstreamModelId])(
+    "grants image transcription only with matching active evidence (%s)", async (upstreamModelId) => {
+      const answer = officialOpenAiModel;
+      const { db } = admissionDb({
+        answer,
+        credentialCheckEvidenceByModel: { [answer.id]: upstreamModelId ? {
+          visionInput: { adapterKind: answer.adapterKind, probeVersion: 1,
+            upstreamModelId, verified: true }
+        } : {} },
+        options: [off]
+      });
+      const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: answer.connectionId, providerModelId: answer.id,
+        searchPlan: { mode: "all_selected", optionIds: [] }, userId: "user-1"
+      });
+      expect(plan.answer.verifiedVisionInput === true)
+        .toBe(upstreamModelId === answer.upstreamModelId);
+    }
+  );
   it("uses an explicit Project model with the installation default credential, never personal grants", async () => {
     const defaultCredentialId = `credential:${officialOpenAiModel.connectionId}`;
     const { accessGrantCount, db } = admissionDb({

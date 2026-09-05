@@ -40,4 +40,11 @@ describe("administrator provider compatibility evidence", () => {
       usage: "not_supported"
     });
   });
+
+  it("retains legacy capabilities without granting image input and validates new evidence", () => {
+    expect(decodeAdminProviderCompatibilityEvidence(verified)?.vision).toBeUndefined();
+    expect(decodeAdminProviderCompatibilityEvidence({ ...verified, vision: "verified" }))
+      .toEqual({ ...verified, vision: "verified" });
+    expect(decodeAdminProviderCompatibilityEvidence({ ...verified, vision: true })).toBeNull();
+  });
 });

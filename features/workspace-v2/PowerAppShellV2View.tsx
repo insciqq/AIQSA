@@ -1,5 +1,7 @@
 "use client";
 
+import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePreview";
+
 import {
   ChatDeleteConfirmationDialog,
   ConfirmationDialog,
@@ -522,6 +524,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         )
       : skillCatalog?.skills ?? []
   }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.documentTotal, composer.knowledge.sources, mcpServers, projectContext, skillCatalog?.skills]);
+  const pdfRoutePreview = useChatPdfRoutePreview(composer.currentModel && composer.attachments.some((item) => item.kind === "pdf") ? {
+    projectId: activeProject?.id ?? null, providerConnectionId: composer.currentModel.provider, providerModelId: composer.currentModel.modelId
+  } : null);
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
@@ -531,9 +536,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         composer.workspace.enabled
       ),
       composer.currentModel,
-      composer.workspace.enabled
+      composer.workspace.enabled,
+      pdfRoutePreview
     ),
-    [composer.attachments, composer.currentModel, composer.workspace.enabled]
+    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview]
   );
   const attachmentUsage = useMemo(
     () => calculateAttachmentLimitUsage(
@@ -833,6 +839,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // locally invented post-loss "error" status until refresh reconciles.
     const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
     const presentation = presentRunLifecycleV2({
+      pdfPreparation: source.pdfPreparation,
       ...runTransportStateV2({
         activeChatStreaming: thread.activeChatStreaming,
         interruptedRun: thread.interruptedRun,
@@ -898,6 +905,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onUseLoadAll={() => applyLoadAllAfterMcpDiscoveryFailureV2(
           () => thread.handleRegenerateMessage(source.id)
         )}
+        pdfPreparation={source.pdfPreparation}
+        onStop={() => void composer.stopCurrentRun()}
         presentation={presentation}
         renderCitation={knowledgeReference
           ? (handle, key) => knowledgeHandles.has(handle) ? (

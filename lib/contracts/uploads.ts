@@ -10,6 +10,7 @@ export type PdfProcessingWire = {
 };
 
 export type UploadedAttachmentWire = {
+  pageCount?: number;
   byteSize?: number;
   extractedText?: string | null;
   fileName: string;
@@ -190,6 +191,8 @@ export function decodeUploadAttachmentResponse(value: unknown): UploadAttachment
       attachment.kind !== "file" &&
       attachment.kind !== "image" &&
       attachment.kind !== "pdf") ||
+    (attachment.pageCount !== undefined && (attachment.kind !== "pdf" ||
+      !isPositiveSafeInteger(attachment.pageCount) || attachment.pageCount > PDF_PROCESSING_MAX_PAGES)) ||
     (attachment.byteSize !== undefined &&
       (typeof attachment.byteSize !== "number" ||
         !Number.isFinite(attachment.byteSize) ||
@@ -225,6 +228,7 @@ export function decodeUploadAttachmentResponse(value: unknown): UploadAttachment
 
   return {
     attachment: {
+      ...(attachment.pageCount === undefined ? {} : { pageCount: attachment.pageCount }),
       ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
       ...(attachment.extractedText === undefined
         ? {}
@@ -302,4 +306,11 @@ export function decodeUploadErrorResponse(value: unknown): UploadErrorResponseWi
     error: value.error,
     message: value.message
   };
+}
+
+/** Explicit numeric projection of private upload metadata. */
+export function pdfPageCountFromMetadata(metadata: unknown): number | null {
+  if (!isRecord(metadata)) return null;
+  const value = metadata.pdfPageCount;
+  return isPositiveSafeInteger(value) && value <= PDF_PROCESSING_MAX_PAGES ? value : null;
 }

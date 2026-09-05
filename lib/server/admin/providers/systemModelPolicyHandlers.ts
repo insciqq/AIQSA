@@ -78,10 +78,13 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         Object.hasOwn(value, "reasoningEffort");
       const hasRerankerUpdate = record(value) &&
         Object.hasOwn(value, "rerankerProviderModelId");
+      const hasPdfPolicyUpdate = record(value) &&
+        Object.hasOwn(value, "chatPdfPreparationAllowed");
       if (!record(value) || !Number.isSafeInteger(value.expectedVersion) ||
         Number(value.expectedVersion) < 1 ||
         hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasRerankerUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfPolicyUpdate ||
+        hasPdfPolicyUpdate && typeof value.chatPdfPreparationAllowed !== "boolean" ||
         hasUtilityUpdate && !(value.providerModelId === null ||
           typeof value.providerModelId === "string" &&
           value.providerModelId.trim() === value.providerModelId &&
@@ -103,6 +106,9 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       }
       try {
         await input.service.update({
+          ...(hasPdfPolicyUpdate ? {
+            chatPdfPreparationAllowed: value.chatPdfPreparationAllowed as boolean
+          } : {}),
           expectedVersion: Number(value.expectedVersion),
           ...(hasUtilityUpdate ? {
             providerModelId: value.providerModelId as string | null,

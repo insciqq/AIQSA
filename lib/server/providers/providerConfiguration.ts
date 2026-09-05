@@ -382,7 +382,7 @@ function normalizeEmbeddingModelConfiguration(
 }
 
 function nonAnswerCapabilitiesAreInert(capabilities: ProviderModelCapabilities): boolean {
-  return !capabilities.backgroundStreaming &&
+  return !capabilities.imageInputLimits && !capabilities.backgroundStreaming &&
     !capabilities.defaultMaxOutputTokens &&
     !capabilities.nativeBackground &&
     !capabilities.nativeImageGeneration &&
@@ -403,6 +403,13 @@ function nonAnswerCapabilitiesAreInert(capabilities: ProviderModelCapabilities):
 
 export function normalizeProviderModelCapabilities(value: unknown): ProviderModelCapabilities {
   if (!isRecord(value)) {
+    throw new ProviderConfigurationError("provider_model_capabilities_invalid");
+  }
+  const imageInputLimits = value.imageInputLimits;
+  if (imageInputLimits !== undefined && (!isRecord(imageInputLimits) || value.vision !== true ||
+    ["imageBytes", "imageCount", "imagePixels", "payloadBytes"].some((key) =>
+      !Number.isSafeInteger(imageInputLimits[key]) || Number(imageInputLimits[key]) <= 0) ||
+    Object.keys(imageInputLimits).some((key) => !["imageBytes", "imageCount", "imagePixels", "payloadBytes"].includes(key)))) {
     throw new ProviderConfigurationError("provider_model_capabilities_invalid");
   }
 
@@ -466,6 +473,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
       ? { backgroundStreaming: value.backgroundStreaming }
       : {}),
     ...(typeof value.contextWindow === "number" ? { contextWindow: value.contextWindow } : {}),
+    ...(imageInputLimits ? { imageInputLimits: { ...imageInputLimits } as NonNullable<ProviderModelCapabilities["imageInputLimits"]> } : {}),
     ...(typeof value.defaultMaxOutputTokens === "number"
       ? { defaultMaxOutputTokens: value.defaultMaxOutputTokens }
       : {}),

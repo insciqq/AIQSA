@@ -24,6 +24,7 @@ const catalog = {
   candidates: [candidate],
   rerankerCandidates: [],
   policy: {
+    chatPdfPreparationAllowed: false,
     reasoningEffort: null,
     rerankerModel: null,
     systemModel: null,
@@ -38,6 +39,29 @@ afterEach(() => {
 });
 
 describe("administrator provider system model task", () => {
+  it("defaults PDF egress off and saves explicit permission with its destination disclosure", async () => {
+    const current = { ...catalog, policy: { ...catalog.policy,
+      systemModel: { ...candidate, available: true }, reasoningEffort: "medium" } };
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => new Response(
+      JSON.stringify({ systemModelPolicy: { ...current, policy: { ...current.policy,
+        chatPdfPreparationAllowed: init?.method === "PATCH" } } })
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminProviderSystemModelTask active />);
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "Allow chat PDF preparation with the utility model"
+    });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText(/PDF page images and extracted page text may be sent to Provider A \/ Model A/u))
+      .toBeVisible();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "Save system models" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual({
+      chatPdfPreparationAllowed: true, expectedVersion: 1
+    });
+    expect(checkbox).toBeChecked();
+  });
   it("names the selected System Model when it is the reranker fallback", async () => {
     const fallback = {
       ...catalog,
@@ -205,6 +229,7 @@ describe("administrator provider system model task", () => {
       candidates: [candidate],
       rerankerCandidates: [rerankerCandidate],
       policy: {
+        chatPdfPreparationAllowed: false,
         reasoningEffort: "xhigh",
         rerankerModel: { ...rerankerCandidate, available: true },
         systemModel: { ...candidate, available: false },
@@ -420,6 +445,7 @@ describe("administrator provider system model task", () => {
       candidates: [candidate],
       rerankerCandidates: [],
       policy: {
+        chatPdfPreparationAllowed: false,
         rerankerModel: null,
         systemModel: { ...candidate, available: false },
         reasoningEffort: "xhigh",

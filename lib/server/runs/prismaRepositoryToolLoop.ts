@@ -1757,6 +1757,7 @@ export function createPrismaRunToolLoopOperations(
 
         await tx.usageEvent.deleteMany({
           where: {
+            chatPdfPreparation: false,
             modelRunId: input.runId
           }
         });
@@ -1926,6 +1927,7 @@ export function createPrismaRunToolLoopOperations(
         if (usageAttributions.length > 0) {
           await tx.usageEvent.deleteMany({
             where: {
+              chatPdfPreparation: false,
               modelRunId: input.runId
             }
           });

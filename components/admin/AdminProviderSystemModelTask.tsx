@@ -56,6 +56,7 @@ export function AdminProviderSystemModelTask({
   const [selectedId, setSelectedId] = useState("");
   const [selectedRerankerId, setSelectedRerankerId] = useState("");
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
+  const [allowChatPdf, setAllowChatPdf] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -90,6 +91,7 @@ export function AdminProviderSystemModelTask({
       (catalog?.policy.systemModel?.id === selectedId ? catalog.policy.systemModel : null)
     : null;
   const draftDirty = Boolean(catalog) && (
+    allowChatPdf !== catalog?.policy.chatPdfPreparationAllowed ||
     selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
     selectedRerankerId !== currentRerankerId
   );
@@ -97,6 +99,7 @@ export function AdminProviderSystemModelTask({
   const requestDraftDiscard = useAdminDraftProtection({
     dirty: draftDirty,
     onDiscard: () => {
+      setAllowChatPdf(catalog?.policy.chatPdfPreparationAllowed === true);
       setSelectedId(currentId);
       setSelectedReasoningEffort(currentReasoningEffort);
       setSelectedRerankerId(currentRerankerId);
@@ -106,6 +109,7 @@ export function AdminProviderSystemModelTask({
   });
 
   const apply = useCallback((next: AdminSystemModelPolicyCatalog) => {
+    setAllowChatPdf(next.policy.chatPdfPreparationAllowed);
     setCatalog(next);
     setSelectedId(next.policy.systemModel?.id ?? "");
     setSelectedReasoningEffort(next.policy.reasoningEffort ?? "");
@@ -142,6 +146,7 @@ export function AdminProviderSystemModelTask({
   }, [active, catalog, loading, refresh]);
 
   const save = async (updates: Readonly<{
+    chatPdfPreparationAllowed?: boolean;
     providerModelId?: string | null;
     reasoningEffort?: string | null;
     rerankerProviderModelId?: string | null;
@@ -183,6 +188,7 @@ export function AdminProviderSystemModelTask({
   };
 
   const canSave = Boolean(catalog) && (
+    allowChatPdf !== catalog?.policy.chatPdfPreparationAllowed ||
     selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
     selectedRerankerId !== currentRerankerId ||
     Boolean(catalog?.policy.systemModel?.available === false) ||
@@ -334,6 +340,26 @@ export function AdminProviderSystemModelTask({
               ) : null}
             </div>
 
+            <div className="grid gap-2 text-sm text-ink-secondary">
+              <label className="flex min-h-11 cursor-pointer items-center gap-3">
+                <input
+                  checked={allowChatPdf}
+                  disabled={busy || loading}
+                  onChange={(event) => setAllowChatPdf(event.target.checked)}
+                  type="checkbox"
+                />
+                Allow chat PDF preparation with the utility model
+              </label>
+              <p>
+                PDF page images and extracted page text may be sent to {selectedDeployment
+                  ? deploymentLabel(selectedDeployment) : "the configured utility model"}.
+                {selectedDeployment?.visionInput === "verified"
+                  ? " Image input is verified."
+                  : " Verify image input in the deployment compatibility checks before this route can be used."}
+                {" "}Changes apply to future messages only. The selected chat model still writes the answer.
+              </p>
+            </div>
+
             <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="system-model-deployment">
               Internal utility model
               <select
@@ -420,6 +446,8 @@ export function AdminProviderSystemModelTask({
                   const rerankerChanged = selectedRerankerId !== currentRerankerId ||
                     catalog.policy.rerankerModel?.available === false && !utilityChanged;
                   void save({
+                    ...(allowChatPdf !== catalog.policy.chatPdfPreparationAllowed
+                      ? { chatPdfPreparationAllowed: allowChatPdf } : {}),
                     ...(utilityChanged ? {
                       providerModelId: selectedId || null,
                       reasoningEffort: selectedId

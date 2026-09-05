@@ -29,6 +29,7 @@ import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
 import { hasVerifiedForcedToolCall } from "../providers/forcedToolCallEvidence";
 import { hasVerifiedPdfInput } from "../providers/pdfInputEvidence";
+import { hasVerifiedVisionInput } from "../providers/visionInputEvidence";
 
 export type ProviderAdmissionErrorCode =
   | "credential_active_version_missing"
@@ -53,6 +54,7 @@ export class ProviderAdmissionError extends Error {
 }
 
 export type ProviderAdmissionRole = Readonly<{
+  verifiedVisionInput?: true;
   authority?: SearchProbeBinding | null;
   credentialSource: "default" | "group" | "user";
   modelConfiguration: RunModelConfiguration;
@@ -530,6 +532,8 @@ async function loadRole(
   return {
     authority,
     credentialSource: credential.source,
+    ...(hasVerifiedVisionInput(check.evidence, resolvedModel)
+      ? { verifiedVisionInput: true as const } : {}),
     modelConfiguration: {
       adapterKind: resolvedModel.adapterKind as CatalogAdapterKind,
       capabilities: resolvedModel.capabilities,

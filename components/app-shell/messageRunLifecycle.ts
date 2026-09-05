@@ -1,3 +1,4 @@
+import { decodePreparingRunAdmission } from "@/lib/contracts/runs";
 import {
   errorMessage,
   responseErrorMessageDetails
@@ -133,6 +134,7 @@ function finishStream(input: {
   cancelled: boolean;
   chatId: string;
   failed: boolean;
+  deferred?: boolean;
 }) {
   const ownsAbortController =
     input.activeStreamAbortRef.current.get(input.chatId) === input.abortController;
@@ -146,7 +148,7 @@ function finishStream(input: {
 
   updateStreamChatMessages(input.chatId, (current) =>
     current.map((candidate) =>
-      candidate.id === input.assistantMessageId && candidate.status === "streaming"
+      candidate.id === input.assistantMessageId && candidate.status === "streaming" && !input.deferred
         ? {
             ...candidate,
             status: input.cancelled ? "cancelled" : input.failed ? "error" : "complete"
@@ -181,6 +183,7 @@ export async function executeMessageRunLifecycle({
   let assistantMessageId = optimisticAssistantMessageId;
   let cancelled = false;
   let failed = false;
+  let deferred = false;
   let failureMessage: string | null = null;
   let failureCode: string | null = null;
   let receivedChatUpdate = false;
@@ -217,6 +220,19 @@ export async function executeMessageRunLifecycle({
       throw new Error(details.message);
     }
 
+    if (response.status === 202) {
+      const admitted = decodePreparingRunAdmission(await response.json());
+      if (!admitted) throw new Error("run_admission_malformed");
+      runId = admitted.run.id;
+      assistantMessageId = admitted.assistantMessageId;
+      reconcileMessageIds({ assistantMessageId, currentRunId: runId,
+        messageIds: { assistantMessageId, userMessageId: admitted.userMessageId }, optimisticAssistantMessageId });
+      useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
+      updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
+        ? { ...message, runId, ...(admitted.run.pdfPreparation ? { pdfPreparation: admitted.run.pdfPreparation } : {}) }
+        : message));
+      deferred = true;
+    } else {
     const streamResult = await consumeRunStream({
       chatId,
       failurePrefix,
@@ -280,6 +296,7 @@ export async function executeMessageRunLifecycle({
     if (!failed && !cancelled) {
       void notifyAnswerReady();
     }
+    }
   } catch (error) {
     tokenBuffer.flush();
     cancelled = runWasCancelled(abortController, runId);
@@ -317,8 +334,14 @@ export async function executeMessageRunLifecycle({
       assistantMessageId,
       cancelled,
       chatId,
-      failed
+      failed,
+      deferred
     });
+    if (deferred && !failed && !cancelled) {
+      // Let the successful admission clear the submitted draft first. The
+      // existing keyed resume owner then polls this committed background run.
+      setTimeout(() => { void refreshActiveChat(chatId, { forceDetail: true, preserveControls: true }).catch(() => undefined); }, 0);
+    }
   }
 
   return {

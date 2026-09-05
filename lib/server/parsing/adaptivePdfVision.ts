@@ -67,7 +67,7 @@ function boundedText(blocks: readonly ParsedDocumentBlock[], maximum: number): s
   return value || null;
 }
 
-function tableRegions(input: Readonly<{
+export function adaptivePdfTableRegions(input: Readonly<{
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   page: NativePdfPageMetrics;
@@ -161,7 +161,7 @@ export async function prepareAdaptivePdfVisionSupplement(input: Readonly<{
   const nativePageText = adaptiveNativeTextLexicallyValid(page)
     ? boundedText(nativeBlocks, ADAPTIVE_PDF_MAX_NATIVE_PAGE_TEXT_CHARACTERS)
     : null;
-  const regions = tableRegions({ docling: input.docling, geometry: input.geometry, page });
+  const regions = adaptivePdfTableRegions({ docling: input.docling, geometry: input.geometry, page });
   const tableDetected = [...(input.docling?.blocks ?? []), ...nativeBlocks].some((block) =>
     block.page <= page.page && block.pageEnd >= page.page &&
     (block.isTable || block.table !== null || block.type === "table"));

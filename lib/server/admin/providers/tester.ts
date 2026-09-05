@@ -34,6 +34,8 @@ import {
   type ProviderPdfInputProbe
 } from "../../providers/pdfInputProbe";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
+import { createProviderVisionInputProbe } from "../../providers/visionInputProbe";
+import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import {
   ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
   unsupportedAdminProviderCompatibilityEvidence
@@ -542,12 +544,37 @@ async function testAnswerModel(
   const structuredOutput = await testStructuredOutput(input, options);
   const forcedToolCall = await testForcedToolCall(input, options);
   const pdfInput = await testPdfInput(input, options);
+  let visionInput: AdminProviderTestEvidence["visionInput"];
+  if (input.model.capabilities.vision === true) {
+    try {
+      const probe = createProviderVisionInputProbe({
+        execute: async (_snapshot, request, execution) => {
+          const stream = providerRuntime(input, options).adapter.stream(request, execution);
+          let next = await stream.next();
+          while (!next.done) next = await stream.next();
+          return next.value;
+        }
+      });
+      if (await probe.probe(executionSnapshot(input), input.signal)) {
+        visionInput = decodeVisionInputVerificationEvidence({
+          adapterKind: input.model.adapterKind,
+          probeVersion: 1,
+          upstreamModelId: input.model.upstreamModelId,
+          verified: true
+        }) ?? undefined;
+      }
+    } catch (error) {
+      preserveTestWideFailure(input, error);
+    }
+  }
   const streaming = await runGenerationProbe(input, options, true);
 
   return {
     evidence: {
       compatibility: {
         directPdf: pdfInput.status,
+        ...(input.model.capabilities.vision === true
+          ? { vision: visionInput ? "verified" as const : "not_supported" as const } : {}),
         ...(input.model.capabilities.toolCalling === true &&
           supportsForcedToolCallProbe(input.model.adapterKind)
           ? { forcedToolCall: forcedToolCall.status }
@@ -562,6 +589,7 @@ async function testAnswerModel(
       method,
       selectedProviders,
       ...(pdfInput.evidence ? { pdfInput: pdfInput.evidence } : {}),
+      ...(visionInput ? { visionInput } : {}),
       ...(forcedToolCall.evidence
         ? { forcedToolCall: forcedToolCall.evidence }
         : {}),
