@@ -38,11 +38,9 @@ import type {
   AssistantRunResolver
 } from "./runMaterialization";
 
-export type AssistantRevisionRow = {
-  authorDisplayName: string | null;
+export type AssistantContentRow = {
   avatar: unknown;
   category: string | null;
-  createdAt: Date;
   description: string;
   developerPrompt: string | null;
   id: string;
@@ -50,7 +48,6 @@ export type AssistantRevisionRow = {
   mcpServerIds: string[];
   name: string;
   providerModelId: string;
-  revisionNumber: number;
   runControls: unknown;
   searchPlan: unknown;
   skillSummaries?: { id: string; name: string }[];
@@ -63,7 +60,6 @@ export type AssistantPublicationRow = {
   groupId: string | null;
   groupName: string | null;
   id: string;
-  revisionNumber: number;
   scope: "group" | "installation" | "project";
   updatedAt: Date;
 };
@@ -77,15 +73,14 @@ export type AssistantAccessEntry = {
   ownerDisplayName: string;
   pinned: boolean;
   published: boolean;
-  /** The revision this runner would execute right now. */
-  revision: AssistantRevisionRow;
+  /** One complete live definition for future admission. */
+  content: AssistantContentRow;
   updatedAt: Date;
   version: number;
 };
 
 export type AssistantDetailData = AssistantAccessEntry & {
   publications: AssistantPublicationRow[] | null;
-  revisionCount: number | null;
 };
 
 export type AssistantWriteResult =
@@ -93,6 +88,7 @@ export type AssistantWriteResult =
   | { kind: "archived" }
   | { kind: "not_found" }
   | { kind: "skills_not_available" }
+  | { kind: "skill_audience_mismatch" }
   | { kind: "version_conflict" };
 
 export type AssistantCreateResult =
@@ -103,7 +99,6 @@ export type AssistantPublishInput = {
   actorIsAdmin: boolean;
   assistantId: string;
   groupId: string | null;
-  revisionNumber: number | null;
   scope: "group" | "installation";
   userId: string;
 };
@@ -125,11 +120,9 @@ export type AssistantDuplicateResult =
   | { kind: "skills_not_available" }
   | { kind: "tools_not_available" };
 
-const revisionSelect = {
-  author: { select: { displayName: true } },
+const contentSelect = {
   avatar: true,
   category: true,
-  createdAt: true,
   description: true,
   developerPrompt: true,
   id: true,
@@ -137,7 +130,6 @@ const revisionSelect = {
   mcpServerIds: true,
   name: true,
   providerModelId: true,
-  revisionNumber: true,
   runControls: true,
   searchPlan: true,
   skillLinks: {
@@ -149,21 +141,19 @@ const revisionSelect = {
   },
   starterPrompts: true,
   systemPrompt: true
-} satisfies Prisma.AssistantRevisionSelect;
+} satisfies Prisma.AssistantDefinitionSelect;
 
-type RevisionRecord = Prisma.AssistantRevisionGetPayload<{ select: typeof revisionSelect }>;
+type ContentRecord = Prisma.AssistantDefinitionGetPayload<{ select: typeof contentSelect }>;
 
-function revisionRow(record: RevisionRecord): AssistantRevisionRow {
+function contentRow(record: ContentRecord): AssistantContentRow {
   const knowledge = decodeKnowledgePlan(record.knowledgeSelection);
   if (!knowledge.ok || knowledge.plan.mode === "all_my_knowledge" ||
     knowledge.plan.mode === "inherited") {
-    throw new Error("assistant_revision_integrity_invalid");
+    throw new Error("assistant_definition_integrity_invalid");
   }
   return {
-    authorDisplayName: record.author?.displayName ?? null,
     avatar: record.avatar,
     category: record.category,
-    createdAt: record.createdAt,
     description: record.description,
     developerPrompt: record.developerPrompt,
     id: record.id,
@@ -171,7 +161,6 @@ function revisionRow(record: RevisionRecord): AssistantRevisionRow {
     mcpServerIds: [...record.mcpServerIds],
     name: record.name,
     providerModelId: record.providerModelId,
-    revisionNumber: record.revisionNumber,
     runControls: record.runControls,
     searchPlan: record.searchPlan,
     skillSummaries: record.skillLinks.flatMap((link) =>
@@ -189,7 +178,6 @@ function publicationRow(record: {
   group: { name: string } | null;
   groupId: string | null;
   id: string;
-  revision: { revisionNumber: number };
   scope: "group" | "installation";
   updatedAt: Date;
 }): AssistantPublicationRow {
@@ -197,15 +185,13 @@ function publicationRow(record: {
     groupId: record.groupId,
     groupName: record.group?.name ?? null,
     id: record.id,
-    revisionNumber: record.revision.revisionNumber,
     scope: record.scope,
     updatedAt: record.updatedAt
   };
 }
 
-function revisionDraftData(draft: AssistantDraft): Omit<
-  Prisma.AssistantRevisionUncheckedCreateInput,
-  "assistantId" | "authorUserId" | "revisionNumber"
+function contentDraftData(draft: AssistantDraft): Omit<
+  Prisma.AssistantDefinitionUncheckedCreateInput, "ownerUserId"
 > {
   return {
     avatar: draft.avatar as unknown as Prisma.InputJsonValue,
@@ -226,15 +212,15 @@ function revisionDraftData(draft: AssistantDraft): Omit<
   };
 }
 
-async function createAssistantRevisionSkillLinks(
+async function createAssistantSkillLinks(
   tx: Prisma.TransactionClient,
-  assistantRevisionId: string,
+  assistantId: string,
   skillIds: readonly string[]
 ): Promise<void> {
   if (skillIds.length === 0) return;
-  await tx.assistantRevisionSkill.createMany({
+  await tx.assistantSkill.createMany({
     data: skillIds.map((skillId, ordinal) => ({
-      assistantRevisionId,
+      assistantId,
       ordinal,
       skillId
     }))
@@ -284,7 +270,7 @@ function isPrismaSerializationConflict(error: unknown): boolean {
       (error.code === "P2010" &&
         typeof error.meta === "object" &&
         error.meta !== null &&
-        error.meta.code === "40001"));
+        (error.meta.code === "40001" || error.meta.code === "40P01")));
 }
 
 export type PrismaAssistantRepositoryOptions = {
@@ -595,6 +581,13 @@ export function createPrismaAssistantRepository(
       modelById: new Map(selection.models.map((model) => [model.modelId, model]))
     };
   });
+  const accessInclude = {
+    skillLinks: contentSelect.skillLinks,
+    owner: { select: { displayName: true } },
+    publications: { include: { group: { select: { archivedAt: true, name: true } } } },
+    projectBindings: { select: { id: true } }
+  } satisfies Prisma.AssistantDefinitionInclude;
+
   async function loadAccessEntryWith(
     readClient: AssistantReadClient,
     userId: string,
@@ -602,17 +595,7 @@ export function createPrismaAssistantRepository(
   ): Promise<AssistantAccessEntry | null> {
     const [definition, memberGroupIds, pin] = await Promise.all([
       readClient.assistantDefinition.findUnique({
-        include: {
-          currentRevision: { select: revisionSelect },
-          owner: { select: { displayName: true } },
-          publications: {
-            include: {
-              group: { select: { archivedAt: true, name: true } },
-              revision: { select: revisionSelect }
-            }
-          },
-          projectBindings: { select: { id: true } }
-        },
+        include: accessInclude,
         where: { id: assistantId }
       }),
       activeMemberGroupIds(readClient, userId),
@@ -623,6 +606,15 @@ export function createPrismaAssistantRepository(
     ]);
     if (!definition) return null;
 
+    return projectAccessEntry(definition, userId, memberGroupIds, Boolean(pin));
+  }
+
+  function projectAccessEntry(
+    definition: Prisma.AssistantDefinitionGetPayload<{ include: typeof accessInclude }>,
+    userId: string,
+    memberGroupIds: readonly string[],
+    pinned: boolean
+  ): AssistantAccessEntry | null {
     const owned = definition.ownerUserId === userId;
     const memberGroups = new Set(memberGroupIds);
     const accessiblePublications = definition.publications.filter(
@@ -637,20 +629,7 @@ export function createPrismaAssistantRepository(
       return null;
     }
 
-    const selectedPublication = owned
-      ? null
-      : [...accessiblePublications].sort(
-          (left, right) => right.revision.revisionNumber - left.revision.revisionNumber
-        )[0] ?? null;
-    const accessibleRevision = owned
-      ? definition.currentRevision
-      : selectedPublication?.revision ?? null;
-    if (!accessibleRevision) return null;
-    const selectedPublications = owned
-      ? definition.publications
-      : accessiblePublications.filter(
-          (publication) => publication.revision.id === accessibleRevision.id
-        );
+    const selectedPublications = owned ? definition.publications : accessiblePublications;
 
     return {
       archived: definition.archivedAt !== null,
@@ -665,9 +644,9 @@ export function createPrismaAssistantRepository(
         .sort((left, right) => left.localeCompare(right)),
       owned,
       ownerDisplayName: definition.owner.displayName,
-      pinned: Boolean(pin),
+      pinned,
       published: definition.publications.length > 0 || (owned && definition.projectBindings.length > 0),
-      revision: revisionRow(accessibleRevision),
+      content: contentRow(definition),
       updatedAt: definition.updatedAt,
       version: definition.version
     };
@@ -683,21 +662,9 @@ export function createPrismaAssistantRepository(
           return { kind: "skills_not_available" as const };
         }
         const definition = await tx.assistantDefinition.create({
-          data: { ownerUserId: userId }
+          data: { ...contentDraftData(draft), ownerUserId: userId }
         });
-        const revision = await tx.assistantRevision.create({
-          data: {
-            ...revisionDraftData(draft),
-            assistantId: definition.id,
-            authorUserId: userId,
-            revisionNumber: 1
-          }
-        });
-        await createAssistantRevisionSkillLinks(tx, revision.id, draft.skillIds);
-        await tx.assistantDefinition.update({
-          data: { currentRevisionId: revision.id },
-          where: { id: definition.id }
-        });
+        await createAssistantSkillLinks(tx, definition.id, draft.skillIds);
         return { assistantId: definition.id, kind: "ok" as const };
       });
     },
@@ -727,10 +694,10 @@ export function createPrismaAssistantRepository(
             await lockAssistantPublicationRowsForDuplicate(tx, assistantId);
             const provisionalSource = await loadAccessEntryWith(tx, userId, assistantId);
             if (!provisionalSource) return { kind: "not_found" as const };
-            const knowledgeSelection = provisionalSource.revision.knowledgeSelection;
+            const knowledgeSelection = provisionalSource.content.knowledgeSelection;
             const knowledgeBaseIds = distinctKnowledgeBaseIds(knowledgeSelection.baseIds);
             const knowledgeSourceIds = distinctKnowledgeSourceIds(knowledgeSelection.sourceIds);
-            const skillIds = distinctSortedSkillIds(provisionalSource.revision.skillIds);
+            const skillIds = distinctSortedSkillIds(provisionalSource.content.skillIds);
             if (!await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds)) {
               return { kind: "knowledge_not_available" as const };
             }
@@ -743,14 +710,14 @@ export function createPrismaAssistantRepository(
             await lockActiveMemberGroupRows(tx, userId);
             await lockKnowledgePublicationRowsForDuplicate(tx, knowledgeBaseIds);
             const source = await loadAccessEntryWith(tx, userId, assistantId);
-            if (!source || source.revision.id !== provisionalSource.revision.id) {
+            if (!source || source.version !== provisionalSource.version) {
               return { kind: "not_found" as const };
             }
             if (!catalogView) return { kind: "model_not_available" as const };
-            const runControls = decodeAssistantRunControls(source.revision.runControls ?? {});
-            const searchPlan = decodeSearchPlan(source.revision.searchPlan);
+            const runControls = decodeAssistantRunControls(source.content.runControls ?? {});
+            const searchPlan = decodeSearchPlan(source.content.searchPlan);
             if (!runControls || !searchPlan.ok) {
-              throw new Error("assistant_revision_integrity_invalid");
+              throw new Error("assistant_definition_integrity_invalid");
             }
             if (!await allKnowledgeDependenciesAvailable(
               tx,
@@ -764,8 +731,8 @@ export function createPrismaAssistantRepository(
             }
             const invalid = validateAssistantConfigurationAgainstCatalog(
               {
-                mcpServerIds: source.revision.mcpServerIds,
-                providerModelId: source.revision.providerModelId,
+                mcpServerIds: source.content.mcpServerIds,
+                providerModelId: source.content.providerModelId,
                 runControls,
                 searchPlan: searchPlan.plan
               },
@@ -779,34 +746,25 @@ export function createPrismaAssistantRepository(
             if (invalid === "search") return { kind: "search_not_available" as const };
             if (invalid === "tools") return { kind: "tools_not_available" as const };
 
-            const copyName = `Copy of ${source.revision.name}`.slice(0, 80);
+            const copyName = `Copy of ${source.content.name}`.slice(0, 80);
             const definition = await tx.assistantDefinition.create({
-              data: { ownerUserId: userId }
-            });
-            const revision = await tx.assistantRevision.create({
               data: {
-                assistantId: definition.id,
-                authorUserId: userId,
-                avatar: source.revision.avatar as Prisma.InputJsonValue,
-                category: source.revision.category,
-                description: source.revision.description,
-                developerPrompt: source.revision.developerPrompt,
-                knowledgeSelection: source.revision.knowledgeSelection as unknown as Prisma.InputJsonValue,
-                mcpServerIds: [...source.revision.mcpServerIds],
+                ownerUserId: userId,
+                avatar: source.content.avatar as Prisma.InputJsonValue,
+                category: source.content.category,
+                description: source.content.description,
+                developerPrompt: source.content.developerPrompt,
+                knowledgeSelection: source.content.knowledgeSelection as unknown as Prisma.InputJsonValue,
+                mcpServerIds: [...source.content.mcpServerIds],
                 name: copyName,
-                providerModelId: source.revision.providerModelId,
-                revisionNumber: 1,
-                runControls: source.revision.runControls as Prisma.InputJsonValue,
-                searchPlan: source.revision.searchPlan as Prisma.InputJsonValue,
-                starterPrompts: [...source.revision.starterPrompts],
-                systemPrompt: source.revision.systemPrompt
+                providerModelId: source.content.providerModelId,
+                runControls: source.content.runControls as Prisma.InputJsonValue,
+                searchPlan: source.content.searchPlan as Prisma.InputJsonValue,
+                starterPrompts: [...source.content.starterPrompts],
+                systemPrompt: source.content.systemPrompt
               }
             });
-            await createAssistantRevisionSkillLinks(tx, revision.id, source.revision.skillIds);
-            await tx.assistantDefinition.update({
-              data: { currentRevisionId: revision.id },
-              where: { id: definition.id }
-            });
+            await createAssistantSkillLinks(tx, definition.id, source.content.skillIds);
             return { assistantId: definition.id, kind: "ok" as const };
           }, {
             isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
@@ -829,23 +787,20 @@ export function createPrismaAssistantRepository(
       const entry = await loadAccessEntry(userId, assistantId);
       if (!entry) return null;
       if (!entry.owned) {
-        return { ...entry, publications: null, revisionCount: null };
+        return { ...entry, publications: null };
       }
-      const [publications, projectBindings, revisionCount] = await Promise.all([
+      const [publications, projectBindings] = await Promise.all([
         client.assistantPublication.findMany({
           include: {
-            group: { select: { name: true } },
-            revision: { select: { revisionNumber: true } }
+            group: { select: { name: true } }
           },
           orderBy: { createdAt: "asc" },
           where: { assistantId }
         }),
         client.projectAssistantBinding.findMany({
-          include: { revision: { select: { revisionNumber: true } } },
           orderBy: { createdAt: "asc" },
           where: { assistantId }
-        }),
-        client.assistantRevision.count({ where: { assistantId } })
+        })
       ]);
       return {
         ...entry,
@@ -855,197 +810,81 @@ export function createPrismaAssistantRepository(
             groupId: null,
             groupName: null,
             id: `project:${binding.id}`,
-            revisionNumber: binding.revision.revisionNumber,
             scope: "project" as const,
             updatedAt: binding.createdAt
           }))
-        ],
-        revisionCount
+        ]
       };
     },
 
     async listForUser(userId: string): Promise<AssistantAccessEntry[]> {
       const memberGroupIds = await activeMemberGroupIds(client, userId);
-      const [owned, sharedPublications, pins] = await Promise.all([
-        client.assistantDefinition.findMany({
-          include: {
-            currentRevision: { select: revisionSelect },
-            owner: { select: { displayName: true } },
-            projectBindings: { select: { id: true } },
-            publications: { select: { groupId: true, id: true, scope: true } }
-          },
-          where: { ownerUserId: userId }
-        }),
-        client.assistantPublication.findMany({
-          include: {
-            assistant: {
-              include: {
-                owner: { select: { displayName: true } },
-                publications: { select: { id: true, scope: true } }
-              }
-            },
-            group: { select: { archivedAt: true, name: true } },
-            revision: { select: revisionSelect }
-          },
-          where: {
-            assistant: { archivedAt: null, ownerUserId: { not: userId } },
-            OR: [
-              { scope: "installation" },
-              ...(memberGroupIds.length > 0
-                ? [{ groupId: { in: memberGroupIds } }]
-                : [])
-            ]
-          }
-        }),
-        client.assistantPin.findMany({
-          select: { assistantId: true },
-          where: { userId }
-        })
-      ]);
-      const pinned = new Set(pins.map((pin) => pin.assistantId));
-
-      const entries: AssistantAccessEntry[] = owned.flatMap((definition) =>
-        definition.currentRevision
-          ? [
-              {
-                archived: definition.archivedAt !== null,
-                id: definition.id,
-                installationScope: definition.publications.some(
-                  (publication) => publication.scope === "installation"
-                ),
-                memberGroupNames: [],
-                owned: true,
-                ownerDisplayName: definition.owner.displayName,
-                pinned: pinned.has(definition.id),
-                published: definition.publications.length > 0 || definition.projectBindings.length > 0,
-                revision: revisionRow(definition.currentRevision),
-                updatedAt: definition.updatedAt,
-                version: definition.version
-              }
-            ]
-          : []
-      );
-
-      const sharedByAssistant = new Map<string, typeof sharedPublications>();
-      for (const publication of sharedPublications) {
-        if (
-          publication.scope === "group" &&
-          (publication.groupId === null || publication.group?.archivedAt !== null)
-        ) {
-          continue;
-        }
-        const current = sharedByAssistant.get(publication.assistantId) ?? [];
-        current.push(publication);
-        sharedByAssistant.set(publication.assistantId, current);
-      }
-      for (const [assistantId, publications] of sharedByAssistant) {
-        const best = [...publications].sort(
-          (left, right) => right.revision.revisionNumber - left.revision.revisionNumber
-        )[0]!;
-        const selectedPublications = publications.filter(
-          (publication) => publication.revision.id === best.revision.id
-        );
-        entries.push({
-          archived: false,
-          id: assistantId,
-          installationScope: selectedPublications.some(
-            (publication) => publication.scope === "installation"
-          ),
-          memberGroupNames: selectedPublications
-            .filter((publication) => publication.scope === "group")
-            .map((publication) => publication.group?.name ?? "")
-            .filter((name) => name.length > 0)
-            .sort((left, right) => left.localeCompare(right)),
-          owned: false,
-          ownerDisplayName: best.assistant.owner.displayName,
-          pinned: pinned.has(assistantId),
-          published: true,
-          revision: revisionRow(best.revision),
-          updatedAt: best.updatedAt,
-          version: best.assistant.version
-        });
-      }
-
-      return entries.sort((left, right) =>
-        left.revision.name.localeCompare(right.revision.name) || left.id.localeCompare(right.id)
-      );
-    },
-
-    async listRevisions(userId: string, assistantId: string): Promise<AssistantRevisionRow[] | null> {
-      const definition = await client.assistantDefinition.findFirst({
-        select: { id: true },
-        where: { id: assistantId, ownerUserId: userId }
-      });
-      if (!definition) return null;
-      const revisions = await client.assistantRevision.findMany({
-        orderBy: { revisionNumber: "desc" },
-        select: revisionSelect,
-        where: { assistantId }
-      });
-      return revisions.map(revisionRow);
-    },
-
-    async getRevision(
-      userId: string,
-      assistantId: string,
-      revisionNumber: number
-    ): Promise<AssistantRevisionRow | null> {
-      const revision = await client.assistantRevision.findFirst({
-        select: revisionSelect,
+      const definitions = await client.assistantDefinition.findMany({
+        include: { ...accessInclude, pins: { select: { userId: true }, where: { userId } } },
         where: {
-          assistant: { ownerUserId: userId },
-          assistantId,
-          revisionNumber
+          OR: [
+            { ownerUserId: userId },
+            {
+              archivedAt: null,
+              publications: { some: { OR: [
+                { scope: "installation" },
+                { scope: "group", groupId: { in: memberGroupIds }, group: { archivedAt: null } }
+              ] } }
+            }
+          ]
         }
       });
-      return revision ? revisionRow(revision) : null;
+      const entries = definitions.map((definition) =>
+        projectAccessEntry(definition, userId, memberGroupIds, definition.pins.length > 0)
+      ).filter((entry): entry is AssistantAccessEntry => entry !== null);
+      return entries.sort((left, right) =>
+        left.content.name.localeCompare(right.content.name) || left.id.localeCompare(right.id));
     },
 
-    async revise(
+    async update(
       userId: string,
       assistantId: string,
       expectedVersion: number,
       draft: AssistantDraft
     ): Promise<AssistantWriteResult> {
-      return client.$transaction(async (tx) => {
-        const locked = await tx.$queryRaw<
-          Array<{ archivedAt: Date | null; id: string; version: number }>
-        >`
-          SELECT "id", "archivedAt", "version"
-          FROM "AssistantDefinition"
-          WHERE "id" = ${assistantId} AND "ownerUserId" = ${userId}
-          FOR UPDATE
-        `;
-        const definition = locked[0];
-        if (!definition) return { kind: "not_found" as const };
-        if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
-        if (definition.archivedAt) return { kind: "archived" as const };
-        if (!await lockAndCheckSkillDependencies(tx, userId, draft.skillIds)) {
-          return { kind: "skills_not_available" as const };
-        }
-
-        const latest = await tx.assistantRevision.aggregate({
-          _max: { revisionNumber: true },
-          where: { assistantId }
-        });
-        const revision = await tx.assistantRevision.create({
-          data: {
-            ...revisionDraftData(draft),
-            assistantId,
-            authorUserId: userId,
-            revisionNumber: (latest._max.revisionNumber ?? 0) + 1
+      try {
+        return await client.$transaction(async (tx) => {
+          const locked = await tx.$queryRaw<
+            Array<{ archivedAt: Date | null; id: string; version: number }>
+          >`
+            SELECT "id", "archivedAt", "version"
+            FROM "AssistantDefinition"
+            WHERE "id" = ${assistantId} AND "ownerUserId" = ${userId}
+            FOR UPDATE
+          `;
+          const definition = locked[0];
+          if (!definition) return { kind: "not_found" as const };
+          if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
+          if (definition.archivedAt) return { kind: "archived" as const };
+          if (!await lockAndCheckSkillDependencies(tx, userId, draft.skillIds)) {
+            return { kind: "skills_not_available" as const };
           }
+
+          const publications = await tx.assistantPublication.findMany({
+            select: { groupId: true, scope: true }, where: { assistantId }
+          });
+          for (const audience of publications) {
+            if (!await skillsReachPublicationAudience(tx, draft.skillIds, audience)) {
+              return { kind: "skill_audience_mismatch" as const };
+            }
+          }
+          await tx.assistantDefinition.update({
+            data: { ...contentDraftData(draft), version: { increment: 1 } },
+            where: { id: assistantId }
+          });
+          await tx.assistantSkill.deleteMany({ where: { assistantId } });
+          await createAssistantSkillLinks(tx, assistantId, draft.skillIds);
+          return { assistantId, kind: "ok" as const };
         });
-        await createAssistantRevisionSkillLinks(tx, revision.id, draft.skillIds);
-        await tx.assistantDefinition.update({
-          data: {
-            currentRevisionId: revision.id,
-            version: { increment: 1 }
-          },
-          where: { id: assistantId }
-        });
-        return { assistantId, kind: "ok" as const };
-      });
+      } catch (error) {
+        if (isPrismaSerializationConflict(error)) return { kind: "version_conflict" };
+        throw error;
+      }
     },
 
     async setArchived(
@@ -1128,42 +967,14 @@ export function createPrismaAssistantRepository(
           if (!memberships[0]) return { kind: "forbidden" as const };
         }
 
-        const revision = input.revisionNumber === null
-          ? await tx.assistantDefinition
-              .findUnique({
-                select: {
-                  currentRevision: {
-                    select: {
-                      id: true,
-                      revisionNumber: true,
-                      skillLinks: {
-                        orderBy: { ordinal: "asc" },
-                        select: { skillId: true }
-                      }
-                    }
-                  }
-                },
-                where: { id: input.assistantId }
-              })
-              .then((row) => row?.currentRevision ?? null)
-          : await tx.assistantRevision.findFirst({
-              select: {
-                id: true,
-                revisionNumber: true,
-                skillLinks: {
-                  orderBy: { ordinal: "asc" },
-                  select: { skillId: true }
-                }
-              },
-              where: {
-                assistantId: input.assistantId,
-                revisionNumber: input.revisionNumber
-              }
-            });
-        if (!revision) return { kind: "invalid" as const };
+        const content = await tx.assistantDefinition.findUnique({
+          select: { skillLinks: { select: { skillId: true } } },
+          where: { id: input.assistantId }
+        });
+        if (!content) return { kind: "invalid" as const };
         if (!await skillsReachPublicationAudience(
           tx,
-          revision.skillLinks.map((link) => link.skillId),
+          content.skillLinks.map((link) => link.skillId),
           { groupId: input.groupId, scope: input.scope }
         )) {
           return { kind: "skill_audience_mismatch" as const };
@@ -1181,12 +992,10 @@ export function createPrismaAssistantRepository(
         const publication = existing
           ? await tx.assistantPublication.update({
               data: {
-                publishedByUserId: input.userId,
-                revisionId: revision.id
+                publishedByUserId: input.userId
               },
               include: {
-                group: { select: { name: true } },
-                revision: { select: { revisionNumber: true } }
+                group: { select: { name: true } }
               },
               where: { id: existing.id }
             })
@@ -1195,12 +1004,10 @@ export function createPrismaAssistantRepository(
                 assistantId: input.assistantId,
                 groupId: input.scope === "group" ? input.groupId : null,
                 publishedByUserId: input.userId,
-                revisionId: revision.id,
                 scope: input.scope
               },
               include: {
-                group: { select: { name: true } },
-                revision: { select: { revisionNumber: true } }
+                group: { select: { name: true } }
               }
             });
         return { kind: "ok" as const, publication: publicationRow(publication) };
@@ -1322,87 +1129,84 @@ export function createPrismaAssistantRepository(
     }
   };
 
+  async function resolveConsistentDefinition(
+    operation: (tx: Prisma.TransactionClient) => Promise<AssistantRunResolution>
+  ): Promise<AssistantRunResolution> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await client.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+        });
+      } catch (error) {
+        if (!isPrismaSerializationConflict(error)) throw error;
+      }
+    }
+    return { code: "assistant_not_available", ok: false, status: 404 };
+  }
+
   const runResolver: AssistantRunResolver = {
     async resolveForProject(projectId, assistantId): Promise<AssistantRunResolution> {
-      const binding = await client.projectAssistantBinding.findUnique({
-        include: {
-          assistant: { select: { archivedAt: true } },
-          revision: {
-            include: {
-              providerModel: { select: { connectionId: true, id: true, modelClass: true } },
-              skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true } }
-            }
-          }
-        },
-        where: { projectId_assistantId: { assistantId, projectId } }
+      return resolveConsistentDefinition(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "AssistantDefinition"
+          WHERE "id" = ${assistantId} FOR SHARE`;
+        const binding = await tx.projectAssistantBinding.findUnique({
+          include: { assistant: { include: {
+            providerModel: { select: { connectionId: true, id: true, modelClass: true } },
+            skillLinks: contentSelect.skillLinks
+          } } },
+          where: { projectId_assistantId: { assistantId, projectId } }
+        });
+        if (!binding || binding.assistant.archivedAt || binding.assistant.providerModel.modelClass !== "answer") {
+          return { code: "assistant_not_available", ok: false, status: 404 };
+        }
+        return materialize(contentRow(binding.assistant), binding.assistant.version,
+          binding.assistant.providerModel.connectionId);
       });
-      if (!binding || binding.assistant.archivedAt || binding.revision.providerModel.modelClass !== "answer") {
-        return { code: "assistant_not_available", ok: false, status: 404 };
-      }
-      const revision = binding.revision;
-      const runControls = decodeAssistantRunControls(revision.runControls ?? {});
-      const searchPlan = decodeSearchPlan(revision.searchPlan);
-      const avatar = decodeAssistantAvatarRecipe(revision.avatar);
-      const knowledge = decodeKnowledgePlan(revision.knowledgeSelection);
-      if (!runControls || !searchPlan.ok || !avatar || !knowledge.ok ||
-        knowledge.plan.mode === "all_my_knowledge" || knowledge.plan.mode === "inherited") {
-        throw new Error("assistant_revision_integrity_invalid");
-      }
-      return {
-        assistant: {
-          assistantId,
-          developerPrompt: revision.developerPrompt,
-          knowledgeSelection: knowledge.plan,
-          mcpServerIds: [...revision.mcpServerIds],
-          name: revision.name,
-          provider: revision.providerModel.connectionId,
-          providerModelId: revision.providerModel.id,
-          revisionId: revision.id,
-          revisionNumber: revision.revisionNumber,
-          runControls,
-          searchPlan: searchPlan.plan,
-          skillIds: revision.skillLinks.map(({ skillId }) => skillId),
-          systemPrompt: revision.systemPrompt
-        },
-        ok: true
-      };
     },
     async resolveForRun(userId, assistantId): Promise<AssistantRunResolution> {
-      const entry = await loadAccessEntry(userId, assistantId);
-      if (!entry || entry.archived) {
-        return { code: "assistant_not_available", ok: false, status: 404 };
-      }
-      const runControls = decodeAssistantRunControls(entry.revision.runControls ?? {});
-      const searchPlan = decodeSearchPlan(entry.revision.searchPlan);
-      const avatar = decodeAssistantAvatarRecipe(entry.revision.avatar);
-      if (!runControls || !searchPlan.ok || !avatar) {
-        throw new Error("assistant_revision_integrity_invalid");
-      }
-      const model = await client.providerModel.findUnique({
-        select: { connectionId: true, id: true, modelClass: true },
-        where: { id: entry.revision.providerModelId }
+      return resolveConsistentDefinition(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "AssistantDefinition"
+          WHERE "id" = ${assistantId} FOR SHARE`;
+        const entry = await loadAccessEntryWith(tx, userId, assistantId);
+        if (!entry || entry.archived) {
+          return { code: "assistant_not_available", ok: false, status: 404 };
+        }
+        const model = await tx.providerModel.findUnique({
+          select: { connectionId: true, modelClass: true },
+          where: { id: entry.content.providerModelId }
+        });
+        if (!model || model.modelClass !== "answer") {
+          return { code: "assistant_not_available", ok: false, status: 404 };
+        }
+        return materialize(entry.content, entry.version, model.connectionId);
       });
-      if (!model || model.modelClass !== "answer") {
-        return { code: "assistant_not_available", ok: false, status: 404 };
-      }
-      const assistant: AssistantRunMaterialization = {
-        assistantId: entry.id,
-        developerPrompt: entry.revision.developerPrompt,
-        knowledgeSelection: entry.revision.knowledgeSelection,
-        mcpServerIds: [...entry.revision.mcpServerIds],
-        name: entry.revision.name,
-        provider: model.connectionId,
-        providerModelId: model.id,
-        revisionId: entry.revision.id,
-        revisionNumber: entry.revision.revisionNumber,
-        runControls,
-        searchPlan: searchPlan.plan,
-        skillIds: [...entry.revision.skillIds],
-        systemPrompt: entry.revision.systemPrompt
-      };
-      return { assistant, ok: true };
     }
   };
+
+  function materialize(content: AssistantContentRow, version: number, provider: string): AssistantRunResolution {
+    const runControls = decodeAssistantRunControls(content.runControls ?? {});
+    const searchPlan = decodeSearchPlan(content.searchPlan);
+    const avatar = decodeAssistantAvatarRecipe(content.avatar);
+    if (!runControls || !searchPlan.ok || !avatar) {
+      throw new Error("assistant_definition_integrity_invalid");
+    }
+    const assistant: AssistantRunMaterialization = {
+      assistantId: content.id,
+      definitionVersion: version,
+      identity: { avatar, name: content.name },
+      developerPrompt: content.developerPrompt,
+      knowledgeSelection: content.knowledgeSelection,
+      mcpServerIds: [...content.mcpServerIds],
+      name: content.name,
+      provider,
+      providerModelId: content.providerModelId,
+      runControls,
+      searchPlan: searchPlan.plan,
+      skillIds: [...content.skillIds],
+      systemPrompt: content.systemPrompt
+    };
+    return { assistant, ok: true };
+  }
 
   return { ...repository, ...runResolver };
 }

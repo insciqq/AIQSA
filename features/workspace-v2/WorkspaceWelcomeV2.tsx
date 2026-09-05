@@ -105,7 +105,6 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
   const closeAssistantSubview = () => {
     if (!assistantView || assistantView.busy) return;
     if (assistantView.task === "editor") assistantView.editor?.onCancel();
-    else if (assistantView.task === "history") assistantView.history?.onBack();
   };
   const requestAssistantSubviewClose = () => {
     if (assistantView?.task === "editor" && assistantView.editor?.dirty) {
@@ -129,7 +128,6 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
         owned: assistant.owned,
         ownerDisplayName: assistant.ownerDisplayName,
         pinned: assistant.pinned,
-        revision: assistant.revisionNumber,
         ...(unavailable
           ? { unavailable }
           : {})
@@ -211,7 +209,6 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
             onCreateFromCurrentSetup={composer.assistant.startFromCurrentSetup}
             onDuplicate={(id) => assistantView?.list.onDuplicate(id)}
             onOpen={(id) => assistantView?.list.onEdit(id)}
-            onOpenHistory={(id) => assistantView?.list.onOpenHistory(id)}
             onPinToggle={(id, pinned) => assistantView?.list.onPinToggle(id, pinned)}
             onRetry={() => assistantView?.onRetryCatalog()}
             onUnavailableAction={(id, action) => dispatchAssistantUnavailableActionV2({
@@ -390,19 +387,11 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
           ? {
               backLabel: "Assistants",
               busy: assistantView.busy || assistantView.editor.saving,
-              key: `assistant-editor-${assistantView.editor.revisionNumber ?? "new"}`,
+              key: `assistant-editor-${assistantView.editor.mode}`,
               label: assistantView.editor.draft.name.trim() || "New assistant",
               onBack: requestAssistantSubviewClose
             }
-          : activeTab === "assistants" && assistantView?.task === "history" && assistantView.history
-            ? {
-                backLabel: "Assistant",
-                busy: assistantView.busy || assistantView.history.restoring,
-                key: `assistant-history-${assistantView.history.assistantName}`,
-                label: `History · ${assistantView.history.assistantName}`,
-                onBack: assistantView.history.onBack
-              }
-            : activeTab === "knowledge" && knowledgeView && isKnowledgeSubview(knowledgeView) ? {
+          : activeTab === "knowledge" && knowledgeView && isKnowledgeSubview(knowledgeView) ? {
               ...knowledgeSubviewChrome(knowledgeView),
               busy: knowledgeView.busy,
               onBack: () => knowledgeExit.requestExit()

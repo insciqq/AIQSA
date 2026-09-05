@@ -947,7 +947,7 @@ export function PowerAppShellV2({
     knowledgeDataError: knowledgeSnapshot.dataError,
     knowledgeDataState: knowledgeSnapshot.dataState,
     openMcpSettings: () => {
-      useAssistantLibraryStore.getState().patch({ editor: null, history: null, open: false, task: "list" });
+      useAssistantLibraryStore.getState().patch({ editor: null, open: false, task: "list" });
       openMcpSettings();
     },
     retryCatalog: () => void retryCatalog(),
@@ -982,7 +982,7 @@ export function PowerAppShellV2({
         avatar: projectAssistant.summary.avatar,
         description: projectAssistant.summary.description,
         id: projectAssistant.summary.id,
-        includedSkills: projectAssistant.revision.skillIds.map((id) => ({
+        includedSkills: projectAssistant.content.skillIds.map((id) => ({
           id,
           name: skillsById.get(id) ?? "Project Skill"
         })),
@@ -992,7 +992,7 @@ export function PowerAppShellV2({
         promptCharacterCount: projectAssistant.promptCharacterCount,
         starterPrompts: projectAssistant.summary.starterPrompts
       },
-      revision: projectAssistant.revision
+      content: projectAssistant.content
     })) {
       removeAssistantFromComposer();
       return false;
@@ -1947,7 +1947,7 @@ export function PowerAppShellV2({
         knowledgeDataError: knowledgeSnapshot.dataError,
         knowledgeDataState: knowledgeSnapshot.dataState,
         openMcpSettings: () => {
-          useAssistantLibraryStore.getState().patch({ editor: null, history: null, open: false, task: "list" });
+          useAssistantLibraryStore.getState().patch({ editor: null, open: false, task: "list" });
           openMcpSettings();
         },
         retryCatalog: () => void retryCatalog(),

@@ -98,12 +98,12 @@ const projectDetailInclude = {
   _count: { select: { attachments: true, chats: true } },
   assistantBindings: {
     include: {
-      assistant: { select: { archivedAt: true } },
-      revision: {
+      assistant: {
         select: {
+          archivedAt: true,
           avatar: true,
+          updatedAt: true,
           category: true,
-          createdAt: true,
           description: true,
           developerPrompt: true,
           id: true,
@@ -111,10 +111,9 @@ const projectDetailInclude = {
           mcpServerIds: true,
           name: true,
           providerModelId: true,
-          revisionNumber: true,
           runControls: true,
           searchPlan: true,
-          skillLinks: { select: { skillId: true } },
+          skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true } },
           starterPrompts: true,
           systemPrompt: true
         }
@@ -648,10 +647,9 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
     ...row.assistantBindings.map((binding) => ({
       available: binding.assistant.archivedAt === null,
       id: binding.id,
-      label: binding.revision.name,
+      label: binding.assistant.name,
       reason: binding.assistant.archivedAt === null ? null : "resource_archived",
       resourceId: binding.assistantId,
-      revisionId: binding.revisionId,
       type: "assistant" as const
     })),
     ...row.skillBindings.map((binding) => ({
@@ -686,20 +684,20 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
     .map((source) => source.id));
   const mcp = activeByType("mcp");
   const skills = activeByType("skill");
-  const assistants = values.filter((resource) => {
-    if (!resource.available || resource.type !== "assistant") return false;
-    const binding = row.assistantBindings.find((candidate) =>
-      candidate.assistantId === resource.resourceId && candidate.revisionId === resource.revisionId
-    );
-    const selection = binding ? decodeKnowledgePlan(binding.revision.knowledgeSelection) : null;
-    return Boolean(binding) && selection?.ok === true &&
+  const assistants = values.filter((resource) => resource.type === "assistant").map((resource) => {
+    const binding = row.assistantBindings.find((candidate) => candidate.assistantId === resource.resourceId)!;
+    const definition = binding.assistant;
+    const selection = decodeKnowledgePlan(definition.knowledgeSelection);
+    const available = resource.available && selection.ok &&
       selection.plan.mode !== "all_my_knowledge" && selection.plan.mode !== "inherited" &&
-      models.has(binding!.revision.providerModelId) &&
+      models.has(definition.providerModelId) &&
       selection.plan.baseIds.every((id) => knowledge.has(id)) &&
       selection.plan.sourceIds.every((id) => knowledgeSources.has(id)) &&
-      binding!.revision.mcpServerIds.every((id) => mcp.has(id)) &&
-      searchOptionIds(binding!.revision.searchPlan).every((id) => searches.has(id)) &&
-      binding!.revision.skillLinks.every((link) => skills.has(link.skillId));
+      definition.mcpServerIds.every((id) => mcp.has(id)) &&
+      searchOptionIds(definition.searchPlan).every((id) => searches.has(id)) &&
+      definition.skillLinks.every((link) => skills.has(link.skillId));
+    return { ...resource, available, label: available ? definition.name : "Unavailable Assistant",
+      reason: available ? null : "resource_unavailable" };
   });
   return [...independentlyAvailable, ...assistants];
 }
@@ -714,7 +712,7 @@ function projectComposer(
   visibleResources: readonly ProjectResourceWire[],
   defaults: ProjectDefaultsWire
 ): ProjectDetailWire["composer"] {
-  const visible = new Map(visibleResources.map((resource) => [resource.id, resource] as const));
+  const visible = new Map(visibleResources.filter((resource) => resource.available).map((resource) => [resource.id, resource] as const));
   const visibleModelIds = new Set(visibleResources.flatMap((resource) =>
     resource.type === "model" ? [resource.resourceId] : []
   ));
@@ -769,43 +767,40 @@ function projectComposer(
 
   const assistants = row.assistantBindings.flatMap((binding) => {
     if (!visible.has(binding.id)) return [];
-    const avatar = decodeAssistantAvatarRecipe(binding.revision.avatar);
-    const controls = decodeAssistantRunControls(binding.revision.runControls);
-    const knowledge = decodeKnowledgePlan(binding.revision.knowledgeSelection);
-    const searchPlan = decodeSearchPlan(binding.revision.searchPlan);
+    const avatar = decodeAssistantAvatarRecipe(binding.assistant.avatar);
+    const controls = decodeAssistantRunControls(binding.assistant.runControls);
+    const knowledge = decodeKnowledgePlan(binding.assistant.knowledgeSelection);
+    const searchPlan = decodeSearchPlan(binding.assistant.searchPlan);
     if (!avatar || !controls || !knowledge.ok ||
       knowledge.plan.mode === "all_my_knowledge" || knowledge.plan.mode === "inherited" ||
       !searchPlan.ok) return [];
-    const category = binding.revision.category !== null &&
-      ASSISTANT_CATEGORIES.includes(binding.revision.category as AssistantCategory)
-      ? binding.revision.category as AssistantCategory
+    const category = binding.assistant.category !== null &&
+      ASSISTANT_CATEGORIES.includes(binding.assistant.category as AssistantCategory)
+      ? binding.assistant.category as AssistantCategory
       : null;
-    const promptCharacterCount = binding.revision.systemPrompt.length +
-      (binding.revision.developerPrompt?.length ?? 0);
+    const promptCharacterCount = binding.assistant.systemPrompt.length +
+      (binding.assistant.developerPrompt?.length ?? 0);
     const modelLabel = models.find((model) =>
-      model.modelId === binding.revision.providerModelId
+      model.modelId === binding.assistant.providerModelId
     )?.displayName ?? null;
-    const skillIds = binding.revision.skillLinks.map((link) => link.skillId);
+    const skillIds = binding.assistant.skillLinks.map((link) => link.skillId);
     return [{
       promptCharacterCount,
-      revision: {
-        authorDisplayName: null,
+      content: {
         avatar,
         category,
-        createdAt: iso(binding.revision.createdAt),
-        description: binding.revision.description,
+        description: binding.assistant.description,
         // Prompts remain server-side; only the bounded size participates in
         // the composer context gauge.
         developerPrompt: null,
         knowledgeSelection: knowledge.plan,
-        mcpServerIds: binding.revision.mcpServerIds,
-        name: binding.revision.name,
-        providerModelId: binding.revision.providerModelId,
-        revisionNumber: binding.revision.revisionNumber,
+        mcpServerIds: binding.assistant.mcpServerIds,
+        name: binding.assistant.name,
+        providerModelId: binding.assistant.providerModelId,
         runControls: controls,
         searchPlan: searchPlan.plan,
         skillIds,
-        starterPrompts: binding.revision.starterPrompts,
+        starterPrompts: binding.assistant.starterPrompts,
         systemPrompt: ""
       },
       summary: {
@@ -813,25 +808,24 @@ function projectComposer(
         availability: { ok: true as const },
         avatar,
         category,
-        description: binding.revision.description,
+        description: binding.assistant.description,
         fingerprint: {
           knowledgeLabel: knowledgeFingerprintLabel(knowledge.plan),
           knowledgeResourceCount: knowledge.plan.baseIds.length + knowledge.plan.sourceIds.length,
-          mcpServerCount: binding.revision.mcpServerIds.length,
+          mcpServerCount: binding.assistant.mcpServerIds.length,
           modelLabel,
           reasoningEffort: controls.reasoningEffort ?? null,
           searchOptionCount: searchPlan.plan.optionIds.length
         },
         id: binding.assistantId,
-        name: binding.revision.name,
+        name: binding.assistant.name,
         owned: false,
         ownerDisplayName: "Project",
         pinned: false,
         published: true,
-        revisionNumber: binding.revision.revisionNumber,
         scope: { kind: "installation" as const },
-        starterPrompts: binding.revision.starterPrompts,
-        updatedAt: iso(binding.revision.createdAt)
+        starterPrompts: binding.assistant.starterPrompts,
+        updatedAt: iso(binding.assistant.updatedAt)
       }
     }];
   });
@@ -1176,12 +1170,12 @@ async function resolveBoundProjectResource(
     type: "knowledge"
   };
   const assistant = await db.projectAssistantBinding.findFirst({
-    include: { revision: { select: { name: true } } },
+    include: { assistant: { select: { name: true } } },
     where: { id: bindingId, projectId }
   });
   if (assistant) return {
     bindingId,
-    label: assistant.revision.name,
+    label: assistant.assistant.name,
     resourceId: assistant.assistantId,
     storageId: assistant.id,
     type: "assistant"
@@ -1277,14 +1271,14 @@ async function dependentAssistantBindings(
   )) return [];
   const bindings = await db.projectAssistantBinding.findMany({
     include: {
-      revision: {
+      assistant: {
         select: {
           knowledgeSelection: true,
           mcpServerIds: true,
           name: true,
           providerModelId: true,
           searchPlan: true,
-          skillLinks: { select: { skillId: true } }
+          skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true } }
         }
       }
     },
@@ -1294,16 +1288,16 @@ async function dependentAssistantBindings(
     ? await projectBoundKnowledgeSourceIds(db, input.projectId, input.resourceId)
     : new Set<string>();
   return bindings.filter((binding) => {
-    const revision = binding.revision;
-    const knowledge = decodeKnowledgePlan(revision.knowledgeSelection);
-    return input.type === "model" && revision.providerModelId === input.resourceId ||
+    const definition = binding.assistant;
+    const knowledge = decodeKnowledgePlan(definition.knowledgeSelection);
+    return input.type === "model" && definition.providerModelId === input.resourceId ||
       input.type === "knowledge" && knowledge.ok && (
         knowledge.plan.baseIds.includes(input.resourceId) ||
         knowledge.plan.sourceIds.some((sourceId) => !remainingKnowledgeSourceIds.has(sourceId))
       ) ||
-      input.type === "mcp" && revision.mcpServerIds.includes(input.resourceId) ||
-      input.type === "search" && searchOptionIds(revision.searchPlan).includes(input.resourceId) ||
-      input.type === "skill" && revision.skillLinks.some((link) => link.skillId === input.resourceId);
+      input.type === "mcp" && definition.mcpServerIds.includes(input.resourceId) ||
+      input.type === "search" && searchOptionIds(definition.searchPlan).includes(input.resourceId) ||
+      input.type === "skill" && definition.skillLinks.some((link) => link.skillId === input.resourceId);
   });
 }
 
@@ -1429,7 +1423,7 @@ async function resourceRemovalConsequences(
     affectedChatCount,
     clearedDefaults,
     dependentAssistantIds,
-    dependentAssistants: dependents.map((binding) => binding.revision.name),
+    dependentAssistants: dependents.map((binding) => binding.assistant.name),
     hasRemainingMcp,
     remainingKnowledgeSourceIds,
     next
@@ -1583,27 +1577,29 @@ export function createPrismaProjectRepository(
     db: ProjectDataClient,
     input: Readonly<{ projectId: string; resourceId: string; userId: string }>
   ) {
-    const target = await db.assistantDefinition.findFirst({
+    const definition = await db.assistantDefinition.findFirst({
       include: {
-        currentRevision: { include: { skillLinks: { select: { skillId: true } } } }
+        skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true } }
       },
       where: {
         archivedAt: null,
         id: input.resourceId,
-        ownerUserId: input.userId
+        OR: [
+          { ownerUserId: input.userId },
+          { projectBindings: { some: { projectId: input.projectId } } }
+        ]
       }
     });
-    const revision = target?.currentRevision ?? null;
-    if (!target || !revision) return null;
+    if (!definition) return null;
 
-    const requiredSearchIds = [...new Set(searchOptionIds(revision.searchPlan))];
-    const knowledge = decodeKnowledgePlan(revision.knowledgeSelection);
+    const requiredSearchIds = [...new Set(searchOptionIds(definition.searchPlan))];
+    const knowledge = decodeKnowledgePlan(definition.knowledgeSelection);
     if (!knowledge.ok || knowledge.plan.mode === "all_my_knowledge" ||
       knowledge.plan.mode === "inherited") return null;
     const requiredKnowledgeIds = [...new Set(knowledge.plan.baseIds)];
     const requiredKnowledgeSourceIds = [...new Set(knowledge.plan.sourceIds)];
-    const requiredSkillIds = [...new Set(revision.skillLinks.map((link) => link.skillId))];
-    const requiredMcpIds = [...new Set(revision.mcpServerIds)];
+    const requiredSkillIds = [...new Set(definition.skillLinks.map((link) => link.skillId))];
+    const requiredMcpIds = [...new Set(definition.mcpServerIds)];
     const [
       eligibleModels,
       searchOptions,
@@ -1779,7 +1775,7 @@ export function createPrismaProjectRepository(
       skill: new Set(activeSkills.map((binding) => binding.skillId))
     };
     const dependencies: ProjectResourceDependencyPreviewWire[] = [];
-    const model = eligibleModels.find((entry) => entry.id === revision.providerModelId);
+    const model = eligibleModels.find((entry) => entry.id === definition.providerModelId);
     dependencies.push(model ? {
       label: model.displayName,
       reason: null,
@@ -1908,10 +1904,9 @@ export function createPrismaProjectRepository(
       knowledgeSources: knowledgeSources.filter((source) =>
         eligibleKnowledgeSourceIds.has(source.id)),
       mcpServers: mcpServers.filter((server) => eligibleMcpIds.has(server.id)),
-      revision,
+      definition,
       searchOptions,
-      skills,
-      target
+      skills
     };
   }
 
@@ -2240,24 +2235,22 @@ export function createPrismaProjectRepository(
         });
       } else if (input.type === "assistant") {
         const rows = await prisma.assistantDefinition.findMany({
-          include: { currentRevision: true },
           orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
           skip: offset,
           take,
           where: {
             archivedAt: null,
-            currentRevisionId: { not: null },
             ownerUserId: input.userId,
-            ...(contains ? { currentRevision: { is: { name: { contains, mode: "insensitive" } } } } : {})
+            ...(contains ? { name: { contains, mode: "insensitive" } } : {})
           }
         });
-        items = rows.flatMap((row) => row.currentRevision ? [{
-          description: row.currentRevision.description || null,
+        items = rows.map((row) => ({
+          description: row.description || null,
           disabledReason: linkedResourceIds.has(row.id) ? "already_linked_to_project" : null,
           id: row.id,
-          label: row.currentRevision.name,
+          label: row.name,
           type: "assistant" as const
-        }] : []);
+        }));
       } else if (input.type === "skill") {
         const rows = await prisma.skillDefinition.findMany({
           include: { currentRevision: true },
@@ -2888,8 +2881,8 @@ export function createPrismaProjectRepository(
               },
               dependencies: plan.dependencies,
               policyRevision: access.policyRevision,
-              resource: { label: plan.revision.name, type: "assistant" },
-              revisionId: plan.revision.id
+              resource: { label: plan.definition.name, type: "assistant" },
+              assistantVersion: plan.definition.version
             }
           };
         }
@@ -2916,7 +2909,7 @@ export function createPrismaProjectRepository(
             dependencies: [],
             policyRevision: access.policyRevision,
             resource: { label: resource.label, type: resource.type },
-            revisionId: null
+            assistantVersion: null
           }
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -2927,7 +2920,7 @@ export function createPrismaProjectRepository(
       expectedPolicyRevision: number;
       projectId: string;
       resourceId: string;
-      revisionId?: string;
+      expectedAssistantVersion?: number;
       type: ProjectResourceTypeWire;
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectResourceWire[]>> {
@@ -3064,26 +3057,26 @@ export function createPrismaProjectRepository(
             });
           } else {
             const plan = await assistantResourcePlan(tx, input);
-            if (!plan || (input.revisionId && input.revisionId !== plan.revision.id)) {
+            if (!plan || input.expectedAssistantVersion !== plan.definition.version) {
               return { kind: "unavailable" as const, reason: "project_assistant_unavailable" };
             }
             if (!plan.canCommit) {
               return { kind: "unavailable" as const, reason: "project_assistant_dependency_unavailable" };
             }
             // Preview and commit share this exact plan. The serializable
-            // transaction plus policy/revision checks makes Assistant and all
+            // transaction plus policy/definition checks makes Assistant and all
             // newly delegated dependencies one atomic publication.
             const {
               knowledgeBases,
               knowledgeSources,
               mcpServers,
-              revision,
+              definition,
               searchOptions,
               skills
             } = plan;
 
             await tx.projectModelBinding.createMany({
-              data: [{ addedByUserId: input.userId, projectId: input.projectId, providerModelId: revision.providerModelId }],
+              data: [{ addedByUserId: input.userId, projectId: input.projectId, providerModelId: definition.providerModelId }],
               skipDuplicates: true
             });
             if (searchOptions.length > 0) await tx.projectSearchBinding.createMany({
@@ -3127,23 +3120,21 @@ export function createPrismaProjectRepository(
               skipDuplicates: true
             });
 
-            const revisionId = revision.id;
             const existing = await tx.projectAssistantBinding.findUnique({
               where: { projectId_assistantId: { assistantId: input.resourceId, projectId: input.projectId } }
             });
             if (existing) {
               await tx.projectAssistantBinding.update({
-                data: { addedByUserId: input.userId, revisionId },
+                data: { addedByUserId: input.userId },
                 where: { id: existing.id }
               });
-              eventType = "resource_revision_updated";
+              eventType = "resource_dependencies_refreshed";
             } else {
               await tx.projectAssistantBinding.create({
                 data: {
                   addedByUserId: input.userId,
                   assistantId: input.resourceId,
-                  projectId: input.projectId,
-                  revisionId
+                  projectId: input.projectId
                 }
               });
             }

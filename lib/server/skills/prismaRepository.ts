@@ -147,7 +147,7 @@ async function removalBreaksAssistantPublication(
   const assistantPublications = await tx.assistantPublication.findMany({
     select: { groupId: true, scope: true },
     where: {
-      revision: {
+      assistant: {
         skillLinks: { some: { skillId } }
       }
     }
@@ -284,16 +284,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
     });
     const revision = definition.currentRevision;
     const assistantUsageCount = await client.assistantDefinition.count({
-      where: {
-        OR: [
-          { currentRevision: { skillLinks: { some: { skillId } } } },
-          {
-            publications: {
-              some: { revision: { skillLinks: { some: { skillId } } } }
-            }
-          }
-        ]
-      }
+      where: { skillLinks: { some: { skillId } } }
     });
     return {
       archived: definition.archivedAt !== null,
@@ -341,26 +332,35 @@ export function createPrismaSkillRepository(client: PrismaClient) {
     },
 
     async delete(userId: string, skillId: string): Promise<"not_found" | "ok"> {
-      return client.$transaction(async (tx) => {
-        const [skill] = await tx.$queryRaw<Array<{
-          deletedAt: Date | null;
-          id: string;
-        }>>`
-          SELECT "id", "deletedAt"
-          FROM "SkillDefinition"
-          WHERE "id" = ${skillId}
-            AND "ownerUserId" = ${userId}
-          FOR UPDATE
-        `;
-        if (!skill || skill.deletedAt) return "not_found" as const;
-        await tx.skillPublication.deleteMany({ where: { skillId } });
-        await tx.assistantRevisionSkill.deleteMany({ where: { skillId } });
-        await tx.skillDefinition.update({
-          data: { deletedAt: new Date(), version: { increment: 1 } },
-          where: { id: skillId }
-        });
-        return "ok" as const;
-      });
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await client.$transaction(async (tx) => {
+            const [skill] = await tx.$queryRaw<Array<{
+              deletedAt: Date | null;
+              id: string;
+            }>>`
+              SELECT "id", "deletedAt"
+              FROM "SkillDefinition"
+              WHERE "id" = ${skillId}
+                AND "ownerUserId" = ${userId}
+              FOR UPDATE
+            `;
+            if (!skill || skill.deletedAt) return "not_found" as const;
+            await tx.skillPublication.deleteMany({ where: { skillId } });
+            await tx.assistantSkill.deleteMany({ where: { skillId } });
+            await tx.skillDefinition.update({
+              data: { deletedAt: new Date(), version: { increment: 1 } },
+              where: { id: skillId }
+            });
+            return "ok" as const;
+          });
+        } catch (error) {
+          const retryable = error instanceof Prisma.PrismaClientKnownRequestError &&
+            (error.code === "P2034" || (error.code === "P2010" &&
+              (error.meta?.code === "40001" || error.meta?.code === "40P01")));
+          if (!retryable || attempt >= 2) throw error;
+        }
+      }
     },
 
     getForUser,

@@ -1877,7 +1877,7 @@ export function createPrismaAdminProviderRepository(
           chatDefaults,
           searchReferences,
           searchRevisionReferences,
-          assistantRevisions,
+          assistants,
           runBindings,
           memoryBindings
         ] = await Promise.all([
@@ -1895,7 +1895,7 @@ export function createPrismaAdminProviderRepository(
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
           tx.searchIntegrationRevision.count({ where: { providerModelId: modelId } }),
-          tx.assistantRevision.count({ where: { providerModelId: modelId } }),
+          tx.assistantDefinition.count({ where: { providerModelId: modelId } }),
           countBlockingProviderRunBindings(tx, { providerModelId: modelId }),
           countBlockingMemoryExecutionBindings(tx, { providerModelId: modelId })
         ]);
@@ -1913,7 +1913,7 @@ export function createPrismaAdminProviderRepository(
           searchRevisionReferences
             ? { count: searchRevisionReferences, kind: "search_revision_references" }
             : null,
-          assistantRevisions ? { count: assistantRevisions, kind: "assistant_revisions" } : null,
+          assistants ? { count: assistants, kind: "assistants" } : null,
           runBindings ? { count: runBindings, kind: "run_bindings" } : null,
           memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
         ]);
@@ -1999,14 +1999,14 @@ export function createPrismaAdminProviderRepository(
           ]);
           const modelIds = models.map(({ id }) => id);
           const credentialIds = credentials.map(({ id }) => id);
-          const [searchReferences, searchRevisionReferences, assistantRevisions] = await Promise.all([
+          const [searchReferences, searchRevisionReferences, assistants] = await Promise.all([
             tx.searchStrategy.count({
               where: { providerModelId: { in: modelIds } }
             }),
             tx.searchIntegrationRevision.count({
               where: { providerModelId: { in: modelIds } }
             }),
-            tx.assistantRevision.count({
+            tx.assistantDefinition.count({
               where: { providerModelId: { in: modelIds } }
             })
           ]);
@@ -2018,8 +2018,8 @@ export function createPrismaAdminProviderRepository(
             searchRevisionReferences
               ? { count: searchRevisionReferences, kind: "search_revision_references" }
               : null,
-            assistantRevisions
-              ? { count: assistantRevisions, kind: "assistant_revisions" }
+            assistants
+              ? { count: assistants, kind: "assistants" }
               : null,
             runBindings ? { count: runBindings, kind: "run_bindings" } : null,
             memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null

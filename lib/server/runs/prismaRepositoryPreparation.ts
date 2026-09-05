@@ -387,7 +387,7 @@ export type LockedPreparingRun = Readonly<{
   pdfPreparationRequired?: boolean;
   assistantId: string | null;
   assistantMessageId: string | null;
-  assistantRevisionId: string | null;
+  assistantIdentity: Prisma.JsonValue | null;
   chatId: string;
   id: string;
   modelId: string;
@@ -446,7 +446,7 @@ export async function lockPreparingRun(
 ): Promise<LockedPreparingRun | null> {
   const [run] = await tx.$queryRaw<LockedPreparingRun[]>(Prisma.sql`
     SELECT
-      "assistantId", "assistantMessageId", "assistantRevisionId", "chatId", "id",
+      "assistantId", "assistantMessageId", "assistantIdentity", "chatId", "id",
       "modelId", "normalizedRequest", "provider",
       "status", "userId", "userMessageId",
       EXISTS (SELECT 1 FROM "ChatPdfRunPreparation" p
@@ -823,7 +823,7 @@ export async function admitProjectRunWithClient(
         await assertProjectAssistantRunProvenance(tx, {
           assistantId: input.assistant.assistantId,
           projectId: project.projectId,
-          revisionId: input.assistant.revisionId,
+          definitionVersion: input.assistant.definitionVersion,
         });
       }
       const firstProjectSend = input.admissionKind === "NORMAL_SEND"
@@ -1025,7 +1025,7 @@ export async function admitProjectRunWithClient(
         data: {
           assistantMessageId,
           ...(input.assistant
-            ? { assistantId: input.assistant.assistantId, assistantRevisionId: input.assistant.revisionId }
+            ? { assistantId: input.assistant.assistantId, assistantIdentity: input.assistant.identity as unknown as Prisma.InputJsonValue }
             : {}),
           chatId: input.chatId,
           ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
@@ -1186,7 +1186,7 @@ export async function admitPreparingRunWithClient(
       if (input.assistant) {
         await assertAssistantRunProvenance(tx, {
           assistantId: input.assistant.assistantId,
-          revisionId: input.assistant.revisionId,
+          definitionVersion: input.assistant.definitionVersion,
           userId: input.userId
         });
       }
@@ -1489,7 +1489,7 @@ export async function admitPreparingRunWithClient(
           ...(input.assistant
             ? {
                 assistantId: input.assistant.assistantId,
-                assistantRevisionId: input.assistant.revisionId
+                assistantIdentity: input.assistant.identity as unknown as Prisma.InputJsonValue
               }
             : {}),
           chatId: input.chatId,
@@ -2945,7 +2945,7 @@ export async function finalizePreparingRunWithClient(
       run.assistantMessageId !== attempt.admittedAssistantLeafMessageId ||
       run.assistantId !== attempt.assistantIdSnapshot ||
       run.assistantId !== (input.assistant?.assistantId ?? null) ||
-      run.assistantRevisionId !== (input.assistant?.revisionId ?? null)
+      memoryPreparingHash(run.assistantIdentity) !== memoryPreparingHash(input.assistant?.identity ?? null)
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_shape_changed", false);
     }
@@ -3060,14 +3060,6 @@ export async function finalizePreparingRunWithClient(
           throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
         }
       }
-    }
-
-    if (input.assistant) {
-      await assertAssistantRunProvenance(tx, {
-        assistantId: input.assistant.assistantId,
-        revisionId: input.assistant.revisionId,
-        userId: input.userId
-      });
     }
 
     const contextRequested = input.normalizedRequest.personalContext !== undefined;
@@ -3374,15 +3366,6 @@ export async function retryPreparingRunAttemptWithClient(
       chat.memorySourceRevision !== lifecycleSnapshot.sourceRevision
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
-    }
-    if (run.assistantId && run.assistantRevisionId) {
-      await assertAssistantRunProvenance(tx, {
-        assistantId: run.assistantId,
-        revisionId: run.assistantRevisionId,
-        userId: input.userId
-      });
-    } else if (run.assistantId || run.assistantRevisionId) {
-      throw new MemoryPreparingRunConflictError("memory_admission_shape_changed", false);
     }
     const settings = attempt.chatMemoryModeSnapshot === "TEMPORARY"
       ? TEMPORARY_PREPARING_SETTINGS

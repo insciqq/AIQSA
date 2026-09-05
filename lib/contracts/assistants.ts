@@ -161,6 +161,17 @@ export function decodeAssistantAvatarRecipe(value: unknown): AssistantAvatarReci
   };
 }
 
+/** Bounded display-only identity captured once with an accepted run. */
+export type AssistantIdentity = { avatar: AssistantAvatarRecipe; name: string };
+
+export function decodeAssistantIdentity(value: unknown): AssistantIdentity | null {
+  if (!isRecord(value) || Object.keys(value).length !== 2 ||
+    typeof value.name !== "string" || !value.name.trim() ||
+    value.name.length > ASSISTANT_NAME_MAX_LENGTH) return null;
+  const avatar = decodeAssistantAvatarRecipe(value.avatar);
+  return avatar ? { avatar, name: value.name } : null;
+}
+
 /**
  * Pure bounded generator: maps random bytes (Web Crypto in the browser, fixed
  * vectors in tests) to one exact recipe. The same bytes always produce the same
@@ -509,24 +520,20 @@ export type AssistantSummary = {
   ownerDisplayName: string;
   pinned: boolean;
   published: boolean;
-  revisionNumber: number;
   scope: AssistantAccessScope;
   starterPrompts: string[];
   updatedAt: string;
 };
 
-export type AssistantRevisionContent = {
-  authorDisplayName: string | null;
+export type AssistantContent = {
   avatar: AssistantAvatarRecipe;
   category: AssistantCategory | null;
-  createdAt: string;
   description: string;
   developerPrompt: string | null;
   knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
   providerModelId: string | null;
-  revisionNumber: number;
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
   skillIds: string[];
@@ -538,7 +545,6 @@ export type AssistantPublicationView = {
   groupId: string | null;
   groupName: string | null;
   id: string;
-  revisionNumber: number;
   scope: "group" | "installation" | "project";
   updatedAt: string;
 };
@@ -551,17 +557,9 @@ export type AssistantDetail = {
   ownerDisplayName: string;
   pinned: boolean;
   publications?: AssistantPublicationView[];
-  revision: AssistantRevisionContent;
-  revisionCount?: number;
+  content: AssistantContent;
   skills?: { id: string; name: string }[];
   version?: number;
-};
-
-export type AssistantRevisionHistoryEntry = {
-  authorDisplayName: string | null;
-  changedSections: string[];
-  createdAt: string;
-  revisionNumber: number;
 };
 
 export type AssistantPublishableGroup = { id: string; name: string };
@@ -573,8 +571,6 @@ export type AssistantListResponse = {
   viewer: { canPublishInstallation: boolean };
 };
 export type AssistantDetailResponse = { assistant: AssistantDetail };
-export type AssistantRevisionsResponse = { revisions: AssistantRevisionHistoryEntry[] };
-export type AssistantRevisionResponse = { revision: AssistantRevisionContent };
 export type AssistantPublicationResponse = { publication: AssistantPublicationView };
 
 function nonEmptyString(value: unknown): value is string {
@@ -691,7 +687,6 @@ export function decodeAssistantSummary(value: unknown): AssistantSummary | null 
     typeof value.ownerDisplayName !== "string" ||
     typeof value.pinned !== "boolean" ||
     typeof value.published !== "boolean" ||
-    typeof value.revisionNumber !== "number" ||
     !scope ||
     !stringArray(value.starterPrompts) ||
     !nonEmptyString(value.updatedAt)
@@ -712,14 +707,13 @@ export function decodeAssistantSummary(value: unknown): AssistantSummary | null 
     ownerDisplayName: value.ownerDisplayName,
     pinned: value.pinned,
     published: value.published,
-    revisionNumber: value.revisionNumber,
     scope,
     starterPrompts: value.starterPrompts,
     updatedAt: value.updatedAt
   };
 }
 
-export function decodeAssistantRevisionContent(value: unknown): AssistantRevisionContent | null {
+export function decodeAssistantContent(value: unknown): AssistantContent | null {
   if (!isRecord(value)) return null;
   const avatar = decodeAssistantAvatarRecipe(value.avatar);
   const category = decodeCategory(value.category);
@@ -730,10 +724,8 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
   });
   const skillIds = value.skillIds;
   if (
-    !stringOrNull(value.authorDisplayName) ||
     !avatar ||
     category === undefined ||
-    !nonEmptyString(value.createdAt) ||
     typeof value.description !== "string" ||
     !stringOrNull(value.developerPrompt) ||
     !knowledge.ok ||
@@ -742,7 +734,6 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     !stringArray(value.mcpServerIds) ||
     !nonEmptyString(value.name) ||
     !stringOrNull(value.providerModelId) ||
-    typeof value.revisionNumber !== "number" ||
     !runControls ||
     !searchPlan.ok ||
     !stringArray(skillIds) ||
@@ -757,17 +748,14 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
   }
 
   return {
-    authorDisplayName: value.authorDisplayName,
     avatar,
     category,
-    createdAt: value.createdAt,
     description: value.description,
     developerPrompt: value.developerPrompt,
     knowledgeSelection: knowledge.plan,
     mcpServerIds: value.mcpServerIds,
     name: value.name,
     providerModelId: value.providerModelId,
-    revisionNumber: value.revisionNumber,
     runControls,
     searchPlan: searchPlan.plan,
     skillIds,
@@ -782,7 +770,6 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
     !stringOrNull(value.groupId) ||
     !stringOrNull(value.groupName) ||
     !nonEmptyString(value.id) ||
-    typeof value.revisionNumber !== "number" ||
     (value.scope !== "group" && value.scope !== "installation" && value.scope !== "project") ||
     !nonEmptyString(value.updatedAt)
   ) {
@@ -797,7 +784,6 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
     groupId: value.groupId,
     groupName: value.groupName,
     id: value.id,
-    revisionNumber: value.revisionNumber,
     scope: value.scope,
     updatedAt: value.updatedAt
   };
@@ -806,7 +792,7 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
 export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
   if (!isRecord(value)) return null;
   const availability = decodeAvailability(value.availability);
-  const revision = decodeAssistantRevisionContent(value.revision);
+  const content = decodeAssistantContent(value.content);
   if (
     typeof value.archived !== "boolean" ||
     !availability ||
@@ -815,7 +801,7 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     (value.owned === false && !availability.ok && availability.dependencies !== undefined) ||
     typeof value.ownerDisplayName !== "string" ||
     typeof value.pinned !== "boolean" ||
-    !revision
+    !content
   ) {
     return null;
   }
@@ -828,7 +814,6 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     publications = decoded as AssistantPublicationView[];
   }
 
-  if (value.revisionCount !== undefined && typeof value.revisionCount !== "number") return null;
   if (value.version !== undefined && typeof value.version !== "number") return null;
   let skills: { id: string; name: string }[] | undefined;
   if (value.skills !== undefined) {
@@ -839,8 +824,8 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
       skills.push({ id: skill.id, name: skill.name });
     }
     if (
-      skills.length !== revision.skillIds.length ||
-      skills.some((skill, index) => skill.id !== revision.skillIds[index])
+      skills.length !== content.skillIds.length ||
+      skills.some((skill, index) => skill.id !== content.skillIds[index])
     ) {
       return null;
     }
@@ -854,8 +839,7 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     ownerDisplayName: value.ownerDisplayName,
     pinned: value.pinned,
     ...(publications ? { publications } : {}),
-    revision,
-    ...(value.revisionCount !== undefined ? { revisionCount: value.revisionCount } : {}),
+    content,
     ...(skills ? { skills } : {}),
     ...(value.version !== undefined ? { version: value.version } : {})
   };
@@ -891,33 +875,4 @@ export function decodeAssistantDetailResponse(value: unknown): AssistantDetailRe
   if (!isRecord(value)) return null;
   const assistant = decodeAssistantDetail(value.assistant);
   return assistant ? { assistant } : null;
-}
-
-export function decodeAssistantRevisionsResponse(value: unknown): AssistantRevisionsResponse | null {
-  if (!isRecord(value) || !Array.isArray(value.revisions)) return null;
-  const revisions: AssistantRevisionHistoryEntry[] = [];
-  for (const entry of value.revisions) {
-    if (
-      !isRecord(entry) ||
-      !stringOrNull(entry.authorDisplayName) ||
-      !stringArray(entry.changedSections) ||
-      !nonEmptyString(entry.createdAt) ||
-      typeof entry.revisionNumber !== "number"
-    ) {
-      return null;
-    }
-    revisions.push({
-      authorDisplayName: entry.authorDisplayName,
-      changedSections: entry.changedSections,
-      createdAt: entry.createdAt,
-      revisionNumber: entry.revisionNumber
-    });
-  }
-  return { revisions };
-}
-
-export function decodeAssistantRevisionResponse(value: unknown): AssistantRevisionResponse | null {
-  if (!isRecord(value)) return null;
-  const revision = decodeAssistantRevisionContent(value.revision);
-  return revision ? { revision } : null;
 }

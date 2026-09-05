@@ -1441,6 +1441,22 @@ describe("model run route handlers", () => {
     }));
     expect(resolveCurrentRoute).not.toHaveBeenCalled();
     expect(stream).not.toHaveBeenCalled();
+
+    const resolveAssistant = vi.fn().mockResolvedValue({ ok: false,
+      code: "assistant_not_available", status: 404 });
+    const assistantRetry = createRegenerateModelRunHandler({ ...authDeps, repository,
+      providers: { fake: adapter }, assistants: { resolveForRun: resolveAssistant },
+      chatPdf: { kick, findAdmission: async () => null, resolve: resolveCurrentRoute,
+        loadRetry: async () => ({ assistantId: "saved-assistant", skillIds: [] }) } });
+    const previousAdmissions = vi.mocked(repository.createRegenerationRun).mock.calls.length;
+    const unavailable = await assistantRetry(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
+        retryPdfPreparation: true, assistantId: "client-replacement", systemPrompt: "client override"
+      })
+    }), { params: { messageId: "assistant-message-1" } });
+    expect(unavailable.status).toBe(404);
+    expect(resolveAssistant).toHaveBeenCalledWith(config.bootstrapUserId, "saved-assistant");
+    expect(vi.mocked(repository.createRegenerationRun).mock.calls).toHaveLength(previousAdmissions);
   });
 
   it("rejects a direct-PDF checksum mismatch before request building or provider execution", async () => {

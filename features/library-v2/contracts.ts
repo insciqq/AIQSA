@@ -43,7 +43,7 @@ export type LibrarySubviewV2 = Readonly<{
 export type AssistantSummaryV2 = Readonly<{
   archived: boolean;
   available: boolean;
-  /** Immutable identity recipe pinned in the Assistant revision, when known. */
+  /** Current Assistant avatar recipe, when known. */
   avatar?: AssistantAvatarRecipe;
   description: string;
   id: string;
@@ -52,7 +52,6 @@ export type AssistantSummaryV2 = Readonly<{
   owned: boolean;
   ownerDisplayName?: string | null;
   pinned?: boolean;
-  revision: number;
   unavailable?: AssistantUnavailabilityCopy;
 }>;
 

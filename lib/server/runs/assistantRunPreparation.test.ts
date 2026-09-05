@@ -54,8 +54,8 @@ function assistantResolution(
       name: "Code Reviewer",
       provider: "fake",
       providerModelId: "fake-model",
-      revisionId: "revision-1",
-      revisionNumber: 3,
+      definitionVersion: 3,
+      identity: { name: "Code Reviewer", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
       runControls: { reasoningEffort: "high", temperature: 0.3 },
       searchPlan: { mode: "all_selected", optionIds: [] },
       skillIds: [],
@@ -478,7 +478,7 @@ describe("ordinary Knowledge plan resolution", () => {
 });
 
 describe("assistant run admission", () => {
-  it("materializes the resolved revision server-side and skips defaults persistence", async () => {
+  it("materializes the resolved definition server-side and skips defaults persistence", async () => {
     const resolveForRun = vi.fn(async () => assistantResolution());
     const result = await prepareRun(
       deps({ assistants: { resolveForRun } }),
@@ -504,13 +504,14 @@ describe("assistant run admission", () => {
       expect(request.reasoningEffort).toBe("high");
       expect(result.prepared.assistant).toEqual({
         assistantId: "assistant-1",
-        revisionId: "revision-1"
+        definitionVersion: 3,
+        identity: { name: "Code Reviewer", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } }
       });
       expect(result.prepared.defaults).toBeNull();
     }
   });
 
-  it("uses the exact revision Knowledge list and admits it server-side", async () => {
+  it("uses the current Assistant Knowledge list and admits it server-side", async () => {
     const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
       knowledgeAdmissionPlan(input, "a"));
     const result = await prepareRun(
@@ -613,7 +614,8 @@ describe("assistant run admission", () => {
     if (result.ok) {
       expect(result.prepared.assistant).toEqual({
         assistantId: "assistant-1",
-        revisionId: "revision-1"
+        definitionVersion: 3,
+        identity: { name: "Code Reviewer", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } }
       });
       expect(result.prepared.knowledgeAdmissionPlan?.sources).toEqual([
         expect.objectContaining({

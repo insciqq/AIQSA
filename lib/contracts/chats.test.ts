@@ -353,7 +353,6 @@ describe("chat wire contracts", () => {
         rotations: [0, 2]
       },
       name: "Docs helper",
-      revisionNumber: 3
     };
 
     expect(
@@ -376,7 +375,7 @@ describe("chat wire contracts", () => {
     ).toBeNull();
     for (const malformedIdentity of [
       { ...assistantIdentity, name: "" },
-      { ...assistantIdentity, revisionNumber: 0 },
+      { ...assistantIdentity, name: "a".repeat(81) },
       { ...assistantIdentity, avatar: { kind: "uploaded" } }
     ]) {
       expect(

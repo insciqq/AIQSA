@@ -8,14 +8,12 @@ import {
   type AssistantDraft,
   type AssistantListResponse,
   type AssistantPublicationResponse,
-  type AssistantRevisionContent,
-  type AssistantRevisionsResponse,
+  type AssistantContent,
   type AssistantRunControlField,
   type AssistantSummary
 } from "../../contracts/assistants";
 import { decodeKnowledgePlan, inheritedKnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
-import { assistantRevisionChangedSections } from "../../domain/assistants";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
@@ -33,7 +31,7 @@ import {
 import { isMcpRunPlanRecordStartable } from "../mcp/runPlan";
 import type {
   AssistantAccessEntry,
-  AssistantRevisionRow,
+  AssistantContentRow,
   PrismaAssistantRepository
 } from "./prismaRepository";
 
@@ -44,15 +42,13 @@ export type AssistantHandlerDeps = {
     | "create"
     | "duplicate"
     | "getDetail"
-    | "getRevision"
     | "listForUser"
     | "listPublishableGroups"
-    | "listRevisions"
     | "loadUserAccessibleMcpServerIds"
     | "loadUserMcpRunPlanView"
     | "loadUserRunnableMcpServerIds"
     | "publish"
-    | "revise"
+    | "update"
     | "revokePublication"
     | "setArchived"
     | "setPinned"
@@ -118,16 +114,16 @@ async function runnerCatalogView(
   });
 }
 
-function decodeStoredRevision(revision: AssistantRevisionRow): {
+function decodeStoredContent(content: AssistantContentRow): {
   avatar: NonNullable<ReturnType<typeof decodeAssistantAvatarRecipe>>;
   runControls: NonNullable<ReturnType<typeof decodeAssistantRunControls>>;
   searchPlan: { mode: "all_selected" | "model_choice"; optionIds: string[] };
 } {
-  const avatar = decodeAssistantAvatarRecipe(revision.avatar);
-  const runControls = decodeAssistantRunControls(revision.runControls ?? {});
-  const searchPlan = decodeSearchPlan(revision.searchPlan);
+  const avatar = decodeAssistantAvatarRecipe(content.avatar);
+  const runControls = decodeAssistantRunControls(content.runControls ?? {});
+  const searchPlan = decodeSearchPlan(content.searchPlan);
   if (!avatar || !runControls || !searchPlan.ok) {
-    throw new Error("assistant_revision_integrity_invalid");
+    throw new Error("assistant_definition_integrity_invalid");
   }
   return {
     avatar,
@@ -160,20 +156,20 @@ function knowledgeFingerprintCount(value: unknown): number {
 }
 
 function availabilityFor(
-  revision: AssistantRevisionRow,
+  content: AssistantContentRow,
   searchPlanOptionIds: readonly string[],
   view: RunnerCatalogView,
   options: { owned: boolean }
 ): AssistantAvailability {
-  const runControls = decodeAssistantRunControls(revision.runControls ?? {});
-  const searchPlan = decodeSearchPlan(revision.searchPlan);
+  const runControls = decodeAssistantRunControls(content.runControls ?? {});
+  const searchPlan = decodeSearchPlan(content.searchPlan);
   if (!runControls || !searchPlan.ok) {
-    throw new Error("assistant_revision_integrity_invalid");
+    throw new Error("assistant_definition_integrity_invalid");
   }
   const failure = validateAssistantConfigurationAgainstCatalog(
     {
-      mcpServerIds: revision.mcpServerIds,
-      providerModelId: revision.providerModelId,
+      mcpServerIds: content.mcpServerIds,
+      providerModelId: content.providerModelId,
       runControls,
       searchPlan: {
         mode: searchPlan.plan.mode,
@@ -186,7 +182,7 @@ function availabilityFor(
   if (!failure) return { ok: true };
 
   const dependencies = options.owned
-    ? ownerAvailabilityDependencies(revision, failure, view)
+    ? ownerAvailabilityDependencies(content, failure, view)
     : [];
   if (failure === "search") {
     return {
@@ -210,23 +206,23 @@ function availabilityFor(
 }
 
 function ownerAvailabilityDependencies(
-  revision: AssistantRevisionRow,
+  content: AssistantContentRow,
   failure: AssistantCatalogValidationFailure,
   view: RunnerCatalogView
 ): NonNullable<Extract<AssistantAvailability, { ok: false }>["dependencies"]> {
-  const model = view.modelById.get(revision.providerModelId);
+  const model = view.modelById.get(content.providerModelId);
   if (failure === "model" || typeof failure === "object") {
     return [{ kind: "model", name: model?.displayName ?? "Saved model" }];
   }
   if (failure === "search") {
     return [{ kind: "search", name: "Web search" }];
   }
-  if (model && revision.mcpServerIds.length > 0 && !model.capabilities.toolCalling) {
+  if (model && content.mcpServerIds.length > 0 && !model.capabilities.toolCalling) {
     return [{ kind: "model", name: model.displayName }];
   }
 
   const names = new Set<string>();
-  for (const serverId of revision.mcpServerIds) {
+  for (const serverId of content.mcpServerIds) {
     const record = view.mcpRunPlan.recordsByServerId.get(serverId);
     const accessible = view.accessibleMcpServerIds.has(serverId);
     if (
@@ -248,9 +244,9 @@ export function buildAssistantSummary(
   entry: AssistantAccessEntry,
   view: RunnerCatalogView
 ): AssistantSummary {
-  const decoded = decodeStoredRevision(entry.revision);
+  const decoded = decodeStoredContent(entry.content);
   const availability = availabilityFor(
-    entry.revision,
+    entry.content,
     decoded.searchPlan.optionIds,
     view,
     { owned: entry.owned }
@@ -259,63 +255,59 @@ export function buildAssistantSummary(
     archived: entry.archived,
     availability,
     avatar: decoded.avatar,
-    category: assistantCategory(entry.revision.category),
-    description: entry.revision.description,
+    category: assistantCategory(entry.content.category),
+    description: entry.content.description,
     fingerprint: {
-      knowledgeLabel: knowledgeFingerprintLabel(entry.revision.knowledgeSelection),
-      knowledgeResourceCount: knowledgeFingerprintCount(entry.revision.knowledgeSelection),
-      mcpServerCount: entry.revision.mcpServerIds.length,
-      modelLabel: view.modelById.get(entry.revision.providerModelId)?.displayName ?? null,
+      knowledgeLabel: knowledgeFingerprintLabel(entry.content.knowledgeSelection),
+      knowledgeResourceCount: knowledgeFingerprintCount(entry.content.knowledgeSelection),
+      mcpServerCount: entry.content.mcpServerIds.length,
+      modelLabel: view.modelById.get(entry.content.providerModelId)?.displayName ?? null,
       reasoningEffort: decoded.runControls.reasoningEffort ?? null,
       searchOptionCount: decoded.searchPlan.optionIds.length
     },
     id: entry.id,
-    name: entry.revision.name,
+    name: entry.content.name,
     owned: entry.owned,
     ownerDisplayName: entry.ownerDisplayName,
     pinned: entry.pinned,
     published: entry.published,
-    revisionNumber: entry.revision.revisionNumber,
     scope: entry.owned
       ? { kind: "owner" }
       : entry.memberGroupNames.length > 0
         ? { groupNames: entry.memberGroupNames, kind: "group" }
         : { kind: "installation" },
-    starterPrompts: [...entry.revision.starterPrompts],
+    starterPrompts: [...entry.content.starterPrompts],
     updatedAt: entry.updatedAt.toISOString()
   };
 }
 
-function revisionContent(
-  revision: AssistantRevisionRow,
+function definitionContent(
+  content: AssistantContentRow,
   view: RunnerCatalogView,
   options: { owned: boolean }
-): AssistantRevisionContent {
-  const decoded = decodeStoredRevision(revision);
-  const modelVisible = view.modelById.has(revision.providerModelId);
+): AssistantContent {
+  const decoded = decodeStoredContent(content);
+  const modelVisible = view.modelById.has(content.providerModelId);
   return {
-    authorDisplayName: revision.authorDisplayName,
     avatar: decoded.avatar,
-    category: assistantCategory(revision.category),
-    createdAt: revision.createdAt.toISOString(),
-    description: revision.description,
-    developerPrompt: revision.developerPrompt,
+    category: assistantCategory(content.category),
+    description: content.description,
+    developerPrompt: content.developerPrompt,
     // Knowledge ids are governed dependencies too. Published consumers do
-    // not receive opaque ids here; run admission resolves the exact revision
+    // not receive opaque ids here; run admission resolves the exact content
     // server-side and returns one privacy-neutral availability failure.
     knowledgeSelection: options.owned
-      ? revision.knowledgeSelection
+      ? content.knowledgeSelection
       : inheritedKnowledgeSelection("assistant"),
     // Consumers never learn hidden dependency ids: unresolvable model ids
     // project as null and MCP ids narrow to the runner's accessible servers.
     mcpServerIds: options.owned
-      ? [...revision.mcpServerIds]
-      : revision.mcpServerIds.filter((serverId) =>
+      ? [...content.mcpServerIds]
+      : content.mcpServerIds.filter((serverId) =>
           view.accessibleMcpServerIds.has(serverId)
         ),
-    name: revision.name,
-    providerModelId: options.owned || modelVisible ? revision.providerModelId : null,
-    revisionNumber: revision.revisionNumber,
+    name: content.name,
+    providerModelId: options.owned || modelVisible ? content.providerModelId : null,
     runControls: decoded.runControls,
     searchPlan: options.owned
       ? decoded.searchPlan
@@ -325,25 +317,24 @@ function revisionContent(
             view.entitledSearchOptionIds.has(optionId)
           )
         },
-    skillIds: [...revision.skillIds],
-    starterPrompts: [...revision.starterPrompts],
-    systemPrompt: revision.systemPrompt
+    skillIds: [...content.skillIds],
+    starterPrompts: [...content.starterPrompts],
+    systemPrompt: content.systemPrompt
   };
 }
 
 function detailFromEntry(
   entry: AssistantAccessEntry & {
     publications: import("./prismaRepository").AssistantPublicationRow[] | null;
-    revisionCount: number | null;
   },
   view: RunnerCatalogView
 ): AssistantDetail {
-  const decoded = decodeStoredRevision(entry.revision);
-  const skillSummaries = entry.revision.skillSummaries ?? [];
+  const decoded = decodeStoredContent(entry.content);
+  const skillSummaries = entry.content.skillSummaries ?? [];
   return {
     archived: entry.archived,
     availability: availabilityFor(
-      entry.revision,
+      entry.content,
       decoded.searchPlan.optionIds,
       view,
       { owned: entry.owned }
@@ -358,15 +349,13 @@ function detailFromEntry(
             groupId: publication.groupId,
             groupName: publication.groupName,
             id: publication.id,
-            revisionNumber: publication.revisionNumber,
             scope: publication.scope,
             updatedAt: publication.updatedAt.toISOString()
           }))
         }
       : {}),
-    revision: revisionContent(entry.revision, view, { owned: entry.owned }),
-    ...(entry.revisionCount !== null ? { revisionCount: entry.revisionCount } : {}),
-    ...(skillSummaries.length === entry.revision.skillIds.length
+    content: definitionContent(entry.content, view, { owned: entry.owned }),
+    ...(skillSummaries.length === entry.content.skillIds.length
       ? { skills: skillSummaries.map((skill) => ({ ...skill })) }
       : {}),
     ...(entry.owned ? { version: entry.version } : {})
@@ -494,18 +483,19 @@ export function createUpdateAssistantHandler(deps: AssistantHandlerDeps) {
     const assistantId = await routeParam(context, "assistantId");
     const [body, bodyError] = await readJson(request);
     if (bodyError) return bodyError;
-    if (!body || typeof body.expectedVersion !== "number" || !Number.isInteger(body.expectedVersion)) {
+    if (!body || typeof body.expectedVersion !== "number" || !Number.isSafeInteger(body.expectedVersion) ||
+      body.expectedVersion < 1 || Object.keys(body).some((key) => !["expectedVersion", "content", "archived"].includes(key))) {
       return errorJson("assistant_draft_invalid", 400);
     }
-    const hasRevision = "revision" in body && body.revision !== undefined;
+    const hasContent = "content" in body && body.content !== undefined;
     const hasArchived = "archived" in body && body.archived !== undefined;
-    if (hasRevision === hasArchived) {
+    if (hasContent === hasArchived) {
       return errorJson("assistant_draft_invalid", 400);
     }
 
     let result;
-    if (hasRevision) {
-      const decoded = decodeAssistantDraft(body.revision);
+    if (hasContent) {
+      const decoded = decodeAssistantDraft(body.content);
       if (!decoded.ok) {
         return errorJson(decoded.code, 400, undefined, {
           ...(decoded.field ? { field: decoded.field } : {})
@@ -513,7 +503,7 @@ export function createUpdateAssistantHandler(deps: AssistantHandlerDeps) {
       }
       const invalid = validateDraftAgainstCatalog(decoded.draft, resolved.view);
       if (invalid) return invalid;
-      result = await deps.repository.revise(
+      result = await deps.repository.update(
         resolved.auth.userId,
         assistantId,
         body.expectedVersion,
@@ -533,6 +523,7 @@ export function createUpdateAssistantHandler(deps: AssistantHandlerDeps) {
 
     if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
     if (result.kind === "version_conflict") return errorJson("assistant_version_conflict", 409);
+    if (result.kind === "skill_audience_mismatch") return errorJson("assistant_skill_audience_mismatch", 409);
     if (result.kind === "archived") return errorJson("assistant_archived", 409);
     if (result.kind === "skills_not_available") {
       return errorJson("assistant_skills_not_available", 400);
@@ -589,63 +580,6 @@ export function createDuplicateAssistantHandler(deps: AssistantHandlerDeps) {
   };
 }
 
-export function createListAssistantRevisionsHandler(deps: AssistantHandlerDeps) {
-  return async function GET(
-    request: Request,
-    context: { params: Promise<{ assistantId: string }> | { assistantId: string } }
-  ): Promise<Response> {
-    const resolved = await authAndView(deps, request);
-    if ("response" in resolved) return resolved.response;
-    const assistantId = await routeParam(context, "assistantId");
-    const revisions = await deps.repository.listRevisions(resolved.auth.userId, assistantId);
-    if (!revisions) return errorJson("assistant_not_available", 404);
-
-    const contents = revisions.map((revision) =>
-      revisionContent(revision, resolved.view, { owned: true })
-    );
-    const byNumber = new Map(contents.map((content) => [content.revisionNumber, content]));
-    return Response.json({
-      revisions: contents.map((content) => ({
-        authorDisplayName: content.authorDisplayName,
-        changedSections: assistantRevisionChangedSections(
-          byNumber.get(content.revisionNumber - 1) ?? null,
-          content
-        ),
-        createdAt: content.createdAt,
-        revisionNumber: content.revisionNumber
-      }))
-    } satisfies AssistantRevisionsResponse);
-  };
-}
-
-export function createGetAssistantRevisionHandler(deps: AssistantHandlerDeps) {
-  return async function GET(
-    request: Request,
-    context: {
-      params:
-        | Promise<{ assistantId: string; revisionNumber: string }>
-        | { assistantId: string; revisionNumber: string };
-    }
-  ): Promise<Response> {
-    const resolved = await authAndView(deps, request);
-    if ("response" in resolved) return resolved.response;
-    const params = await context.params;
-    const revisionNumber = Number.parseInt(params.revisionNumber, 10);
-    if (!Number.isInteger(revisionNumber) || revisionNumber < 1) {
-      return errorJson("assistant_revision_not_found", 404);
-    }
-    const revision = await deps.repository.getRevision(
-      resolved.auth.userId,
-      params.assistantId,
-      revisionNumber
-    );
-    if (!revision) return errorJson("assistant_revision_not_found", 404);
-    return Response.json({
-      revision: revisionContent(revision, resolved.view, { owned: true })
-    });
-  };
-}
-
 export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
   return async function POST(
     request: Request,
@@ -664,11 +598,7 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
     if (scope === "group" && (typeof groupId !== "string" || !groupId.trim())) {
       return errorJson("assistant_publication_invalid", 400);
     }
-    const revisionNumber = body?.revisionNumber;
-    if (
-      revisionNumber !== undefined &&
-      (typeof revisionNumber !== "number" || !Number.isInteger(revisionNumber) || revisionNumber < 1)
-    ) {
+    if (Object.keys(body ?? {}).some((key) => key !== "scope" && key !== "groupId")) {
       return errorJson("assistant_publication_invalid", 400);
     }
 
@@ -676,7 +606,6 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
       actorIsAdmin: resolved.auth.isAdmin,
       assistantId,
       groupId: scope === "group" ? (groupId as string).trim() : null,
-      revisionNumber: typeof revisionNumber === "number" ? revisionNumber : null,
       scope,
       userId: resolved.auth.userId
     });
@@ -695,7 +624,6 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
         groupId: result.publication.groupId,
         groupName: result.publication.groupName,
         id: result.publication.id,
-        revisionNumber: result.publication.revisionNumber,
         scope: result.publication.scope,
         updatedAt: result.publication.updatedAt.toISOString()
       }

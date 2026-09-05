@@ -77,7 +77,7 @@ export type ProjectWorkspaceController = Readonly<{
   workspace: ProjectWorkspaceResponseWire | null;
   actions: Readonly<{
     addGrant(input: { groupId?: string; role: ProjectRole; userId?: string }): Promise<boolean>;
-    addResource(input: { expectedPolicyRevision?: number; resourceId: string; revisionId?: string; type: "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill" }): Promise<boolean>;
+    addResource(input: { expectedPolicyRevision?: number; resourceId: string; expectedAssistantVersion?: number; type: "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill" }): Promise<boolean>;
     archiveChat(chatId: string, archived: boolean): Promise<boolean>;
     closeCreate(): void;
     closeSettings(): void;

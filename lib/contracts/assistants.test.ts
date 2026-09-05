@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   assistantAvatarRecipeFromBytes,
   decodeAssistantAvatarRecipe,
+  decodeAssistantIdentity,
   decodeAssistantDetail,
   decodeAssistantDraft,
   decodeAssistantListResponse,
-  decodeAssistantRevisionContent,
+  decodeAssistantContent,
   decodeAssistantRunControls,
   decodeAssistantSummary,
   type AssistantAvatarRecipe
@@ -246,7 +247,6 @@ function validSummary(): Record<string, unknown> {
     ownerDisplayName: "Alex",
     pinned: true,
     published: true,
-    revisionNumber: 4,
     scope: { groupNames: ["Design"], kind: "group" },
     starterPrompts: ["Review a diff"],
     updatedAt: "2026-08-06T00:00:00.000Z"
@@ -348,55 +348,49 @@ describe("assistant wire decoders", () => {
     ).toBeNull();
   });
 
-  it("requires and decodes bounded revision Knowledge and Skill ids", () => {
-    const revision = {
+  it("requires and decodes bounded content Knowledge and Skill ids", () => {
+    const content = {
       ...validDraft(),
-      authorDisplayName: "Alex",
-      createdAt: "2026-08-08T00:00:00.000Z",
-      revisionNumber: 2
     };
-    const withoutKnowledge: Record<string, unknown> = { ...revision };
+    const withoutKnowledge: Record<string, unknown> = { ...content };
     delete withoutKnowledge.knowledgeSelection;
-    expect(decodeAssistantRevisionContent(withoutKnowledge)).toBeNull();
-    expect(decodeAssistantRevisionContent({
-      ...revision,
+    expect(decodeAssistantContent(withoutKnowledge)).toBeNull();
+    expect(decodeAssistantContent({
+      ...content,
       knowledgeSelection: {
         baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
       }
     })?.knowledgeSelection).toEqual({
       baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
     });
-    expect(decodeAssistantRevisionContent({
-      ...revision,
+    expect(decodeAssistantContent({
+      ...content,
       knowledgeSelection: {
         baseIds: ["base-a", "base-a"], mode: "explicit", sourceIds: [], version: 1
       }
     })).toBeNull();
-    expect(decodeAssistantRevisionContent({
-      ...revision,
+    expect(decodeAssistantContent({
+      ...content,
       knowledgeSelection: {
         baseIds: [" "], mode: "explicit", sourceIds: [], version: 1
       }
     })).toBeNull();
-    const withoutSkills: Record<string, unknown> = { ...revision };
+    const withoutSkills: Record<string, unknown> = { ...content };
     delete withoutSkills.skillIds;
-    expect(decodeAssistantRevisionContent(withoutSkills)).toBeNull();
-    expect(decodeAssistantRevisionContent({
-      ...revision,
+    expect(decodeAssistantContent(withoutSkills)).toBeNull();
+    expect(decodeAssistantContent({
+      ...content,
       skillIds: ["skill-review", "skill-finish"]
     })?.skillIds).toEqual(["skill-review", "skill-finish"]);
-    expect(decodeAssistantRevisionContent({
-      ...revision,
+    expect(decodeAssistantContent({
+      ...content,
       skillIds: ["skill-review", "skill-review"]
     })).toBeNull();
   });
 
   it("accepts only ordered Assistant Skill summaries matching the declared ids", () => {
-    const revision = {
+    const content = {
       ...validDraft(),
-      authorDisplayName: "Alex",
-      createdAt: "2026-08-08T00:00:00.000Z",
-      revisionNumber: 2,
       skillIds: ["skill-review", "skill-finish"]
     };
     const detail = {
@@ -406,7 +400,7 @@ describe("assistant wire decoders", () => {
       owned: false,
       ownerDisplayName: "Alex",
       pinned: false,
-      revision,
+      content,
       skills: [
         { id: "skill-review", name: "Careful reviewer" },
         { id: "skill-finish", name: "Action closer" }
@@ -418,5 +412,18 @@ describe("assistant wire decoders", () => {
       ...detail,
       skills: [...detail.skills].reverse()
     })).toBeNull();
+  });
+});
+
+describe("accepted Assistant identity", () => {
+  it("admits only a bounded display snapshot and excludes private or revision fields", () => {
+    const avatar = assistantAvatarRecipeFromBytes(new Uint8Array(10));
+    const identity = { name: "Original assistant", avatar };
+    expect(decodeAssistantIdentity(identity)).toEqual(identity);
+    for (const invalid of [{ ...identity, name: "" }, { ...identity, name: "a".repeat(81) },
+      { ...identity, systemPrompt: "private" }, { ...identity, revisionNumber: 1 },
+      { ...identity, avatar: { ...avatar, url: "private" } }]) {
+      expect(decodeAssistantIdentity(invalid)).toBeNull();
+    }
   });
 });

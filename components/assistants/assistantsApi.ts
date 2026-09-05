@@ -3,13 +3,9 @@ import {
   ASSISTANT_RUN_CONTROL_FIELDS,
   decodeAssistantDetailResponse,
   decodeAssistantListResponse,
-  decodeAssistantRevisionResponse,
-  decodeAssistantRevisionsResponse,
   type AssistantDetail,
   type AssistantDraft,
   type AssistantListResponse,
-  type AssistantRevisionContent,
-  type AssistantRevisionHistoryEntry,
   type AssistantRunControlField
 } from "@/lib/contracts/assistants";
 
@@ -127,7 +123,7 @@ export function createAssistant(
   );
 }
 
-export function reviseAssistant(
+export function updateAssistant(
   assistantId: string,
   expectedVersion: number,
   draft: AssistantDraft
@@ -135,7 +131,7 @@ export function reviseAssistant(
   return requestJson(
     `/api/me/assistants/${encodeURIComponent(assistantId)}`,
     {
-      body: JSON.stringify({ expectedVersion, revision: draft }),
+      body: JSON.stringify({ expectedVersion, content: draft }),
       headers: jsonHeaders,
       method: "PATCH"
     },
@@ -169,30 +165,9 @@ export function duplicateAssistant(
   );
 }
 
-export function fetchAssistantRevisions(
-  assistantId: string
-): Promise<AssistantApiResult<AssistantRevisionHistoryEntry[]>> {
-  return requestJson(
-    `/api/me/assistants/${encodeURIComponent(assistantId)}/revisions`,
-    { method: "GET" },
-    (value) => decodeAssistantRevisionsResponse(value)?.revisions ?? null
-  );
-}
-
-export function fetchAssistantRevision(
-  assistantId: string,
-  revisionNumber: number
-): Promise<AssistantApiResult<AssistantRevisionContent>> {
-  return requestJson(
-    `/api/me/assistants/${encodeURIComponent(assistantId)}/revisions/${revisionNumber}`,
-    { method: "GET" },
-    (value) => decodeAssistantRevisionResponse(value)?.revision ?? null
-  );
-}
-
 export function publishAssistant(
   assistantId: string,
-  input: { groupId?: string; revisionNumber?: number; scope: "group" | "installation" }
+  input: { groupId?: string; scope: "group" | "installation" }
 ): Promise<AssistantApiResult<undefined>> {
   return requestJson(
     `/api/me/assistants/${encodeURIComponent(assistantId)}/publications`,

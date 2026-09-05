@@ -5,8 +5,7 @@ import type {
   AssistantDraft,
   AssistantPublicationView,
   AssistantPublishableGroup,
-  AssistantRevisionContent,
-  AssistantRevisionHistoryEntry,
+  AssistantContent,
   AssistantRunControlField,
   AssistantRunControls,
   AssistantSummary
@@ -102,7 +101,6 @@ export type AssistantEditorView = {
   onCancel(): void;
   onChange(update: Partial<AssistantEditorDraftState>): void;
   onGenerateAvatar(): void;
-  onOpenHistory(): void;
   onOpenMcpSettings(): void;
   onPublish(input: { groupId?: string; scope: "group" | "installation" }): void;
   onRevokePublication(publicationId: string): void;
@@ -112,21 +110,7 @@ export type AssistantEditorView = {
   publications: AssistantPublicationView[] | null;
   publishableGroups: AssistantPublishableGroup[];
   canPublishInstallation: boolean;
-  /** Header shows `Draft` before creation and `Revision N` afterward. */
-  revisionNumber: number | null;
   saving: boolean;
-};
-
-export type AssistantHistoryView = {
-  assistantName: string;
-  entries: AssistantRevisionHistoryEntry[];
-  loading: boolean;
-  onBack(): void;
-  onRestore(revisionNumber: number): void;
-  onView(revisionNumber: number): void;
-  restoring: boolean;
-  /** Read-only content of the currently viewed revision, when one is open. */
-  viewedRevision: AssistantRevisionContent | null;
 };
 
 export type AssistantLibraryListView = {
@@ -135,7 +119,6 @@ export type AssistantLibraryListView = {
   onDuplicate(assistantId: string): void;
   onEdit(assistantId: string): void;
   onNewAssistant(): void;
-  onOpenHistory(assistantId: string): void;
   onPinToggle(assistantId: string, pinned: boolean): void;
   onUse(assistantId: string): void;
 };
@@ -145,14 +128,13 @@ export type AssistantLibraryView = {
   catalogError: string | null;
   catalogState: "error" | "loading" | "ready";
   editor: AssistantEditorView | null;
-  history: AssistantHistoryView | null;
   list: AssistantLibraryListView;
   notice: LibraryNotice | null;
   onBackToChat(): void;
   onDismissNotice(): void;
   onRetryCatalog(): void;
-  /** Which Library subview is visible; editor/history are non-null when active. */
-  task: "editor" | "history" | "list";
+  /** Which Library subview is visible; editor is non-null when active. */
+  task: "editor" | "list";
 };
 
 export type AssistantEditorDraftResult =
@@ -356,34 +338,34 @@ export function reconcileDraftForModel(
   return { draft, resetFields };
 }
 
-export function editorStateFromRevision(
-  revision: AssistantRevisionContent
+export function editorStateFromContent(
+  content: AssistantContent
 ): AssistantEditorDraftState {
-  const controls = revision.runControls;
+  const controls = content.runControls;
   return {
-    avatar: revision.avatar,
+    avatar: content.avatar,
     backgroundMode: controls.backgroundMode ?? null,
-    category: revision.category,
-    description: revision.description,
-    developerPrompt: revision.developerPrompt ?? "",
-    knowledgeSelection: revision.knowledgeSelection.mode === "inherited"
+    category: content.category,
+    description: content.description,
+    developerPrompt: content.developerPrompt ?? "",
+    knowledgeSelection: content.knowledgeSelection.mode === "inherited"
       ? EMPTY_KNOWLEDGE_SELECTION
-      : revision.knowledgeSelection,
+      : content.knowledgeSelection,
     maxOutputTokens:
       controls.maxOutputTokens !== undefined
         ? String(controls.maxOutputTokens)
         : "",
-    mcpServerIds: [...revision.mcpServerIds],
-    name: revision.name,
-    providerModelId: revision.providerModelId,
+    mcpServerIds: [...content.mcpServerIds],
+    name: content.name,
+    providerModelId: content.providerModelId,
     reasoningEffort: controls.reasoningEffort ?? "",
     reasoningMode: controls.reasoningMode ?? "",
-    searchOptionIds: [...revision.searchPlan.optionIds],
-    searchPlanMode: revision.searchPlan.mode,
-    skillIds: [...revision.skillIds],
-    starterPrompts: [...revision.starterPrompts],
+    searchOptionIds: [...content.searchPlan.optionIds],
+    searchPlanMode: content.searchPlan.mode,
+    skillIds: [...content.skillIds],
+    starterPrompts: [...content.starterPrompts],
     streamMode: controls.streamMode ?? null,
-    systemPrompt: revision.systemPrompt,
+    systemPrompt: content.systemPrompt,
     temperature:
       controls.temperature !== undefined
         ? String(controls.temperature)

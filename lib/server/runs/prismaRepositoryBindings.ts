@@ -4,8 +4,8 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import {
-  decodeAssistantAvatarRecipe,
-  type AssistantAvatarRecipe
+  decodeAssistantIdentity,
+  type AssistantIdentity
 } from "../../contracts/assistants";
 import { SKILL_MAX_SELECTED } from "../../contracts/skills";
 import {
@@ -129,21 +129,13 @@ function isPrismaSerializationConflict(error: unknown): boolean {
     /PostgresError\s*\{\s*code:\s*"(?:40001|40P01)"/u.test(error.message);
 }
 
-/**
- * In-transaction Assistant acceptance recheck: the definition must still exist
- * unarchived, the revision must belong to it, and the runner must currently be
- * the owner or hold an active group/installation publication for that exact
- * revision. The locking reads serialize archive, publication, active-group, and
- * membership changes with acceptance. A concurrent revision advance is not a
- * conflict — the run records the revision resolved at admission — but access
- * loss, archive, and publication revocation fail with a stable privacy-safe
- * conflict.
- */
+/** Recheck live authority and the complete resolved definition at first
+ * acceptance. A concurrent edit fails closed before any external dispatch. */
 export async function assertAssistantRunProvenance(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   input: {
     assistantId: string;
-    revisionId: string;
+    definitionVersion: number;
     userId: string;
   }
 ): Promise<void> {
@@ -151,10 +143,8 @@ export async function assertAssistantRunProvenance(
     const definitions = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
       SELECT definition."ownerUserId"
       FROM "AssistantDefinition" AS definition
-      INNER JOIN "AssistantRevision" AS revision
-        ON revision."assistantId" = definition."id"
-       AND revision."id" = ${input.revisionId}
       WHERE definition."id" = ${input.assistantId}
+        AND definition."version" = ${input.definitionVersion}
         AND definition."archivedAt" IS NULL
       FOR SHARE OF definition
     `;
@@ -166,7 +156,6 @@ export async function assertAssistantRunProvenance(
       SELECT publication."id"
       FROM "AssistantPublication" AS publication
       WHERE publication."assistantId" = ${input.assistantId}
-        AND publication."revisionId" = ${input.revisionId}
         AND publication."scope" = 'installation'
       ORDER BY publication."id"
       FOR SHARE OF publication
@@ -183,7 +172,6 @@ export async function assertAssistantRunProvenance(
         ON member_group."id" = membership."groupId"
        AND member_group."archivedAt" IS NULL
       WHERE publication."assistantId" = ${input.assistantId}
-        AND publication."revisionId" = ${input.revisionId}
         AND publication."scope" = 'group'
       ORDER BY publication."id"
       FOR SHARE OF publication, membership, member_group
@@ -197,15 +185,14 @@ export async function assertAssistantRunProvenance(
   }
 }
 
-/** Project publication is its own Assistant authority. The exact pinned
- * binding and revision must still exist and the definition must be active,
- * but the initiating member never needs a matching personal publication. */
+/** Project publication is its own authority; the admission snapshot must
+ * still match the complete live definition and current Project binding. */
 export async function assertProjectAssistantRunProvenance(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   input: Readonly<{
     assistantId: string;
     projectId: string;
-    revisionId: string;
+    definitionVersion: number;
   }>
 ): Promise<void> {
   const bindings = await tx.$queryRaw<Array<{ id: string }>>`
@@ -214,29 +201,18 @@ export async function assertProjectAssistantRunProvenance(
     INNER JOIN "AssistantDefinition" AS definition
       ON definition."id" = project_binding."assistantId"
      AND definition."archivedAt" IS NULL
-    INNER JOIN "AssistantRevision" AS revision
-      ON revision."id" = project_binding."revisionId"
-     AND revision."assistantId" = definition."id"
     WHERE project_binding."projectId" = ${input.projectId}
       AND project_binding."assistantId" = ${input.assistantId}
-      AND project_binding."revisionId" = ${input.revisionId}
-    FOR SHARE OF project_binding, definition, revision
+      AND definition."version" = ${input.definitionVersion}
+    FOR SHARE OF project_binding, definition
   `;
   if (!bindings[0]) throw new AssistantRunConflictError();
 }
 
 export function serializeRunAssistantIdentity(modelRun: {
-  assistantRevision?: { avatar: unknown; name: string; revisionNumber: number } | null;
-} | undefined): { avatar: AssistantAvatarRecipe; name: string; revisionNumber: number } | null {
-  const revision = modelRun?.assistantRevision;
-  if (!revision) return null;
-  const avatar = decodeAssistantAvatarRecipe(revision.avatar);
-  if (!avatar) return null;
-  return {
-    avatar,
-    name: revision.name,
-    revisionNumber: revision.revisionNumber
-  };
+  assistantIdentity?: unknown;
+} | undefined): AssistantIdentity | null {
+  return decodeAssistantIdentity(modelRun?.assistantIdentity);
 }
 
 export async function insertAcceptedMcpRunBindings(

@@ -1,9 +1,7 @@
 import type {
   AssistantAvailability,
   AssistantListResponse,
-  AssistantPublicationView,
-  AssistantRevisionContent,
-  AssistantRevisionHistoryEntry
+  AssistantPublicationView
 } from "@/lib/contracts/assistants";
 import type {
   AssistantEditorDraftState,
@@ -25,19 +23,7 @@ export type AssistantLibraryEditorState = {
   fieldErrors: AssistantEditorFieldErrors | null;
   expectedVersion: number | null;
   publications: AssistantPublicationView[] | null;
-  revisionNumber: number | null;
   saving: boolean;
-};
-
-export type AssistantLibraryHistoryState = {
-  assistantId: string;
-  assistantName: string;
-  entries: AssistantRevisionHistoryEntry[];
-  loading: boolean;
-  restoring: boolean;
-  /** Runtime always sets this; optional keeps older persisted/test snapshots safe. */
-  returnTask?: "editor" | "list";
-  viewedRevision: AssistantRevisionContent | null;
 };
 
 export type AssistantLibrarySnapshot = {
@@ -54,18 +40,15 @@ export type AssistantLibrarySnapshot = {
   dataError: string | null;
   dataState: "error" | "loading" | "ready";
   editor: AssistantLibraryEditorState | null;
-  history: AssistantLibraryHistoryState | null;
-  historyRequestId: number;
   listRequestId: number;
   notice: LibraryNotice | null;
   open: boolean;
-  task: "editor" | "history" | "list";
+  task: "editor" | "list";
 };
 
 export type AssistantLibraryStore = AssistantLibrarySnapshot & {
   patch(update: Partial<AssistantLibrarySnapshot>): void;
   patchEditor(update: Partial<AssistantLibraryEditorState>): void;
-  patchHistory(update: Partial<AssistantLibraryHistoryState>): void;
 };
 
 export const initialAssistantLibrarySnapshot: AssistantLibrarySnapshot = {
@@ -77,8 +60,6 @@ export const initialAssistantLibrarySnapshot: AssistantLibrarySnapshot = {
   dataError: null,
   dataState: "loading",
   editor: null,
-  history: null,
-  historyRequestId: 0,
   listRequestId: 0,
   notice: null,
   open: false,
@@ -92,8 +73,5 @@ export const useAssistantLibraryStore = create<AssistantLibraryStore>((set) => (
   },
   patchEditor(update) {
     set((state) => (state.editor ? { editor: { ...state.editor, ...update } } : {}));
-  },
-  patchHistory(update) {
-    set((state) => (state.history ? { history: { ...state.history, ...update } } : {}));
   }
 }));

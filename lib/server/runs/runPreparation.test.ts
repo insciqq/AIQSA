@@ -2682,8 +2682,8 @@ describe("run preparation", () => {
                 name: "Knowledge Assistant",
                 provider: hosted.selection.providerConnectionId,
                 providerModelId: hosted.selection.providerModelId,
-                revisionId: "assistant-revision-1",
-                revisionNumber: 1,
+                definitionVersion: 1,
+                identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
                 runControls: { maxOutputTokens: 512 },
                 searchPlan: { mode: "model_choice" as const, optionIds: [optionId] },
                 skillIds: [],
@@ -2712,7 +2712,8 @@ describe("run preparation", () => {
     expect(admissionLoad).toHaveBeenCalledOnce();
     expect(prepared.assistant).toEqual({
       assistantId: "assistant-1",
-      revisionId: "assistant-revision-1"
+      definitionVersion: 1,
+      identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } }
     });
     expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
     expect(prepared.normalizedRequest.searchPlan.options).toEqual([

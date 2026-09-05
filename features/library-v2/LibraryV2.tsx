@@ -303,7 +303,6 @@ export function AssistantsPanelV2({
   onCreateFromCurrentSetup,
   onDuplicate,
   onOpen,
-  onOpenHistory,
   onPinToggle,
   onRetry,
   onUnavailableAction,
@@ -317,7 +316,6 @@ export function AssistantsPanelV2({
   onCreateFromCurrentSetup?(): void;
   onDuplicate?(id: string): void;
   onOpen?(id: string): void;
-  onOpenHistory?(id: string): void;
   onPinToggle?(id: string, pinned: boolean): void;
   onRetry?(): void;
   onUnavailableAction?(id: string, action: "mcp-settings" | "open-editor"): void;
@@ -403,7 +401,6 @@ export function AssistantsPanelV2({
               onArchiveToggle={onArchiveToggle}
               onDuplicate={onDuplicate}
               onOpen={onOpen}
-              onOpenHistory={onOpenHistory}
               onPinToggle={onPinToggle}
               onUnavailableAction={onUnavailableAction}
               onUse={onUse}
@@ -434,7 +431,6 @@ function AssistantCardV2({
   onArchiveToggle,
   onDuplicate,
   onOpen,
-  onOpenHistory,
   onPinToggle,
   onUnavailableAction,
   onUse
@@ -443,7 +439,6 @@ function AssistantCardV2({
   onArchiveToggle?(id: string, archived: boolean): void;
   onDuplicate?(id: string): void;
   onOpen?(id: string): void;
-  onOpenHistory?(id: string): void;
   onPinToggle?(id: string, pinned: boolean): void;
   onUnavailableAction?(id: string, action: "mcp-settings" | "open-editor"): void;
   onUse?(id: string): void;
@@ -506,13 +501,6 @@ function AssistantCardV2({
               className="v2-assistant-actions-menu-surface"
               label={`Actions for ${assistant.name}`}
             >
-              {assistant.owned ? (
-                <>
-                  <UiV2MenuItem onClick={() => closeAndRun(() => onOpenHistory?.(assistant.id))}>
-                    Version history
-                  </UiV2MenuItem>
-                </>
-              ) : null}
               <UiV2MenuItem onClick={() => closeAndRun(() => onDuplicate?.(assistant.id))}>
                 Duplicate
               </UiV2MenuItem>

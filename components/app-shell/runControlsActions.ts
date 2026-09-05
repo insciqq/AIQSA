@@ -502,7 +502,7 @@ export function useRunControlsActions({
   }
 
   /**
-   * Atomically applies one exact Assistant revision to the composer without
+   * Atomically applies one current Assistant definition to the composer without
    * persisting any user default: Assistant-derived values never replace the
    * user's ordinary manual draft or saved per-model control values.
    */
@@ -518,12 +518,12 @@ export function useRunControlsActions({
       promptCharacterCount: number;
       starterPrompts: string[];
     };
-    revision: import("@/lib/contracts/assistants").AssistantRevisionContent;
+    content: import("@/lib/contracts/assistants").AssistantContent;
   }): boolean {
     const currentCatalog = currentCatalogFromStore();
-    const model = input.revision.providerModelId
+    const model = input.content.providerModelId
       ? currentCatalog?.models.find(
-          (candidate) => candidate.modelId === input.revision.providerModelId
+          (candidate) => candidate.modelId === input.content.providerModelId
         )
       : undefined;
     if (!model) {
@@ -531,7 +531,7 @@ export function useRunControlsActions({
     }
 
     flushPendingModelControlDefaults();
-    const controls = input.revision.runControls;
+    const controls = input.content.runControls;
     const baseDefaults = resolveModelControlDefaults(model, {});
     const controlDefaults = {
       backgroundMode: controls.backgroundMode ?? baseDefaults.backgroundMode,
@@ -550,11 +550,11 @@ export function useRunControlsActions({
     useComposerControlStore.getState().applyAssistantSelection({
       assistant: input.assistant,
       controlDefaults,
-      knowledgeSelection: input.revision.knowledgeSelection,
+      knowledgeSelection: input.content.knowledgeSelection,
       modelId: model.modelId,
       provider: model.provider,
-      searchOptionIds: input.revision.searchPlan.optionIds,
-      searchPlanMode: input.revision.searchPlan.mode
+      searchOptionIds: input.content.searchPlan.optionIds,
+      searchPlanMode: input.content.searchPlan.mode
     });
     return true;
   }

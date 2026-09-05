@@ -443,4 +443,30 @@ describe("Project workspace surfaces", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(loadMoreActivity).toHaveBeenCalledTimes(1));
   });
+
+  it("previews and explicitly refreshes an unavailable Assistant with the current definition fence", async () => {
+    const base = controller();
+    const resource = { available: false, id: "assistant-binding", label: "Unavailable Assistant",
+      reason: "resource_unavailable", resourceId: "assistant-1", type: "assistant" as const };
+    const previewResourceAdd = vi.fn().mockResolvedValue({ action: "add", canCommit: true,
+      policyRevision: 5, assistantVersion: 12, resource,
+      dependencies: [{ label: "Review workflow", type: "skill", state: "will_add", reason: null }],
+      consequences: { affectedChatCount: 0, clearedDefaults: [], dependentAssistants: [] } });
+    const addResource = vi.fn().mockResolvedValue(true);
+    render(<ProjectSettingsDialogV2 controller={{ ...base,
+      detail: { ...base.detail!, resources: [resource] },
+      actions: { ...base.actions, previewResourceAdd, addResource } }} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Resources" }));
+    expect(within(dialog).getByText("Unavailable Assistant")).toBeVisible();
+    expect(dialog).not.toHaveTextContent("resource_unavailable");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Refresh dependencies" }));
+    const confirmation = await screen.findByRole("alertdialog", { name: "Confirm Project resource publication" });
+    expect(addResource).not.toHaveBeenCalled();
+    expect(confirmation).toHaveTextContent("Review workflow");
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Refresh dependencies" }));
+    await waitFor(() => expect(addResource).toHaveBeenCalledWith({
+      expectedPolicyRevision: 5, expectedAssistantVersion: 12, resourceId: "assistant-1", type: "assistant"
+    }));
+  });
 });

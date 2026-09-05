@@ -3,7 +3,6 @@
 import type {
   AssistantEditorDraftState,
   AssistantEditorView,
-  AssistantHistoryView,
   AssistantLibraryView
 } from "@/components/assistants/libraryViewContracts";
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
@@ -19,7 +18,6 @@ export type AssistantsGalleryStateV2 =
   | "editor"
   | "empty"
   | "error"
-  | "history"
   | "list"
   | "loading";
 
@@ -44,7 +42,6 @@ const assistantCards: readonly AssistantSummaryV2[] = [
     name: "API Reviewer",
     owned: true,
     pinned: true,
-    revision: 4
   },
   {
     archived: false,
@@ -55,7 +52,6 @@ const assistantCards: readonly AssistantSummaryV2[] = [
     name: "Research editor",
     owned: false,
     ownerDisplayName: "Maya Chen",
-    revision: 8
   },
   {
     archived: false,
@@ -65,7 +61,6 @@ const assistantCards: readonly AssistantSummaryV2[] = [
     modelLabel: "GPT-5.6 Terra",
     name: "Release helper",
     owned: true,
-    revision: 2,
     unavailable: {
       action: { kind: "mcp-settings", label: "Fix in Settings…" },
       explanation: "GitHub is turned off or needs attention.",
@@ -80,9 +75,8 @@ const assistantCards: readonly AssistantSummaryV2[] = [
     name: "Contract analyst",
     owned: false,
     ownerDisplayName: "Operations",
-    revision: 3,
     unavailable: {
-      explanation: "Ask the owner for an available revision.",
+      explanation: "Ask the owner to update this assistant.",
       headline: "Required access unavailable"
     }
   }
@@ -116,8 +110,8 @@ export function AssistantsV2Gallery({
   state = "list"
 }: Readonly<{ state?: AssistantsGalleryStateV2 }>) {
   const startsInEditor = state === "advanced" || state === "dirty" || state === "editor";
-  const [task, setTask] = useState<"editor" | "history" | "list">(
-    state === "history" ? "history" : startsInEditor ? "editor" : "list"
+  const [task, setTask] = useState<"editor" | "list">(
+    startsInEditor ? "editor" : "list"
   );
   const [draft, setDraft] = useState(initialDraft);
   const [dirty, setDirty] = useState(state === "dirty");
@@ -151,13 +145,12 @@ export function AssistantsV2Gallery({
       setDirty(true);
     },
     onGenerateAvatar: () => setDirty(true),
-    onOpenHistory: () => setTask("history"),
     onOpenMcpSettings: () => setNotice({ kind: "success", text: "MCP Settings would open here." }),
     onPublish: () => setNotice({ kind: "success", text: "Publication fixture action complete." }),
     onRevokePublication: () => undefined,
     onSave: () => {
       setDirty(false);
-      setNotice({ kind: "success", text: "Saved revision 5. Existing runs keep the setup they used." });
+      setNotice({ kind: "success", text: "Saved. Future runs use these changes." });
     },
     onUseInChat: () => setUsedAssistant(draft.name),
     options: {
@@ -200,32 +193,7 @@ export function AssistantsV2Gallery({
     },
     publications: [],
     publishableGroups: [{ id: "group-platform", name: "Platform team" }],
-    revisionNumber: 4,
     saving: false
-  };
-
-  const history: AssistantHistoryView = {
-    assistantName: draft.name,
-    entries: [
-      {
-        authorDisplayName: "Dana",
-        changedSections: ["instructions", "run-setup"],
-        createdAt: "2026-09-03T10:00:00.000Z",
-        revisionNumber: 4
-      },
-      {
-        authorDisplayName: "Dana",
-        changedSections: ["identity"],
-        createdAt: "2026-09-02T10:00:00.000Z",
-        revisionNumber: 3
-      }
-    ],
-    loading: false,
-    onBack: () => setTask("editor"),
-    onRestore: () => setNotice({ kind: "success", text: "Restored as revision 5." }),
-    onView: () => undefined,
-    restoring: false,
-    viewedRevision: null
   };
 
   const view: AssistantLibraryView = {
@@ -233,14 +201,12 @@ export function AssistantsV2Gallery({
     catalogError: null,
     catalogState: "ready",
     editor: task === "editor" ? editor : null,
-    history: task === "history" ? history : null,
     list: {
       assistants: [],
       onArchiveToggle: () => undefined,
       onDuplicate: () => undefined,
       onEdit: () => setTask("editor"),
       onNewAssistant: () => setTask("editor"),
-      onOpenHistory: () => setTask("history"),
       onPinToggle: () => setPinned((current) => !current),
       onUse: () => undefined
     },
@@ -272,7 +238,6 @@ export function AssistantsV2Gallery({
       onCreateFromCurrentSetup={() => setTask("editor")}
       onDuplicate={() => setNotice({ kind: "success", text: "Assistant duplicated." })}
       onOpen={() => setTask("editor")}
-      onOpenHistory={() => setTask("history")}
       onPinToggle={() => setPinned((current) => !current)}
       onRetry={() => setNotice({ kind: "success", text: "Retry requested." })}
       onUnavailableAction={(_, action) => setNotice({ kind: "success", text: action === "mcp-settings" ? "MCP Settings would open here." : "Assistant editor opened." })}
@@ -288,10 +253,10 @@ export function AssistantsV2Gallery({
       initialTab="assistants"
       onBack={() => setClosed(true)}
       subview={task === "list" ? null : {
-        backLabel: task === "history" ? "Back to assistant" : "Back to Assistants",
-        key: task === "history" ? "assistant-history" : "assistant-editor",
-        label: task === "history" ? "Revision history" : draft.name,
-        onBack: task === "history" ? history.onBack : editor.onCancel
+        backLabel: "Back to Assistants",
+        key: "assistant-editor",
+        label: draft.name,
+        onBack: editor.onCancel
       }}
       tabs={[{ content, id: "assistants", label: "Assistants" }]}
     />

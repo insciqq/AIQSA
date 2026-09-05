@@ -310,6 +310,7 @@ function ProjectSettingsDialogContentV2({
     kind: "add" | "remove";
     label: string;
     preview?: ProjectResourceChangePreviewWire;
+    refresh?: boolean;
     resourceId?: string;
     type: ProjectResourceTypeWire;
   }>>(null);
@@ -520,6 +521,13 @@ function ProjectSettingsDialogContentV2({
       type: resourceType
     });
   };
+  const requestAssistantRefresh = async (assistantId: string) => {
+    const preview = await controller.actions.previewResourceAdd(assistantId);
+    if (!preview) return;
+    setResourceConfirmation({ expectedPolicyRevision: preview.policyRevision,
+      kind: "add", label: preview.resource.label, preview, refresh: true,
+      resourceId: assistantId, type: "assistant" });
+  };
   const requestGrantRemoval = async (grantId: string) => {
     const preview = await controller.actions.previewGrantRemoval(grantId);
     if (preview) setGrantRemovalConfirmation({ grantId, preview });
@@ -566,7 +574,7 @@ function ProjectSettingsDialogContentV2({
       ? await controller.actions.addResource({
           expectedPolicyRevision: pending.expectedPolicyRevision,
           resourceId: pending.resourceId,
-          ...(pending.preview?.revisionId ? { revisionId: pending.preview.revisionId } : {}),
+          ...(pending.preview?.assistantVersion ? { expectedAssistantVersion: pending.preview.assistantVersion } : {}),
           type: pending.type
         })
       : pending.kind === "remove" && pending.bindingId
@@ -1004,9 +1012,11 @@ function ProjectSettingsDialogContentV2({
                       <div className="v2-project-list-row" key={resource.id}>
                         <span>
                           <strong>{resource.label}</strong>
-                          <small>{resourceIsDefault(resource) ? "Project default" : "Attached/published"} · {resource.available ? "available" : resource.reason ?? "unavailable"}</small>
+                          <small>{resourceIsDefault(resource) ? "Project default" : "Attached/published"} · {resource.available ? "available" : "unavailable"}</small>
                           {resource.description ? <small>{resource.description}</small> : null}
                         </span>
+                        {manager && resource.type === "assistant" ? <UiV2Button disabled={controller.busy}
+                          onClick={() => void requestAssistantRefresh(resource.resourceId)}>Refresh dependencies</UiV2Button> : null}
                         {manager ? <UiV2IconButton disabled={controller.busy} icon="close" label={`Unlink ${resource.label}`} onClick={() => void requestResourceRemoval(resource.id)} /> : null}
                       </div>
                     ))}
@@ -1044,7 +1054,7 @@ function ProjectSettingsDialogContentV2({
                 <div className="v2-project-confirmation" role="alertdialog" aria-label={resourceConfirmation.kind === "add" ? "Confirm Project resource publication" : "Confirm Project resource unlink"}>
                   <strong>
                     {resourceConfirmation.kind === "add"
-                      ? `Add ${resourceConfirmation.label} to this Project?`
+                      ? resourceConfirmation.refresh ? "Refresh this Assistant’s Project dependencies?" : `Add ${resourceConfirmation.label} to this Project?`
                       : `Unlink ${resourceConfirmation.label}?`}
                   </strong>
                   {resourceConfirmation.kind === "add" ? (
@@ -1094,7 +1104,7 @@ function ProjectSettingsDialogContentV2({
                     onClick={() => void commitResourceChange()}
                   >
                     {resourceConfirmation.kind === "add"
-                      ? resourceConfirmation.type === "assistant" ? "Add Assistant and dependencies" : "Add to Project"
+                      ? resourceConfirmation.refresh ? "Refresh dependencies" : resourceConfirmation.type === "assistant" ? "Add Assistant and dependencies" : "Add to Project"
                       : "Unlink and clean up"}
                   </UiV2Button>
                 </div>

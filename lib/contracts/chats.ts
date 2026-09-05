@@ -5,8 +5,8 @@ import type {
   SessionErrorCode
 } from "./http";
 import {
-  decodeAssistantAvatarRecipe,
-  type AssistantAvatarRecipe
+  decodeAssistantIdentity,
+  type AssistantIdentity
 } from "./assistants";
 import {
   decodeThreadSearchSource,
@@ -77,14 +77,10 @@ export type ThreadMessage = {
 };
 
 /**
- * Snapshot-bound Assistant identity from the accepted revision. Later renames,
+ * Immutable Assistant identity from the accepted run. Later renames,
  * archives, or access changes never alter this historical projection.
  */
-export type ThreadAssistantIdentity = {
-  avatar: AssistantAvatarRecipe;
-  name: string;
-  revisionNumber: number;
-};
+export type ThreadAssistantIdentity = AssistantIdentity;
 
 export type ThreadArtifactSummary = {
   citations: ThreadCitation[];
@@ -803,27 +799,7 @@ function decodeThreadKnowledgeCitation(value: unknown): ThreadKnowledgeCitation 
   return { handle };
 }
 
-function decodeThreadAssistantIdentity(value: unknown): ThreadAssistantIdentity | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const avatar = decodeAssistantAvatarRecipe(value.avatar);
-  const name = requiredString(value.name);
-  if (
-    !avatar ||
-    !name ||
-    typeof value.revisionNumber !== "number" ||
-    !Number.isInteger(value.revisionNumber) ||
-    value.revisionNumber < 1
-  ) {
-    return null;
-  }
-  return {
-    avatar,
-    name,
-    revisionNumber: value.revisionNumber
-  };
-}
+const decodeThreadAssistantIdentity = decodeAssistantIdentity;
 
 function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
   if (!isRecord(value) || !Array.isArray(value.calls)) return null;
