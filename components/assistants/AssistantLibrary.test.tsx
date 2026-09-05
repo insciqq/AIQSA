@@ -6,7 +6,6 @@ import { AssistantLibrary } from "./AssistantLibrary";
 import type {
   AssistantEditorDraftState,
   AssistantEditorView,
-  AssistantHistoryView,
   AssistantLibraryListView,
   AssistantLibraryView
 } from "./libraryViewContracts";
@@ -75,7 +74,6 @@ function editor(overrides: Partial<AssistantEditorView> = {}): AssistantEditorVi
     onCancel: vi.fn(),
     onChange: vi.fn(),
     onGenerateAvatar: vi.fn(),
-    onOpenHistory: vi.fn(),
     onOpenMcpSettings: vi.fn(),
     onPublish: vi.fn(),
     onRevokePublication: vi.fn(),
@@ -110,7 +108,6 @@ function editor(overrides: Partial<AssistantEditorView> = {}): AssistantEditorVi
     },
     publications: [],
     publishableGroups: [],
-    revisionNumber: 4,
     saving: false,
     ...overrides
   };
@@ -123,7 +120,6 @@ function list(): AssistantLibraryListView {
     onDuplicate: vi.fn(),
     onEdit: vi.fn(),
     onNewAssistant: vi.fn(),
-    onOpenHistory: vi.fn(),
     onPinToggle: vi.fn(),
     onUse: vi.fn()
   };
@@ -135,27 +131,12 @@ function view(overrides: Partial<AssistantLibraryView> = {}): AssistantLibraryVi
     catalogError: null,
     catalogState: "ready",
     editor: null,
-    history: null,
     list: list(),
     notice: null,
     onBackToChat: vi.fn(),
     onDismissNotice: vi.fn(),
     onRetryCatalog: vi.fn(),
     task: "list",
-    ...overrides
-  };
-}
-
-function history(overrides: Partial<AssistantHistoryView> = {}): AssistantHistoryView {
-  return {
-    assistantName: "API Reviewer",
-    entries: [],
-    loading: false,
-    onBack: vi.fn(),
-    onRestore: vi.fn(),
-    onView: vi.fn(),
-    restoring: false,
-    viewedRevision: null,
     ...overrides
   };
 }
@@ -239,25 +220,15 @@ describe("Assistant Library subviews", () => {
     expect(screen.getByText("Needs the GitHub tools")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Use in chat" })).not.toBeInTheDocument();
   });
-
-  it("opens immutable history from the revision control and restores older revisions", () => {
-    const openHistory = vi.fn();
-    const current = editor({ onOpenHistory: openHistory });
-    const { rerender } = render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);
-    fireEvent.click(screen.getByRole("button", { name: /Revision 4/ }));
-    expect(openHistory).toHaveBeenCalledOnce();
-
-    const revisions = history({
-      entries: [
-        { authorDisplayName: "Dana", changedSections: ["instructions", "run-setup"], createdAt: "2026-09-03T10:00:00.000Z", revisionNumber: 4 },
-        { authorDisplayName: "Dana", changedSections: ["identity"], createdAt: "2026-09-02T10:00:00.000Z", revisionNumber: 3 }
-      ]
-    });
-    rerender(<AssistantLibrary view={view({ history: revisions, task: "history" })} />);
-    expect(screen.getByText("Changed: Instructions, Model settings")).toBeVisible();
-    const listNode = screen.getByRole("list", { name: "Revisions" });
-    expect(within(listNode).queryByRole("button", { name: "Restore revision 4" })).not.toBeInTheDocument();
-    fireEvent.click(within(listNode).getByRole("button", { name: "Restore revision 3" }));
-    expect(revisions.onRestore).toHaveBeenCalledWith(3);
+  it("shares the live definition without history or publication updates", () => {
+    const current = editor({ publications: [{ id: "publication", scope: "group", groupId: "team",
+      groupName: "Review team", updatedAt: "2026-09-05T00:00:00Z" }] });
+    render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);
+    fireEvent.click(screen.getByText("Sharing").closest("summary")!);
+    expect(screen.getByText("Review team")).toBeVisible();
+    expect(screen.queryByText(/Revision|Draft|history|Publish update/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Unshare" }));
+    expect(current.onRevokePublication).toHaveBeenCalledWith("publication");
   });
+
 });

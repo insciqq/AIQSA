@@ -1,3 +1,4 @@
+import { decodeAssistantIdentity, type AssistantIdentity } from "../../contracts/assistants";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
@@ -181,7 +182,7 @@ function projectProviderAdmission(userId: string) {
 }
 
 function createRunInput(input: {
-  assistant?: { assistantId: string; revisionId: string };
+  assistant?: { assistantId: string; definitionVersion: number; identity: AssistantIdentity };
   attachmentIds?: string[];
   chatId: string;
   defaults?: Partial<AcceptedRunDefaults>;
@@ -890,11 +891,9 @@ describe("Prisma-backed run repository", () => {
         userId
       });
       if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
-      const definition = await prisma.assistantDefinition.create({ data: { ownerUserId: userId } });
-      const revision = await prisma.assistantRevision.create({
+      const definition = await prisma.assistantDefinition.create({
         data: {
-          assistantId: definition.id,
-          authorUserId: userId,
+          ownerUserId: userId,
           avatar: {
             accents: [0, 4],
             backgroundShape: "circle",
@@ -906,22 +905,20 @@ describe("Prisma-backed run repository", () => {
           },
           name: "Project admission Assistant",
           providerModelId: providerTemplateIds.fakeModel,
-          revisionNumber: 1,
           runControls: {},
           searchPlan: { mode: "all_selected", optionIds: [] },
           systemPrompt: "Use only Project context."
         }
       });
       await prisma.assistantDefinition.update({
-        data: { archivedAt: new Date(), currentRevisionId: revision.id },
+        data: { archivedAt: new Date() },
         where: { id: definition.id }
       });
       await prisma.projectAssistantBinding.create({
         data: {
           addedByUserId: userId,
           assistantId: definition.id,
-          projectId: createdProject.value.id,
-          revisionId: revision.id
+          projectId: createdProject.value.id
         }
       });
       const project = await prisma.project.findUniqueOrThrow({ where: { id: createdProject.value.id } });
@@ -938,11 +935,12 @@ describe("Prisma-backed run repository", () => {
 
       try {
         await expect(createPrismaRunRepository(prisma).createRun(createRunInput({
-          assistant: { assistantId: definition.id, revisionId: revision.id },
+          assistant: { assistantId: definition.id, definitionVersion: definition.version,
+            identity: decodeAssistantIdentity({ name: definition.name, avatar: definition.avatar })! },
           chatId: chat.id,
           project: {
             accessRevision: project.accessRevision,
-            assistantBindings: [{ assistantId: definition.id, revisionId: revision.id }],
+            assistantBindings: [{ assistantId: definition.id }],
             defaults: createdProject.value.defaults,
             instructions: project.instructions,
             instructionsRevision: project.instructionsRevision,
@@ -968,11 +966,6 @@ describe("Prisma-backed run repository", () => {
         });
       } finally {
         await prisma.project.deleteMany({ where: { id: project.id } });
-        await prisma.assistantDefinition.updateMany({
-          data: { currentRevisionId: null },
-          where: { id: definition.id }
-        });
-        await prisma.assistantRevision.deleteMany({ where: { assistantId: definition.id } });
         await prisma.assistantDefinition.deleteMany({ where: { id: definition.id } });
       }
     });

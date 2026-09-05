@@ -13,7 +13,7 @@ import {
   createUpdateAssistantHandler,
   type AssistantHandlerDeps
 } from "./handlers";
-import type { AssistantAccessEntry, AssistantRevisionRow } from "./prismaRepository";
+import type { AssistantAccessEntry, AssistantContentRow } from "./prismaRepository";
 
 const avatar = {
   accents: [1],
@@ -113,20 +113,17 @@ function catalogData(): CatalogData {
   };
 }
 
-function revisionRow(overrides: Partial<AssistantRevisionRow> = {}): AssistantRevisionRow {
+function contentRow(overrides: Partial<AssistantContentRow> = {}): AssistantContentRow {
   return {
-    authorDisplayName: "Owner",
     avatar,
     category: "coding",
-    createdAt: new Date("2026-08-06T00:00:00.000Z"),
     description: "Reviews changes.",
     developerPrompt: null,
-    id: "revision-1",
+    id: "assistant-1",
     knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: "Code Reviewer",
     providerModelId: "model-1",
-    revisionNumber: 4,
     runControls: { reasoningEffort: "high" },
     searchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
     skillIds: [],
@@ -146,7 +143,7 @@ function accessEntry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAc
     ownerDisplayName: "Alex",
     pinned: false,
     published: true,
-    revision: revisionRow(),
+    content: contentRow(),
     updatedAt: new Date("2026-08-06T00:00:00.000Z"),
     version: 3,
     ...overrides
@@ -177,10 +174,8 @@ function fakeRepository(overrides: Partial<AssistantHandlerDeps["repository"]> =
     create: vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const })),
     duplicate: vi.fn(async () => ({ kind: "not_found" as const })),
     getDetail: vi.fn(async () => null),
-    getRevision: vi.fn(async () => null),
     listForUser: vi.fn(async () => []),
     listPublishableGroups: vi.fn(async () => []),
-    listRevisions: vi.fn(async () => null),
     loadUserAccessibleMcpServerIds: vi.fn(async () => new Set<string>()),
     loadUserMcpRunPlanView: vi.fn(async () => ({
       isGenerationLive: () => false,
@@ -189,7 +184,7 @@ function fakeRepository(overrides: Partial<AssistantHandlerDeps["repository"]> =
     })),
     loadUserRunnableMcpServerIds: vi.fn(async () => new Set<string>()),
     publish: vi.fn(async () => ({ kind: "not_found" as const })),
-    revise: vi.fn(async () => ({ kind: "not_found" as const })),
+    update: vi.fn(async () => ({ kind: "not_found" as const })),
     revokePublication: vi.fn(async () => "not_found" as const),
     setArchived: vi.fn(async () => ({ kind: "not_found" as const })),
     setPinned: vi.fn(async () => false),
@@ -213,7 +208,7 @@ describe("assistant list handler", () => {
     const deps = handlerDeps({
       listForUser: vi.fn(async () => [
         accessEntry({
-          revision: revisionRow({
+          content: contentRow({
             knowledgeSelection: {
               baseIds: ["hidden-base"],
               mode: "explicit",
@@ -224,7 +219,7 @@ describe("assistant list handler", () => {
         }),
         accessEntry({
           id: "assistant-2",
-          revision: revisionRow({ id: "revision-2", mcpServerIds: ["hidden-server"], name: "Ops" })
+          content: contentRow({ id: "assistant-2", mcpServerIds: ["hidden-server"], name: "Ops" })
         })
       ]),
       listPublishableGroups: vi.fn(async () => [{ id: "group-1", name: "Design" }])
@@ -251,7 +246,6 @@ describe("assistant list handler", () => {
         searchOptionCount: 1
       },
       name: "Code Reviewer",
-      revisionNumber: 4,
       scope: { groupNames: ["Design"], kind: "group" }
     });
     expect(second).toMatchObject({
@@ -262,7 +256,7 @@ describe("assistant list handler", () => {
   it("marks assistants whose model is outside the runner catalog as unavailable", async () => {
     const deps = handlerDeps({
       listForUser: vi.fn(async () => [
-        accessEntry({ revision: revisionRow({ providerModelId: "hidden-model" }) })
+        accessEntry({ content: contentRow({ providerModelId: "hidden-model" }) })
       ])
     });
     const response = await createListAssistantsHandler(deps)(new Request("http://test/api/me/assistants"));
@@ -277,7 +271,7 @@ describe("assistant list handler", () => {
     const deps = handlerDeps({
       listForUser: vi.fn(async () => [
         accessEntry({
-          revision: revisionRow({ mcpServerIds: ["server-1"] })
+          content: contentRow({ mcpServerIds: ["server-1"] })
         })
       ]),
       loadUserAccessibleMcpServerIds: vi.fn(async () => new Set(["server-1"])),
@@ -303,12 +297,12 @@ describe("assistant list handler", () => {
         accessEntry({
           id: "owned-assistant",
           owned: true,
-          revision: revisionRow({ mcpServerIds: [record.serverId] })
+          content: contentRow({ mcpServerIds: [record.serverId] })
         }),
         accessEntry({
           id: "shared-assistant",
           owned: false,
-          revision: revisionRow({ id: "revision-2", mcpServerIds: [record.serverId] })
+          content: contentRow({ id: "assistant-2", mcpServerIds: [record.serverId] })
         })
       ]),
       loadUserAccessibleMcpServerIds: vi.fn(async () => new Set([record.serverId])),
@@ -347,7 +341,7 @@ describe("assistant list handler", () => {
       listForUser: vi.fn(async () => [
         accessEntry({
           owned: true,
-          revision: revisionRow({ mcpServerIds: [record.serverId] })
+          content: contentRow({ mcpServerIds: [record.serverId] })
         })
       ]),
       loadUserAccessibleMcpServerIds: vi.fn(async () => new Set([record.serverId])),
@@ -378,7 +372,7 @@ describe("assistant list handler", () => {
       listForUser: vi.fn(async () => [
         accessEntry({
           owned: true,
-          revision: revisionRow({ mcpServerIds: [record.serverId] })
+          content: contentRow({ mcpServerIds: [record.serverId] })
         })
       ]),
       loadUserAccessibleMcpServerIds: vi.fn(async () => new Set<string>()),
@@ -410,7 +404,7 @@ describe("assistant detail handler", () => {
     const deps = handlerDeps({
       getDetail: vi.fn(async () => ({
         ...accessEntry({
-          revision: revisionRow({
+          content: contentRow({
             mcpServerIds: ["granted-server", "hidden-server"],
             knowledgeSelection: {
               baseIds: ["hidden-base"],
@@ -431,7 +425,6 @@ describe("assistant detail handler", () => {
           })
         }),
         publications: null,
-        revisionCount: null
       })),
       loadUserAccessibleMcpServerIds: vi.fn(async () => new Set(["granted-server"]))
     });
@@ -440,23 +433,23 @@ describe("assistant detail handler", () => {
       { params: { assistantId: "assistant-1" } }
     );
     const body = (await response.json()) as { assistant: Record<string, unknown> };
-    const revision = body.assistant.revision as Record<string, unknown>;
+    const content = body.assistant.content as Record<string, unknown>;
 
-    expect(revision.systemPrompt).toBe("You review code.");
-    expect(revision.knowledgeSelection).toEqual({
+    expect(content.systemPrompt).toBe("You review code.");
+    expect(content.knowledgeSelection).toEqual({
       baseIds: [],
       inheritedFrom: "assistant",
       mode: "inherited",
       sourceIds: [],
       version: 1
     });
-    expect(revision.providerModelId).toBeNull();
-    expect(revision.mcpServerIds).toEqual(["granted-server"]);
-    expect(revision.searchPlan).toEqual({
+    expect(content.providerModelId).toBeNull();
+    expect(content.mcpServerIds).toEqual(["granted-server"]);
+    expect(content.searchPlan).toEqual({
       mode: "all_selected",
       optionIds: ["openai-native-web-search"]
     });
-    expect(revision.skillIds).toEqual(["skill-review", "skill-finish"]);
+    expect(content.skillIds).toEqual(["skill-review", "skill-finish"]);
     expect(body.assistant.skills).toEqual([
       { id: "skill-review", name: "Careful reviewer" },
       { id: "skill-finish", name: "Action closer" }
@@ -584,14 +577,14 @@ describe("assistant create handler", () => {
     const create = vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const }));
     const owned = accessEntry({
       owned: true,
-      revision: revisionRow({ mcpServerIds: [record.serverId], searchPlan: {
+      content: contentRow({ mcpServerIds: [record.serverId], searchPlan: {
         mode: "all_selected",
         optionIds: []
       } })
     });
     const deps = handlerDeps({
       create,
-      getDetail: vi.fn(async () => ({ ...owned, publications: [], revisionCount: 1 })),
+      getDetail: vi.fn(async () => ({ ...owned, publications: [] })),
       loadUserAccessibleMcpServerIds: vi.fn(async () => new Set([record.serverId])),
       loadUserMcpRunPlanView: vi.fn(async () => ({
         isGenerationLive: () => false,
@@ -664,13 +657,13 @@ describe("assistant create handler", () => {
 
 describe("assistant update handler", () => {
   it("validates drafts against the owner catalog before persistence", async () => {
-    const revise = vi.fn();
-    const deps = handlerDeps({ revise });
+    const update = vi.fn();
+    const deps = handlerDeps({ update });
     const response = await createUpdateAssistantHandler(deps)(
       new Request("http://test/api/me/assistants/assistant-1", {
         body: JSON.stringify({
           expectedVersion: 3,
-          revision: {
+          content: {
             avatar,
             category: null,
             description: "",
@@ -693,7 +686,7 @@ describe("assistant update handler", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "assistant_model_not_available" });
-    expect(revise).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -723,12 +716,12 @@ describe("assistant update handler", () => {
       { error: "assistant_run_controls_invalid", field: "reasoningEffort" }
     ]
   ])("rejects %s before persistence", async (_label, runControls, errorBody) => {
-    const revise = vi.fn();
-    const response = await createUpdateAssistantHandler(handlerDeps({ revise }))(
+    const update = vi.fn();
+    const response = await createUpdateAssistantHandler(handlerDeps({ update }))(
       new Request("http://test/api/me/assistants/assistant-1", {
         body: JSON.stringify({
           expectedVersion: 3,
-          revision: {
+          content: {
             avatar,
             category: null,
             description: "",
@@ -751,11 +744,11 @@ describe("assistant update handler", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual(errorBody);
-    expect(revise).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("rejects Search and MCP choices that the selected model cannot execute", async () => {
-    const revise = vi.fn();
+    const update = vi.fn();
     const noTools = catalogModel();
     noTools.capabilities = { ...noTools.capabilities, toolCalling: false };
     const unavailableCatalog = catalogData();
@@ -764,7 +757,7 @@ describe("assistant update handler", () => {
       new Request("http://test/api/me/assistants/assistant-1", {
         body: JSON.stringify({
           expectedVersion: 3,
-          revision: {
+          content: {
             avatar,
             category: null,
             description: "",
@@ -785,7 +778,7 @@ describe("assistant update handler", () => {
     const deps = handlerDeps(
       {
         loadUserAccessibleMcpServerIds: vi.fn(async () => new Set(["server-1"])),
-        revise
+        update
       },
       { catalogData: unavailableCatalog }
     );
@@ -805,18 +798,18 @@ describe("assistant update handler", () => {
     );
     expect(toolsResponse.status).toBe(400);
     expect(await toolsResponse.json()).toEqual({ error: "assistant_tools_not_available" });
-    expect(revise).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("maps CAS conflicts to a stable version conflict", async () => {
     const deps = handlerDeps({
-      revise: vi.fn(async () => ({ kind: "version_conflict" as const }))
+      update: vi.fn(async () => ({ kind: "version_conflict" as const }))
     });
     const response = await createUpdateAssistantHandler(deps)(
       new Request("http://test/api/me/assistants/assistant-1", {
         body: JSON.stringify({
           expectedVersion: 1,
-          revision: {
+          content: {
             avatar,
             category: null,
             description: "",
@@ -840,13 +833,13 @@ describe("assistant update handler", () => {
     expect(await response.json()).toEqual({ error: "assistant_version_conflict" });
   });
 
-  it("maps an unavailable Skill dependency during revision", async () => {
-    const revise = vi.fn(async () => ({ kind: "skills_not_available" as const }));
-    const response = await createUpdateAssistantHandler(handlerDeps({ revise }))(
+  it("maps an unavailable Skill dependency during an edit", async () => {
+    const update = vi.fn(async () => ({ kind: "skills_not_available" as const }));
+    const response = await createUpdateAssistantHandler(handlerDeps({ update }))(
       new Request("http://test/api/me/assistants/assistant-1", {
         body: JSON.stringify({
           expectedVersion: 3,
-          revision: {
+          content: {
             avatar,
             category: null,
             description: "",
@@ -870,7 +863,7 @@ describe("assistant update handler", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "assistant_skills_not_available" });
-    expect(revise).toHaveBeenCalledWith(
+    expect(update).toHaveBeenCalledWith(
       "user-1",
       "assistant-1",
       3,
@@ -956,5 +949,17 @@ describe("assistant publication revoke handler", () => {
       publicationId: "publication-child",
       userId: "user-1"
     });
+  });
+});
+
+describe("live Assistant publication validation", () => {
+  it("rejects a removed revision selector instead of silently changing its meaning", async () => {
+    const deps = handlerDeps();
+    const response = await createPublishAssistantHandler(deps)(new Request("http://localhost/api", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "group", groupId: "team", revisionNumber: 1 })
+    }), { params: { assistantId: "assistant-1" } });
+    expect(response.status).toBe(400);
+    expect(deps.repository.publish).not.toHaveBeenCalled();
   });
 });

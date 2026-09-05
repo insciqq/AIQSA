@@ -271,7 +271,7 @@ export type AdminProviderDeleteBlocker = {
   kind:
     | "access_grants"
     | "active_child_configuration"
-    | "assistant_revisions"
+    | "assistants"
     | "chat_defaults"
     | "code_owned_template"
     | "connection_default"

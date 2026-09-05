@@ -85,7 +85,7 @@ export type FocusedKnowledgeRecoveryScope = KnowledgeRunAdmissionAuthorizationSn
 /** Immutable, server-loaded Project context carried into run admission. */
 export type ProjectRunAdmission = Readonly<{
   accessRevision: number;
-  assistantBindings: readonly Readonly<{ assistantId: string; revisionId: string }>[];
+  assistantBindings: readonly Readonly<{ assistantId: string }>[];
   defaults: ProjectDefaultsWire;
   instructions: string;
   instructionsRevision: number;

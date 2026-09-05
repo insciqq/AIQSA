@@ -8,7 +8,7 @@ import { safeExternalHref } from "../../domain/links";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "../../domain/workspace";
 import { projectThreadSearchSources } from "../../domain/searchSources";
-import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
+import { decodeAssistantIdentity } from "../../contracts/assistants";
 import {
   ARCHIVED_CHAT_CURSOR_MAX_LENGTH,
   ARCHIVED_CHAT_PAGE_SIZE,
@@ -93,13 +93,7 @@ const assistantRunDetailSelect = {
   answerStartedAt: true,
   assistantId: true,
   assistantMessageId: true,
-  assistantRevision: {
-    select: {
-      avatar: true,
-      name: true,
-      revisionNumber: true
-    }
-  },
+  assistantIdentity: true,
   events: {
     orderBy: {
       sequence: "asc"
@@ -794,17 +788,9 @@ function serializeChatDetail(input: {
 }
 
 function serializeAssistantIdentity(modelRun: {
-  assistantRevision: { avatar: unknown; name: string; revisionNumber: number } | null;
+  assistantIdentity: unknown;
 } | undefined): NonNullable<ChatDetailRecord["messages"][number]["assistantIdentity"]> | null {
-  const revision = modelRun?.assistantRevision;
-  if (!revision) return null;
-  const avatar = decodeAssistantAvatarRecipe(revision.avatar);
-  if (!avatar) return null;
-  return {
-    avatar,
-    name: revision.name,
-    revisionNumber: revision.revisionNumber
-  };
+  return decodeAssistantIdentity(modelRun?.assistantIdentity);
 }
 
 function serializeChatSummary(

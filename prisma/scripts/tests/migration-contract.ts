@@ -1,3 +1,4 @@
+import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7256,6 +7257,36 @@ function runMemoryVNextRetrievalCutoverMigrationProof(
   }
 }
 
+function runAssistantLiveAdoptionProof(database: string, committed: readonly string[]): void {
+  const index = committed.indexOf(ASSISTANT_LIVE_MIGRATION);
+  assert.ok(index > 0, "live Assistant migration is missing");
+  dropDatabase(database);
+  createDatabase(database);
+  // Keep the predecessor migration tree in the disposable app container's /tmp.
+  const probe = app(database, ["node", "-e", `
+    const fs = require('node:fs'), path = require('node:path');
+    const root = fs.mkdtempSync('/tmp/aiqsa-assistant-adoption-');
+    fs.copyFileSync('prisma/schema.prisma', path.join(root, 'schema.prisma'));
+    fs.mkdirSync(path.join(root, 'migrations'));
+    fs.copyFileSync('prisma/migrations/migration_lock.toml', path.join(root, 'migrations/migration_lock.toml'));
+    for (const name of ${JSON.stringify(committed.slice(0, index))}) {
+      fs.cpSync(path.join('prisma/migrations', name), path.join(root, 'migrations', name), { recursive: true });
+    }
+    process.stdout.write(root);
+  `]);
+  assert.match(probe, /^\/tmp\/aiqsa-assistant-adoption-[a-zA-Z0-9]+$/u);
+  try {
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", `${probe}/schema.prisma`]);
+    psqlScalar(database, assistantLiveAdoptionFixtureSql);
+    app(database, ["npx", "prisma", "migrate", "deploy"]);
+    psqlScalar(database, assistantLiveAdoptionProofSql);
+    app(database, ["npx", "prisma", "migrate", "deploy"]);
+    assertDeployedMigrations(database, committed);
+  } finally {
+    app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", probe]);
+  }
+}
+
 function main(
   mode: Mode,
   databases: readonly string[],
@@ -7294,6 +7325,7 @@ function main(
   runKnowledgeToolCoexistenceMigrationProof(migrations);
   runKnowledgeSearchHealthMigrationProof(shadowDatabase, migrations);
   runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
+  runAssistantLiveAdoptionProof(shadowDatabase, migrations);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -7309,7 +7341,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Knowledge search outage/heartbeat guards, Memory vNext legacy-job retirement/retrieval indexes, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Knowledge search outage/heartbeat guards, Memory vNext legacy-job retirement/retrieval indexes, live Assistant adoption/history/authority/immutability, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

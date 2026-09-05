@@ -285,7 +285,7 @@ export async function leaveProject(
 
 export async function addProjectResource(
   projectId: string,
-  input: { expectedPolicyRevision: number; resourceId: string; revisionId?: string; type: "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill" }
+  input: { expectedPolicyRevision: number; resourceId: string; expectedAssistantVersion?: number; type: "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill" }
 ): Promise<void> {
   await jsonRequest(
     `/api/projects/${encodeURIComponent(projectId)}/resources`,

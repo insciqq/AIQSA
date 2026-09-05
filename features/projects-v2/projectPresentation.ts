@@ -27,7 +27,7 @@ const activityLabels: Readonly<Record<string, string>> = {
   resource_attached: "Shared resource added",
   resource_detached: "Shared resource removed",
   resource_owner_revoked: "Resource owner revoked Project publication",
-  resource_revision_updated: "Shared resource revision updated",
+  resource_dependencies_refreshed: "Assistant dependencies refreshed",
   user_grant_added: "Member access added",
   user_grant_changed: "Member role changed",
   user_grant_removed: "Member access removed",

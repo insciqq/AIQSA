@@ -200,7 +200,7 @@ export function usePowerAppShellViewModel({
     : 0;
   const composerContextStats = useMemo<ComposerContextStats>(() => {
     // Approximation only: the authoritative prompt is resolved server-side (the
-    // standard-chat baseline or the selected Assistant revision). The raw
+    // standard-chat baseline or the selected Assistant definition). The raw
     // template stands in for the rendered baseline: substituting the live
     // clock/zone/locale here would make SSR and hydration disagree.
     const promptSystem = [

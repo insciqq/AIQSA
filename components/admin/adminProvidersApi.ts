@@ -442,7 +442,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {
-    assistant_revisions: "assistant revisions",
+    assistants: "assistants",
     installation_default: "installation default",
     system_model: "utility model role"
   };

@@ -728,11 +728,9 @@ describe("Prisma-backed message branch repository", () => {
 
   it("copies chat defaults and projects source answer provenance without cloning execution", async () => {
     await withMessageBranchUser(async ({ userId }) => {
-      const assistant = await prisma.assistantDefinition.create({ data: { ownerUserId: userId } });
-      const revision = await prisma.assistantRevision.create({
+      const assistant = await prisma.assistantDefinition.create({
         data: {
-          assistantId: assistant.id,
-          authorUserId: userId,
+          ownerUserId: userId,
           avatar: {
             accents: [0, 4],
             backgroundShape: "circle",
@@ -744,7 +742,6 @@ describe("Prisma-backed message branch repository", () => {
           },
           name: "Branch analyst",
           providerModelId: providerTemplateIds.fakeModel,
-          revisionNumber: 1,
           runControls: {},
           searchPlan: { mode: "all_selected", optionIds: [] },
           systemPrompt: "Analyze the supplied context."
@@ -788,7 +785,7 @@ describe("Prisma-backed message branch repository", () => {
           data: {
             assistantId: assistant.id,
             assistantMessageId: assistantMessage.id,
-            assistantRevisionId: revision.id,
+            assistantIdentity: { name: assistant.name, avatar: assistant.avatar },
             chatId: sourceChat.id,
             inputTokens: 5,
             modelId: "fake-qsa",
@@ -863,6 +860,8 @@ describe("Prisma-backed message branch repository", () => {
         expect(branched?.defaultKnowledgePlan).toEqual(knowledgePlan);
         if (!branched) throw new Error("branch_not_created");
 
+        await prisma.assistantDefinition.update({ where: { id: assistant.id },
+          data: { name: "Future branch analyst", systemPrompt: "Future instructions only" } });
         const detail = await createPrismaChatRepository(prisma).getChat({
           chatId: branched.id,
           userId
@@ -883,8 +882,7 @@ describe("Prisma-backed message branch repository", () => {
             }]
           },
           assistantIdentity: {
-            name: "Branch analyst",
-            revisionNumber: 1
+            name: "Branch analyst"
           },
           citationMessageId: assistantMessage.id,
           modelRunId: sourceRun.id,
@@ -926,7 +924,6 @@ describe("Prisma-backed message branch repository", () => {
         });
       } finally {
         await prisma.chat.deleteMany({ where: { userId } });
-        await prisma.assistantRevision.deleteMany({ where: { assistantId: assistant.id } });
         await prisma.assistantDefinition.delete({ where: { id: assistant.id } });
       }
     });

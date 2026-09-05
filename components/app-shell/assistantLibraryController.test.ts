@@ -1,7 +1,7 @@
 import type {
   AssistantAvatarRecipe,
   AssistantDetail,
-  AssistantRevisionContent
+  AssistantContent
 } from "@/lib/contracts/assistants";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEditorDraftState } from "@/components/assistants/libraryViewContracts";
@@ -26,11 +26,9 @@ const mocks = vi.hoisted(() => ({
   duplicateAssistant: vi.fn(),
   fetchAssistantDetail: vi.fn(),
   fetchAssistantList: vi.fn(),
-  fetchAssistantRevision: vi.fn(),
-  fetchAssistantRevisions: vi.fn(),
   loadUserMcpServers: vi.fn(),
   publishAssistant: vi.fn(),
-  reviseAssistant: vi.fn(),
+  updateAssistant: vi.fn(),
   revokeAssistantPublication: vi.fn(),
   setAssistantArchived: vi.fn(),
   setAssistantPinned: vi.fn()
@@ -41,10 +39,8 @@ vi.mock("@/components/assistants/assistantsApi", () => ({
   duplicateAssistant: mocks.duplicateAssistant,
   fetchAssistantDetail: mocks.fetchAssistantDetail,
   fetchAssistantList: mocks.fetchAssistantList,
-  fetchAssistantRevision: mocks.fetchAssistantRevision,
-  fetchAssistantRevisions: mocks.fetchAssistantRevisions,
   publishAssistant: mocks.publishAssistant,
-  reviseAssistant: mocks.reviseAssistant,
+  updateAssistant: mocks.updateAssistant,
   revokeAssistantPublication: mocks.revokeAssistantPublication,
   setAssistantArchived: mocks.setAssistantArchived,
   setAssistantPinned: mocks.setAssistantPinned
@@ -64,19 +60,16 @@ const avatar: AssistantAvatarRecipe = {
   rotations: [0, 2]
 };
 
-function revision(revisionNumber = 3): AssistantRevisionContent {
+function content(): AssistantContent {
   return {
-    authorDisplayName: "Dana Ops",
     avatar,
     category: "coding",
-    createdAt: "2026-08-07T09:00:00.000Z",
     description: "Reviews changes with care.",
     developerPrompt: null,
     knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: "Code reviewer",
     providerModelId: "model-1",
-    revisionNumber,
     runControls: {},
     searchPlan: { mode: "model_choice", optionIds: [] },
     skillIds: [],
@@ -85,7 +78,7 @@ function revision(revisionNumber = 3): AssistantRevisionContent {
   };
 }
 
-function detail(revisionNumber = 3): AssistantDetail {
+function detail(version = 3): AssistantDetail {
   return {
     archived: false,
     availability: { ok: true },
@@ -94,9 +87,8 @@ function detail(revisionNumber = 3): AssistantDetail {
     ownerDisplayName: "Dana Ops",
     pinned: false,
     publications: [],
-    revision: revision(revisionNumber),
-    revisionCount: revisionNumber,
-    version: revisionNumber
+    content: content(),
+    version
   };
 }
 
@@ -225,7 +217,6 @@ function installEditor(options: { busy?: boolean } = {}) {
       fieldErrors: null,
       expectedVersion: 3,
       publications: [],
-      revisionNumber: 3,
       saving: false
     },
     open: true,
@@ -245,7 +236,6 @@ beforeEach(() => {
     },
     ok: true
   });
-  mocks.fetchAssistantRevisions.mockResolvedValue({ data: [], ok: true });
   mocks.loadUserMcpServers.mockResolvedValue([]);
 });
 
@@ -278,9 +268,9 @@ describe("assistantLibraryController", () => {
     });
   });
 
-  it("names the Assistants surface in a revision conflict recovery action", async () => {
+  it("names the Assistants surface in a content conflict recovery action", async () => {
     installEditor();
-    mocks.reviseAssistant.mockResolvedValue({
+    mocks.updateAssistant.mockResolvedValue({
       code: "assistant_version_conflict",
       message: "Conflict.",
       ok: false
@@ -302,7 +292,7 @@ describe("assistantLibraryController", () => {
 
     await actions.saveEditor();
 
-    expect(mocks.reviseAssistant).not.toHaveBeenCalled();
+    expect(mocks.updateAssistant).not.toHaveBeenCalled();
     expect(useAssistantLibraryStore.getState().editor).toMatchObject({
       fieldErrors: { maxOutputTokens: "Enter a whole number from 1 to 8192." },
       saving: false
@@ -311,7 +301,7 @@ describe("assistantLibraryController", () => {
 
   it("attaches server run-control metadata to the exact editor field", async () => {
     installEditor();
-    mocks.reviseAssistant.mockResolvedValue({
+    mocks.updateAssistant.mockResolvedValue({
       code: "assistant_run_controls_invalid",
       field: "maxOutputTokens",
       limit: 8192,
@@ -371,7 +361,7 @@ describe("assistantLibraryController", () => {
     mocks.fetchAssistantDetail.mockResolvedValue({
       data: {
         ...detail(),
-        revision: { ...revision(), runControls: { maxOutputTokens: 9000 } }
+        content: { ...content(), runControls: { maxOutputTokens: 9000 } }
       },
       ok: true
     });
@@ -529,33 +519,6 @@ describe("assistantLibraryController", () => {
     )?.editor?.onUseInChat).toBeNull();
   });
 
-  it("keeps the successful restore notice while history refreshes", async () => {
-    useAssistantLibraryStore.setState({
-      ...initialAssistantLibrarySnapshot,
-      history: {
-        assistantId: "assistant-1",
-        assistantName: "Code reviewer",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      },
-      open: true,
-      task: "history"
-    });
-    mocks.fetchAssistantRevision.mockResolvedValue({ data: revision(1), ok: true });
-    mocks.fetchAssistantDetail.mockResolvedValue({ data: detail(3), ok: true });
-    mocks.reviseAssistant.mockResolvedValue({ data: detail(4), ok: true });
-    const actions = createAssistantLibraryActions(controllerInput());
-
-    await actions.restoreHistoryRevision(1);
-
-    expect(useAssistantLibraryStore.getState().notice).toEqual({
-      kind: "success",
-      text: "Restored as revision 4."
-    });
-  });
-
   it("refuses save and close mutations while another library operation is busy", async () => {
     installEditor({ busy: true });
     const actions = createAssistantLibraryActions(controllerInput());
@@ -564,7 +527,7 @@ describe("assistantLibraryController", () => {
     actions.closeEditor();
     actions.closeLibrary();
 
-    expect(mocks.reviseAssistant).not.toHaveBeenCalled();
+    expect(mocks.updateAssistant).not.toHaveBeenCalled();
     expect(useAssistantLibraryStore.getState().editor).not.toBeNull();
     expect(useAssistantLibraryStore.getState().task).toBe("editor");
     expect(useAssistantLibraryStore.getState().open).toBe(true);
@@ -585,14 +548,13 @@ describe("assistantLibraryController", () => {
         fieldErrors: null,
         expectedVersion: null,
         publications: null,
-        revisionNumber: null,
         saving: false
       },
       open: true,
       task: "editor"
     });
     mocks.createAssistant.mockResolvedValue({ data: detail(1), ok: true });
-    mocks.reviseAssistant.mockResolvedValue({ data: detail(2), ok: true });
+    mocks.updateAssistant.mockResolvedValue({ data: detail(2), ok: true });
     mocks.fetchAssistantDetail.mockResolvedValue({ data: detail(2), ok: true });
     const input = controllerInput();
     const actions = createAssistantLibraryActions(input);
@@ -608,7 +570,7 @@ describe("assistantLibraryController", () => {
     view?.editor?.onUseInChat?.();
     await vi.waitFor(() => expect(input.applyAssistantToComposer).toHaveBeenCalledOnce());
     expect(input.applyAssistantToComposer).toHaveBeenCalledWith(
-      expect.objectContaining({ revision: expect.objectContaining({ revisionNumber: 2 }) })
+      expect.objectContaining({ content: expect.objectContaining({ name: "Code reviewer" }) })
     );
   });
 
@@ -616,7 +578,7 @@ describe("assistantLibraryController", () => {
     mocks.fetchAssistantDetail.mockResolvedValue({
       data: {
         ...detail(),
-        revision: { ...revision(), skillIds: ["skill-incident", "skill-review"] },
+        content: { ...content(), skillIds: ["skill-incident", "skill-review"] },
         skills: [
           { id: "skill-incident", name: "Incident brief" },
           { id: "skill-review", name: "Careful reviewer" }
@@ -668,7 +630,6 @@ describe("assistantLibraryController", () => {
           fieldErrors: null,
           expectedVersion: 9,
           publications: [],
-          revisionNumber: 9,
           saving: false
         },
         task: "editor"
@@ -685,181 +646,6 @@ describe("assistantLibraryController", () => {
     }
   );
 
-  it("ignores a late history response after another Assistant history becomes current", async () => {
-    const first = deferred<{ data: never[]; ok: true }>();
-    const secondEntry = {
-      authorDisplayName: "Bea",
-      changedSections: ["identity"],
-      createdAt: "2026-08-07T10:00:00.000Z",
-      revisionNumber: 2
-    };
-    mocks.fetchAssistantRevisions
-      .mockReturnValueOnce(first.promise)
-      .mockResolvedValueOnce({ data: [secondEntry], ok: true });
-    const actions = createAssistantLibraryActions(controllerInput());
-
-    const firstOpen = actions.openHistory("assistant-a");
-    await vi.waitFor(() => expect(mocks.fetchAssistantRevisions).toHaveBeenCalledOnce());
-    useAssistantLibraryStore.getState().patch({ history: null, task: "list" });
-    await actions.openHistory("assistant-b");
-    first.resolve({ data: [], ok: true });
-    await firstOpen;
-
-    expect(useAssistantLibraryStore.getState().history).toMatchObject({
-      assistantId: "assistant-b",
-      entries: [secondEntry]
-    });
-  });
-
-  it("ignores a viewed revision response after another Assistant history becomes current", async () => {
-    useAssistantLibraryStore.setState({
-      ...initialAssistantLibrarySnapshot,
-      history: {
-        assistantId: "assistant-a",
-        assistantName: "Assistant A",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      },
-      open: true,
-      task: "history"
-    });
-    const viewed = deferred<{ data: AssistantRevisionContent; ok: true }>();
-    mocks.fetchAssistantRevision.mockReturnValue(viewed.promise);
-    const actions = createAssistantLibraryActions(controllerInput());
-
-    const pending = actions.viewHistoryRevision(1);
-    await vi.waitFor(() => expect(mocks.fetchAssistantRevision).toHaveBeenCalledOnce());
-    useAssistantLibraryStore.getState().patch({
-      history: {
-        assistantId: "assistant-b",
-        assistantName: "Assistant B",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      }
-    });
-    viewed.resolve({ data: revision(1), ok: true });
-    await pending;
-
-    expect(useAssistantLibraryStore.getState().history).toMatchObject({
-      assistantId: "assistant-b",
-      viewedRevision: null
-    });
-  });
-
-  it("keeps the newest viewed revision when same-Assistant views settle out of order", async () => {
-    useAssistantLibraryStore.setState({
-      ...initialAssistantLibrarySnapshot,
-      history: {
-        assistantId: "assistant-a",
-        assistantName: "Assistant A",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      },
-      open: true,
-      task: "history"
-    });
-    const older = deferred<{ data: AssistantRevisionContent; ok: true }>();
-    const newer = deferred<{ data: AssistantRevisionContent; ok: true }>();
-    mocks.fetchAssistantRevision
-      .mockReturnValueOnce(older.promise)
-      .mockReturnValueOnce(newer.promise);
-    const actions = createAssistantLibraryActions(controllerInput());
-
-    const olderView = actions.viewHistoryRevision(1);
-    const newerView = actions.viewHistoryRevision(2);
-    newer.resolve({ data: revision(2), ok: true });
-    await newerView;
-    older.resolve({ data: revision(1), ok: true });
-    await olderView;
-
-    expect(useAssistantLibraryStore.getState().history?.viewedRevision?.revisionNumber).toBe(2);
-  });
-
-  it("does not let a late restore replace a different dirty editor", async () => {
-    useAssistantLibraryStore.setState({
-      ...initialAssistantLibrarySnapshot,
-      history: {
-        assistantId: "assistant-1",
-        assistantName: "Code reviewer",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      },
-      open: true,
-      task: "history"
-    });
-    const restore = deferred<{ data: AssistantDetail; ok: true }>();
-    mocks.fetchAssistantRevision.mockResolvedValue({ data: revision(1), ok: true });
-    mocks.fetchAssistantDetail.mockResolvedValue({ data: detail(3), ok: true });
-    mocks.reviseAssistant.mockReturnValue(restore.promise);
-    const actions = createAssistantLibraryActions(controllerInput());
-
-    const pending = actions.restoreHistoryRevision(1);
-    await vi.waitFor(() => expect(mocks.reviseAssistant).toHaveBeenCalledOnce());
-    const replacementDraft = { ...draft(), name: "Unsaved Assistant B" };
-    useAssistantLibraryStore.getState().patch({
-      editor: {
-        assistantId: "assistant-b",
-        archived: false,
-        availability: { ok: true },
-        baseline: JSON.stringify(draft()),
-        createdAssistantId: null,
-        draft: replacementDraft,
-        error: null,
-        fieldErrors: null,
-        expectedVersion: 2,
-        publications: [],
-        revisionNumber: 2,
-        saving: false
-      },
-      history: null,
-      task: "editor"
-    });
-    restore.resolve({ data: detail(4), ok: true });
-    await pending;
-
-    expect(useAssistantLibraryStore.getState()).toMatchObject({
-      task: "editor",
-      editor: { assistantId: "assistant-b", draft: { name: "Unsaved Assistant B" } }
-    });
-  });
-
-  it("uses the restored revision name while refreshing history", async () => {
-    useAssistantLibraryStore.setState({
-      ...initialAssistantLibrarySnapshot,
-      history: {
-        assistantId: "assistant-1",
-        assistantName: "Old name",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      },
-      open: true,
-      task: "history"
-    });
-    const restoredRevision = { ...revision(4), name: "Restored name" };
-    mocks.fetchAssistantRevision.mockResolvedValue({ data: revision(1), ok: true });
-    mocks.fetchAssistantDetail.mockResolvedValue({ data: detail(3), ok: true });
-    mocks.reviseAssistant.mockResolvedValue({
-      data: { ...detail(4), revision: restoredRevision },
-      ok: true
-    });
-    mocks.fetchAssistantRevisions.mockResolvedValue({ data: [], ok: true });
-    const actions = createAssistantLibraryActions(controllerInput());
-
-    await actions.restoreHistoryRevision(1);
-    await vi.waitFor(() => expect(useAssistantLibraryStore.getState().history?.loading).toBe(false));
-
-    expect(useAssistantLibraryStore.getState().history?.assistantName).toBe("Restored name");
-  });
 
   it("marks archive busy before its detail preflight settles", async () => {
     const preflight = deferred<{ data: AssistantDetail; ok: true }>();
@@ -888,33 +674,6 @@ describe("assistantLibraryController", () => {
     view!.onRetryCatalog();
 
     expect(input.retryCatalog).not.toHaveBeenCalled();
-  });
-
-  it("guards a stale history Back callback during restore and after task replacement", () => {
-    useAssistantLibraryStore.setState({
-      ...initialAssistantLibrarySnapshot,
-      history: {
-        assistantId: "assistant-a",
-        assistantName: "Assistant A",
-        entries: [],
-        loading: false,
-        restoring: false,
-        viewedRevision: null
-      },
-      open: true,
-      task: "history"
-    });
-    const input = controllerInput();
-    const actions = createAssistantLibraryActions(input);
-    const view = buildAssistantLibraryView(input, actions, useAssistantLibraryStore.getState());
-    useAssistantLibraryStore.getState().patchHistory({ restoring: true });
-
-    view!.history!.onBack();
-    expect(useAssistantLibraryStore.getState().task).toBe("history");
-
-    useAssistantLibraryStore.getState().patch({ history: null, task: "editor" });
-    view!.history!.onBack();
-    expect(useAssistantLibraryStore.getState().task).toBe("editor");
   });
 
   it("keeps the newest Assistant list when overlapping refreshes settle out of order", async () => {

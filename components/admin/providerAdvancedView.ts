@@ -197,7 +197,7 @@ const blockerLabels: Record<AdminProviderDeleteBlocker["kind"], string> = {
   chat_defaults: "chat defaults",
   code_owned_template: "code-owned template",
   connection_default: "connection default",
-  assistant_revisions: "assistant revisions",
+  assistants: "assistants",
   credentials: "credentials",
   group_assignments: "group assignments",
   installation_default: "installation default",

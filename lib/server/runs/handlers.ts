@@ -81,7 +81,7 @@ export type RunHandlerDeps = {
       adapter: ProviderAdapter;
       prepared: MaterializedPreparedRunData;
       toolBridge?: ProviderToolBridge;
-    }> | null>;
+    }> | Readonly<{ assistantId: string; skillIds: readonly string[] }> | null>;
   }>;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
@@ -700,8 +700,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (body?.retryPdfPreparation === true && !retry) {
       return Response.json({ error: "pdf_preparation_unavailable" }, { status: 409 });
     }
-    const preparation = retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
-      body,
+    const preparation = retry && "prepared" in retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
+      body: retry && "assistantId" in retry
+        ? { assistantId: retry.assistantId, skillIds: retry.skillIds }
+        : body,
       signal: request.signal,
       source: {
         kind: "regenerate",

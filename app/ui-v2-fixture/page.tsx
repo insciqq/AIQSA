@@ -108,7 +108,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "assistants") {
     const state = fixtureState(
       query.state,
-      ["advanced", "dirty", "editor", "empty", "error", "history", "list", "loading"] as const,
+      ["advanced", "dirty", "editor", "empty", "error", "list", "loading"] as const,
       "list"
     );
     const { AssistantsV2Gallery } = await import("./_fixtures/AssistantsV2Gallery");

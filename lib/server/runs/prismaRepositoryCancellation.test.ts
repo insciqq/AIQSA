@@ -18,7 +18,7 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
           ? [{
               assistantId: null,
               assistantMessageId,
-              assistantRevisionId: null,
+              assistantIdentity: null,
               chatId,
               id: runId,
               modelId: "answer-model",

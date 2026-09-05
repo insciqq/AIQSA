@@ -7,6 +7,7 @@ import { pdfInputVerificationEvidence } from "../providers/pdfInputEvidence";
 import { createPrismaProjectContentRepository } from "./contentRepository";
 import { createPrismaProjectMemoryRepository } from "./memoryRepository";
 import { createPrismaProjectRepository } from "./prismaRepository";
+import { createPrismaSkillRepository } from "../skills/prismaRepository";
 
 type ProjectFixture = Readonly<{
   ownerId: string;
@@ -55,7 +56,7 @@ async function withProjectFixture<T>(
 type AssistantSourceFixture = ProjectFixture & Readonly<{
   createAssistant: (sourceId: string) => Promise<Readonly<{
     assistantId: string;
-    revisionId: string;
+    assistantVersion: number;
   }>>;
   foreignSourceId: string;
   notReadySourceId: string;
@@ -195,14 +196,8 @@ async function withAssistantSourceFixture<T>(
 
       const createAssistant = async (sourceId: string) => {
         const assistant = await prisma.assistantDefinition.create({
-          data: { ownerUserId: project.ownerId },
-          select: { id: true }
-        });
-        assistantIds.push(assistant.id);
-        const revision = await prisma.assistantRevision.create({
           data: {
-            assistantId: assistant.id,
-            authorUserId: project.ownerId,
+            ownerUserId: project.ownerId,
             avatar: {
               accents: [0, 4],
               backgroundShape: "circle",
@@ -218,20 +213,16 @@ async function withAssistantSourceFixture<T>(
               sourceIds: [sourceId],
               version: 1
             },
-            name: `Direct Source Assistant ${assistantIds.length}`,
+            name: `Direct Source Assistant ${assistantIds.length + 1}`,
             providerModelId: providerTemplateIds.fakeModel,
-            revisionNumber: 1,
             runControls: {},
             searchPlan: { mode: "all_selected", optionIds: [] },
             systemPrompt: "Use the explicitly selected direct Source."
           },
-          select: { id: true }
+          select: { id: true, version: true }
         });
-        await prisma.assistantDefinition.update({
-          data: { currentRevisionId: revision.id },
-          where: { id: assistant.id }
-        });
-        return { assistantId: assistant.id, revisionId: revision.id };
+        assistantIds.push(assistant.id);
+        return { assistantId: assistant.id, assistantVersion: assistant.version };
       };
 
       return await run({
@@ -246,11 +237,6 @@ async function withAssistantSourceFixture<T>(
         await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
         await tx.projectAssistantBinding.deleteMany({ where: { projectId: project.projectId } });
         await tx.projectKnowledgeSourceBinding.deleteMany({ where: { projectId: project.projectId } });
-        await tx.assistantDefinition.updateMany({
-          data: { currentRevisionId: null },
-          where: { id: { in: assistantIds } }
-        });
-        await tx.assistantRevision.deleteMany({ where: { assistantId: { in: assistantIds } } });
         await tx.assistantDefinition.deleteMany({ where: { id: { in: assistantIds } } });
         await tx.knowledgeSource.updateMany({
           data: { currentVersionId: null, pendingVersionId: null },
@@ -664,7 +650,7 @@ describe("Prisma-backed Project repository", () => {
             state: "will_add",
             type: "knowledge"
           }]),
-          revisionId: assistant.revisionId
+          assistantVersion: assistant.assistantVersion
         }
       });
 
@@ -673,7 +659,7 @@ describe("Prisma-backed Project repository", () => {
         expectedPolicyRevision: initial.policyRevision,
         projectId,
         resourceId: assistant.assistantId,
-        revisionId: assistant.revisionId,
+        expectedAssistantVersion: assistant.assistantVersion,
         type: "assistant",
         userId: ownerId
       });
@@ -682,7 +668,6 @@ describe("Prisma-backed Project repository", () => {
       expect(added.value).toEqual(expect.arrayContaining([
         expect.objectContaining({
           resourceId: assistant.assistantId,
-          revisionId: assistant.revisionId,
           type: "assistant"
         })
       ]));
@@ -702,7 +687,7 @@ describe("Prisma-backed Project repository", () => {
         .toBe(afterFirstCommit.composer?.knowledgeSources.length);
       expect(afterFirstCommit.composer?.assistants).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          revision: expect.objectContaining({
+          content: expect.objectContaining({
             knowledgeSelection: expect.objectContaining({
               mode: "explicit",
               sourceIds: [readySourceId]
@@ -740,7 +725,7 @@ describe("Prisma-backed Project repository", () => {
         expectedPolicyRevision: afterFirstCommit.policyRevision,
         projectId,
         resourceId: assistant.assistantId,
-        revisionId: assistant.revisionId,
+        expectedAssistantVersion: assistant.assistantVersion,
         type: "assistant",
         userId: ownerId
       })).resolves.toMatchObject({ kind: "ok" });
@@ -795,7 +780,7 @@ describe("Prisma-backed Project repository", () => {
           expectedPolicyRevision: initial.policyRevision,
           projectId,
           resourceId: assistant.assistantId,
-          revisionId: assistant.revisionId,
+          expectedAssistantVersion: assistant.assistantVersion,
           type: "assistant",
           userId: ownerId
         }), candidate.label).resolves.toEqual({
@@ -817,6 +802,64 @@ describe("Prisma-backed Project repository", () => {
         select: { policyRevision: true },
         where: { id: projectId }
       })).resolves.toEqual({ policyRevision: initial.policyRevision });
+    });
+  });
+
+  it("invalidates live Assistant availability without grants until a manager refreshes current dependencies", async () => {
+    await withAssistantSourceFixture(async ({ createAssistant, ownerId, projectId, readySourceId }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      const assistant = await createAssistant(readySourceId);
+      const initial = (await repository.getDetail(ownerId, projectId))!;
+      expect(await repository.addResource({ actorDisplayName: "Owner", projectId, userId: ownerId,
+        expectedPolicyRevision: initial.policyRevision, type: "assistant", resourceId: assistant.assistantId,
+        expectedAssistantVersion: assistant.assistantVersion })).toMatchObject({ kind: "ok" });
+      const beforeEdit = (await repository.getDetail(ownerId, projectId))!;
+      const skillId = await createPrismaSkillRepository(prisma).create(ownerId, {
+        name: "New private dependency", description: "", instructions: "Use the new workflow."
+      });
+      try {
+        const event = await prisma.projectEvent.findFirst({ where: { projectId }, orderBy: { sequence: "desc" } });
+        await prisma.assistantDefinition.update({ where: { id: assistant.assistantId }, data: {
+          name: "Changed private title", skillLinks: { create: { skillId, ordinal: 0 } }
+        } });
+        const unavailable = (await repository.getDetail(ownerId, projectId))!;
+        expect(unavailable.policyRevision).toBe(beforeEdit.policyRevision);
+        expect(unavailable.resources.find((resource) => resource.type === "assistant")).toMatchObject({
+          available: false, label: "Unavailable Assistant", reason: "resource_unavailable"
+        });
+        expect(unavailable.composer?.assistants).toEqual([]);
+        expect(JSON.stringify(unavailable)).not.toMatch(/Changed private title|New private dependency/);
+        expect(await prisma.projectSkillBinding.count({ where: { projectId } })).toBe(0);
+        expect(await prisma.projectKnowledgeSourceBinding.count({ where: { projectId } })).toBe(1);
+        expect(await prisma.projectEvent.findMany({ where: { projectId, sequence: { gt: event?.sequence ?? 0n } } }))
+          .toEqual(expect.arrayContaining([expect.objectContaining({
+            eventType: "assistant_definition_changed", entityId: null, entityType: null
+          })]));
+
+        const preview = await repository.previewResourceChange({ action: "add", projectId, userId: ownerId,
+          expectedPolicyRevision: unavailable.policyRevision, type: "assistant", resourceId: assistant.assistantId });
+        if (preview.kind !== "ok") throw new Error("assistant_refresh_preview_failed");
+        expect(preview.value).toMatchObject({ canCommit: true, dependencies: expect.arrayContaining([
+          expect.objectContaining({ type: "skill", state: "will_add", label: "New private dependency" })
+        ]) });
+        const input = { actorDisplayName: "Owner", projectId, userId: ownerId,
+          expectedPolicyRevision: unavailable.policyRevision, type: "assistant" as const, resourceId: assistant.assistantId };
+        expect(await repository.addResource({ ...input, expectedAssistantVersion: assistant.assistantVersion }))
+          .toMatchObject({ kind: "unavailable" });
+        expect(await repository.addResource({ ...input, expectedAssistantVersion: preview.value.assistantVersion! }))
+          .toMatchObject({ kind: "ok" });
+        const refreshed = (await repository.getDetail(ownerId, projectId))!;
+        expect(refreshed.composer?.assistants).toEqual([expect.objectContaining({
+          content: expect.objectContaining({ name: "Changed private title", skillIds: [skillId] })
+        })]);
+        expect(await prisma.projectSkillBinding.count({ where: { projectId, skillId } })).toBe(1);
+      } finally {
+        await prisma.projectSkillBinding.deleteMany({ where: { projectId, skillId } });
+        await prisma.assistantSkill.deleteMany({ where: { skillId } });
+        await prisma.skillDefinition.update({ where: { id: skillId }, data: { currentRevisionId: null } });
+        await prisma.skillRevision.deleteMany({ where: { skillId } });
+        await prisma.skillDefinition.delete({ where: { id: skillId } });
+      }
     });
   });
 

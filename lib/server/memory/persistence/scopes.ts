@@ -82,11 +82,8 @@ async function requireAvailableTarget(
   }
   if (selection.type === "ASSISTANT") {
     const [target] = await tx.$queryRaw<Array<{ id: string; name: string | null }>>(Prisma.sql`
-      SELECT definition."id", revision."name"
+      SELECT definition."id", definition."name"
       FROM "AssistantDefinition" AS definition
-      LEFT JOIN "AssistantRevision" AS revision
-        ON revision."assistantId" = definition."id"
-       AND revision."id" = definition."currentRevisionId"
       WHERE definition."id" = ${selection.targetId}
         AND definition."ownerUserId" = ${userId}
         AND definition."archivedAt" IS NULL

@@ -736,7 +736,6 @@ model User {
   assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
   assistantPins                       AssistantPin[]
   assistantPublications               AssistantPublication[]             @relation("AssistantPublicationPublisher")
-  assistantRevisionsAuthored          AssistantRevision[]                @relation("AssistantRevisionAuthor")
   chats                               Chat[]
   folders                             Folder[]
   groups                              UserGroup[]
@@ -1266,29 +1265,10 @@ enum KnowledgeDeletionObjectDisposition {
 model AssistantDefinition {
   id                String                    @id @default(uuid())
   ownerUserId       String
-  currentRevisionId String?                   @unique
   version           Int                       @default(1)
   archivedAt        DateTime?
   createdAt         DateTime                  @default(now())
   updatedAt         DateTime                  @updatedAt
-  /// The composite relation proves the current pointer targets a revision of this definition.
-  currentRevision   AssistantRevision?        @relation("AssistantCurrentRevision", fields: [id, currentRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "AssistantDefinition_currentRevision_fkey")
-  owner             User                      @relation("AssistantDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  pins              AssistantPin[]
-  projectBindings   ProjectAssistantBinding[]
-  publications      AssistantPublication[]
-  revisions         AssistantRevision[]       @relation("AssistantRevisions")
-
-  @@unique([id, currentRevisionId])
-  @@unique([ownerUserId, id])
-  @@index([ownerUserId, archivedAt])
-}
-
-model AssistantRevision {
-  id                 String                    @id @default(uuid())
-  assistantId        String
-  revisionNumber     Int
-  schemaVersion      Int                       @default(1)
   name               String
   description        String                    @default("")
   category           String?
@@ -1301,27 +1281,22 @@ model AssistantRevision {
   mcpServerIds       String[]                  @default([])
   knowledgeSelection Json                      @default("{\"baseIds\":[],\"mode\":\"none\",\"sourceIds\":[],\"version\":1}")
   starterPrompts     String[]                  @default([])
-  authorUserId       String?
-  createdAt          DateTime                  @default(now())
-  assistant          AssistantDefinition       @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
-  author             User?                     @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  currentFor         AssistantDefinition?      @relation("AssistantCurrentRevision")
-  modelRuns          ModelRun[]                @relation("ModelRunAssistantRevision")
-  projectBindings    ProjectAssistantBinding[] @relation("ProjectAssistantBindingRevision")
+  owner              User                      @relation("AssistantDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   providerModel      ProviderModel             @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  publications       AssistantPublication[]    @relation("AssistantPublicationRevision")
-  skillLinks         AssistantRevisionSkill[]
+  pins               AssistantPin[]
+  projectBindings    ProjectAssistantBinding[]
+  publications       AssistantPublication[]
+  skillLinks         AssistantSkill[]
+  modelRuns          ModelRun[]
 
-  @@unique([assistantId, revisionNumber])
-  @@unique([assistantId, id])
-  @@index([authorUserId])
+  @@unique([ownerUserId, id])
+  @@index([ownerUserId, archivedAt])
   @@index([providerModelId])
 }
 
 model AssistantPublication {
   id                String                    @id @default(uuid())
   assistantId       String
-  revisionId        String
   scope             AssistantPublicationScope
   groupId           String?
   publishedByUserId String?
@@ -1330,13 +1305,10 @@ model AssistantPublication {
   assistant         AssistantDefinition       @relation(fields: [assistantId], references: [id], onDelete: Restrict)
   group             Group?                    @relation(fields: [groupId], references: [id], onDelete: Restrict)
   publishedBy       User?                     @relation("AssistantPublicationPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
-  /// The composite relation proves the pinned revision belongs to the published definition.
-  revision          AssistantRevision         @relation("AssistantPublicationRevision", fields: [assistantId, revisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "AssistantPublication_revision_fkey")
 
   @@unique([assistantId, groupId])
   @@index([groupId])
   @@index([assistantId, scope])
-  @@index([revisionId])
 }
 
 model AssistantPin {
@@ -1362,7 +1334,7 @@ model SkillDefinition {
   /// The composite relation proves the current pointer targets a revision of this definition.
   currentRevision        SkillRevision?           @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
   owner                  User                     @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  assistantRevisionLinks AssistantRevisionSkill[]
+  assistantLinks         AssistantSkill[]
   publications           SkillPublication[]
   projectBindings        ProjectSkillBinding[]
   revisions              SkillRevision[]          @relation("SkillRevisions")
@@ -1410,15 +1382,15 @@ model SkillPublication {
   @@index([skillId, scope])
 }
 
-model AssistantRevisionSkill {
-  assistantRevisionId String
-  skillId             String
-  ordinal             Int
-  assistantRevision   AssistantRevision @relation(fields: [assistantRevisionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  skill               SkillDefinition   @relation(fields: [skillId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+model AssistantSkill {
+  assistantId String
+  skillId     String
+  ordinal     Int
+  assistant   AssistantDefinition @relation(fields: [assistantId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  skill       SkillDefinition     @relation(fields: [skillId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
-  @@id([assistantRevisionId, skillId])
-  @@unique([assistantRevisionId, ordinal])
+  @@id([assistantId, skillId])
+  @@unique([assistantId, ordinal])
   @@index([skillId])
 }
 
@@ -2266,7 +2238,7 @@ model ProviderModel {
   updatedAt                   DateTime                        @updatedAt
   accessGrants                AccessGrant[]
   activeCredentialChecks      ProviderModelCredentialCheck[]
-  assistantRevisions          AssistantRevision[]
+  assistantDefinitions        AssistantDefinition[]
   connection                  ProviderConnection              @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   draftChecks                 ProviderDraftCheck[]
   providerRunBindings         ProviderRunBinding[]
@@ -2743,7 +2715,7 @@ model ModelRun {
   userMessageId                String
   assistantMessageId           String?
   assistantId                  String?
-  assistantRevisionId          String?
+  assistantIdentity            Json?
   provider                     String
   modelId                      String
   status                       ModelRunStatus
@@ -2763,8 +2735,8 @@ model ModelRun {
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   branchSourceMessages         Message[]                           @relation("BranchSourceModelRun")
-  /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
-  assistantRevision            AssistantRevision?                  @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
+  /// Accepted identity is immutable; execution lives in the normalized request and exact bindings.
+  assistant                    AssistantDefinition?                @relation(fields: [assistantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   chat                         Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
@@ -2792,7 +2764,7 @@ model ModelRun {
 
   @@unique([userId, id])
   @@unique([userId, chatId, id])
-  @@index([assistantId, assistantRevisionId])
+  @@index([assistantId])
   @@index([chatId, createdAt])
   @@index([provider, modelId])
   @@index([status])
@@ -3883,17 +3855,15 @@ model ProjectAssistantBinding {
   id            String              @id @default(uuid())
   projectId     String
   assistantId   String
-  revisionId    String
   addedByUserId String?
   createdAt     DateTime            @default(now())
   addedBy       User?               @relation("ProjectAssistantBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
   assistant     AssistantDefinition @relation(fields: [assistantId], references: [id], onDelete: Restrict)
   project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  revision      AssistantRevision   @relation("ProjectAssistantBindingRevision", fields: [assistantId, revisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@unique([projectId, assistantId])
   @@index([addedByUserId])
-  @@index([assistantId, revisionId])
+  @@index([assistantId])
 }
 
 /// Canonical Project authority for a published Skill. The current Skill

@@ -6,7 +6,7 @@ import type {
 import type { ReactNode } from "react";
 
 /**
- * Assistant identity colors are recipe data pinned inside immutable revisions,
+ * Assistant identity colors are recipe data captured with accepted runs,
  * not theme styling: the same recipe must render identically in every palette
  * and after any future theme change, so these values deliberately live outside
  * the semantic token system. Color here is recognition only and never carries

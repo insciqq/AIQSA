@@ -394,16 +394,18 @@ export function createAddProjectResourceHandler(deps: ProjectHandlerDeps) {
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
     if (bodyError) return bodyError;
-    if (!body || !hasOnly(body, ["expectedPolicyRevision", "resourceId", "revisionId", "type"])) {
+    if (!body || !hasOnly(body, ["expectedPolicyRevision", "resourceId", "expectedAssistantVersion", "type"])) {
       return error("project_resource_input_invalid", 400);
     }
     const expectedPolicyRevision = optionalRevision(body.expectedPolicyRevision);
     const type = body.type;
     const resourceId = nonEmptyText(body.resourceId, 128);
-    const revisionId = body.revisionId === undefined ? undefined : nonEmptyText(body.revisionId, 128);
+    const expectedAssistantVersion = body.expectedAssistantVersion;
     if (
       expectedPolicyRevision === null || expectedPolicyRevision === undefined ||
-      !resourceId || revisionId === null ||
+      !resourceId ||
+      (expectedAssistantVersion !== undefined && (!Number.isSafeInteger(expectedAssistantVersion) || Number(expectedAssistantVersion) < 1)) ||
+      (body.type === "assistant" && expectedAssistantVersion === undefined) ||
       !["assistant", "knowledge", "mcp", "model", "search", "skill"].includes(String(type))
     ) return error("project_resource_input_invalid", 400);
     const { projectId } = await context.params;
@@ -413,7 +415,7 @@ export function createAddProjectResourceHandler(deps: ProjectHandlerDeps) {
         expectedPolicyRevision,
         projectId,
         resourceId,
-        revisionId,
+        expectedAssistantVersion: expectedAssistantVersion as number | undefined,
         type: type as "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill",
         userId: session.userId
       }),

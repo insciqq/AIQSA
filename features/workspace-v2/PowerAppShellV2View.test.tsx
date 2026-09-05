@@ -204,8 +204,7 @@ describe("Answer identity v2", () => {
           recipeVersion: 1,
           rotations: [0, 1]
         },
-        name: "Quarterly analyst",
-        revisionNumber: 3
+        name: "Quarterly analyst"
       }
     })).toEqual({
       label: "Quarterly analyst",

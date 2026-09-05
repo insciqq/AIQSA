@@ -307,7 +307,7 @@ export function createPrismaRunRepository(
     if (!access) return null;
     const project = await prismaClient.project.findUnique({
       include: {
-        assistantBindings: { select: { assistantId: true, revisionId: true } },
+        assistantBindings: { select: { assistantId: true } },
         knowledgeBaseBindings: { select: { knowledgeBaseId: true } },
         mcpBindings: { select: { serverId: true } },
         modelBindings: { select: { providerModelId: true } },
@@ -1370,13 +1370,7 @@ export function createPrismaRunRepository(
                   answerStartedAt: true,
                   assistantId: true,
                   assistantMessageId: true,
-                  assistantRevision: {
-                    select: {
-                      avatar: true,
-                      name: true,
-                      revisionNumber: true
-                    }
-                  },
+                  assistantIdentity: true,
                   createdAt: true,
                   events: {
                     orderBy: {

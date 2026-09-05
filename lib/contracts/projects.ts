@@ -11,9 +11,9 @@ import {
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import type { KnowledgePlan as StoredKnowledgePlan } from "./knowledge";
 import {
-  decodeAssistantRevisionContent,
+  decodeAssistantContent,
   decodeAssistantSummary,
-  type AssistantRevisionContent,
+  type AssistantContent,
   type AssistantSummary
 } from "./assistants";
 import { decodeCatalogResponse, type Catalog } from "./catalog";
@@ -230,7 +230,7 @@ export type ProjectResourceWire = Readonly<{
 export type ProjectComposerWire = Readonly<{
   assistants: readonly Readonly<{
     promptCharacterCount: number;
-    revision: AssistantRevisionContent;
+    content: AssistantContent;
     summary: AssistantSummary;
   }>[];
   catalog: Catalog;
@@ -340,7 +340,7 @@ export type ProjectResourceTypeWire = ProjectResourceWire["type"];
 export type CreateProjectResourceRequestWire = Readonly<{
   expectedPolicyRevision: number;
   resourceId: string;
-  revisionId?: string;
+  expectedAssistantVersion?: number;
   type: ProjectResourceTypeWire;
 }>;
 
@@ -365,7 +365,7 @@ export type ProjectResourceChangePreviewWire = Readonly<{
     label: string;
     type: ProjectResourceTypeWire;
   }>;
-  revisionId: string | null;
+  assistantVersion: number | null;
 }>;
 
 export type ProjectGrantRemovalPreviewWire = Readonly<{
@@ -562,10 +562,10 @@ function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
   const assistants = value.assistants.map((entry) => {
     if (!isRecord(entry) || !Number.isSafeInteger(entry.promptCharacterCount) ||
       (entry.promptCharacterCount as number) < 0) return null;
-    const revision = decodeAssistantRevisionContent(entry.revision);
+    const content = decodeAssistantContent(entry.content);
     const summary = decodeAssistantSummary(entry.summary);
-    return revision && summary && revision.providerModelId && revision.name === summary.name
-      ? { promptCharacterCount: entry.promptCharacterCount as number, revision, summary }
+    return content && summary && content.providerModelId && content.name === summary.name
+      ? { promptCharacterCount: entry.promptCharacterCount as number, content, summary }
       : null;
   });
   const knowledgeBases = value.knowledgeBases.filter((base): base is ComposerConfigKnowledgeBase =>
@@ -679,7 +679,7 @@ export function decodeProjectResourceChangePreview(
     !isRecord(preview.resource) || typeof preview.resource.label !== "string" ||
     !["assistant", "knowledge", "mcp", "model", "search", "skill"].includes(
       String(preview.resource.type)
-    ) || !nullableString(preview.revisionId)) return null;
+    ) || !(preview.assistantVersion === null || finiteRevision(preview.assistantVersion))) return null;
   const consequences = preview.consequences;
   if (!finiteRevision(consequences.affectedChatCount) ||
     !Array.isArray(consequences.clearedDefaults) ||
@@ -704,7 +704,7 @@ export function decodeProjectResourceChangePreview(
     dependencies: dependencies as ProjectResourceDependencyPreviewWire[],
     policyRevision: preview.policyRevision,
     resource: preview.resource as ProjectResourceChangePreviewWire["resource"],
-    revisionId: preview.revisionId
+    assistantVersion: preview.assistantVersion
   };
 }
 

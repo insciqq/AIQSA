@@ -1016,15 +1016,17 @@ async function scrubConfigurationReferences(
   resourceId: string,
   resourceType: "base" | "source"
 ): Promise<void> {
-  const revisions = await tx.assistantRevision.findMany({
-    select: { id: true, knowledgeSelection: true }
-  });
-  for (const revision of revisions) {
-    const scrubbed = selectionWithoutResource(revision.knowledgeSelection, resourceId, resourceType);
-    if (JSON.stringify(scrubbed) === JSON.stringify(revision.knowledgeSelection)) continue;
-    await tx.assistantRevision.update({
-      data: { knowledgeSelection: json(scrubbed) },
-      where: { id: revision.id }
+  // Serialize cleanup with live edits and admission; never overwrite a newer
+  // selection based on a previously read definition.
+  const definitions = await tx.$queryRaw<Array<{ id: string; knowledgeSelection: Prisma.JsonValue }>>`
+    SELECT "id", "knowledgeSelection" FROM "AssistantDefinition" ORDER BY "id" FOR UPDATE
+  `;
+  for (const definition of definitions) {
+    const scrubbed = selectionWithoutResource(definition.knowledgeSelection, resourceId, resourceType);
+    if (JSON.stringify(scrubbed) === JSON.stringify(definition.knowledgeSelection)) continue;
+    await tx.assistantDefinition.update({
+      data: { knowledgeSelection: json(scrubbed), version: { increment: 1 } },
+      where: { id: definition.id }
     });
   }
   const folders = await tx.folder.findMany({

@@ -7,7 +7,7 @@ test("Assistant cards keep owner, shared, and repair actions honest", async ({ p
   await expect(owner.getByRole("button", { name: "Use API Reviewer" })).toBeEnabled();
   await expect(owner.getByRole("button", { name: "Edit" })).toBeVisible();
   await owner.getByRole("button", { name: "More actions for API Reviewer" }).click();
-  await expect(page.getByRole("menuitem", { name: "Version history" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Version history" })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "Unpin" })).toBeVisible();
   await page.keyboard.press("Escape");
 
@@ -46,9 +46,8 @@ test("Assistant editor is an inline, guarded Library subview", async ({ page }) 
   await confirmation.getByRole("button", { name: "Keep editing" }).click();
   await expect(cancel).toBeFocused();
 
-  await editor.getByRole("button", { name: /Revision 4/u }).click();
-  await expect(page.getByTestId("assistant-history")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Restore revision 3" })).toBeVisible();
+  await expect(editor).not.toContainText(/Revision|Publish update/u);
+  await expect(page.getByTestId("assistant-history")).toHaveCount(0);
 });
 
 test("Assistant list states and mobile actions stay bounded", async ({ page }) => {

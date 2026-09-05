@@ -4,7 +4,6 @@ import { DiscardChangesConfirmationDialog } from "@/components/app-shell/Confirm
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type {
   AssistantEditorView,
-  AssistantHistoryView,
   AssistantLibraryView,
   LibraryNotice
 } from "@/components/assistants/libraryViewContracts";
@@ -27,22 +26,6 @@ import { useState } from "react";
 import { assistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 import { AssistantAdvancedControlsV2 } from "./assistantAdvancedControls";
 import { AssistantSetupPanelV2 } from "./AssistantSetupPanelV2";
-
-const HISTORY_SECTION_LABELS: Readonly<Record<string, string>> = {
-  identity: "Basics",
-  instructions: "Instructions",
-  knowledge: "Knowledge",
-  model: "Model",
-  "run-setup": "Model settings",
-  search: "Web search",
-  skills: "Skills",
-  starters: "Starter prompts",
-  tools: "Tools"
-};
-
-function historySectionLabel(sectionId: string): string {
-  return HISTORY_SECTION_LABELS[sectionId] ?? sectionId;
-}
 
 function AssistantNoticeV2({ notice, onDismiss }: Readonly<{
   notice: LibraryNotice;
@@ -87,7 +70,7 @@ function AssistantSharingV2({ editor, locked }: Readonly<{
                   : publication.groupName ?? "Group";
               return (
                 <li key={publication.id}>
-                  <span><strong>{target}</strong><small>Revision {publication.revisionNumber}</small></span>
+                  <span><strong>{target}</strong></span>
                   <UiV2Button disabled={locked} onClick={() => editor.onRevokePublication(publication.id)}>Unshare</UiV2Button>
                 </li>
               );
@@ -117,7 +100,7 @@ function AssistantSharingV2({ editor, locked }: Readonly<{
             Publish to installation
           </UiV2Button>
         ) : null}
-        <small>Saving a revision never changes what an existing publication shares.</small>
+        <small>Changes apply to future runs for everyone with access. Projects may need their dependencies refreshed.</small>
       </div>
     </details>
   );
@@ -160,13 +143,6 @@ export function AssistantEditorV2({
       <header className="v2-assistant-editor-header">
         <div>
           <h2>{draft.name.trim() || "New assistant"}</h2>
-          {editor.revisionNumber === null ? (
-            <span className="v2-assistant-editor-revision">Draft</span>
-          ) : (
-            <button className="v2-assistant-editor-revision v2-focusable" type="button" onClick={editor.onOpenHistory}>
-              Revision {editor.revisionNumber} <span aria-hidden="true">›</span>
-            </button>
-          )}
         </div>
         <div className="v2-assistant-editor-actions">
           {editor.onUseInChat ? (
@@ -327,67 +303,8 @@ export function AssistantEditorV2({
         </span>
         <p>{editor.mode === "create"
           ? "Nothing is saved until you press Create assistant."
-          : "Saving creates a new revision. Chats already running keep the one they started with."}</p>
+          : "Saving updates this assistant for future runs. Accepted runs keep their original setup."}</p>
       </footer>
-    </section>
-  );
-}
-
-export function AssistantHistoryV2({
-  busy,
-  history,
-  notice,
-  onDismissNotice
-}: Readonly<{
-  busy: boolean;
-  history: AssistantHistoryView;
-  notice: LibraryNotice | null;
-  onDismissNotice(): void;
-}>) {
-  const newest = history.entries.reduce((current, entry) => Math.max(current, entry.revisionNumber), 0);
-  const locked = busy || history.restoring;
-  const viewed = history.viewedRevision;
-  return (
-    <section className="v2-assistant-history" data-testid="assistant-history">
-      <header>
-        <div><h2>Revision history</h2><p>{history.assistantName}</p></div>
-        <UiV2Button disabled={locked} onClick={history.onBack}>Back to assistant</UiV2Button>
-      </header>
-      {notice ? <AssistantNoticeV2 notice={notice} onDismiss={onDismissNotice} /> : null}
-      <div className="v2-assistant-history-layout" data-detail={Boolean(viewed) || undefined}>
-        <div>
-          {history.loading ? <p role="status"><span className="v2-spinner" aria-hidden="true" />Loading revision history…</p> : null}
-          {!history.loading && history.entries.length === 0 ? <p>No revisions yet.</p> : null}
-          <ul aria-label="Revisions">
-            {history.entries.map((entry) => (
-              <li key={entry.revisionNumber}>
-                <span>
-                  <strong>Revision {entry.revisionNumber}</strong>
-                  <small>{entry.authorDisplayName ?? "Unknown author"} · {new Date(entry.createdAt).toLocaleString()}</small>
-                  {entry.changedSections.length ? <small>Changed: {entry.changedSections.map(historySectionLabel).join(", ")}</small> : null}
-                </span>
-                <div>
-                  <UiV2Button disabled={locked} onClick={() => history.onView(entry.revisionNumber)}>View</UiV2Button>
-                  {entry.revisionNumber !== newest ? <UiV2Button disabled={locked} onClick={() => history.onRestore(entry.revisionNumber)}>Restore revision {entry.revisionNumber}</UiV2Button> : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-        {viewed ? (
-          <section className="v2-assistant-revision-detail" aria-label={`Revision ${viewed.revisionNumber} content`}>
-            <h3>Revision {viewed.revisionNumber} · read-only</h3>
-            <p>Restore creates a new revision from this content.</p>
-            <dl>
-              <div><dt>Name</dt><dd>{viewed.name}</dd></div>
-              <div><dt>Description</dt><dd>{viewed.description || "No description."}</dd></div>
-              <div><dt>Instructions</dt><dd><pre>{viewed.systemPrompt || "No instructions."}</pre></dd></div>
-              <div><dt>Advanced instructions</dt><dd><pre>{viewed.developerPrompt || "None."}</pre></dd></div>
-              <div><dt>Starter prompts</dt><dd>{viewed.starterPrompts.length ? viewed.starterPrompts.join(" · ") : "None."}</dd></div>
-            </dl>
-          </section>
-        ) : null}
-      </div>
     </section>
   );
 }
@@ -419,13 +336,6 @@ export function AssistantLibraryV2({
           notice={view.notice}
           onDismissNotice={view.onDismissNotice}
           onRequestClose={requestClose}
-        />
-      ) : view.task === "history" && view.history ? (
-        <AssistantHistoryV2
-          busy={view.busy}
-          history={view.history}
-          notice={view.notice}
-          onDismissNotice={view.onDismissNotice}
         />
       ) : null}
       {confirmingDiscard ? (

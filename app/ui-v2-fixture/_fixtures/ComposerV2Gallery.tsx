@@ -67,7 +67,6 @@ export const composerGalleryConfig: ComposerConfig = {
     ownerDisplayName: "Мария",
     pinned: true,
     published: false,
-    revisionNumber: 4,
     scope: { kind: "owner" },
     starterPrompts: ["Сравни источники"],
     updatedAt: "2026-08-13T09:00:00.000Z"

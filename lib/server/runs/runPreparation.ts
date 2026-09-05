@@ -1,3 +1,4 @@
+import type { AssistantIdentity } from "../../contracts/assistants";
 import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
@@ -262,8 +263,10 @@ export type DeepReadonly<Value> = Value extends Primitive
 type PreparedRunDefaultsData = AcceptedRunDefaults;
 
 export type MaterializedPreparedRunData = {
-  assistant?: { assistantId: string; revisionId: string };
+  assistant?: { assistantId: string; definitionVersion: number; identity: AssistantIdentity };
   chatPdfAdmissions?: ChatPdfAttachmentAdmission[];
+  /** Manual choices to re-admit an explicit Assistant PDF retry against current content. */
+  manualSkillIds?: string[];
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
@@ -486,8 +489,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
       ? { chatPdfAdmissions: mutablePreparedData<ChatPdfAttachmentAdmission[]>(prepared.chatPdfAdmissions) }
       : {}),
     ...(prepared.assistant
-      ? { assistant: mutablePreparedData<{ assistantId: string; revisionId: string }>(prepared.assistant) }
+      ? { assistant: mutablePreparedData<NonNullable<MaterializedPreparedRunData["assistant"]>>(prepared.assistant) }
       : {}),
+    ...(prepared.manualSkillIds ? { manualSkillIds: [...prepared.manualSkillIds] } : {}),
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
@@ -1181,7 +1185,7 @@ export async function prepareRun(
     return failure("provider_not_available", 403);
   }
   if (project && assistantRun && !project.assistantBindings.some((binding) =>
-    binding.assistantId === assistantRun.assistantId && binding.revisionId === assistantRun.revisionId
+    binding.assistantId === assistantRun.assistantId
   )) {
     return failure("assistant_not_available", 404);
   }
@@ -1856,12 +1860,13 @@ export async function prepareRun(
       };
 
   const prepared = immutablePreparedData<MaterializedPreparedRunData>({
-    ...(chatPdfAdmissions.length ? { chatPdfAdmissions } : {}),
+    ...(chatPdfAdmissions.length ? { chatPdfAdmissions, ...(assistantRun ? { manualSkillIds } : {}) } : {}),
     ...(assistantRun
       ? {
           assistant: {
             assistantId: assistantRun.assistantId,
-            revisionId: assistantRun.revisionId
+            definitionVersion: assistantRun.definitionVersion,
+            identity: assistantRun.identity
           }
         }
       : {}),

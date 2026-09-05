@@ -44,9 +44,8 @@ type AssistantListBody = {
 type AssistantDetailBody = {
   assistant: {
     id: string;
-    revision: {
+    content: {
       name: string;
-      revisionNumber: number;
     };
     version?: number;
   };
@@ -119,7 +118,7 @@ async function createAssistantViaApi(
   });
   expect(response.status(), await response.text()).toBe(201);
   const body = (await response.json()) as AssistantDetailBody;
-  return { id: body.assistant.id, name: body.assistant.revision.name };
+  return { id: body.assistant.id, name: body.assistant.content.name };
 }
 
 async function archiveAssistantById(page: Page, assistantId: string): Promise<void> {
@@ -230,7 +229,7 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   await expect(editor.getByRole("status")).toContainText(
     "Assistant created. It is private until you share it"
   );
-  await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toBeVisible();
+  await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toHaveCount(0);
   await expect(editor.getByRole("heading", { name })).toBeVisible();
   await expect(save).toHaveText("Save changes");
   await expect(editor.getByRole("button", { name: "Use in chat" })).toBeVisible();
@@ -337,7 +336,7 @@ test("requires explicit removal before a governed Assistant control changes", as
   }
 });
 
-test("keeps accepted answers on their historical revision after a revise", async ({ page }) => {
+test("keeps accepted answers on their historical identity after an edit", async ({ page }) => {
   const suffix = Date.now();
   const name = `${assistantNamePrefix} Revise ${suffix}`;
   const revisedName = `${assistantNamePrefix} Revise ${suffix} v2`;
@@ -365,20 +364,20 @@ test("keeps accepted answers on their historical revision after a revise", async
     await card.getByRole("button", { exact: true, name: "Edit" }).click();
 
     const editor = library.getByTestId("assistant-editor");
-    await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toBeVisible();
+    await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toHaveCount(0);
     const nameField = editor.getByLabel("Name Required", { exact: true });
     await expect(nameField).toHaveValue(name);
     await nameField.fill(revisedName);
     await editor.getByTestId("assistant-editor-save").click();
-    await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved revision 2");
-    await expect(editor.getByRole("button", { exact: true, name: "Revision 2" })).toBeVisible();
+    await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
+    await expect(editor.getByRole("button", { exact: true, name: "Revision 2" })).toHaveCount(0);
 
     await library.getByRole("button", { exact: true, name: "Assistants" }).click();
     await expect(editor).toHaveCount(0);
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
 
-    // Historical immutability: the accepted answer keeps the revision it used.
+    // Historical immutability: the accepted answer keeps its saved identity.
     const identity = answer.getByTestId("answer-assistant-identity");
     await expect(identity).toContainText(name);
     await expect(identity).not.toContainText(revisedName);

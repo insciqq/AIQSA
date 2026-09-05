@@ -1,12 +1,12 @@
 import type {
   AssistantAvatarRecipe,
-  AssistantRevisionContent
+  AssistantContent
 } from "@/lib/contracts/assistants";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import { describe, expect, it } from "vitest";
 import {
   assistantDraftFromEditorState,
-  editorStateFromRevision,
+  editorStateFromContent,
   reconcileDraftForModel,
   type AssistantEditorDraftState
 } from "./libraryViewContracts";
@@ -66,19 +66,16 @@ function editor(overrides: Partial<AssistantEditorDraftState> = {}): AssistantEd
   };
 }
 
-function revision(runControls: AssistantRevisionContent["runControls"]): AssistantRevisionContent {
+function content(runControls: AssistantContent["runControls"]): AssistantContent {
   return {
-    authorDisplayName: "Dana",
     avatar,
     category: null,
-    createdAt: "2026-09-03T10:00:00.000Z",
     description: "",
     developerPrompt: null,
     knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: "Reviewer",
     providerModelId: "model-1",
-    revisionNumber: 1,
     runControls,
     searchPlan: { mode: "all_selected", optionIds: [] },
     skillIds: [],
@@ -169,8 +166,8 @@ describe("Assistant editor run-control contracts", () => {
     ]);
   });
 
-  it("round-trips absent revision controls as nullable model defaults", () => {
-    expect(editorStateFromRevision(revision({}))).toMatchObject({
+  it("round-trips absent content controls as nullable model defaults", () => {
+    expect(editorStateFromContent(content({}))).toMatchObject({
       backgroundMode: null,
       maxOutputTokens: "",
       reasoningEffort: "",

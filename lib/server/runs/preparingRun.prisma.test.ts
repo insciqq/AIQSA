@@ -1,3 +1,4 @@
+import { decodeAssistantIdentity } from "../../contracts/assistants";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -284,13 +285,6 @@ async function withPreparingUser<T>(
       await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
       await tx.chatMemoryCheckpointMessage.deleteMany({ where: { userId } });
       await tx.chat.deleteMany({ where: { userId } });
-      await tx.assistantDefinition.updateMany({
-        data: { currentRevisionId: null },
-        where: { ownerUserId: userId }
-      });
-      await tx.assistantRevision.deleteMany({
-        where: { assistant: { ownerUserId: userId } }
-      });
       await tx.assistantDefinition.deleteMany({ where: { ownerUserId: userId } });
       await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
       await tx.user.deleteMany({ where: { id: userId } });
@@ -3808,11 +3802,8 @@ describe("PREPARING run orchestration", () => {
       });
       const folder = await prisma.folder.create({ data: { name: "Legacy scoped run", userId } });
       const assistantDefinition = await prisma.assistantDefinition.create({
-        data: { ownerUserId: userId }
-      });
-      const assistantRevision = await prisma.assistantRevision.create({
         data: {
-          assistantId: assistantDefinition.id,
+          ownerUserId: userId,
           avatar: {
             accents: [0, 4],
             backgroundShape: "circle",
@@ -3824,15 +3815,10 @@ describe("PREPARING run orchestration", () => {
           },
           name: "Legacy scope admission Assistant",
           providerModelId: providerTemplateIds.fakeModel,
-          revisionNumber: 1,
           runControls: {},
           searchPlan: { mode: "all_selected", optionIds: [] },
           systemPrompt: "Answer directly."
         }
-      });
-      await prisma.assistantDefinition.update({
-        data: { currentRevisionId: assistantRevision.id },
-        where: { id: assistantDefinition.id }
       });
       const folderScope = await createPrismaMemoryScopeRepository(prisma).ensure(userId, {
         targetId: folder.id,
@@ -3861,7 +3847,8 @@ describe("PREPARING run orchestration", () => {
         {
           assistant: {
             assistantId: assistantDefinition.id,
-            revisionId: assistantRevision.id
+            definitionVersion: assistantDefinition.version,
+            identity: decodeAssistantIdentity({ name: assistantDefinition.name, avatar: assistantDefinition.avatar })!
           },
           chat: await prisma.chat.create({
             data: { title: "Matching legacy Assistant scope", userId }
