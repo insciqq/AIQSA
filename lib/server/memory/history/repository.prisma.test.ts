@@ -95,7 +95,6 @@ async function createTurn(
     assistantText: string;
     chatId: string;
     createdAt: Date;
-    grounded?: boolean;
     parentMessageId: string | null;
     userId: string;
     userText: string;
@@ -118,9 +117,6 @@ async function createTurn(
       chatId: input.chatId,
       content: textMessageContent(input.assistantText),
       createdAt: assistantAt,
-      groundedAt: input.grounded ? assistantAt : null,
-      groundingProvider: input.grounded ? "gemini" : null,
-      groundingStrategy: input.grounded ? "gemini-google-search" : null,
       modelId: "history-test-model",
       parentMessageId: userMessage.id,
       provider: "history-test-provider",
@@ -1294,7 +1290,7 @@ describe("Memory lexical history index persistence", () => {
       });
       await processHistoryJob(userId);
       await prisma.chatMemoryCheckpoint.update({
-        data: { pipelineVersion: "memory-history-incremental-v1" },
+        data: { pipelineVersion: "memory-history-incremental-v7" },
         where: { userId_chatId: { chatId: chat.id, userId } }
       });
 
@@ -1321,7 +1317,7 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
       })).resolves.toMatchObject({
-        pipelineVersion: "memory-history-incremental-v1",
+        pipelineVersion: "memory-history-incremental-v7",
         status: "PENDING"
       });
       const claim = await claimHistoryJob(userId);
@@ -2851,7 +2847,6 @@ describe("Memory lexical history index persistence", () => {
         assistantText: "Grounded answer remains visible past-chat context.",
         chatId: chat.id,
         createdAt: new Date("2026-08-10T16:00:00.000Z"),
-        grounded: true,
         parentMessageId: null,
         userId,
         userText: "Please search with my attached context."

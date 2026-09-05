@@ -2,11 +2,7 @@ import type { ChatUpdateDataWire } from "../../contracts/chats";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
-  GROUNDED_LIVE_ONLY_PLACEHOLDER
-} from "../../domain/grounding";
-import {
   encodeSseEvent,
-  isGroundingDisplaySseEvent,
   textFromContentBlocks,
   type ModelRunChatUpdateData,
   type ModelRunSseEvent,
@@ -240,7 +236,6 @@ export type RunExecutionRepository = Pick<
   | "loadEntitlements"
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadModelPricing"
-  | "markAssistantMessageGroundedLiveOnly"
   | "markRunAnswerStarted"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
@@ -354,8 +349,7 @@ function iso(value: Date | string): string {
 }
 
 function serializeChatUpdate(
-  update: RunChatUpdateRecord,
-  liveGroundedAnswer?: Readonly<{ assistantMessageId: string; finalText: string }>
+  update: RunChatUpdateRecord
 ): ModelRunChatUpdateData {
   return {
     chat: {
@@ -379,10 +373,7 @@ function serializeChatUpdate(
       assistantIdentity: message.assistantIdentity ?? null,
       ...(message.author !== undefined ? { author: message.author } : {}),
       citationMessageId: message.citationMessageId ?? null,
-      content:
-        liveGroundedAnswer && message.id === liveGroundedAnswer.assistantMessageId
-          ? textMessageContent(liveGroundedAnswer.finalText)
-          : message.content,
+      content: message.content,
       createdAt: iso(message.createdAt),
       errorMessage: message.errorMessage ?? null,
       id: message.id,
@@ -410,8 +401,10 @@ async function emit(
     await repository.appendRunOutputEvent(runId, outputEvent);
   }
 
+  if (event.type === "grounding_display" && !outputEvent) return;
+  const clientEvent = event.type === "grounding_display" ? outputEvent! : event;
   try {
-    controller.enqueue(encoder.encode(encodeSseEvent(event)));
+    controller.enqueue(encoder.encode(encodeSseEvent(clientEvent)));
   } catch {
     // Keep provider execution and durable persistence alive after a response
     // consumer disconnects. Task 102 owns any future configurable abort policy.
@@ -679,7 +672,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       });
       let persistedProviderResponseId: string | null = null;
       let answerStartMarked = false;
-      let groundedLiveOnly = false;
       let knowledgeAnswerAttempted = groundedKnowledgeAnswer;
       let projectAccessCheck: Promise<boolean> | null = null;
       let projectAccessRevoked = false;
@@ -789,29 +781,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const includeTokenEvents = options.includeTokenEvents ?? true;
         const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
 
-        if (isGroundingDisplaySseEvent(effectiveEvent)) {
-          if (!groundedLiveOnly) {
-            groundedLiveOnly = true;
-            await tokenBuffer.disablePersistence();
-            const marked = await input.repository.markAssistantMessageGroundedLiveOnly({
-              assistantMessageId: input.created.assistantMessageId,
-              groundedAt: new Date(),
-              provider: normalizedRequest.provider,
-              runId,
-              strategy: normalizedRequest.searchPlan.options.find((option) =>
-                option.adapterKind === "answer_provider_hosted")?.optionId ?? "provider-grounding"
-            });
-            if (!marked) {
-              throw new RunPipelineError(
-                "grounding_persistence_fence_failed",
-                "Grounded answer could not enter live-only mode"
-              );
-            }
-          }
-          emitTransient(controller, encoder, effectiveEvent);
-          return;
-        }
-
         if (effectiveEvent.type === "token") {
           if (includeTokenEvents && !answerStartMarked) {
             answerStartMarked = true;
@@ -821,16 +790,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             return;
           }
 
-          if (!groundedLiveOnly) {
-            await tokenBuffer.push(effectiveEvent.data.delta);
-          }
-          emitTransient(controller, encoder, effectiveEvent);
-          return;
-        }
-
-        if (groundedLiveOnly) {
-          const eventProviderResponseId = providerResponseIdFromEvent(effectiveEvent);
-          if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
+          await tokenBuffer.push(effectiveEvent.data.delta);
           emitTransient(controller, encoder, effectiveEvent);
           return;
         }
@@ -839,7 +799,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const eventProviderResponseId = providerResponseIdFromEvent(effectiveEvent);
         if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
 
-        await emit(controller, encoder, input.repository, runId, effectiveEvent);
+        const clientEvent = effectiveEvent.type === "artifact" &&
+          normalizedRequest.searchPlan.options.some((option) =>
+            option.optionId === "gemini-google-search" && option.adapterKind === "answer_provider_hosted")
+          ? projectRunOutputArtifactEvent(effectiveEvent)
+          : effectiveEvent;
+        if (clientEvent) await emit(controller, encoder, input.repository, runId, clientEvent);
       }
 
       async function publishProviderResponseId(providerResponseId: string): Promise<void> {
@@ -2672,19 +2637,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             workspace: normalizedRequest.workspace
           });
         }
-        const persistedProviderResult = groundedLiveOnly
-          ? {
-              ...attributedProviderResult,
-              finalText: GROUNDED_LIVE_ONLY_PLACEHOLDER
-            }
-          : attributedProviderResult;
         const finalization = await finalizeRunCompletion({
           ...(knowledgeAnswerExecution
             ? { knowledgeAnswerContracts: knowledgeAnswerExecution.contracts }
             : {}),
           ...(knowledgeZeroEvidence ? { knowledgeZeroEvidence: true as const } : {}),
           repository: input.repository,
-          result: persistedProviderResult,
+          result: attributedProviderResult,
           run: {
             assistantMessageId: input.created.assistantMessageId,
             chatId: normalizedRequest.chatId,
@@ -2719,15 +2678,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           });
           if (chatUpdate) {
             emitTransient(controller, encoder, {
-              data: serializeChatUpdate(
-                chatUpdate,
-                groundedLiveOnly
-                  ? {
-                      assistantMessageId: input.created.assistantMessageId,
-                      finalText: providerResult.finalText
-                    }
-                  : undefined
-              ),
+              data: serializeChatUpdate(chatUpdate),
               type: "chat_update"
             });
           }

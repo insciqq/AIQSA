@@ -45,13 +45,7 @@ function createMemoryRepository() {
         return null;
       }
 
-      if (activeLeafMessageId === "grounded-message") {
-        return {
-          error: "grounded_content_not_shareable"
-        };
-      }
-
-      if (activeLeafMessageId !== "message-1") {
+      if (activeLeafMessageId !== "message-1" && activeLeafMessageId !== "grounded-message") {
         return {
           error: "invalid_active_leaf"
         };
@@ -180,7 +174,7 @@ describe("share route handlers", () => {
     });
   });
 
-  it("rejects a share whose visible branch contains live-only grounded content", async () => {
+  it("creates a share for a retained grounded branch", async () => {
     const { repository } = createMemoryRepository();
     const POST = createShareChatHandler({ repository, resolveAuth: auth.resolveAuth });
     const response = await POST(
@@ -192,8 +186,8 @@ describe("share route handlers", () => {
       { params: { chatId: "chat-1" } }
     );
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({ error: "grounded_content_not_shareable" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveProperty("share");
   });
 
   it.each([

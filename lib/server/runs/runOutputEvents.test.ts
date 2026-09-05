@@ -7,6 +7,42 @@ import {
 } from "./runOutputEvents";
 
 describe("durable run output events", () => {
+  it("keeps only validated grounding display and strips provider counters, styles and wrappers", () => {
+    const event = { type: "grounding_display" as const, data: {
+      provider: "gemini" as const,
+      suggestionsHtml: '<style>div{color:red}</style><div><a href="https://www.google.com/search?q=weather">Weather</a></div>',
+      citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.test/source",
+        thoughtSignature: "private-signature" }],
+      runSearch: { callCount: 1, queryCount: 1 }, queries: ["private generated query"],
+      operationId: "private-operation", raw: { upstream: true }
+    } };
+    const projected = projectRunOutputArtifactEvent(event);
+    expect(projected).toEqual({ type: "grounding_display", data: {
+      provider: "gemini",
+      suggestionsHtml: '<div><a href="https://www.google.com/search?q=weather">Weather</a></div>',
+      citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.test/source" }]
+    } });
+    expect(isRunOutputArtifactEvent(event)).toBe(false);
+    expect(projected && isRunOutputArtifactEvent(projected)).toBe(true);
+    expect(JSON.stringify(projected)).not.toMatch(/private|runSearch|queries|style|upstream|operationId/);
+  });
+
+  it.each([
+    { suggestionsHtml: "" },
+    { suggestionsHtml: '<a href="javascript:alert(1)">Unsafe</a>' },
+    { suggestionsHtml: '<a href="https://www.google.com/search?q=x" onclick="alert(1)">Unsafe</a>' },
+    { suggestionsHtml: "x".repeat(256 * 1_024 + 1) },
+    { citations: [{ startIndex: 0, endIndex: -1, title: "Invalid", url: "https://example.test" }] },
+    { citations: [{ startIndex: 0, endIndex: 1, title: "Invalid", url: "javascript:alert(1)" }] },
+    { citations: [{ startIndex: 0, endIndex: 1, title: "Invalid", url: "https://user:secret@example.test" }] },
+    { citations: Array.from({ length: 101 }, () => ({ startIndex: 0, endIndex: 1, title: "Source", url: "https://example.test" })) }
+  ])("rejects unsafe or over-budget grounding display %#", (invalid) => {
+    expect(projectRunOutputArtifactEvent({ type: "grounding_display", data: {
+      provider: "gemini", citations: [],
+      suggestionsHtml: '<a href="https://www.google.com/search?q=x">Search</a>', ...invalid
+    } })).toBeNull();
+  });
+
   it("projects citations and reasoning into output-only shapes", () => {
     const citation = projectRunOutputArtifactEvent({
       data: {

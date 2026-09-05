@@ -22,7 +22,7 @@ export type CreatedShareRecord = ShareRecord & {
 };
 
 export type ShareCreateError = {
-  error: "grounded_content_not_shareable" | "invalid_active_leaf";
+  error: "invalid_active_leaf";
 };
 
 export type ChatShareListRecord = {

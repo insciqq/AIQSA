@@ -2,15 +2,7 @@ import { getVisibleMessagePath, type BranchMessage } from "./branching";
 
 export type ShareSnapshotMessageInput = BranchMessage & {
   content: unknown;
-  groundedAt?: Date | string | null;
 };
-
-export class GroundedContentNotShareableError extends Error {
-  constructor() {
-    super("grounded_content_not_shareable");
-    this.name = "GroundedContentNotShareableError";
-  }
-}
 
 export type PublicShareSnapshot = {
   messages: {
@@ -113,9 +105,6 @@ export function buildPublicShareSnapshot(input: {
   title: string;
 }): PublicShareSnapshot {
   const visiblePath = getVisibleMessagePath(input.messages, input.activeLeafMessageId);
-  if (visiblePath.some((message) => message.groundedAt !== null && message.groundedAt !== undefined)) {
-    throw new GroundedContentNotShareableError();
-  }
 
   return {
     messages: visiblePath.flatMap((message) => {

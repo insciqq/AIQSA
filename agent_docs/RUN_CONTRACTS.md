@@ -111,6 +111,8 @@ Completed UI exposes answer text, safe inline citations and Sources when present
 
 Usage derives only from provider-reported categories. Answer rounds, chat PDF preparation, client Search, Knowledge embeddings, and Memory utilities retain their own exact provider/model attribution and then contribute to aggregate accounting where applicable. Missing failed-call usage and price are null, never estimated; cached/reasoning tokens are not inferred. Recovery replaces or monotonically enriches the same outcome instead of double counting.
 
-Anonymous sharing snapshots the active visible branch through the positive sanitized schema in [Backend](BACKEND.md). A grounded Gemini live-only branch is not shareable because durable content does not exist. Branch checkout is history navigation, not a run-inspection surface.
+Anonymous sharing snapshots the active visible branch through the positive sanitized schema in [Backend](BACKEND.md). This includes retained Gemini-grounded answer text; Suggestions, citations, and other structured artifacts stay outside the public snapshot. Branch checkout is history navigation, not a run-inspection surface.
+
+Gemini Google Search answers retain their text and validated display through ordinary settlement, branch context, and recovery. Already-discarded legacy answers cannot be reconstructed; an unfinished legacy grounded run must be fenced against provider replay before its live-only provenance is removed.
 
 Persist only what execution, recovery, side-effect safety, security, deletion/retention, citations/outputs, or aggregate accounting consumes. Logs remain structured and content-free. [Providers](PROVIDERS.md) owns wire terminals, [Memory](MEMORY.md) personal context, and [Persistence](PERSISTENCE.md) durable mechanics.

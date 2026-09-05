@@ -1,3 +1,4 @@
+import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { Prisma } from "@prisma/client";
 import {
@@ -99,10 +100,11 @@ const assistantRunDetailSelect = {
       sequence: "asc"
     },
     select: {
+      eventType: true,
       payload: true
     },
     where: {
-      eventType: "artifact"
+      eventType: { in: ["artifact", "grounding_display"] }
     }
   },
   createdAt: true,
@@ -266,7 +268,7 @@ type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweig
 type ArtifactSummaryRun = {
   answerStartedAt?: Date | null;
   createdAt?: Date;
-  events: { payload: unknown }[];
+  events: { eventType?: string; payload: unknown }[];
   knowledgeRetrievalSession?: {
     degradedFlags?: string[];
     evidenceItems: { handle: string; state: string }[];
@@ -1151,6 +1153,9 @@ export function summarizeMessageRunArtifacts(
   memorySources: readonly MemoryAnswerSource[] = [],
   memoryStatus?: MemoryRunPresentationStatus
 ): ThreadArtifactSummary | null {
+  const grounding = run.events.filter((event) => event.eventType === "grounding_display")
+    .map((event) => projectGroundingDisplay(event.payload))
+    .filter((display) => display !== null).at(-1) ?? null;
   const artifactPayloads = run.events.map((event) => event.payload);
   const reasoningPayloads = artifactPayloads.filter(
     (payload) => artifactType(payload) === "reasoning"
@@ -1161,7 +1166,9 @@ export function summarizeMessageRunArtifacts(
   const citationPayloads = artifactPayloads.filter(
     (payload) => artifactType(payload) === "citation"
   );
-  const citations = citationPayloads
+  const citations = grounding ? grounding.citations.map((citation, index) => ({
+    index: index + 1, title: citation.title || `Source ${index + 1}`, url: citation.url
+  })) : citationPayloads
     .map((payload, index) => citationFromPayload(payload, index + 1))
     .filter((citation): citation is ThreadCitation => Boolean(citation));
   const searchPayloads = artifactPayloads.filter(
@@ -1171,7 +1178,8 @@ export function summarizeMessageRunArtifacts(
     ...run.searchRuns.flatMap((searchRun) =>
       sourceValuesFromSearchRun(searchRun.artifacts)
     ),
-    ...searchPayloads.flatMap(sourceValuesFromSearchPayload)
+    ...searchPayloads.flatMap(sourceValuesFromSearchPayload),
+    ...(grounding ? [citations] : [])
   ]);
   const generatedFiles = (run.workspaceProducedAttachments ?? []).flatMap((attachment) =>
     attachment.workspaceRunOutput
@@ -1235,6 +1243,7 @@ export function summarizeMessageRunArtifacts(
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
     !knowledgeState &&
+    !grounding &&
     !memoryAction &&
     !memoryStatus &&
     memorySources.length === 0 &&
@@ -1246,6 +1255,7 @@ export function summarizeMessageRunArtifacts(
   return {
     citations,
     ...(generatedFiles.length > 0 ? { generatedFiles } : {}),
+    ...(grounding ? { groundingDisplay: { provider: grounding.provider, suggestionsHtml: grounding.suggestionsHtml } } : {}),
     ...(knowledgeState ? { knowledgeState } : {}),
     knowledgeCitations,
     ...(memoryAction ? { memoryAction } : {}),

@@ -1,3 +1,4 @@
+import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -7257,15 +7258,17 @@ function runMemoryVNextRetrievalCutoverMigrationProof(
   }
 }
 
-function runAssistantLiveAdoptionProof(database: string, committed: readonly string[]): void {
-  const index = committed.indexOf(ASSISTANT_LIVE_MIGRATION);
-  assert.ok(index > 0, "live Assistant migration is missing");
+function runForwardAdoptionProof(
+  database: string, committed: readonly string[], migration: string, fixture: string, proof: string
+): void {
+  const index = committed.indexOf(migration);
+  assert.ok(index > 0, "forward adoption migration is missing");
   dropDatabase(database);
   createDatabase(database);
   // Keep the predecessor migration tree in the disposable app container's /tmp.
   const probe = app(database, ["node", "-e", `
     const fs = require('node:fs'), path = require('node:path');
-    const root = fs.mkdtempSync('/tmp/aiqsa-assistant-adoption-');
+    const root = fs.mkdtempSync('/tmp/aiqsa-forward-adoption-');
     fs.copyFileSync('prisma/schema.prisma', path.join(root, 'schema.prisma'));
     fs.mkdirSync(path.join(root, 'migrations'));
     fs.copyFileSync('prisma/migrations/migration_lock.toml', path.join(root, 'migrations/migration_lock.toml'));
@@ -7274,12 +7277,12 @@ function runAssistantLiveAdoptionProof(database: string, committed: readonly str
     }
     process.stdout.write(root);
   `]);
-  assert.match(probe, /^\/tmp\/aiqsa-assistant-adoption-[a-zA-Z0-9]+$/u);
+  assert.match(probe, /^\/tmp\/aiqsa-forward-adoption-[a-zA-Z0-9]+$/u);
   try {
     app(database, ["npx", "prisma", "migrate", "deploy", "--schema", `${probe}/schema.prisma`]);
-    psqlScalar(database, assistantLiveAdoptionFixtureSql);
+    psqlScalar(database, fixture);
     app(database, ["npx", "prisma", "migrate", "deploy"]);
-    psqlScalar(database, assistantLiveAdoptionProofSql);
+    psqlScalar(database, proof);
     app(database, ["npx", "prisma", "migrate", "deploy"]);
     assertDeployedMigrations(database, committed);
   } finally {
@@ -7325,7 +7328,10 @@ function main(
   runKnowledgeToolCoexistenceMigrationProof(migrations);
   runKnowledgeSearchHealthMigrationProof(shadowDatabase, migrations);
   runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
-  runAssistantLiveAdoptionProof(shadowDatabase, migrations);
+  runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANT_LIVE_MIGRATION,
+    assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_GROUNDING_MIGRATION,
+    geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);

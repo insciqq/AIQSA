@@ -1,3 +1,4 @@
+import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
   RunEventView,
@@ -82,20 +83,8 @@ function groundingDisplayFromEvent(event: RunEventView): {
   display: NonNullable<ThreadArtifactSummary["groundingDisplay"]>;
 } | null {
   if (event.type !== "grounding_display" || !isRecord(event.data)) return null;
-  const data = event.data;
-  if (
-    data.provider !== "gemini" ||
-    typeof data.suggestionsHtml !== "string" ||
-    data.suggestionsHtml.length === 0 ||
-    new TextEncoder().encode(data.suggestionsHtml).byteLength > 256 * 1_024 ||
-    !isRecord(data.runSearch) ||
-    typeof data.runSearch.callCount !== "number" ||
-    !Number.isSafeInteger(data.runSearch.callCount) ||
-    data.runSearch.callCount < 1 ||
-    data.runSearch.callCount > 100
-  ) {
-    return null;
-  }
+  const data = decodeGroundingDisplay(event.data);
+  if (!data) return null;
   const citations = (Array.isArray(data.citations) ? data.citations : [])
     .slice(0, 100)
     .map((citation, index) => citationFromValue(citation, index + 1))

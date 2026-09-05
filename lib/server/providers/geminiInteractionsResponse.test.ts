@@ -49,7 +49,7 @@ function frame(event: string, payload: unknown): string {
 }
 
 describe("Gemini Interactions response normalization", () => {
-  it("normalizes grounded JSON with safe usage and live-only display data", async () => {
+  it("normalizes grounded JSON with safe usage and display data", async () => {
     const normalized = await collect(streamGeminiInteractionsJsonResponse({
       id: "interaction-1",
       model: "gemini-3.6-flash",

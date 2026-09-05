@@ -2672,9 +2672,6 @@ model Message {
   role                   String
   parentMessageId        String?
   content                Json
-  groundedAt             DateTime?
-  groundingProvider      String?
-  groundingStrategy      String?
   provider               String?
   modelId                String?
   status                 MessageStatus     @default(complete)
@@ -2703,7 +2700,6 @@ model Message {
   @@index([chatId, createdAt])
   @@index([authorUserId])
   @@index([branchSourceModelRunId])
-  @@index([groundingProvider, groundedAt])
 }
 
 model ModelRun {
@@ -4087,7 +4083,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v7") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v8") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String

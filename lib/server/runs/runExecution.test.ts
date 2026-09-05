@@ -5,9 +5,6 @@ import {
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
   MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
 } from "../../contracts/runs";
-import {
-  GROUNDED_LIVE_ONLY_PLACEHOLDER
-} from "../../domain/grounding";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
@@ -99,7 +96,6 @@ type FailedRun = {
   options?: Readonly<{ recoveryTerminal?: boolean }>;
   runId: string;
 };
-type GroundedMark = Parameters<RunRepository["markAssistantMessageGroundedLiveOnly"]>[0];
 type ProjectAccessCheck = Parameters<NonNullable<RunRepository["isProjectRunAccessCurrent"]>>[0];
 
 type RepositoryOptions = Readonly<{
@@ -917,7 +913,6 @@ function createRepository(options: RepositoryOptions = {}) {
   const completeRuns: CompleteRunInput[] = [];
   const failedRuns: FailedRun[] = [];
   const groundingAnswers: string[] = [];
-  const groundedMarks: GroundedMark[] = [];
   const persistedEvents: { event: ModelRunSseEvent; runId: string; sequence: number }[] = [];
   const providerResponseIds: string[] = [];
   const providerRequestPreviews: Record<string, unknown>[] = [];
@@ -1053,12 +1048,6 @@ function createRepository(options: RepositoryOptions = {}) {
     async loadModelPricing() {
       return null;
     },
-    async markAssistantMessageGroundedLiveOnly(input) {
-      groundedMarks.push(input);
-      assistantTexts.splice(0);
-      persistedEvents.splice(0);
-      return true;
-    },
     async persistToolLoopCallBatch(input) {
       const calls = input.calls.map((call) => {
         const existing = [...toolCalls.values()].find((entry) =>
@@ -1161,7 +1150,6 @@ function createRepository(options: RepositoryOptions = {}) {
     },
     failedRuns,
     groundingAnswers,
-    groundedMarks,
     get chatUpdateLoads() {
       return chatUpdateLoads;
     },
@@ -1865,9 +1853,9 @@ describe("run execution", () => {
     expect(egress.completed).toEqual(["egress-1"]);
   });
 
-  it("keeps grounded output live while persisting only provenance, usage, and a neutral placeholder", async () => {
+  it("persists grounded text and safe display while live completion matches the refetched answer", async () => {
     const persistedChatUpdate = chatUpdate();
-    persistedChatUpdate.messages[1]!.content = textMessageContent(GROUNDED_LIVE_ONLY_PLACEHOLDER);
+    persistedChatUpdate.messages[1]!.content = textMessageContent("Live grounded answer");
     const repository = createRepository({
       chatUpdate: persistedChatUpdate,
       entitlements: {
@@ -1885,7 +1873,7 @@ describe("run execution", () => {
           citations: [],
           provider: "gemini",
           runSearch: { callCount: 1, queryCount: 1 },
-          suggestionsHtml: "<div>suggestion-secret</div>"
+          suggestionsHtml: '<div><a href="https://www.google.com/search?q=weather">Weather</a></div>'
         },
         type: "grounding_display"
       };
@@ -1896,11 +1884,13 @@ describe("run execution", () => {
         },
         type: "artifact"
       };
+      yield { type: "artifact", data: { artifactType: "summary",
+        payload: { responseId: "provider-summary-identifier", raw: "provider-wrapper-canary" } } };
       yield { data: { delta: "Live grounded answer" }, type: "token" };
       return providerResult({
         finalProviderResponsePreview: {
           citation: "https://source.example/secret",
-          searchSuggestionsHtml: "<div>suggestion-secret</div>"
+          searchSuggestionsHtml: '<div><a href="https://www.google.com/search?q=weather">Weather</a></div>'
         },
         finalText: "Live grounded answer"
       });
@@ -1916,35 +1906,19 @@ describe("run execution", () => {
       repository: repository.repository
     })).text());
 
-    expect(repository.groundedMarks).toHaveLength(1);
-    expect(repository.groundedMarks[0]).toMatchObject({
-      assistantMessageId: "assistant-1",
-      provider: "gemini",
-      runId: "run-1",
-      strategy: "gemini-google-search"
-    });
-    expect(repository.assistantTexts).toEqual([]);
+    expect(repository.assistantTexts.at(-1)).toContain("Live grounded answer");
     expect(repository.completeRuns).toHaveLength(1);
-    expect(repository.completeRuns[0]?.finalText).toBe(GROUNDED_LIVE_ONLY_PLACEHOLDER);
+    expect(repository.completeRuns[0]?.finalText).toBe("Live grounded answer");
     expect(repository.completeRuns[0]).not.toHaveProperty("finalProviderResponsePreview");
     expect(repository.durableProviderResponsePreview).toBeNull();
-    expect(repository.persistedEvents).toEqual([]);
-    const persisted = JSON.stringify({
-      assistantTexts: repository.assistantTexts,
-      completeRuns: repository.completeRuns,
-      events: repository.persistedEvents,
-      providerRequestPreviews: repository.providerRequestPreviews,
-      providerResponsePreview: repository.durableProviderResponsePreview
-    });
-    expect(persisted).not.toContain("suggestion-secret");
-    expect(persisted).not.toContain("citation-secret");
-    expect(persisted).not.toContain("source.example");
-    expect(persisted).not.toContain("Live grounded answer");
-    expect(persisted).not.toContain("pre-marker-secret");
-
-    const liveChatUpdate = events.find((event) => event.type === "chat_update");
-    expect(JSON.stringify(liveChatUpdate)).toContain("Live grounded answer");
-    expect(JSON.stringify(liveChatUpdate)).not.toContain(GROUNDED_LIVE_ONLY_PLACEHOLDER);
+    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
+      "grounding_display", "artifact"
+    ]);
+    expect(JSON.stringify(repository.persistedEvents)).not.toContain("runSearch");
+    expect(JSON.stringify(events)).not.toContain("runSearch");
+    expect(JSON.stringify(events)).not.toMatch(/provider-summary-identifier|provider-wrapper-canary/);
+    expect(JSON.stringify(events.find((event) => event.type === "chat_update")))
+      .toContain("Live grounded answer");
     const groundingIndex = events.findIndex((event) => event.type === "grounding_display");
     const liveAnswerIndex = events.findIndex(
       (event) => event.type === "token" && event.data.delta === "Live grounded answer"
@@ -1954,7 +1928,7 @@ describe("run execution", () => {
     expect(events.at(-1)?.type).toBe("done");
   });
 
-  it("keeps failed grounded partial output transient and leaves no durable provider content", async () => {
+  it("retains partial grounded text and safe output on ordinary provider failure", async () => {
     const repository = createRepository();
     const adapter = createAdapter(async function* () {
       yield {
@@ -1967,7 +1941,7 @@ describe("run execution", () => {
           }],
           provider: "gemini",
           runSearch: { callCount: 1, queryCount: 1 },
-          suggestionsHtml: "<div>failed-suggestion-secret</div>"
+          suggestionsHtml: '<div><a href="https://www.google.com/search?q=weather">Weather</a></div>'
         },
         type: "grounding_display"
       };
@@ -1979,22 +1953,13 @@ describe("run execution", () => {
       await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text()
     );
 
-    expect(repository.groundedMarks).toHaveLength(1);
-    expect(repository.assistantTexts).toEqual([]);
+    expect(repository.assistantTexts.at(-1)).toBe("failed grounded partial");
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toHaveLength(1);
     expect(repository.durableProviderResponsePreview).toBeNull();
-    expect(repository.persistedEvents).toEqual([]);
-    const persisted = JSON.stringify({
-      assistantTexts: repository.assistantTexts,
-      events: repository.persistedEvents,
-      providerRequestPreviews: repository.providerRequestPreviews,
-      providerResponsePreview: repository.durableProviderResponsePreview
-    });
-    expect(persisted).not.toContain("failed grounded partial");
-    expect(persisted).not.toContain("failed-suggestion-secret");
-    expect(persisted).not.toContain("failed-citation-secret");
-    expect(persisted).not.toContain("failed-source.example");
+    expect(repository.persistedEvents).toHaveLength(1);
+    expect(repository.persistedEvents[0]?.event.type).toBe("grounding_display");
+    expect(JSON.stringify(repository.persistedEvents)).not.toContain("runSearch");
     expect(events.map((event) => event.type)).toEqual([
       "run_start",
       "message_start",

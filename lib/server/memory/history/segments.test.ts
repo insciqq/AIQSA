@@ -50,7 +50,7 @@ function round(rawSafeText: string): MemoryRecallRoundProjection {
     safetyClass: "NORMAL",
     sourceAssistantId: null,
     sourceContentHash: "d".repeat(64),
-    sourceProjectionVersion: "memory-history-source-projection-v5",
+    sourceProjectionVersion: "memory-history-source-projection-v6",
     sourceRevision: 2,
     supportingRoundIds: [],
     userId: "owner"

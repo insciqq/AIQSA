@@ -697,13 +697,6 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<NormalizedRunRequest | null>;
-  markAssistantMessageGroundedLiveOnly(input: {
-    assistantMessageId: string;
-    groundedAt: Date;
-    provider: string;
-    runId: string;
-    strategy: string;
-  }): Promise<boolean>;
   persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
   prepareAutomaticKnowledgeCallBatch?(
     input: PrepareAutomaticKnowledgeCallBatchInput

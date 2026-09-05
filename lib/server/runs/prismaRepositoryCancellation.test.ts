@@ -39,7 +39,6 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
       updateMany: vi.fn(async () => ({ count: 1 }))
     },
     message: {
-      findUnique: vi.fn(async () => ({ groundedAt: null })),
       updateMany: vi.fn(async () => ({ count: 1 }))
     },
     modelRun: {

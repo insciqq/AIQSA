@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPublicShareSnapshot,
-  GroundedContentNotShareableError,
   projectPublicShareSnapshot,
   type ShareSnapshotMessageInput
 } from "./shareSnapshot";
@@ -92,22 +91,19 @@ describe("share snapshots", () => {
     }
   });
 
-  it("rejects a visible grounded branch without blocking an unrelated sibling branch", () => {
-    const groundedMessages: ShareSnapshotMessageInput[] = messages.map((message) =>
-      message.id === "a1"
-        ? { ...message, groundedAt: new Date("2026-07-26T12:00:00.000Z") }
-        : message
-    );
-
-    expect(() => buildPublicShareSnapshot({
-      activeLeafMessageId: "a1",
-      messages: groundedMessages,
-      title: "Grounded"
-    })).toThrow(GroundedContentNotShareableError);
+  it("shares grounded answer text while dropping every structured artifact", () => {
+    const groundedMessages = messages.map((message) => message.id === "a1"
+      ? { ...message, content: { blocks: [{ type: "text", text: "Retained grounded answer" }] },
+          groundingDisplay: { provider: "gemini", suggestionsHtml: "private suggestions" },
+          citations: [{ url: "https://private-artifact.example" }] }
+      : message);
+    const snapshot = buildPublicShareSnapshot({
+      activeLeafMessageId: "a1", messages: groundedMessages, title: "Grounded"
+    });
+    expect(snapshot.messages.at(-1)?.content.blocks[0]?.text).toBe("Retained grounded answer");
+    expect(JSON.stringify(snapshot)).not.toMatch(/groundingDisplay|citations|gemini|private-artifact/);
     expect(buildPublicShareSnapshot({
-      activeLeafMessageId: "u2",
-      messages: groundedMessages,
-      title: "Sibling"
+      activeLeafMessageId: "u2", messages: groundedMessages, title: "Sibling"
     }).messages).toHaveLength(1);
   });
 
@@ -199,7 +195,6 @@ describe("share snapshots", () => {
             sourceVersionId: privateSentinels[8]
           }]
         },
-        groundedAt: null,
         id: "knowledge-answer",
         knowledgeEvidence: {
           query: privateSentinels[3],
