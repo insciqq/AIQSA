@@ -1,6 +1,7 @@
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ParsedDocument } from "../parsing/types";
 import type { NormalizedRunRequest } from "../providers/types";
+import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
 import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
@@ -106,7 +107,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
         providerRequestPreview: runtime.adapter.buildRequestPreview(finalBudget.request) };
     } else throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     signal.throwIfAborted();
-    const searchRuntimes: NonNullable<RunExecutionInput["searchRuntimes"]> = {};
+    const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
     for (const option of prepared.normalizedRequest.searchPlan.options) {
       try { searchRuntimes[option.optionId] = await deps.providerRuntime.resolve(claim.runId, "search", `search:${option.optionId}`); }
       catch (error) { if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") throw error; }

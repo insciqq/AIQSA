@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createTestAuth } from "@/tests/support/auth";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { resolveProjectAccess } from "../projects/access";
 import { createChatPdfPreviewHandler } from "./chatPdfPreviewHandler";
@@ -13,10 +14,11 @@ function fixture() {
   const tx = { systemModelPolicy: { findUnique: vi.fn(async () => null) },
     projectModelBinding: { findUnique: vi.fn(async () => null) } };
   const db = { $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)) };
-  const resolveAuth = vi.fn(async () => ({ userId: "owner" }));
-  const handler = createChatPdfPreviewHandler({ prisma: db as unknown as PrismaClient,
-    resolveAuth: resolveAuth as Parameters<typeof createChatPdfPreviewHandler>[0]["resolveAuth"] });
+  const auth = createTestAuth({ user: { id: "owner", role: "user" } });
+  const resolveAuth = vi.fn(auth.resolveAuth);
+  const handler = createChatPdfPreviewHandler({ prisma: db as unknown as PrismaClient, resolveAuth });
   const request = (extra = {}) => new Request("http://app.local/api/uploads/pdf-route", { method: "POST",
+    headers: { cookie: auth.cookie },
     body: JSON.stringify({ providerConnectionId: "connection", providerModelId: "model", ...extra }) });
   return { db, handler, request, resolveAuth, tx };
 }
@@ -42,7 +44,7 @@ describe("private PDF route preview", () => {
 
   it("rejects unauthenticated and oversized identifiers before catalog access", async () => {
     const h = fixture();
-    h.resolveAuth.mockResolvedValueOnce(null as never);
+    h.resolveAuth.mockResolvedValueOnce(null);
     expect((await h.handler(h.request())).status).toBe(401);
     expect((await h.handler(h.request({ providerModelId: "x".repeat(129) }))).status).toBe(400);
     expect(h.db.$transaction).not.toHaveBeenCalled();

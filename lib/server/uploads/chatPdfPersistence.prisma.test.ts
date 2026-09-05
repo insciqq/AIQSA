@@ -280,7 +280,7 @@ describe("chat PDF database lifecycle", () => {
     expect(await repository.markAnswerDispatched(h.claim)).toBe(true);
     const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
     expect(await runs.completeRun({ runId: h.runId, assistantMessageId: run.assistantMessageId!, chatId: h.chatId,
-      userMessageId: run.userMessageId, userId: h.userId, provider: run.provider, modelId: run.modelId,
+      estimatedCostMicros: null, userId: h.userId, provider: run.provider, modelId: run.modelId,
       finalText: "The answer", usage: { inputTokens: 20, outputTokens: 3, reasoningTokens: 0 } })).toBe(true);
     const receipts = await prisma.usageEvent.findMany({ where: { modelRunId: h.runId } });
     expect(receipts.filter(({ chatPdfPreparation }) => chatPdfPreparation)).toHaveLength(2);
@@ -343,9 +343,11 @@ describe("chat PDF database lifecycle", () => {
     const removed: string[] = [];
     const handler = createPrismaTemporaryChatDeletionHandler({ async deleteObject(key) { removed.push(key); } }, prisma);
     const result = await handler.execute(claim, { now: () => now, signal: new AbortController().signal });
+    const apply = result.apply;
+    if (!apply) throw new Error("Temporary deletion must provide an aggregate mutation");
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
-      await result.apply(tx, claim);
+      await apply(tx, claim);
       await tx.memoryDeletionOutbox.update({ where: { id: claim.id }, data: {
         state: "SUCCEEDED", completedAt: now, lastAuditAt: now, leaseToken: null, leaseExpiresAt: null
       } });
