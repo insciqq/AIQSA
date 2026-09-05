@@ -107,6 +107,7 @@ export type ProjectRunAdmission = Readonly<{
 
 export type RunAttachmentRecord = ProviderAttachment & {
   preparedPdf?: Readonly<{ byteSize: number; checksum: string; pageCount: number; sourceChecksum: string; storageKey: string }>;
+  workspaceOriginalOnly?: boolean;
   checksum: string | null;
   processingErrorCode: string | null;
   storageKey: string;

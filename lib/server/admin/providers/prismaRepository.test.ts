@@ -2,6 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { encryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
+import { createAdminProviderService } from "./service";
+import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import type {
   ProviderActiveRefreshCandidate,
   ProviderDraftTestCandidate,
@@ -968,6 +970,57 @@ describe("Prisma admin provider repository", () => {
       }
     }));
   });
+
+  it.each(["missing", "unavailable", "available", "changed"] as const)(
+    "retains a paid role proof with a %s prior active check, unless authority changed", async (previous) => {
+      const evidence: AdminProviderTestEvidence = {
+        detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: "vendor/model",
+        compatibility: { probeVersion: 1, modelAccess: "verified", streaming: "not_supported",
+          usage: "not_supported", structuredOutput: "not_supported", forcedToolCall: "not_supported",
+          directPdf: "not_supported", vision: "verified" },
+        visionInput: { adapterKind: "openai_responses_compatible", probeVersion: 1,
+          upstreamModelId: "vendor/model", verified: true }
+      };
+      const priorEvidence: AdminProviderTestEvidence = { ...evidence,
+        compatibility: { ...evidence.compatibility!, streaming: "verified", vision: "not_supported" },
+        visionInput: undefined };
+      const upsert = vi.fn(async () => ({}));
+      const model = { activeVersion: 4 };
+      const db = transactional({
+        providerConnection: { findUnique: async () => ({ activeVersion: 2 }) },
+        providerModel: { findFirst: async () => model },
+        providerCredential: { findFirst: async () => ({ activeVersionId: "version-1",
+          activeVersion: { revokedAt: null, secretEnvelope: "active-envelope" } }) },
+        providerModelCredentialCheck: { upsert, findUnique: async () => previous === "missing" ? null
+          : { status: previous === "unavailable" ? "unavailable" : "available", evidence: priorEvidence } }
+      });
+      const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+      const source = activeCandidate();
+      const active = { ...source, model: { ...source.model, configuration: { ...source.model.configuration,
+        capabilities: { ...source.model.configuration.capabilities, vision: true } } } };
+      vi.spyOn(repository, "loadActiveRefreshCandidate").mockResolvedValue(active);
+      const test = vi.fn(async () => {
+        if (previous === "changed") model.activeVersion += 1;
+        return { evidence, status: "available" as const };
+      });
+      const service = createAdminProviderService({ repository, tester: { test }, now: () => NOW,
+        credentialTester: { test: async () => { throw new Error("unexpected credential test"); } } });
+      const result = service.refreshActive({ capabilityRole: "vision", confirmPaidRequest: true,
+        connectionId: "connection-1", credentialId: "credential-1", providerModelId: "model-1" });
+      if (previous === "changed") {
+        await expect(result).rejects.toMatchObject({ code: "provider_draft_stale" });
+        expect(upsert).not.toHaveBeenCalled();
+      } else {
+        await expect(result).resolves.toMatchObject({ status: "available" });
+        expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({
+          status: "available", evidence: expect.objectContaining({ visionInput: evidence.visionInput,
+            compatibility: expect.objectContaining({ modelAccess: "verified", vision: "verified",
+              streaming: previous === "available" ? "verified" : "not_supported" }) })
+        }) }));
+      }
+      expect(test).toHaveBeenCalledOnce();
+    }
+  );
 
   it("records a value-free refresh warning without overwriting prior active status", async () => {
     const updateMany = vi.fn(async (_args: unknown) => ({ count: 1 }));

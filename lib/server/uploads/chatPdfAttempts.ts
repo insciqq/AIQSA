@@ -94,9 +94,9 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
       });
     },
 
-    async ambiguous(dispatch: ChatPdfDispatch): Promise<void> {
+    async ambiguous(dispatch: ChatPdfDispatch, errorCode: "pdf_preparation_ambiguous" | "pdf_transcription_failed" = "pdf_preparation_ambiguous"): Promise<void> {
       await prisma.chatPdfPageAttempt.updateMany({ where: { id: dispatch.attemptId, state: "dispatched" },
-        data: { state: "ambiguous", errorCode: "pdf_preparation_ambiguous" } });
+        data: { state: "ambiguous", errorCode } });
     },
 
     async recordUsage(dispatch: ChatPdfDispatch, reported: ModelRunUsage): Promise<void> {
@@ -130,7 +130,7 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
     },
 
     async settle(dispatch: ChatPdfDispatch, input: Readonly<{
-      errorCode?: "pdf_preparation_invalid";
+      errorCode?: "pdf_preparation_invalid" | "pdf_transcription_failed";
       resultArtifactId: string | null;
       usage: ModelRunUsage;
     }>): Promise<void> {

@@ -20,6 +20,8 @@ export const CHAT_PDF_RENDER_VERSION = 1;
 export const CHAT_PDF_PROMPT_VERSION = 6;
 export const CHAT_PDF_ARTIFACT_MAX_BYTES = 32 * 1024 * 1024;
 export const CHAT_PDF_PAGE_OUTPUT_MAX_CHARACTERS = 500_000;
+export const CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE =
+  "PDF text preparation was unsuccessful. The original file is available through Workspace tools; inspect it there before making claims about its contents.";
 // These are application ceilings, not a claim about a provider's capacity.
 // One page and at most two table crops are sent in each bounded request.
 export const CHAT_PDF_IMAGE_LIMITS: NonNullable<ProviderModelCapabilities["imageInputLimits"]> = Object.freeze({
@@ -40,7 +42,7 @@ export function chatPdfImageLimits(admission: ChatPdfAttachmentAdmission): typeo
 export class ChatPdfPreparationError extends Error {
   constructor(readonly code: "pdf_preparation_failed" | "pdf_preparation_ambiguous" |
     "pdf_preparation_unavailable" | "pdf_preparation_invalid" | "pdf_local_text_unusable" |
-    "pdf_page_limit_exceeded" | "pdf_preparation_context_limit", readonly retryable = false) {
+    "pdf_page_limit_exceeded" | "pdf_preparation_context_limit" | "pdf_transcription_failed", readonly retryable = false) {
     super(code);
     this.name = "ChatPdfPreparationError";
   }

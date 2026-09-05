@@ -1577,16 +1577,24 @@ export function createPrismaRunRepository(
       const preparedPdfs = runId ? await prismaClient.chatPdfAttachmentPreparation.findMany({ where: {
         modelRunId: runId, attachmentId: { in: attachmentIds }, route: { not: "direct_pdf" },
         modelRun: { userId }
-      }, select: { attachmentId: true, state: true, sourceChecksum: true, documentArtifact: { select: {
+      }, select: { attachmentId: true, state: true, sourceChecksum: true, sourceByteSize: true,
+        modelRun: { select: { workspaceRunBinding: { select: { modelRunId: true } } } }, documentArtifact: { select: {
         byteSize: true, checksum: true, pageCount: true, sourceChecksum: true, storageKey: true, state: true
       } } } }) : [];
-      if (preparedPdfs.some((row) => row.state !== "ready" || row.documentArtifact?.state !== "ready")) {
+      if (preparedPdfs.some((row) => !attachments.some((attachment) => attachment.id === row.attachmentId &&
+        attachment.checksum?.trim() === row.sourceChecksum.trim() && attachment.byteSize === row.sourceByteSize) ||
+        (row.state === "original_only"
+          ? !row.modelRun.workspaceRunBinding || row.documentArtifact !== null
+          : row.state !== "ready" || row.documentArtifact?.state !== "ready"))) {
         throw new AttachmentLinkConflictError();
       }
-      const documents = new Map(preparedPdfs.map((row) => [row.attachmentId, row.documentArtifact!]));
+      const documents = new Map(preparedPdfs.filter((row) => row.state === "ready")
+        .map((row) => [row.attachmentId, row.documentArtifact!]));
+      const originals = new Set(preparedPdfs.filter((row) => row.state === "original_only").map((row) => row.attachmentId));
       return attachments.map(
         (attachment): RunAttachmentRecord => ({
           ...(documents.has(attachment.id) ? { preparedPdf: documents.get(attachment.id)! } : {}),
+          ...(originals.has(attachment.id) ? { workspaceOriginalOnly: true } : {}),
           byteSize: attachment.byteSize,
           checksum: attachment.checksum,
           extractedText: attachment.extractedText,

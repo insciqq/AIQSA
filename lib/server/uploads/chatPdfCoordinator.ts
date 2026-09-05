@@ -1,10 +1,13 @@
 import type { ParsedDocument } from "../parsing/types";
+import { DocumentParserError } from "../parsing/errors";
+import { isProviderDeadlineExceededError } from "../providers/network";
+import { isRetryableProviderHttpStatus, isRetryableProviderNetworkError } from "../providers/providerRetry";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import type { ActiveRunControllerRegistry } from "../runs/runExecution";
 import { type createChatPdfAttempts } from "./chatPdfAttempts";
 import {
   ChatPdfPreparationError, createChatPdfCore, decodeChatPdfArtifact, decodeChatPdfPage,
-  encodeChatPdfArtifact, type ChatPdfLocalExtraction, type ChatPdfWorkPlan
+  encodeChatPdfArtifact, validateChatPdfSource, type ChatPdfLocalExtraction, type ChatPdfWorkPlan
 } from "./chatPdfCore";
 import {
   CHAT_PDF_HEARTBEAT_MS, chatPdfAdmissionFromRow,
@@ -83,11 +86,8 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     }
   }
 
-  async function work(claim: ChatPdfClaim, loaded: ChatPdfLoadedRun, signal: AbortSignal): Promise<void> {
-    if (!await deps.authorize(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
-    signal.throwIfAborted();
-    const preparation = loaded.modelRun.chatPdfAttachments.find((item) => item.state !== "ready");
-    if (!preparation) return;
+  async function prepareAttachment(claim: ChatPdfClaim,
+    preparation: ChatPdfLoadedRun["modelRun"]["chatPdfAttachments"][number], signal: AbortSignal): Promise<void> {
     if (preparation.state === "failed" || preparation.state === "cancelled") {
       throw new ChatPdfPreparationError("pdf_preparation_failed", preparation.retryable);
     }
@@ -108,6 +108,10 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     const plan = preparation.workPlan as unknown as ChatPdfWorkPlan;
     const local = await readArtifact<ChatPdfLocalExtraction>(preparation.localArtifactId, admission.attachmentId, signal);
     const attempts = await deps.attempts.list(preparation.id);
+    if (attempts.some((attempt) => attempt.errorCode === "pdf_transcription_failed" &&
+      (attempt.state === "settled" || attempt.state === "ambiguous"))) {
+      throw new ChatPdfPreparationError("pdf_transcription_failed", true);
+    }
     if (attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "ambiguous")) {
       throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
     }
@@ -149,16 +153,22 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       let result;
       try {
         result = await boundedOperation(operation, providerSignal);
-      } catch {
-        await deps.attempts.ambiguous(dispatch).catch(() => undefined);
-        throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
+      } catch (error) {
+        const status = typeof error === "object" && error !== null && "status" in error
+          && typeof error.status === "number" ? error.status : null;
+        const transcriptionFailure = !signal.aborted && (providerSignal.aborted ||
+          isProviderDeadlineExceededError(error) || isRetryableProviderNetworkError(error) ||
+          isRetryableProviderHttpStatus(status));
+        const code = transcriptionFailure ? "pdf_transcription_failed" : "pdf_preparation_ambiguous";
+        await deps.attempts.ambiguous(dispatch, code);
+        throw new ChatPdfPreparationError(code, true);
       }
       try {
         decodeChatPdfPage(pending.page, result.finalText);
       } catch {
-        await deps.attempts.settle(dispatch, { errorCode: "pdf_preparation_invalid",
+        await deps.attempts.settle(dispatch, { errorCode: "pdf_transcription_failed",
           resultArtifactId: null, usage: result.usage });
-        throw new ChatPdfPreparationError("pdf_preparation_invalid", true);
+        throw new ChatPdfPreparationError("pdf_transcription_failed", true);
       }
       try {
         providerSignal.throwIfAborted();
@@ -187,6 +197,31 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     await deps.repository.publishDocument(claim, preparation.id, id);
   }
 
+  async function work(claim: ChatPdfClaim, loaded: ChatPdfLoadedRun, signal: AbortSignal): Promise<void> {
+    const preparation = loaded.modelRun.chatPdfAttachments.find((item) =>
+      item.state !== "ready" && item.state !== "original_only");
+    if (!preparation) return;
+    try {
+      await prepareAttachment(claim, preparation, signal);
+    } catch (error) {
+      const code = error instanceof ChatPdfPreparationError && error.code === "pdf_local_text_unusable"
+        ? error.code : error instanceof ChatPdfPreparationError && error.code === "pdf_transcription_failed" ||
+          error instanceof DocumentParserError && ["parser_timeout", "parser_unavailable"].includes(error.code)
+          ? "pdf_transcription_failed" : null;
+      if (!code || !loaded.modelRun.workspaceRunBinding || signal.aborted) throw error;
+      if (!await deps.authorize(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      // Re-read the original before admitting the degraded outcome. Storage,
+      // integrity, access and cancellation failures never become OCR failures.
+      const admission = chatPdfAdmissionFromRow(preparation);
+      const original = await deps.storage.getObject(preparation.attachment.storageKey, {
+        maxBytes: admission.byteSize, signal
+      });
+      validateChatPdfSource(original.body, admission);
+      signal.throwIfAborted();
+      await deps.repository.useWorkspaceOriginal(claim, preparation.id, code);
+    }
+  }
+
   async function runOne(): Promise<boolean> {
     const claim = await deps.repository.claim();
     if (!claim) return false;
@@ -209,8 +244,9 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     try {
       const loaded = await deps.repository.load(claim);
       if (loaded.modelRun.chatPdfAttachments.length === 0) throw new ChatPdfPreparationError("pdf_preparation_invalid");
-      if (loaded.modelRun.chatPdfAttachments.every((item) => item.state === "ready")) {
-        if (!await deps.authorize(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      if (!await deps.authorize(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      signal.throwIfAborted();
+      if (loaded.modelRun.chatPdfAttachments.every((item) => item.state === "ready" || item.state === "original_only")) {
         await deps.continueRun({ claim, loaded, releaseRegistry: registration.release, signal });
       } else {
         await work(claim, loaded, signal);

@@ -1,4 +1,4 @@
-import { encodeChatPdfArtifact } from "../uploads/chatPdfCore";
+import { CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, encodeChatPdfArtifact } from "../uploads/chatPdfCore";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderModelCapabilities } from "../providers/types";
@@ -60,6 +60,21 @@ function repository(records: readonly RunAttachmentRecord[]) {
 }
 
 describe("run attachment materialization", () => {
+  it("restores the original-only notice only for its accepted Workspace run", async () => {
+    const source = { ...attachment("pdf", "pdf", 100), workspaceOriginalOnly: true,
+      status: "failed", extractedText: "An older extraction must not replace the accepted outcome." };
+    const store = repository([source]);
+    const result = await loadProviderAttachments({ repository: store }, "user", ["pdf"], {
+      capabilities: baseCapabilities, limits: limits(), runId: "accepted-run", workspaceEnabled: true
+    });
+    expect(result[0]?.extractedText).toBe(CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE);
+    expect(result[0]).not.toHaveProperty("workspaceOriginalOnly");
+    expect(JSON.stringify(result)).not.toContain("private/pdf");
+    await expect(loadProviderAttachments({ repository: store }, "user", ["pdf"], {
+      capabilities: baseCapabilities, limits: limits(), runId: "accepted-run"
+    })).rejects.toMatchObject({ code: "attachment_object_read_failed" });
+  });
+
   it("restores the exact run-owned PDF artifact without exposing private artifact references", async () => {
     const encoded = encodeChatPdfArtifact({ text: "Accepted document text.", pageCount: 2 });
     const source = { ...attachment("pdf", "pdf", 100), checksum: "a".repeat(64), extractedText: null,

@@ -157,6 +157,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         return tx.chatPdfRunPreparation.findUniqueOrThrow({
           where: { modelRunId: claim.runId }, include: { modelRun: { include: {
             chat: { select: { projectId: true } },
+            workspaceRunBinding: { select: { modelRunId: true } },
             chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], include: {
               attachment: { select: { storageKey: true } }
             } }
@@ -286,6 +287,21 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         await tx.chatPdfAttachmentPreparation.update({ where: { id: row.id }, data: {
           completedPages: row.pageCount!, documentArtifactId, state: "ready"
         } });
+      });
+    },
+
+    async useWorkspaceOriginal(claim: ChatPdfClaim, preparationId: string,
+      errorCode: "pdf_local_text_unusable" | "pdf_transcription_failed"): Promise<void> {
+      await prisma.$transaction(async (tx) => {
+        await assertChatPdfClaim(tx, claim);
+        if (!await tx.workspaceRunBinding.findUnique({ where: { modelRunId: claim.runId } })) {
+          throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+        }
+        const updated = await tx.chatPdfAttachmentPreparation.updateMany({ where: {
+          id: preparationId, modelRunId: claim.runId, route: { not: "direct_pdf" },
+          state: { in: ["checking", "preparing", "assembling"] }
+        }, data: { state: "original_only", errorCode, retryable: false } });
+        if (updated.count !== 1) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
       });
     },
 

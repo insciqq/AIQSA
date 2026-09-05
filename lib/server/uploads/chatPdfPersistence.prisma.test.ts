@@ -19,7 +19,7 @@ const attachmentIds: string[] = [];
 const repository = createChatPdfRepository(prisma);
 const attempts = createChatPdfAttempts(prisma);
 
-async function fixture(vision = false, temporary = false) {
+async function fixture(vision = false, temporary = false, workspace = false) {
   const userId = randomUUID(); owners.push(userId);
   const sourceChecksum = "a".repeat(64);
   const attachmentId = randomUUID();
@@ -63,6 +63,15 @@ async function fixture(vision = false, temporary = false) {
       checksum: sourceChecksum, byteSize: 10, metadata: {} } });
     const run = await tx.modelRun.create({ data: { userId, chatId: chat.id, userMessageId: message.id,
       assistantMessageId: assistant.id, modelId: "fixture", provider: "openai_compatible", status: "preparing" } });
+    if (workspace) {
+      const session = await tx.workspaceSession.create({ data: { chatId: chat.id,
+        sandboxName: `aiqsa-ws-${randomUUID()}`, imageRef: "fixture", internetEnabled: false,
+        policyRevision: 1, expiresAt: new Date(Date.now() + 3600000) } });
+      await tx.workspaceRunBinding.create({ data: { modelRunId: run.id, workspaceSessionId: session.id,
+        imageRef: "fixture", internetEnabled: false, policyRevision: 1, runtimeVersion: "fixture",
+        mcpVersion: "fixture", toolCatalogHash: "a".repeat(64), toolDefinitions: [{ name: "execute" }],
+        outputDirectory: `/workspace/output/${run.id}` } });
+    }
     await tx.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: assistant.id } });
     if (admission.snapshot) await tx.providerRunBinding.create({ data: {
       modelRunId: run.id, role: "answer", credentialSource: "default", connectionId: admission.snapshot.connectionId,
@@ -103,6 +112,8 @@ async function fixture(vision = false, temporary = false) {
 afterEach(async () => {
   for (const id of owners.splice(0)) await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
+    await tx.workspaceRunBinding.deleteMany({ where: { modelRun: { userId: id } } });
+    await tx.workspaceSession.deleteMany({ where: { chat: { userId: id } } });
     await tx.memoryDeletionOutbox.updateMany({
       data: { completedAt: null, leaseExpiresAt: new Date(Date.now() + 300000),
         leaseToken: "pdf-test-cleanup", nextAttemptAt: null, state: "RUNNING" },
@@ -125,6 +136,60 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("chat PDF database lifecycle", () => {
+  it("durably admits a Workspace original without a document artifact and preserves that outcome for recovery", async () => {
+    const h = await fixture(false, true, true);
+    await repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_local_text_unusable");
+    expect(await prisma.chatPdfAttachmentPreparation.findUnique({ where: { id: h.preparationId } }))
+      .toMatchObject({ state: "original_only", completedPages: 0, documentArtifactId: null, retryable: false });
+    await expect(prisma.chatPdfAttachmentPreparation.update({ where: { id: h.preparationId }, data: { state: "preparing" } }))
+      .rejects.toThrow(/chat_pdf_transition_invalid|chat_pdf_preparation_immutable/);
+    const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
+    expect(await runs.loadAttachments(h.userId, [h.admission.attachmentId], undefined, h.runId))
+      .toEqual([expect.objectContaining({ workspaceOriginalOnly: true })]);
+    await prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } });
+    expect(await repository.markAnswerDispatched(h.claim)).toBe(true);
+    expect(await repository.claim()).toBeNull();
+    expect(await prisma.chatPdfPageAttempt.count({ where: { preparationId: h.preparationId } })).toBe(0);
+  });
+
+  it("does not use Workspace degradation to bypass the Personal Memory gate", async () => {
+    const h = await fixture(false, false, true);
+    await repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_local_text_unusable");
+    await expect(prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } }))
+      .rejects.toThrow(/chat_pdf_memory_not_ready/);
+  });
+
+  it("keeps ambiguous Vision work and late usage after continuing with the original", async () => {
+    const h = await fixture(true, true, true); await h.savePlan();
+    const reserved = await attempts.reserve(h.claim, { preparationId: h.preparationId, page: 1,
+      workKey: h.plan.units[0]!.key, requestDigest: "b".repeat(64) });
+    if (reserved.kind !== "reserved") throw new Error("reservation missing");
+    const dispatch = await attempts.dispatch(h.claim, reserved.attemptId);
+    await attempts.ambiguous(dispatch, "pdf_transcription_failed");
+    await repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_transcription_failed");
+    await prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } });
+    expect(await repository.markAnswerDispatched(h.claim)).toBe(true);
+    await attempts.recordUsage(dispatch, { inputTokens: 9, outputTokens: 2, reasoningTokens: 0 });
+    expect(await attempts.list(h.preparationId)).toEqual([expect.objectContaining({
+      state: "ambiguous", errorCode: "pdf_transcription_failed", resultArtifactId: null
+    })]);
+    expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } }))
+      .toMatchObject({ inputTokens: 9, outputTokens: 2, totalTokens: 11 });
+    expect(await repository.claim()).toBeNull();
+  });
+
+  it("rejects original-only state without a Workspace binding or after Stop", async () => {
+    const h = await fixture();
+    await expect(repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_local_text_unusable"))
+      .rejects.toThrow("pdf_preparation_unavailable");
+    await expect(prisma.chatPdfAttachmentPreparation.update({ where: { id: h.preparationId },
+      data: { state: "original_only", errorCode: "pdf_local_text_unusable" } }))
+      .rejects.toThrow(/chat_pdf_workspace_original_invalid/);
+    await prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "cancelled" } });
+    await expect(repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_local_text_unusable"))
+      .rejects.toThrow("pdf_preparation_unavailable");
+  });
+
   it("commits a durable PDF gate without a Memory attempt and refuses premature answer dispatch", async () => {
     const h = await fixture();
     expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: h.runId } })).toBe(0);

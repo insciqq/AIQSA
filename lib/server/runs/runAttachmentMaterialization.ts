@@ -1,4 +1,4 @@
-import { CHAT_PDF_ARTIFACT_MAX_BYTES, decodeChatPdfArtifact } from "../uploads/chatPdfCore";
+import { CHAT_PDF_ARTIFACT_MAX_BYTES, CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, decodeChatPdfArtifact } from "../uploads/chatPdfCore";
 import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
 import { DocumentParserError } from "../parsing/errors";
@@ -546,6 +546,12 @@ export async function loadProviderAttachments(
   }
   const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
   for (const record of records) {
+    if (record.workspaceOriginalOnly) {
+      if (!options.runId || !options.workspaceEnabled || record.kind !== "pdf" || record.preparedPdf) {
+        throw objectReadFailed();
+      }
+      record.extractedText = CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE;
+    }
     const artifact = record.preparedPdf;
     if (!artifact) continue;
     if (!options.runId || !deps.storage || record.kind !== "pdf" ||

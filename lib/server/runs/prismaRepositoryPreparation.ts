@@ -4063,7 +4063,7 @@ export async function continuePdfPreparedRunWithClient(
     const run = await lockPreparingRun(tx, created.runId, admission.userId);
     await assertChatPdfClaim(tx, { claimToken: input.claimToken, runId: created.runId, userId: admission.userId });
     const pending = await tx.chatPdfAttachmentPreparation.count({ where: {
-      modelRunId: created.runId, state: { not: "ready" }
+      modelRunId: created.runId, state: { notIn: ["ready", "original_only"] }
     } });
     if (!chat || !run || run.status !== "preparing" || pending ||
       chat.activeLeafMessageId !== created.assistantMessageId) {
