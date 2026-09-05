@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import {
   isRunOutputArtifactEvent,
   projectRunOutputArtifactEvent,
   runOutputArtifactEvents
 } from "./runOutputEvents";
+
+it("accepts a server-owned context snapshot for persistence but rejects provider-supplied snapshots", () => {
+  const payload: SessionContextStatus = {
+    approximateInputTokens: 44, contextWindow: 1000, droppedMessages: 0, loadedTools: 1,
+    maxOutputTokens: 100, modelId: "model", phase: "after_answer", provider: "fake", safetyMarginTokens: 100, version: 1
+  };
+  const event = { type: "artifact", data: { artifactType: "context_status", payload } } as const;
+  expect(isRunOutputArtifactEvent(event)).toBe(true);
+  expect(projectRunOutputArtifactEvent(event)).toBeNull();
+  expect(isRunOutputArtifactEvent({ ...event, data: { ...event.data, payload: { ...payload, rawRequest: "private" } } })).toBe(false);
+});
 
 describe("durable run output events", () => {
   it("keeps only validated grounding display and strips provider counters, styles and wrappers", () => {

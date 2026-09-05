@@ -30,6 +30,7 @@ import type {
   ProviderRunRequest
 } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
+import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 
 // Matches the former 20,000-character ASCII ceiling under the shared
@@ -84,6 +85,18 @@ export type RunContextBudgetResult =
       status: 400;
     }>;
 
+function contextBudgetPrompt(prompt: NormalizedRunRequest["prompt"]) {
+  return {
+    developer: [
+      prompt.developer,
+      prompt.memoryActionAnswerResult ? memoryActionAnswerContract(prompt.memoryActionAnswerResult) : null,
+      prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null,
+      knowledgeAnswerDraftContractText(prompt.knowledgeAnswerDraftContract)
+    ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
+    system: prompt.system
+  };
+}
+
 export function applyRunContextBudget(input: Readonly<{
   contextMessages: ProviderConversationMessage[];
   messageExtraTokens?: Record<string, number>;
@@ -119,17 +132,7 @@ export function applyRunContextBudget(input: Readonly<{
     maxOutputTokens: maxOutputTokensForBudget(input.params, input.modelCapabilities, input.provider),
     messageExtraTokens,
     messages: budgetMessages,
-    prompt: {
-      developer: [
-        input.prompt.developer,
-        input.prompt.memoryActionAnswerResult
-          ? memoryActionAnswerContract(input.prompt.memoryActionAnswerResult)
-          : null,
-        input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null,
-        knowledgeAnswerDraftContractText(input.prompt.knowledgeAnswerDraftContract)
-      ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
-      system: input.prompt.system
-    }
+    prompt: contextBudgetPrompt(input.prompt)
   });
 
   if (!budget.ok) {
@@ -245,6 +248,52 @@ export function providerFacingSerializedTools(
     ...(bridge.serializeHostedTools?.(request) ?? []),
     ...(request.tools ?? []).map((tool) => bridge.serializeTool(tool).tool)
   ];
+}
+
+function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  return estimateApproxTokens(providerFacingSerializedTools(request, bridge)) +
+    estimateApproxTokens(request.providerToolMessages ?? []) +
+    estimateApproxTokens(request.personalContext?.text ?? "") +
+    (request.personalContext
+      ? estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) +
+        estimateApproxTokens(MEMORY_READER_FINALIZATION_CONTRACT_V1) : 0) +
+    estimateApproxTokens(knowledgeToolLoopContract(request) ?? "");
+}
+
+/** Reads the same contributors as the budget guard, without changing a request. */
+export function measureSessionContext(input: Readonly<{
+  answerText?: string;
+  bridge?: ProviderToolBridge;
+  request: ProviderRunRequest;
+}>): SessionContextStatus {
+  const { request } = input;
+  const prompt = contextBudgetPrompt(request.prompt);
+  const messages = request.context?.messages;
+  const contextTokens = messages?.length
+    ? messages.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
+    : estimateApproxTokens(request.content);
+  const contextWindow = request.modelCapabilities.contextWindow;
+  const limits = calculateContextBudgetLimits({
+    contextWindow: contextWindow ?? 0,
+    maxOutputTokens: maxOutputTokensForBudget(request.params, request.modelCapabilities, request.provider),
+    provider: request.provider
+  });
+  return {
+    approximateInputTokens: contextTokens +
+      estimateApproxTokens(prompt.system ?? "") + estimateApproxTokens(prompt.developer ?? "") +
+      providerRequestFixedExtraTokens(request, input.bridge) +
+      providerAttachmentBudgetTokens({ attachments: request.attachments, modelCapabilities: request.modelCapabilities }) +
+      estimateApproxTokens(input.answerText ?? ""),
+    contextWindow: Number.isFinite(contextWindow) && Number(contextWindow) > 0 ? Math.floor(contextWindow!) : null,
+    droppedMessages: request.context?.summary?.truncation?.droppedMessages ?? 0,
+    loadedTools: providerFacingSerializedTools(request, input.bridge).length,
+    maxOutputTokens: limits.maxOutputTokens,
+    modelId: request.modelId,
+    phase: input.answerText === undefined ? "request" : "after_answer",
+    provider: request.provider,
+    safetyMarginTokens: limits.safetyMarginTokens,
+    version: 1
+  };
 }
 
 export type ProviderRequestContextBudgetResult =
@@ -425,15 +474,7 @@ export function applyProviderRequestContextBudget(input: Readonly<{
         role: "user" as const
       }];
   const currentMessageId = budgetMessages.at(-1)?.id;
-  const fixedExtraTokens =
-    estimateApproxTokens(providerFacingSerializedTools(input.request, input.bridge)) +
-    estimateApproxTokens(input.request.providerToolMessages ?? []) +
-    estimateApproxTokens(input.request.personalContext?.text ?? "") +
-    (input.request.personalContext
-      ? estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) +
-        estimateApproxTokens(MEMORY_READER_FINALIZATION_CONTRACT_V1)
-      : 0) +
-    estimateApproxTokens(knowledgeToolLoopContract(input.request) ?? "");
+  const fixedExtraTokens = providerRequestFixedExtraTokens(input.request, input.bridge);
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {
     return {

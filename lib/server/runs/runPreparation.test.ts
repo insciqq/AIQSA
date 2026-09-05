@@ -1392,7 +1392,7 @@ describe("run preparation", () => {
     ));
 
     expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
   });
 
   it("does not invent a language fallback when the answer model lacks tool calling", async () => {
@@ -1404,7 +1404,7 @@ describe("run preparation", () => {
     ));
 
     expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
   });
 
   it("lets a direct-user Memory action coexist with admin-connected tools", async () => {
@@ -1430,7 +1430,7 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
   });
@@ -1505,7 +1505,7 @@ describe("run preparation", () => {
     ));
 
     expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
   });
 
   it("keeps send and regeneration preparation in parity while using their server-owned context sources", async () => {
@@ -1842,7 +1842,7 @@ describe("run preparation", () => {
 
     expect(catalog).toHaveBeenCalledWith("user-1");
     expect(prepare).not.toHaveBeenCalled();
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "find_tools"
     ]);
     expect(prepared.normalizedRequest.mcp).toBeUndefined();
@@ -1867,8 +1867,10 @@ describe("run preparation", () => {
       }))
     ));
     expect(off.normalizedRequest.mcp).toBeUndefined();
+    expect(off.normalizedRequest.sessionStatusTool).toBe(true);
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
     expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
-    expect(off.providerRequest.tools).toBeUndefined();
+    expect(off.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
     expect(catalog).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
 
@@ -1882,7 +1884,8 @@ describe("run preparation", () => {
     ));
     expect(prepare).toHaveBeenCalledWith("user-1");
     expect(loadAll.normalizedRequest.mcpDiscovery).toBeUndefined();
-    expect(loadAll.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(loadAll.providerRequest.tools?.some((tool) => tool.name === "get_session_status")).toBe(true);
+    expect(loadAll.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
   });
@@ -1938,7 +1941,7 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.mcp).toEqual(mcpPlan.snapshot);
     expect(prepared.mcpBindings).toEqual(mcpPlan.bindings);
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
   });
 
   it.each([
@@ -1972,7 +1975,7 @@ describe("run preparation", () => {
       modelId: "vendor/model",
       provider: "openai_compatible"
     });
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
   });
@@ -2029,7 +2032,7 @@ describe("run preparation", () => {
       mode: "model_choice",
       options: [expect.objectContaining({ optionId })]
     });
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
   });
 
   it("re-admits hosted Gemini Search as a client route when MCP tools must coexist", async () => {
@@ -2093,7 +2096,7 @@ describe("run preparation", () => {
       })]
     });
     expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain('"type":"google_search"');
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "search_engine_1",
       "mcp_team_lookup_1"
     ]);
@@ -2177,7 +2180,7 @@ describe("run preparation", () => {
     ]);
     expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
     expect(prepared.normalizedRequest.toolMode).toBe("auto");
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "search_knowledge",
       "search_engine_1"
     ]);
@@ -2243,7 +2246,7 @@ describe("run preparation", () => {
       expect(prepared.normalizedRequest).not.toHaveProperty("memoryHistoryTool");
       expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
       expect(prepared.normalizedRequest.toolMode).toBe("auto");
-      expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
         "search_knowledge",
         "search_engine_1"
       ]);
@@ -2406,7 +2409,7 @@ describe("run preparation", () => {
       evidenceCount: 1,
       route: "full_context_v1"
     });
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["find_tools"]);
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual(["find_tools"]);
     expect(catalog).toHaveBeenCalledWith("user-1");
     expect(prepareMcp).not.toHaveBeenCalled();
     expect(prepared.providerRequest.context?.messages).toEqual(expect.arrayContaining([
@@ -2490,7 +2493,7 @@ describe("run preparation", () => {
       })
     ]);
     expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toContain(
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toContain(
       "search_knowledge"
     );
     expect(prepared.providerRequest.toolChoice).toBe("required");
@@ -2629,7 +2632,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
     expect(prepared.normalizedRequest).not.toHaveProperty("memoryHistoryTool");
     expect(prepared.normalizedRequest.toolMode).toBe("auto");
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "search_knowledge",
       "search_engine_1",
       "mcp_team_lookup_1"
@@ -2720,7 +2723,7 @@ describe("run preparation", () => {
       expect.objectContaining({ adapterKind: "provider_model_client", optionId })
     ]);
     expect(prepared.normalizedRequest.toolMode).toBe("auto");
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "search_knowledge",
       "search_engine_1"
     ]);
@@ -2813,7 +2816,7 @@ describe("run preparation", () => {
         expect.objectContaining({ adapterKind: "provider_model_client", optionId })
       ]);
       expect(prepared.normalizedRequest.toolMode).toBe("auto");
-      expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
         "search_knowledge",
         "search_engine_1"
       ]);
@@ -2823,7 +2826,7 @@ describe("run preparation", () => {
   it.each([
     "gemini_interactions_native" as const,
     "anthropic_messages" as const
-  ])("keeps singleton $0 Search hosted when no answer-model tools coexist", async (adapterKind) => {
+  ])("routes singleton $0 Search alongside the built-in session tool", async (adapterKind) => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
     const admissionLoad = vi.fn(async (input: {
       requiresClientToolCoexistence?: boolean;
@@ -2845,14 +2848,14 @@ describe("run preparation", () => {
 
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(1);
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
     expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
       "requiresClientToolCoexistence"
     );
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
-      "answer_provider_hosted"
+      "provider_model_client"
     );
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "search_engine_1"]);
   });
 
   it("routes a provider-admitted multi-engine plan", async () => {
@@ -2915,7 +2918,7 @@ describe("run preparation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "search_selected_engines"
     ]);
   });
@@ -2960,7 +2963,7 @@ describe("run preparation", () => {
       expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
         searchPlan: plan.requestedSearchPlan
       }));
-      expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
         "search_engine_1"
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview))

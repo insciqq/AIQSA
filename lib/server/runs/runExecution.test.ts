@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import { sessionStatusTool } from "../tools/sessionStatus";
 import {
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
   MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
@@ -1320,7 +1321,12 @@ function createMemoryEgressRecorder() {
   return { began, blocked, completed, failed, recovered, recoveredTools, service };
 }
 
-function parseSse(text: string): ModelRunSseEvent[] {
+function isContextEvent(event: ModelRunSseEvent) {
+  return event.type === "artifact" && event.data.artifactType === "context_status";
+}
+
+// Most existing assertions concern answer output; context snapshots have separate coverage.
+function parseSse(text: string, includeContext = false): ModelRunSseEvent[] {
   return text
     .split("\n\n")
     .filter(Boolean)
@@ -1336,7 +1342,7 @@ function parseSse(text: string): ModelRunSseEvent[] {
         data: JSON.parse(data) as unknown,
         type
       } as ModelRunSseEvent;
-    });
+    }).filter((event) => includeContext || !isContextEvent(event));
 }
 
 function deferred<Value>() {
@@ -1349,6 +1355,35 @@ function deferred<Value>() {
 }
 
 describe("run execution", () => {
+  it.each(["auto", "none"] as const)("executes the built-in status tool with tool mode %s and persists the completed measurement", async (toolMode) => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai", toolMode });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{
+        arguments: {}, id: "status-call", name: "get_session_status"
+      }] });
+      return providerResult({ finalText: "We have room to continue." });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter, prepared, repository: repository.repository
+    })).text(), true);
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("contextPercent");
+    expect(events.find(isContextEvent)).toMatchObject({ data: { artifactType: "context_status", payload: {
+      loadedTools: 1, phase: "after_answer", modelId: "gpt-tool-model"
+    } } });
+    expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("done");
+  });
   beforeEach(() => {
     activeRunControllersForTest().clear();
   });
@@ -1730,9 +1765,9 @@ describe("run execution", () => {
       data: { artifactType: "context_truncated", payload: truncation },
       type: "artifact"
     });
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual(["artifact"]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event)).map(({ event }) => event.type)).toEqual(["artifact"]);
     expect(
-      repository.persistedEvents
+      repository.persistedEvents.filter(({ event }) => !isContextEvent(event))
         .filter(({ event }) => event.type === "token")
         .map(({ event }) => (event.type === "token" ? event.data.delta : ""))
     ).toEqual([]);
@@ -1837,7 +1872,7 @@ describe("run execution", () => {
       },
       type: "artifact"
     });
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
     expect(dispatched).toEqual([
       expect.objectContaining({
         personalContext: expect.objectContaining({ text: personalContext.text }),
@@ -1911,7 +1946,7 @@ describe("run execution", () => {
     expect(repository.completeRuns[0]?.finalText).toBe("Live grounded answer");
     expect(repository.completeRuns[0]).not.toHaveProperty("finalProviderResponsePreview");
     expect(repository.durableProviderResponsePreview).toBeNull();
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event)).map(({ event }) => event.type)).toEqual([
       "grounding_display", "artifact"
     ]);
     expect(JSON.stringify(repository.persistedEvents)).not.toContain("runSearch");
@@ -1957,8 +1992,8 @@ describe("run execution", () => {
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toHaveLength(1);
     expect(repository.durableProviderResponsePreview).toBeNull();
-    expect(repository.persistedEvents).toHaveLength(1);
-    expect(repository.persistedEvents[0]?.event.type).toBe("grounding_display");
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toHaveLength(1);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))[0]?.event.type).toBe("grounding_display");
     expect(JSON.stringify(repository.persistedEvents)).not.toContain("runSearch");
     expect(events.map((event) => event.type)).toEqual([
       "run_start",
@@ -1984,7 +2019,7 @@ describe("run execution", () => {
 
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toHaveLength(0);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
     expect(events.map((event) => event.type)).toEqual([
       "run_start",
       "message_start",
@@ -1992,7 +2027,7 @@ describe("run execution", () => {
       "usage",
       "done"
     ]);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
   });
 
   it("flushes partial text and records failure without persisting a timeline", async () => {
@@ -2009,7 +2044,7 @@ describe("run execution", () => {
 
     expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token", "error"]);
     expect(repository.assistantTexts).toEqual(["partial"]);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
     expect(repository.failedRuns).toEqual([
       {
         assistantMessageId: "assistant-1",
@@ -2249,7 +2284,7 @@ describe("run execution", () => {
 
     expect(repository.failedRuns).toEqual([]);
     expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token"]);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
   });
 
   it("suppresses usage, chat_update, and done when status-guarded completion loses", async () => {
@@ -2264,7 +2299,7 @@ describe("run execution", () => {
     );
 
     expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token"]);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.recordedRunUsageEvents).toHaveLength(1);
     expect(repository.recordedRunUsageEvents[0]?.usageAttributions).toMatchObject([
@@ -2353,7 +2388,7 @@ describe("run execution", () => {
     expect(providerCancels).toEqual(["response-late"]);
     expect(repository.completeRuns).toHaveLength(0);
     expect(repository.failedRuns).toHaveLength(0);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
   });
 
   it("keeps execution and durable finalization alive after the SSE consumer disconnects", async () => {
@@ -2376,7 +2411,7 @@ describe("run execution", () => {
 
     expect(repository.assistantTexts).toEqual(["finished without consumer"]);
     expect(repository.completeRuns).toHaveLength(1);
-    expect(repository.persistedEvents).toEqual([]);
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
     expect(repository.failedRuns).toEqual([]);
     await expect.poll(() => activeRunControllerRegistry.has("run-1")).toBe(false);
   });
@@ -3956,7 +3991,7 @@ describe("run execution", () => {
     ]);
     const durable = JSON.stringify({
       completeRuns: repository.completeRuns,
-      persistedEvents: repository.persistedEvents,
+      persistedEvents: repository.persistedEvents.filter(({ event }) => !isContextEvent(event)),
       providerRequestPreviews: repository.providerRequestPreviews,
       searchRuns: repository.searchRuns,
       toolCalls: [...repository.toolCalls.values()]

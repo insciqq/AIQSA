@@ -474,6 +474,7 @@ const normalizedRequestKeys = new Set([
   "provider",
   "reasoningEffort",
   "searchPlan",
+  "sessionStatusTool",
   "skills",
   "toolBudgets",
   "toolMode",
@@ -800,6 +801,7 @@ function decodeProviderDispatchRecoveryRequest(
     value.knowledgeEvidencePackingVersion !== undefined &&
       value.knowledgeEvidencePackingVersion !== 2 ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
+    (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&
       !nonBlank(value.reasoningEffort, 32) ||
@@ -1129,7 +1131,7 @@ export function createPrismaRunToolLoopOperations(
       if (call.state === "complete" || call.state === "error") {
         return { call: persistedToolLoopCall(call), kind: "settled" as const };
       }
-      if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME) {
+      if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME && call.toolName !== "get_session_status") {
         const history = await tx.memoryHistoryRun.findUnique({
           select: {
             completedAt: true,

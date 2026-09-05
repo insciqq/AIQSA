@@ -5,12 +5,6 @@ import { mcpReadinessPresentation } from "@/components/app-shell/mcpReadiness";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
-  composerContextGauge,
-  composerContextGaugeTitle,
-  type ComposerContextStats
-} from "@/components/app-shell/composerContextStats";
-import { formatTokenCount } from "@/components/app-shell/shellFormatting";
-import {
   attachmentAcceptForPolicy,
   dataTransferHasFiles,
   DEFAULT_COMPOSER_ATTACHMENT_POLICY,
@@ -32,7 +26,6 @@ import {
 } from "@/features/attachments-v2/attachmentPresentation";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
-import type { ChatUsageStats } from "@/lib/contracts/chats";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type {
   ChatWorkspaceState,
@@ -196,7 +189,6 @@ export type ComposerV2Props = Readonly<{
   attachmentPolicy?: ComposerAttachmentPolicy;
   config: ComposerConfig | null;
   configError?: boolean;
-  contextStats?: ComposerContextStats | null;
   disabledReason?: string | null;
   draft: string;
   hasReadyAttachments?: boolean;
@@ -264,7 +256,6 @@ export type ComposerV2Props = Readonly<{
   sending?: boolean;
   stopping?: boolean;
   uploading?: boolean;
-  usageStats?: ChatUsageStats | null;
   workspace?: Readonly<{
     available: boolean;
     busy: boolean;
@@ -305,99 +296,6 @@ function workspaceUnavailableCopy(reason: WorkspaceUnavailableReason | undefined
     default:
       return "Workspace runtime is unavailable.";
   }
-}
-
-function ContextGaugeV2({
-  stats,
-  usage
-}: Readonly<{
-  stats: ComposerContextStats;
-  usage: ChatUsageStats | null;
-}>) {
-  const [pinned, setPinned] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const gauge = composerContextGauge(stats);
-  const circumference = 2 * Math.PI * 9;
-  const progress = gauge.fraction === null ? 0 : Math.min(1, gauge.fraction);
-  const open = pinned || hovered;
-  const close = () => {
-    setPinned(false);
-    setHovered(false);
-    triggerRef.current?.focus();
-  };
-  const usageFacts = usage ?? {
-    activeBranchMessageCount: 0,
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    totalTokens: 0
-  };
-
-  return (
-    <span
-      className="v2-composer-context"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <button
-        ref={triggerRef}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-label={`${gauge.accessibleLabel}. Open context details`}
-        className="v2-composer-context-trigger v2-focusable"
-        data-context-tone={gauge.tone}
-        title={composerContextGaugeTitle(stats)}
-        type="button"
-        onClick={() => setPinned((value) => !value)}
-      >
-        <svg aria-hidden="true" viewBox="0 0 24 24">
-          <circle className="v2-composer-context-track" cx="12" cy="12" fill="none" r="9" strokeWidth="3" />
-          {gauge.fraction !== null ? (
-            <circle
-              className="v2-composer-context-progress"
-              cx="12"
-              cy="12"
-              fill="none"
-              r="9"
-              strokeDasharray={circumference}
-              strokeDashoffset={circumference * (1 - progress)}
-              strokeLinecap="round"
-              strokeWidth="3"
-            />
-          ) : null}
-        </svg>
-        <span>{gauge.percent === null ? "·" : gauge.percent > 0 ? gauge.percent : ""}</span>
-      </button>
-      {open ? (
-        <section
-          aria-label="Context and usage statistics"
-          className="v2-composer-context-popover"
-          role="dialog"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              close();
-            }
-          }}
-        >
-          <header>
-            <strong>Context and usage</strong>
-            <UiV2IconButton icon="close" label="Close context and usage statistics" onClick={close} />
-          </header>
-          <dl>
-            <div><dt>Approximate input</dt><dd>~{formatTokenCount(stats.approximateInputTokens)}</dd></div>
-            <div><dt>Safe input budget</dt><dd>{stats.safeInputBudgetTokens === null ? "Unavailable" : formatTokenCount(stats.safeInputBudgetTokens)}</dd></div>
-            <div><dt>Total context</dt><dd>{stats.totalContextTokens === null ? "Unavailable" : formatTokenCount(stats.totalContextTokens)}</dd></div>
-            <div><dt>Safe budget used</dt><dd>{gauge.percent === null ? "Unavailable" : `${gauge.percent}%`}</dd></div>
-            <div><dt>Total messages</dt><dd>{usageFacts.activeBranchMessageCount}</dd></div>
-            <div><dt>Provider-reported tokens</dt><dd>{formatTokenCount(usageFacts.totalTokens)}</dd></div>
-            <div><dt>Total tokens cached</dt><dd>{formatTokenCount(usageFacts.cachedInputTokens)}</dd></div>
-            <div><dt>Cache-write tokens</dt><dd>{formatTokenCount(usageFacts.cacheWriteInputTokens)}</dd></div>
-          </dl>
-        </section>
-      ) : null}
-    </span>
-  );
 }
 
 function modelCapabilityLabels(model: CatalogModel): string[] {
@@ -482,7 +380,6 @@ export function ComposerV2({
   attachmentPolicy = DEFAULT_COMPOSER_ATTACHMENT_POLICY,
   config,
   configError = false,
-  contextStats = null,
   disabledReason = null,
   draft,
   hasReadyAttachments = false,
@@ -531,7 +428,6 @@ export function ComposerV2({
   sending = false,
   stopping = false,
   uploading = false,
-  usageStats = null,
   workspace
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
@@ -567,11 +463,6 @@ export function ComposerV2({
     (model) => model.modelId === selectedModelId && model.provider === selectedProvider
   );
   const currentProvider = providers.find((provider) => provider.id === currentModel?.provider);
-  // The context gauge is not a permanent control (PRD §4.5): it appears only
-  // once the estimate reaches 70% of the safe input budget.
-  const contextGaugeVisible = contextStats
-    ? (composerContextGauge(contextStats).fraction ?? 0) >= 0.7
-    : false;
   const noModels = Boolean(config && models.length === 0);
   const controlsLocked = Boolean(selectedAssistant);
   const bootstrapReason = configError
@@ -1401,7 +1292,6 @@ export function ComposerV2({
           </div>
 
           <span className="v2-composer-spacer" />
-          {contextStats && contextGaugeVisible ? <ContextGaugeV2 stats={contextStats} usage={usageStats} /> : null}
           <span className="v2-composer-run-action">
             <RunComposerActionV2
               active={activeRun}

@@ -9,7 +9,6 @@ import type { RunSurfaceSnapshot } from "@/components/app-shell/runSurfaceStore"
 import type {
   Catalog,
   ChatContextStats,
-  ChatUsageStats,
   WorkspaceChatSummary,
   CatalogModel,
   FolderSummary,
@@ -18,13 +17,14 @@ import type {
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
+import { decodeSessionContextStatus, sessionContextCapacity } from "@/lib/contracts/sessionStatus";
+import { isRecord } from "./shellValues";
 import { useMemo } from "react";
 
 type PowerAppShellViewModelInput = {
   activeChatId: string | null;
   activeChatStreaming: boolean;
   activeThreadContextStats?: ChatContextStats | null;
-  activeThreadUsageStats: ChatUsageStats | null;
   attachments: ComposerAttachment[];
   catalog: Catalog | null;
   chats: WorkspaceChatSummary[];
@@ -116,7 +116,6 @@ export function usePowerAppShellViewModel({
   activeChatId,
   activeChatStreaming,
   activeThreadContextStats = null,
-  activeThreadUsageStats,
   attachments,
   catalog,
   chats,
@@ -199,6 +198,26 @@ export function usePowerAppShellViewModel({
       }).budgetTokens
     : 0;
   const composerContextStats = useMemo<ComposerContextStats>(() => {
+    const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === "assistant");
+    const liveStart = [...runEvents].reverse().find((event) => event.type === "message_start");
+    const liveStartData = isRecord(liveStart?.data) ? liveStart.data : null;
+    const liveStatus = liveStartData?.assistantMessageId === lastAssistant?.id
+      ? [...runEvents].reverse().find((event) => event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "context_status")
+      : undefined;
+    const snapshot = (isRecord(liveStatus?.data) ? decodeSessionContextStatus(liveStatus.data.payload) : null) ??
+      activeThreadContextStats?.session;
+    if (snapshot &&
+      snapshot.modelId === (currentModel?.upstreamModelId ?? currentModel?.modelId) &&
+      snapshot.provider === (currentModel?.providerFamily ?? currentModel?.provider) &&
+      snapshot.contextWindow === (currentContextWindow || null) &&
+      sessionContextCapacity(snapshot).budgetTokens === (currentContextWindow ? safeInputBudget : null)) {
+      return {
+        approximateInputTokens: snapshot.approximateInputTokens,
+        safeInputBudgetTokens: sessionContextCapacity(snapshot).budgetTokens,
+        session: snapshot,
+        totalContextTokens: snapshot.contextWindow
+      };
+    }
     // Approximation only: the authoritative prompt is resolved server-side (the
     // standard-chat baseline or the selected Assistant definition). The raw
     // template stands in for the rendered baseline: substituting the live
@@ -236,20 +255,13 @@ export function usePowerAppShellViewModel({
       safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
       totalContextTokens: currentContextWindow || null
     };
-  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, safeInputBudget, selectedAssistantPromptCharacterCount, selectedSkillPromptCharacterCount, visibleMessages]);
-  const composerUsageStats = activeThreadUsageStats ?? {
-    activeBranchMessageCount: visibleMessages.length,
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    totalTokens: 0
-  };
+  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, runEvents, safeInputBudget, selectedAssistantPromptCharacterCount, selectedSkillPromptCharacterCount, visibleMessages]);
   return {
     activeChat,
     activeChatStreaming,
     activeChatTitle,
     composerDisabledHint,
     composerContextStats,
-    composerUsageStats,
     currentModel,
     currentParameterControls,
     liveArtifactSummary,

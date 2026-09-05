@@ -18,7 +18,6 @@ import type {
   Catalog,
   CatalogModel,
   WorkspaceChatSummary,
-  ChatUsageStats,
   FolderSummary,
   ModelParameterControls,
   Notice,
@@ -194,7 +193,6 @@ export type ShellComposerView = {
   composerActions: ShellComposerActions;
   composerContextStats: ComposerContextStats | null;
   composerDisabledHint: string | null;
-  composerUsageStats: ChatUsageStats | null;
   assistant: {
     clearRemovedNotice(): void;
     editById(assistantId: string): void;

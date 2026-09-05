@@ -47,73 +47,11 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
-  it("renders no memory disclaimer while keeping truthful context/provider usage", () => {
-    const { container } = render(<ComposerV2 {...props({
-      contextStats: {
-        approximateInputTokens: 8_000,
-        safeInputBudgetTokens: 10_000,
-        totalContextTokens: 12_000
-      },
-      usageStats: {
-        activeBranchMessageCount: 4,
-        cachedInputTokens: 300,
-        cacheWriteInputTokens: 50,
-        totalTokens: 2_400
-      }
-    })} />);
-
+  it("keeps context controls in the header, outside the composer", () => {
+    const { container } = render(<ComposerV2 {...props()} />);
     expect(screen.queryByTestId("composer-memory-mode")).toBeNull();
-    expect(container.textContent).not.toContain("Normal chat");
+    expect(screen.queryByTestId("header-context-indicator")).toBeNull();
     expect(container.textContent).not.toContain("Temporary chat");
-    expect(container.textContent).not.toContain("Temporary");
-
-    const context = screen.getByRole("button", {
-      name: /80% of the 10k safe input budget/u
-    });
-    expect(context).toHaveAttribute("data-context-tone", "warning");
-    fireEvent.click(context);
-
-    const dialog = screen.getByRole("dialog", { name: "Context and usage statistics" });
-    expect(dialog).toHaveTextContent("Provider-reported tokens2.4k");
-    expect(dialog).toHaveTextContent("Total messages4");
-  });
-
-  it("shows the context gauge only from 70% of the safe budget", () => {
-    const { unmount } = render(<ComposerV2 {...props({
-      contextStats: {
-        approximateInputTokens: 800,
-        safeInputBudgetTokens: 10_000,
-        totalContextTokens: 12_000
-      }
-    })} />);
-    expect(screen.queryByRole("button", { name: /Context estimate/ })).toBeNull();
-    unmount();
-  });
-
-  it("labels the context gauge in human units and reveals it on hover too", () => {
-    render(<ComposerV2 {...props({
-      contextStats: {
-        approximateInputTokens: 7_200,
-        safeInputBudgetTokens: 10_000,
-        totalContextTokens: 12_000
-      }
-    })} />);
-
-    const context = screen.getByRole("button", { name: /Context estimate/ });
-    expect(context).toHaveAttribute("title", "~72% of context");
-    expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
-
-    fireEvent.mouseOver(context);
-    expect(screen.getByRole("dialog", { name: "Context and usage statistics" })).toBeVisible();
-    fireEvent.mouseOut(context);
-    expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
-
-    fireEvent.click(context);
-    fireEvent.mouseOut(context);
-    const pinned = screen.getByRole("dialog", { name: "Context and usage statistics" });
-    fireEvent.keyDown(pinned, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
-    expect(context).toHaveFocus();
   });
 
   it("sends on Enter, preserves Shift+Enter, and ignores every IME fallback", () => {

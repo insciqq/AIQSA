@@ -17,10 +17,13 @@ import type { ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import {
   applyProviderRequestContextBudget,
+  measureSessionContext,
   normalizedRequestPersonalContextTokenLimit,
   providerFacingSerializedTools,
   UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS
 } from "./runContextBudget";
+import { executeSessionStatus, sessionStatusTool } from "../tools/sessionStatus";
+import { decodeSessionContextStatus, sessionContextCapacity } from "../../contracts/sessionStatus";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -58,6 +61,27 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 
 describe("provider request context budget", () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it("shares actual serialized tool/transcript measurements with the read-only session tool", () => {
+    const base = request({ modelCapabilities: { ...request().modelCapabilities, contextWindow: 10000 } });
+    const input = { ...base, tools: [sessionStatusTool], providerToolMessages: [{ role: "tool", content: "tool result" }] };
+    const before = structuredClone(input);
+    const status = measureSessionContext({ request: input, bridge: openAIResponsesToolBridge });
+    const plain = measureSessionContext({ request: base, bridge: openAIResponsesToolBridge });
+    expect(status.loadedTools).toBe(1);
+    expect(status.approximateInputTokens).toBeGreaterThan(plain.approximateInputTokens);
+    expect(decodeSessionContextStatus(status)).toEqual(status);
+    expect(decodeSessionContextStatus({ ...status, secret: "untrusted" })).toBeNull();
+    const result = executeSessionStatus({ arguments: {}, id: "status-call", name: sessionStatusTool.name }, input, openAIResponsesToolBridge);
+    expect(result).toMatchObject({ status: "complete", content: [{ type: "json", value: {
+      contextTokens: status.approximateInputTokens, contextPercent: sessionContextCapacity(status).percent, loadedTools: 1
+    } }] });
+    expect(input).toEqual(before);
+    expect(executeSessionStatus({ arguments: { chatId: "other-owner" }, id: "bad", name: sessionStatusTool.name }, input).status).toBe("error");
+    const finished = measureSessionContext({ answerText: "finished answer", request: input, bridge: openAIResponsesToolBridge });
+    expect(finished.approximateInputTokens - status.approximateInputTokens).toBe(estimateApproxTokens("finished answer"));
+    expect(sessionContextCapacity({ ...status, contextWindow: null }).percent).toBeNull();
+  });
 
   it("derives the future Memory ceiling from the admitted model envelope", () => {
     const input = request({

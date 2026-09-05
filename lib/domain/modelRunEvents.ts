@@ -1,5 +1,6 @@
 import type { GroundingDisplay } from "./groundingDisplay";
 import type { TokenUsage } from "./usage";
+import type { SessionContextStatus } from "../contracts/sessionStatus";
 
 export type ModelRunUsage = {
   estimatedCostMicros?: number | null;
@@ -10,6 +11,7 @@ export type ModelRunChatUpdateData = {
     activeLeafMessageId: string | null;
     contextStats: {
       approximateActiveBranchInputTokens: number;
+      session?: SessionContextStatus | null;
     };
     createdAt: string;
     defaultModelId: string | null;
@@ -87,7 +89,7 @@ export type ModelRunSseEvent =
   | {
       type: "artifact";
       data: {
-        artifactType: "citation" | "context_truncated" | "reasoning" | "search" | "summary" | "tool_call" | "tool_result";
+        artifactType: "citation" | "context_status" | "context_truncated" | "reasoning" | "search" | "summary" | "tool_call" | "tool_result";
         payload: unknown;
         searchDisplayName?: string;
         searchStrategy?: string;
