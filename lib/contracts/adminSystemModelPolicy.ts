@@ -1,6 +1,9 @@
 import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 
+export type SystemModelVerificationRole = "memory" | "direct_pdf" | "vision" | "embedding" | "reranker";
+
 export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
+  pdfInput?: "not_requested" | "not_verified" | "unsupported" | "verified";
   visionInput?: "not_verified" | "verified";
   defaultReasoningEffort: string | null;
   forcedToolCall: "not_verified" | "unsupported" | "verified";
@@ -19,9 +22,13 @@ export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
 
 export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
+  documentCandidates: AdminSystemModelCandidate[];
+  verificationCandidates: AdminSystemModelCandidate[];
   rerankerCandidates: AdminRerankerModelCandidate[];
   policy: {
     chatPdfPreparationAllowed: boolean;
+    chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
+    chatPdfReasoningEffort: string | null;
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
     rerankerRoute?: {
       entries: AdminRerankerRouteEntry[];
@@ -56,6 +63,7 @@ function baseCandidate(value: unknown): boolean {
 
 function candidate(value: unknown): value is AdminSystemModelCandidate {
   if (!record(value) || !baseCandidate(value) ||
+    (value.pdfInput !== undefined && !["not_requested", "not_verified", "unsupported", "verified"].includes(String(value.pdfInput))) ||
     (value.visionInput !== undefined && value.visionInput !== "verified" &&
       value.visionInput !== "not_verified") ||
     !Array.isArray(value.reasoningEfforts) ||
@@ -78,7 +86,11 @@ export function decodeAdminSystemModelPolicyResponse(
 ): AdminSystemModelPolicyResponse | null {
   if (!record(value) || !record(value.systemModelPolicy)) return null;
   const catalog = value.systemModelPolicy;
-  if (!Array.isArray(catalog.candidates) || !catalog.candidates.every(candidate) ||
+  if (!Array.isArray(catalog.candidates) || !catalog.candidates.every((value) =>
+      candidate(value) && value.structuredOutput === "verified" && value.forcedToolCall === "verified") ||
+    !Array.isArray(catalog.documentCandidates) || !catalog.documentCandidates.every((value) =>
+      candidate(value) && (value.pdfInput === "verified" || value.visionInput === "verified")) ||
+    !Array.isArray(catalog.verificationCandidates) || !catalog.verificationCandidates.every(candidate) ||
     !Array.isArray(catalog.rerankerCandidates) ||
     !catalog.rerankerCandidates.every(baseCandidate) ||
     !record(catalog.policy)) return null;
@@ -88,7 +100,11 @@ export function decodeAdminSystemModelPolicyResponse(
   const rerankerModel = policy.rerankerModel;
   const rerankerRoute = policy.rerankerRoute;
   const updatedBy = policy.updatedBy;
-  if ((systemModel !== null && (!record(systemModel) || !candidate(systemModel) ||
+  if ((policy.chatPdfModel !== null && (!record(policy.chatPdfModel) || !candidate(policy.chatPdfModel) ||
+      typeof policy.chatPdfModel.available !== "boolean")) ||
+    !(policy.chatPdfReasoningEffort === null || boundedText(policy.chatPdfReasoningEffort, 32)) ||
+    (policy.chatPdfModel === null && policy.chatPdfReasoningEffort !== null) ||
+    (systemModel !== null && (!record(systemModel) || !candidate(systemModel) ||
       typeof (systemModel as Record<string, unknown>).available !== "boolean")) ||
     (rerankerModel !== null && (!record(rerankerModel) || !baseCandidate(rerankerModel) ||
       typeof (rerankerModel as Record<string, unknown>).available !== "boolean")) ||
@@ -116,9 +132,13 @@ export function decodeAdminSystemModelPolicyResponse(
   return {
     systemModelPolicy: {
       candidates: catalog.candidates,
+      documentCandidates: catalog.documentCandidates,
+      verificationCandidates: catalog.verificationCandidates,
       rerankerCandidates: catalog.rerankerCandidates,
       policy: {
         chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed,
+        chatPdfModel: policy.chatPdfModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"],
+        chatPdfReasoningEffort: policy.chatPdfReasoningEffort as string | null,
         reasoningEffort: reasoningEffort as string | null,
         rerankerModel: rerankerModel as
           (AdminRerankerModelCandidate & { available: boolean }) | null,

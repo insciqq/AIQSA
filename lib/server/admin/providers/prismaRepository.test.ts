@@ -300,7 +300,8 @@ describe("Prisma admin provider repository", () => {
       where: {
         OR: [
           { providerModelId: "model-1" },
-          { rerankerProviderModelId: "model-1" }
+          { rerankerProviderModelId: "model-1" },
+          { chatPdfProviderModelId: "model-1" }
         ]
       }
     });
@@ -1071,16 +1072,19 @@ describe("Prisma admin provider repository", () => {
     expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
       data: {
         providerModelId: null,
-        rerankerProviderModelId: null,
+        reasoningEffort: null,
         updatedByUserId: null,
         version: { increment: 1 }
       },
-      where: {
-        OR: [
-          { providerModelId: { in: ["model-1"] } },
-          { rerankerProviderModelId: { in: ["model-1"] } }
-        ]
-      }
+      where: { providerModelId: { in: ["model-1"] } }
+    });
+    expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
+      data: { rerankerProviderModelId: null, updatedByUserId: null, version: { increment: 1 } },
+      where: { rerankerProviderModelId: { in: ["model-1"] } }
+    });
+    expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
+      data: { chatPdfProviderModelId: null, chatPdfReasoningEffort: null, updatedByUserId: null, version: { increment: 1 } },
+      where: { chatPdfProviderModelId: { in: ["model-1"] } }
     });
     expect(db.accessGrant.deleteMany).toHaveBeenCalledWith({
       where: {

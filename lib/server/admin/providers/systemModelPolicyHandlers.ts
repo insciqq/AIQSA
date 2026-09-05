@@ -1,3 +1,4 @@
+import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {
@@ -72,42 +73,36 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      const hasUtilityUpdate = record(value) &&
-        Object.hasOwn(value, "providerModelId");
-      const hasReasoningUpdate = record(value) &&
-        Object.hasOwn(value, "reasoningEffort");
-      const hasRerankerUpdate = record(value) &&
-        Object.hasOwn(value, "rerankerProviderModelId");
-      const hasPdfPolicyUpdate = record(value) &&
-        Object.hasOwn(value, "chatPdfPreparationAllowed");
-      if (!record(value) || !Number.isSafeInteger(value.expectedVersion) ||
-        Number(value.expectedVersion) < 1 ||
-        hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfPolicyUpdate ||
+      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId",
+        "chatPdfPreparationAllowed", "chatPdfProviderModelId", "chatPdfReasoningEffort"];
+      const textOrNull = (entry: unknown, limit: number) => entry === null ||
+        typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
+        !/[\u0000-\u001f\u007f]/u.test(entry);
+      const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
+      const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
+      const hasPdfPolicyUpdate = record(value) && Object.hasOwn(value, "chatPdfPreparationAllowed");
+      const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
+      if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
+        !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfPolicyUpdate && !hasPdfModelUpdate ||
+        hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
+        hasPdfModelUpdate !== Object.hasOwn(value, "chatPdfReasoningEffort") ||
+        hasUtilityUpdate && (!textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32)) ||
+        hasPdfModelUpdate && (!textOrNull(value.chatPdfProviderModelId, 256) || !textOrNull(value.chatPdfReasoningEffort, 32)) ||
+        hasRerankerUpdate && !textOrNull(value.rerankerProviderModelId, 256) ||
         hasPdfPolicyUpdate && typeof value.chatPdfPreparationAllowed !== "boolean" ||
-        hasUtilityUpdate && !(value.providerModelId === null ||
-          typeof value.providerModelId === "string" &&
-          value.providerModelId.trim() === value.providerModelId &&
-          value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
-          !/[\u0000-\u001f\u007f]/u.test(value.providerModelId)) ||
-        hasRerankerUpdate && !(value.rerankerProviderModelId === null ||
-          typeof value.rerankerProviderModelId === "string" &&
-          value.rerankerProviderModelId.trim() === value.rerankerProviderModelId &&
-          value.rerankerProviderModelId.length > 0 &&
-          value.rerankerProviderModelId.length <= 256 &&
-          !/[\u0000-\u001f\u007f]/u.test(value.rerankerProviderModelId)) ||
-        hasReasoningUpdate && !(value.reasoningEffort === null ||
-          typeof value.reasoningEffort === "string" &&
-          value.reasoningEffort.trim() === value.reasoningEffort &&
-          value.reasoningEffort.length > 0 && value.reasoningEffort.length <= 32 &&
-          !/[\u0000-\u001f\u007f]/u.test(value.reasoningEffort)) ||
-        value.providerModelId === null && value.reasoningEffort !== null) {
+        value.providerModelId === null && value.reasoningEffort !== null ||
+        value.chatPdfProviderModelId === null && value.chatPdfReasoningEffort !== null) {
         return Response.json({ error: "system_model_policy_update_invalid" }, { status: 400 });
       }
       try {
         await input.service.update({
           ...(hasPdfPolicyUpdate ? {
             chatPdfPreparationAllowed: value.chatPdfPreparationAllowed as boolean
+          } : {}),
+          ...(hasPdfModelUpdate ? {
+            chatPdfProviderModelId: value.chatPdfProviderModelId as string | null,
+            chatPdfReasoningEffort: value.chatPdfReasoningEffort as string | null
           } : {}),
           expectedVersion: Number(value.expectedVersion),
           ...(hasUtilityUpdate ? {
@@ -134,7 +129,8 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      if (!record(value) || Object.keys(value).length !== 1 ||
+      if (!record(value) || Object.keys(value).length !== 2 ||
+        !["memory", "direct_pdf", "vision", "embedding", "reranker"].includes(String(value.role)) ||
         typeof value.providerModelId !== "string" ||
         value.providerModelId.trim() !== value.providerModelId ||
         value.providerModelId.length < 1 || value.providerModelId.length > 256 ||
@@ -145,7 +141,8 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         );
       }
       try {
-        await input.service.verifyStructuredOutput({
+        await input.service.verifyRole({
+          role: value.role as SystemModelVerificationRole,
           providerModelId: value.providerModelId,
           signal: request.signal
         });

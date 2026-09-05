@@ -1,3 +1,4 @@
+import { hasVerifiedDedicatedProtocol } from "../providers/systemRoleEvidence";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { CatalogAdapterKind } from "../../domain/catalog";
@@ -55,6 +56,8 @@ export class ProviderAdmissionError extends Error {
 
 export type ProviderAdmissionRole = Readonly<{
   verifiedVisionInput?: true;
+  verifiedStructuredOutput?: true;
+  verifiedForcedToolCall?: true;
   authority?: SearchProbeBinding | null;
   credentialSource: "default" | "group" | "user";
   modelConfiguration: RunModelConfiguration;
@@ -442,7 +445,9 @@ async function loadRole(
       status: "available"
     }
   });
-  if (!check) throw new ProviderAdmissionError("model_not_available");
+  if (!check || input.modelClass !== "answer" && !hasVerifiedDedicatedProtocol(check.evidence, modelConfig)) {
+    throw new ProviderAdmissionError("model_not_available");
+  }
   const structuredOutput = input.modelClass === "answer" &&
     hasVerifiedStructuredOutput(check.evidence, modelConfig);
   const forcedToolCalling = input.modelClass === "answer" &&
@@ -532,6 +537,8 @@ async function loadRole(
   return {
     authority,
     credentialSource: credential.source,
+    ...(structuredOutput ? { verifiedStructuredOutput: true as const } : {}),
+    ...(forcedToolCalling ? { verifiedForcedToolCall: true as const } : {}),
     ...(hasVerifiedVisionInput(check.evidence, resolvedModel)
       ? { verifiedVisionInput: true as const } : {}),
     modelConfiguration: {
@@ -644,7 +651,7 @@ export async function loadInstallationAnswerProviderRole(
       credentialAuthority: { kind: "installation" },
       modelClass: "answer",
       modelId: input.providerModelId,
-      requireAnswerSelectable: true,
+      requireAnswerSelectable: false,
       requireEntitlement: false
     });
   } catch (error) {

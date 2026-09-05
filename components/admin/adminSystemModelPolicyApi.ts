@@ -1,6 +1,7 @@
 import {
   decodeAdminSystemModelPolicyResponse,
-  type AdminSystemModelPolicyCatalog
+  type AdminSystemModelPolicyCatalog,
+  type SystemModelVerificationRole
 } from "@/lib/contracts/adminSystemModelPolicy";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -43,6 +44,8 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 
 export function updateAdminSystemModelPolicy(input: Readonly<{
   chatPdfPreparationAllowed?: boolean;
+  chatPdfProviderModelId?: string | null;
+  chatPdfReasoningEffort?: string | null;
   expectedVersion: number;
   /** Omit both utility fields to preserve the independent utility role. */
   providerModelId?: string | null;
@@ -57,12 +60,13 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   }, fetcher);
 }
 
-export function verifyAdminSystemModelStructuredOutput(
+export function verifyAdminSystemModelRole(
   providerModelId: string,
+  role: SystemModelVerificationRole,
   fetcher: Fetcher = fetch
 ) {
   return request({
-    body: JSON.stringify({ providerModelId }),
+    body: JSON.stringify({ providerModelId, role }),
     headers: { "content-type": "application/json" },
     method: "POST"
   }, fetcher);
@@ -76,8 +80,8 @@ export function adminSystemModelPolicyErrorMessage(code: string): string {
     system_model_policy_reasoning_unavailable: "Choose a reasoning effort advertised by the selected system model.",
     system_model_policy_stale: "The system model changed elsewhere. Reload and apply your choice again.",
     system_model_policy_structured_output_unsupported: "Strict utility verification is not supported for this adapter.",
-    system_model_policy_target_unavailable: "Choose an available deployment of the required answer or reranker class with an active installation credential.",
-    system_model_policy_verification_failed: "Strict utility verification failed. Check the model route and installation-default credential, then try again.",
+    system_model_policy_target_unavailable: "Choose a deployment verified for this role with an active installation credential.",
+    system_model_policy_verification_failed: "Role verification failed. Check the model route and installation-default credential, then try again.",
     system_model_policy_verification_invalid: "Reload the current system model and try verification again."
   };
   return messages[code] ?? code.replaceAll("_", " ");

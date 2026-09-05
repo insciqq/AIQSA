@@ -1041,23 +1041,26 @@ model ModelPolicy {
 model SystemModelPolicy {
   id                      String         @id
   chatPdfPreparationAllowed Boolean       @default(false)
+  chatPdfProviderModelId   String?
+  chatPdfReasoningEffort   String?        @db.VarChar(32)
+  /// Memory semantic/action work and its shared structured utilities.
   providerModelId         String?
   rerankerProviderModelId String?
   /// Set only by an explicit administrator save or clear of the reranker role.
-  /// NULL means the role was never configured, which permits one-time
-  /// fresh-install default adoption; automatic adoption keeps it NULL.
   rerankerConfiguredAt    DateTime?
   reasoningEffort         String?        @db.VarChar(32)
   version                 Int            @default(1)
   updatedByUserId         String?
   createdAt               DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
+  chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
   updatedBy               User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([providerModelId])
   @@index([rerankerProviderModelId])
+  @@index([chatPdfProviderModelId])
   @@index([updatedByUserId])
 }
 
@@ -2251,6 +2254,7 @@ model ProviderModel {
   knowledgeProfileRevisions   KnowledgeIndexProfileRevision[]
   knowledgeRunBindings        KnowledgeRunBinding[]
   knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
+  chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")

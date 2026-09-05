@@ -1,3 +1,4 @@
+import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -1395,6 +1396,18 @@ export function createPrismaAdminProviderRepository(
           credential?.activeVersionId !== input.candidate.credential.versionId ||
           credential.activeVersion?.revokedAt || !credential.activeVersion?.secretEnvelope
         ) return "stale" as const;
+        const existing = input.capabilityRole ? await tx.providerModelCredentialCheck.findUnique({
+          where: { providerModelId_credentialVersionId_connectionVersion_modelVersion: {
+            connectionVersion: input.candidate.connection.version,
+            credentialVersionId: input.candidate.credential.versionId,
+            modelVersion: input.candidate.model.version,
+            providerModelId: input.candidate.model.id
+          } }
+        }) : null;
+        if (input.capabilityRole && (!existing || existing.status !== "available")) return "stale" as const;
+        const evidence = input.capabilityRole
+          ? mergeSystemRoleEvidence(existing!.evidence, input.evidence, input.capabilityRole)
+          : input.evidence;
         await tx.providerModelCredentialCheck.upsert({
           create: {
             checkedAt: input.checkedAt,
@@ -1402,14 +1415,14 @@ export function createPrismaAdminProviderRepository(
             connectionVersion: input.candidate.connection.version,
             credentialId: input.candidate.credential.id,
             credentialVersionId: input.candidate.credential.versionId,
-            evidence: json(input.evidence),
+            evidence: json(evidence),
             modelVersion: input.candidate.model.version,
             providerModelId: input.candidate.model.id,
             status: input.status
           },
           update: {
             checkedAt: input.checkedAt,
-            evidence: json(input.evidence),
+            evidence: json(evidence),
             latestRefreshError: Prisma.DbNull,
             refreshFailedAt: null,
             status: input.status
@@ -1693,22 +1706,6 @@ export function createPrismaAdminProviderRepository(
             status: check.status
           }))
         });
-        const automaticPrimary = input.connection.enable && connection.defaultCredentialId
-          ? approvedRerankerDeployments.find((deployment) => checks.some((check) =>
-              check.credentialId === connection.defaultCredentialId &&
-              check.providerModelId === deployment.providerModelId &&
-              check.status === "available"
-            ))
-          : undefined;
-        if (automaticPrimary) {
-          await tx.systemModelPolicy.updateMany({
-            data: {
-              rerankerProviderModelId: automaticPrimary.providerModelId,
-              version: { increment: 1 }
-            },
-            where: { id: "installation", rerankerProviderModelId: null }
-          });
-        }
           await cleanupProviderReferences(tx, { connectionId: input.connection.id }, input.now);
           return "updated" as const;
         });
@@ -1887,7 +1884,8 @@ export function createPrismaAdminProviderRepository(
             where: {
               OR: [
                 { providerModelId: modelId },
-                { rerankerProviderModelId: modelId }
+                { rerankerProviderModelId: modelId },
+                { chatPdfProviderModelId: modelId }
               ]
             }
           }),
@@ -2039,20 +2037,20 @@ export function createPrismaAdminProviderRepository(
             },
             where: { defaultProviderModelId: { in: modelIds } }
           });
-          await tx.systemModelPolicy.updateMany({
-            data: {
-              providerModelId: null,
-              rerankerProviderModelId: null,
-              updatedByUserId: null,
-              version: { increment: 1 }
-            },
-            where: {
-              OR: [
-                { providerModelId: { in: modelIds } },
-                { rerankerProviderModelId: { in: modelIds } }
-              ]
-            }
-          });
+          // Clear only the deleted deployment's roles; other assignments
+          // remain valid, including their explicit configuration timestamps.
+          for (const field of ["providerModelId", "rerankerProviderModelId", "chatPdfProviderModelId"] as const) {
+            await tx.systemModelPolicy.updateMany({
+              data: {
+                [field]: null,
+                ...(field === "providerModelId" ? { reasoningEffort: null } : {}),
+                ...(field === "chatPdfProviderModelId" ? { chatPdfReasoningEffort: null } : {}),
+                updatedByUserId: null,
+                version: { increment: 1 }
+              },
+              where: { [field]: { in: modelIds } }
+            });
+          }
           await tx.chat.updateMany({
             data: { defaultProviderModelId: null },
             where: { defaultProviderModelId: { in: modelIds } }

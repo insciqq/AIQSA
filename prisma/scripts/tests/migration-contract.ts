@@ -1,4 +1,5 @@
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
+import { SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -7332,6 +7333,10 @@ function main(
     assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_GROUNDING_MIGRATION,
     geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
+  for (const pdfAllowed of [false, true]) {
+    runForwardAdoptionProof(shadowDatabase, migrations, SYSTEM_MODEL_ROLES_MIGRATION,
+      systemModelRolesAdoptionFixtureSql(pdfAllowed), systemModelRolesAdoptionProofSql(pdfAllowed));
+  }
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);

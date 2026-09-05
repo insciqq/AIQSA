@@ -4,9 +4,9 @@ import type { ChatPdfRoute } from "../../contracts/chatPdfPreparation";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import {
   applySystemModelReasoningEffort,
-  createSystemModelRoleResolver,
   type SystemModelRoleResolution
 } from "../providerRuntime/systemModelRole";
+import { createChatPdfModelRoleResolver } from "../providerRuntime/chatPdfModelRole";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { SearchProbeBinding } from "../search/probeBinding";
 
@@ -61,7 +61,7 @@ export function chatPdfFingerprint(value: unknown): string {
 }
 
 export function createChatPdfRouteResolver(db: Prisma.TransactionClient) {
-  const system = createSystemModelRoleResolver(db);
+  const system = createChatPdfModelRoleResolver(db);
   return {
     async resolve(answer: ProviderAdmissionRole): Promise<ChatPdfRouteAdmission> {
       if (answer.snapshot.model.capabilities.nativePdfInput) {

@@ -217,7 +217,7 @@ describe("administrator system model policy handlers", () => {
     const service = {
       list: vi.fn().mockResolvedValue(catalog),
       update: vi.fn(),
-      verifyStructuredOutput: vi.fn().mockResolvedValue(undefined)
+      verifyRole: vi.fn().mockResolvedValue(undefined)
     };
     const handlers = createAdminSystemModelPolicyHandlers({
       resolveAuth: vi.fn().mockResolvedValue(session()) as never,
@@ -226,14 +226,15 @@ describe("administrator system model policy handlers", () => {
     const response = await handlers.POST(new Request(
       "http://local.test/api/admin/providers/system-model-policy",
       {
-        body: JSON.stringify({ providerModelId: "model-1" }),
+        body: JSON.stringify({ providerModelId: "model-1", role: "memory" }),
         headers: { "content-type": "application/json" },
         method: "POST"
       }
     ));
 
     expect(response.status).toBe(200);
-    expect(service.verifyStructuredOutput).toHaveBeenCalledWith({
+    expect(service.verifyRole).toHaveBeenCalledWith({
+      role: "memory",
       providerModelId: "model-1",
       signal: expect.any(AbortSignal)
     });
@@ -244,7 +245,7 @@ describe("administrator system model policy handlers", () => {
     const service = {
       list: vi.fn(),
       update: vi.fn(),
-      verifyStructuredOutput: vi.fn().mockRejectedValue(
+      verifyRole: vi.fn().mockRejectedValue(
         new AdminSystemModelPolicyServiceError("system_model_policy_verification_failed")
       )
     };
@@ -261,12 +262,12 @@ describe("administrator system model policy handlers", () => {
       }
     ));
     expect(invalid.status).toBe(400);
-    expect(service.verifyStructuredOutput).not.toHaveBeenCalled();
+    expect(service.verifyRole).not.toHaveBeenCalled();
 
     const failed = await handlers.POST(new Request(
       "http://local.test/api/admin/providers/system-model-policy",
       {
-        body: JSON.stringify({ providerModelId: "model-1" }),
+        body: JSON.stringify({ providerModelId: "model-1", role: "memory" }),
         headers: { "content-type": "application/json" },
         method: "POST"
       }

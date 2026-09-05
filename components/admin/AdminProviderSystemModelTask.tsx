@@ -1,492 +1,219 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  adminSystemModelPolicyErrorMessage,
-  getAdminSystemModelPolicy,
-  updateAdminSystemModelPolicy,
-  verifyAdminSystemModelStructuredOutput
-} from "@/components/admin/adminSystemModelPolicyApi";
-import {
-  inputClass,
-  primaryButton,
-  quietButton
-} from "@/components/admin/adminPrimitives";
-import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
+  adminSystemModelPolicyErrorMessage, getAdminSystemModelPolicy,
+  updateAdminSystemModelPolicy, verifyAdminSystemModelRole
+} from "./adminSystemModelPolicyApi";
+import { AdminKnowledgeModelAssignments } from "./AdminKnowledgeModelAssignments";
+import { useAdminDraftProtection } from "./AdminDraftProtection";
+import { inputClass, primaryButton, quietButton } from "./adminPrimitives";
 import type {
-  AdminSystemModelCandidate,
-  AdminSystemModelPolicyCatalog
+  AdminSystemModelCandidate, AdminSystemModelPolicyCatalog, SystemModelVerificationRole
 } from "@/lib/contracts/adminSystemModelPolicy";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
-import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-function structuredOutputStatus(
-  status: AdminSystemModelCandidate["structuredOutput"]
-): string {
-  if (status === "verified") return "Structured output: Ready.";
-  if (status === "not_verified") return "Structured output: Verification required.";
-  return "Structured output: Not supported by this adapter.";
+type Draft = { memory: string; effort: string; reranker: string; pdf: string; pdfEffort: string; allowPdf: boolean };
+type Assignment = "memory" | "reranker" | "pdf";
+const emptyDraft: Draft = { memory: "", effort: "", reranker: "", pdf: "", pdfEffort: "", allowPdf: false };
+function draftFor(catalog: AdminSystemModelPolicyCatalog): Draft {
+  return { memory: catalog.policy.systemModel?.id ?? "", effort: catalog.policy.reasoningEffort ?? "",
+    reranker: catalog.policy.rerankerModel?.id ?? "", pdf: catalog.policy.chatPdfModel?.id ?? "",
+    pdfEffort: catalog.policy.chatPdfReasoningEffort ?? "", allowPdf: catalog.policy.chatPdfPreparationAllowed };
+}
+function verificationLabel(value: string | undefined) {
+  return value === "verified" ? "verified" : value === "unsupported" ? "unsupported" : "verification required";
 }
 
-function forcedToolCallStatus(
-  status: AdminSystemModelCandidate["forcedToolCall"]
-): string {
-  if (status === "verified") return "Memory control: Ready.";
-  if (status === "not_verified") return "Memory control: Verification required.";
-  return "Memory control: Forced strict tool calls are not supported by this route.";
-}
-
-function strictUtilitiesNeedVerification(
-  model: AdminSystemModelCandidate
-): boolean {
-  return model.structuredOutput !== "unsupported" &&
-    model.forcedToolCall !== "unsupported" &&
-    (model.structuredOutput === "not_verified" ||
-      model.forcedToolCall === "not_verified");
-}
-
-export function AdminProviderSystemModelTask({
-  active,
-  onMutationCommitted
-}: Readonly<{
+export function AdminProviderSystemModelTask({ active, onMutationCommitted }: Readonly<{
   active: boolean;
   onMutationCommitted?(): void | Promise<unknown>;
 }>) {
   const [catalog, setCatalog] = useState<AdminSystemModelPolicyCatalog | null>(null);
-  const [selectedId, setSelectedId] = useState("");
-  const [selectedRerankerId, setSelectedRerankerId] = useState("");
-  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
-  const [allowChatPdf, setAllowChatPdf] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [verifying, setVerifying] = useState(false);
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const autoLoadAttemptedRef = useRef(false);
-  const connectionLabels = useMemo(() => resolveProviderConnectionLabels([
-    ...(catalog?.candidates ?? []).map(({ connectionDisplayName: name, connectionId: id }) => ({ id, name })),
-    ...(catalog?.rerankerCandidates ?? []).map(({ connectionDisplayName: name, connectionId: id }) => ({ id, name })),
-    ...(catalog?.policy.systemModel
-      ? [{
-          id: catalog.policy.systemModel.connectionId,
-          name: catalog.policy.systemModel.connectionDisplayName
-        }]
-      : []),
-    ...(catalog?.policy.rerankerModel
-      ? [{
-          id: catalog.policy.rerankerModel.connectionId,
-          name: catalog.policy.rerankerModel.connectionDisplayName
-        }]
-      : [])
-  ]), [catalog]);
-  const deploymentLabel = (deployment:
-    AdminSystemModelPolicyCatalog["candidates"][number] |
-    AdminSystemModelPolicyCatalog["rerankerCandidates"][number]) =>
-    `${connectionLabels.get(deployment.connectionId) ?? deployment.connectionDisplayName} / ${deployment.displayName}`;
-  const currentId = catalog?.policy.systemModel?.id ?? "";
-  const currentReasoningEffort = catalog?.policy.reasoningEffort ?? "";
-  const currentRerankerId = catalog?.policy.rerankerModel?.id ?? "";
-  const selectedDeployment = selectedId
-    ? catalog?.candidates.find((candidate) => candidate.id === selectedId) ??
-      (catalog?.policy.systemModel?.id === selectedId ? catalog.policy.systemModel : null)
-    : null;
-  const draftDirty = Boolean(catalog) && (
-    allowChatPdf !== catalog?.policy.chatPdfPreparationAllowed ||
-    selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
-    selectedRerankerId !== currentRerankerId
-  );
-  const busy = saving || verifying;
-  const requestDraftDiscard = useAdminDraftProtection({
-    dirty: draftDirty,
-    onDiscard: () => {
-      setAllowChatPdf(catalog?.policy.chatPdfPreparationAllowed === true);
-      setSelectedId(currentId);
-      setSelectedReasoningEffort(currentReasoningEffort);
-      setSelectedRerankerId(currentRerankerId);
-    },
-    owner: "provider-system-model-policy",
-    pending: draftDirty && busy
-  });
-
-  const apply = useCallback((next: AdminSystemModelPolicyCatalog) => {
-    setAllowChatPdf(next.policy.chatPdfPreparationAllowed);
-    setCatalog(next);
-    setSelectedId(next.policy.systemModel?.id ?? "");
-    setSelectedReasoningEffort(next.policy.reasoningEffort ?? "");
-    setSelectedRerankerId(next.policy.rerankerModel?.id ?? "");
-  }, []);
-
+  const [verifyRole, setVerifyRole] = useState<SystemModelVerificationRole>("memory");
+  const [verifyModel, setVerifyModel] = useState("");
+  const current = catalog ? draftFor(catalog) : emptyDraft;
+  const dirty = Boolean(catalog && Object.keys(draft).some((key) =>
+    draft[key as keyof Draft] !== current[key as keyof Draft]));
+  const discard = useAdminDraftProtection({ dirty, pending: dirty && busy, owner: "system-model-assignments",
+    onDiscard: () => setDraft(current) });
+  const labels = useMemo(() => resolveProviderConnectionLabels([
+    ...(catalog?.verificationCandidates ?? []), ...(catalog?.rerankerCandidates ?? []),
+    ...(catalog?.policy.systemModel ? [catalog.policy.systemModel] : []),
+    ...(catalog?.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),
+    ...(catalog?.policy.rerankerModel ? [catalog.policy.rerankerModel] : [])
+  ].map((item) => ({ id: item.connectionId, name: item.connectionDisplayName }))), [catalog]);
+  const label = (item: { connectionId: string; connectionDisplayName: string; displayName: string }) =>
+    (labels.get(item.connectionId) ?? item.connectionDisplayName) + " / " + item.displayName;
   const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+    setBusy(true); setError(null);
     const result = await getAdminSystemModelPolicy();
-    setLoading(false);
-    if (result.ok) {
-      apply(result.data);
-      return;
-    }
-    setError(adminSystemModelPolicyErrorMessage(result.error));
-  }, [apply]);
-
+    setBusy(false);
+    if (!result.ok) { setError(adminSystemModelPolicyErrorMessage(result.error)); return; }
+    setCatalog(result.data); setDraft(draftFor(result.data));
+  }, []);
   useEffect(() => {
-    if (!active) {
-      autoLoadAttemptedRef.current = false;
-      return;
-    }
-    if (catalog || loading || autoLoadAttemptedRef.current) return;
+    if (!active) return;
     let disposed = false;
-    queueMicrotask(() => {
-      if (disposed || autoLoadAttemptedRef.current) return;
-      autoLoadAttemptedRef.current = true;
-      void refresh();
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [active, catalog, loading, refresh]);
-
-  const save = async (updates: Readonly<{
-    chatPdfPreparationAllowed?: boolean;
-    providerModelId?: string | null;
-    reasoningEffort?: string | null;
-    rerankerProviderModelId?: string | null;
-  }>) => {
+    queueMicrotask(() => { if (!disposed) void refresh(); });
+    return () => { disposed = true; };
+  }, [active, refresh]);
+  const save = async (assignment: Assignment) => {
     if (!catalog || busy) return;
-    setSaving(true);
-    setError(null);
-    setNotice(null);
+    setBusy(true); setError(null); setNotice(null);
     const result = await updateAdminSystemModelPolicy({
       expectedVersion: catalog.policy.version,
-      ...updates
+      ...(assignment === "memory" ? { providerModelId: draft.memory || null, reasoningEffort: draft.memory ? draft.effort || null : null } : {}),
+      ...(assignment === "reranker" ? { rerankerProviderModelId: draft.reranker || null } : {}),
+      ...(assignment === "pdf" ? { chatPdfProviderModelId: draft.pdf || null,
+        chatPdfReasoningEffort: draft.pdf ? draft.pdfEffort || null : null, chatPdfPreparationAllowed: draft.allowPdf } : {})
     });
-    setSaving(false);
-    if (!result.ok) {
-      setError(adminSystemModelPolicyErrorMessage(result.error));
-      return;
-    }
-    apply(result.data);
-    setNotice("System models updated.");
+    setBusy(false);
+    if (!result.ok) { setError(adminSystemModelPolicyErrorMessage(result.error)); return; }
+    setCatalog(result.data);
+    const saved = draftFor(result.data);
+    setDraft((previous) => ({ ...previous,
+      ...(assignment === "memory" ? { memory: saved.memory, effort: saved.effort } : {}),
+      ...(assignment === "reranker" ? { reranker: saved.reranker } : {}),
+      ...(assignment === "pdf" ? { pdf: saved.pdf, pdfEffort: saved.pdfEffort, allowPdf: saved.allowPdf } : {})
+    }));
+    setNotice("Assignment saved for future work.");
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
-
-  const verifyStructuredOutput = async () => {
-    const systemModel = catalog?.policy.systemModel;
-    if (!systemModel || !strictUtilitiesNeedVerification(systemModel) ||
-      busy || draftDirty) return;
-    setVerifying(true);
-    setError(null);
-    setNotice(null);
-    const result = await verifyAdminSystemModelStructuredOutput(systemModel.id);
-    setVerifying(false);
-    if (!result.ok) {
-      setError(adminSystemModelPolicyErrorMessage(result.error));
-      return;
-    }
-    apply(result.data);
-    setNotice("System Model strict utilities verified.");
-    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
+  const verify = async () => {
+    if (!verifyModel || busy) return;
+    setBusy(true); setError(null); setNotice(null);
+    const result = await verifyAdminSystemModelRole(verifyModel, verifyRole);
+    setBusy(false);
+    if (!result.ok) { setError(adminSystemModelPolicyErrorMessage(result.error)); return; }
+    setCatalog(result.data);
+    setNotice("Selected role verified. Assignments and other drafts are unchanged.");
   };
-
-  const canSave = Boolean(catalog) && (
-    allowChatPdf !== catalog?.policy.chatPdfPreparationAllowed ||
-    selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
-    selectedRerankerId !== currentRerankerId ||
-    Boolean(catalog?.policy.systemModel?.available === false) ||
-    Boolean(catalog?.policy.rerankerModel?.available === false)
-  );
-
-  function selectDeployment(providerModelId: string) {
-    setSelectedId(providerModelId);
-    if (!providerModelId) {
-      setSelectedReasoningEffort("");
-      return;
-    }
-    const deployment = catalog?.candidates.find((candidate) => candidate.id === providerModelId) ??
-      (catalog?.policy.systemModel?.id === providerModelId ? catalog.policy.systemModel : null);
-    if (!deployment) {
-      setSelectedReasoningEffort("");
-      return;
-    }
-    setSelectedReasoningEffort((current) => {
-      if (current && deployment.reasoningEfforts.includes(current)) return current;
-      if (deployment.reasoningEfforts.includes("xhigh")) return "xhigh";
-      return deployment.defaultReasoningEffort ?? "";
-    });
+  const selectedMemory = catalog?.verificationCandidates.find((item) => item.id === draft.memory) ??
+    (catalog?.policy.systemModel?.id === draft.memory ? catalog.policy.systemModel : null);
+  const selectedPdf = catalog?.verificationCandidates.find((item) => item.id === draft.pdf) ??
+    (catalog?.policy.chatPdfModel?.id === draft.pdf ? catalog.policy.chatPdfModel : null);
+  const visionCandidates = catalog?.documentCandidates.filter((item) => item.visionInput === "verified") ?? [];
+  function options(items: readonly { id: string; displayName: string; connectionDisplayName: string; connectionId: string }[],
+    selected: { id: string; displayName: string; connectionDisplayName: string; connectionId: string } | null | undefined) {
+    return <><option value="">Not assigned</option>
+      {selected && !items.some((item) => item.id === selected.id)
+        ? <option disabled value={selected.id}>Unavailable — {label(selected)}</option> : null}
+      {items.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}</>;
   }
-
+  function reasoning(model: AdminSystemModelCandidate | null | undefined, value: string, key: "effort" | "pdfEffort") {
+    return <label className="grid gap-1.5 text-sm text-ink-secondary">{key === "effort" ? "Memory reasoning effort" : "Chat PDF reasoning effort"}
+      <select className={inputClass} disabled={busy || !model} value={value}
+        onChange={(event) => setDraft((previous) => ({ ...previous, [key]: event.target.value }))}>
+        <option value="">Provider default</option>
+        {value && !model?.reasoningEfforts.includes(value) ? <option disabled value={value}>Unavailable — {value}</option> : null}
+        {model?.reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+      </select>
+    </label>;
+  }
+  function status(model: { available: boolean; displayName: string; connectionId: string; connectionDisplayName: string } | null) {
+    return <p className="text-sm text-ink-secondary" role="status">Current: {model ? label(model) + (model.available ? " · Ready" : " · Unavailable — verify the current deployment") : "Not assigned"}.</p>;
+  }
+  const changed = (keys: (keyof Draft)[]) => keys.some((key) => draft[key] !== current[key]);
   return (
-    <section
-      aria-labelledby="provider-system-model-heading"
-      className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7"
-    >
+    <section aria-labelledby="system-models-heading" className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
       <div className="max-w-3xl">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-trace-subtle pb-4">
           <div>
-            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation roles</p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="provider-system-model-heading">System Models</h2>
-            <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
-              The internal utility model and the Knowledge reranking model are independent installation roles. Neither grants user access or substitutes another configured model.
-            </p>
+            <h2 className="text-lg font-semibold text-ink" id="system-models-heading">System Models</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">Assign verified deployments to independent internal roles. Providers manages connections and credentials. Chat answer selection remains separate.</p>
           </div>
-          <button
-            className={quietButton}
-            disabled={loading || busy}
-            onClick={() => requestDraftDiscard(() => {
-              void refresh();
-            })}
-            type="button"
-          >
-            <RefreshCw aria-hidden="true" className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
-            Refresh
-          </button>
+          <button className={quietButton} disabled={busy} onClick={() => discard(() => void refresh())} type="button">Refresh roles</button>
         </div>
-
-        {error ? <p className="mt-4 rounded-control bg-critical/10 px-3 py-2 text-xs text-critical" role="alert">{error}</p> : null}
-        {notice ? <p className="mt-4 rounded-control bg-positive/10 px-3 py-2 text-xs text-positive" role="status">{notice}</p> : null}
-
-        {catalog ? (
-          <div className="mt-5 grid gap-4">
-            <div className="border-l-2 border-proof/60 pl-3 text-xs leading-5 text-ink-secondary">
-              <p>
-                Utility model: {catalog.policy.systemModel
-                  ? `${deploymentLabel(catalog.policy.systemModel)} · reasoning ${catalog.policy.reasoningEffort ?? "provider default"}`
-                  : "None"}.
-              </p>
-              <p>
-                Reranking model: {catalog.policy.rerankerModel
-                  ? deploymentLabel(catalog.policy.rerankerModel)
-                  : catalog.policy.systemModel
-                    ? `System Model fallback · ${deploymentLabel(catalog.policy.systemModel)}`
-                    : "Unavailable · no dedicated reranker or System Model"}.
-              </p>
-              {catalog.policy.systemModel ? (
-                <>
-                  <p className={catalog.policy.systemModel.available ? "text-ink-secondary" : "text-caution"}>
-                    Status: {catalog.policy.systemModel.available ? "Available" : "Unavailable"}.
-                    {!catalog.policy.systemModel.available
-                      ? " It remains selected, but internal work fails closed until you re-save, replace, or clear it."
-                      : ""}
-                  </p>
-                  <p className={catalog.policy.systemModel.structuredOutput === "verified"
-                    ? "text-ink-secondary"
-                    : "text-caution"}>
-                    {structuredOutputStatus(catalog.policy.systemModel.structuredOutput)}
-                  </p>
-                  <p className={catalog.policy.systemModel.forcedToolCall === "verified"
-                    ? "text-ink-secondary"
-                    : "text-caution"}>
-                    {forcedToolCallStatus(catalog.policy.systemModel.forcedToolCall)}
-                  </p>
-                  {strictUtilitiesNeedVerification(catalog.policy.systemModel) ? (
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <p className="max-w-xl text-ink-muted">
-                        Verification sends bounded capability requests to this exact deployment route and may incur provider charges.
-                      </p>
-                      <button
-                        className={quietButton}
-                        disabled={busy || loading || draftDirty}
-                        onClick={() => void verifyStructuredOutput()}
-                        type="button"
-                      >
-                        {verifying ? "Verifying…" : "Run verification"}
-                      </button>
-                    </div>
-                  ) : catalog.policy.systemModel.structuredOutput === "unsupported" ? (
-                    <p className="text-ink-muted">
-                      Supported paths are OpenAI Responses, Responses-compatible deployments, and OpenRouter Chat Completions.
-                    </p>
-                  ) : catalog.policy.systemModel.forcedToolCall === "unsupported" ? (
-                    <p className="text-ink-muted">
-                      Choose a route that accepts one forced strict function call for Memory actions.
-                    </p>
-                  ) : null}
-                </>
-              ) : null}
-              {catalog.policy.rerankerModel ? (
-                <>
-                  <p className={catalog.policy.rerankerModel.available ||
-                    catalog.policy.rerankerRoute?.entries.slice(1).some(({ available }) => available)
-                    ? "text-ink-secondary"
-                    : "text-caution"}>
-                    Reranker status: {catalog.policy.rerankerModel.available
-                      ? "Primary available."
-                      : catalog.policy.rerankerRoute?.entries.slice(1)
-                        .some(({ available }) => available)
-                        ? "Primary unavailable; an ordered fallback is available."
-                        : "Unavailable; fused local RRF remains available."}
-                  </p>
-                  {catalog.policy.rerankerRoute?.entries.length ? (
-                    <p className="text-ink-muted">
-                      Atomic route: {catalog.policy.rerankerRoute.entries.map((entry) =>
-                        `${entry.position + 1}. ${entry.displayName} · ${entry.available
-                          ? "available"
-                          : "unavailable"} · floor ${entry.relevanceScoreFloor ?? "off"}`
-                      ).join(" → ")}. A successful fallback is informational and does not degrade Memory evidence.
-                    </p>
-                  ) : null}
-                </>
-              ) : (
-                <p className="text-caution">
-                  Knowledge retrieval keeps deterministic ranking. {catalog.policy.systemModel
-                    ? `Memory uses ${deploymentLabel(catalog.policy.systemModel)} through the slower generative compatibility path until a dedicated reranker is selected; successful fallback runs are not marked degraded.`
-                    : "Semantic Memory sorting is unavailable until a dedicated reranker or System Model is selected; fused local ranking remains available."}
-                </p>
-              )}
-              <p>Policy version: {catalog.policy.version}.</p>
-              {catalog.policy.updatedBy ? (
-                <p>
-                  Last saved by {catalog.policy.updatedBy.displayName}.
-                </p>
-              ) : null}
-            </div>
-
-            <div className="grid gap-2 text-sm text-ink-secondary">
-              <label className="flex min-h-11 cursor-pointer items-center gap-3">
-                <input
-                  checked={allowChatPdf}
-                  disabled={busy || loading}
-                  onChange={(event) => setAllowChatPdf(event.target.checked)}
-                  type="checkbox"
-                />
-                Allow chat PDF preparation with the utility model
+        {error ? <p className="mt-4 text-sm text-critical" role="alert">{error}</p> : null}
+        {notice ? <p className="mt-4 text-sm text-positive" role="status">{notice}</p> : null}
+        {!catalog ? <p className="mt-5 text-sm text-ink-muted" role="status">{busy ? "Loading system models…" : "System Models is unavailable. Refresh to retry."}</p> : <>
+          <section aria-labelledby="memory-model-heading" className="grid gap-4 py-6">
+            <h3 className="text-base font-semibold text-ink" id="memory-model-heading">Memory and semantic work</h3>
+            <p className="text-sm leading-6 text-ink-secondary">Requires verified strict Structured Output and forced exact-action calls. Also serves the existing structured title and MCP routing helpers. Changes apply to future work; accepted Memory executions retain their binding.</p>
+            {status(catalog.policy.systemModel)}
+            {catalog.policy.systemModel ? <p className="text-xs leading-5 text-ink-muted">
+              Structured Output: {verificationLabel(catalog.policy.systemModel.structuredOutput)}.
+              {" "}Exact actions: {verificationLabel(catalog.policy.systemModel.forcedToolCall)}.
+            </p> : null}
+            <label className="grid gap-1.5 text-sm text-ink-secondary">Memory semantic model
+              <select className={inputClass} disabled={busy} value={draft.memory} onChange={(event) => {
+                const memory = event.target.value;
+                setDraft((previous) => ({ ...previous, memory, effort: "" }));
+              }}>{options(catalog.candidates, catalog.policy.systemModel)}</select>
+            </label>
+            {reasoning(selectedMemory, draft.effort, "effort")}
+            <button className={primaryButton + " justify-self-start"} disabled={busy || !changed(["memory", "effort"]) ||
+              Boolean(draft.memory && !catalog.candidates.some((item) => item.id === draft.memory))}
+              onClick={() => void save("memory")} type="button">Save Memory role</button>
+          </section>
+          <section aria-labelledby="chat-pdf-model-heading" className="grid gap-4 border-t border-trace-subtle py-6">
+            <h3 className="text-base font-semibold text-ink" id="chat-pdf-model-heading">Chat PDF preparation</h3>
+            <p className="text-sm leading-6 text-ink-secondary">Requires verified image input. With permission, sends PDF page images and native page text to this deployment. Future messages use this setting; the selected chat model writes the answer.</p>
+            {status(catalog.policy.chatPdfModel)}
+            {catalog.policy.chatPdfModel ? <p className="text-xs leading-5 text-ink-muted">
+              Image input: {verificationLabel(catalog.policy.chatPdfModel.visionInput)}.
+            </p> : null}
+            <label className="grid gap-1.5 text-sm text-ink-secondary">Chat PDF model
+              <select className={inputClass} disabled={busy} value={draft.pdf} onChange={(event) => {
+                const pdf = event.target.value;
+                setDraft((previous) => ({ ...previous, pdf, pdfEffort: "" }));
+              }}>{options(visionCandidates, catalog.policy.chatPdfModel)}</select>
+            </label>
+            {reasoning(selectedPdf, draft.pdfEffort, "pdfEffort")}
+            <label className="flex min-h-11 items-center gap-3 text-sm text-ink-secondary">
+              <input type="checkbox" disabled={busy} checked={draft.allowPdf} onChange={(event) => {
+                const allowPdf = event.target.checked; setDraft((previous) => ({ ...previous, allowPdf }));
+              }} />Allow chat PDF preparation at this destination
+            </label>
+            <button className={primaryButton + " justify-self-start"} disabled={busy || !changed(["pdf", "pdfEffort", "allowPdf"]) ||
+              Boolean(draft.pdf && !visionCandidates.some((item) => item.id === draft.pdf))}
+              onClick={() => void save("pdf")} type="button">Save chat PDF role</button>
+          </section>
+          <section aria-labelledby="reranker-model-heading" className="grid gap-4 border-t border-trace-subtle py-6">
+            <h3 className="text-base font-semibold text-ink" id="reranker-model-heading">Memory and Knowledge reranking</h3>
+            <p className="text-sm leading-6 text-ink-secondary">Requires a dedicated reranker with a verified complete score response. Changes affect future ranking operations and do not reindex documents.</p>
+            {status(catalog.policy.rerankerModel)}
+            <label className="grid gap-1.5 text-sm text-ink-secondary">Reranking model
+              <select className={inputClass} disabled={busy} value={draft.reranker} onChange={(event) => {
+                const reranker = event.target.value; setDraft((previous) => ({ ...previous, reranker }));
+              }}>{options(catalog.rerankerCandidates, catalog.policy.rerankerModel)}</select>
+            </label>
+            {catalog.policy.rerankerRoute?.entries.length ? <p className="text-xs leading-5 text-ink-muted">
+              Current authorized route: {catalog.policy.rerankerRoute.entries.map((item) => label(item) + (item.available ? "" : " (unavailable)")).join(" → ")}
+            </p> : null}
+            <button className={primaryButton + " justify-self-start"} disabled={busy || !changed(["reranker"]) ||
+              Boolean(draft.reranker && !catalog.rerankerCandidates.some((item) => item.id === draft.reranker))}
+              onClick={() => void save("reranker")} type="button">Save reranking role</button>
+          </section>
+          <details className="border-t border-trace-subtle py-4">
+            <summary className="cursor-pointer text-sm font-semibold text-ink">Verify a deployment for a role</summary>
+            <div className="mt-4 grid gap-3">
+              <label className="grid gap-1.5 text-sm text-ink-secondary">Role to verify
+                <select className={inputClass} disabled={busy} value={verifyRole} onChange={(event) => setVerifyRole(event.target.value as SystemModelVerificationRole)}>
+                  <option value="memory">Memory — Structured Output and exact actions</option>
+                  <option value="direct_pdf">Knowledge — Direct PDF</option>
+                  <option value="vision">Document processing — Vision</option>
+                </select>
               </label>
-              <p>
-                PDF page images and extracted page text may be sent to {selectedDeployment
-                  ? deploymentLabel(selectedDeployment) : "the configured utility model"}.
-                {selectedDeployment?.visionInput === "verified"
-                  ? " Image input is verified."
-                  : " Verify image input in the deployment compatibility checks before this route can be used."}
-                {" "}Changes apply to future messages only. The selected chat model still writes the answer.
-              </p>
+              <label className="grid gap-1.5 text-sm text-ink-secondary">Deployment to verify
+                <select className={inputClass} disabled={busy} value={verifyModel} onChange={(event) => setVerifyModel(event.target.value)}>
+                  <option value="">Choose a deployment</option>
+                  {catalog.verificationCandidates.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}
+                </select>
+              </label>
+              <p className="text-xs leading-5 text-ink-muted">Sends bounded synthetic requests through the installation credential and configured route. Only the selected role is checked. Configure and test embedding or reranker deployments in Providers.</p>
+              <button className={quietButton + " justify-self-start"} disabled={busy || !verifyModel} onClick={() => void verify()} type="button">Verify selected role (paid request)</button>
             </div>
-
-            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="system-model-deployment">
-              Internal utility model
-              <select
-                className={inputClass}
-                disabled={busy || loading}
-                id="system-model-deployment"
-                onChange={(event) => selectDeployment(event.currentTarget.value)}
-                value={selectedId}
-              >
-                <option value="">No utility model</option>
-                {catalog.policy.systemModel &&
-                  !catalog.candidates.some((candidate) => candidate.id === catalog.policy.systemModel?.id) ? (
-                    <option disabled value={catalog.policy.systemModel.id}>
-                      Unavailable — {deploymentLabel(catalog.policy.systemModel)}
-                    </option>
-                  ) : null}
-                {catalog.candidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {deploymentLabel(candidate)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="system-model-reasoning-effort">
-              Reasoning effort
-              <select
-                className={inputClass}
-                disabled={busy || loading || !selectedDeployment}
-                id="system-model-reasoning-effort"
-                onChange={(event) => setSelectedReasoningEffort(event.currentTarget.value)}
-                value={selectedReasoningEffort}
-              >
-                <option value="">Provider default</option>
-                {selectedReasoningEffort &&
-                  !selectedDeployment?.reasoningEfforts.includes(selectedReasoningEffort) ? (
-                    <option disabled value={selectedReasoningEffort}>
-                      Unavailable — {selectedReasoningEffort}
-                    </option>
-                  ) : null}
-                {(selectedDeployment?.reasoningEfforts ?? []).map((effort) => (
-                  <option key={effort} value={effort}>{effort}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="knowledge-reranker-deployment">
-              Knowledge reranking model
-              <select
-                className={inputClass}
-                disabled={busy || loading}
-                id="knowledge-reranker-deployment"
-                onChange={(event) => setSelectedRerankerId(event.currentTarget.value)}
-                value={selectedRerankerId}
-              >
-                <option value="">None — Knowledge uses deterministic ranking; Memory uses the System Model path</option>
-                {catalog.policy.rerankerModel &&
-                  !catalog.rerankerCandidates.some((candidate) =>
-                    candidate.id === catalog.policy.rerankerModel?.id) ? (
-                    <option disabled value={catalog.policy.rerankerModel.id}>
-                      Unavailable — {deploymentLabel(catalog.policy.rerankerModel)}
-                    </option>
-                  ) : null}
-                {catalog.rerankerCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {deploymentLabel(candidate)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <p className="text-xs leading-5 text-ink-muted">
-              Runtime uses the selected connection&apos;s installation-default credential. Reasoning choices are limited to capabilities advertised by the utility deployment; the reranking role has no reasoning or structured-output settings. Reranking changes apply to new operations only and never trigger Knowledge reindexing.
-            </p>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                className={primaryButton}
-                disabled={busy || !canSave}
-                onClick={() => {
-                  const utilityChanged = selectedId !== currentId ||
-                    selectedReasoningEffort !== currentReasoningEffort ||
-                    catalog.policy.systemModel?.available === false;
-                  const rerankerChanged = selectedRerankerId !== currentRerankerId ||
-                    catalog.policy.rerankerModel?.available === false && !utilityChanged;
-                  void save({
-                    ...(allowChatPdf !== catalog.policy.chatPdfPreparationAllowed
-                      ? { chatPdfPreparationAllowed: allowChatPdf } : {}),
-                    ...(utilityChanged ? {
-                      providerModelId: selectedId || null,
-                      reasoningEffort: selectedId
-                        ? selectedReasoningEffort || null
-                        : null
-                    } : {}),
-                    ...(rerankerChanged
-                      ? { rerankerProviderModelId: selectedRerankerId || null }
-                      : {})
-                  });
-                }}
-                type="button"
-              >
-                Save system models
-              </button>
-              <button
-                className={quietButton}
-                disabled={busy || catalog.policy.systemModel === null}
-                onClick={() => void save({
-                  providerModelId: null,
-                  reasoningEffort: null
-                })}
-                type="button"
-              >
-                Clear utility model
-              </button>
-              <button
-                className={quietButton}
-                disabled={busy || catalog.policy.rerankerModel === null}
-                onClick={() => void save({ rerankerProviderModelId: null })}
-                type="button"
-              >
-                Clear reranking model
-              </button>
-            </div>
-          </div>
-        ) : loading ? (
-          <p className="mt-5 text-sm text-ink-muted" role="status">Loading system models…</p>
-        ) : null}
+          </details>
+        </>}
+        <AdminKnowledgeModelAssignments active={active} onMutationCommitted={onMutationCommitted} />
+        <p className="border-t border-trace-subtle pt-4 text-xs leading-5 text-ink-muted">Personal Memory embedding destinations remain bound to each owner’s existing settings and index generation. Changing Knowledge embeddings does not migrate personal Memory.</p>
+        <a className={quietButton + " mt-3"} href="/admin">Manage provider deployments</a>
       </div>
     </section>
   );

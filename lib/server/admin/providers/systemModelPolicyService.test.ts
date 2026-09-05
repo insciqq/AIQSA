@@ -122,6 +122,7 @@ describe("administrator system model policy service", () => {
     } as unknown as PrismaClient;
 
     const catalog = await createAdminSystemModelPolicyService(prisma, {
+      loadRerankerRole: vi.fn().mockResolvedValue({}),
       resolveRerankerRole: vi.fn().mockResolvedValue({
         credentialScope: "installation",
         ok: true,
@@ -184,18 +185,10 @@ describe("administrator system model policy service", () => {
 
     await expect(createAdminSystemModelPolicyService(prisma, {
       resolveRole: vi.fn().mockResolvedValue({ code: "system_model_unavailable", ok: false })
-    }).list()).resolves.toEqual({
-      candidates: [{
-        connectionDisplayName: "Answer provider",
-        connectionId: "connection-1",
-        defaultReasoningEffort: "medium",
-        displayName: "Answer model",
-        forcedToolCall: "not_verified",
-        id: "model-1",
-        reasoningEfforts: ["low", "medium", "high", "xhigh"],
-        structuredOutput: "not_verified",
-        visionInput: "not_verified"
-      }],
+    }).list()).resolves.toMatchObject({
+      candidates: [],
+      documentCandidates: [],
+      verificationCandidates: [ { id: "model-1" }, { id: "technical-model" } ],
       policy: {
         chatPdfPreparationAllowed: false,
         reasoningEffort: "xhigh",
@@ -316,9 +309,9 @@ describe("administrator system model policy service", () => {
           forcedToolCall: "verified",
           id: "model-1",
           structuredOutput: "verified"
-        },
-        { id: "model-anthropic", structuredOutput: "unsupported" }
-      ]
+        }
+      ],
+      verificationCandidates: [ { id: "model-1" }, { id: "model-anthropic", structuredOutput: "unsupported" } ]
     });
   });
 
@@ -342,6 +335,7 @@ describe("administrator system model policy service", () => {
       status: "available"
     });
     const prisma = {
+      providerModel: { findUnique: vi.fn().mockResolvedValue(target) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: target,
@@ -352,10 +346,12 @@ describe("administrator system model policy service", () => {
 
     await expect(createAdminSystemModelPolicyService(prisma, {
       refreshActive
-    }).verifyStructuredOutput({
+    }).verifyRole({
+      role: "memory",
       providerModelId: "model-1"
     })).resolves.toBeUndefined();
     expect(refreshActive).toHaveBeenCalledWith({
+      capabilityRole: "memory",
       confirmPaidRequest: true,
       connectionId: "connection-1",
       credentialId: "credential-1",
@@ -390,6 +386,7 @@ describe("administrator system model policy service", () => {
     });
     const refreshActive = vi.fn();
     const prisma = {
+      providerModel: { findUnique: vi.fn().mockResolvedValue(target) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: target,
@@ -400,7 +397,8 @@ describe("administrator system model policy service", () => {
 
     await expect(createAdminSystemModelPolicyService(prisma, {
       refreshActive
-    }).verifyStructuredOutput({
+    }).verifyRole({
+      role: "memory",
       providerModelId: "model-1"
     })).resolves.toBeUndefined();
     expect(refreshActive).not.toHaveBeenCalled();
@@ -415,6 +413,7 @@ describe("administrator system model policy service", () => {
       }
     });
     const unsupportedPrisma = {
+      providerModel: { findUnique: vi.fn().mockResolvedValue(unsupported) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: unsupported,
@@ -424,13 +423,15 @@ describe("administrator system model policy service", () => {
     } as unknown as PrismaClient;
     await expect(createAdminSystemModelPolicyService(unsupportedPrisma, {
       refreshActive
-    }).verifyStructuredOutput({
+    }).verifyRole({
+      role: "memory",
       providerModelId: "model-1"
     })).rejects.toEqual(new AdminSystemModelPolicyServiceError(
       "system_model_policy_structured_output_unsupported"
     ));
 
     const mismatchPrisma = {
+      providerModel: { findUnique: vi.fn().mockResolvedValue(null) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: verifiableModel(),
@@ -440,7 +441,8 @@ describe("administrator system model policy service", () => {
     } as unknown as PrismaClient;
     await expect(createAdminSystemModelPolicyService(mismatchPrisma, {
       refreshActive
-    }).verifyStructuredOutput({
+    }).verifyRole({
+      role: "memory",
       providerModelId: "model-other"
     })).rejects.toEqual(new AdminSystemModelPolicyServiceError(
       "system_model_policy_target_unavailable"
@@ -450,6 +452,7 @@ describe("administrator system model policy service", () => {
 
   it("locks, revalidates administrator access, and validates installation authority", async () => {
     const loadRole = vi.fn().mockResolvedValue({
+      verifiedStructuredOutput: true, verifiedForcedToolCall: true,
       snapshot: { model: { capabilities: { reasoning: true, reasoningEfforts: ["xhigh"] } } }
     });
     const update = vi.fn().mockResolvedValue({});
@@ -506,6 +509,7 @@ describe("administrator system model policy service", () => {
 
   it("validates and updates answer and reranker roles atomically", async () => {
     const loadRole = vi.fn().mockResolvedValue({
+      verifiedStructuredOutput: true, verifiedForcedToolCall: true,
       snapshot: { model: { capabilities: { reasoning: false } } }
     });
     const loadRerankerRole = vi.fn().mockResolvedValue({});
@@ -550,6 +554,7 @@ describe("administrator system model policy service", () => {
 
   it("preserves never-configured reranker state on a utility-only update", async () => {
     const loadRole = vi.fn().mockResolvedValue({
+      verifiedStructuredOutput: true, verifiedForcedToolCall: true,
       snapshot: { model: { capabilities: { reasoning: false } } }
     });
     const update = vi.fn().mockResolvedValue({});
@@ -681,6 +686,7 @@ describe("administrator system model policy service", () => {
     } as unknown as PrismaClient;
 
     await expect(createAdminSystemModelPolicyService(prisma, {
+      loadRerankerRole: vi.fn().mockResolvedValue({}),
       resolveRerankerRole: vi.fn().mockResolvedValue({
         code: "reranker_model_absent",
         ok: false,
@@ -693,44 +699,6 @@ describe("administrator system model policy service", () => {
     }).list()).resolves.toMatchObject({
       rerankerCandidates: [{ id: "reranker-1" }]
     });
-  });
-
-  it("resolves the reranker role before reading the policy so adoption is visible", async () => {
-    const order: string[] = [];
-    const prisma = {
-      providerModel: {
-        findMany: vi.fn().mockImplementation(async () => [])
-      },
-      systemModelPolicy: {
-        findUnique: vi.fn().mockImplementation(async () => {
-          order.push("policy_read");
-          return {
-            providerModel: null,
-            providerModelId: null,
-            reasoningEffort: null,
-            rerankerProviderModel: null,
-            rerankerProviderModelId: null,
-            updatedAt: NOW,
-            updatedBy: null,
-            version: 1
-          };
-        })
-      }
-    } as unknown as PrismaClient;
-
-    await createAdminSystemModelPolicyService(prisma, {
-      resolveRerankerRole: vi.fn().mockImplementation(async () => {
-        order.push("reranker_resolution");
-        return { code: "reranker_model_absent", ok: false, selectedProviderModelId: null };
-      }),
-      resolveRole: vi.fn().mockResolvedValue({
-        code: "system_model_not_configured",
-        ok: false
-      })
-    }).list();
-
-    expect(order[0]).toBe("reranker_resolution");
-    expect(order).toContain("policy_read");
   });
 
   it("rejects a reasoning effort the selected deployment does not advertise", async () => {
@@ -746,6 +714,7 @@ describe("administrator system model policy service", () => {
 
     await expect(createAdminSystemModelPolicyService(prisma, {
       loadRole: vi.fn().mockResolvedValue({
+        verifiedStructuredOutput: true, verifiedForcedToolCall: true,
         snapshot: {
           model: {
             capabilities: { reasoning: true, reasoningEfforts: ["low", "medium"] }

@@ -119,24 +119,22 @@ export function adminKnowledgeProfileFixture(
       profiledGenerations: 1,
       totalBases: 1
     },
-    pdfProcessingOptions: [
-      { available: true, mode: "local", representation: "local_only" },
-      {
-        available: false,
-        mode: "system_model_direct_pdf",
-        representation: "original_pdf_page_ranges"
-      },
-      {
-        available: false,
-        mode: "system_model_vision",
-        representation: "rendered_pdf_page_images"
-      }
-    ],
+    availablePdfDestinations: [],
     recentRevisions: [activeRevision],
-    systemModelDestination: null,
     updatedAt: "2026-08-18T00:00:00.000Z",
     updatedBy: null,
     version: 1,
     ...overrides
+  };
+}
+
+export function adminKnowledgeSettingsFixture(
+  overrides: Partial<AdminKnowledgeSettings> = {}
+): AdminKnowledgeSettings {
+  return {
+    answerPolicy: adminKnowledgeAnswerPolicyFixture(),
+    ingestionLimits: { maxChunksPerDocument: 10_000, maxFileBytes: 25_000_000, maxNormalizedChars: 5_000_000, maxPages: 2_000 },
+    operations: adminKnowledgeOperationsFixture(), profile: adminKnowledgeProfileFixture(),
+    retrieval: { candidateLimit: 40, resultLimit: 16 }, ...overrides
   };
 }

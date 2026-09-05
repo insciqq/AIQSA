@@ -174,6 +174,7 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
 
         {status ? (
           <>
+            <a className={quietButton + " mt-5"} href="/admin?section=system-models">Manage assignments in System Models</a>
             <dl className="mt-5 divide-y divide-trace-subtle border-y border-trace-subtle" aria-live="polite">
               <StatusLine label={copy.configured}>
                 <ConfiguredTargets targets={status.configuredTargets} />

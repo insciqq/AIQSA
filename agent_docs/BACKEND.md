@@ -23,7 +23,7 @@ Authentication keeps one identity/session transition owner. Password, OAuth, inv
 
 The Personal Memory MCP is an inbound same-installation resource, not part of the administrator-managed outbound MCP control plane. Its OAuth grant resolves one current active AIQSA account at every call; that identity is the sole Memory owner and no client-supplied tenant or user selector is accepted. The first version exposes only canonical personal Memory facts and creates no Chat, Message, ModelRun, `MemoryRetrievalAttempt`, or outbound MCP state; governed query-embedding and reranker executions use their content-free inbound-request owner.
 
-Installation model recommendation and internal system utility selection are separate. Neither grants entitlement. The utility role resolves only its exact configured model and installation credential; absence or invalidity fails closed without fallback.
+Installation answer recommendations and purpose-specific System Model assignments are independent and never grant entitlement. Every role resolves only its configured deployment and installation credential; absence or invalidity fails that stage closed without substitution. Consolidated administration preserves each domain's state owner: Memory utility bindings are future-only, Knowledge document and embedding changes atomically activate an immutable profile with explicit reprocessing/reindexing, and owner-scoped Personal Memory embeddings retain their existing entitlement and generation contract.
 
 ## Files, Jobs, And Shares
 

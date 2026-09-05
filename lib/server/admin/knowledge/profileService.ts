@@ -21,13 +21,11 @@ import {
 import { scheduleKnowledgeProfileMigration } from "../../knowledge/profileMigration";
 import {
   loadProjectEmbeddingProviderRole,
+  loadInstallationAnswerProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createAcceptedProviderRequestExecutor } from "../../providerRuntime/acceptedRequestExecutor";
-import {
-  applySystemModelReasoningEffort,
-  createSystemModelRoleResolver
-} from "../../providerRuntime/systemModelRole";
+import type { SearchProbeBinding } from "../../search/probeBinding";
 import {
   normalizeProviderModelConfiguration,
   ProviderConfigurationError
@@ -64,6 +62,8 @@ type RevisionRecord = Prisma.KnowledgeIndexProfileRevisionGetPayload<{
 type ProcessingClient = Prisma.TransactionClient | PrismaClient;
 
 type SystemModelPin = Readonly<{
+  authority?: SearchProbeBinding | null;
+  verifiedVisionInput?: true;
   policyVersion: number;
   snapshot: ProviderExecutionSnapshot;
 }>;
@@ -73,7 +73,7 @@ type InstallationDestinationResolver = (
   deploymentId: string
 ) => Promise<Readonly<{ pin: KnowledgeVectorSpacePin }> | null>;
 
-type SystemModelResolver = (client: ProcessingClient) => Promise<SystemModelPin | null>;
+type SystemModelResolver = (client: ProcessingClient, deploymentId: string) => Promise<SystemModelPin | null>;
 
 type VisionProbe = (
   snapshot: ProviderExecutionSnapshot,
@@ -113,6 +113,7 @@ function revisionSnapshot(revision: Readonly<{
     revision.pdfSystemModelSnapshot === null) return null;
   try {
     return {
+      ...(revision.pdfProcessingMode === "system_model_vision" ? { verifiedVisionInput: true as const } : {}),
       policyVersion: Number(revision.pdfSystemModelPolicyVersion),
       snapshot: normalizeProviderExecutionSnapshot(revision.pdfSystemModelSnapshot)
     };
@@ -159,6 +160,7 @@ function canonicalJson(value: unknown): string {
 
 function samePin(left: SystemModelPin, right: SystemModelPin): boolean {
   return left.policyVersion === right.policyVersion &&
+    canonicalJson(left.authority ?? null) === canonicalJson(right.authority ?? null) &&
     canonicalJson(left.snapshot) === canonicalJson(right.snapshot);
 }
 
@@ -166,7 +168,7 @@ function supportsMode(pin: SystemModelPin, mode: AdminKnowledgePdfProcessingMode
   if (mode === "local") return true;
   return mode === "system_model_direct_pdf"
     ? pin.snapshot.model.capabilities.nativePdfInput === true
-    : pin.snapshot.model.capabilities.vision === true;
+    : pin.verifiedVisionInput === true && pin.snapshot.model.capabilities.vision === true;
 }
 
 function isRetryableSerialization(error: unknown): boolean {
@@ -195,7 +197,7 @@ export function createAdminKnowledgeProfileService(
   options: Readonly<{
     probeVision?: VisionProbe;
     resolveInstallationDestination?: InstallationDestinationResolver;
-    resolveSystemModel?: SystemModelResolver;
+    resolveDocumentModel?: SystemModelResolver;
     scheduleMigration?: typeof scheduleKnowledgeProfileMigration;
   }> = {}
 ) {
@@ -217,24 +219,26 @@ export function createAdminKnowledgeProfileService(
       throw error;
     }
   };
-  const defaultSystemModel: SystemModelResolver = async (client) => {
-    const resolved = await createSystemModelRoleResolver(client).resolve();
-    if (!resolved.ok) return null;
+  const defaultSystemModel: SystemModelResolver = async (client, deploymentId) => {
     try {
-      const snapshot = normalizeProviderExecutionSnapshot(resolved.role.snapshot);
+      const role = await loadInstallationAnswerProviderRole(client, { providerModelId: deploymentId });
+      if (!role.authority) return null;
       return {
-        policyVersion: resolved.policyVersion,
-        snapshot: applySystemModelReasoningEffort(snapshot, resolved.reasoningEffort)
+        authority: role.authority,
+        policyVersion: role.authority.modelVersion,
+        ...(role.verifiedVisionInput ? { verifiedVisionInput: true as const } : {}),
+        snapshot: normalizeProviderExecutionSnapshot(role.snapshot)
       };
-    } catch {
-      return null;
+    } catch (error) {
+      if (availabilityFailure(error)) return null;
+      throw error;
     }
   };
   const execute = createAcceptedProviderRequestExecutor(prisma);
   const defaultVisionProbe = createProviderVisionInputProbe({ execute }).probe;
   const installationDestination = options.resolveInstallationDestination ??
     defaultInstallationDestination;
-  const resolveSystemModel = options.resolveSystemModel ?? defaultSystemModel;
+  const resolveDocumentModel = options.resolveDocumentModel ?? defaultSystemModel;
   const probeVision = options.probeVision ?? defaultVisionProbe;
   const scheduleMigration = options.scheduleMigration ?? scheduleKnowledgeProfileMigration;
 
@@ -270,6 +274,22 @@ export function createAdminKnowledgeProfileService(
     }));
     return candidates.filter((candidate): candidate is AdminKnowledgeProfileDestination =>
       candidate !== null);
+  }
+
+  async function listPdfDestinations() {
+    const models = await prisma.providerModel.findMany({
+      select: { id: true }, orderBy: [{ displayName: "asc" }, { id: "asc" }],
+      where: { modelClass: "answer", enabled: true, activeVersion: { gt: 0 }, connection: { enabled: true } }
+    });
+    const destinations = [];
+    for (const model of models) {
+      const pin = await resolveDocumentModel(prisma, model.id);
+      if (!pin) continue;
+      const directPdf = supportsMode(pin, "system_model_direct_pdf");
+      const vision = supportsMode(pin, "system_model_vision");
+      if (directPdf || vision) destinations.push({ ...processingDestination(pin.snapshot), directPdf, vision });
+    }
+    return destinations;
   }
 
   function currentPolicy(revision: RevisionRecord): boolean {
@@ -316,15 +336,11 @@ export function createAdminKnowledgeProfileService(
   }
 
   async function processingPreflight(
-    mode: AdminKnowledgePdfProcessingMode
+    mode: AdminKnowledgePdfProcessingMode,
+    deploymentId: string | null
   ): Promise<SystemModelPin | null> {
     if (mode === "local") return null;
-    let pin: SystemModelPin | null;
-    try {
-      pin = await resolveSystemModel(prisma);
-    } catch {
-      pin = null;
-    }
+    const pin = deploymentId ? await resolveDocumentModel(prisma, deploymentId) : null;
     if (!pin || !supportsMode(pin, mode) ||
       !await processingSnapshotAvailable(prisma, pin, mode)) {
       throw new AdminKnowledgeProfileServiceError("knowledge_pdf_processing_mode_unavailable");
@@ -379,8 +395,12 @@ export function createAdminKnowledgeProfileService(
       expectedVersion: number;
       now?: Date;
       pdfProcessingMode: AdminKnowledgePdfProcessingMode;
+      documentDeploymentId: string | null;
       userId: string;
     }>): Promise<void> {
+      if ((input.pdfProcessingMode === "local") !== (input.documentDeploymentId === null)) {
+        throw new AdminKnowledgeProfileServiceError("knowledge_pdf_processing_mode_unavailable");
+      }
       let processingPin: SystemModelPin | null = null;
       if (input.pdfProcessingMode !== "local") {
         const before = await prisma.knowledgeIndexProfile.findUnique({
@@ -390,7 +410,7 @@ export function createAdminKnowledgeProfileService(
         if (!before || before.version !== input.expectedVersion) {
           throw new AdminKnowledgeProfileServiceError("knowledge_profile_stale");
         }
-        processingPin = await processingPreflight(input.pdfProcessingMode);
+        processingPin = await processingPreflight(input.pdfProcessingMode, input.documentDeploymentId);
       }
       const now = input.now ?? new Date();
       await serializable(() => prisma.$transaction(async (tx) => {
@@ -406,7 +426,7 @@ export function createAdminKnowledgeProfileService(
           throw new AdminKnowledgeProfileServiceError("knowledge_profile_destination_unavailable");
         }
         if (processingPin) {
-          const currentPin = await resolveSystemModel(tx);
+          const currentPin = await resolveDocumentModel(tx, input.documentDeploymentId!);
           if (!currentPin || !samePin(processingPin, currentPin) ||
             !supportsMode(currentPin, input.pdfProcessingMode) ||
             !await processingSnapshotAvailable(tx, currentPin, input.pdfProcessingMode)) {
@@ -476,7 +496,7 @@ export function createAdminKnowledgeProfileService(
         legacyGenerations,
         profiledGenerations,
         totalBases,
-        currentSystemModel
+        availablePdfDestinations
       ] = await Promise.all([
         prisma.knowledgeIndexProfile.findUnique({
           include: {
@@ -500,7 +520,7 @@ export function createAdminKnowledgeProfileService(
         prisma.knowledgeBase.count({
           where: { archivedAt: null, deletionRequestedAt: null, trashedAt: null }
         }),
-        resolveSystemModel(prisma).catch(() => null)
+        listPdfDestinations()
       ]);
       if (!profile) throw new Error("installation_knowledge_profile_missing");
       const active = profile.activeRevision;
@@ -605,29 +625,8 @@ export function createAdminKnowledgeProfileService(
           profiledGenerations,
           totalBases
         },
-        pdfProcessingOptions: [
-          { available: true, mode: "local", representation: "local_only" },
-          {
-            available: Boolean(currentSystemModel && supportsMode(
-              currentSystemModel,
-              "system_model_direct_pdf"
-            )),
-            mode: "system_model_direct_pdf",
-            representation: "original_pdf_page_ranges"
-          },
-          {
-            available: Boolean(currentSystemModel && supportsMode(
-              currentSystemModel,
-              "system_model_vision"
-            )),
-            mode: "system_model_vision",
-            representation: "rendered_pdf_page_images"
-          }
-        ],
+        availablePdfDestinations,
         recentRevisions: profile.revisions.filter(currentPolicy).map(revisionProjection),
-        systemModelDestination: currentSystemModel
-          ? processingDestination(currentSystemModel.snapshot)
-          : null,
         updatedAt: profile.updatedAt.toISOString(),
         updatedBy: profile.updatedBy,
         version: profile.version

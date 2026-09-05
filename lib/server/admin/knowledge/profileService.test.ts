@@ -134,12 +134,12 @@ describe("administrator Knowledge profile service", () => {
         findUnique: vi.fn().mockResolvedValue(credentialVersion)
       }
     } as unknown as PrismaClient;
-    const systemModel = { policyVersion: 7, snapshot: systemSnapshot() };
+    const systemModel = { verifiedVisionInput: true as const, policyVersion: 7, snapshot: systemSnapshot() };
     const probeVision = vi.fn(async () => true);
     const service = createAdminKnowledgeProfileService(prisma, {
       probeVision,
       resolveInstallationDestination: vi.fn(async () => ({ pin })),
-      resolveSystemModel: vi.fn(async () => systemModel),
+      resolveDocumentModel: vi.fn(async () => systemModel),
       scheduleMigration: vi.fn(async () => ({
         activatedBases: 0,
         alreadyActiveBases: 0,
@@ -154,6 +154,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 4,
       now: NOW,
+      documentDeploymentId: "answer-1",
       pdfProcessingMode: "system_model_direct_pdf",
       userId: "admin-1"
     });
@@ -197,12 +198,13 @@ describe("administrator Knowledge profile service", () => {
     const service = createAdminKnowledgeProfileService(prisma, {
       probeVision: vi.fn(async () => false),
       resolveInstallationDestination: vi.fn(async () => ({ pin })),
-      resolveSystemModel: vi.fn(async () => ({ policyVersion: 7, snapshot: systemSnapshot() }))
+      resolveDocumentModel: vi.fn(async () => ({ verifiedVisionInput: true as const, policyVersion: 7, snapshot: systemSnapshot() }))
     });
 
     await expect(service.activate({
       deploymentId: "embedding-1",
       expectedVersion: 4,
+      documentDeploymentId: "answer-1",
       pdfProcessingMode: "system_model_vision",
       userId: "admin-1"
     })).rejects.toEqual(
@@ -245,6 +247,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 4,
       now: NOW,
+      documentDeploymentId: null,
       pdfProcessingMode: "local",
       userId: "admin-1"
     });
@@ -317,6 +320,7 @@ describe("administrator Knowledge profile service", () => {
       }
     } as unknown as PrismaClient;
     const service = createAdminKnowledgeProfileService(prisma, {
+      resolveDocumentModel: vi.fn(async () => null),
       resolveInstallationDestination: vi.fn(async () => ({ pin }))
     });
 
@@ -376,6 +380,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 2,
       now: NOW,
+      documentDeploymentId: null,
       pdfProcessingMode: "local",
       userId: "admin-1"
     })).rejects.toEqual(new AdminKnowledgeProfileServiceError("knowledge_profile_stale"));

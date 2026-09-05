@@ -98,7 +98,8 @@ function store(input: Readonly<{
     providerModelCredentialCheck: {
       findFirst: vi.fn(async () => input.checkAvailable === false
         ? null
-        : { evidence: {}, id: "check-1" })
+        : { evidence: { method: "tiny_generation", upstreamModelId: configuration.upstreamModelId,
+          selectedProviders: ["Together"], reranking: { probeVersion: 1, completeScores: true } }, id: "check-1" })
     },
     providerUserCredentialAssignment: { findUnique: vi.fn(async () => null) }
   };

@@ -163,6 +163,7 @@ describe("administrator Knowledge settings handlers", () => {
         action: "activate_profile",
         deploymentId: "embedding-1",
         expectedVersion: 2,
+        documentDeploymentId: null,
         pdfProcessingMode: "local"
       }),
       headers: { "content-type": "application/json" },
@@ -173,6 +174,7 @@ describe("administrator Knowledge settings handlers", () => {
     expect(service.activateProfile).toHaveBeenCalledWith({
       deploymentId: "embedding-1",
       expectedVersion: 2,
+      documentDeploymentId: null,
       pdfProcessingMode: "local",
       userId: "user-1"
     });
@@ -184,6 +186,7 @@ describe("administrator Knowledge settings handlers", () => {
           action: "activate_profile",
           deploymentId: "embedding-1",
           expectedVersion: 2,
+          documentDeploymentId: null,
           pdfProcessingMode: "local",
           visionDeploymentId: "vision-1"
         }),

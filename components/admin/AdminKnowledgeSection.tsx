@@ -1,10 +1,8 @@
 "use client";
 
 import {
-  activateAdminKnowledgeProfile,
   adminKnowledgeErrorMessage,
   getAdminKnowledgeSettings,
-  rollbackAdminKnowledgeProfile,
   updateAdminKnowledgeAnswerPolicy,
   updateAdminKnowledgeIngestionParallelism
 } from "@/components/admin/adminKnowledgeApi";
@@ -64,10 +62,6 @@ export function AdminKnowledgeSection({
   const [settings, setSettings] = useState<AdminKnowledgeSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [selectedDestinationId, setSelectedDestinationId] = useState("");
-  const [selectedPdfMode, setSelectedPdfMode] =
-    useState<AdminKnowledgePdfProcessingMode>("local");
-  const [selectedRevisionId, setSelectedRevisionId] = useState("");
   const [maximumKnowledgeSearches, setMaximumKnowledgeSearches] = useState(12);
   const [ingestionParallelism, setIngestionParallelism] = useState(8);
   const [error, setError] = useState<string | null>(null);
@@ -76,18 +70,6 @@ export function AdminKnowledgeSection({
 
   const apply = useCallback((next: AdminKnowledgeSettings) => {
     setSettings(next);
-    const activeDeploymentId = next.profile.activeRevision?.destination.deploymentId ?? "";
-    setSelectedDestinationId(
-      next.profile.availableDestinations.some(({ deploymentId }) => deploymentId === activeDeploymentId)
-        ? activeDeploymentId
-        : next.profile.availableDestinations[0]?.deploymentId ?? ""
-    );
-    setSelectedRevisionId(
-      next.profile.recentRevisions.find((revision) =>
-        revision.executionAuthority === "installation" &&
-        revision.id !== next.profile.activeRevision?.id)?.id ?? ""
-    );
-    setSelectedPdfMode(next.profile.activeRevision?.pdfProcessing.mode ?? "local");
     setMaximumKnowledgeSearches(next.answerPolicy.maximumKnowledgeSearches);
     setIngestionParallelism(next.answerPolicy.ingestionParallelism);
   }, []);
@@ -113,45 +95,6 @@ export function AdminKnowledgeSection({
     autoLoadAttemptedRef.current = true;
     void refresh();
   }, [active, loading, refresh, settings]);
-
-  const activateProfile = async () => {
-    if (!settings || !selectedDestinationId || busy) return;
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    const result = await activateAdminKnowledgeProfile({
-      deploymentId: selectedDestinationId,
-      expectedVersion: settings.profile.version,
-      pdfProcessingMode: selectedPdfMode
-    });
-    setBusy(false);
-    if (!result.ok) {
-      setError(adminKnowledgeErrorMessage(result.error));
-      return;
-    }
-    apply(result.data);
-    setNotice("Knowledge profile activated. Existing Bases are rebuilding safely in the background.");
-    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
-  };
-
-  const rollbackProfile = async () => {
-    if (!settings || !selectedRevisionId || busy) return;
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    const result = await rollbackAdminKnowledgeProfile({
-      expectedVersion: settings.profile.version,
-      revisionId: selectedRevisionId
-    });
-    setBusy(false);
-    if (!result.ok) {
-      setError(adminKnowledgeErrorMessage(result.error));
-      return;
-    }
-    apply(result.data);
-    setNotice("Earlier Knowledge profile selected. Existing Bases are rolling back safely in the background.");
-    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
-  };
 
   const saveAnswerPolicy = async () => {
     if (!settings || busy || !Number.isSafeInteger(maximumKnowledgeSearches) ||
@@ -196,8 +139,6 @@ export function AdminKnowledgeSection({
   };
 
   const activeProfile = settings?.profile.activeRevision ?? null;
-  const rollbackRevisions = settings?.profile.recentRevisions.filter((revision) =>
-    revision.executionAuthority === "installation" && revision.id !== activeProfile?.id) ?? [];
   const healthLabel = settings?.profile.health.state === "ready"
     ? "Ready"
     : settings?.profile.health.state === "ready_with_warnings"
@@ -205,14 +146,6 @@ export function AdminKnowledgeSection({
       : settings?.profile.health.state === "unavailable"
         ? "Unavailable"
         : "Not configured";
-  const activationChangesProfile = Boolean(settings && selectedDestinationId && (
-    selectedDestinationId !== activeProfile?.destination.deploymentId ||
-    selectedPdfMode !== activeProfile?.pdfProcessing.mode ||
-    settings.profile.health.state !== "ready"
-  ));
-  const selectedPdfOption = settings?.profile.pdfProcessingOptions.find(
-    ({ mode }) => mode === selectedPdfMode
-  ) ?? null;
   const processingCopy: Record<AdminKnowledgePdfProcessingMode, Readonly<{
     label: string;
     summary: string;
@@ -319,7 +252,7 @@ export function AdminKnowledgeSection({
 
               {settings.profile.health.code === "knowledge_profile_legacy_authority" ? (
                 <p className="mt-3 border-l-2 border-caution bg-caution/[0.06] px-3 py-2 text-xs leading-5 text-ink-secondary">
-                  Existing indexes are using the legacy per-user credential path. Activate a ready destination below to move future Bases and reprocessing to installation authority without changing accepted runs.
+                  Existing indexes are using the legacy per-user credential path. Activate a ready destination in System Models to move future Bases and reprocessing to installation authority without changing accepted runs.
                 </p>
               ) : settings.profile.health.state === "unavailable" ? (
                 <p className="mt-3 border-l-2 border-critical bg-critical/[0.06] px-3 py-2 text-xs leading-5 text-ink-secondary">
@@ -327,79 +260,11 @@ export function AdminKnowledgeSection({
                 </p>
               ) : settings.profile.health.state === "not_configured" ? (
                 <p className="mt-3 border-l-2 border-caution bg-caution/[0.06] px-3 py-2 text-xs leading-5 text-ink-secondary">
-                  No processing route is active. Configure and test an embedding model in Providers, then activate it here before users create Knowledge Bases.
+                  No processing route is active. Configure and test an embedding model in Providers, then activate it in System Models before users create Knowledge Bases.
                 </p>
               ) : null}
 
-              <fieldset className="mt-4" disabled={busy}>
-                <legend className="text-xs font-medium text-ink-secondary">PDF processing</legend>
-                <p className="mt-1 text-xs leading-5 text-ink-muted">
-                  Select one route. Non-PDF documents continue through the local document pipeline.
-                </p>
-                <div className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle">
-                  {settings.profile.pdfProcessingOptions.map((option) => {
-                    const copy = processingCopy[option.mode];
-                    return (
-                      <label
-                        className={`grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] gap-3 px-3 py-3 ${!option.available ? "cursor-not-allowed opacity-55" : "hover:bg-workspace-rail/35"}`}
-                        key={option.mode}
-                      >
-                        <input
-                          checked={selectedPdfMode === option.mode}
-                          className="mt-0.5 size-4 accent-[rgb(var(--proof))]"
-                          disabled={!option.available}
-                          name="knowledge-pdf-processing-mode"
-                          onChange={() => setSelectedPdfMode(option.mode)}
-                          type="radio"
-                        />
-                        <span>
-                          <span className="block text-xs font-semibold text-ink">{copy.label}</span>
-                          <span className="mt-1 block text-xs leading-5 text-ink-muted">{copy.summary}</span>
-                        </span>
-                        <span className="text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted">
-                          {option.available ? "" : "Not supported"}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                {settings.profile.systemModelDestination ? (
-                  <p className="mt-2 text-xs text-ink-muted">
-                    Current System Model · {settings.profile.systemModelDestination.connectionDisplayName} / {settings.profile.systemModelDestination.modelDisplayName}
-                  </p>
-                ) : (
-                  <p className="mt-2 text-xs text-caution">Set an installation System Model to use Direct PDF or Vision.</p>
-                )}
-              </fieldset>
-
-              <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-                <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
-                  Embedding destination
-                  <select
-                    className={inputClass}
-                    disabled={busy || settings.profile.availableDestinations.length === 0}
-                    onChange={(event) => setSelectedDestinationId(event.currentTarget.value)}
-                    value={selectedDestinationId}
-                  >
-                    {settings.profile.availableDestinations.length === 0
-                      ? <option value="">No tested installation destination</option>
-                      : settings.profile.availableDestinations.map((item) => (
-                          <option key={item.deploymentId} value={item.deploymentId}>
-                            {item.connectionDisplayName} / {item.modelDisplayName} · {item.targetDimension.toLocaleString()} dimensions
-                          </option>
-                        ))}
-                  </select>
-                  <span className="font-normal text-ink-muted">Only enabled embedding models with a tested installation credential appear here.</span>
-                </label>
-                <button
-                  className={primaryButton}
-                  disabled={busy || !activationChangesProfile || !selectedPdfOption?.available}
-                  onClick={() => void activateProfile()}
-                  type="button"
-                >
-                  Activate for future processing
-                </button>
-              </div>
+              <a className={quietButton + " mt-4"} href="/admin?section=system-models">Manage assignments in System Models</a>
 
               {profileRollout && profileRollout.activeProfileBases < profileRollout.totalBases ? (
                 <div
@@ -431,25 +296,6 @@ export function AdminKnowledgeSection({
                   {settings.profile.updatedBy ? ` · changed by ${settings.profile.updatedBy.displayName}` : ""}
                   {` · ${settings.profile.migration.activeProfileBases.toLocaleString()}/${settings.profile.migration.totalBases.toLocaleString()} Bases on revision`}
                 </span>
-                {rollbackRevisions.length > 0 ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label className="sr-only" htmlFor="knowledge-profile-rollback">Earlier processing profile</label>
-                    <select
-                      className={`${inputClass} min-w-52`}
-                      disabled={busy}
-                      id="knowledge-profile-rollback"
-                      onChange={(event) => setSelectedRevisionId(event.currentTarget.value)}
-                      value={selectedRevisionId}
-                    >
-                      {rollbackRevisions.map((revision) => (
-                        <option key={revision.id} value={revision.id}>
-                          Revision {revision.revisionNumber} · {processingCopy[revision.pdfProcessing.mode].label} · {revision.destination.connectionDisplayName} / {revision.destination.modelDisplayName}
-                        </option>
-                      ))}
-                    </select>
-                    <button className={quietButton} disabled={busy || !selectedRevisionId} onClick={() => void rollbackProfile()} type="button">Restore profile</button>
-                  </div>
-                ) : null}
               </div>
             </section>
 

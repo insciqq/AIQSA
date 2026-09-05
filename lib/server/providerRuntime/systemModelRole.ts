@@ -5,6 +5,7 @@ import {
   ProviderAdmissionError,
   type ProviderAdmissionRole
 } from "./admission";
+import { systemModelRoleEligible } from "./systemModelCapabilities";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 
 export const SYSTEM_MODEL_ABSENT = "system_model_absent" as const;
@@ -80,6 +81,9 @@ export function createSystemModelRoleResolver(
         const role = await loadRole(db, {
           providerModelId: policy.providerModelId
         });
+        if (!systemModelRoleEligible(role, "memory")) {
+          return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
+        }
         if (policy.reasoningEffort !== null) {
           const capabilities = role.snapshot.model.capabilities;
           if (capabilities.reasoning !== true ||

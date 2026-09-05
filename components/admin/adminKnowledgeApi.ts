@@ -43,6 +43,7 @@ export function activateAdminKnowledgeProfile(input: Readonly<{
   deploymentId: string;
   expectedVersion: number;
   pdfProcessingMode: AdminKnowledgePdfProcessingMode;
+  documentDeploymentId: string | null;
 }>, fetcher: Fetcher = fetch) {
   return request({
     body: JSON.stringify({ action: "activate_profile", ...input }),
@@ -91,7 +92,7 @@ export function adminKnowledgeErrorMessage(code: string): string {
     knowledge_answer_policy_stale: "Answer retrieval settings changed elsewhere. Refresh and try again.",
     knowledge_ingestion_parallelism_invalid: "Choose between 1 and 64 parallel documents.",
     knowledge_ingestion_parallelism_stale: "Document processing settings changed elsewhere. Refresh and try again.",
-    knowledge_pdf_processing_mode_unavailable: "That PDF processing route is not ready on the current System Model.",
+    knowledge_pdf_processing_mode_unavailable: "That PDF processing route is not verified on the selected document model.",
     knowledge_response_invalid: "The Knowledge settings response was invalid.",
     knowledge_profile_destination_unavailable: "That processing destination is no longer ready. Check its provider connection and refresh.",
     knowledge_profile_input_invalid: "The processing profile request was invalid. Refresh and try again.",

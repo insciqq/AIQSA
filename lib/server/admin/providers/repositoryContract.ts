@@ -1,3 +1,4 @@
+import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
   AdminProviderCheckStatus,
   AdminProviderConnection,
@@ -238,6 +239,7 @@ export type AdminProviderRepository = Readonly<{
     check: StoredProviderDraftCheck
   ): Promise<"stale" | "stored">;
   storeActiveRefreshCas(input: {
+    capabilityRole?: SystemModelVerificationRole;
     candidate: ProviderActiveRefreshCandidate;
     checkedAt: Date;
     evidence: AdminProviderTestEvidence;
