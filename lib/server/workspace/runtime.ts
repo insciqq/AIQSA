@@ -1,3 +1,4 @@
+import type { WorkspaceOperation } from "./operationFence";
 import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
@@ -74,8 +75,8 @@ export type WorkspaceOutputStream = Readonly<{
 
 /**
  * Result of quiescing one long-lived execution. `closed` proves the guest
- * process is gone; `unknown` means the runtime could not prove it, so the
- * caller must stop the VM to guarantee quiescence.
+ * process and all its descendants are gone; `unknown` means the runtime could
+ * not prove it, so the caller must stop the VM to guarantee quiescence.
  */
 export type WorkspaceExecutionTermination = Readonly<{
   outcome: "closed" | "unknown";
@@ -85,11 +86,20 @@ export type WorkspaceExecutionTermination = Readonly<{
 export type WorkspaceOutputReleaseInput = Readonly<{
   batchId: string;
   runtimeSandboxId: string;
+  operation?: WorkspaceOperation;
   sessionId: string;
   signal?: AbortSignal;
 }>;
 
+export type WorkspaceOperationInput = Readonly<{
+  operation: WorkspaceOperation;
+  runtimeSandboxId: string | null;
+  sessionId: string;
+}>;
+
 export interface WorkspaceRuntime {
+  claimSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
+  retireSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   health(signal?: AbortSignal): Promise<WorkspaceRuntimeHealth>;
   ensureSession(input: Readonly<{
     cpus: number;
@@ -99,16 +109,19 @@ export interface WorkspaceRuntime {
     memoryMiB: number;
     runtimeSandboxId: string | null;
     sandboxName: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceRuntimeSession>;
   /**
-   * Originals already present in the guest inbox according to its index,
-   * verified against real regular files. Any read/parse problem yields an
-   * empty list so the caller restages everything instead of failing.
+   * Canonically admitted originals whose actual regular-file bytes match.
+   * The guest index is only a bounded hint. Unusable copies are omitted so
+   * the caller restages them; cancellation still propagates.
    */
   listStagedAttachments(input: Readonly<{
+    attachments: readonly WorkspaceStagedAttachmentEntry[];
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceStagedAttachmentEntry[]>;
@@ -118,11 +131,13 @@ export interface WorkspaceRuntime {
     manifests: readonly Readonly<{ body: unknown; messageId: string }>[];
     outputDirectory?: string;
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<void>;
   loadBoundTools(input: Readonly<{
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceToolCatalog>;
@@ -132,6 +147,7 @@ export interface WorkspaceRuntime {
     modelRunToolCallId: string;
     originalName: WorkspaceMcpToolName;
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceToolResult>;
@@ -139,40 +155,58 @@ export interface WorkspaceRuntime {
     modelRunId: string;
     modelRunToolCallId: string;
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
   }>): Promise<void>;
   /**
    * Terminates the given executions on behalf of the application's durable
-   * registry: TERM, a bounded grace period, KILL, then close. The runner's own
-   * ownership cache must not block this after a restart.
+   * registry: TERM, a bounded grace period, KILL, then observe. A signal,
+   * handle close or leader-only exit never proves descendant termination. The
+   * runner's own ownership cache must not block this after a restart.
    */
   terminateExecutions(input: Readonly<{
     executions: readonly Readonly<{ modelRunId: string; runtimeExecSessionId: string }>[];
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceExecutionTermination[]>;
   collectOutputs(input: Readonly<{
+    /** Create once, then read only this private capture even after guest mutation. */
+    capture?: Readonly<{ create: boolean; id: string }>;
     modelRunId: string;
     outputDirectory: string;
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceOutputStream[]>;
   /** Releases every unopened handle of an output batch; idempotent. */
   releaseOutputs?(input: WorkspaceOutputReleaseInput): Promise<void>;
+  /** Current owner only; completed captures otherwise live until exact-session removal. */
+  releaseOutputCapture?(input: Readonly<{
+    captureId: string;
+    modelRunId: string;
+    runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<void>;
   createProjectArchive(input: Readonly<{
     runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceOutputStream>;
   stopSession(input: Readonly<{
     runtimeSandboxId: string | null;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<void>;
   removeSession(input: Readonly<{
     runtimeSandboxId: string | null;
+    operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<void>;
@@ -183,12 +217,15 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_attachment_unavailable"
     | "workspace_archive_limit_exceeded"
     | "workspace_execution_cleanup_failed"
+    | "workspace_operation_stale"
     | "workspace_output_limit_exceeded"
     | "workspace_output_export_failed"
     | "workspace_runtime_incompatible"
     | "workspace_runtime_unavailable"
     | "workspace_session_create_failed"
     | "workspace_session_lost"
+    /** The runner proved the requested tool had not reached MCP dispatch. */
+    | "workspace_session_lost_before_dispatch"
     | "workspace_tool_cancelled"
     | "workspace_tool_timeout";
 

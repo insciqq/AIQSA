@@ -131,6 +131,9 @@ export function workspaceToolIsAllowed(value: string): value is WorkspaceMcpTool
   return (WORKSPACE_MCP_TOOL_ALLOWLIST as readonly string[]).includes(value);
 }
 
+/** Shared by durable selection and private output-status projection. */
+export const WORKSPACE_EXPORT_MAX_ATTEMPTS = 20;
+
 /**
  * Output export failures that no retry can repair: the run's output set is
  * invalid, or the guest disk that held it is gone. Everything else (storage,

@@ -89,6 +89,8 @@ const bases = [
 
 const files = [
   {
+    canOpenChat: true,
+    saved: false,
     id: "sales",
     meta: "From chat “Quarterly product brief” · 214 kB",
     name: "sales_q3.csv",
@@ -97,6 +99,8 @@ const files = [
   },
   {
     id: "scan",
+    canOpenChat: true,
+    saved: false,
     meta: "OCR and text extraction",
     name: "contract_scan.pdf",
     private: true,

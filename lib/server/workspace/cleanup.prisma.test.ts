@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
 import { prisma } from "@/lib/server/prisma";
 import { getWorkspaceConfig } from "./config";
@@ -10,6 +10,8 @@ import {
   runWorkspaceMaintenance
 } from "./cleanup";
 import type { WorkspaceRuntime } from "./runtime";
+import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
+import { namespacedWorkspaceToolName } from "./toolCatalog";
 
 const config = getWorkspaceConfig({
   AIQSA_TEST_MODE: "1",
@@ -77,7 +79,7 @@ describe("Prisma Workspace maintenance", () => {
       .mockRejectedValueOnce(new Error("synthetic runner outage"))
       .mockResolvedValue(undefined);
     const stopSession = vi.fn<WorkspaceRuntime["stopSession"]>(async () => undefined);
-    const runtime: WorkspaceRuntime = {
+    const runtime: WorkspaceRuntime = fenceDeterministicWorkspaceRuntime({
       callBoundTool: unused,
       cancelToolCall: unused,
       collectOutputs: unused,
@@ -90,7 +92,7 @@ describe("Prisma Workspace maintenance", () => {
       stageAttachments: unused,
       stopSession,
       terminateExecutions: unused
-    };
+    });
 
     const user = await prisma.user.create({
       data: { displayName: "Workspace Maintenance Test", id: userId }
@@ -200,12 +202,12 @@ describe("Prisma Workspace maintenance", () => {
         idleStopped: 1,
         staleOperationsRecovered: 1,
         staleSessionsSettled: 0,
-        staleSessionsStopped: 0
+        staleSessionsStopped: 1
       });
-      expect(stopSession).toHaveBeenCalledWith({
+      expect(stopSession).toHaveBeenCalledWith(expect.objectContaining({
         runtimeSandboxId: idle.runtimeSandboxId,
         sessionId: idle.id
-      });
+      }));
       await expect(prisma.workspaceSession.findUniqueOrThrow({
         select: { lastActiveAt: true, runtimeSandboxId: true, state: true, stoppedAt: true },
         where: { id: idle.id }
@@ -263,23 +265,28 @@ describe("Prisma Workspace maintenance", () => {
 
       // The restore reconciler is global; sessions left by other lanes in the
       // shared disposable database count too, so only the fixture rows are exact.
-      await expect(reconcileWorkspaceAfterRestore(prisma, now)).resolves.toBeGreaterThanOrEqual(3);
+      await prisma.workspaceSession.update({ data: {
+        operationOwner: "run:restore_before_first_dispatch", operationExpiresAt: future
+      }, where: { id: expired.id } });
+      await expect(reconcileWorkspaceAfterRestore(prisma, now)).resolves.toBeGreaterThanOrEqual(4);
       await expect(prisma.workspaceSession.findMany({
         orderBy: { id: "asc" },
         select: {
           id: true,
           lastErrorCode: true,
+          operationOwner: true, operationExpiresAt: true,
           runtimeSandboxId: true,
           state: true,
           stoppedAt: true
         },
-        where: { id: { in: [idle.id, interrupted.id, active.id] } }
+        where: { id: { in: [expired.id, idle.id, interrupted.id, active.id] } }
       })).resolves.toEqual(
-        [idle.id, interrupted.id, active.id]
+        [expired.id, idle.id, interrupted.id, active.id]
           .sort()
           .map((id) => ({
             id,
             lastErrorCode: "workspace_restored_without_disk",
+            operationOwner: null, operationExpiresAt: null,
             runtimeSandboxId: null,
             state: "PENDING",
             stoppedAt: null
@@ -317,7 +324,7 @@ describe("Prisma Workspace maintenance", () => {
     const overflowExpiry = new Date(now.getTime() - 60_000);
     const removeSession = vi.fn<WorkspaceRuntime["removeSession"]>(async () => undefined);
     const stopSession = vi.fn<WorkspaceRuntime["stopSession"]>(async () => undefined);
-    const runtime: WorkspaceRuntime = {
+    const runtime: WorkspaceRuntime = fenceDeterministicWorkspaceRuntime({
       callBoundTool: unused,
       cancelToolCall: unused,
       collectOutputs: unused,
@@ -330,7 +337,7 @@ describe("Prisma Workspace maintenance", () => {
       stageAttachments: unused,
       stopSession,
       terminateExecutions: unused
-    };
+    });
     const user = await prisma.user.create({
       data: { displayName: "Workspace Maintenance Overflow Test", id: userId }
     });
@@ -382,11 +389,12 @@ describe("Prisma Workspace maintenance", () => {
         staleSessionsSettled: 0,
         staleSessionsStopped: 0
       });
-      expect(removeSession).toHaveBeenCalledWith({
+      expect(removeSession).toHaveBeenCalledWith(expect.objectContaining({
         runtimeSandboxId: oldest.runtimeSandboxId,
         sessionId: oldest.id
-      });
-      expect(stopSession).not.toHaveBeenCalled();
+      }));
+      expect(stopSession).toHaveBeenCalledTimes(2);
+      expect(stopSession.mock.calls.every(([input]) => input.sessionId === oldest.id)).toBe(true);
       await expect(prisma.workspaceSession.findUniqueOrThrow({
         select: { runtimeSandboxId: true, state: true },
         where: { id: overflow.id }
@@ -412,7 +420,7 @@ describe("Prisma Workspace maintenance", () => {
 describe("Prisma Workspace maintenance backstop", () => {
   const BACKSTOP_USER_PREFIX = `${TEST_USER_PREFIX}backstop-`;
 
-  afterAll(async () => {
+  afterEach(async () => {
     const users = await prisma.user.findMany({
       select: { id: true },
       where: { id: { startsWith: BACKSTOP_USER_PREFIX } }
@@ -429,7 +437,12 @@ describe("Prisma Workspace maintenance backstop", () => {
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
 
-  it("settles sessions abandoned in RUNNING or CREATING once their chat has no active run", async () => {
+  it.each([
+    { command: "sandbox_exec_start", state: "running", registeredCount: 1 },
+    { command: "sandbox_exec_start", state: "error", registeredCount: 257 },
+    { command: "sandbox_shell", state: "complete", registeredCount: 1 },
+    { command: "sandbox_exec", state: "error", registeredCount: 1 }
+  ] as const)("settles abandoned sessions including unregistered $command/$state and $registeredCount registered executions", async ({ command, state, registeredCount }) => {
     const userId = `${BACKSTOP_USER_PREFIX}${randomUUID()}`;
     const now = new Date();
     const staleAt = new Date(now.getTime() - 6 * 60 * 1_000);
@@ -440,7 +453,7 @@ describe("Prisma Workspace maintenance backstop", () => {
         runtimeExecSessionId: execution.runtimeExecSessionId
       })));
     const stopSession = vi.fn<WorkspaceRuntime["stopSession"]>(async () => undefined);
-    const runtime: WorkspaceRuntime = {
+    const runtime: WorkspaceRuntime = fenceDeterministicWorkspaceRuntime({
       callBoundTool: unused,
       cancelToolCall: unused,
       collectOutputs: unused,
@@ -453,7 +466,7 @@ describe("Prisma Workspace maintenance backstop", () => {
       stageAttachments: unused,
       stopSession,
       terminateExecutions
-    };
+    });
     await prisma.user.create({ data: { displayName: "Workspace Backstop Test", id: userId } });
     const chat = async (title: string) => prisma.chat.create({
       data: { title, userId, workspaceEnabled: true }
@@ -544,7 +557,7 @@ describe("Prisma Workspace maintenance backstop", () => {
         providerCallId: `call_${randomUUID()}`,
         roundIndex: 1,
         state: "complete",
-        toolName: "mcp_workspace_sandbox_exec_start_fixture",
+        toolName: namespacedWorkspaceToolName("sandbox_exec_start"),
         workspaceRunBindingId: registeredRun.id
       }
     });
@@ -556,6 +569,18 @@ describe("Prisma Workspace maintenance backstop", () => {
         workspaceSessionId: registered.id
       }
     });
+    const extraCalls = Array.from({ length: registeredCount - 1 }, (_, index) => ({
+      id: randomUUID(), arguments: {}, modelRunId: registeredRun.id, ordinal: index + 1,
+      providerCallId: `call_${randomUUID()}`, roundIndex: 1, state: "complete" as const,
+      toolName: namespacedWorkspaceToolName("sandbox_exec_start"), workspaceRunBindingId: registeredRun.id
+    }));
+    if (extraCalls.length) {
+      await prisma.modelRunToolCall.createMany({ data: extraCalls });
+      await prisma.workspaceExecution.createMany({ data: extraCalls.map((call) => ({
+        modelRunId: registeredRun.id, modelRunToolCallId: call.id,
+        runtimeExecSessionId: `exec-${call.ordinal}`, workspaceSessionId: registered.id
+      })) });
+    }
     const ambiguousRun = await cancelledRun(ambiguousChat.id, ambiguous.id);
     await prisma.modelRunToolCall.create({
       data: {
@@ -564,30 +589,34 @@ describe("Prisma Workspace maintenance backstop", () => {
         ordinal: 0,
         providerCallId: `call_${randomUUID()}`,
         roundIndex: 1,
-        state: "running",
-        toolName: "mcp_workspace_sandbox_exec_start_fixture",
+        state,
+        toolName: namespacedWorkspaceToolName(command),
         workspaceRunBindingId: ambiguousRun.id
       }
     });
 
     await expect(runWorkspaceMaintenance({ config, now, prisma, runtime })).resolves.toMatchObject({
       staleSessionsSettled: 3,
-      staleSessionsStopped: 1
+      staleSessionsStopped: 2
     });
     expect(terminateExecutions).toHaveBeenCalledWith(expect.objectContaining({
-      executions: [{ modelRunId: registeredRun.id, runtimeExecSessionId: "exec-registered" }],
+      executions: expect.arrayContaining([{ modelRunId: registeredRun.id, runtimeExecSessionId: "exec-registered" }]),
       runtimeSandboxId: registered.runtimeSandboxId,
       sessionId: registered.id
     }));
-    expect(stopSession).toHaveBeenCalledTimes(1);
-    expect(stopSession).toHaveBeenCalledWith({
+    expect(terminateExecutions.mock.calls.flatMap(([input]) => input.executions)).toHaveLength(registeredCount);
+    expect(await prisma.workspaceExecution.count({ where: {
+      workspaceSessionId: registered.id, state: { in: ["ACTIVE", "TERMINATING"] }
+    } })).toBe(0);
+    expect(stopSession).toHaveBeenCalledTimes(7);
+    expect(stopSession).toHaveBeenCalledWith(expect.objectContaining({
       runtimeSandboxId: ambiguous.runtimeSandboxId,
       sessionId: ambiguous.id
-    });
+    }));
     await expect(prisma.workspaceSession.findUniqueOrThrow({
       select: { state: true },
       where: { id: registered.id }
-    })).resolves.toEqual({ state: "READY" });
+    })).resolves.toEqual({ state: "STOPPED" });
     await expect(prisma.workspaceSession.findUniqueOrThrow({
       select: { state: true },
       where: { id: creating.id }
@@ -600,6 +629,10 @@ describe("Prisma Workspace maintenance backstop", () => {
       select: { state: true },
       where: { id: execution.id }
     })).resolves.toEqual({ state: "CLOSED" });
+
+    await expect(prisma.workspaceExecution.count({ where: {
+      workspaceSessionId: ambiguous.id, state: "LOST", lastErrorCode: "workspace_execution_cleanup_failed"
+    } })).resolves.toBe(1);
 
     // Nothing left to settle: the backstop is idempotent.
     await expect(runWorkspaceMaintenance({ config, now, prisma, runtime })).resolves.toMatchObject({

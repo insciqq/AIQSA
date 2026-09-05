@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import {
   createGetChatMemoryModeHandler,
@@ -14,5 +15,5 @@ const deps = {
   resolveAuth: resolveRequestAuth
 };
 
-export const GET = createGetChatMemoryModeHandler(deps);
-export const PATCH = createPatchChatMemoryModeHandler(deps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatMemoryModeHandler>> = createGetChatMemoryModeHandler(deps);
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createPatchChatMemoryModeHandler>> = createPatchChatMemoryModeHandler(deps);

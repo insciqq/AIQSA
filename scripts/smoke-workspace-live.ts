@@ -388,8 +388,8 @@ try {
     runtimeSandboxId: onlineRuntimeId,
     sessionId: onlineSessionId
   });
-  // Cancellation terminates and closes the run's executions, so the official
-  // exec id is gone afterwards; a poll that still answers must report done.
+  // A missing observation is opaque at the runtime boundary. It cannot prove
+  // process exit; exercise the same exact-VM fallback as terminal settlement.
   let cancelled = false;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     toolCallSequence += 1;
@@ -403,7 +403,10 @@ try {
     });
     const text = polled.content[0]?.text ?? "";
     if (polled.status !== "complete") {
-      assert.match(text, /exec session not found/u);
+      await runtime.stopSession({ runtimeSandboxId: onlineRuntimeId, sessionId: onlineSessionId });
+      const stopped = await Sandbox.get(onlineSandboxName);
+      assert.equal(stopped.id, onlineRuntimeId);
+      assert.equal(stopped.status, "stopped");
       cancelled = true;
       break;
     }
@@ -432,7 +435,19 @@ try {
     runtimeSandboxId: onlineRuntimeId,
     sessionId: onlineSessionId
   });
-  assert.deepEqual(terminations.map((entry) => entry.outcome), ["closed", "unknown"]);
+  assert.equal(terminations.length, 2);
+  assert.equal(terminations[0]!.runtimeExecSessionId, quiesceId);
+  assert.equal(terminations[1]!.outcome, "unknown");
+  // The deliberately unknown handle requires a VM stop even if the known
+  // execution closed. Signal/observation results alone cannot settle the run.
+  await runtime.stopSession({ runtimeSandboxId: onlineRuntimeId, sessionId: onlineSessionId });
+  assert.equal((await Sandbox.get(onlineSandboxName)).status, "stopped");
+  const afterUnknown = await runtime.ensureSession({
+    cpus: config.cpus, diskMiB: config.diskMiB, imageRef: config.imageRef,
+    internetEnabled: true, memoryMiB: config.memoryMiB,
+    runtimeSandboxId: onlineRuntimeId, sandboxName: onlineSandboxName, sessionId: onlineSessionId
+  });
+  assert.equal(afterUnknown.runtimeSandboxId, onlineRuntimeId);
   await new Promise((resolve) => setTimeout(resolve, 13_000));
   const marker = await call(onlineSessionId, onlineRuntimeId, quiesceRunId, "sandbox_fs_exists", {
     path: "/workspace/project/after-stop.txt"
@@ -441,6 +456,12 @@ try {
 
   // Incremental staging: the guest index lists intact originals only.
   const stagedListing = await runtime.listStagedAttachments({
+    attachments: staged.map((attachment) => ({
+      attachmentId: attachment.id,
+      byteSize: attachment.bytes.byteLength,
+      checksum: sha256(attachment.bytes),
+      sandboxPath: workspaceAttachmentPath({ attachmentId: attachment.id, messageId, originalName: attachment.name })
+    })),
     runtimeSandboxId: onlineRuntimeId,
     sessionId: onlineSessionId
   });
@@ -449,6 +470,17 @@ try {
     stagedListing.every((entry) => entry.checksum.length === 64 && entry.byteSize > 0),
     true
   );
+
+  const projectArchive = await runtime.createProjectArchive({
+    runtimeSandboxId: onlineRuntimeId,
+    sessionId: onlineSessionId
+  });
+  const projectBytes = await collect(projectArchive.body);
+  assert.equal(sha256(projectBytes), projectArchive.checksum);
+  assert.equal(tarContains(gunzipSync(projectBytes), "marker.txt"), true);
+  // Keep only one guest running while qualifying the second network policy.
+  await runtime.stopSession({ runtimeSandboxId: onlineRuntimeId, sessionId: onlineSessionId });
+  assert.equal((await Sandbox.get(onlineSandboxName)).status, "stopped");
 
   const offline = await runtime.ensureSession({
     cpus: config.cpus,
@@ -476,14 +508,6 @@ try {
   });
   assert.equal(noNetwork.success, true);
 
-  const projectArchive = await runtime.createProjectArchive({
-    runtimeSandboxId: onlineRuntimeId,
-    sessionId: onlineSessionId
-  });
-  const projectBytes = await collect(projectArchive.body);
-  assert.equal(sha256(projectBytes), projectArchive.checksum);
-  assert.equal(tarContains(gunzipSync(projectBytes), "marker.txt"), true);
-
   await cleanup();
   await absent(onlineSandboxName);
   await absent(offlineSandboxName);
@@ -491,7 +515,7 @@ try {
     archiveChecksum: projectArchive.checksum,
     catalogHash: catalog.hash,
     outputChecksum: outputs[0]!.checksum,
-    outputFile: outputs[0]!.relativePath,
+    outputCount: outputs.length,
     status: "passed"
   }) + "\n");
 } catch (error) {

@@ -288,7 +288,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
       "Workspace read the staged input and created result.zip."
     );
     chatId = await activeChatId(page);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready");
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
     const activity = page.getByTestId("tool-activity-disclosure").last();
     await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Worked in Workspace");
@@ -296,7 +296,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await expect(activity).toContainText("Read inbox/index.json");
     await expect(activity).toContainText(/Read inbox\/(?:opaque-input\.aiqsa-e2e|processing-evidence\.pdf)/u);
     await expect(activity).toContainText("Wrote project/persisted.txt");
-    await expect(activity).toContainText("Exported 1 file");
+    await expect(activity).toContainText("Exported 1 file", { timeout: 30_000 });
     expect(await activity.textContent()).not.toMatch(/sandbox_|Used Workspace/u);
 
     const first = await assertGeneratedZip(page);

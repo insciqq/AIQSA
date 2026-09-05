@@ -510,6 +510,19 @@
   position: relative;
 }
 
+.v2-file-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.v2-file-row-actions > a {
+  color: var(--v2-color-accent);
+  font-size: 0.8125rem;
+}
+
 .v2-library-disclosure {
   display: flex;
   align-items: center;
@@ -1074,7 +1087,12 @@
   }
 
   .v2-file-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .v2-file-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
   }
 
   .v2-file-actions-menu .v2-icon-button {

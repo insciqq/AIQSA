@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssistants";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
@@ -28,12 +29,12 @@ const repository = createPrismaRunRepository();
 const chatRepository = createPrismaChatRepository();
 const storage = createS3StorageAdapter();
 
-export const GET = createGetChatMessagesPageHandler({
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatMessagesPageHandler>> = createGetChatMessagesPageHandler({
   repository: chatRepository,
   resolveAuth: resolveRequestAuth
 });
 
-export const POST = createSendMessageHandler({
+export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>> = createSendMessageHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
   assistants: defaultAssistantRepository,
   chatTitleGenerator: createPrismaChatTitleGenerator(),

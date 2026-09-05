@@ -465,7 +465,7 @@ export type RunRepository = {
     text: string,
     options: Readonly<{ allowErrored?: boolean; runId: string }>
   ): Promise<void>;
-  appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<void>;
+  appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
   beginToolLoopProviderRound(input: {
     providerContinuation: ToolLoopJsonValue | null;
     providerCursor?: number | string | null;

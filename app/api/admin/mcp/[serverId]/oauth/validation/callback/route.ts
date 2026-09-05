@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { settleDefaultMcpOAuth } from "@/lib/server/mcp/defaultActivation";
@@ -7,7 +8,7 @@ import { createMcpOAuthCallbackHandler } from "@/lib/server/mcp/oauthHandlers";
 
 export const runtime = "nodejs";
 
-export const GET = createMcpOAuthCallbackHandler({
+export const GET: AsyncRouteHandler<ReturnType<typeof createMcpOAuthCallbackHandler>> = createMcpOAuthCallbackHandler({
   getConfig: getAuthConfig,
   onRuntimeChanged: kickDefaultMcpRuntime,
   resolveAuth: resolveRequestAuth,

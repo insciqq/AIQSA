@@ -8,11 +8,13 @@ import {
   foldWorkspaceActivityEntries,
   projectWorkspaceActivity,
   workspaceActivityEvent,
+  workspaceActivityEntryId,
   workspaceExecutionGroupId,
   workspaceLifecycleActivity,
   type ExecOutputBuffer
 } from "./activityProjection";
 import { isRunOutputArtifactEvent, projectRunOutputArtifactEvent } from "@/lib/server/runs/runOutputEvents";
+import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 
 function official(data: unknown, status: "complete" | "error" = "complete"): ToolExecutionResult {
   return {
@@ -52,7 +54,8 @@ describe("workspace activity projection", () => {
       id: expect.stringMatching(/^call:[a-f0-9]{24}$/u),
       kind: "command",
       phase: "failed",
-      startedAt: "2026-09-04T10:00:00.000Z"
+      startedAt: "2026-09-04T10:00:00.000Z",
+      updateId: expect.stringMatching(/^update:[a-f0-9]{24}$/u)
     });
     expect(JSON.stringify(entry)).not.toContain("sandbox");
     expect(decodeThreadWorkspaceActivityEntry(entry)).toEqual(entry);
@@ -117,6 +120,14 @@ describe("workspace activity projection", () => {
   it("groups start, polls, and close of one execution into a single entry", () => {
     const execOutputs = new Map<string, ExecOutputBuffer>();
     const groupId = workspaceExecutionGroupId("run-1", "exec-abc");
+    const id = workspaceActivityEntryId("toolcall-7");
+    const requested = projectWorkspaceActivity({
+      arguments: { command: "pytest -q", cwd: "/workspace/project" },
+      callId: "toolcall-7",
+      originalName: "sandbox_exec_start",
+      runId: "run-1",
+      startedAt: new Date("2026-09-04T10:00:00.000Z")
+    }, "running");
     const started = projectWorkspaceActivity({
       arguments: { command: "pytest -q", shell: true },
       callId: "toolcall-7",
@@ -125,16 +136,17 @@ describe("workspace activity projection", () => {
       result: official({ execSessionId: "exec-abc" }),
       runId: "run-1"
     }, "settled");
-    expect(started).toEqual({
+    expect(started).toMatchObject({
       command: { preview: "pytest -q" },
       groupId,
-      id: groupId,
+      id,
       kind: "command",
       phase: "running"
     });
     const quiet = projectWorkspaceActivity({
       arguments: { execSessionId: "exec-abc" },
       callId: "toolcall-8",
+      executionStartCallId: "toolcall-7",
       execOutputs,
       originalName: "sandbox_exec_poll",
       result: official({ done: false, error: null, events: [], exitStatus: null, nextCursor: 0 }),
@@ -144,6 +156,7 @@ describe("workspace activity projection", () => {
     const chunk = projectWorkspaceActivity({
       arguments: { execSessionId: "exec-abc" },
       callId: "toolcall-9",
+      executionStartCallId: "toolcall-7",
       execOutputs,
       originalName: "sandbox_exec_poll",
       result: official({
@@ -153,10 +166,11 @@ describe("workspace activity projection", () => {
       }),
       runId: "run-1"
     }, "settled");
-    expect(chunk).toMatchObject({ command: { preview: "…", stderrPreview: "warn\n", stdoutPreview: "collecting…\n" }, id: groupId, phase: "running" });
+    expect(chunk).toMatchObject({ command: { preview: "…", stderrPreview: "warn\n", stdoutPreview: "collecting…\n" }, id, phase: "running" });
     const finished = projectWorkspaceActivity({
       arguments: { execSessionId: "exec-abc" },
       callId: "toolcall-10",
+      executionStartCallId: "toolcall-7",
       execOutputs,
       originalName: "sandbox_exec_poll",
       result: official({
@@ -168,21 +182,50 @@ describe("workspace activity projection", () => {
     }, "settled");
     expect(finished).toMatchObject({
       command: { exitCode: 0, stdoutPreview: "collecting…\n18 passed\n" },
-      id: groupId,
+      id,
       phase: "succeeded"
     });
     const closed = projectWorkspaceActivity({
       arguments: { execSessionId: "exec-abc" },
       callId: "toolcall-11",
+      executionStartCallId: "toolcall-7",
       execOutputs,
       originalName: "sandbox_exec_close",
       result: official({ closed: true }),
       runId: "run-1"
     }, "settled");
-    expect(closed).toMatchObject({ id: groupId, phase: "succeeded" });
-    const folded = foldWorkspaceActivityEntries([started!, chunk!, finished!, closed!], null);
+    expect(closed).toMatchObject({ id, phase: "succeeded" });
+    const entries = [requested!, started!, chunk!, finished!, closed!].map((entry, sequence) => ({ ...entry, sequence }));
+    const folded = foldWorkspaceActivityEntries(entries, null);
     expect(folded).toHaveLength(1);
-    expect(folded[0]).toMatchObject({ command: { exitCode: 0, preview: "pytest -q" }, phase: "succeeded" });
+    expect(folded[0]).toMatchObject({ command: { cwd: "project", exitCode: 0, preview: "pytest -q" }, phase: "succeeded", startedAt: requested!.startedAt });
+    expect(presentWorkspaceActivityV2(entries.map(workspaceActivityEvent))).toEqual({ entries: folded });
+    expect(presentWorkspaceActivityV2([workspaceActivityEvent(entries[0]!)], { entries: folded })).toEqual({ entries: folded });
+    expect(foldWorkspaceActivityEntries([...entries, entries[1]!, entries[3]!], null)).toEqual(folded);
+  });
+
+  it("keeps equal command text separate and folds failed starts without duplicates", () => {
+    const entries = ["one", "two"].flatMap((callId, index) => {
+      const input = { arguments: { command: "same command" }, callId, originalName: "sandbox_exec_start" as const, runId: "run-1" };
+      return [
+        { ...projectWorkspaceActivity(input, "running")!, sequence: index * 2 },
+        { ...projectWorkspaceActivity({ ...input, result: official({}, "error") }, "settled")!, sequence: index * 2 + 1 }
+      ];
+    });
+    const folded = foldWorkspaceActivityEntries([...entries, ...entries], null);
+    expect(folded).toHaveLength(2);
+    expect(folded.every((entry) => entry.phase === "failed" && entry.command?.preview === "same command")).toBe(true);
+  });
+
+  it("does not infer process exit from signal and close acknowledgements", () => {
+    const execOutputs = new Map<string, ExecOutputBuffer>();
+    const input = { callId: "signal", executionStartCallId: "start", execOutputs, runId: "run-1" };
+    const signal = projectWorkspaceActivity({ ...input, arguments: { execSessionId: "exec", signal: "term" }, originalName: "sandbox_exec_signal", result: official({ signalled: true }) }, "settled");
+    const close = projectWorkspaceActivity({ ...input, callId: "close", arguments: { execSessionId: "exec" }, originalName: "sandbox_exec_close", result: official({ closed: true }) }, "settled");
+    expect(signal).toBeNull();
+    expect(close).toBeNull();
+    expect(execOutputs.get(workspaceExecutionGroupId("run-1", "exec"))?.done).toBe(false);
+    expect(projectWorkspaceActivity({ ...input, callId: "poll", arguments: { execSessionId: "exec" }, originalName: "sandbox_exec_poll", result: official({ done: true, events: [], exitStatus: null }) }, "settled")).toBeNull();
   });
 
   it("keeps head and tail of oversized output inside 8 KiB without splitting characters", () => {

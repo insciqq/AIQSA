@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "./memoryClient";
 import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
@@ -506,6 +507,48 @@ describe("chat wire contracts", () => {
     expect(preview.length).toBeLessThanOrEqual(CHAT_BRANCH_PREVIEW_MAX_LENGTH);
     expect(preview.charCodeAt(preview.length - 1)).not.toBeGreaterThanOrEqual(0xd800);
   });
+
+  it.each([18, MEMORY_ANSWER_SOURCE_MAX_ITEMS])(
+    "preserves a completed Workspace answer with %i Memory sources when reloading",
+    (sourceCount) => {
+      const memorySources = Array.from({ length: sourceCount }, (_, index) => ({
+        actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+        date: summary.createdAt,
+        memoryRef: `opaque-memory-${index}`,
+        origin: "Earlier planning chat",
+        sourceAvailable: true,
+        sourceType: "PAST_CHAT",
+        text: `Planning note ${index + 1}`
+      }));
+      const generatedFiles = [{
+        attachmentId: "generated-document",
+        byteSize: 9323,
+        fileName: "application.docx",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        relativePath: "application.docx"
+      }];
+      const artifactSummary = {
+        citations: [], generatedFiles, memorySources, reasoningText: [], sources: []
+      };
+      const decode = (sources: unknown) => decodeChatDetailResponse({
+        chat: detailChat({
+          messages: [{ ...message, artifactSummary: { ...artifactSummary, memorySources: sources } }],
+          usageStats
+        })
+      });
+
+      expect(decode(memorySources)?.messages[0]).toMatchObject({
+        artifactSummary: { generatedFiles, memorySources },
+        content: message.content,
+        status: "complete"
+      });
+      expect(decode([...memorySources, { ...memorySources[0], memoryRef: "" }])).toBeNull();
+      expect(decode(Array.from(
+        { length: MEMORY_ANSWER_SOURCE_MAX_ITEMS + 1 },
+        () => memorySources[0]
+      ))).toBeNull();
+    }
+  );
 
   it("keeps committed Memory action feedback and strips retrieval receipts", () => {
     const artifactSummary = {

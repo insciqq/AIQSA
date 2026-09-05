@@ -1,5 +1,7 @@
 "use client";
 
+import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
+
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
@@ -511,9 +513,11 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
  */
 export function AnswerOutputsV2({
   artifact,
+  canSaveFiles = false,
   workspaceOutputStatus = null
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
+  canSaveFiles?: boolean;
   /** Export state of the run's Workspace outputs; shown above the generated files. */
   workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
 }>) {
@@ -551,7 +555,7 @@ export function AnswerOutputsV2({
         </p>
       ) : null}
       {hasGeneratedFiles ? (
-        <GeneratedFilesV2 files={artifact?.generatedFiles ?? []} />
+        <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}
       {artifact?.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
@@ -571,8 +575,11 @@ function generatedFileType(file: ThreadGeneratedFile): string {
   return subtype && subtype.length <= 20 ? subtype.toLocaleUpperCase() : "FILE";
 }
 
-export function GeneratedFilesV2({ files }: Readonly<{
+export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisabled = false }: Readonly<{
   files: readonly ThreadGeneratedFile[];
+  canSave?: boolean;
+  onUseFile?(attachmentId: string, fileName: string): void;
+  useDisabled?: boolean;
 }>) {
   if (files.length === 0) return null;
   return (
@@ -586,6 +593,7 @@ export function GeneratedFilesV2({ files }: Readonly<{
               <strong title={file.relativePath}>{file.fileName}</strong>
               <small>{generatedFileType(file)} · {formatAttachmentBytes(file.byteSize)}</small>
             </span>
+            <span className="v2-generated-file-actions">
             <a
               className="v2-generated-file-download v2-focusable"
               download={file.fileName}
@@ -594,6 +602,9 @@ export function GeneratedFilesV2({ files }: Readonly<{
               <UiV2Icon name="download" />
               Download
             </a>
+            {canSave ? <SaveFileButtonV2 attachmentId={file.attachmentId} /> : null}
+            {onUseFile ? <UiV2Button disabled={useDisabled} onClick={() => onUseFile(file.attachmentId, file.fileName)}>Use file</UiV2Button> : null}
+            </span>
           </li>
         ))}
       </ul>

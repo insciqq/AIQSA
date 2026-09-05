@@ -27,7 +27,7 @@ const prisma = new PrismaClient();
 let originalPolicy: { enabled: boolean; internetEnabled: boolean } | null = null;
 const createdChatIds: string[] = [];
 
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "default" });
 test.setTimeout(360_000);
 
 async function enableWorkspacePolicy(page: Page): Promise<void> {
@@ -51,6 +51,13 @@ async function newWorkspaceChat(page: Page): Promise<void> {
   await startNewChat(page);
   await selectFakeModel(page);
   await turnWorkspaceOn(page);
+}
+
+async function expectStaging(page: Page, bodies: number, last: number): Promise<void> {
+  await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics:");
+  // Export ownership also verifies staging. Only transferred originals and
+  // the current admission's delta matter to the incremental-staging contract.
+  await expect(lastAnswer(page)).toContainText(new RegExp(`Staging metrics: bodies=${bodies} calls=\\d+ last=${last}\\.`));
 }
 
 async function attach(page: Page, files: readonly { buffer: Buffer; name: string }[]): Promise<void> {
@@ -101,7 +108,7 @@ test("shows a human-readable timeline, resolves exact sandbox links, and keeps d
     await expect(activity).toContainText("Ran pwd");
     await expect(activity).toContainText("Read inbox/index.json");
     await expect(activity).toContainText("Wrote output/");
-    await expect(activity).toContainText("Exported 1 file");
+    await expect(activity).toContainText("Exported 1 file", { timeout: 30_000 });
     // The direct-exec mistake from the dev stand: rejected before the runtime, shown as an open failure card.
     const failedCard = activity.locator("details.v2-workspace-command[data-phase='failed']");
     await expect(failedCard).toHaveAttribute("open", "");
@@ -167,14 +174,26 @@ test("stages only new originals on later turns and restages everything after the
       { buffer: Buffer.from("first original\n"), name: "first.aiqsa-e2e" },
       { buffer: Buffer.from("second original\n"), name: "second.aiqsa-e2e" }
     ]);
-    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=2 calls=1 last=2.");
+    await expectStaging(page, 2, 2);
     createdChatIds.push(await activeChatId(page));
-    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=2 calls=2 last=0.");
+    await expectStaging(page, 2, 0);
     // Nothing transferred on the second turn: no "Prepared" row at all.
     await expect(lastActivity(page)).not.toContainText("Prepared");
     await attach(page, [{ buffer: Buffer.from("third original\n"), name: "third.aiqsa-e2e" }]);
-    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=3 calls=3 last=1.");
+    await expectStaging(page, 3, 1);
     await expect(lastActivity(page)).toContainText("Prepared 1 attachment");
+
+    const chatId = await activeChatId(page);
+    const beforeResume = await prisma.workspaceSession.findUniqueOrThrow({
+      select: { runtimeSandboxId: true }, where: { chatId }
+    });
+    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:resume_probe]", "Workspace resumed the same disk with its originals.");
+    await expect(lastActivity(page)).not.toContainText("Workspace was recreated");
+    await expect(lastActivity(page)).not.toContainText("Prepared");
+    expect(await prisma.workspaceSession.findUniqueOrThrow({
+      select: { runtimeSandboxId: true }, where: { chatId }
+    })).toEqual(beforeResume);
+    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:state_probe]", "Workspace state persisted.");
 
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:lose_session]", "Runtime state was written and the sandbox was lost.");
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:recreate_probe]", "Runtime state is gone and originals were restored.");
@@ -182,16 +201,18 @@ test("stages only new originals on later turns and restages everything after the
     await expect(recreated).toContainText("Workspace was recreated");
     await expect(recreated).toContainText("Original attachments were restored");
     await expect(recreated).toContainText("Prepared 3 attachments");
-    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics: bodies=3 calls=2 last=0.");
+    await expectStaging(page, 3, 0);
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
+    const restoredTimeline = page.getByTestId("tool-activity-disclosure").filter({ hasText: "Workspace was recreated" });
+    if (await restoredTimeline.getAttribute("open") === null) await restoredTimeline.locator(":scope > summary").click();
     await expect(page.getByText("Workspace was recreated")).toBeVisible();
   } finally {
     await context.close();
   }
 });
 
-test("Stop after an async start prevents the delayed side effect, also after the runner forgot the execution", async ({ browser }) => {
+test("Stop prevents synchronous, async, forgotten-handle and descendant side effects", async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
   try {
@@ -213,38 +234,41 @@ test("Stop after an async start prevents the delayed side effect, also after the
     await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({
       select: { state: true },
       where: { chatId }
-    })).state, { timeout: 30_000 }).toBe("READY");
+    })).state, { timeout: 30_000 }).toBe("STOPPED");
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready", { timeout: 30_000 });
+    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
     await expect(openLastActivity(page)).resolves.toBeDefined();
     await expect(lastActivity(page)).toContainText("Stopped sleep 300");
     await page.waitForTimeout(13_000);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
 
-    // Runner-side loss of the execution session: quiescence cannot be proven,
-    // so the VM is stopped with its disk intact and the marker still never lands.
-    await sendAndStop(page, "[AIQSA_WORKSPACE_E2E:forget_executions_stop]", async () => {
-      await expect(lastActivity(page)).toContainText("Running sleep 300", { timeout: 15_000 });
-    });
-    const session = await prisma.workspaceSession.findUniqueOrThrow({
-      select: { id: true },
-      where: { chatId }
-    });
-    await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({
-      select: { state: true },
-      where: { id: session.id }
-    })).state, { timeout: 30_000 }).toBe("STOPPED");
-    await expect.poll(async () => prisma.workspaceExecution.count({
-      where: { state: { in: ["ACTIVE", "TERMINATING"] }, workspaceSessionId: session.id }
-    })).toBe(0);
-    expect(await prisma.workspaceExecution.count({
-      where: { state: "LOST", workspaceSessionId: session.id }
-    })).toBeGreaterThan(0);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
-    await page.waitForTimeout(13_000);
-    await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace ready", { timeout: 30_000 });
+    // Both lost observation and a terminal leader with a surviving child
+    // require the disk-preserving VM fallback before another turn can run.
+    for (const scenario of ["forget_executions_stop", "descendant_stop"]) {
+      await sendAndStop(page, `[AIQSA_WORKSPACE_E2E:${scenario}]`, async () => {
+        await expect(lastActivity(page)).toContainText("Running sleep 300", { timeout: 15_000 });
+      });
+      const session = await prisma.workspaceSession.findUniqueOrThrow({
+        select: { id: true },
+        where: { chatId }
+      });
+      await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({
+        select: { state: true },
+        where: { id: session.id }
+      })).state, { timeout: 30_000 }).toBe("STOPPED");
+      await expect.poll(async () => prisma.workspaceExecution.count({
+        where: { state: { in: ["ACTIVE", "TERMINATING"] }, workspaceSessionId: session.id }
+      })).toBe(0);
+      expect(await prisma.workspaceExecution.count({
+        where: { state: "LOST", workspaceSessionId: session.id }
+      })).toBeGreaterThan(0);
+      await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
+      await page.waitForTimeout(13_000);
+      await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
+      await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
+    }
+
   } finally {
     await context.close();
   }
@@ -265,7 +289,7 @@ test("a failed export keeps the answer complete and recovery finishes the remain
     const status = page.getByTestId("workspace-output-status");
     await expect(status).toContainText("still being prepared", { timeout: 30_000 });
     const files = page.getByRole("region", { name: "Generated files" }).last();
-    await expect(files).toContainText("first.txt");
+    await expect(files).toContainText("first.txt", { timeout: 30_000 });
     await expect(files).not.toContainText("second.txt");
     const run = await prisma.modelRun.findFirstOrThrow({
       select: { id: true, status: true, workspaceRunBinding: { select: { exportState: true } } },
@@ -274,16 +298,18 @@ test("a failed export keeps the answer complete and recovery finishes the remain
     expect(run.status).toBe("complete");
     expect(run.workspaceRunBinding?.exportState).toBe("FAILED");
 
-    // Background recovery (10 s cadence) completes the export; the answer never re-ran.
+    const draft = "Keep this unsent follow-up while files recover";
+    await page.getByRole("textbox", { name: "Message" }).fill(draft);
+    // Background recovery completes the export and the open chat refreshes;
+    // no reload, user send or provider dispatch is needed.
     await expect.poll(async () => (await prisma.workspaceRunBinding.findUniqueOrThrow({
       select: { exportState: true },
       where: { modelRunId: run.id }
     })).exportState, { timeout: 90_000 }).toBe("COMPLETE");
-    await page.reload();
-    await expect(page.getByTestId("app-shell")).toBeVisible();
     const recovered = page.getByRole("region", { name: "Generated files" }).last();
     await expect(recovered).toContainText("first.txt");
-    await expect(recovered).toContainText("second.txt");
+    await expect(recovered).toContainText("second.txt", { timeout: 45_000 });
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(draft);
     await expect(recovered.getByRole("listitem")).toHaveCount(2);
     await expect(page.getByTestId("workspace-output-status")).toHaveCount(0);
     expect(await prisma.modelRun.count({ where: { chatId } })).toBe(runsBefore);

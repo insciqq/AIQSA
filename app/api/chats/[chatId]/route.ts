@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createArchiveChatHandler, createGetChatHandler, createUpdateChatHandler } from "@/lib/server/chats/handlers";
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
@@ -18,7 +19,7 @@ const chatRepository = createPrismaChatRepository();
 const runRepository = createPrismaRunRepository();
 const storage = createS3StorageAdapter();
 
-export const GET = createGetChatHandler({
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatHandler>> = createGetChatHandler({
   reconcileRuns: (input) =>
     reconcileStaleRuns({
       knowledgeAdmission: knowledgeRunAdmissionService,
@@ -36,12 +37,12 @@ export const GET = createGetChatHandler({
   resolveAuth: resolveRequestAuth
 });
 
-export const PATCH = createUpdateChatHandler({
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createUpdateChatHandler>> = createUpdateChatHandler({
   repository: chatRepository,
   resolveAuth: resolveRequestAuth
 });
 
-export const DELETE = createArchiveChatHandler({
+export const DELETE: AsyncRouteHandler<ReturnType<typeof createArchiveChatHandler>> = createArchiveChatHandler({
   repository: chatRepository,
   resolveAuth: resolveRequestAuth
 });

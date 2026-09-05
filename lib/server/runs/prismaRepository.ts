@@ -1391,7 +1391,7 @@ export function createPrismaRunRepository(
                   normalizedRequest: true,
                   status: true,
                   workspaceRunBinding: {
-                    select: { exportState: true, lastExportErrorCode: true }
+                    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true }
                   },
                   toolCalls: {
                     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
@@ -1578,6 +1578,7 @@ export function createPrismaRunRepository(
 
       const attachments = await prismaClient.attachment.findMany({
         where: {
+          savedAt: null,
           id: {
             in: attachmentIds
           },

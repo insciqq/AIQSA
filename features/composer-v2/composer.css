@@ -610,6 +610,7 @@
 
 /* Chip-anchored pickers open above their own chip (UX audit F2/F3). */
 .v2-composer-layer[data-kind="knowledge"],
+.v2-composer-layer[data-kind="files"],
 .v2-composer-layer[data-kind="search"],
 .v2-composer-layer[data-kind="tools"] {
   left: var(--v2-composer-layer-left, 0px);

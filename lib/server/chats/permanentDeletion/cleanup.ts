@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { StorageAdapter } from "../../uploads/storage";
-import type { WorkspaceRuntime } from "../../workspace/runtime";
+import { WorkspaceRuntimeError, type WorkspaceRuntime } from "../../workspace/runtime";
+import { removeWorkspaceForDeletion } from "../../workspace/removal";
 import { MemoryCoordinatorError } from "../../memory/coordinator/errors";
 import type {
   MemoryDeletionClaim,
@@ -742,81 +742,19 @@ export function createPrismaPermanentChatDeletionHandler(
       }
       const now = context.now();
       const workspaceSession = await client.workspaceSession.findUnique({
-        select: {
-          id: true,
-          runtimeSandboxId: true,
-          sandboxName: true
-        },
+        select: { id: true },
         where: { chatId: claim.targetId }
       });
-      if (workspaceSession?.runtimeSandboxId) {
-        if (!workspaceRuntime) {
-          throw new MemoryCoordinatorError(
-            "memory_permanent_chat_workspace_runtime_unavailable",
-            true
-          );
-        }
-        const cleanupClaimToken = randomUUID();
-        await client.$transaction(async (tx) => {
-          await tx.workspaceCleanupJob.upsert({
-            create: {
-              attemptCount: 1,
-              claimedAt: now,
-              claimToken: cleanupClaimToken,
-              lastAttemptAt: now,
-              nextAttemptAt: now,
-              runtimeSandboxId: workspaceSession.runtimeSandboxId,
-              sandboxName: workspaceSession.sandboxName,
-              state: "RUNNING",
-              workspaceSessionId: workspaceSession.id
-            },
-            update: {
-              attemptCount: { increment: 1 },
-              claimedAt: now,
-              claimToken: cleanupClaimToken,
-              lastAttemptAt: now,
-              lastErrorCode: null,
-              nextAttemptAt: now,
-              runtimeSandboxId: workspaceSession.runtimeSandboxId,
-              sandboxName: workspaceSession.sandboxName,
-              state: "RUNNING"
-            },
-            where: { workspaceSessionId: workspaceSession.id }
-          });
-          await tx.workspaceSession.update({
-            data: { lastErrorCode: null, state: "DELETING" },
-            where: { id: workspaceSession.id }
-          });
-        });
+      if (workspaceSession) {
         try {
-          throwIfAborted(context.signal);
-          await workspaceRuntime.removeSession({
-            runtimeSandboxId: workspaceSession.runtimeSandboxId,
-            sessionId: workspaceSession.id,
-            signal: context.signal
+          await removeWorkspaceForDeletion({
+            now, prisma: client, runtime: workspaceRuntime, sessionId: workspaceSession.id, signal: context.signal
           });
-          await client.workspaceSession.update({
-            data: {
-              lastErrorCode: null,
-              runtimeSandboxId: null,
-              state: "DELETING",
-              stoppedAt: now
-            },
-            where: { id: workspaceSession.id }
-          });
-        } catch {
-          await client.workspaceCleanupJob.updateMany({
-            data: {
-              claimedAt: null,
-              claimToken: null,
-              lastErrorCode: "workspace_remove_failed",
-              nextAttemptAt: new Date(now.getTime() + 30_000),
-              state: "FAILED"
-            },
-            where: { workspaceSessionId: workspaceSession.id }
-          }).catch(() => undefined);
+        } catch (error) {
           throw new MemoryCoordinatorError(
-            "memory_permanent_chat_workspace_cleanup_failed",
+            error instanceof WorkspaceRuntimeError && error.code === "workspace_runtime_unavailable"
+              ? "memory_permanent_chat_workspace_runtime_unavailable"
+              : "memory_permanent_chat_workspace_cleanup_failed",
             true
           );
         }

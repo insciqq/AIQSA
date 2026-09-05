@@ -1,10 +1,36 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
-import { createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import { appendRunOutputEvents, createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import type { RunOutputArtifactEvent } from "./runOutputEvents";
+
+describe("Workspace activity publication", () => {
+  it("reuses the first durable sequence and payload when a settled tool artifact is replayed", async () => {
+    const rows: { payload: RunOutputArtifactEvent["data"]; sequence: number }[] = [];
+    const tx = {
+      modelRunEvent: {
+        aggregate: async () => ({ _max: { sequence: rows.at(-1)?.sequence ?? null } }),
+        createMany: async ({ data }: { data: typeof rows }) => { rows.push(...data); },
+        findFirst: async ({ where }: { where: { payload: { equals: string; path: string[] } } }) =>
+          rows.find((row) => row.payload.artifactType === "workspace_activity" && row.payload.payload.updateId === where.payload.equals) ?? null
+      }
+    } as unknown as Prisma.TransactionClient;
+    const event = (updateId: string, phase: "running" | "succeeded"): RunOutputArtifactEvent => ({
+      data: { artifactType: "workspace_activity", payload: { command: { preview: "command" }, id: "command", kind: "command", phase, updateId } },
+      type: "artifact"
+    });
+    const first = await appendRunOutputEvents(tx, "run", [event("start", "running")]);
+    const last = await appendRunOutputEvents(tx, "run", [event("poll", "succeeded"), event("poll", "succeeded")]);
+    const replay = await appendRunOutputEvents(tx, "run", [event("start", "running")]);
+    expect(first).toMatchObject([{ data: { payload: { sequence: 0 } } }]);
+    expect(last).toMatchObject([{ data: { payload: { sequence: 1 } } }, { data: { payload: { sequence: 1 } } }]);
+    expect(replay).toEqual(first);
+    expect(rows).toHaveLength(2);
+  });
+});
 
 type ToolCallRow = {
   completedAt: Date | null;

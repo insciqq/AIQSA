@@ -1,3 +1,5 @@
+import { act, renderHook } from "@testing-library/react";
+import { useWorkspaceOutputReconciliation } from "./useWorkspaceOutputReconciliation";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resetComposerSessionStoreForTest,
@@ -144,7 +146,8 @@ function apiMessage(candidate: ThreadMessage) {
     parentMessageId: candidate.parentMessageId,
     provider: candidate.provider ?? null,
     role: candidate.role,
-    status: candidate.status
+    status: candidate.status,
+    workspaceActivity: candidate.workspaceActivity ?? null
   };
 }
 
@@ -584,6 +587,77 @@ describe("workspace actions", () => {
     await expect(pendingDetail).resolves.toBeNull();
     expect(state.chats().some((candidate) => candidate.id === "chat-a")).toBe(false);
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBeUndefined();
+  });
+
+  it("reconciles terminal Workspace files through the ordinary detail owner without losing draft, controls or ready downloads", async () => {
+    vi.useFakeTimers();
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Unsent follow-up" });
+    const file = { attachmentId: "first", byteSize: 6, fileName: "first.txt", mimeType: "text/plain", relativePath: "first.txt" };
+    const original = message({ id: "answer", role: "assistant", content: "Completed answer", artifactSummary: { citations: [], sources: [], reasoningText: [], generatedFiles: [file] },
+      workspaceActivity: { entries: [], outputStatus: { state: "retrying" } } });
+    useThreadStore.getState().mergeMessages("chat-a", [original], { activeLeafId: "answer" });
+    const result = { ...original, artifactSummary: { citations: [], sources: [], reasoningText: [], generatedFiles: [file, { ...file, attachmentId: "second", fileName: "second.txt", relativePath: "second.txt" }] },
+      workspaceActivity: { entries: [], outputStatus: { state: "complete" as const } } };
+    const fetchMock = vi.fn(async () => Response.json({ chat: apiChatDetail(state.chatA, [result]) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const hook = renderHook(() => {
+      const messages = useThreadStore((store) => store.threadsByChatId["chat-a"]!.messages);
+      useWorkspaceOutputReconciliation({ accountId: "account-a", chatId: "chat-a", messages, streaming: false, refreshActiveChat: state.actions.refreshActiveChat });
+    });
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      const current = useThreadStore.getState().threadsByChatId["chat-a"]!.messages[0]!;
+      expect(current).toMatchObject({ content: "Completed answer", status: "complete", workspaceActivity: { outputStatus: { state: "complete" } } });
+      expect(current.artifactSummary?.generatedFiles).toEqual(result.artifactSummary.generatedFiles);
+      expect(state.draft()).toBe("Unsent follow-up");
+      expect(state.setSelectedModelId).not.toHaveBeenCalled();
+      expect(state.applyModelControlDefaults).not.toHaveBeenCalled();
+      expect(state.resumeChatRun).not.toHaveBeenCalled();
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { hook.unmount(); vi.useRealTimers(); }
+  });
+
+  it("ignores an aborted output refresh even when the transport returns a late response", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Keep draft" });
+    useThreadStore.getState().mergeMessages("chat-a", [message({ id: "existing" })]);
+    const before = useThreadStore.getState().threadsByChatId["chat-a"];
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((done) => { resolve = done; })));
+    const controller = new AbortController();
+    const refresh = state.actions.refreshActiveChat("chat-a", { forceDetail: true, preserveControls: true, resumeRuns: false, signal: controller.signal });
+    controller.abort();
+    resolve(Response.json({ chat: apiChatDetail(state.chatA, [message({ id: "late" })]) }));
+    await expect(refresh).resolves.toBeNull();
+    expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBe(before);
+    expect(state.draft()).toBe("Keep draft");
+    expect(state.setSelectedModelId).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403, 404, 503])("classifies output-refresh HTTP %s for its source owner", async (status) => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Keep draft" });
+    const unavailable = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status })));
+    await expect(state.actions.refreshActiveChat("chat-a", { forceDetail: true, preserveControls: true, resumeRuns: false, signal: new AbortController().signal, onUnavailable: unavailable })).resolves.toBeNull();
+    expect(unavailable).toHaveBeenCalledTimes(status === 503 ? 0 : 1);
+    expect(state.draft()).toBe("Keep draft");
+  });
+
+  it("does not start an aborted output refresh queued behind another detail request", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Keep draft" });
+    let resolve!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((done) => { resolve = done; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const first = state.actions.fetchChatDetail("chat-a");
+    const controller = new AbortController();
+    const queued = state.actions.refreshActiveChat("chat-a", { forceDetail: true, preserveControls: true, resumeRuns: false, signal: controller.signal });
+    controller.abort();
+    resolve(Response.json({ chat: apiChatDetail(state.chatA, [message({ id: "first" })]) }));
+    await first;
+    await expect(queued).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(state.setSelectedModelId).not.toHaveBeenCalled();
+    expect(state.draft()).toBe("Keep draft");
   });
 
   it("waits out a pre-terminal detail request before forcing post-terminal detail", async () => {
@@ -1518,7 +1592,7 @@ describe("workspace actions", () => {
     );
   });
 
-  it("keeps concurrent token content and the current leaf when stale detail resolves", async () => {
+  it.each([false, true])("keeps concurrent token content and the current leaf when stale detail resolves (stale activity: %s)", async (staleActivity) => {
     const state = useWorkspaceActionsForTest({
       activeChatId: "chat-b",
       attachments: [],
@@ -1529,9 +1603,11 @@ describe("workspace actions", () => {
       message({
         content: "Partial",
         id: "assistant-a",
+        runId: "run-activity",
         parentMessageId: "user-a",
         role: "assistant",
-        status: "streaming"
+        status: "streaming",
+        workspaceActivity: { entries: [{ command: { preview: "pytest", ...(staleActivity ? { exitCode: 0, stdoutPreview: "passed" } : {}) }, id: "command", kind: "command", phase: staleActivity ? "succeeded" : "running", sequence: staleActivity ? 2 : 1 }] }
       })
     ];
     useThreadStore.getState().replaceThread("chat-a", {
@@ -1549,9 +1625,11 @@ describe("workspace actions", () => {
       message({
         content: "Stale partial",
         id: "assistant-a",
+        runId: "run-activity",
         parentMessageId: "user-a",
         role: "assistant",
-        status: "streaming"
+        status: "streaming",
+        workspaceActivity: { entries: [{ command: { preview: "…", ...(!staleActivity ? { exitCode: 0, stdoutPreview: "passed" } : {}) }, id: "command", kind: "command", phase: staleActivity ? "running" : "succeeded", sequence: staleActivity ? 1 : 2 }] }
       }),
       message({
         content: "Server sibling",
@@ -1614,6 +1692,9 @@ describe("workspace actions", () => {
     expect(cached.messages.find((candidate) => candidate.id === "assistant-a")?.content).toBe(
       "Partial plus live token"
     );
+    expect(cached.messages.find((candidate) => candidate.id === "assistant-a")?.workspaceActivity?.entries).toMatchObject([
+      { command: { exitCode: 0, preview: "pytest", stdoutPreview: "passed" }, phase: "succeeded", sequence: 2 }
+    ]);
     expect(cached.messages.map((candidate) => candidate.id)).toEqual([
       "user-a",
       "assistant-a",

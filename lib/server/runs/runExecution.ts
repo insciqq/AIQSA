@@ -422,7 +422,8 @@ async function emit(
 ): Promise<void> {
   const outputEvent = projectRunOutputArtifactEvent(event);
   if (outputEvent) {
-    await repository.appendRunOutputEvent(runId, outputEvent);
+    const published = await repository.appendRunOutputEvent(runId, outputEvent);
+    if (published.data.artifactType === "workspace_activity") event = published;
   }
 
   try {
@@ -2704,17 +2705,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               "Workspace execution is unavailable"
             );
           }
-          // Output publication is not on the answer's critical path: a
-          // busy or failed export leaves the binding in a retryable state for
-          // background recovery while the answer itself completes.
-          await input.workspace.finalize({
+          // Capture and receiver retirement must finish before completion.
+          // The durable pending obligation is picked up independently.
+          const handoff = await input.workspace.handoff({
             onActivity: onWorkspaceActivity,
             runId,
             signal,
             userId: input.userId,
             workspace: normalizedRequest.workspace
           });
-          await settleWorkspace("completed");
+          if (handoff.status !== "ready") throw new WorkspaceRuntimeError("workspace_operation_stale");
+          throwIfAborted(signal);
+          await assertProjectRunAccessCurrent(true);
         }
         const persistedProviderResult = groundedLiveOnly
           ? {

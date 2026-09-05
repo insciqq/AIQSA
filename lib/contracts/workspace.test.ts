@@ -109,9 +109,19 @@ describe("workspace activity contract", () => {
       id: "call:abc123",
       kind: "command",
       phase: "succeeded",
-      startedAt: "2026-09-04T10:00:00.000Z"
+      sequence: 3,
+      startedAt: "2026-09-04T10:00:00.000Z",
+      updateId: "update:abc123"
     };
     expect(decodeThreadWorkspaceActivityEntry(entry)).toEqual(entry);
+    for (const sequence of [-1, 0.1, NaN, Number.MAX_SAFE_INTEGER + 1, "3"]) {
+      expect(decodeThreadWorkspaceActivityEntry({ ...entry, sequence })).toBeNull();
+    }
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, updateId: "raw id!" })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, firstSequence: 4 })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, command: { ...entry.command, outputSequence: 4 } })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, runOutcome: "cancelled" })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entry, phase: "cancelled", runOutcome: "cancelled" })).not.toBeNull();
     expect(decodeThreadWorkspaceActivityEntry({ ...entry, runtimeSandboxId: "leak" })).toBeNull();
     expect(decodeThreadWorkspaceActivityEntry({ ...entry, command: { ...entry.command, arguments: {} } })).toBeNull();
     expect(decodeThreadWorkspaceActivityEntry({ ...entry, kind: "sandbox_exec" })).toBeNull();

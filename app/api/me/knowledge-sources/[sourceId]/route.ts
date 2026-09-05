@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultKnowledgeSourceLibraryHandlerDeps } from "@/lib/server/knowledge/defaultSourceLibrary";
 import {
   createGetKnowledgeSourceHandler,
@@ -6,5 +7,5 @@ import {
 
 export const runtime = "nodejs";
 
-export const GET = createGetKnowledgeSourceHandler(defaultKnowledgeSourceLibraryHandlerDeps);
-export const PATCH = createUpdateKnowledgeSourceHandler(defaultKnowledgeSourceLibraryHandlerDeps);
+export const GET: AsyncRouteHandler<ReturnType<typeof createGetKnowledgeSourceHandler>> = createGetKnowledgeSourceHandler(defaultKnowledgeSourceLibraryHandlerDeps);
+export const PATCH: AsyncRouteHandler<ReturnType<typeof createUpdateKnowledgeSourceHandler>> = createUpdateKnowledgeSourceHandler(defaultKnowledgeSourceLibraryHandlerDeps);

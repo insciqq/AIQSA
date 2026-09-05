@@ -1,3 +1,4 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import {
   authRateLimiter,
@@ -10,7 +11,7 @@ import { createOAuthCallbackHandler } from "@/lib/server/auth/oauthHandlers";
 
 export const runtime = "nodejs";
 
-export const GET = createOAuthCallbackHandler({
+export const GET: AsyncRouteHandler<ReturnType<typeof createOAuthCallbackHandler>> = createOAuthCallbackHandler({
   getConfig: () => getAuthConfig(),
   loginRateLimiter: authRateLimiter,
   oauthFlowRateLimiter: oauthCallbackFlowRateLimiter,

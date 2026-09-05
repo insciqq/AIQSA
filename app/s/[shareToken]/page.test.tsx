@@ -82,7 +82,7 @@ describe("PublicSharePage", () => {
       throw notFoundSignal;
     });
 
-    await expect(PublicSharePage({ params: { shareToken: "missing-token" } })).rejects.toBe(
+    await expect(PublicSharePage({ params: Promise.resolve({ shareToken: "missing-token" }) })).rejects.toBe(
       notFoundSignal
     );
 

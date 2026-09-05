@@ -103,8 +103,10 @@ export function createMemoryStorageAdapter(): StorageAdapter & {
         chunks.push(chunk);
       }
       if (byteSize !== input.byteSize) throw new Error("stored_object_size_mismatch");
+      const body = Buffer.concat(chunks, byteSize);
+      if (input.checksum && createHash("sha256").update(body).digest("hex") !== input.checksum) throw new Error("stored_object_checksum_mismatch");
       objects.set(input.storageKey, {
-        body: Buffer.concat(chunks, byteSize),
+        body,
         contentType: input.contentType,
         storageKey: input.storageKey
       });

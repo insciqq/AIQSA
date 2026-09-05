@@ -6,6 +6,7 @@ import {
   type ThreadWorkspaceOutputStatus
 } from "@/lib/contracts/workspace";
 import { formatWorkDurationV2 } from "./runPresentation";
+import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 
 /**
  * Client-owned copy and folding for the Workspace activity timeline. The
@@ -17,22 +18,6 @@ const COLLAPSED_COMMAND_CHARS = 80;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function mergeEntry(
-  previous: ThreadWorkspaceActivityEntry | undefined,
-  next: ThreadWorkspaceActivityEntry
-): ThreadWorkspaceActivityEntry {
-  if (!previous || !next.command || next.command.preview !== "…") return next;
-  return {
-    ...next,
-    command: {
-      ...next.command,
-      ...(previous.command?.cwd ? { cwd: previous.command.cwd } : {}),
-      preview: previous.command?.preview ?? next.command.preview
-    },
-    ...(previous.startedAt && !next.startedAt ? { startedAt: previous.startedAt } : {})
-  };
 }
 
 function liveEntries(events: readonly RunEventView[]): ThreadWorkspaceActivityEntry[] {
@@ -47,24 +32,14 @@ function liveEntries(events: readonly RunEventView[]): ThreadWorkspaceActivityEn
 }
 
 /**
- * Merges the reloadable projection with the live stream. Persisted entries
- * are authoritative for their ids; live events only add steps the server
- * has not projected yet, so a late `chat_update` can never regress a phase.
+ * Both sources carry the sequence assigned at persistence, including replay.
+ * A delayed detail response and reordered SSE obey the same merge rule.
  */
 export function presentWorkspaceActivityV2(
   events: readonly RunEventView[],
   persisted: ThreadWorkspaceActivity | null = null
 ): ThreadWorkspaceActivity | null {
-  const byId = new Map<string, ThreadWorkspaceActivityEntry>();
-  for (const entry of persisted?.entries ?? []) byId.set(entry.id, entry);
-  const persistedIds = new Set(byId.keys());
-  for (const entry of liveEntries(events)) {
-    if (persistedIds.has(entry.id)) continue;
-    byId.set(entry.id, mergeEntry(byId.get(entry.id), entry));
-  }
-  const entries = [...byId.values()];
-  if (entries.length === 0 && !persisted?.outputStatus) return null;
-  return { entries, ...(persisted?.outputStatus ? { outputStatus: persisted.outputStatus } : {}) };
+  return mergeWorkspaceActivity(persisted, { entries: liveEntries(events) });
 }
 
 /** Consecutive successful existence/stat checks collapse into one "Checked N files" row. */
@@ -219,7 +194,7 @@ export function workspaceOutputStatusCopyV2(
     case "retrying":
       return "The answer completed, but some generated files are still being prepared.";
     case "failed":
-      return "The answer completed, but some generated files could not be prepared for download.";
+      return "Some generated files could not be prepared for download.";
     default:
       return null;
   }

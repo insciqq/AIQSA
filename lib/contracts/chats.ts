@@ -17,6 +17,7 @@ import {
   type KnowledgePlan
 } from "./knowledge";
 import {
+  MEMORY_ANSWER_SOURCE_MAX_ITEMS,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
   decodeMemoryActionFeedback,
   decodeMemoryAnswerSource,
@@ -758,7 +759,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
 
   let memorySources: MemoryAnswerSource[] | undefined;
   if (value.memorySources !== undefined) {
-    if (!Array.isArray(value.memorySources) || value.memorySources.length > 13) return null;
+    if (!Array.isArray(value.memorySources) ||
+      value.memorySources.length > MEMORY_ANSWER_SOURCE_MAX_ITEMS) return null;
     const decoded = value.memorySources.map((source) => decodeMemoryAnswerSource(source));
     if (decoded.some((source) => !source.ok)) return null;
     memorySources = decoded.flatMap((source) => source.ok ? [source.value] : []);

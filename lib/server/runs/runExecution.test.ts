@@ -937,7 +937,11 @@ function createRepository(options: RepositoryOptions = {}) {
     },
     async appendRunOutputEvent(runId, event) {
       const sequence = persistedEvents.length;
-      persistedEvents.push({ event, runId, sequence });
+      const published: typeof event = event.data.artifactType === "workspace_activity"
+        ? { data: { artifactType: "workspace_activity", payload: { ...event.data.payload, sequence } }, type: "artifact" }
+        : event;
+      persistedEvents.push({ event: published, runId, sequence });
+      return published;
     },
     async beginToolLoopProviderRound() {
       return "started";
@@ -1360,7 +1364,84 @@ function deferred<Value>() {
   return { promise, resolve };
 }
 
+const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
+  enabled: true, imageRef: "test-image", inboxIndexPath: "/workspace/inbox/index.json",
+  internetEnabled: false, maxToolCalls: 20, maxToolRounds: 10, mcpVersion: "0.6.16",
+  messageManifestPath: "/workspace/inbox/messages/message-1/manifest.json",
+  outputDirectory: "/workspace/output/run-1", projectDirectory: "/workspace/project",
+  runtimeVersion: "0.6.16", sessionId: "workspace-1", syncToolTimeoutSeconds: 5,
+  toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300
+};
+
 describe("run execution", () => {
+
+  it.each(["ready", "failed", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
+    const boundary = deferred<void>();
+    const repository = createRepository({ completionWins: outcome !== "completion_lost" });
+    const providerCalls = vi.fn();
+    const adapter = createAdapter(async function* () { providerCalls(); return providerResult(); });
+    const prepared = preparedData();
+    const handoff = vi.fn(async () => {
+      await boundary.promise;
+      if (outcome === "failed") throw new Error("synthetic_handoff_failure");
+      return { status: "ready" as const };
+    });
+    const workspace = {
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff, recoverExports: vi.fn(),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })),
+      tools: async () => [{ capability: "workspace" as const, description: "Fixture", inputSchema: {}, name: "workspace_fixture" }]
+    };
+    const text = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository,
+      prepared: { ...prepared, normalizedRequest: { ...prepared.normalizedRequest, workspace: completionWorkspace } }
+    }), workspace }).text();
+    try {
+      await vi.waitFor(() => expect(handoff).toHaveBeenCalledOnce());
+      expect(repository.completeRuns).toHaveLength(0);
+      if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+      boundary.resolve();
+      const events = parseSse(await text);
+      expect(events.some((event) => event.type === "done" && event.data.status === "complete")).toBe(outcome === "ready");
+      expect(repository.completeRuns).toHaveLength(outcome === "ready" || outcome === "completion_lost" ? 1 : 0);
+      expect(providerCalls).toHaveBeenCalledOnce();
+      expect(workspace.finalize).not.toHaveBeenCalled();
+      if (outcome !== "ready") expect(events.some((event) => event.type === "usage")).toBe(false);
+      if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(2);
+    } finally { boundary.resolve(); await text; }
+  });
+
+  it("completes the Workspace answer before a held export and preserves it after transfer failure", async () => {
+    const transfer = deferred<void>();
+    const repository = createRepository({ chatUpdate: chatUpdate() });
+    const providerCalls = vi.fn();
+    const adapter = createAdapter(async function* () { providerCalls(); return providerResult(); });
+    const prepared = preparedData();
+    const finalize = vi.fn(async () => { await transfer.promise; return { code: "workspace_output_export_failed" as const, retryable: true, status: "failed" as const }; });
+    const handoff = vi.fn(async () => ({ status: "ready" as const }));
+    const workspace = {
+      accepts: () => false, execute: vi.fn(), finalize, handoff, recoverExports: vi.fn(),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })),
+      tools: async () => [{ capability: "workspace" as const, description: "Fixture tool", inputSchema: { type: "object" }, name: "workspace_fixture" }]
+    };
+    const response = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository,
+      prepared: { ...prepared, normalizedRequest: { ...prepared.normalizedRequest, workspace: completionWorkspace } }
+    }), workspace });
+    const text = response.text();
+    try {
+      await vi.waitFor(() => { expect(repository.failedRuns).toEqual([]); expect(repository.completeRuns).toHaveLength(1); });
+      const events = parseSse(await text);
+      expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+      expect(handoff).toHaveBeenCalledOnce();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(providerCalls).toHaveBeenCalledOnce();
+      const background = finalize();
+      transfer.resolve();
+      await background;
+      expect(repository.completeRuns).toHaveLength(1);
+      expect(repository.failedRuns).toEqual([]);
+      expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+    } finally { transfer.resolve(); await text; }
+  });
+
   beforeEach(() => {
     activeRunControllersForTest().clear();
   });
@@ -1686,6 +1767,22 @@ describe("run execution", () => {
 
     expect(providerStarts).toBe(2);
     expect(repository.completeRuns.map((run) => run.runId).sort()).toEqual(["run-a", "run-b"]);
+  });
+
+  it("sends the persisted Workspace sequence in the live artifact", async () => {
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield {
+        data: { artifactType: "workspace_activity", payload: { command: { preview: "pytest" }, id: "command", kind: "command", phase: "running", updateId: "start" } },
+        type: "artifact"
+      };
+      return providerResult();
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text());
+    expect(events.find((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity")).toMatchObject({
+      data: { payload: { sequence: 0, updateId: "start" } }
+    });
+    expect(repository.persistedEvents[0]?.event).toMatchObject({ data: { payload: { sequence: 0 } } });
   });
 
   it("preserves SSE order, batches durable text, and persists only reloadable output artifacts", async () => {

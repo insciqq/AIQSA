@@ -7,8 +7,18 @@ import {
 } from "./uploads";
 
 describe("upload wire decoders", () => {
+  it("accepts a saved independent file without inventing source-chat navigation", () => {
+    const file = {
+      byteSize: 1024, chatId: null, chatTitle: null, createdAt: "2026-09-01T00:00:00.000Z",
+      fileName: "template.docx", id: "saved-file", messageId: null, savedAt: "2026-09-05T00:00:00.000Z", status: "ready"
+    };
+    expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [file] })).toEqual({ nextCursor: null, files: [file] });
+    expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [{ ...file, savedAt: null }] })).toBeNull();
+    expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [{ ...file, chatId: "unrelated-chat" }] })).toBeNull();
+  });
   it("accepts only bounded sent-file navigation projections", () => {
     expect(decodeAttachmentLibraryResponse({
+      nextCursor: null,
       files: [{
         byteSize: 1_024,
         chatId: "chat-1",
@@ -17,10 +27,12 @@ describe("upload wire decoders", () => {
         fileName: "notes.txt",
         id: "attachment-1",
         messageId: "message-1",
+        savedAt: null,
         privateStorageKey: "must-not-project",
         status: "ready"
       }]
     })).toEqual({
+      nextCursor: null,
       files: [{
         byteSize: 1_024,
         chatId: "chat-1",
@@ -29,10 +41,12 @@ describe("upload wire decoders", () => {
         fileName: "notes.txt",
         id: "attachment-1",
         messageId: "message-1",
+        savedAt: null,
         status: "ready"
       }]
     });
     expect(decodeAttachmentLibraryResponse({
+      nextCursor: null,
       files: [{
         byteSize: 1,
         chatId: "chat-1",
@@ -41,6 +55,7 @@ describe("upload wire decoders", () => {
         fileName: "notes.txt",
         id: "attachment-1",
         messageId: "message-1",
+        savedAt: null,
         status: "ready"
       }]
     })).toBeNull();

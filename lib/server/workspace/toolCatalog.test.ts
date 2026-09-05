@@ -1,9 +1,13 @@
+import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "@/lib/domain/workspace";
+import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import {
   bindOfficialWorkspaceTools,
   injectWorkspaceToolArguments,
-  originalWorkspaceToolName
+  originalWorkspaceToolName,
+  WORKSPACE_BOUND_TOOL_CATALOG_HASH
 } from "./toolCatalog";
 
 function officialTools() {
@@ -32,6 +36,27 @@ function officialTools() {
 }
 
 describe("official Microsandbox MCP binding", () => {
+  it("loads the actual pinned catalog from a nested application working directory", () => {
+    const root = process.cwd();
+    const runtimePath = resolve(root, "lib/server/workspace/microsandboxRuntime.ts");
+    const result = execFileSync(process.execPath, [
+      "--import", resolveRuntimeModulePath("tsx"), "-e",
+      `const { loadPinnedOfficialWorkspaceToolCatalog } = require(${JSON.stringify(runtimePath)});
+       loadPinnedOfficialWorkspaceToolCatalog().then(catalog => {
+         process.stdout.write(JSON.stringify({ hash: catalog.hash, count: catalog.tools.length }));
+       });`
+    ], {
+      cwd: resolve(root, "lib/server"),
+      encoding: "utf8",
+      env: { ...process.env, TSX_TSCONFIG_PATH: resolve(root, "tsconfig.json") },
+      timeout: 20_000
+    });
+    expect(JSON.parse(result)).toEqual({
+      hash: WORKSPACE_BOUND_TOOL_CATALOG_HASH,
+      count: WORKSPACE_MCP_TOOL_ALLOWLIST.length
+    });
+  }, 25_000);
+
   it("requires the complete allowlist and strips model-controlled identities", () => {
     const catalog = bindOfficialWorkspaceTools({
       mcpVersion: "0.6.16",

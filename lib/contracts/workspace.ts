@@ -236,6 +236,8 @@ export type ThreadWorkspaceActivityCommand = Readonly<{
   cwd?: string;
   exitCode?: number | null;
   originalByteCount?: number;
+  /** Source event of the retained output snapshot, even after a later output-free update. */
+  outputSequence?: number;
   preview: string;
   stderrPreview?: string;
   stdoutPreview?: string;
@@ -254,11 +256,17 @@ export type ThreadWorkspaceActivityEntry = Readonly<{
   durationMs?: number;
   errorCode?: WorkspaceErrorCode;
   file?: ThreadWorkspaceActivityFile;
+  firstSequence?: number;
   groupId?: string;
   id: string;
   kind: WorkspaceActivityKind;
   phase: WorkspaceActivityPhase;
+  /** Run-outcome projection of an unfinished entry; does not assert a process exit. */
+  runOutcome?: "cancelled" | "failed";
+  /** Assigned by ModelRunEvent persistence and retained when this update is replayed. */
+  sequence?: number;
   startedAt?: string;
+  updateId?: string;
 }>;
 
 export type ThreadWorkspaceOutputStatus = Readonly<{
@@ -278,16 +286,21 @@ const ACTIVITY_ENTRY_KEYS = new Set([
   "durationMs",
   "errorCode",
   "file",
+  "firstSequence",
   "groupId",
   "id",
   "kind",
   "phase",
-  "startedAt"
+  "runOutcome",
+  "sequence",
+  "startedAt",
+  "updateId"
 ]);
 const ACTIVITY_COMMAND_KEYS = new Set([
   "cwd",
   "exitCode",
   "originalByteCount",
+  "outputSequence",
   "preview",
   "stderrPreview",
   "stdoutPreview",
@@ -345,11 +358,14 @@ function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand |
     ? undefined
     : boundedCount(value.originalByteCount, Number.MAX_SAFE_INTEGER);
   if (originalByteCount === null) return null;
+  const outputSequence = value.outputSequence === undefined ? undefined : boundedCount(value.outputSequence, Number.MAX_SAFE_INTEGER);
+  if (outputSequence === null) return null;
   if (value.truncated !== undefined && typeof value.truncated !== "boolean") return null;
   return {
     ...(cwd ? { cwd } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(originalByteCount !== undefined ? { originalByteCount } : {}),
+    ...(outputSequence !== undefined ? { outputSequence } : {}),
     preview,
     ...(stderrPreview !== undefined ? { stderrPreview } : {}),
     ...(stdoutPreview !== undefined ? { stdoutPreview } : {}),
@@ -386,6 +402,16 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     ? value.phase as WorkspaceActivityPhase
     : null;
   if (!id || !kind || !phase) return null;
+  const sequence = value.sequence === undefined ? undefined : boundedCount(value.sequence, Number.MAX_SAFE_INTEGER);
+  if (sequence === null) return null;
+  const firstSequence = value.firstSequence === undefined ? undefined : boundedCount(value.firstSequence, Number.MAX_SAFE_INTEGER);
+  if (firstSequence === null || firstSequence !== undefined && (sequence === undefined || firstSequence > sequence)) return null;
+  const updateId = value.updateId === undefined ? undefined
+    : typeof value.updateId === "string" && ACTIVITY_ID_PATTERN.test(value.updateId) ? value.updateId : null;
+  if (updateId === null) return null;
+  const runOutcome = value.runOutcome === undefined ? undefined
+    : value.runOutcome === "cancelled" || value.runOutcome === "failed" ? value.runOutcome : null;
+  if (runOutcome === null || runOutcome !== undefined && phase !== runOutcome) return null;
   const groupId = value.groupId === undefined
     ? undefined
     : typeof value.groupId === "string" && ACTIVITY_ID_PATTERN.test(value.groupId) ? value.groupId : null;
@@ -407,6 +433,7 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
   if (value.errorCode !== undefined && !errorCode) return null;
   const command = value.command === undefined ? undefined : decodeActivityCommand(value.command);
   if (value.command !== undefined && !command) return null;
+  if (command?.outputSequence !== undefined && (sequence === undefined || command.outputSequence > sequence)) return null;
   const file = value.file === undefined ? undefined : decodeActivityFile(value.file);
   if (value.file !== undefined && !file) return null;
   return {
@@ -415,11 +442,15 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(errorCode ? { errorCode } : {}),
     ...(file ? { file } : {}),
+    ...(firstSequence !== undefined ? { firstSequence } : {}),
     ...(groupId ? { groupId } : {}),
     id,
     kind,
     phase,
-    ...(startedAt ? { startedAt } : {})
+    ...(runOutcome ? { runOutcome } : {}),
+    ...(sequence !== undefined ? { sequence } : {}),
+    ...(startedAt ? { startedAt } : {}),
+    ...(updateId ? { updateId } : {})
   };
 }
 

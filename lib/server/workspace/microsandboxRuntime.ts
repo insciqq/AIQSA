@@ -32,6 +32,8 @@ import {
   type WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
+import { resolveRuntimeModulePath } from "../runtimeModulePath";
+import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
 import {
   bindOfficialWorkspaceTools,
@@ -68,7 +70,7 @@ type LocalSession = {
 const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
 const EXEC_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
-const MCP_BINARY = join(process.cwd(), "node_modules", "microsandbox-mcp", "bin", "microsandbox-mcp.js");
+const MCP_BINARY = resolveRuntimeModulePath("microsandbox-mcp/bin/microsandbox-mcp.js");
 const PROJECT_ARCHIVE_COMMAND =
   "set -o pipefail; cd \"$2\"; " +
   "if find . -xdev \\( -type b -o -type c -o -type s \\) -print -quit | IFS= read -r _; " +
@@ -135,6 +137,14 @@ function boundedMcpResult(value: unknown, maximum: number): WorkspaceToolResult 
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+  if (record.isError === true) {
+    // Official errors may include runtime identity/status or raw SDK details.
+    // They are never lifecycle evidence and never authorize a retry.
+    return {
+      content: [{ text: "The Workspace operation failed.", type: "text" }],
+      status: "error"
+    };
+  }
   const content = Array.isArray(record.content) ? record.content : [];
   const chunks: Uint8Array[] = [];
   for (const item of content) {
@@ -167,12 +177,12 @@ function boundedMcpResult(value: unknown, maximum: number): WorkspaceToolResult 
     content: [{ text, type: "text" }],
     ...(exitCode === undefined ? {} : { exitCode }),
     originalByteCount: bounded.originalByteCount,
-    status: record.isError === true ? "error" : "complete",
+    status: "complete",
     truncated: bounded.truncated
   };
 }
 
-function execPollReportsDone(value: unknown): boolean {
+function execPollReportsLeaderExit(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if ((value as { isError?: unknown }).isError === true) return false;
   const content = (value as { content?: unknown }).content;
@@ -182,8 +192,14 @@ function execPollReportsDone(value: unknown): boolean {
     const text = (item as { text?: unknown }).text;
     if (typeof text !== "string") continue;
     try {
-      const parsed = JSON.parse(text) as { data?: { done?: unknown } };
-      if (parsed.data?.done === true) return true;
+      const parsed = JSON.parse(text) as {
+        data?: { done?: unknown; error?: unknown; exitStatus?: { code?: unknown } | null }
+      };
+      const code = parsed.data?.exitStatus?.code;
+      // In the pinned SDK, -1 also represents lost reaper notification. EOF,
+      // a reader error, and a signal acknowledgement provide no exit proof.
+      if (parsed.data?.done === true && parsed.data.error == null &&
+        typeof code === "number" && Number.isInteger(code) && code >= 0 && code <= 255) return true;
     } catch {
       // Ignore non-JSON content.
     }
@@ -254,9 +270,14 @@ function readStreamBody(
       try {
         if (!stream) {
           stream = await open();
+          if (finalized) {
+            await stream[Symbol.asyncDispose]().catch(() => undefined);
+            return;
+          }
           iterator = stream[Symbol.asyncIterator]();
         }
         const next = await iterator!.next();
+        if (finalized) return;
         if (next.done) {
           await finalize();
           controller.close();
@@ -264,21 +285,47 @@ function readStreamBody(
           controller.enqueue(next.value);
         }
       } catch (error) {
+        if (finalized) return;
         await finalize();
         controller.error(error);
       }
     }
-  });
+  }, { highWaterMark: 0 });
 }
 
-async function hashGuestFile(sandbox: Sandbox, path: string): Promise<string> {
-  const hash = createHash("sha256");
+async function consumeGuestFile(
+  sandbox: Sandbox, path: string, byteSize: number, consume: (chunk: Uint8Array) => void, signal?: AbortSignal
+): Promise<void> {
+  signal?.throwIfAborted();
   const stream = await sandbox.fs().readStream(path);
+  let bytes = 0;
+  let disposal: Promise<void> | undefined;
+  const dispose = () => disposal ??= stream[Symbol.asyncDispose]().catch(() => undefined);
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const onAbort = () => { rejectAbort(signal!.reason); void dispose(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    for await (const chunk of stream) hash.update(chunk);
+    signal?.throwIfAborted();
+    const iterator = stream[Symbol.asyncIterator]();
+    while (true) {
+      const next = signal ? await Promise.race([iterator.next(), aborted]) : await iterator.next();
+      signal?.throwIfAborted();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > byteSize) throw new Error("guest_file_size_mismatch");
+      consume(next.value);
+    }
+    if (bytes !== byteSize) throw new Error("guest_file_size_mismatch");
   } finally {
-    await stream[Symbol.asyncDispose]().catch(() => undefined);
+    signal?.removeEventListener("abort", onAbort);
+    await dispose();
   }
+}
+
+async function hashGuestFile(sandbox: Sandbox, path: string, byteSize: number, signal?: AbortSignal): Promise<string> {
+  const hash = createHash("sha256");
+  await consumeGuestFile(sandbox, path, byteSize, (chunk) => { hash.update(chunk); }, signal);
   return hash.digest("hex");
 }
 
@@ -346,8 +393,17 @@ export async function loadPinnedOfficialWorkspaceToolCatalog(): Promise<Workspac
 
 export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   private readonly sessions = new Map<string, LocalSession>();
+  private readonly initializing = new Map<string, Promise<WorkspaceRuntimeSession>>();
 
-  constructor(private readonly config: WorkspaceConfig) {}
+  private captures: WorkspaceOutputCaptureStore | undefined;
+
+  constructor(private readonly config: WorkspaceConfig, private readonly captureDirectory?: string) {}
+
+  private outputCaptures(): WorkspaceOutputCaptureStore {
+    const directory = this.captureDirectory ?? (process.env.MSB_HOME?.trim() ? join(process.env.MSB_HOME.trim(), "workspace-outputs") : null);
+    if (!directory) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    return this.captures ??= new WorkspaceOutputCaptureStore(directory, this.config);
+  }
 
   async health(): Promise<WorkspaceRuntimeHealth> {
     try {
@@ -384,20 +440,38 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async ensureSession(input: Parameters<WorkspaceRuntime["ensureSession"]>[0]): Promise<WorkspaceRuntimeSession> {
+    const pending = this.initializing.get(input.sessionId);
+    if (pending) {
+      await pending.catch(() => undefined);
+      return this.ensureSession(input);
+    }
+    const operation = this.initializeSession(input).finally(() => {
+      if (this.initializing.get(input.sessionId) === operation) this.initializing.delete(input.sessionId);
+    });
+    this.initializing.set(input.sessionId, operation);
+    return operation;
+  }
+
+  private async initializeSession(input: Parameters<WorkspaceRuntime["ensureSession"]>[0]): Promise<WorkspaceRuntimeSession> {
+    if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
     const existing = this.sessions.get(input.sessionId);
     if (existing) {
       if (
         existing.sandboxName !== input.sandboxName ||
         (input.runtimeSandboxId !== null && existing.runtimeSandboxId !== input.runtimeSandboxId)
       ) {
-        throw new WorkspaceRuntimeError("workspace_session_lost");
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
       try {
         const handle = await Sandbox.get(existing.sandboxName);
         if (handle.id !== existing.runtimeSandboxId) {
-          throw new WorkspaceRuntimeError("workspace_session_lost");
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
-        existing.sandbox = await handle.connectOrStart();
+        const reconnected = await handle.connectOrStart({ detached: true });
+        if (reconnected.id !== existing.runtimeSandboxId || reconnected.name !== existing.sandboxName) {
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        }
+        existing.sandbox = reconnected;
         return {
           runtimeSandboxId: existing.runtimeSandboxId,
           sandboxName: existing.sandboxName,
@@ -406,6 +480,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       } catch (error) {
         if (error instanceof WorkspaceRuntimeError) throw error;
         if (error instanceof SandboxNotFoundError) {
+          await this.closeMcp(existing);
+          if (this.sessions.get(input.sessionId) === existing) this.sessions.delete(input.sessionId);
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
         throw new WorkspaceRuntimeError("workspace_session_create_failed");
@@ -413,6 +489,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
 
     let sandbox: Sandbox;
+    let acquired: LocalSession | undefined;
     try {
       const handle = await Sandbox.get(input.sandboxName).catch((error: unknown) => {
         if (error instanceof SandboxNotFoundError) return null;
@@ -420,14 +497,15 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       });
       if (handle) {
         if (input.runtimeSandboxId !== null && handle.id !== input.runtimeSandboxId) {
-          throw new WorkspaceRuntimeError("workspace_session_lost");
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
-        sandbox = await handle.connectOrStart();
+        sandbox = await handle.connectOrStart({ detached: true });
       } else {
         if (input.runtimeSandboxId !== null) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }
         let builder = Sandbox.builder(input.sandboxName)
+          .detached(true)
           .image(input.imageRef)
           .rootDisk(input.diskMiB)
           .cpus(input.cpus)
@@ -442,9 +520,17 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           : builder.network((network) => network.policy(NetworkPolicy.none()));
         sandbox = await builder.connectOrCreate();
       }
-      if (input.runtimeSandboxId !== null && sandbox.id !== input.runtimeSandboxId) {
-        throw new WorkspaceRuntimeError("workspace_session_lost");
+      if (sandbox.name !== input.sandboxName || (input.runtimeSandboxId !== null && sandbox.id !== input.runtimeSandboxId)) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
+      // Retain exact cleanup authority before any fallible initialization.
+      // A failed stop must not discard the only acquired runtime identity.
+      acquired = {
+        activeCalls: new Map(), execOwners: new Map(),
+        runtimeSandboxId: sandbox.id, sandbox, sandboxName: input.sandboxName
+      };
+      this.sessions.set(input.sessionId, acquired);
+      if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       const initialized = await sandbox.exec("mkdir", [
         "-p",
         `${WORKSPACE_ROOT}/inbox/messages`,
@@ -454,18 +540,20 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       ]);
       if (!initialized.success) throw new Error("workspace_init_failed");
     } catch (error) {
+      if (acquired) {
+        try {
+          await acquired.sandbox.stopWithTimeout(10_000);
+        } catch {
+          throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        }
+      }
       if (error instanceof WorkspaceRuntimeError) throw error;
+      if (error instanceof SandboxNotFoundError && input.runtimeSandboxId !== null) {
+        throw new WorkspaceRuntimeError("workspace_session_lost");
+      }
       throw new WorkspaceRuntimeError("workspace_session_create_failed");
     }
 
-    const session: LocalSession = {
-      activeCalls: new Map(),
-      execOwners: new Map(),
-      runtimeSandboxId: sandbox.id,
-      sandbox,
-      sandboxName: input.sandboxName
-    };
-    this.sessions.set(input.sessionId, session);
     return { runtimeSandboxId: sandbox.id, sandboxName: sandbox.name, state: "ready" };
   }
 
@@ -475,6 +563,56 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
     return session;
+  }
+
+  private async runningSession(input: Readonly<{
+    runtimeSandboxId: string;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<LocalSession> {
+    if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    const cached = this.sessions.get(input.sessionId);
+    if (cached && cached.runtimeSandboxId !== input.runtimeSandboxId) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    const sandboxName = cached?.sandboxName ?? workspaceSandboxName(input.sessionId);
+    try {
+      const handle = await Sandbox.get(sandboxName);
+      if (handle.id !== input.runtimeSandboxId) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      // One structured observation and at most one start. Never infer loss
+      // from an MCP error or restart a draining/paused VM. Connecting has an
+      // explicit timeout rather than an unbounded wait-for-status loop.
+      const sandbox = handle.status === "running" || handle.status === "starting"
+        ? await handle.connectWithTimeout(10_000)
+        : handle.status === "created" || handle.status === "stopped" || handle.status === "crashed"
+          ? await handle.connectOrStart({ detached: true })
+          : null;
+      if (!sandbox) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+      if (sandbox.id !== input.runtimeSandboxId || sandbox.name !== sandboxName) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      const session: LocalSession = cached ?? {
+        activeCalls: new Map(),
+        execOwners: new Map(),
+        runtimeSandboxId: input.runtimeSandboxId,
+        sandbox,
+        sandboxName
+      };
+      session.sandbox = sandbox;
+      this.sessions.set(input.sessionId, session);
+      return session;
+    } catch (error) {
+      if (error instanceof SandboxNotFoundError) {
+        if (cached) await this.closeMcp(cached);
+        if (this.sessions.get(input.sessionId) === cached) this.sessions.delete(input.sessionId);
+        throw new WorkspaceRuntimeError("workspace_session_lost");
+      }
+      if (error instanceof WorkspaceRuntimeError) throw error;
+      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    }
   }
 
   private async mcp(session: LocalSession): Promise<McpConnection> {
@@ -491,31 +629,50 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   async listStagedAttachments(
     input: Parameters<WorkspaceRuntime["listStagedAttachments"]>[0]
   ): Promise<readonly WorkspaceStagedAttachmentEntry[]> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const session = await this.runningSession(input);
     const fs = session.sandbox.fs();
     try {
+      if (!input.attachments.length) return [];
       if (!(await fs.exists(WORKSPACE_INBOX_INDEX_PATH))) return [];
       const metadata = await fs.stat(WORKSPACE_INBOX_INDEX_PATH);
-      if (metadata.kind !== "file" || metadata.size > WORKSPACE_INBOX_INDEX_MAX_BYTES) return [];
+      if (metadata.kind !== "file" || !Number.isSafeInteger(metadata.size) || metadata.size < 1 || metadata.size > WORKSPACE_INBOX_INDEX_MAX_BYTES) return [];
+      const index = new Uint8Array(metadata.size);
+      let offset = 0;
+      await consumeGuestFile(session.sandbox, WORKSPACE_INBOX_INDEX_PATH, metadata.size, (chunk) => {
+        index.set(chunk, offset); offset += chunk.byteLength;
+      }, input.signal);
       const entries = decodeWorkspaceInboxIndexAttachments(
-        JSON.parse(new TextDecoder().decode(await fs.read(WORKSPACE_INBOX_INDEX_PATH)))
+        JSON.parse(new TextDecoder().decode(index))
       );
       if (!entries) return [];
       const staged: WorkspaceStagedAttachmentEntry[] = [];
-      for (const entry of entries) {
-        // Only a regular file of the recorded size counts as staged; symlinks,
-        // directories, and partial writes are restaged from the original.
+      const indexed = new Map(entries.map((entry) => [entry.attachmentId, entry]));
+      for (const entry of input.attachments) {
+        input.signal?.throwIfAborted();
+        const hint = indexed.get(entry.attachmentId);
+        if (!hint || hint.sandboxPath !== entry.sandboxPath || hint.byteSize !== entry.byteSize || hint.checksum !== entry.checksum) continue;
+        // Guest index checksums are hints. Read the actual bytes before
+        // canonical application metadata can authorize reuse.
         const stat = await fs.stat(entry.sandboxPath).catch(() => null);
-        if (stat && stat.kind === "file" && stat.size === entry.byteSize) staged.push(entry);
+        if (!stat || stat.kind !== "file" || stat.size !== entry.byteSize) continue;
+        try {
+          const checksum = await hashGuestFile(session.sandbox, entry.sandboxPath, entry.byteSize, input.signal);
+          const after = await fs.stat(entry.sandboxPath);
+          if (after.kind === "file" && after.size === entry.byteSize && checksum === entry.checksum) staged.push(entry);
+        } catch {
+          input.signal?.throwIfAborted();
+          // Restage an unreadable, replaced or changed original.
+        }
       }
       return staged;
     } catch {
+      input.signal?.throwIfAborted();
       return [];
     }
   }
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const session = await this.runningSession(input);
     const fs = session.sandbox.fs();
     try {
       if (input.outputDirectory) {
@@ -592,10 +749,17 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
+    // Only this preflight can mint a retryable no-dispatch proof. Anything
+    // thrown by callTool below is an ambiguous dispatch and never upgraded.
+    const session = await this.runningSession(input).catch((error: unknown) => {
+      if (error instanceof WorkspaceRuntimeError && error.code === "workspace_session_lost") {
+        throw new WorkspaceRuntimeError("workspace_session_lost_before_dispatch");
+      }
+      throw error;
+    });
     const mcp = await this.mcp(session);
     const execSessionId = typeof input.arguments.execSessionId === "string"
       ? input.arguments.execSessionId
@@ -635,6 +799,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           : input.originalName === "sandbox_exec_poll" || input.originalName === "sandbox_fs_read"
             ? { ...argumentsWithIdentity, maxBytes: this.config.toolOutputMaxBytes }
             : argumentsWithIdentity;
+      if (input.signal?.aborted || controller.signal.aborted) {
+        throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      }
       const result = await mcp.client.callTool({
         arguments: boundedArguments,
         name: input.originalName
@@ -649,9 +816,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         session.execOwners.set(id, input.modelRunId);
         return { ...boundedMcpResult(result, this.config.toolOutputMaxBytes), execSessionId: id };
       }
-      if (input.originalName === "sandbox_exec_close" && execSessionId) {
-        session.execOwners.delete(execSessionId);
-      }
+      // Closing an MCP observation cannot discharge descendant ownership.
       return boundedMcpResult(result, this.config.toolOutputMaxBytes);
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError) throw error;
@@ -680,49 +845,67 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   /**
-   * TERM every execution, wait one bounded grace period, then KILL and close
-   * whatever is still alive. An execution counts as closed only when the
-   * official server confirmed the kill, the close, or a finished poll;
-   * anything else (including an unknown session after an MCP restart) is
-   * reported as unknown so the caller stops the VM instead of guessing.
+   * Observe the leader after TERM and KILL before releasing its handle.
+   * The pinned MCP cannot certify escaped/background descendants even after
+   * leader exit, so the durable owner still requires an exact VM stop.
    */
   private async terminateExecutionIds(
     session: LocalSession,
-    ids: readonly string[]
+    ids: readonly string[],
+    signal?: AbortSignal
   ): Promise<readonly WorkspaceExecutionTermination[]> {
     if (ids.length === 0) return [];
+    const unknown = ids.map((runtimeExecSessionId) => ({ outcome: "unknown" as const, runtimeExecSessionId }));
+    // Do not turn a large registry into minutes of sequential signal timeouts.
+    // The VM fallback covers all commands regardless of batch size.
+    if (ids.length > 32 || signal?.aborted) return unknown;
     const mcp = await this.mcp(session);
+    const deadline = AbortSignal.timeout(10_000);
+    const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const call = (name: WorkspaceMcpToolName, args: Record<string, unknown>) =>
-      mcp.client.callTool({ arguments: args, name }, undefined, { timeout: 5_000 })
+      operationSignal.aborted ? Promise.resolve(null) :
+        mcp.client.callTool({ arguments: args, name }, undefined, { signal: operationSignal, timeout: 2_000 })
         .then((result) => result.isError !== true ? result : null)
         .catch(() => null);
-    for (const execSessionId of ids) {
-      await call("sandbox_exec_signal", { execSessionId, signal: "term" });
-    }
+    await Promise.all(ids.map((execSessionId) => call("sandbox_exec_signal", { execSessionId, signal: "term" })));
     await delay(1_000);
-    const results: WorkspaceExecutionTermination[] = [];
-    for (const execSessionId of ids) {
-      const polled = await call("sandbox_exec_poll", { execSessionId, limit: 1 });
-      const done = execPollReportsDone(polled);
-      const killed = done ? null : await call("sandbox_exec_signal", { execSessionId, signal: "kill" });
-      const closed = await call("sandbox_exec_close", { execSessionId });
-      const proven = done || killed !== null || closed !== null;
-      if (proven) session.execOwners.delete(execSessionId);
-      results.push({ outcome: proven ? "closed" : "unknown", runtimeExecSessionId: execSessionId });
-    }
-    return results;
+    await Promise.all(ids.map(async (execSessionId) => {
+      let exited = execPollReportsLeaderExit(await call("sandbox_exec_poll", { execSessionId, limit: 1 }));
+      if (!exited) {
+        await call("sandbox_exec_signal", { execSessionId, signal: "kill" });
+        await delay(1_000);
+        exited = execPollReportsLeaderExit(await call("sandbox_exec_poll", { execSessionId, limit: 1 }));
+      }
+      if (exited) await call("sandbox_exec_close", { execSessionId });
+      // Retain cached ownership as well: handle disposal cannot erase an
+      // unresolved descendant obligation before the disk-preserving stop.
+    }));
+    return unknown;
   }
 
   async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     return this.terminateExecutionIds(
       session,
-      input.executions.map((execution) => execution.runtimeExecSessionId)
+      input.executions.map((execution) => execution.runtimeExecSessionId),
+      input.signal
     );
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    if (input.capture) {
+      await this.runningSession(input);
+      return this.outputCaptures().collect(input, () => this.collectCurrentOutputs(input));
+    }
+    return this.collectCurrentOutputs(input);
+  }
+
+  async releaseOutputCapture(input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]): Promise<void> {
+    await this.outputCaptures().release(input);
+  }
+
+  private async collectCurrentOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+    const session = await this.runningSession(input);
     const quiesced = await this.terminateExecutionIds(
       session,
       this.cachedExecutionIds(session, input.modelRunId)
@@ -776,16 +959,18 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       ) {
         throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
       }
-      return Promise.all(files.sort((a, b) => a.relativePath.localeCompare(b.relativePath)).map(async (file) => ({
-        body: readStreamBody(() => fs.readStream(file.path)),
+      const outputs: WorkspaceOutputStream[] = [];
+      for (const file of files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))) outputs.push({
         byteSize: file.byteSize,
-        checksum: await hashGuestFile(session.sandbox, file.path),
+        checksum: await hashGuestFile(session.sandbox, file.path, file.byteSize, input.signal),
+        body: readStreamBody(() => fs.readStream(file.path)),
         mimeType: mimeTypeForPath(file.relativePath),
         opaqueFileId: createHash("sha256")
           .update(`${session.runtimeSandboxId}\0${input.modelRunId}\0${file.relativePath}`)
           .digest("hex"),
         relativePath: file.relativePath
-      })));
+      });
+      return outputs;
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError) throw error;
       throw new WorkspaceRuntimeError("workspace_output_export_failed");
@@ -793,7 +978,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async createProjectArchive(input: Parameters<WorkspaceRuntime["createProjectArchive"]>[0]): Promise<WorkspaceOutputStream> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const session = await this.runningSession(input);
     const archivePath = `${WORKSPACE_TEMP_DIRECTORY}/workspace-export-${createHash("sha256")
       .update(`${input.sessionId}\0${Date.now()}`)
       .digest("hex")}.tar.gz`;
@@ -820,7 +1005,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         () => session.sandbox.fs().remove(archivePath)
       ),
       byteSize: metadata.size,
-      checksum: await hashGuestFile(session.sandbox, archivePath),
+      checksum: await hashGuestFile(session.sandbox, archivePath, metadata.size, input.signal),
       mimeType: "application/gzip",
       opaqueFileId: createHash("sha256").update(archivePath).digest("hex"),
       relativePath: "workspace.tar.gz"
@@ -833,45 +1018,83 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     if (mcp) await mcp.transport.close().catch(() => undefined);
   }
 
+  private async waitForInitialization(sessionId: string): Promise<void> {
+    const pending = this.initializing.get(sessionId);
+    if (!pending) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        pending.catch(() => undefined),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new WorkspaceRuntimeError("workspace_execution_cleanup_failed")), 10_000);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async stopSession(input: Parameters<WorkspaceRuntime["stopSession"]>[0]): Promise<void> {
+    // A cancelled remote ensure may still be creating its VM. Absence before
+    // that accepted initializer finishes is not proof of a stopped session.
+    await this.waitForInitialization(input.sessionId);
     const session = this.sessions.get(input.sessionId);
     if (session && input.runtimeSandboxId && session.runtimeSandboxId !== input.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
+    const expectedId = input.runtimeSandboxId ?? session?.runtimeSandboxId;
     await (session ? this.closeMcp(session) : Promise.resolve());
+    let stopped = false;
     try {
       const handle = await Sandbox.get(session?.sandboxName ?? workspaceSandboxName(input.sessionId));
-      if (input.runtimeSandboxId && handle.id !== input.runtimeSandboxId) {
+      if (expectedId && handle.id !== expectedId) {
         throw new WorkspaceRuntimeError("workspace_session_lost");
       }
       await handle.stopWithTimeout(10_000);
+      stopped = true;
     } catch (error) {
-      if (error instanceof SandboxNotFoundError) return;
+      if (error instanceof SandboxNotFoundError) {
+        stopped = true;
+        return;
+      }
       if (error instanceof WorkspaceRuntimeError) throw error;
       throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     } finally {
-      this.sessions.delete(input.sessionId);
+      if (stopped && this.sessions.get(input.sessionId) === session) this.sessions.delete(input.sessionId);
     }
   }
 
   async removeSession(input: Parameters<WorkspaceRuntime["removeSession"]>[0]): Promise<void> {
+    await this.waitForInitialization(input.sessionId);
     const session = this.sessions.get(input.sessionId);
     if (session && input.runtimeSandboxId && session.runtimeSandboxId !== input.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
+    let expectedId = input.runtimeSandboxId ?? session?.runtimeSandboxId;
     if (session) await this.closeMcp(session);
+    let removed = false;
     try {
       const handle = await Sandbox.get(session?.sandboxName ?? workspaceSandboxName(input.sessionId));
-      if (input.runtimeSandboxId && handle.id !== input.runtimeSandboxId) {
+      if (expectedId && handle.id !== expectedId) {
         throw new WorkspaceRuntimeError("workspace_session_lost");
       }
+      expectedId = handle.id;
       await handle.destroy({ timeoutMs: 10_000 });
+      removed = true;
     } catch (error) {
-      if (error instanceof SandboxNotFoundError) return;
+      if (error instanceof SandboxNotFoundError) {
+        removed = true;
+        return;
+      }
       if (error instanceof WorkspaceRuntimeError) throw error;
       throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     } finally {
-      this.sessions.delete(input.sessionId);
+      if (removed) {
+        if (this.sessions.get(input.sessionId) === session) this.sessions.delete(input.sessionId);
+        if (this.captures || this.captureDirectory || process.env.MSB_HOME?.trim()) {
+          await this.outputCaptures().removeSession({ ...input, runtimeSandboxId: expectedId ?? null });
+        }
+      }
     }
   }
 }
