@@ -48,8 +48,15 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
       prepared.project?.projectId);
     for (const row of loaded.modelRun.chatPdfAttachments) {
       const original = records.find(({ id }) => id === row.attachmentId);
-      if (!original || original.checksum?.trim() !== row.sourceChecksum.trim() || original.byteSize !== row.sourceByteSize ||
-        row.state !== "ready") throw new ChatPdfPreparationError("pdf_preparation_invalid");
+      if (!original || original.checksum?.trim() !== row.sourceChecksum.trim() || original.byteSize !== row.sourceByteSize) {
+        throw new ChatPdfPreparationError("pdf_preparation_invalid");
+      }
+      if (row.state === "original_only" && prepared.normalizedRequest.workspace?.enabled &&
+        loaded.modelRun.workspaceRunBinding && row.route !== "direct_pdf" && !row.documentArtifactId) {
+        original.workspaceOriginalOnly = true;
+        continue;
+      }
+      if (row.state !== "ready") throw new ChatPdfPreparationError("pdf_preparation_invalid");
       if (row.route === "direct_pdf") continue;
       if (!row.documentArtifactId) throw new ChatPdfPreparationError("pdf_preparation_invalid");
       const artifact = await deps.pdfRepository.readArtifact(row.documentArtifactId, row.attachmentId);
@@ -67,7 +74,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     }
     const attachments = await loadProviderAttachments({ repository: { loadAttachments: async () => records }, storage: deps.storage },
       claim.userId, prepared.normalizedRequest.attachmentIds, { capabilities: prepared.normalizedRequest.modelCapabilities,
-        limits: getRunAttachmentLimits(), signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled });
+        limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled });
     const budget = applyProviderRequestContextBudget({ request: { ...prepared.providerRequest, attachments },
       ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {}) });
     if (!budget.ok || !budget.request.context) throw new ChatPdfPreparationError("pdf_preparation_context_limit");

@@ -20,7 +20,7 @@ describe("Project-scoped run binding locks", () => {
       {
         assistantId: "assistant-1",
         projectId: "project-1",
-        revisionId: "assistant-revision-1"
+        definitionVersion: 7
       }
     );
 
@@ -28,12 +28,13 @@ describe("Project-scoped run binding locks", () => {
     const sql = (call[0] as unknown as readonly string[]).join(" ");
     expect(sql).toContain('FROM "ProjectAssistantBinding"');
     expect(sql).toContain('definition."archivedAt" IS NULL');
+    expect(sql).toContain('definition."version" =');
     expect(sql).not.toContain('"AssistantPublication"');
     expect(sql).not.toContain('definition."ownerUserId"');
     expect(call).toEqual(expect.arrayContaining([
       "project-1",
       "assistant-1",
-      "assistant-revision-1"
+      7
     ]));
   });
 

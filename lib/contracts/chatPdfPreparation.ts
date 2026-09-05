@@ -10,7 +10,7 @@ export const CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE =
   "Some PDFs will use basic text extraction, so reading quality may be limited.";
 
 export type ChatPdfRoute = "direct_pdf" | "system_vision" | "selected_model_vision" | "local_text";
-export type ChatPdfPreparationPhase = "checking" | "preparing" | "assembling" | "ready" | "failed" | "cancelled";
+export type ChatPdfPreparationPhase = "checking" | "preparing" | "assembling" | "ready" | "original_only" | "failed" | "cancelled";
 
 export type ChatPdfPreparationWire = Readonly<{
   completedPages: number;
@@ -30,7 +30,7 @@ export function decodeChatPdfPreparation(value: unknown): ChatPdfPreparationWire
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
   if (!["direct_pdf", "system_vision", "selected_model_vision", "local_text"].includes(String(item.route)) ||
-    !["checking", "preparing", "assembling", "ready", "failed", "cancelled"].includes(String(item.phase)) ||
+    !["checking", "preparing", "assembling", "ready", "original_only", "failed", "cancelled"].includes(String(item.phase)) ||
     !(item.pageCount === null || Number.isSafeInteger(item.pageCount) &&
       Number(item.pageCount) >= 1 && Number(item.pageCount) <= PDF_PROCESSING_MAX_PAGES) ||
     !Number.isSafeInteger(item.completedPages) || Number(item.completedPages) < 0 ||
@@ -38,6 +38,7 @@ export function decodeChatPdfPreparation(value: unknown): ChatPdfPreparationWire
     item.limitedReadingQuality !== (item.route === "local_text") ||
     item.longDocument !== isLongChatPdf(item.pageCount as number | null) ||
     typeof item.retryable !== "boolean" ||
+    item.phase === "original_only" && item.route === "direct_pdf" ||
     item.retryable && item.phase !== "failed") return null;
   return {
     completedPages: Number(item.completedPages),

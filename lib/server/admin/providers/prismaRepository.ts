@@ -1404,9 +1404,10 @@ export function createPrismaAdminProviderRepository(
             providerModelId: input.candidate.model.id
           } }
         }) : null;
-        if (input.capabilityRole && (!existing || existing.status !== "available")) return "stale" as const;
-        const evidence = input.capabilityRole
-          ? mergeSystemRoleEvidence(existing!.evidence, input.evidence, input.capabilityRole)
+        // A role probe includes fresh model-access proof. Only an available
+        // prior check has independent capabilities to preserve on this tuple.
+        const evidence = input.capabilityRole && existing?.status === "available"
+          ? mergeSystemRoleEvidence(existing.evidence, input.evidence, input.capabilityRole)
           : input.evidence;
         await tx.providerModelCredentialCheck.upsert({
           create: {
