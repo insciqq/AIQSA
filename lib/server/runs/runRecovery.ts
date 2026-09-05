@@ -1,5 +1,4 @@
 import {
-  isGroundingDisplaySseEvent,
   textFromContentBlocks,
   type ModelRunSseEvent,
   type ModelRunUsage
@@ -228,7 +227,6 @@ export type RunRecoveryRepository = Pick<
   | "loadFocusedKnowledgeScopeExclusions"
   | "loadModelPricing"
   | "loadRunUsageAttributions"
-  | "markAssistantMessageGroundedLiveOnly"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
   | "recoverPreparingRun"
@@ -1631,12 +1629,6 @@ async function recoverCheckpointedToolLoop(
   }
 
   try {
-    if (run.assistantText === null) {
-      throw new ToolLoopRecoveryError(
-        "grounding_live_only_not_recoverable",
-        "Grounded live-only output cannot resume after process recovery."
-      );
-    }
     const savedKnowledgeRuntime = run.normalizedRequest as unknown as Readonly<{
       knowledgeFocusedRequest?: unknown;
       knowledgePlanner?: unknown;
@@ -2068,23 +2060,6 @@ async function recoverCheckpointedToolLoop(
         if (recoveredKnowledgeEnabled) return;
         await tokenBuffer!.push(effectiveEvent.data.delta);
         return;
-      }
-      if (isGroundingDisplaySseEvent(effectiveEvent)) {
-        await tokenBuffer!.disablePersistence();
-        if (run.assistantMessageId) {
-          await deps.repository.markAssistantMessageGroundedLiveOnly({
-            assistantMessageId: run.assistantMessageId,
-            groundedAt: new Date(),
-            provider: run.normalizedRequest.provider,
-            runId: run.id,
-            strategy: run.normalizedRequest.searchPlan.options.find((option) =>
-              option.adapterKind === "answer_provider_hosted")?.optionId ?? "provider-grounding"
-          });
-        }
-        throw new ToolLoopRecoveryError(
-          "grounding_live_only_not_recoverable",
-          "Grounded live-only output cannot resume after process recovery."
-        );
       }
       await tokenBuffer!.flush();
       await publishProviderResponseId(providerResponseIdFromEvent(effectiveEvent) ?? undefined);

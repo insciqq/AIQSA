@@ -10,7 +10,7 @@ import type {
 import type { MemoryQualificationLanguageBucket } from "./language";
 import type { MemoryToolEventProjection } from "./toolEvents";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v7";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v8";
 export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
   "memory-history-rebuild-required-v5";
 export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";

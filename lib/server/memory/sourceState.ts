@@ -15,7 +15,7 @@ import {
   type MemoryTransaction
 } from "./persistence/transaction";
 
-export const MEMORY_SOURCE_PROJECTION_VERSION = "memory-source-v1";
+export const MEMORY_SOURCE_PROJECTION_VERSION = "memory-source-v2";
 const vNextFactRelationPipeline = "memory-fact-relation-v2";
 
 const MAX_COUNTER = 2_147_483_647;
@@ -131,9 +131,6 @@ type SourcePathRow = Readonly<{
   createdAt: Date;
   depth: number;
   errorMessage: string | null;
-  groundedAt: Date | null;
-  groundingProvider: string | null;
-  groundingStrategy: string | null;
   id: string;
   modelId: string | null;
   parentMessageId: string | null;
@@ -253,8 +250,7 @@ async function loadActiveSourcePath(
         message."id", message."parentMessageId", message."role",
         message."content", message."status"::text AS "status",
         message."provider", message."modelId", message."errorMessage",
-        message."groundedAt", message."groundingProvider",
-        message."groundingStrategy", message."createdAt", message."updatedAt",
+        message."createdAt", message."updatedAt",
         0 AS "depth"
       FROM ancestor_ids AS member
       INNER JOIN "Message" AS message
@@ -268,8 +264,7 @@ async function loadActiveSourcePath(
         child."id", child."parentMessageId", child."role",
         child."content", child."status"::text AS "status",
         child."provider", child."modelId", child."errorMessage",
-        child."groundedAt", child."groundingProvider",
-        child."groundingStrategy", child."createdAt", child."updatedAt",
+        child."createdAt", child."updatedAt",
         parent."depth" + 1
       FROM active_path AS parent
       INNER JOIN "Message" AS child
@@ -280,8 +275,7 @@ async function loadActiveSourcePath(
     )
     SELECT
       "id", "parentMessageId", "role", "content", "status", "provider",
-      "modelId", "errorMessage", "groundedAt", "groundingProvider",
-      "groundingStrategy", "createdAt", "updatedAt", "depth"
+      "modelId", "errorMessage", "createdAt", "updatedAt", "depth"
     FROM active_path
     ORDER BY "depth" ASC
   `);
@@ -312,9 +306,6 @@ function sourceMessageProjection(message: SourcePathRow): Readonly<Record<string
     ...identity,
     content: message.content,
     errorMessage: message.errorMessage,
-    groundedAt: message.groundedAt?.toISOString() ?? null,
-    groundingProvider: message.groundingProvider,
-    groundingStrategy: message.groundingStrategy,
     status: message.status,
     updatedAt: message.updatedAt.toISOString()
   };

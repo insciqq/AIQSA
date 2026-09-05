@@ -1,3 +1,5 @@
+import { decodeGroundingDisplay, type GroundingDisplay } from "../../domain/groundingDisplay";
+import { validateGeminiSearchSuggestionsHtml } from "../providers/geminiInteractionsGrounding";
 import { decodeThreadSearchSource, type ThreadSearchSource } from "../../contracts/searchSources";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { safeExternalHref } from "../../domain/links";
@@ -19,6 +21,7 @@ type RunOutputCitation = {
 };
 
 export type RunOutputArtifactEvent =
+  | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
         artifactType: "citation";
@@ -147,6 +150,17 @@ function isExactSearchSource(value: unknown, expectedRank: number): value is Thr
     decoded.url === value.url;
 }
 
+/** Positive output projection. Invalid or marker-only input has no display. */
+export function projectGroundingDisplay(value: unknown): GroundingDisplay | null {
+  const data = decodeGroundingDisplay(value);
+  if (!data) return null;
+  try {
+    return { ...data, suggestionsHtml: validateGeminiSearchSuggestionsHtml(data.suggestionsHtml) };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Projects a live provider event into the exact, reloadable answer-output
  * shape allowed to cross the durable event boundary. Provider operation
@@ -156,6 +170,10 @@ function isExactSearchSource(value: unknown, expectedRank: number): value is Thr
 export function projectRunOutputArtifactEvent(
   event: ModelRunSseEvent
 ): RunOutputArtifactEvent | null {
+  if (event.type === "grounding_display") {
+    const data = projectGroundingDisplay(event.data);
+    return data ? { type: "grounding_display", data } : null;
+  }
   if (event.type !== "artifact") return null;
 
   if (event.data.artifactType === "citation") {
@@ -190,6 +208,15 @@ export function projectRunOutputArtifactEvent(
 export function isRunOutputArtifactEvent(
   event: ModelRunSseEvent
 ): event is RunOutputArtifactEvent {
+  if (event.type === "grounding_display") {
+    const data = projectGroundingDisplay(event.data);
+    return data !== null && hasOnlyKeys(event.data, ["provider", "suggestionsHtml", "citations"]) &&
+      data.suggestionsHtml === event.data.suggestionsHtml &&
+      event.data.citations.every((citation, index) =>
+        hasOnlyKeys(citation, ["startIndex", "endIndex", "title", "url"]) &&
+        citation.title === data.citations[index]?.title &&
+        citation.url === data.citations[index]?.url);
+  }
   if (event.type !== "artifact" ||
     !hasOnlyKeys(event.data, ["artifactType", "payload"])) return false;
 

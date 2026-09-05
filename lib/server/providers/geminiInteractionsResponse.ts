@@ -56,7 +56,9 @@ const interactionStatuses = new Set([
 ]);
 
 type GeminiInteractionRecord = Readonly<Record<string, unknown>>;
-type GroundingDisplayEvent = Extract<ModelRunSseEvent, { type: "grounding_display" }>;
+type GroundingDisplayEvent = Extract<ModelRunSseEvent, { type: "grounding_display" }> & {
+  data: { runSearch: { callCount: number; queryCount: number } };
+};
 
 export type GeminiInteractionsResponseContext = Readonly<{
   groundingExpected?: boolean;

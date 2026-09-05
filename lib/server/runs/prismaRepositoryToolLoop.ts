@@ -81,13 +81,29 @@ export async function appendRunOutputEvents(
   if (events.some((event) => !isRunOutputArtifactEvent(event))) {
     throw new Error("run_output_event_invalid");
   }
+  const pending: RunOutputArtifactEvent[] = [];
+  let lastGrounding = events.some((event) => event.type === "grounding_display")
+    ? (await tx.modelRunEvent.findFirst({
+        orderBy: { sequence: "desc" }, select: { payload: true },
+        where: { modelRunId: runId, eventType: "grounding_display" }
+      }))?.payload
+    : undefined;
+  for (const event of events) {
+    if (event.type === "grounding_display") {
+      if (lastGrounding && canonicalJson(lastGrounding as ToolLoopJsonValue) ===
+        canonicalJson(event.data)) continue;
+      lastGrounding = json(event.data) as Prisma.JsonValue;
+    }
+    pending.push(event);
+  }
+  if (pending.length === 0) return;
   const latest = await tx.modelRunEvent.aggregate({
     _max: { sequence: true },
     where: { modelRunId: runId }
   });
   const firstSequence = (latest._max.sequence ?? -1) + 1;
   await tx.modelRunEvent.createMany({
-    data: events.map((event, offset) => ({
+    data: pending.map((event, offset) => ({
       eventType: event.type,
       modelRunId: runId,
       payload: json(event.data),
@@ -301,7 +317,7 @@ async function lockToolLoopRun(
   return run ?? null;
 }
 
-function activeToolLoopRun(run: LockedToolLoopRun): boolean {
+function activeToolLoopRun(run: Pick<LockedToolLoopRun, "status" | "errorPayload">): boolean {
   return dispatchableModelRunStatuses.includes(run.status) ||
     (run.status === "error" && !isRecoveredRunTerminalPayload(run.errorPayload));
 }
@@ -936,7 +952,6 @@ export function createPrismaRunToolLoopOperations(
             ...(options.allowErrored ? {} : { status: "streaming" as const })
           },
           where: {
-            groundedAt: null,
             id: assistantMessageId,
             status: options.allowErrored
               ? { in: ["streaming", "error"] }
@@ -1184,10 +1199,13 @@ export function createPrismaRunToolLoopOperations(
     appendRunOutputEvent: async (runId, event) => {
       if (!isRunOutputArtifactEvent(event)) throw new Error("run_output_event_invalid");
       await prismaClient.$transaction(async (tx) => {
-        const [run] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE
+        const [run] = await tx.$queryRaw<Array<{
+          id: string; status: ModelRunStatus; errorPayload: Prisma.JsonValue | null;
+        }>>(Prisma.sql`
+          SELECT "id", "status", "errorPayload" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE
         `);
         if (!run) throw new Error("model_run_not_found");
+        if (!activeToolLoopRun(run)) return;
         await appendRunOutputEvents(tx, runId, [event]);
         await tx.modelRun.update({
           data: {
@@ -1204,8 +1222,7 @@ export function createPrismaRunToolLoopOperations(
         include: {
           assistantMessage: {
             select: {
-              content: true,
-              groundedAt: true
+              content: true
             }
           },
           knowledgeRunBindings: {
@@ -1286,7 +1303,7 @@ export function createPrismaRunToolLoopOperations(
       }
       return {
         assistantMessageId: run.assistantMessageId,
-        assistantText: run.assistantMessage && !run.assistantMessage.groundedAt
+        assistantText: run.assistantMessage
           ? textFromContentBlocks(
               isRecord(run.assistantMessage.content) ? run.assistantMessage.content : {}
             )

@@ -1,3 +1,5 @@
+import { createPrismaChatRepository } from "../chats/prismaRepository";
+import { createPrismaShareRepository } from "../shares/prismaRepository";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { providerTemplateIds } from "../../domain/providerTemplates";
@@ -432,8 +434,8 @@ describe("Prisma-backed Project repository", () => {
     }
   });
 
-  it("writes durable Project outbox rows for run artifacts and tool checkpoints", async () => {
-    await withProjectFixture(async ({ ownerId, projectId }) => {
+  it("reloads and shares grounded Project output with content-free invalidation and member authority", async () => {
+    await withProjectFixture(async ({ ownerId, projectId, userIds }) => {
       const chat = await prisma.chat.create({
         data: {
           createdByDisplayName: "Project Owner",
@@ -454,10 +456,15 @@ describe("Prisma-backed Project repository", () => {
           role: "user"
         }
       });
+      const answer = await prisma.message.create({ data: {
+        chatId: chat.id, parentMessageId: message.id, role: "assistant", status: "streaming",
+        content: { blocks: [{ type: "text", text: "Grounded Project answer" }] }
+      } });
       const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
       const run = await prisma.$transaction(async (tx) => {
         const created = await tx.modelRun.create({
           data: {
+            assistantMessageId: answer.id,
             chatId: chat.id,
             modelId: "fake-qsa",
             normalizedRequest: {},
@@ -491,9 +498,12 @@ describe("Prisma-backed Project repository", () => {
 
       await prisma.modelRunEvent.create({
         data: {
-          eventType: "artifact",
+          eventType: "grounding_display",
           modelRunId: run.id,
-          payload: { artifactType: "search", payload: { action: { sources: [] } } },
+          payload: { provider: "gemini",
+            suggestionsHtml: '<a href="https://www.google.com/search?q=weather">Weather</a>',
+            citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.test/source" }]
+          },
           sequence: 0
         }
       });
@@ -523,7 +533,27 @@ describe("Prisma-backed Project repository", () => {
         { entityId: run.id, entityType: "run", eventType: "run_tool_changed" },
         { entityId: run.id, entityType: "run", eventType: "run_tool_changed" }
       ]);
-    });
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: run.id } });
+      await prisma.message.update({ data: { status: "complete" }, where: { id: answer.id } });
+      await prisma.chat.update({ data: { activeLeafMessageId: answer.id }, where: { id: chat.id } });
+      await prisma.project.update({ data: { publicSharingEnabled: true }, where: { id: projectId } });
+      const chats = createPrismaChatRepository(prisma);
+      const reloaded = await chats.getChat({ chatId: chat.id, userId: ownerId });
+      expect(reloaded?.messages.find(({ id }) => id === answer.id)).toMatchObject({
+        content: { blocks: [{ type: "text", text: "Grounded Project answer" }] },
+        artifactSummary: { groundingDisplay: { provider: "gemini" },
+          citations: [{ index: 1, title: "Source", url: "https://example.test/source" }] }
+      });
+      expect(await chats.getChat({ chatId: chat.id, userId: userIds[1]! })).toBeNull();
+      const shares = createPrismaShareRepository(prisma);
+      const input = { activeLeafMessageId: answer.id, chatId: chat.id,
+        shareToken: "synthetic-token", slugHash: randomUUID(), userId: ownerId };
+      const shared = await shares.createChatShare(input);
+      expect(shared && "snapshot" in shared ? shared.snapshot.messages.at(-1)?.content : null)
+        .toEqual({ blocks: [{ type: "text", text: "Grounded Project answer" }] });
+      expect(JSON.stringify(shared)).not.toMatch(/suggestionsHtml|citations|google.com|example.test|runSearch/);
+      expect(await shares.createChatShare({ ...input, slugHash: randomUUID(), userId: userIds[1]! })).toBeNull();
+    }, 1);
   });
 
   it("omits a disabled resource identity and clears it from the safe defaults projection", async () => {

@@ -572,7 +572,6 @@ function createHarness(options: Readonly<{
         : options.pricing;
     },
     loadRunUsageAttributions: async () => [],
-    markAssistantMessageGroundedLiveOnly: async () => true,
     persistToolLoopCallBatch: async () => ({ kind: "not_found" }),
     recordRunUsageEvents: async (input) => {
       if (state.run.status === "complete") return false;
@@ -4957,11 +4956,13 @@ describe("run recovery", () => {
     warning.mockRestore();
   });
 
-  it("fails grounded live-only checkpoint recovery before contacting the provider", async () => {
+  it("recovers validated grounding display through the ordinary saved provider checkpoint", async () => {
+    const display: ModelRunSseEvent = { type: "grounding_display", data: {
+      provider: "gemini", citations: [],
+      suggestionsHtml: '<div><a href="https://www.google.com/search?q=weather">Weather</a></div>'
+    } };
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
-      events: [],
-      status: "in_progress",
-      terminal: false
+      events: [display], status: "in_progress", terminal: false
     }));
     const adapter = providerWithRefresh(refresh);
     const stream = vi.spyOn(adapter, "stream");
@@ -4969,29 +4970,15 @@ describe("run recovery", () => {
       controls: [control({ providerResponseId: "response-tool-1" })],
       providers: { openai: adapter }
     });
-    const durable = {
-      ...checkpointedRun({
-        phase: "provider_running",
-        providerResponseId: "response-tool-1"
-      }),
-      assistantText: null
-    };
-    installCheckpointState(harness, durable);
-
+    installCheckpointState(harness, {
+      ...checkpointedRun({ phase: "provider_running", providerResponseId: "response-tool-1" }),
+      assistantText: "Retained grounded partial"
+    });
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
-
-    expect(refresh).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
     expect(stream).not.toHaveBeenCalled();
-    expect(harness.state.assistantTexts).toEqual([]);
-    expect(harness.state.recoveredErrors).toEqual([
-      expect.objectContaining({
-        error: {
-          code: "grounding_live_only_not_recoverable",
-          message: "Grounded live-only output cannot resume after process recovery."
-        },
-        runId
-      })
-    ]);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.events.map(({ event }) => event)).toContainEqual(display);
   });
 
   it("recovers a pending Gemini client Search without repeating settled answer context", async () => {

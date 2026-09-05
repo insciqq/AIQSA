@@ -5,7 +5,6 @@ import {
   type ModelRunStatus
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
-import { groundedLiveOnlyMessageContent } from "../../domain/grounding";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
@@ -107,7 +106,6 @@ type ConversationPathSelector =
 
 type ConversationPathRow = {
   chatId: string;
-  messageGroundedAt: Date | null;
   messageContent: Prisma.JsonValue | null;
   messageId: string | null;
   messageParentId?: string | null;
@@ -145,9 +143,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
 
     return [
       {
-        content: row.messageGroundedAt
-          ? groundedLiveOnlyMessageContent()
-          : row.messageContent as { blocks: unknown[] },
+        content: row.messageContent as { blocks: unknown[] },
         id: row.messageId,
         role: row.messageRole
       }
@@ -245,7 +241,6 @@ export function createPrismaRunRepository(
         SELECT
           message."chatId",
           message."content",
-          message."groundedAt",
           message."id",
           message."parentMessageId",
           message."role",
@@ -262,7 +257,6 @@ export function createPrismaRunRepository(
         SELECT
           parent."chatId",
           parent."content",
-          parent."groundedAt",
           parent."id",
           parent."parentMessageId",
           parent."role",
@@ -278,7 +272,6 @@ export function createPrismaRunRepository(
       SELECT
         chat."id" AS "chatId",
         path."content" AS "messageContent",
-        path."groundedAt" AS "messageGroundedAt",
         path."id" AS "messageId",
         path."parentMessageId" AS "messageParentId",
         path."role" AS "messageRole",
@@ -679,12 +672,6 @@ export function createPrismaRunRepository(
           return false;
         }
 
-        const assistantMessage = await tx.message.findUnique({
-          select: { groundedAt: true },
-          where: { id: input.assistantMessageId }
-        });
-        const groundedLiveOnly = Boolean(assistantMessage?.groundedAt);
-
         await tx.modelRun.update({
           data: {
             cachedInputTokens: usage.cachedInputTokens,
@@ -709,9 +696,7 @@ export function createPrismaRunRepository(
 
         await tx.message.updateMany({
           data: {
-            content: json(
-              groundedLiveOnly ? groundedLiveOnlyMessageContent() : textMessageContent(input.finalText)
-            ),
+            content: json(textMessageContent(input.finalText)),
             errorMessage: null,
             outputTokens: usage.outputTokens,
             reasoningTokens: usage.reasoningTokens,
@@ -777,9 +762,7 @@ export function createPrismaRunRepository(
             id: input.chatId
           }
         });
-        if (!groundedLiveOnly) {
-          await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
-        }
+        await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
         return true;
       });
     },
@@ -882,18 +865,10 @@ export function createPrismaRunRepository(
           FOR UPDATE
         `);
         if (!lockedRun) return false;
-        const assistantMessage = await tx.message.findUnique({
-          select: { groundedAt: true },
-          where: { id: assistantMessageId }
-        });
-        const groundedLiveOnly = Boolean(assistantMessage?.groundedAt);
-        const durableError = groundedLiveOnly
-          ? { code: error.code, message: "Grounded live-only run failed." }
-          : error;
         const updatedCount = lockedRun.status === "preparing"
           ? Number(await settlePreparingRunInTransaction(tx, {
-              errorCode: durableError.code,
-              message: durableError.message,
+              errorCode: error.code,
+              message: error.message,
               runId,
               state: "FAILED",
               userId: lockedRun.userId
@@ -902,8 +877,8 @@ export function createPrismaRunRepository(
               data: {
                 errorPayload: json(
                   options?.recoveryTerminal
-                    ? recoveredRunErrorPayload(durableError)
-                    : durableError
+                    ? recoveredRunErrorPayload(error)
+                    : error
                 ),
                 status: "error"
               },
@@ -919,18 +894,9 @@ export function createPrismaRunRepository(
 
         await cancelPendingToolLoopCallsInTransaction(tx, runId);
 
-        if (groundedLiveOnly) {
-          await tx.modelRunEvent.deleteMany({
-            where: { modelRunId: runId }
-          });
-        }
-
         await tx.message.updateMany({
           data: {
-            ...(groundedLiveOnly
-              ? { content: json(groundedLiveOnlyMessageContent()) }
-              : {}),
-            errorMessage: durableError.message,
+            errorMessage: error.message,
             status: "error"
           },
           where: {
@@ -1766,42 +1732,6 @@ export function createPrismaRunRepository(
           totalTokens: row.totalTokens ?? 0
         }
       }));
-    },
-    markAssistantMessageGroundedLiveOnly: async (input) => {
-      const provider = input.provider.trim().slice(0, 128);
-      const strategy = input.strategy.trim().slice(0, 128);
-      if (provider !== "gemini" || strategy !== "gemini-google-search") return false;
-
-      return prismaClient.$transaction(async (tx) => {
-        const run = await tx.modelRun.findUnique({
-          select: { assistantMessageId: true, status: true },
-          where: { id: input.runId }
-        });
-        if (
-          run?.assistantMessageId !== input.assistantMessageId ||
-          !dispatchableModelRunStatuses.includes(run.status)
-        ) return false;
-
-        const updated = await tx.message.updateMany({
-          data: {
-            content: json(groundedLiveOnlyMessageContent()),
-            groundedAt: input.groundedAt,
-            groundingProvider: provider,
-            groundingStrategy: strategy
-          },
-          where: { id: input.assistantMessageId }
-        });
-        if (updated.count !== 1) return false;
-
-        await tx.modelRunEvent.deleteMany({
-          where: { modelRunId: input.runId }
-        });
-        await tx.modelRun.update({
-          data: { updatedAt: new Date() },
-          where: { id: input.runId }
-        });
-        return true;
-      });
     },
   };
 }

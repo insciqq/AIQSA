@@ -1,15 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
-import { GROUNDED_LIVE_ONLY_PLACEHOLDER } from "../../domain/grounding";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 
 describe("grounded conversation persistence", () => {
-  it("replaces grounded assistant text before branch context can be saved or sent again", () => {
+  it("retains grounded assistant text in later branch context", () => {
     const messages = conversationMessagesFromPathRows([
       {
         chatId: "chat-1",
         messageContent: textMessageContent("Question"),
-        messageGroundedAt: null,
         messageId: "user-1",
         messageRole: "user",
         messageStatus: "complete"
@@ -17,7 +15,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent("grounded-result-secret"),
-        messageGroundedAt: new Date("2026-07-26T12:00:00.000Z"),
         messageId: "assistant-1",
         messageRole: "assistant",
         messageStatus: "complete"
@@ -31,12 +28,12 @@ describe("grounded conversation persistence", () => {
         role: "user"
       },
       {
-        content: textMessageContent(GROUNDED_LIVE_ONLY_PLACEHOLDER),
+        content: textMessageContent("grounded-result-secret"),
         id: "assistant-1",
         role: "assistant"
       }
     ]);
-    expect(JSON.stringify(messages)).not.toContain("grounded-result-secret");
+    expect(JSON.stringify(messages)).toContain("grounded-result-secret");
   });
 
   it("omits a failed zero-answer turn from later provider context without deleting its audit rows", () => {
@@ -44,7 +41,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent("Earlier question"),
-        messageGroundedAt: null,
         messageId: "user-1",
         messageParentId: null,
         messageRole: "user",
@@ -53,7 +49,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent("Earlier answer"),
-        messageGroundedAt: null,
         messageId: "assistant-1",
         messageParentId: "user-1",
         messageRole: "assistant",
@@ -62,7 +57,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent("Question that failed"),
-        messageGroundedAt: null,
         messageId: "user-failed",
         messageParentId: "assistant-1",
         messageRole: "user",
@@ -71,7 +65,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent(""),
-        messageGroundedAt: null,
         messageId: "assistant-failed",
         messageParentId: "user-failed",
         messageRole: "assistant",
@@ -90,7 +83,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent("Question with a partial answer"),
-        messageGroundedAt: null,
         messageId: "user-1",
         messageParentId: null,
         messageRole: "user",
@@ -99,7 +91,6 @@ describe("grounded conversation persistence", () => {
       {
         chatId: "chat-1",
         messageContent: textMessageContent("Partial answer"),
-        messageGroundedAt: null,
         messageId: "assistant-1",
         messageParentId: "user-1",
         messageRole: "assistant",

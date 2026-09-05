@@ -9,7 +9,7 @@ import {
 } from "./safety";
 
 export const MEMORY_HISTORY_SOURCE_PROJECTION_VERSION =
-  "memory-history-source-projection-v5";
+  "memory-history-source-projection-v6";
 
 export const MEMORY_HISTORY_SOURCE_ORIGINS = [
   "DEVELOPER",

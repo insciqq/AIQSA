@@ -19,7 +19,6 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let flushChain = Promise.resolve();
   let flushError: unknown = null;
-  let persistenceDisabled = false;
 
   function clearFlushTimer(): void {
     if (flushTimer) {
@@ -30,11 +29,6 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
 
   async function persistPending(): Promise<void> {
     clearFlushTimer();
-    if (persistenceDisabled) {
-      pendingDelta = "";
-      pendingTokenCount = 0;
-      return;
-    }
     if (!pendingDelta) {
       return;
     }
@@ -80,26 +74,10 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
   }
 
   return {
-    async disablePersistence(): Promise<void> {
-      persistenceDisabled = true;
-      clearFlushTimer();
-      assistantText = "";
-      pendingDelta = "";
-      pendingTokenCount = 0;
-      // Wait until a previously-started flush settles before the repository
-      // replaces the message and purges durable provider events. Preserve the
-      // original flush error for the normal pipeline failure path, but do not
-      // let it bypass the live-only persistence fence.
-      await flushChain.catch(() => undefined);
-    },
     flush,
     push(delta: string): Promise<void> {
       if (flushError) {
         return Promise.reject(flushError);
-      }
-
-      if (persistenceDisabled) {
-        return Promise.resolve();
       }
 
       assistantText += delta;

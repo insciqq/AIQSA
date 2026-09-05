@@ -20,8 +20,7 @@ const suggestionStream = createGatedRunStreamFixture({
 
 const groundingData = {
   citations: [],
-  provider: "gemini",
-  runSearch: { callCount: 1, queryCount: 1 }
+  provider: "gemini"
 } as const;
 
 test("contains Gemini suggestions and rejects direct provider CSS before it can intercept the viewport", async ({

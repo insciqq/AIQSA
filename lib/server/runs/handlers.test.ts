@@ -725,7 +725,6 @@ function createMemoryRepository(
     loadModelPricing: async () => modelPricing,
     loadRunUsageAttributions: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
-    markAssistantMessageGroundedLiveOnly: async () => true,
     persistToolLoopCallBatch: async (input) => {
       const existing = state.toolCalls.filter((call) => call.roundIndex === input.roundIndex);
       if (existing.length > 0) return { calls: existing, kind: "reused" };

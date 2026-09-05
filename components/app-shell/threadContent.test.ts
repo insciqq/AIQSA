@@ -12,9 +12,8 @@ describe("thread answer outputs", () => {
       '<div><a href="https://www.google.com/search?q=aiqsa">AIQSA</a></div>';
     const summary = summarizeThreadArtifacts([{
       data: {
-        citations: [{ title: "Source", url: "https://example.com/source" }],
+        citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.com/source" }],
         provider: "gemini",
-        runSearch: { callCount: 1, queryCount: 2 },
         suggestionsHtml
       },
       type: "grounding_display"

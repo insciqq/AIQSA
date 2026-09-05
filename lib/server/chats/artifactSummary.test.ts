@@ -4,8 +4,24 @@ import {
   summarizeMessageRunToolActivity
 } from "./prismaRepository";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { summarizeThreadArtifacts } from "../../../components/app-shell/threadContent";
+import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 
 describe("summarizeMessageRunArtifacts", () => {
+  it("reloads the same safe Gemini display and citations as the live stream", () => {
+    const event = projectRunOutputArtifactEvent({ type: "grounding_display", data: {
+      provider: "gemini",
+      suggestionsHtml: '<a href="https://www.google.com/search?q=weather">Weather</a>',
+      citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.test/source" }]
+    } })!;
+    const live = summarizeThreadArtifacts([event]);
+    const reloaded = summarizeMessageRunArtifacts({
+      events: [{ eventType: event.type, payload: event.data }], searchRuns: []
+    });
+    expect(reloaded).toEqual({ ...live, knowledgeCitations: [] });
+    expect(JSON.stringify(reloaded)).not.toMatch(/startIndex|endIndex|runSearch/);
+  });
+
   it("projects only the friendly Memory availability state", () => {
     const summary = summarizeMessageRunArtifacts(
       { events: [], searchRuns: [] },
