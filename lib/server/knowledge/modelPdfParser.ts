@@ -5,6 +5,7 @@ import { sumTokenUsage } from "../../domain/usage";
 import {
   decodeModelPdfBatchOutput,
   MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION,
+  MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
   modelPdfPagesToDocument,
   modelPdfTranscriptionPrompt
 } from "../parsing/modelPdfOutput";
@@ -501,6 +502,8 @@ export function createKnowledgeModelPdfParser(
           pageEnd,
           pageStart,
           promptVersion: input.parserProfileVersion >=
+            MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION ? 7
+            : input.parserProfileVersion >=
             MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION
             ? 6
             : input.parserProfileVersion >= 7
@@ -577,6 +580,7 @@ export function createKnowledgeModelPdfParser(
               });
               try {
                 decodeModelPdfBatchOutput({
+                  preserveTableWhitespace: input.parserProfileVersion >= MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
                   mode: input.mode,
                   pageEnd,
                   pageStart,
@@ -621,6 +625,7 @@ export function createKnowledgeModelPdfParser(
       });
       try {
         const decodedPages = settled.flatMap((batch) => decodeModelPdfBatchOutput({
+          preserveTableWhitespace: input.parserProfileVersion >= MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
           mode: input.mode,
           pageEnd: batch.pageEnd,
           pageStart: batch.pageStart,
@@ -632,6 +637,7 @@ export function createKnowledgeModelPdfParser(
             decodedByPage.get(index + 1) ?? Object.freeze({ page: index + 1, text: "" }));
           const visionDocument = adaptivePlan.visionRequiredPageCount > 0
             ? modelPdfPagesToDocument({
+                legacyTableInference: input.parserProfileVersion < MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
                 maxBlocks: input.maxBlocks,
                 maxCharacters: input.maxCharacters,
                 mode: input.mode,
@@ -651,6 +657,7 @@ export function createKnowledgeModelPdfParser(
         }
         const pages = decodedPages;
         const document = modelPdfPagesToDocument({
+          legacyTableInference: input.parserProfileVersion < MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
           maxBlocks: input.maxBlocks,
           maxCharacters: input.maxCharacters,
           mode: input.mode,

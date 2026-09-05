@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { knowledgeEvidenceOccurrenceKeyV1, isKnowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
+import { KnowledgeSearchFailure, knowledgeSearchFailureCode } from "./searchFailure";
 import {
   canonicalizeKnowledgeSourceCandidates,
   type KnowledgeCanonicalSourceBinding,
@@ -13,7 +15,7 @@ import {
   knowledgeExactQueryValues
 } from "./hierarchicalIndex";
 import {
-  KNOWLEDGE_PRIOR_CONTENT_HASH_MAX,
+  KNOWLEDGE_PRIOR_OCCURRENCE_MAX,
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_SCOPED_RESULT_LIMIT,
   KNOWLEDGE_SCOPE_MAX_BINDINGS
@@ -1725,19 +1727,19 @@ function independentlyMatchedTableContext(
 }
 
 function selectKnowledgeContext(input: Readonly<{
-  assignedContentHashes: ReadonlySet<string>;
+  assignedOccurrenceKeys: ReadonlySet<string>;
   candidates: readonly KnowledgeRetrievalCandidate[];
-  excludedContentHashes: ReadonlySet<string>;
-  selectedContentHashes: ReadonlySet<string>;
+  excludedOccurrenceKeys: ReadonlySet<string>;
+  selectedOccurrenceKeys: ReadonlySet<string>;
   source: KnowledgeRetrievalCandidate;
 }>): KnowledgeRetrievalCandidate[] {
   const available = input.candidates.filter((candidate) =>
     candidate.chunkId !== input.source.chunkId &&
     sameKnowledgeSource(input.source, candidate) &&
-    !input.excludedContentHashes.has(candidate.contentHash) &&
-    !input.assignedContentHashes.has(candidate.contentHash));
+    !input.excludedOccurrenceKeys.has(knowledgeEvidenceOccurrenceKeyV1(candidate)) &&
+    !input.assignedOccurrenceKeys.has(knowledgeEvidenceOccurrenceKeyV1(candidate)));
   const local = available.filter((candidate) =>
-    !input.selectedContentHashes.has(candidate.contentHash) &&
+    !input.selectedOccurrenceKeys.has(knowledgeEvidenceOccurrenceKeyV1(candidate)) &&
     relatedKnowledgeContext(input.source, candidate))
     .sort((left, right) =>
       Math.abs(left.chunkIndex - input.source.chunkIndex) -
@@ -1745,15 +1747,14 @@ function selectKnowledgeContext(input: Readonly<{
       left.chunkIndex - right.chunkIndex ||
       left.chunkId.localeCompare(right.chunkId));
   const independentlyMatched = fuseKnowledgeCandidates(available.filter((candidate) =>
-    !input.selectedContentHashes.has(candidate.contentHash) &&
+    !input.selectedOccurrenceKeys.has(knowledgeEvidenceOccurrenceKeyV1(candidate)) &&
     independentlyMatchedTableContext(input.source, candidate)));
   const selected: KnowledgeRetrievalCandidate[] = [];
-  const chunks = new Set<string>();
-  const content = new Set<string>();
+  const occurrences = new Set<string>();
   for (const candidate of [...local, ...independentlyMatched]) {
-    if (chunks.has(candidate.chunkId) || content.has(candidate.contentHash)) continue;
-    chunks.add(candidate.chunkId);
-    content.add(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    if (occurrences.has(key)) continue;
+    occurrences.add(key);
     selected.push(candidate);
     if (selected.length >= knowledgeContextMaximum(input.source)) break;
   }
@@ -1832,7 +1833,7 @@ export async function executeKnowledgeRetrievalCore(
     anchorQuery?: string;
     candidateLimit: number;
     bindingOrdinals?: readonly number[];
-    excludedContentHashes: readonly string[];
+    excludedOccurrenceKeys: readonly string[];
     lexicalSearch?: KnowledgePassageBm25Search;
     /** FR-14 canonical-section window loader; present only for automatic
      * search operations, so exact/metadata/read operations never expand. */
@@ -1848,7 +1849,7 @@ export async function executeKnowledgeRetrievalCore(
 ): Promise<KnowledgeRetrievalCoreResult> {
   const requestedBindingOrdinals = input.bindingOrdinals ?? [];
   const requestedSourceIds = input.sourceIds ?? [];
-  const excludedContentHashes = new Set(input.excludedContentHashes);
+  const excludedOccurrenceKeys = new Set(input.excludedOccurrenceKeys);
   if (
     input.candidateLimit !== KNOWLEDGE_LANE_CANDIDATE_LIMIT ||
     (input.resultLimit !== KNOWLEDGE_RESULT_LIMIT &&
@@ -1861,9 +1862,9 @@ export async function executeKnowledgeRetrievalCore(
     ))
   ) throw new Error("knowledge_retrieval_request_invalid");
   if (
-    input.excludedContentHashes.length > KNOWLEDGE_PRIOR_CONTENT_HASH_MAX ||
-    excludedContentHashes.size !== input.excludedContentHashes.length ||
-    input.excludedContentHashes.some((hash) => !/^[0-9a-f]{64}$/u.test(hash))
+    input.excludedOccurrenceKeys.length > KNOWLEDGE_PRIOR_OCCURRENCE_MAX ||
+    excludedOccurrenceKeys.size !== input.excludedOccurrenceKeys.length ||
+    input.excludedOccurrenceKeys.some((key) => !isKnowledgeEvidenceOccurrenceKeyV1(key))
   ) throw new Error("knowledge_retrieval_exclusion_invalid");
   if (
     requestedBindingOrdinals.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
@@ -1907,6 +1908,10 @@ export async function executeKnowledgeRetrievalCore(
       scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
   ) throw new Error("knowledge_retrieval_scope_invalid");
 
+  const scopeFingerprint = createHash("sha256").update(JSON.stringify(acceptedScopes)).digest("hex");
+  if (acceptedScopes.some((scope) => scope.acceptedIndexArtifactIds.length > 0 && !scope.projectionComplete)) {
+    throw new KnowledgeSearchFailure("knowledge_search_projection_incomplete", scopeFingerprint);
+  }
   const rerankConfigured = Boolean(input.rerank);
   const envelope = decodeHybridQueryEnvelope(await client.$queryRaw<unknown[]>(
     knowledgeFocusedHybridSearchSql({
@@ -1926,20 +1931,24 @@ export async function executeKnowledgeRetrievalCore(
     })
   ));
   if (JSON.stringify(envelope.scopes) !== JSON.stringify(acceptedScopes)) {
-    throw new Error("knowledge_retrieval_scope_invalid");
+    throw new KnowledgeSearchFailure("knowledge_retrieval_scope_changed", scopeFingerprint);
   }
 
   const acceptedIndexArtifactIds = [...new Set(acceptedScopes.flatMap((scope) =>
     scope.acceptedIndexArtifactIds))].sort();
   if (acceptedIndexArtifactIds.length > 0 &&
     acceptedScopes.some((scope) => !scope.projectionComplete)) {
-    throw new Error("knowledge_search_projection_incomplete");
+    throw new KnowledgeSearchFailure("knowledge_search_projection_incomplete", scopeFingerprint);
   }
   const bm25 = await (input.lexicalSearch ?? createKnowledgePassageBm25Search())({
     indexArtifactIds: acceptedIndexArtifactIds,
     ownerUserId: input.userId,
     queryVariants: [input.anchorQuery ?? input.query, input.query],
     ...(input.rerank?.signal ? { signal: input.rerank.signal } : {})
+  }).catch((error: unknown) => {
+    const code = knowledgeSearchFailureCode(error);
+    if (code) throw new KnowledgeSearchFailure(code, scopeFingerprint);
+    throw error;
   });
   const bm25Rows = bm25.hits.length === 0
     ? []
@@ -1959,7 +1968,7 @@ export async function executeKnowledgeRetrievalCore(
       row.contentHash
     ])));
   if (revalidatedBm25Hits.size !== bm25.hits.length) {
-    throw new Error("knowledge_search_candidate_revalidation_failed");
+    throw new KnowledgeSearchFailure("knowledge_search_candidate_revalidation_failed", scopeFingerprint);
   }
 
   const byOrdinal = new Map(acceptedScopes.map((scope) => [scope.bindingOrdinal, scope]));
@@ -2014,7 +2023,7 @@ export async function executeKnowledgeRetrievalCore(
     merged.sourceBindings
   );
   const primaryPool = canonical.candidates.filter(hasPrimarySignal).filter((candidate) =>
-    !excludedContentHashes.has(candidate.contentHash));
+    !excludedOccurrenceKeys.has(knowledgeEvidenceOccurrenceKeyV1(candidate)));
 
   let candidates: readonly KnowledgeRankedCandidate[];
   let rankingEvidence: KnowledgeRankingEvidence;
@@ -2137,8 +2146,8 @@ export async function executeKnowledgeRetrievalCore(
       candidates.filter((candidate) => candidate.bindingOrdinal === scope.bindingOrdinal).length
     ])
   );
-  const selectedContentHashes = new Set(selected.map((candidate) => candidate.contentHash));
-  const assignedContextHashes = new Set<string>();
+  const selectedOccurrenceKeys = new Set(selected.map(knowledgeEvidenceOccurrenceKeyV1));
+  const assignedContextOccurrenceKeys = new Set<string>();
   // FR-14 child-to-parent expansion: load bounded canonical-section windows
   // for the final selection before provider delivery. A classified load
   // failure degrades to the candidate-pool mechanics below (PRD §18: parent
@@ -2182,13 +2191,13 @@ export async function executeKnowledgeRetrievalCore(
         candidate
       ) !== null;
     const context = sectionWindowUsable ? [] : selectKnowledgeContext({
-      assignedContentHashes: assignedContextHashes,
+      assignedOccurrenceKeys: assignedContextOccurrenceKeys,
       candidates: canonical.candidates,
-      excludedContentHashes,
-      selectedContentHashes,
+      excludedOccurrenceKeys,
+      selectedOccurrenceKeys,
       source: candidate
     });
-    for (const neighbor of context) assignedContextHashes.add(neighbor.contentHash);
+    for (const neighbor of context) assignedContextOccurrenceKeys.add(knowledgeEvidenceOccurrenceKeyV1(neighbor));
     legacyContextByChunk.set(candidate.chunkId, context);
     if (countTokens !== null) {
       expansionPrimaries.push({
@@ -2215,7 +2224,7 @@ export async function executeKnowledgeRetrievalCore(
     try {
       expansions = assembleKnowledgeParentExpansions({
         countTokens,
-        excludedContentHashes,
+        excludedOccurrenceKeys,
         ...(parentLoadFailure ? { loadFailureCode: parentLoadFailure } : {}),
         primaries: expansionPrimaries,
         windows: parentWindows

@@ -123,7 +123,7 @@ export type KnowledgeRetrievalStore = Readonly<{
     anchorQuery?: string;
     bindingOrdinals?: readonly number[];
     candidateLimit: number;
-    excludedContentHashes: readonly string[];
+    excludedOccurrenceKeys: readonly string[];
     operation: KnowledgeOperationKind;
     query: string;
     rerank?: Readonly<{
@@ -217,7 +217,7 @@ export type KnowledgeBudgetState = Readonly<{
   excludedResources?: number;
   invocationOrdinal: number;
   policy: KnowledgeBudgetPolicy;
-  priorContentHashes: readonly string[];
+  priorOccurrenceKeys: readonly string[];
   priorSourceAliases: readonly string[];
   stopReason: KnowledgeBudgetStopReason | null;
   usage: KnowledgeBudgetUsage;
@@ -595,7 +595,7 @@ async function loadBudgetState(input: Readonly<{
     evidenceCount: (invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
     invocationOrdinal,
     policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-    priorContentHashes: [],
+    priorOccurrenceKeys: [],
     priorSourceAliases: [],
     stopReason: knowledgeBudgetStopReason(DEFAULT_KNOWLEDGE_BUDGET_POLICY, usage),
     usage
@@ -1616,7 +1616,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ...(anchorQuery ? { anchorQuery } : {}),
         ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
         candidateLimit,
-        excludedContentHashes: budgetState.priorContentHashes,
+        excludedOccurrenceKeys: budgetState.priorOccurrenceKeys,
         operation: request.operation,
         query: request.query,
         ...(rerankExecutor
@@ -1643,7 +1643,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ranking.candidateOrder.length !== search.candidateCount ||
         (search.candidateCount > 0 && search.passages.length === 0) ||
         lexicalBackend?.backendKind !== "opensearch_bm25_v1" ||
-        lexicalBackend.rankingProfileVersion !== 4 ||
+        lexicalBackend.rankingProfileVersion !== 5 ||
         lexicalBackend.status !== "complete") {
         throw new Error("knowledge_hybrid_ranking_invalid");
       }

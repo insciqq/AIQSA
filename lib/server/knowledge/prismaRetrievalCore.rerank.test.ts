@@ -116,7 +116,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query: "договор аренды",
     resultLimit: 16,
     runId: "run-1",

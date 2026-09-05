@@ -8,6 +8,7 @@ import { toolLoopCheckpoint } from "../runs/toolLoopPersistence";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import { STRUCTURED_PLAN_VERSION } from "./structuredData";
+import { tableOccurrenceFixture } from "./tableOccurrence.testFixtures";
 import {
   createKnowledgeFieldContextSegments,
   createKnowledgeTableDocumentContext
@@ -817,6 +818,29 @@ describe("Knowledge citation viewer authorization and projection", () => {
       request
     )).resolves.toBeNull();
     expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("opens the parsed repeated-value row from its accepted Version without a neighboring row or issue date", async () => {
+    const { data, encoded: artifact, header, rows } = tableOccurrenceFixture();
+    const chunk = data[1]!;
+    const block = artifact.document.blocks.find(({ table }) => table !== null)!;
+    const contentHash = createHash("sha256").update(chunk.text).digest("hex");
+    const fixture = personalClient({ evidence: { ...defaultEvidence(), contentHash,
+      contextBoundaries: { documentContext: chunk.documentContext }, excerpt: chunk.text,
+      headingPath: [], page: 1 } });
+    fixture.versionFindFirst.mockResolvedValueOnce({ ...defaultVersion(), artifacts: [{
+      hierarchicalIndexes: [{ passageIndexes: [{ contentHash, headingPath: [], page: 1, pageEnd: 1,
+        sourceBlockEnd: block.index, sourceBlockIds: [block.id], sourceBlockStart: block.index }] }],
+      id: "artifact-1", normalizedTextByteSize: artifact.body.byteLength,
+      normalizedTextChecksum: artifact.checksum, normalizedTextStorageKey: "normalized/table.json", state: "ready"
+    }] });
+    const resolved = await resolveKnowledgeCitationViewer(fixture.value as never, storage(artifact.body), request);
+    const target = resolved?.citation.state === "available"
+      ? resolved.citation.blocks.find(({ relation }) => relation === "target") : null;
+    expect(target).toMatchObject({ text: `${header}\n${rows[1]}`, table: { truncated: true } });
+    expect(target?.text).not.toContain(rows[0]);
+    expect(target?.text).not.toContain("2041-02-03");
+    expect(fixture.versionFindFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: "version-1" }) }));
   });
 
   it("opens only the exact original table row with its repeated header lineage", async () => {

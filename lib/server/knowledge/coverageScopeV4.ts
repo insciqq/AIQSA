@@ -16,6 +16,7 @@ export const KNOWLEDGE_COVERAGE_SCOPE_V4_OPERATION =
 export const KNOWLEDGE_COVERAGE_SCOPE_V4_MAX_OUTPUT_TOKENS = 8_192;
 export const KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION = 1 as const;
 export const KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 = 2 as const;
+export const KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V3 = 3 as const;
 
 export const KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS = Object.freeze({
   maxAnchorCodePoints: 500,
@@ -57,9 +58,30 @@ export type KnowledgeCoverageEvidenceAtomIndexV2 = Readonly<{
   version: typeof KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2;
 }>;
 
+export type KnowledgeCoverageEvidenceAtomV3 = KnowledgeCoverageEvidenceAtomV2 & Readonly<{
+  /** Offsets are UTF-16 boundaries inside the exact admitted segment. A
+   * multi-part row remains one unit; another occurrence has another unit ID. */
+  occurrence: Readonly<{
+    end: number;
+    lineIndex: number;
+    partCount: number;
+    partIndex: number;
+    segmentIndex: number;
+    start: number;
+    unitId: string;
+    unitKind: "table_row" | "text";
+  }>;
+}>;
+
+export type KnowledgeCoverageEvidenceAtomIndexV3 = Readonly<{
+  items: readonly KnowledgeCoverageEvidenceAtomV3[];
+  version: typeof KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V3;
+}>;
+
 export type KnowledgeCoverageEvidenceAtomIndex =
   | KnowledgeCoverageEvidenceAtomIndexV1
-  | KnowledgeCoverageEvidenceAtomIndexV2;
+  | KnowledgeCoverageEvidenceAtomIndexV2
+  | KnowledgeCoverageEvidenceAtomIndexV3;
 
 export type KnowledgeCoverageEvidenceAtomIndexVersion =
   KnowledgeCoverageEvidenceAtomIndex["version"];
@@ -328,6 +350,56 @@ export function knowledgeCoverageEvidenceAtomIndexV1(
   });
 }
 
+function sourceOrderedEvidenceSegments(evidenceItem: KnowledgeCoverageEvidenceV4): readonly Readonly<{
+  contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+  text: string;
+}>[] {
+  if (!handlePattern.test(evidenceItem.handle) || !evidenceItem.exactExcerpt.trim() ||
+    evidenceItem.expandedContext !== undefined &&
+    evidenceItem.expandedContext !== null &&
+    !evidenceItem.expandedContext.trim()) {
+    throw new Error("knowledge_coverage_atom_evidence_invalid");
+  }
+  const contextOrder = evidenceItem.expandedContextOrder === undefined
+    ? undefined
+    : decodeKnowledgeExpandedContextOrderV1(
+        evidenceItem.expandedContextOrder,
+        evidenceItem.expandedContext ?? undefined
+      );
+  if (evidenceItem.expandedContextOrder !== undefined && (!contextOrder ||
+    !evidenceItem.expandedContext)) {
+    throw new Error("knowledge_coverage_atom_evidence_invalid");
+  }
+  const orderedContext = contextOrder
+    ? contextOrder.segments
+        .map((segment) => Object.freeze({
+          ...segment,
+          text: evidenceItem.expandedContext!.slice(segment.start, segment.end)
+        }))
+        .sort((left, right) =>
+          left.sourceOrdinal - right.sourceOrdinal || left.start - right.start)
+    : [];
+  const segments: Readonly<{
+    contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+    text: string;
+  }>[] = [
+    ...orderedContext
+      .filter(({ position }) => position === "previous")
+      .map(({ text }) => ({ contextRole: "previous_context" as const, text })),
+    { contextRole: "exact_excerpt" as const, text: evidenceItem.exactExcerpt },
+    ...orderedContext
+      .filter(({ position }) => position === "next")
+      .map(({ text }) => ({ contextRole: "next_context" as const, text })),
+    ...(!contextOrder && evidenceItem.expandedContext
+      ? [{
+          contextRole: "related_context" as const,
+          text: evidenceItem.expandedContext
+        }]
+      : [])
+  ];
+  return segments;
+}
+
 /**
  * Current source-ordered atom projection. Parent-expansion boundaries come
  * from trusted retrieval coordinates persisted alongside the rendered text;
@@ -340,49 +412,7 @@ export function knowledgeCoverageEvidenceAtomIndexV2(
 ): KnowledgeCoverageEvidenceAtomIndexV2 {
   const items: KnowledgeCoverageEvidenceAtomV2[] = [];
   for (const evidenceItem of evidence) {
-    if (!handlePattern.test(evidenceItem.handle) || !evidenceItem.exactExcerpt.trim() ||
-      evidenceItem.expandedContext !== undefined &&
-      evidenceItem.expandedContext !== null &&
-      !evidenceItem.expandedContext.trim()) {
-      throw new Error("knowledge_coverage_atom_evidence_invalid");
-    }
-    const contextOrder = evidenceItem.expandedContextOrder === undefined
-      ? undefined
-      : decodeKnowledgeExpandedContextOrderV1(
-          evidenceItem.expandedContextOrder,
-          evidenceItem.expandedContext ?? undefined
-        );
-    if (evidenceItem.expandedContextOrder !== undefined && (!contextOrder ||
-      !evidenceItem.expandedContext)) {
-      throw new Error("knowledge_coverage_atom_evidence_invalid");
-    }
-    const orderedContext = contextOrder
-      ? contextOrder.segments
-          .map((segment) => Object.freeze({
-            ...segment,
-            text: evidenceItem.expandedContext!.slice(segment.start, segment.end)
-          }))
-          .sort((left, right) =>
-            left.sourceOrdinal - right.sourceOrdinal || left.start - right.start)
-      : [];
-    const segments: Readonly<{
-      contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
-      text: string;
-    }>[] = [
-      ...orderedContext
-        .filter(({ position }) => position === "previous")
-        .map(({ text }) => ({ contextRole: "previous_context" as const, text })),
-      { contextRole: "exact_excerpt" as const, text: evidenceItem.exactExcerpt },
-      ...orderedContext
-        .filter(({ position }) => position === "next")
-        .map(({ text }) => ({ contextRole: "next_context" as const, text })),
-      ...(!contextOrder && evidenceItem.expandedContext
-        ? [{
-            contextRole: "related_context" as const,
-            text: evidenceItem.expandedContext
-          }]
-        : [])
-    ];
+    const segments = sourceOrderedEvidenceSegments(evidenceItem);
     const seen = new Set<string>();
     for (const segment of segments) {
       for (const text of sentenceAtoms(segment.text)) {
@@ -408,6 +438,76 @@ export function knowledgeCoverageEvidenceAtomIndexV2(
   });
 }
 
+/** Occurrence-preserving projection. TSV cells stay in their complete row;
+ * long rows use bounded fragments with a shared unit identity and exact
+ * offsets. No equal-text occurrence is coalesced, even under one handle. */
+export function knowledgeCoverageEvidenceAtomIndexV3(
+  evidence: readonly KnowledgeCoverageEvidenceV4[]
+): KnowledgeCoverageEvidenceAtomIndexV3 {
+  const items: KnowledgeCoverageEvidenceAtomV3[] = [];
+  let unitCount = 0;
+  const append = (input: Readonly<{
+    contextRole: KnowledgeCoverageEvidenceAtomContextRoleV2;
+    handle: string;
+    lineIndex: number;
+    segmentIndex: number;
+    start: number;
+    text: string;
+    unitKind: "table_row" | "text";
+  }>) => {
+    const points = Array.from(input.text);
+    const partCount = Math.ceil(points.length / KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS.maxAtomCodePoints);
+    const unitId = `U${++unitCount}`;
+    let start = input.start;
+    for (let partIndex = 0; partIndex < partCount; partIndex += 1) {
+      if (items.length >= KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS.maxAtoms) {
+        throw new Error("knowledge_coverage_atom_limit_exceeded");
+      }
+      const text = points.slice(partIndex * KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS.maxAtomCodePoints,
+        (partIndex + 1) * KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS.maxAtomCodePoints).join("");
+      const end = start + text.length;
+      items.push(Object.freeze({ contextRole: input.contextRole, handle: input.handle,
+        id: `A${items.length + 1}`, occurrence: Object.freeze({ end, lineIndex: input.lineIndex,
+          partCount, partIndex, segmentIndex: input.segmentIndex, start, unitId, unitKind: input.unitKind }), text }));
+      start = end;
+    }
+  };
+  for (const evidenceItem of evidence) {
+    for (const [segmentIndex, segment] of sourceOrderedEvidenceSegments(evidenceItem).entries()) {
+      let lineStart = 0;
+      for (const [lineIndex, rawLine] of segment.text.split("\n").entries()) {
+        const line = rawLine.replace(/\r$/u, "");
+        const common = { contextRole: segment.contextRole, handle: evidenceItem.handle, lineIndex, segmentIndex };
+        if (line.includes("\t") && semanticCharacterPattern.test(line)) {
+          append({ ...common, start: lineStart, text: line, unitKind: "table_row" });
+        } else {
+          let cursor = 0;
+          for (const text of sentenceAtoms(line)) {
+            const start = line.indexOf(text, cursor);
+            if (start < 0) throw new Error("knowledge_coverage_atom_boundary_invalid");
+            append({ ...common, start: lineStart + start, text, unitKind: "text" });
+            cursor = start + text.length;
+          }
+        }
+        lineStart += rawLine.length + 1;
+      }
+    }
+  }
+  if (items.length < 1) throw new Error("knowledge_coverage_atom_evidence_invalid");
+  return Object.freeze({ items: Object.freeze(items), version: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V3 });
+}
+
+export function knowledgeCoverageEvidenceFitsAtomLimitV3(evidence: readonly KnowledgeCoverageEvidenceV4[]): boolean {
+  if (evidence.length < 1) return true;
+  try {
+    knowledgeCoverageEvidenceAtomIndexV3(evidence);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message === "knowledge_coverage_atom_limit_exceeded") return false;
+    throw error;
+  }
+}
+
 /**
  * Lets the shared Evidence Manifest packer enforce the exact downstream map
  * capacity before any answer-model request. Invalid evidence still throws;
@@ -431,7 +531,9 @@ export function knowledgeCoverageEvidenceAtomIndex(
   evidence: readonly KnowledgeCoverageEvidenceV4[],
   version: KnowledgeCoverageEvidenceAtomIndexVersion
 ): KnowledgeCoverageEvidenceAtomIndex {
-  return version === KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2
+  return version === KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V3
+    ? knowledgeCoverageEvidenceAtomIndexV3(evidence)
+    : version === KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2
     ? knowledgeCoverageEvidenceAtomIndexV2(evidence)
     : knowledgeCoverageEvidenceAtomIndexV1(evidence);
 }

@@ -2,6 +2,7 @@ export type OpenSearchFailureCode =
   | "opensearch_authentication_failed"
   | "opensearch_bulk_item_failed"
   | "opensearch_connection_failed"
+  | "opensearch_configuration_invalid"
   | "opensearch_index_incompatible"
   | "opensearch_index_missing"
   | "opensearch_rate_limited"
@@ -55,7 +56,7 @@ function configurationFromEnv(env: NodeJS.ProcessEnv): OpenSearchConfiguration {
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new OpenSearchTransportError("opensearch_connection_failed");
+    throw new OpenSearchTransportError("opensearch_configuration_invalid");
   }
   const username = env.AIQSA_OPENSEARCH_USERNAME?.trim();
   const password = env.AIQSA_OPENSEARCH_PASSWORD;
@@ -63,7 +64,7 @@ function configurationFromEnv(env: NodeJS.ProcessEnv): OpenSearchConfiguration {
     (url.protocol !== "http:" && url.protocol !== "https:") ||
     url.username || url.password || url.search || url.hash ||
     (username === undefined) !== (password === undefined)
-  ) throw new OpenSearchTransportError("opensearch_connection_failed");
+  ) throw new OpenSearchTransportError("opensearch_configuration_invalid");
   url.pathname = `${url.pathname.replace(/\/+$/u, "")}/`;
   return Object.freeze({
     ...(password !== undefined ? { password } : {}),

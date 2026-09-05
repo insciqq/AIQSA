@@ -63,14 +63,10 @@ import {
 } from "../knowledge/grounding";
 import { KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } from
   "../knowledge/answerGroundingV21";
-import { KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 } from
-  "../knowledge/answerGroundingSelectorV21";
-import { KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION } from
-  "../knowledge/coverageScopeV6";
-import { KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION } from
-  "../knowledge/coverageScopeCompletenessV1";
-import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION } from
-  "../knowledge/coverageScopeClosureV2";
+import { KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V22, KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION_V3 } from
+  "../knowledge/answerGroundingSnapshotV40";
+import { KNOWLEDGE_COVERAGE_SCOPE_OPERATION_V7, KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION_V2 } from
+  "../knowledge/coverageScopeV7";
 import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
 import type {
   KnowledgeProviderDispatchLifecycle,
@@ -168,14 +164,13 @@ function plannedDraftOutput(text: string) {
 function plannedSelectorOutput() {
   return {
     claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
-    extractIds: [],
+    coverage: [{ id: "D1", status: "covered", contributionIds: ["C1"] }],
     insufficientReason: "not_applicable",
-    version: 1
+    version: 2
   } as const;
 }
 
-function plannedScopeV6Output() {
+function plannedScopeV7Output() {
   return {
     evidenceUnits: [{
       findings: [{
@@ -187,21 +182,22 @@ function plannedScopeV6Output() {
     }],
     jointFindings: [],
     unsupportedDimensions: [],
-    version: 6
+    overflow: { pending: [], unparsedRemainder: false, version: 1 },
+    version: 7
   } as const;
 }
 
 function plannedScopeClosureOutput() {
   return {
     decisions: [{ id: "D1", status: "closed" }],
-    version: 2
+    version: 3
   } as const;
 }
 
 function plannedCurrentKnowledgeOutput(call: number, text: string) {
   if (call === 1) return plannedDraftOutput(text);
-  if (call === 2) return plannedScopeV6Output();
-  if (call === 3) return { additions: [], version: 1 } as const;
+  if (call === 2) return plannedScopeV7Output();
+  if (call === 3) return { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 } as const;
   if (call === 4) return plannedSelectorOutput();
   if (call === 5) return plannedScopeClosureOutput();
   throw new Error("current_knowledge_operation_fixture_invalid");
@@ -209,10 +205,10 @@ function plannedCurrentKnowledgeOutput(call: number, text: string) {
 
 const CURRENT_KNOWLEDGE_OPERATION_NAMES = [
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-  KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
-  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+  KNOWLEDGE_COVERAGE_SCOPE_OPERATION_V7,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION_V2,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V22,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION_V3
 ] as const;
 
 function projectAdmission(): ProjectRunAdmission {
@@ -2563,10 +2559,10 @@ describe("run execution", () => {
       '<aiqsa_knowledge_answer_draft_contract version="21">'
     );
     expect(providerRequests[1]?.prompt.system).toContain(
-      '<aiqsa_knowledge_coverage_scope_contract version="6">'
+      '<aiqsa_knowledge_coverage_scope_contract version="7">'
     );
     expect(providerRequests[3]?.prompt.system).toContain(
-      '<aiqsa_knowledge_grounded_selector_contract version="21">'
+      '<aiqsa_knowledge_grounded_selector_contract version="22">'
     );
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
@@ -2830,8 +2826,8 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([
       expect.objectContaining({
         error: {
-          code: "knowledge_retrieval_failed",
-          message: "Knowledge retrieval failed."
+          code: "opensearch_timeout",
+          message: "Knowledge search timed out. Try again later."
         }
       })
     ]);
@@ -3084,12 +3080,14 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([]);
   });
 
-  it("durably settles a local Knowledge deadline before continuing the tool loop", async () => {
+  it.each(["knowledge_retrieval_aborted", "knowledge_search_projection_incomplete", "opensearch_connection_failed",
+    "opensearch_authentication_failed", "opensearch_configuration_invalid", "opensearch_index_incompatible", "opensearch_rate_limited"])(
+    "durably preserves %s through tool result and terminal failure", async (failureCode) => {
     const finalText = "Knowledge retrieval was unavailable.";
     const repository = createRepository({
       groundingResult: structuralGroundingResult(finalText)
     });
-    const deadline = new Error("knowledge_retrieval_aborted");
+    const deadline = new Error(failureCode);
     deadline.name = "AbortError";
     const { executor: baseExecutor } = toolLoopKnowledgeExecutor();
     const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async () => {
@@ -3124,13 +3122,16 @@ describe("run execution", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(providerRequests).toHaveLength(2);
-    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
-      .toContain("knowledge_retrieval_failed");
+    const persistedFailureCode = failureCode === "knowledge_retrieval_aborted" ? "opensearch_timeout" : failureCode;
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("Knowledge");
     expect([...repository.toolCalls.values()]).toEqual([
-      expect.objectContaining({ result: expect.anything(), state: "error" })
+      expect.objectContaining({ result: expect.objectContaining({ rawPreview: { knowledgeFailure: expect.objectContaining({
+        code: persistedFailureCode, mappingVersion: 1, version: 1
+      }) } }), state: "error" })
     ]);
-    expect(repository.completeRuns).toHaveLength(1);
-    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(0);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: persistedFailureCode }) })]);
+    expect(JSON.stringify(repository.failedRuns)).not.toContain("bounded private lookup");
   });
 
   it("continues after a completed zero-candidate Knowledge result", async () => {

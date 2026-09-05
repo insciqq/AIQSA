@@ -71,7 +71,8 @@ export type KnowledgeSearchIntegrity = Readonly<{
 
 function projectionErrorCode(error: unknown): string {
   if (error instanceof OpenSearchTransportError) return error.code;
-  if (error instanceof Error && /^[a-z0-9_]{1,64}$/u.test(error.message)) {
+  if (error instanceof Error && ["knowledge_search_projection_source_invalid", "knowledge_search_projection_limit_invalid",
+    "knowledge_search_projection_lease_lost", "knowledge_search_projection_count_mismatch"].includes(error.message)) {
     return error.message;
   }
   return "knowledge_search_projection_failed";

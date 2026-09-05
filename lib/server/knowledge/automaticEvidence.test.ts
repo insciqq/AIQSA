@@ -1,4 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { modelPdfPagesToDocument } from "../parsing/modelPdfOutput";
+import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
+import { chunkKnowledgeDocument } from "./chunking";
+import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "./tokenizer/knowledgeTokenCounter";
+import { tableOccurrenceFixture } from "./tableOccurrence.testFixtures";
+import { knowledgeSearchFailureToolResult } from "./searchFailure";
+import { knowledgeCoverageEvidenceAtomIndexV3, knowledgeCoverageEvidenceFromManifestV4 } from "./coverageScopeV4";
+import { knowledgeCoverageScopePromptV6, decodeKnowledgeCoverageScopePromptV6 } from "./coverageScopeV6";
+import { knowledgeFullContextDispatchPresentation, packKnowledgeFullContextDispatchManifest } from "./fullContext";
 import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8 } from "./answerGroundingV5";
 import { summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import type { ProviderRunRequest } from "../providers/types";
@@ -10,7 +19,8 @@ import {
   withAutomaticKnowledgeEvidence
 } from "./automaticEvidence";
 import {
-  KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
+  KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION
 } from "./evidenceDispatchManifest";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
@@ -23,7 +33,7 @@ import {
   KNOWLEDGE_SEARCH_TOOL_NAME,
   type KnowledgeRetrievalEvidence
 } from "./retrievalTypes";
-import { knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
+import { knowledgeEvidenceFromToolResult, knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 
@@ -285,6 +295,24 @@ describe("focused Knowledge evidence", () => {
 
     expect(legacy?.packingVersion).toBe("whole_source_item_v1");
     expect(current?.packingVersion).toBe(KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION);
+    const occurrences = toolLoopKnowledgeEvidenceDispatchDraft({
+      request: { ...request(), knowledgeEvidencePackingVersion: 3 }, results: [toolResult]
+    });
+    expect(occurrences?.packingVersion).toBe(KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION);
+  });
+
+  it("keeps excluded scope and failed retrieval explicit in a useful persisted manifest", () => {
+    const failure = knowledgeSearchFailureToolResult({ id: "failed-call", name: KNOWLEDGE_SEARCH_TOOL_NAME,
+      arguments: { query: "PRIVATE_QUERY" } }, new Error("opensearch_timeout"));
+    const draft = toolLoopKnowledgeEvidenceDispatchDraft({ request: { ...request(), knowledgeEvidencePackingVersion: 3 },
+      exclusions: [{ count: 1, reason: "binding_budget", resourceType: "source" }], results: [result(evidence()), failure] });
+    expect(draft?.items.length).toBeGreaterThan(0);
+    expect(draft?.coverageLimitations).toEqual({ excludedResources: 1, retrievalFailures: ["opensearch_timeout"], version: 1 });
+    expect(draft?.message).toContain("cannot establish absence across the full requested scope");
+    expect(draft?.message).toContain("timed out");
+    expect(draft?.message).not.toContain("PRIVATE_QUERY");
+    expect(() => toolLoopKnowledgeEvidenceDispatchDraft({ request: request(), results: [failure] }))
+      .toThrow("opensearch_timeout");
   });
 
   it("returns a zero-evidence terminal marker instead of minting an empty tool-loop manifest", () => {
@@ -511,6 +539,75 @@ describe("focused Knowledge evidence", () => {
     })]);
   });
 
+  it("carries rejected form-header uncertainty from parsing and chunking into the answer manifest", () => {
+    const parsed = modelPdfPagesToDocument({ maxBlocks: 100, maxCharacters: 10_000,
+      mode: "system_model_vision", pageCount: 1, tableContinuationMarkers: true,
+      pages: [{ page: 1, text: "Name\tAlice\nAge\t30\nHeight\t170 cm" }] });
+    const normalized = encodeKnowledgeNormalizedDocument(parsed, { maxChunksPerDocument: 100,
+      maxFileBytes: 1_000_000, maxNormalizedChars: 100_000, maxNormalizedObjectBytes: 1_000_000, maxPages: 10
+    }, { layoutAwareTables: true, sourceDisplayName: "form.pdf" }).document;
+    const chunks = chunkKnowledgeDocument({ document: normalized, maxChunks: 100,
+      profileVersion: 12, tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER });
+    const age = chunks.find(({ documentContext }) => documentContext?.locator.kind === "table_row" &&
+      documentContext.locator.rowIndex === 1)!;
+    expect(age.text).toBe("Age\t30");
+    expect(age.documentContext?.observations.every(({ metric }) => metric === null)).toBe(true);
+    const base = evidence();
+    const updated: KnowledgeRetrievalEvidence = { ...base, providerText: "pending",
+      results: base.results.map((item) => ({ ...item, documentContext: age.documentContext,
+        includedText: age.text, includedTextBytes: Buffer.byteLength(age.text),
+        layoutKind: age.layoutKind, sourceTextBytes: Buffer.byteLength(age.text) })) };
+    const draft = focusedKnowledgeEvidenceDispatchDraft({ request: request(),
+      result: result({ ...updated, providerText: knowledgeToolResultText(updated) }) });
+    expect(draft.items[0]).toMatchObject({ ambiguity: "table_cell_associations_ambiguous", exactExcerpt: "Age\t30" });
+    expect(draft.message).not.toContain("Alice");
+  });
+
+  it("preserves parsed table rows, headers, dates and locators through RAG and full-context Scope", () => {
+    const { data, header, rows } = tableOccurrenceFixture();
+    expect(data.map(({ text }) => text)).toEqual(rows.map((row) => `${header}\n${row}`));
+    const base = evidence();
+    const updated: KnowledgeRetrievalEvidence = { ...base, providerText: "pending",
+      candidateCount: data.length,
+      bases: base.bases.map((binding) => ({ ...binding, candidateCount: data.length,
+        vectorSearch: { ...binding.vectorSearch!, candidateCount: data.length, eligibleRows: data.length } })),
+      lexicalBackend: knowledgeLexicalBackendEvidenceFixture({ candidateCount: data.length }),
+      results: data.map((chunk, index) => ({ ...base.results[0]!, chunkId: `row-${index + 1}`,
+        handle: `K${index + 1}`, documentContext: chunk.documentContext, includedText: chunk.text,
+        includedTextBytes: Buffer.byteLength(chunk.text), layoutKind: chunk.layoutKind,
+        sourceTextBytes: Buffer.byteLength(chunk.text), documentVersionNumber: 3 })) };
+    const rag = toolLoopKnowledgeEvidenceDispatchDraft({ request: { ...request(), knowledgeEvidencePackingVersion: 3 },
+      results: [{ ...result({ ...updated, providerText: knowledgeToolResultText(updated) }), name: KNOWLEDGE_SEARCH_TOOL_NAME }] })!;
+    const presentation = knowledgeFullContextDispatchPresentation(data.map((chunk, index) => ({
+      documentContext: chunk.documentContext, exactExcerpt: chunk.text, handle: `K${index + 1}`,
+      headingPath: [], page: 1, sourceAlias: "S1" })));
+    const full = packKnowledgeFullContextDispatchManifest({ candidates: rag.items.map((item, index) => ({
+      ambiguity: item.ambiguity, evidenceId: item.evidenceId, exactExcerpt: item.exactExcerpt,
+      fileName: item.fileName, handle: item.handle, locator: presentation.locators[index]!,
+      operationOrdinal: 0, resultOrdinal: index + 1, sourceAlias: item.sourceAlias, sourceLabel: item.sourceLabel,
+      sourceTruncated: false, sourceVersionNumber: item.sourceVersionNumber, state: "available",
+      ...(presentation.expandedContexts[index] ? { expandedContext: presentation.expandedContexts[index] } : {})
+    })), excludedResources: 0, maximumTokens: 8_192, profileId: "synthetic:answer" });
+    for (const manifest of [rag, full]) {
+      const projected = knowledgeCoverageEvidenceFromManifestV4(manifest);
+      const exact = knowledgeCoverageEvidenceAtomIndexV3(projected).items.filter(({ contextRole }) => contextRole === "exact_excerpt");
+      expect(exact.map(({ text }) => text)).toEqual([header, rows[0], header, rows[1]]);
+      expect(new Set(exact.map(({ occurrence }) => occurrence.unitId)).size).toBe(4);
+      expect(manifest.items.map(({ locator }) => locator)).toEqual([
+        expect.stringContaining("table=T1; row-index=1; row-kind=data"),
+        expect.stringContaining("table=T1; row-index=2; row-kind=data")
+      ]);
+      expect(projected.every(({ sourceVersionNumber }) => sourceVersionNumber === 3)).toBe(true);
+      const input = { atomIndexVersion: 3 as const, evidence: projected, evidenceManifest: manifest.message, request: "Compare A and B." };
+      const prompt = knowledgeCoverageScopePromptV6({ ...input, scopePass: "initial" });
+      expect(decodeKnowledgeCoverageScopePromptV6({ ...input, ...prompt })).toEqual({ repairReason: null, scopePass: "initial" });
+      expect(JSON.parse(prompt.userPrompt)).toMatchObject({ atomProjection: "source_ordered_occurrences_v3", evidenceUnitIndex: { version: 3 } });
+      expect(prompt.systemPrompt).toContain("Never inherit a document issue date");
+      expect(manifest.message).not.toContain("Issued 2041-02-03");
+    }
+    expect(rag.items.every(({ locator }) => !locator.includes("source-passage="))).toBe(true);
+  });
+
   it("does not mislabel lexical value-normalization uncertainty as an ambiguous association", () => {
     const base = evidence();
     const documentContext = createKnowledgeTableDocumentContext({
@@ -543,5 +640,23 @@ describe("focused Knowledge evidence", () => {
     expect(documentContext.ambiguityReasons).toContain("ambiguous_number");
     expect(draft.items[0]).toMatchObject({ ambiguity: "none" });
     expect(draft.message).not.toContain("table cell associations are ambiguous");
+  });
+
+  it("serializes exact large observation values into tool evidence without a second numeric conversion", () => {
+    const context = createKnowledgeTableDocumentContext({ blockId: "synthetic-counts", rowIndex: 1,
+      cells: ["9007199254740993e0", "9007199254740992e0"].map((text, column) => ({
+        columnEnd: column, columnStart: column, text })),
+      headerLineage: ["Actual", "Target"].map((text, column) => ({ columnEnd: column, columnStart: column, rowIndex: 0, text }))
+    });
+    const base = evidence();
+    const includedText = "Actual\tTarget\n9007199254740993e0\t9007199254740992e0";
+    const withContext = { ...base, results: base.results.map((item) => ({ ...item, documentContext: context,
+      includedText, includedTextBytes: Buffer.byteLength(includedText), sourceTextBytes: Buffer.byteLength(includedText) })) };
+    const saved = JSON.parse(JSON.stringify(result({ ...withContext, providerText: knowledgeToolResultText(withContext) })));
+    const decoded = knowledgeEvidenceFromToolResult(saved);
+    expect(decoded?.results[0]?.documentContext?.observations.map(({ normalizedValue }) => normalizedValue))
+      .toEqual(["9007199254740993", "9007199254740992"]);
+    const draft = toolLoopKnowledgeEvidenceDispatchDraft({ request: { ...request(), knowledgeEvidencePackingVersion: 3 }, results: [saved] });
+    expect(draft?.items[0]?.ambiguity).toBe("none");
   });
 });

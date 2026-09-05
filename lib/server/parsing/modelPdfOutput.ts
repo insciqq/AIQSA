@@ -10,11 +10,14 @@ import type {
 
 export const MODEL_PDF_OUTPUT_MAX_CHARACTERS_PER_BATCH = 500_000;
 export const MODEL_PDF_OUTPUT_MAX_LINES_PER_PAGE = 20_000;
-export const MODEL_PDF_PROMPT_VERSION = 6;
+export const MODEL_PDF_PROMPT_VERSION = 7;
 /** First immutable model-PDF parser profile whose Vision transcription also
  * projects information encoded only by charts, plots, diagrams, maps, and
  * figures into bounded searchable text. Earlier profiles remain text-only. */
 export const MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION = 14 as const;
+/** New artifacts require explicit layout controls for table continuations;
+ * text repetition cannot establish a merge or justify shifting a cell. */
+export const MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION = 15 as const;
 export const MODEL_PDF_ROW_CONTINUATION_CELL = "[[AIQSA_ROW_CONTINUATION]]";
 
 export type DecodedModelPdfPage = Readonly<{
@@ -38,7 +41,7 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
   mode: PdfModelProcessingMode;
   pageEnd: number;
   pageStart: number;
-  promptVersion?: 1 | 2 | 3 | 4 | 5 | 6;
+  promptVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7;
 }>): string {
   const sections: string[] = [];
   for (let page = input.pageStart; page <= input.pageEnd; page += 1) {
@@ -74,7 +77,7 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
         "logical output cell covered by that span so each row retains its complete identity. " +
         "Keep genuinely empty, non-spanning cells empty, and never infer a span from wording."
     ] : []),
-    ...(promptVersion >= 5 ? [
+    ...(promptVersion >= 5 && promptVersion <= 6 ? [
       "Emit each table as logical rows with one stable tab-separated column order. A logical " +
         "record may occupy multiple physical rows. In every cell that continues the value " +
         `directly above, write exactly ${MODEL_PDF_ROW_CONTINUATION_CELL}. ` +
@@ -83,6 +86,15 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
         "next peer value or visible separator. Decide from layout (borders, alignment, " +
         "indentation, and repeated row pattern), never from the language or meaning of labels. " +
         "Leave genuinely empty cells empty."
+    ] : []),
+    ...(promptVersion >= 7 ? [
+      "Keep every table's exact column order, including leading and trailing empty cells. " +
+        `Write ${MODEL_PDF_ROW_CONTINUATION_CELL} only for an explicitly visible vertical ` +
+        "merged cell whose border or unambiguous layout establishes continuation of the " +
+        "cell directly above. Similar wording, repeated row patterns and a blank cell " +
+        "alone never establish a span. Never infer a missing leading tab or shift a value " +
+        "under a convenient header. Leave genuine or ambiguous empty cells empty, and " +
+        "never carry a continuation across a page or table boundary."
     ] : []),
     ...(promptVersion >= 6 ? [
       "For every information-bearing chart, plot, diagram, map, or figure, add one compact " +
@@ -113,6 +125,8 @@ function exactResponseBody(text: string): string {
 }
 
 export function decodeModelPdfBatchOutput(input: Readonly<{
+  /** Historical pinned profiles used whole-page trim, including table tabs. */
+  preserveTableWhitespace?: boolean;
   mode: PdfModelProcessingMode;
   pageEnd: number;
   pageStart: number;
@@ -136,13 +150,14 @@ export function decodeModelPdfBatchOutput(input: Readonly<{
       responseBody.indexOf(start, contentStart) < endIndex) {
       throw parserError(input.mode);
     }
-    const text = responseBody.slice(contentStart, endIndex).replace(/\r\n?/gu, "\n").trim();
-    if (!text || text.split("\n").length > MODEL_PDF_OUTPUT_MAX_LINES_PER_PAGE) {
+    const body = responseBody.slice(contentStart, endIndex).replace(/\r\n?/gu, "\n");
+    const text = input.preserveTableWhitespace === false ? body.trim() : body.replace(/^\n+|\n+$/gu, "");
+    if (!text.trim() || text.split("\n").length > MODEL_PDF_OUTPUT_MAX_LINES_PER_PAGE) {
       throw parserError(input.mode);
     }
     pages.push(Object.freeze({
       page,
-      text: text === "[BLANK PAGE]" ? "" : text
+      text: text.trim() === "[BLANK PAGE]" ? "" : text
     }));
     cursor = endIndex + end.length;
   }
@@ -420,10 +435,13 @@ function pageBlocks(
   firstIndex: number,
   input: Readonly<{
     continuationMarkers: boolean;
+    legacyInference: boolean;
     mode: PdfModelProcessingMode;
   }>
 ): ParsedDocumentBlock[] {
-  const lines = page.text.split("\n").filter((line) => Boolean(line.trim()));
+  const lines = input.legacyInference
+    ? page.text.split("\n").filter((line) => Boolean(line.trim()))
+    : page.text.split("\n");
   const blocks: ParsedDocumentBlock[] = [];
   const headings: Array<Readonly<{ level: number; text: string }>> = [];
   const headingPath = (): readonly string[] => headings.map(({ text }) => text);
@@ -431,6 +449,7 @@ function pageBlocks(
   while (lineIndex < lines.length) {
     const rawLine = lines[lineIndex]!;
     const line = rawLine.trim();
+    if (!line) { lineIndex += 1; continue; }
     const cells = rowCells(rawLine);
     if (cells) {
       const rows: string[][] = [];
@@ -442,7 +461,7 @@ function pageBlocks(
       }
       if (rows.length > 0) {
         const table = tableFor(
-          input.continuationMarkers ? inferRegularRowGroupContinuations(rows) : rows,
+          input.continuationMarkers && input.legacyInference ? inferRegularRowGroupContinuations(rows) : rows,
           input
         );
         blocks.push(block({
@@ -484,6 +503,8 @@ function pageBlocks(
 }
 
 export function modelPdfPagesToDocument(input: Readonly<{
+  /** Only historical pinned profiles may reproduce the former text inference. */
+  legacyTableInference?: boolean;
   maxBlocks: number;
   maxCharacters: number;
   mode: PdfModelProcessingMode;
@@ -502,6 +523,7 @@ export function modelPdfPagesToDocument(input: Readonly<{
     }
     blocks.push(...pageBlocks(page, blocks.length, {
       continuationMarkers: input.tableContinuationMarkers === true,
+      legacyInference: input.legacyTableInference === true,
       mode: input.mode
     }));
     if (blocks.length > input.maxBlocks) {

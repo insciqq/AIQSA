@@ -117,7 +117,7 @@ export function decodeKnowledgeRerankerBindingEvidenceV2(
     !Number.isSafeInteger(value.inputCandidateCount) ||
     Number(value.inputCandidateCount) < 0 ||
     Number(value.inputCandidateCount) > MAX_INPUT_CANDIDATES ||
-    value.rankingProfileVersion !== 4 ||
+    value.rankingProfileVersion !== 4 && value.rankingProfileVersion !== 5 ||
     typeof value.timedOut !== "boolean" ||
     !boundedFailureCode(value.fallbackReason) ||
     !nullableBoundedIdentifier(value.adapterVersion) ||

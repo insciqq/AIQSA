@@ -407,6 +407,13 @@ describe("adaptive Knowledge answering", () => {
     }).route).toBe(KNOWLEDGE_ANSWER_ROUTE_RAG);
   });
 
+  it("never presents a corpus above the occurrence atom limit as complete", () => {
+    const text = Array.from({ length: 1_025 }, () => "A\tX\t10").join("\n");
+    expect(planKnowledgeAnswering({ admissionPlan: admission(2_000, 1),
+      passages: [{ ...passages()[0]!, text, tokenCount: 2_000 }], request: request(100_000)
+    }).route).toBe(KNOWLEDGE_ANSWER_ROUTE_RAG);
+  });
+
   it("falls back before provider I/O when the two-stage structured prompt envelope cannot fit", () => {
     const oversized = passages().map((passage, index) => ({
       ...passage,

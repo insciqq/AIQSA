@@ -1,3 +1,4 @@
+import { executeKnowledgeCoverageScopeV7 } from "./coverageScopeExecutionV7";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type {
   ProviderStructuredOutputRequest
@@ -145,7 +146,7 @@ import {
   type KnowledgeCoverageScopeClosureFailureReasonV2,
   type KnowledgeCoverageScopeClosureValidationFailureReasonV2
 } from "./coverageScopeClosureV2";
-import { KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2 } from "./coverageScopeV4";
+import { knowledgeCoverageEvidenceAtomIndexV3 } from "./coverageScopeV4";
 import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V21,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
@@ -165,14 +166,26 @@ import {
   decodeKnowledgeGroundingEffectiveExecutionPolicyV1,
   type KnowledgeGroundingEffectiveExecutionPolicyV1
 } from "./groundingExecutionPolicy";
+import {
+  KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1,
+  KNOWLEDGE_ANSWER_CONTRIBUTION_PROTOCOL_V1,
+  knowledgeAnswerDraftPromptV40,
+  type KnowledgeAnswerOperationV40
+} from "./answerGroundingSnapshotV40";
+import {
+  executeKnowledgeAnswerContributionsV40,
+  type KnowledgeContributionExecutionReceiptV1
+} from "./answerGroundingExecutionV40";
+import { validateKnowledgeAnswerDraftContributionsV1 } from "./answerGroundingSelectorV22";
 
 type OperationOrdinalScopeV6 = OperationOrdinalV21 | 7 | 8;
 
 export type KnowledgeAnswerGroundingExecutionV21ScopeV6Result = Readonly<{
-  contracts: KnowledgeAnswerV21ContractVersions;
+  contributionReceipt?: KnowledgeContributionExecutionReceiptV1;
+  contracts: KnowledgeAnswerV21ContractVersions | typeof KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1;
   crossTargetExactRepeatCount: number;
   operations: readonly Readonly<{
-    operation: KnowledgeAnswerOperationScopeV6ClosureV2;
+    operation: KnowledgeAnswerOperationScopeV6ClosureV2 | KnowledgeAnswerOperationV40;
     ordinal: OperationOrdinalScopeV6;
     providerResponseId: string | null;
     usage: ModelRunUsage;
@@ -269,7 +282,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   request: string;
   routeInstruction: string;
   shouldAbort(error: unknown): boolean;
-  snapshotVersion?: 37 | 38 | 39;
+  snapshotVersion?: 37 | 38 | 39 | 40;
   transport: "native_strict" | "provider_neutral_json";
 }>): Promise<KnowledgeAnswerGroundingExecutionV21ScopeV6Result> {
   const inheritedReasoningEffort = input.reasoningEffort ?? null;
@@ -288,19 +301,21 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   if (!executionPolicy ||
     (input.executionPolicy !== undefined && input.reasoningEffort !== undefined) ||
     (input.snapshotVersion !== undefined && input.snapshotVersion !== 37 &&
-      input.snapshotVersion !== 38 && input.snapshotVersion !== 39)) {
+      input.snapshotVersion !== 38 && input.snapshotVersion !== 39 && input.snapshotVersion !== 40)) {
     throw new Error("knowledge_grounding_execution_policy_invalid");
   }
+  const contributions = input.snapshotVersion === undefined || input.snapshotVersion === 40;
   const targetLocalSupplement = input.snapshotVersion !== 37;
   const qualityRepresentativeReduction = input.snapshotVersion !== 37 &&
     input.snapshotVersion !== 38;
-  const protocol = qualityRepresentativeReduction
+  const protocol = contributions ? KNOWLEDGE_ANSWER_CONTRIBUTION_PROTOCOL_V1 : qualityRepresentativeReduction
     ? KNOWLEDGE_ANSWER_SCOPE_V6_QUALITY_REPRESENTATIVE_REDUCTION_PROTOCOL_V1
     : targetLocalSupplement
     ? KNOWLEDGE_ANSWER_SCOPE_V6_TARGET_LOCAL_SUPPLEMENT_PROTOCOL_V1
     : KNOWLEDGE_ANSWER_SCOPE_V6_NON_MISSING_CLOSURE_ADMISSION_PROTOCOL_V1;
   const requestExecutionPolicy = { executionPolicy } as const;
   const evidence = knowledgeCoverageEvidenceFromManifestV6(input.draft);
+  if (contributions) knowledgeCoverageEvidenceAtomIndexV3(evidence);
   const handles = evidence.map(({ handle }) => handle);
   const operations: Array<
     KnowledgeAnswerGroundingExecutionV21ScopeV6Result["operations"][number]
@@ -339,7 +354,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     ? settleKnowledgeAnswerV21FromFinalSelectorV38(settlementInput)
     : settleKnowledgeAnswerV21FromFinalSelector(settlementInput);
 
-  const draftPrompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
+  const draftPrompt = (contributions ? knowledgeAnswerDraftPromptV40 : knowledgeAnswerDraftPromptV21GlobalReducerV1)({
     draftPass: "primary",
     evidenceManifest: input.draft.message,
     request: input.request,
@@ -361,7 +376,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     acceptedFailure: () => operationRecord(KNOWLEDGE_DRAFT_MALFORMED),
     acceptedOutput: (output) => {
       const normalizedOutput = normalizeKnowledgeClaimPayloadV1(output);
-      const validation = validateKnowledgeAnswerDraftV21CommonMarkV1(normalizedOutput, {
+      const validation = (contributions ? validateKnowledgeAnswerDraftContributionsV1 : validateKnowledgeAnswerDraftV21CommonMarkV1)(normalizedOutput, {
         availableHandles: handles,
         forbiddenIdentityFragments: input.forbiddenIdentityFragments
       });
@@ -382,13 +397,26 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     shouldAbort: input.shouldAbort
   });
   pushOperation(1, KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21, draftOperation);
+  const primaryValidation = contributions ? validateKnowledgeAnswerDraftContributionsV1(draftOperation.acceptedResult, {
+    availableHandles: handles, forbiddenIdentityFragments: input.forbiddenIdentityFragments
+  }) : null;
   const primaryDraft = decodeKnowledgeAnswerDraftMalformed(draftOperation.acceptedResult) ??
-    decodeKnowledgeAnswerDraftV21CommonMarkV1(draftOperation.acceptedResult, {
+    (contributions ? primaryValidation?.kind === "accepted" ? primaryValidation.value : null
+    : decodeKnowledgeAnswerDraftV21CommonMarkV1(draftOperation.acceptedResult, {
       availableHandles: handles,
       forbiddenIdentityFragments: input.forbiddenIdentityFragments
-    });
+    }));
   if (!primaryDraft) throw new Error("knowledge_answer_draft_result_invalid");
 
+  if (contributions) {
+    const scoped = await executeKnowledgeCoverageScopeV7({ execution: input, executionPolicy, operations });
+    return executeKnowledgeAnswerContributionsV40({ completeness: scoped.completeness,
+      execution: input, executionPolicy, operations: scoped.operations, primaryDraft,
+      selectorInput: { atomIndexVersion: 3, evidence, request: input.request, scope: scoped.scope,
+        scopeProtocol: "append_only_completeness_reduce_v2" }
+    });
+  }
+  const atomIndexVersion = 2 as const;
   const transientScopeRepair: {
     base: KnowledgeCoverageScopeTransientRepairBaseV1 | null;
     diagnostics: readonly KnowledgeCoverageScopeRepairDiagnosticV1[] | null;
@@ -405,7 +433,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     }>
   ) => {
     const prompt = knowledgeCoverageScopePromptV6RecallMapV1({
-      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      atomIndexVersion,
       evidence,
       evidenceManifest: input.draft.message,
       repairBaseHash: repair?.repairBaseHash ?? null,
@@ -439,7 +467,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         );
         if (repair?.repairBase) {
           const merge = mergeKnowledgeCoverageScopeVerifiedPatchesV1({
-            atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+            atomIndexVersion,
             base: repair.repairBase,
             diagnostic: repair.diagnostic,
             evidence,
@@ -460,7 +488,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
         const validation = validateKnowledgeCoverageScopeV6VerifiedPatchV1(
           resolvedOutput,
           {
-          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          atomIndexVersion,
           evidence,
           request: input.request
           }
@@ -469,7 +497,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           transientScopeRepair.base = validation.repairBase;
           transientScopeRepair.diagnostics =
             collectKnowledgeCoverageScopeRepairDiagnosticsV1({
-              atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+              atomIndexVersion,
               base: validation.repairBase,
               evidence,
               initialDiagnostic: validation.diagnostic,
@@ -536,7 +564,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     throw new Error("knowledge_coverage_scope_unaccepted");
   }
   let scope = decodeKnowledgeCoverageScopeV6(scopeOperation.acceptedResult, {
-    atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+    atomIndexVersion,
     evidence,
     request: input.request
   });
@@ -550,7 +578,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   ) => {
     const prompt = knowledgeCoverageScopeCompletenessPromptV5({
       acceptedScope: scope!,
-      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      atomIndexVersion,
       completenessPass,
       evidence,
       evidenceManifest: input.draft.message,
@@ -585,7 +613,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
           resolvedOutput,
           {
           acceptedScope: scope!,
-          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          atomIndexVersion,
           evidence,
           request: input.request
           }
@@ -635,7 +663,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     completenessOperation.acceptedResult,
     {
       acceptedScope: scope,
-      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      atomIndexVersion,
       evidence,
       request: input.request
     }
@@ -671,7 +699,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     }
     const prompt = selectorInput.correction
       ? knowledgeGroundedDeltaSelectorPromptV7({
-          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          atomIndexVersion,
           bindings: selectorInput.correction.bindings,
           draft: selectorInput.draft,
           evidence,
@@ -685,7 +713,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       : (qualityRepresentativeReduction
         ? knowledgeGroundedSelectorPromptV21GlobalReducerV2
         : knowledgeGroundedSelectorPromptV21GlobalReducerV1)({
-          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          atomIndexVersion,
           draft: selectorInput.draft,
           evidence,
           evidenceManifest: input.draft.message,
@@ -721,7 +749,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       ),
       acceptedOutput: (output) => {
         const validationInput = {
-          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          atomIndexVersion,
           draft: selectorInput.draft,
           evidence,
           request: input.request,
@@ -790,7 +818,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   let acceptedSelector: KnowledgeGroundedSelectorV21 | null = selectorFailure
     ? null
     : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
-        atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+        atomIndexVersion,
         draft: primaryDraft,
         evidence,
         request: input.request,
@@ -824,7 +852,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
     acceptedSelector = selectorFailure
       ? null
       : decodeKnowledgeGroundedSelectorV21(selectorOperation.acceptedResult, {
-          atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+          atomIndexVersion,
           draft: primaryDraft,
           evidence,
           request: input.request,
@@ -851,7 +879,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
       })
     });
     const closureInput = {
-      atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+      atomIndexVersion,
       evidence,
       request: input.request,
       scope,
@@ -957,7 +985,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   const targetEvidenceAvailable = knowledgeTargetedEvidenceAtomIndex({
     evidence,
     targetDimensions: targetableMissingDimensions
-  }, KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2) !== null;
+  }, atomIndexVersion) !== null;
   const correctionRequired = targetEvidenceAvailable && knowledgeTargetedSupplementFitsV1({
     primaryClaimCount,
     targetableDimensionCount: targetableMissingDimensions.length
@@ -974,7 +1002,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
 
   const supplementOrdinal = (postSelectorOrdinal + 1) as OperationOrdinalScopeV6;
   const supplementPrompt = knowledgeAnswerTargetedSupplementPromptV8({
-    atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+    atomIndexVersion,
     auditDimensions: targetableMissingDimensions,
     evidence,
     primaryClaimCount,
@@ -1113,7 +1141,7 @@ export async function executeKnowledgeAnswerGroundingV21(input: Readonly<{
   const finalSelector = finalFailure ? null : decodeKnowledgeGroundedSelectorV21(
     finalOperation.acceptedResult,
     {
-    atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
+    atomIndexVersion,
     draft: finalDraft,
     evidence,
     request: input.request,

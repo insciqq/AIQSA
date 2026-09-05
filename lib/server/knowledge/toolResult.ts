@@ -110,7 +110,7 @@ function decodeKnowledgeLexicalBackendEvidence(
     value.physicalIndexVersion !== KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION ||
     value.mappingVersion !== KNOWLEDGE_SEARCH_MAPPING_VERSION ||
     value.analyzerProfile !== KNOWLEDGE_SEARCH_ANALYZER_PROFILE ||
-    value.rankingProfileVersion !== 4 || value.status !== "complete" ||
+    value.rankingProfileVersion !== 4 && value.rankingProfileVersion !== 5 || value.status !== "complete" ||
     value.projectionCompleteness !== "complete" || value.timedOut !== false ||
     value.canonicalRejectionCount !== 0 ||
     nonNegativeInteger(value.candidateCount) === null ||

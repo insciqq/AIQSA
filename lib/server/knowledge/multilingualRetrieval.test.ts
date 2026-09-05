@@ -59,7 +59,7 @@ async function capturedHybridSql(query: string): Promise<string> {
   };
   await executeKnowledgeRetrievalCore(client as never, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query,
     resultLimit: 8,
     runId: "run-1",

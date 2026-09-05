@@ -109,7 +109,7 @@ export type NormalizedRunRequest = {
   }>;
   /** Durable evidence-packing policy for Knowledge tool-loop recovery. Older
    * accepted requests omit it and retain chronological V1 packing. */
-  knowledgeEvidencePackingVersion?: 2;
+  knowledgeEvidencePackingVersion?: 2 | 3;
   knowledgePlan: KnowledgePlan;
   /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
    * admission rejects it and execution/recovery terminalize it. */

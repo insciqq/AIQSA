@@ -35,6 +35,24 @@ export const KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1 = Object.free
   "</aiqsa_knowledge_source_ordered_context_contract>"
 ].join("\n"));
 
+export const KNOWLEDGE_COVERAGE_OCCURRENCE_CONTEXT_CONTRACT_V1 = [
+  '<aiqsa_knowledge_occurrence_context_contract version="1">',
+  "evidenceUnitIndex version 3 preserves every admitted occurrence. contextRole restores trusted previous/exact/next placement; related_context has no claimed relative position. Resolve references and scope-limiting qualifiers from the full ordered evidence, without turning proximity into a semantic relation.",
+  "Each occurrence is bound to its handle and evidenceContext Source Version/locator. segmentIndex, lineIndex and exact UTF-16 start/end locate it within that admitted segment. Equal text in another row, unit, handle or Source Version remains separate evidence.",
+  "A table_row preserves its original TSV cells, including empty cells. Fragments with the same unitId are ordered by partIndex and must be read together; partCount states the full row size. Keep the row's object, measurement date, value and unit together with the necessary explicit header/context atoms. Never inherit a document issue date or a neighboring row's subject/value without an evidenced relation. Ambiguous cell associations remain ambiguous.",
+  "Framing and positional labels are not factual evidence. Include every atom required for the complete source-bound assertion, including its qualifications; never generalize a named construction, experiment, time or condition.",
+  "</aiqsa_knowledge_occurrence_context_contract>"
+].join("\n");
+
+export function knowledgeCoverageAtomProjectionName(version: KnowledgeCoverageEvidenceAtomIndexVersion) {
+  return version === 3 ? "source_ordered_occurrences_v3" : version === 2 ? "source_ordered_context_v2" : undefined;
+}
+
+export function knowledgeCoverageAtomContextContract(version: KnowledgeCoverageEvidenceAtomIndexVersion) {
+  return version === 3 ? KNOWLEDGE_COVERAGE_OCCURRENCE_CONTEXT_CONTRACT_V1
+    : version === 2 ? KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1 : "";
+}
+
 export type KnowledgeCoverageFindingOutputV1 = Readonly<{
   description: string;
   evidenceAtomIds: readonly string[];
@@ -600,13 +618,13 @@ export function knowledgeCoverageScopePromptV6(input: Readonly<{
   );
   const evidenceContext = knowledgeCoverageEvidenceContextV1(input.evidence);
   return Object.freeze({
-    systemPrompt: atomIndexVersion === 2
+    systemPrompt: atomIndexVersion !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(atomIndexVersion)
       : KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6,
     userPrompt: knowledgeAnswerCanonicalJson({
-      ...(atomIndexVersion === 2
-        ? { atomProjection: "source_ordered_context_v2" as const }
+      ...(atomIndexVersion !== 1
+        ? { atomProjection: knowledgeCoverageAtomProjectionName(atomIndexVersion) }
         : {}),
       evidenceContext,
       evidenceManifestHash: knowledgeAnswerHash(input.evidenceManifest),
@@ -634,9 +652,9 @@ export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
   scopePass: "initial" | "repair";
 }> | null {
   const atomIndexVersion = input.atomIndexVersion ?? 1;
-  const expectedSystemPrompt = atomIndexVersion === 2
+  const expectedSystemPrompt = atomIndexVersion !== 1
     ? `${KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6}\n\n` +
-      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      knowledgeCoverageAtomContextContract(atomIndexVersion)
     : KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6;
   if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
@@ -646,7 +664,7 @@ export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
     return null;
   }
   if (!record(value) || !exactKeys(value, [
-    ...(atomIndexVersion === 2 ? ["atomProjection"] : []),
+    ...(atomIndexVersion !== 1 ? ["atomProjection"] : []),
     "evidenceContext",
     "evidenceManifestHash",
     "evidenceUnitIndex",
@@ -656,8 +674,7 @@ export function decodeKnowledgeCoverageScopePromptV6(input: Readonly<{
     "taskReminder",
     "version"
   ]) || value.evidenceManifestHash !== knowledgeAnswerHash(input.evidenceManifest) ||
-    (atomIndexVersion === 2) !==
-      (value.atomProjection === "source_ordered_context_v2") ||
+    value.atomProjection !== knowledgeCoverageAtomProjectionName(atomIndexVersion) ||
     knowledgeAnswerCanonicalJson(value.evidenceContext) !==
       knowledgeAnswerCanonicalJson(knowledgeCoverageEvidenceContextV1(input.evidence)) ||
     value.request !== input.request ||

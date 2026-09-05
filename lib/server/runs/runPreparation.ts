@@ -1520,7 +1520,7 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    ...(knowledgeRequested ? { knowledgeEvidencePackingVersion: 2 as const } : {}),
+    ...(knowledgeRequested ? { knowledgeEvidencePackingVersion: 3 as const } : {}),
     knowledgePlan: decodedKnowledgePlan.plan,
     modelCapabilities,
     modelId: executionModelId,

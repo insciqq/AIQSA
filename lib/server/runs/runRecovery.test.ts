@@ -67,6 +67,7 @@ import {
   type KnowledgeEvidenceDispatchManifestDraft
 } from "../knowledge/evidenceDispatchManifest";
 import type { StoredKnowledgeEvidenceDispatch } from "../knowledge/evidenceDispatchRepository";
+import { KNOWLEDGE_ANSWER_CONTRIBUTION_PROTOCOL_V1, knowledgeAnswerDraftPromptV40 } from "../knowledge/answerGroundingSnapshotV40";
 import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE
@@ -2327,6 +2328,15 @@ describe("run recovery", () => {
     } as const,
     expectedReasoningEfforts: ["high", "high", "medium", "high"],
     snapshotVersion: 37
+  }, {
+    current: true,
+    executionPolicy: {
+      auditorReasoningEffort: "high", draftReasoningEffort: "low", egressDestination: "answer_provider",
+      overriddenRoles: ["selector", "auditor"], providerBindingKey: "answer",
+      selectorReasoningEffort: "medium", supplementReasoningEffort: "low", version: 1
+    } as const,
+    expectedReasoningEfforts: ["high", "high", "medium", "high"],
+    snapshotVersion: 40
   }])("handles persisted V21 snapshot V$snapshotVersion independently of rollout",
     async ({ current, executionPolicy, expectedReasoningEfforts, snapshotVersion }) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
@@ -2344,7 +2354,8 @@ describe("run recovery", () => {
       request: "remember this",
       routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION
     } as const;
-    const primaryPrompt = snapshotVersion === 35 || snapshotVersion === 36 ||
+    const primaryPrompt = snapshotVersion === 40 ? knowledgeAnswerDraftPromptV40(promptInput)
+      : snapshotVersion === 35 || snapshotVersion === 36 ||
       snapshotVersion === 37
       ? knowledgeAnswerDraftPromptV21GlobalReducerV1(promptInput)
       : knowledgeAnswerDraftPromptV21(promptInput);
@@ -2353,7 +2364,9 @@ describe("run recovery", () => {
       evidenceReceiptHash: dispatch.draft.manifestHash,
       maxOutputTokens: KNOWLEDGE_ANSWER_DRAFT_V21_MAX_OUTPUT_TOKENS,
       operation: KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-      ...(snapshotVersion === 37
+      ...(snapshotVersion === 40
+        ? { executionPolicy: executionPolicy!, protocol: KNOWLEDGE_ANSWER_CONTRIBUTION_PROTOCOL_V1 }
+        : snapshotVersion === 37
         ? {
             executionPolicy: executionPolicy!,
             protocol:
@@ -2597,10 +2610,10 @@ describe("run recovery", () => {
                     }],
                     jointFindings: [],
                     unsupportedDimensions: [],
-                    version: 6
+                    ...(snapshotVersion === 40 ? { overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 7 } : { version: 6 })
                   }
                 : current && requests.length === 2
-                  ? { additions: [], version: 1 }
+                  ? { additions: [], ...(snapshotVersion === 40 ? { overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 } : { version: 1 }) }
                 : current && requests.length === 3
                   ? {
                       claims: [{
@@ -2611,16 +2624,16 @@ describe("run recovery", () => {
                       coverage: [{
                         id: "D1",
                         status: "covered",
-                        supportIds: ["C1"]
+                        ...(snapshotVersion === 40 ? { contributionIds: ["C1"] } : { supportIds: ["C1"] })
                       }],
-                      extractIds: [],
+                      ...(snapshotVersion === 40 ? {} : { extractIds: [] }),
                       insufficientReason: "not_applicable",
-                      version: 1
+                      version: snapshotVersion === 40 ? 2 : 1
                     }
                   : current
                     ? {
                         decisions: [{ id: "D1", status: "closed" }],
-                        version: 2
+                        version: snapshotVersion === 40 ? 3 : 2
                       }
                   : {}),
               providerResponseId: `response-v21-${requests.length}`
@@ -2639,27 +2652,27 @@ describe("run recovery", () => {
       expect(dispatch.lifecycle.prepare).toHaveBeenCalledTimes(4);
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(1,
         expect.objectContaining({
-          contractVersion: 6,
+          contractVersion: snapshotVersion === 40 ? 7 : 6,
           ordinal: 2,
-          purpose: "knowledge_coverage_scope_v6"
+          purpose: snapshotVersion === 40 ? "knowledge_coverage_scope_v7" : "knowledge_coverage_scope_v6"
         }));
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(2,
         expect.objectContaining({
-          contractVersion: 1,
+          contractVersion: snapshotVersion === 40 ? 2 : 1,
           ordinal: 3,
-          purpose: "knowledge_coverage_scope_completeness_v1"
+          purpose: snapshotVersion === 40 ? "knowledge_coverage_scope_completeness_v2" : "knowledge_coverage_scope_completeness_v1"
         }));
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(3,
         expect.objectContaining({
-          contractVersion: 21,
+          contractVersion: snapshotVersion === 40 ? 22 : 21,
           ordinal: 4,
-          purpose: "knowledge_grounded_selector_v21"
+          purpose: snapshotVersion === 40 ? "knowledge_grounded_selector_v22" : "knowledge_grounded_selector_v21"
         }));
       expect(dispatch.lifecycle.prepare).toHaveBeenNthCalledWith(4,
         expect.objectContaining({
-          contractVersion: 2,
+          contractVersion: snapshotVersion === 40 ? 3 : 2,
           ordinal: 5,
-          purpose: "knowledge_coverage_scope_closure_v2"
+          purpose: snapshotVersion === 40 ? "knowledge_coverage_scope_closure_v3" : "knowledge_coverage_scope_closure_v2"
         }));
       expect(groundKnowledgeAnswerV5).not.toHaveBeenCalled();
       expect(groundKnowledgeAnswerV21).toHaveBeenCalledWith({ runId, userId });
@@ -2789,11 +2802,15 @@ describe("run recovery", () => {
     expect(harness.state.failed).toEqual([]);
   });
 
-  it("terminalizes zero focused retrieval candidates without answer-provider I/O or retry", async () => {
+  it.each([null, "knowledge_retrieval_aborted", "opensearch_authentication_failed"])(
+    "terminalizes focused retrieval with %s without answer-provider I/O or retry", async (failureCode) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
     const dispatch = knowledgeProviderDispatchRecorder("dispatch");
     vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
-    const execute = vi.fn(async () => focusedKnowledgeZeroCandidateResult());
+    const execute = vi.fn(async () => {
+      if (failureCode) throw new Error(failureCode);
+      return focusedKnowledgeZeroCandidateResult();
+    });
     const refresh = vi.fn<NonNullable<ProviderAdapter["refresh"]>>();
     const stream = vi.fn(async function* () {
       return providerResult;
@@ -2848,10 +2865,11 @@ describe("run recovery", () => {
     expect(stream).not.toHaveBeenCalled();
     expect(harness.state.failed).toEqual([{
       assistantMessageId: "assistant-1",
-      error: {
-        code: "no_retrieval_candidates",
-        message: "No retrieval candidates were found in the ready Knowledge sources."
-      },
+      error: failureCode === "knowledge_retrieval_aborted" ? {
+        code: "opensearch_timeout", message: "Knowledge search timed out. Try again later."
+      } : failureCode === "opensearch_authentication_failed" ? {
+        code: failureCode, message: "Knowledge search access is misconfigured. Contact an administrator."
+      } : { code: "no_retrieval_candidates", message: "No retrieval candidates were found in the ready Knowledge sources." },
       runId
     }]);
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
@@ -2921,7 +2939,7 @@ describe("run recovery", () => {
       assistantMessageId: "assistant-1",
       error: {
         code: "knowledge_retrieval_failed",
-        message: "Knowledge retrieval failed."
+        message: "Knowledge retrieval failed. Try again later or contact an administrator."
       },
       runId
     }]);
@@ -2973,7 +2991,7 @@ describe("run recovery", () => {
     expect(stream).not.toHaveBeenCalled();
     expect(harness.state.failed).toEqual([{
       assistantMessageId: "assistant-1",
-      error: { code: "knowledge_retrieval_failed", message: "Knowledge retrieval failed." },
+      error: { code: "knowledge_retrieval_failed", message: "Knowledge retrieval failed. Try again later or contact an administrator." },
       runId
     }]);
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
@@ -3196,13 +3214,16 @@ describe("run recovery", () => {
       .toBe(true);
   });
 
-  it("terminalizes a recovered Knowledge tool loop with zero evidence without exposing provider text", async () => {
+  it.each([{ failedSearch: false, excludedCount: 0 }, { failedSearch: true, excludedCount: 0 }, { failedSearch: false, excludedCount: 1 }])(
+    "terminalizes recovered Knowledge without provider text or false exhaustive absence: %j", async ({ failedSearch, excludedCount }) => {
     const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
-    const execute = vi.fn(async (call: { id: string; name: string }) => ({
+    const execute = vi.fn(async (call: { id: string; name: string }) => {
+      if (failedSearch) throw new Error("opensearch_authentication_failed");
+      return ({
       ...focusedKnowledgeZeroCandidateResult(),
       callId: call.id,
       name: call.name
-    }));
+    }); });
     const stream = vi.fn(async function* () {
       yield { data: { delta: "UNTRUSTED_PROVIDER_FINAL_TEXT" }, type: "token" } as const;
       return providerResult;
@@ -3235,7 +3256,7 @@ describe("run recovery", () => {
       knowledgeScope: {
         bindings: authorization.admitted.bindings,
         budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-        exclusions: [],
+        exclusions: excludedCount ? [{ count: excludedCount, reason: "binding_budget", resourceType: "source" }] : [],
         knowledgePlan: authorization.scope.knowledgePlan,
         resolvedSourceCount: 1
       },
@@ -3246,9 +3267,14 @@ describe("run recovery", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(stream).toHaveBeenCalledOnce();
-    expect(harness.state.completed?.finalText).toBe(KNOWLEDGE_INSUFFICIENT_MESSAGE);
+    if (excludedCount) {
+      expect(harness.state.completed?.finalText).toContain("1 selected Knowledge resource(s) were excluded");
+      expect(harness.state.completed?.finalText).toContain("cannot establish absence across the full requested scope");
+    } else expect(harness.state.completed?.finalText).toBe(failedSearch ? undefined : KNOWLEDGE_INSUFFICIENT_MESSAGE);
     expect(harness.state.assistantTexts).toEqual([]);
-    expect(harness.state.failed).toEqual([]);
+    expect(harness.state.failed).toEqual(failedSearch ? [expect.objectContaining({ error: {
+      code: "opensearch_authentication_failed", message: "Knowledge search access is misconfigured. Contact an administrator."
+    } })] : []);
   });
 
   it("rebuilds and dispatches an expired non-checkpointed RESERVED attempt exactly once", async () => {

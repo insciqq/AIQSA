@@ -12,7 +12,8 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_CONTRACT_V6,
   KNOWLEDGE_COVERAGE_SCOPE_REPAIR_TASK_REMINDER_V6,
   KNOWLEDGE_COVERAGE_SCOPE_TASK_REMINDER_V6,
-  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
+  knowledgeCoverageAtomContextContract,
+  knowledgeCoverageAtomProjectionName,
   KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
   KNOWLEDGE_COVERAGE_SCOPE_V6_PAYLOAD_VERSION,
   decodeKnowledgeCoverageScopeFailureV6,
@@ -513,13 +514,13 @@ export function knowledgeCoverageScopePromptV6RepairFeedbackV1(input: Readonly<{
     throw new Error("knowledge_coverage_scope_repair_feedback_v1_prompt_invalid");
   }
   return Object.freeze({
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
-      ...(input.atomIndexVersion === 2
-        ? { atomProjection: "source_ordered_context_v2" as const }
+      ...((input.atomIndexVersion ?? 1) !== 1
+        ? { atomProjection: knowledgeCoverageAtomProjectionName(input.atomIndexVersion ?? 1) }
         : {}),
       evidenceContext: knowledgeCoverageEvidenceContextV1(input.evidence),
       evidenceManifestHash: knowledgeAnswerHash(input.evidenceManifest),
@@ -554,9 +555,9 @@ export function decodeKnowledgeCoverageScopePromptV6RepairFeedbackV1(input: Read
   scopePass: "initial" | "repair";
 }> | null {
   const atomIndexVersion = input.atomIndexVersion ?? 1;
-  const expectedSystemPrompt = atomIndexVersion === 2
+  const expectedSystemPrompt = atomIndexVersion !== 1
     ? `${KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_CONTRACT_V1}\n\n` +
-      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      knowledgeCoverageAtomContextContract(atomIndexVersion)
     : KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_CONTRACT_V1;
   if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
@@ -566,7 +567,7 @@ export function decodeKnowledgeCoverageScopePromptV6RepairFeedbackV1(input: Read
     return null;
   }
   if (!record(value) || !exactKeys(value, [
-    ...(atomIndexVersion === 2 ? ["atomProjection"] : []),
+    ...(atomIndexVersion !== 1 ? ["atomProjection"] : []),
     "evidenceContext",
     "evidenceManifestHash",
     "evidenceUnitIndex",
@@ -579,8 +580,7 @@ export function decodeKnowledgeCoverageScopePromptV6RepairFeedbackV1(input: Read
     "taskReminder",
     "validationLimits"
   ]) || value.scopePass !== "initial" && value.scopePass !== "repair" ||
-    (atomIndexVersion === 2) !==
-      (value.atomProjection === "source_ordered_context_v2") ||
+    value.atomProjection !== knowledgeCoverageAtomProjectionName(atomIndexVersion) ||
     value.payloadVersion !== KNOWLEDGE_COVERAGE_SCOPE_V6_PAYLOAD_VERSION ||
     value.repairFeedbackVersion !== KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_VERSION ||
     value.evidenceManifestHash !== knowledgeAnswerHash(input.evidenceManifest) ||

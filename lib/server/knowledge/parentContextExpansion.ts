@@ -1,4 +1,5 @@
 import { KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS } from "./chunking";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import {
   conservativeQwen2TokenUpperBound,
   qwen2BpeTokenCounter
@@ -39,7 +40,7 @@ import type {
  * model-native tokenizer when available (a conservative UTF-8 byte upper
  * bound otherwise). The cap applies to the exact rendered expansion payload,
  * including its labels and separators. Overlapping windows from several
- * primaries are merged by a shared claim set: the same text never ships
+ * primaries are merged by a shared claim set: the same occurrence never ships
  * twice, while every atomic evidence handle and each child hit's ranking
  * survive untouched.
  *
@@ -229,12 +230,11 @@ type PrimaryState = {
 };
 
 type Claims = Readonly<{
-  chunkIds: Set<string>;
-  contentHashes: Set<string>;
+  occurrenceKeys: Set<string>;
 }>;
 
-function claimed(claims: Claims, row: KnowledgeParentContextRow): boolean {
-  return claims.chunkIds.has(row.id) || claims.contentHashes.has(row.contentHash);
+function claimed(claims: Claims, primary: KnowledgeParentExpansionPrimary, row: KnowledgeParentContextRow): boolean {
+  return claims.occurrenceKeys.has(knowledgeEvidenceOccurrenceKeyV1({ ...primary, chunkId: row.id }));
 }
 
 function structuralLabel(primary: KnowledgeParentExpansionPrimary): boolean {
@@ -283,7 +283,7 @@ function peekSide(
       index += direction;
       continue;
     }
-    if (claimed(claims, row)) break;
+    if (claimed(claims, state.primary, row)) break;
     if (row.layoutKind !== "body") {
       const mayBridgeFragmentedStructure = !state.structured && side === "next" &&
         state.structuralBridgeOpen &&
@@ -329,8 +329,7 @@ function takeSide(
   found: Readonly<{ index: number; row: KnowledgeParentContextRow }>,
   unit: KnowledgeParentExpansionUnit
 ): void {
-  claims.chunkIds.add(found.row.id);
-  claims.contentHashes.add(found.row.contentHash);
+  claims.occurrenceKeys.add(knowledgeEvidenceOccurrenceKeyV1({ ...state.primary, chunkId: found.row.id }));
   state.units.push(unit);
   if (!state.structured && side === "next") {
     if (found.row.layoutKind === "body") {
@@ -394,11 +393,11 @@ function interleaveBySource(states: readonly PrimaryState[]): readonly PrimarySt
  * be in final rank order. Section-window units are allocated with per-source
  * round-robin fairness: each primary receives one expansion slot before any
  * primary receives a second. The shared claim set merges overlapping windows
- * so no passage text ships twice across primaries or mechanisms.
+ * so the same passage occurrence ships once across primaries or mechanisms.
  */
 export function assembleKnowledgeParentExpansions(input: Readonly<{
   countTokens: (text: string) => number;
-  excludedContentHashes: ReadonlySet<string>;
+  excludedOccurrenceKeys: ReadonlySet<string>;
   loadFailureCode?: KnowledgeParentContextFailureCode;
   maxTokensPerGroup?: number;
   primaries: readonly KnowledgeParentExpansionPrimary[];
@@ -406,10 +405,9 @@ export function assembleKnowledgeParentExpansions(input: Readonly<{
 }>): ReadonlyMap<string, KnowledgeParentExpansion> {
   const cap = input.maxTokensPerGroup ?? KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS;
   const claims: Claims = {
-    chunkIds: new Set(input.primaries.map((primary) => primary.chunkId)),
-    contentHashes: new Set([
-      ...input.excludedContentHashes,
-      ...input.primaries.map((primary) => primary.contentHash)
+    occurrenceKeys: new Set([
+      ...input.excludedOccurrenceKeys,
+      ...input.primaries.map(knowledgeEvidenceOccurrenceKeyV1)
     ])
   };
   const results = new Map<string, {
@@ -421,8 +419,7 @@ export function assembleKnowledgeParentExpansions(input: Readonly<{
   for (const primary of input.primaries) {
     const legacy = unitsWithinTokenCap(primary.legacyUnits, input.countTokens, cap);
     for (const unit of legacy) {
-      claims.chunkIds.add(unit.chunkId);
-      claims.contentHashes.add(unit.contentHash);
+      claims.occurrenceKeys.add(knowledgeEvidenceOccurrenceKeyV1({ ...primary, chunkId: unit.chunkId }));
     }
     if (primary.sectionId === null) {
       results.set(primary.chunkId, { state: "legacy", units: legacy });

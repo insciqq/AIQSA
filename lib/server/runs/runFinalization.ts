@@ -4,6 +4,7 @@ import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 import type { KnowledgeAnswerV21ContractVersions } from "../knowledge/answerGroundingV21";
+import type { KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 } from "../knowledge/answerGroundingSnapshotV40";
 
 type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
   Pick<
@@ -12,14 +13,15 @@ type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPri
   >;
 
 export type KnowledgeAnswerFinalizationContracts = KnowledgeAnswerContractVersions |
-  KnowledgeAnswerV21ContractVersions;
+  KnowledgeAnswerV21ContractVersions | typeof KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1;
 
 function isKnowledgeAnswerV21Contracts(
   value: KnowledgeAnswerFinalizationContracts
-): value is KnowledgeAnswerV21ContractVersions {
+): value is KnowledgeAnswerV21ContractVersions | typeof KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 {
   return "coverageAuditorContractVersion" in value &&
-    value.coverageAuditorContractVersion === 6 && value.draftContractVersion === 21 &&
-    value.selectorContractVersion === 21 && value.settlementVersion === 6;
+    value.draftContractVersion === 21 &&
+    (value.coverageAuditorContractVersion === 6 && value.selectorContractVersion === 21 && value.settlementVersion === 6 ||
+      value.coverageAuditorContractVersion === 7 && value.selectorContractVersion === 22 && value.settlementVersion === 7);
 }
 
 export type RunCompletionFinalizationResult =

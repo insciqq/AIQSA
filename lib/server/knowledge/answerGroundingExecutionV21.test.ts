@@ -16,7 +16,7 @@ import {
   type KnowledgeAnswerOperationExecutionV21
 } from "./answerGroundingExecutionV21";
 import {
-  executeKnowledgeAnswerGroundingV21 as executeKnowledgeAnswerGroundingV21ScopeV6
+  executeKnowledgeAnswerGroundingV21 as executeVersionedKnowledgeAnswerGrounding
 } from "./answerGroundingExecutionV21ScopeV6";
 import {
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
@@ -24,7 +24,8 @@ import {
   KNOWLEDGE_GROUNDED_SELECTOR_FINAL_OPERATION_V17,
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17,
   decodeKnowledgeAnswerOperationRequestSnapshotV21,
-  isCurrentKnowledgeAnswerOperationSnapshotV21
+  type KnowledgeAnswerOperationRequestSnapshotV21,
+  type KnowledgeAnswerOperationRequestSnapshotV21V39
 } from "./answerGroundingV21";
 import {
   KNOWLEDGE_COVERAGE_AUDITOR_OPERATION,
@@ -56,6 +57,15 @@ import {
 } from "./answerGroundingSelectorV21";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from
   "./groundingExecutionPolicy";
+
+// These regressions attest the immutable V39 contract. V40 product-path cases
+// live in answerGroundingExecutionV40.test.ts.
+function executeKnowledgeAnswerGroundingV21ScopeV6(input: Parameters<typeof executeVersionedKnowledgeAnswerGrounding>[0]) {
+  return executeVersionedKnowledgeAnswerGrounding({ ...input, snapshotVersion: input.snapshotVersion ?? 39 });
+}
+function isHistoricalSnapshotV39(value: KnowledgeAnswerOperationRequestSnapshotV21): value is KnowledgeAnswerOperationRequestSnapshotV21V39 {
+  return value.version === 39;
+}
 
 const request = "Explain alpha and beta.";
 const usage = Object.freeze({
@@ -974,12 +984,12 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
-    expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
+    expect(snapshots.every(isHistoricalSnapshotV39)).toBe(true);
     expect(snapshots[1]!.systemPrompt).toContain("lowest answer-level abstraction");
     expect(snapshots[1]!.systemPrompt).toContain("put exactly one supplied Q ID");
     expect(snapshots[3]!.systemPrompt).toContain("answer-level granularity");
     const acceptedScopeHash = knowledgeAnswerHash(acceptedScope(true));
-    expect(snapshots.map((snapshot) => isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot)
+    expect(snapshots.map((snapshot) => isHistoricalSnapshotV39(snapshot)
       ? snapshot.coverageScopePayloadHash
       : null)).toEqual([null, null, acceptedScopeHash, acceptedScopeHash,
         acceptedScopeHash]);
@@ -1079,7 +1089,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     const acceptedScopeHash = knowledgeAnswerHash(acceptedScope(false));
     expect(snapshots.slice(2).every((snapshot) =>
-      isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
+      isHistoricalSnapshotV39(snapshot) &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
     expect(JSON.parse(snapshots[5]!.userPrompt)).toMatchObject({
       targetEvidenceAtomIndex: {
@@ -1442,7 +1452,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       coverageScopePayloadHash: initialScopeHash
     });
     expect(snapshots.slice(3).every((snapshot) =>
-      isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
+      isHistoricalSnapshotV39(snapshot) &&
       snapshot.coverageScopePayloadHash === mergedScopeHash)).toBe(true);
     expect(JSON.parse(snapshots[3]!.userPrompt)).toMatchObject({
       coverageScope: {
@@ -2070,7 +2080,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     const snapshots = [...recorder.entries.values()].map(({ acceptedRequest }) =>
       decodeKnowledgeAnswerOperationRequestSnapshotV21(acceptedRequest)!);
     expect(snapshots).toHaveLength(8);
-    expect(snapshots.every(isCurrentKnowledgeAnswerOperationSnapshotV21)).toBe(true);
+    expect(snapshots.every(isHistoricalSnapshotV39)).toBe(true);
     const packed = manifest();
     expect(decodeKnowledgeCoverageScopePromptV6RecallMapV1({
       atomIndexVersion: KNOWLEDGE_COVERAGE_ATOM_INDEX_VERSION_V2,
@@ -2285,7 +2295,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
       const snapshot = decodeKnowledgeAnswerOperationRequestSnapshotV21(
         recorder.entries.get(ordinal)?.acceptedRequest
       );
-      return snapshot && isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
+      return snapshot && isHistoricalSnapshotV39(snapshot) &&
         snapshot.coverageScopePayloadHash === initialScopeHash;
     })).toBe(true);
   });
@@ -2632,7 +2642,7 @@ describe("V21 positive-finding Coverage Scope execution", () => {
     });
     const acceptedScopeHash = knowledgeAnswerHash(acceptedScope(false));
     expect(snapshots.slice(3).every((snapshot) =>
-      isCurrentKnowledgeAnswerOperationSnapshotV21(snapshot) &&
+      isHistoricalSnapshotV39(snapshot) &&
       snapshot.coverageScopePayloadHash === acceptedScopeHash)).toBe(true);
   });
 

@@ -10,10 +10,12 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_V4_LIMITS,
   knowledgeCoverageEvidenceAtomIndex,
   knowledgeCoverageEvidenceAtomIndexV1,
+  knowledgeCoverageEvidenceAtomIndexV3,
   knowledgeCoverageEvidenceContextV1,
   knowledgeCoverageEvidenceFromManifestV4,
   type KnowledgeCoverageEvidenceAtomContextRoleV2,
   type KnowledgeCoverageEvidenceAtomIndexVersion,
+  type KnowledgeCoverageEvidenceAtomV3,
   type KnowledgeCoverageEvidenceV4
 } from "./coverageScopeV4";
 
@@ -59,7 +61,11 @@ export type KnowledgeCoverageEvidenceUnitIndexV2 = Readonly<{
 
 export type KnowledgeCoverageEvidenceUnitIndex =
   | KnowledgeCoverageEvidenceUnitIndexV1
-  | KnowledgeCoverageEvidenceUnitIndexV2;
+  | KnowledgeCoverageEvidenceUnitIndexV2
+  | Readonly<{ units: readonly Readonly<{
+    atoms: readonly Omit<KnowledgeCoverageEvidenceAtomV3, "handle">[];
+    handle: string;
+  }>[]; version: 3 }>;
 
 export type KnowledgeCoverageEvidenceMapItemV1 = Readonly<{
   answerAtomIds: readonly string[];
@@ -233,6 +239,14 @@ export function knowledgeCoverageEvidenceUnitIndex(
   evidence: readonly KnowledgeCoverageEvidenceV5[],
   atomIndexVersion: KnowledgeCoverageEvidenceAtomIndexVersion
 ): KnowledgeCoverageEvidenceUnitIndex {
+  if (atomIndexVersion === 3) {
+    const index = knowledgeCoverageEvidenceAtomIndexV3(evidence);
+    return Object.freeze({ units: Object.freeze(evidence.map(({ handle }) => Object.freeze({
+      atoms: Object.freeze(index.items.filter((atom) => atom.handle === handle)
+        .map(({ contextRole, id, occurrence, text }) => Object.freeze({ contextRole, id, occurrence, text }))),
+      handle
+    }))), version: 3 });
+  }
   return atomIndexVersion === 2
     ? knowledgeCoverageEvidenceUnitIndexV2(evidence)
     : knowledgeCoverageEvidenceUnitIndexV1(evidence);

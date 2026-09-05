@@ -731,7 +731,7 @@ function decodeProviderDispatchRecoveryRequest(
     !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
     value.knowledgeEvidencePackingVersion !== undefined &&
-      value.knowledgeEvidencePackingVersion !== 2 ||
+      value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 ||
     !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&
