@@ -318,6 +318,16 @@ function ProjectSettingsDialogContentV2({
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [deleteProjectName, setDeleteProjectName] = useState("");
   const [discardOpen, setDiscardOpen] = useState(false);
+  const clearCandidatePicker = () => {
+    setCandidates([]);
+    setCandidateNextCursor(null);
+    setCandidateError(null);
+    setCandidateLoading(true);
+    setGrantId("");
+    setResourceId("");
+    setGrantAddConfirmation(null);
+    setResourceConfirmation(null);
+  };
   const previousProjectRef = useRef(project);
   const generalDirty = name !== project.name ||
     description !== project.description ||
@@ -660,7 +670,10 @@ function ProjectSettingsDialogContentV2({
               data-selected={tab === item.id}
               key={item.id}
               type="button"
-              onClick={() => setTab(item.id)}
+              onClick={() => {
+                if (tab !== item.id) clearCandidatePicker();
+                setTab(item.id);
+              }}
             ><UiV2Icon name={item.icon} /> {item.label}</button>
           ))}
         </nav>
@@ -900,8 +913,8 @@ function ProjectSettingsDialogContentV2({
                 }}>
                   <select aria-label="Principal type" value={grantKind} onChange={(event) => {
                     const kind = event.target.value as "group" | "user";
+                    clearCandidatePicker();
                     setGrantKind(kind);
-                    setGrantId("");
                     setCandidateQuery("");
                     if (kind === "group" && grantRole === "OWNER") setGrantRole("CONTRIBUTOR");
                   }}><option value="user">Person</option><option value="group">Group</option></select>
@@ -1028,7 +1041,7 @@ function ProjectSettingsDialogContentV2({
                   event.preventDefault();
                   void requestResourceAdd();
                 }}>
-                  <select aria-label="Resource type" value={resourceType} onChange={(event) => { setResourceType(event.target.value as typeof resourceType); setResourceId(""); setCandidateQuery(""); setResourceConfirmation(null); }}><option value="model">Model</option><option value="search">Search</option><option value="knowledge">Knowledge</option><option value="assistant">Assistant</option><option value="skill">Skill</option><option value="mcp">MCP</option></select>
+                  <select aria-label="Resource type" value={resourceType} onChange={(event) => { clearCandidatePicker(); setResourceType(event.target.value as typeof resourceType); setCandidateQuery(""); }}><option value="model">Model</option><option value="search">Search</option><option value="knowledge">Knowledge</option><option value="assistant">Assistant</option><option value="skill">Skill</option><option value="mcp">MCP</option></select>
                   <input aria-label="Search resources" placeholder={`Search ${resourceType}s`} value={candidateQuery} onChange={(event) => { setCandidateQuery(event.target.value); setResourceId(""); }} />
                   <div className="v2-project-picker" role="listbox" aria-label={`${resourceType} candidates`} onKeyDown={movePickerFocus}>
                     {candidateLoading && candidates.length === 0 ? <small>Searching…</small> : candidateError && candidates.length === 0 ? <small role="alert">{candidateError}</small> : candidates.length === 0 ? <small>No matching Project-safe resources.</small> : candidates.map((candidate) => (

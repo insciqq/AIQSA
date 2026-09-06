@@ -345,6 +345,36 @@ describe("Project workspace surfaces", () => {
     );
   });
 
+  it.each(["tab", "principal", "resource"] as const)(
+    "removes old directory choices immediately when the %s kind changes",
+    async (change) => {
+      apiMocks.loadProjectCandidates.mockResolvedValueOnce({
+        items: [{ id: "candidate-old", label: "Previous choice", type: change === "resource" ? "model" : "user" }],
+        nextCursor: "old-page"
+      }).mockImplementation(() => new Promise(() => undefined));
+      render(<ProjectSettingsDialogV2 controller={{
+        ...controller(), settingsInitialTab: change === "resource" ? "resources" : "members"
+      }} />);
+      const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+      const previous = await within(dialog).findByRole("option", { name: "Previous choice" });
+      fireEvent.click(previous);
+
+      if (change === "tab") {
+        fireEvent.click(within(dialog).getByRole("button", { name: "Resources" }));
+      } else {
+        fireEvent.change(within(dialog).getByRole("combobox", {
+          name: change === "principal" ? "Principal type" : "Resource type"
+        }), { target: { value: change === "principal" ? "group" : "skill" } });
+      }
+
+      expect(within(dialog).queryByRole("option", { name: "Previous choice" })).toBeNull();
+      expect(within(dialog).queryByRole("button", { name: "Load more" })).toBeNull();
+      expect(within(dialog).getByRole("button", {
+        name: change === "principal" ? "Add access" : "Add to Project"
+      })).toBeDisabled();
+    }
+  );
+
   it("preserves the active tab and dirty fields through a background Project revision", async () => {
     const first = controller();
     const view = render(<ProjectSettingsDialogV2 controller={first} />);

@@ -5,6 +5,7 @@ import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { prisma } from "../prisma";
+import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { createPrismaChatRepository } from "./prismaRepository";
@@ -376,6 +377,40 @@ describe("Prisma-backed chat repository", () => {
           where: { id: "installation" }
         });
       }
+    });
+  });
+
+  it("moves an unfiled retained chat with the production Memory hooks", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma, {
+        memorySourceHooks: defaultMemorySourceMutationHooks
+      });
+      const folder = await repository.createFolder({ name: "Filed source", userId });
+      const chat = await prisma.chat.create({
+        data: { defaultProviderModelId: fakeProviderModelId, title: "Unfiled source", userId }
+      });
+      const message = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Retained source"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: message.id }, where: { id: chat.id }
+      });
+
+      await expect(repository.updateChat({
+        chatId: chat.id, folderId: folder!.id, userId
+      })).resolves.toMatchObject({ folderId: folder!.id });
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { activeLeafMessageId: true, memoryBranchGeneration: true, memorySourceRevision: true },
+        where: { id: chat.id }
+      })).resolves.toEqual({
+        activeLeafMessageId: message.id, memoryBranchGeneration: 0, memorySourceRevision: 1
+      });
+      await expect(prisma.message.count({ where: { chatId: chat.id } })).resolves.toBe(1);
     });
   });
 

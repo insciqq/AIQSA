@@ -94,7 +94,7 @@ function invalidationPredicate(event: MemoryRetainedSourceMutationEvent): Prisma
       AND scope."targetIdSnapshot" = ${event.previous.folderId}
     `);
   }
-  return Prisma.join(branches, " OR ");
+  return branches.length > 0 ? Prisma.join(branches, " OR ") : null;
 }
 
 async function affectedEvidence(
