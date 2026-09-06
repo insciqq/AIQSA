@@ -1630,6 +1630,7 @@ async function recoverCheckpointedToolLoop(
   const usageAttributions: RunUsageAttribution[] = [];
   let answerRoundUsage = [...run.checkpoint.answerRoundUsage];
   let usageEvidenceTrusted = true;
+  let persistCancelledUsage: (() => Promise<void>) | undefined;
   let currentProviderResponseId = run.providerResponseId;
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
   // Terminal Workspace settlement for a recovered turn that stops or fails:
@@ -2056,6 +2057,8 @@ async function recoverCheckpointedToolLoop(
         context.usageAccountedToolCallIds.clear();
       }
     }
+
+    persistCancelledUsage = () => persistCumulativeUsage();
 
     async function recordAnswerRoundUsage(
       usage: ModelRunUsage,
@@ -2729,6 +2732,7 @@ async function recoverCheckpointedToolLoop(
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
       await settleRecoveredWorkspaceOnExit("cancelled");
       await tokenBuffer?.flush().catch(() => undefined);
+      if (usageEvidenceTrusted) await persistCancelledUsage?.();
       return;
     }
     await settleRecoveredWorkspaceOnExit("failed");

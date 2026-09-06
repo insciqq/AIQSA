@@ -27,9 +27,11 @@ import {
   quietButton
 } from "@/components/admin/adminPrimitives";
 import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
+import { adminMcpAttention } from "@/components/admin/adminMcpAttention";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import type {
   AdminMcpEditorMode,
+  AdminMcpTask,
   AdminMcpSectionState
 } from "@/components/admin/useAdminMcpSectionState";
 import type { AdminMcpServer } from "@/lib/contracts/mcp";
@@ -114,7 +116,7 @@ function ServerCatalog({
 }: Readonly<{
   controller: AdminMcpController;
   onCreate(): void;
-  onSelect(serverId: string): void;
+  onSelect(serverId: string, task?: AdminMcpTask): void;
   query: string;
   setQuery(value: string): void;
 }>) {
@@ -159,19 +161,19 @@ function ServerCatalog({
             {visible.map((server) => {
               const current = server.id === selected?.id;
               const activationStage = adminMcpActivationStage(server);
+              const attention = adminMcpAttention(server);
               return (
+                <div className="min-w-0" key={server.id} role="listitem">
                 <button
                   aria-current={current ? "true" : undefined}
-                  className={`flex min-h-touch min-w-0 items-center gap-2 px-3 py-2 text-left ${focusRing} ${
+                  className={`flex min-h-touch w-full min-w-0 items-center gap-2 px-3 py-2 text-left ${focusRing} ${
                     server.archivedAt
                       ? "border-l-2 border-l-critical/55 bg-critical/5"
                       : adminAvailabilityRowClass(server.enabled)
                   } ${current ? "ring-1 ring-inset ring-proof/45" : "hover:bg-control-hover"}`}
                   data-admin-task-opener="true"
                   data-resource-availability-row={server.archivedAt ? undefined : server.enabled ? "enabled" : "disabled"}
-                  key={server.id}
-                  onClick={() => onSelect(server.id)}
-                  role="listitem"
+                  onClick={() => onSelect(server.id, attention?.task)}
                   type="button"
                 >
                   <span className="min-w-0 flex-1">
@@ -183,16 +185,23 @@ function ServerCatalog({
                         {adminMcpActivationVerb(server)} · {activationStage.label}
                       </span>
                     ) : null}
-                    {server.activation?.stage === "failed" ? (
-                      <span className="mt-0.5 inline-flex items-center gap-1 text-metadata font-medium text-critical">
+                    {attention ? (
+                      <span className="mt-0.5 inline-flex items-start gap-1 text-metadata font-medium text-caution">
                         <CircleAlert aria-hidden="true" className="size-2.5" />
-                        Activation failed · review and retry
+                        {attention.label}
                       </span>
                     ) : null}
                   </span>
                   <StatusPill server={server} />
                   <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-ink-muted" />
                 </button>
+                {attention?.href ? (
+                  <a aria-label={`${attention.action} ${server.name} for checking changes`} className={`${quietButton} !min-h-touch ml-3 text-caution`} href={attention.href}>
+                    {attention.action}
+                    <span className="sr-only"> {server.name} for checking changes</span>
+                  </a>
+                ) : null}
+                </div>
               );
             })}
           </div>
@@ -342,18 +351,18 @@ function ServerEditor({
       ? oauth ? "Preparing authorization…" : "Starting activation…"
       : "Saving…"
     : creating
-      ? oauth ? "Continue to authorization" : "Activate"
-      : "Save draft";
+      ? oauth ? "Continue to authorization" : "Test & Save"
+      : "Test & Save";
 
   return (
     <section className="grid min-w-0 gap-5 p-4 sm:p-6">
       <div>
-        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Mutable installation draft</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">MCP settings</p>
         <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">{creating ? "Review MCP server" : "Edit MCP server"}</h3>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">
           {imported
             ? "The configuration was parsed into a supported source and typed fields. Review it before activation."
-            : "Saving invalidates prior draft-test evidence. An active revision keeps running until the next exact tested identity is activated."}
+            : "Test & Save checks the connection and tools, then applies your changes. If the check fails, the current configuration keeps running."}
         </p>
       </div>
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
@@ -465,13 +474,15 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
         else actions.openServer();
       }
     } else if (mode === "edit" && selected) {
-      const saved = await controller.actions.update(selected.id, {
+      const saved = await controller.actions.save(selected.id, {
         description: form.description,
         draft: form.draft,
+        expectedUpdatedAt: form.expectedUpdatedAt,
         name: form.name.trim(),
         ...(sharedValues ? { sharedValues } : {})
       });
-      if (saved) actions.openTask("overview");
+      if (saved.applied) actions.openTask("overview");
+      else if (saved.updatedAt) actions.setForm({ ...form, expectedUpdatedAt: saved.updatedAt });
     }
   };
 
@@ -525,9 +536,10 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
               actions.startImport,
               ["mcp-server-draft", "mcp-one-time-values"]
             )}
-            onSelect={(serverId) => requestDiscard(() => {
+            onSelect={(serverId, nextTask) => requestDiscard(() => {
               controller.actions.select(serverId);
-              actions.openServer();
+              if (nextTask) actions.openTask(nextTask);
+              else actions.openServer();
             }, ["mcp-server-draft", "mcp-one-time-values"])}
             query={query}
             setQuery={actions.setQuery}

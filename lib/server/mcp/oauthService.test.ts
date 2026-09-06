@@ -96,7 +96,7 @@ class MemoryOAuthRepository implements McpOAuthRepository {
         : null,
       externalAccountLabel: input.externalAccountLabel,
       id,
-      policy: resolvedPolicy,
+      policy: structuredClone(resolvedPolicy),
       policyFingerprint: input.policyFingerprint,
       purpose: input.purpose,
       scopes: input.tokens.scope?.split(" ") ?? this.policy.requestedScopes,
@@ -880,6 +880,29 @@ describe("generic MCP OAuth service", () => {
       state: "ready",
       userId: "admin-1"
     });
+
+    Object.assign(repository.policy, { configurationIdentity: "edited-draft-hash" });
+    const validationProvider = await service.createValidationProvider({
+      redirectUri, serverId: "server-1", userId: "admin-1"
+    });
+    expect(validationProvider).not.toBeNull();
+    await expect(validationProvider!.tokens()).resolves.toMatchObject({ access_token: "access-1" });
+    expect(repository.validationPrepareCalls).toBe(1);
+    expect(fixture.dcrCalls).toBe(1);
+
+    for (const changed of [
+      { requestedScopes: ["new.scope"] },
+      { serverUrl: "https://replacement.fixture.test/mcp" },
+      { allowPrivateNetwork: true },
+      { redirectUri: "https://aiqsa.fixture.test/another-callback" }
+    ]) {
+      const prior = { ...repository.policy };
+      Object.assign(repository.policy, changed);
+      await expect(service.createValidationProvider({
+        redirectUri: repository.policy.redirectUri, serverId: "server-1", userId: "admin-1"
+      })).resolves.toBeNull();
+      Object.assign(repository.policy, prior);
+    }
   });
 
   it("refuses callback completion after the bound revision stops being eligible", async () => {

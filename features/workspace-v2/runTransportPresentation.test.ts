@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE } from "@/lib/contracts/runs";
 import {
   runTransportStateV2,
   transportLostForMessageV2
@@ -24,6 +25,28 @@ function present(
 }
 
 describe("Run transport presentation v2", () => {
+  it("restores Auto recovery from the exact persisted discovery failure after reload", () => {
+    const slice = runTransportStateV2({
+      activeChatStreaming: false,
+      interruptedRun: null,
+      message: { ...streamingMessage, status: "error", errorMessage: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE },
+      persistedRunStatus: null
+    });
+    expect(presentRunLifecycleV2({ ...slice, content: "", events: [], runId: "run-1" })).toMatchObject({
+      kind: "terminal_error",
+      failure: { code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, recovery: "retry", message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE }
+    });
+  });
+
+  it.each(["complete", "streaming"] as const)("ignores a stale failure message while %s", (status) => {
+    const slice = runTransportStateV2({
+      activeChatStreaming: status === "streaming", interruptedRun: null,
+      message: { ...streamingMessage, status, errorMessage: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE },
+      persistedRunStatus: null
+    });
+    expect(slice.failure).toBeUndefined();
+  });
+
   it("matches a recorded transport loss by assistant message id or run id", () => {
     const interrupted = { assistantMessageId: "assistant-1", runId: null };
     expect(transportLostForMessageV2(interrupted, { id: "assistant-1" })).toBe(true);

@@ -821,6 +821,32 @@ describe("MCP handler input validation", () => {
     });
   });
 
+  it("binds Test & Save to the current administrator and the supplied settings version", async () => {
+    const repository = new MemoryMcpRepository();
+    const catalog = vi.spyOn(repository, "listAdminServers");
+    const onRuntimeChanged = vi.fn();
+    const handler = createAdminMcpDraftTestHandler({ ...deps(repository), onRuntimeChanged });
+    const body = { expectedUpdatedAt: "2026-07-22T00:00:00.000Z", publish: true, sharedValues: { key: "fixture-shared-value" } };
+    const response = await handler(request({ body, contentType: "application/json", user: "admin" }), routeContext);
+    expect(response.status).toBe(200);
+    expect(repository.testDraftCalls).toEqual([{ ...body, oneTimeValues: {}, serverId: SERVER_ID, validationUserId: "admin" }]);
+    expect(catalog).toHaveBeenCalledWith("admin");
+    expect(onRuntimeChanged).toHaveBeenCalledOnce();
+    expect(await response.text()).not.toContain("fixture-shared-value");
+  });
+
+  it.each([
+    { publish: true },
+    { publish: "true", expectedUpdatedAt: "2026-07-22T00:00:00.000Z" },
+    { publish: true, expectedUpdatedAt: "invalid" },
+    { sharedValues: { key: "fixture-value" } }
+  ])("rejects invalid Test & Save input before contacting MCP: %j", async (body) => {
+    const repository = new MemoryMcpRepository();
+    const handler = createAdminMcpDraftTestHandler(deps(repository));
+    expect((await handler(request({ body, contentType: "application/json", user: "admin" }), routeContext)).status).toBe(400);
+    expect(repository.testDraftCalls).toEqual([]);
+  });
+
   it("activates and rolls back through explicit lifecycle actions", async () => {
     const repository = new MemoryMcpRepository();
     const activate = createAdminMcpActivateHandler(deps(repository));

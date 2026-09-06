@@ -396,7 +396,13 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
       connectionVersion: 1,
       credentialId,
       credentialVersionId,
-      evidence: { detail: "ok" },
+      evidence: {
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: [],
+        upstreamModelId: preparingEmbeddingConfiguration.upstreamModelId,
+        embedding: { probeVersion: 1, document: true, query: true, dimensions: preparingEmbeddingConfiguration.embedding.targetDimension }
+      },
       modelVersion: 1,
       providerModelId: modelId,
       status: "available"
@@ -2536,6 +2542,67 @@ describe("PREPARING run orchestration", () => {
       } finally {
         await fixture.cleanup();
       }
+    });
+  });
+
+  it("keeps Memory off on first send, follow-up and regeneration while retaining chat history", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await prisma.userMemorySettings.update({
+        data: { useMemoryFacts: true, referenceChatHistory: true, learnAutomatically: true },
+        where: { userId }
+      });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const fact = await saveExplicitFact(userId, scope.id, "My preferred editor is Vim.");
+      await classifyExplicitFact(userId, fact.versionId);
+      const { id: chatId } = await prisma.chat.create({
+        data: { title: "Memory off", memoryMode: "EXCLUDED", userId }
+      });
+      const request = normalizedRequest(chatId, "What is my preferred editor?");
+      const repository = createPrismaRunRepository(prisma);
+      const memoryMaterializer: NonNullable<Parameters<typeof repository.createRun>[0]["memoryMaterializer"]> =
+        (personalContext, memoryActionAnswerResult) => {
+          expect(personalContext).toBeNull();
+          const finalRequest = {
+            ...request,
+            prompt: { ...request.prompt, memoryActionAnswerResult }
+          };
+          return {
+            contextTruncation: null,
+            normalizedRequest: finalRequest,
+            providerRequest: { ...finalRequest, attachments: [] },
+            providerRequestPreview: {}
+          };
+        };
+      const base = {
+        chatId, content: request.content, memoryMaterializer, modelId: request.modelId,
+        normalizedRequest: request, provider: request.provider, providerRequestPreview: {}, userId
+      };
+      const settle = async (created: Awaited<ReturnType<typeof repository.createRun>>) => {
+        expect(created.materializedRequest?.normalizedRequest.personalContext).toBeUndefined();
+        const binding = await prisma.modelRunMemoryBinding.findUniqueOrThrow({
+          where: { modelRunId: created.runId }
+        });
+        expect(binding).toMatchObject({ outcome: "DISABLED", contextTokenCount: 0 });
+        expect(await prisma.modelRunMemoryItem.count({ where: { bindingId: binding.id } })).toBe(0);
+        await expect(repository.completeRun({
+          assistantMessageId: created.assistantMessageId, chatId, estimatedCostMicros: null,
+          finalText: "No personal memory used.", modelId: request.modelId, provider: request.provider,
+          runId: created.runId, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, userId
+        })).resolves.toBe(true);
+      };
+      const first = await repository.createRun({
+        ...base, expectedActiveLeafId: null
+      });
+      await settle(first);
+      const next = await repository.createRun({ ...base, expectedActiveLeafId: first.assistantMessageId });
+      await settle(next);
+      const regenerated = await repository.createRegenerationRun({
+        ...base, preSendAssistantMessageId: next.assistantMessageId, userMessageId: next.userMessageId
+      });
+      await settle(regenerated);
+      expect(await prisma.message.count({ where: { chatId } })).toBe(5);
+      expect(await prisma.memoryFactVersion.count({ where: { userId } })).toBe(1);
+      expect(await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({ memoryMode: "EXCLUDED" });
     });
   });
 

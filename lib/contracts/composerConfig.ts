@@ -25,6 +25,7 @@ export type ComposerConfigKnowledgeSource = Readonly<{
 }>;
 
 export type ComposerConfigMcpServer = Readonly<{
+  attention?: "needs_setup" | "needs_authorization" | "reauthorization_required" | "unavailable" | null;
   description: string;
   enabled: boolean;
   id: string;

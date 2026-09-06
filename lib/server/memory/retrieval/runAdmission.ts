@@ -2351,6 +2351,9 @@ export function createMemoryRunRetrievalService(
       if (input.expected.chatMemoryMode === "TEMPORARY") {
         return emptyAttempt(input.expected, "DISABLED", "temporary_chat");
       }
+      if (input.expected.chatMemoryMode === "EXCLUDED") {
+        return emptyAttempt(input.expected, "DISABLED", "chat_memory_off");
+      }
       const controlCache = input.controlCache ?? {};
       const deadline = createMemoryAdmissionDeadline(
         controlCache,

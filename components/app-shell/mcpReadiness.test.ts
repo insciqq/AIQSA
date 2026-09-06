@@ -3,10 +3,21 @@ import type { UserMcpServer } from "@/lib/contracts/mcp";
 import {
   hasTransitioningMcpServer,
   isMcpReadinessTransitioning,
+  mcpSetupAttention,
   mcpReadinessPresentation
 } from "./mcpReadiness";
 
 describe("MCP readiness presentation", () => {
+  it("surfaces initial setup and expired OAuth even before a server is enabled", () => {
+    const server: Pick<UserMcpServer, "fields" | "oauthState" | "readiness"> = { fields: [], oauthState: null, readiness: "disabled" };
+    expect(mcpSetupAttention(server)).toBeNull();
+    expect(mcpSetupAttention({ ...server, fields: [{ configured: false } as UserMcpServer["fields"][number]] })).toBe("needs_setup");
+    expect(mcpSetupAttention({ ...server, oauthState: "disconnected" })).toBe("needs_authorization");
+    expect(mcpSetupAttention({ ...server, oauthState: "reauthorization_required" })).toBe("reauthorization_required");
+    expect(mcpSetupAttention({ ...server, oauthState: "ready", readiness: "idle" })).toBeNull();
+    expect(mcpSetupAttention({ ...server, readiness: "starting" })).toBeNull();
+    expect(mcpSetupAttention({ ...server, readiness: "unavailable" })).toBe("unavailable");
+  });
   it("keeps progress, actionable setup, failure, and ready states distinct", () => {
     expect(mcpReadinessPresentation("queued")).toEqual({ kind: "progress", label: "Activating" });
     expect(mcpReadinessPresentation("starting")).toEqual({ kind: "progress", label: "Starting runtime" });

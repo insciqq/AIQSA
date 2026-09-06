@@ -32,6 +32,7 @@ type FixtureOptions = Readonly<{
   instructions?: string;
   listTools?: (cursor: string | undefined) => ListToolsResult | Promise<ListToolsResult>;
   ping?: (signal: AbortSignal) => Promise<void>;
+  serverVersion?: string;
 }>;
 
 type Fixture = Readonly<{
@@ -94,7 +95,7 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
 async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const requestHeaders: Fixture["requestHeaders"] = [];
   const server = new Server(
-    { name: "aiqsa-test-mcp", title: "AIQSA test MCP", version: "1.0.0" },
+    { name: "aiqsa-test-mcp", title: "AIQSA test MCP", version: options.serverVersion ?? "1.0.0" },
     {
       capabilities: {
         ...(options.enableLogging ? { logging: {} } : {}),
@@ -220,6 +221,59 @@ describe("MCP tool argument schema validation", () => {
 });
 
 describe("McpClientSession", () => {
+  it("preserves an empty server version through initialize, discovery, and a read call", async () => {
+    const fixture = await startFixture({ serverVersion: "" });
+    const session = createSession(fixture);
+    try {
+      await session.initialize();
+      expect(session.serverEvidence?.implementation).toEqual({
+        name: "aiqsa-test-mcp", title: "AIQSA test MCP", version: ""
+      });
+      expect((await session.listAllTools()).map(({ name }) => name)).toEqual(["echo"]);
+      await expect(session.callTool("echo", {})).resolves.toMatchObject({
+        isError: false, text: ["echo"]
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([
+    { label: "missing", value: undefined },
+    { label: "null", value: null },
+    { label: "number", value: 0 },
+    { label: "boolean", value: false },
+    { label: "object", value: {} }
+  ])("rejects a $label server version on the wire", async ({ value }) => {
+    const fixture = await startFixture();
+    const session = createSession(fixture, {
+      async fetch(url, init) {
+        const request = new Request(url, init);
+        const initializing = request.method === "POST" &&
+          (await request.clone().json()).method === "initialize";
+        const response = await fetch(request);
+        if (!initializing) {
+          return response;
+        }
+        const payload = await response.json();
+        if (value === undefined) delete payload.result.serverInfo.version;
+        else payload.result.serverInfo.version = value;
+        const headers = new Headers(response.headers);
+        headers.delete("content-length");
+        return new Response(JSON.stringify(payload), { headers, status: response.status });
+      }
+    });
+    try {
+      await expect(session.initialize()).rejects.toMatchObject({
+        code: "mcp_initialize_failed", operation: "initialize"
+      });
+      expect(session.serverEvidence).toBeNull();
+      await expect(session.listAllTools()).rejects.toBeInstanceOf(McpClientSessionError);
+    } finally {
+      await session.close();
+    }
+  });
+
   it("pings the real local protocol transport without reading tools or calling one", async () => {
     const listTools = vi.fn(() => ({ tools: [] }));
     const callTool = vi.fn(() => ({ content: [] }));

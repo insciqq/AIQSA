@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
+import { McpSemanticRouterError } from "../mcp/router";
+import type { McpDiscoveryState } from "../mcp/runPlan";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import type {
   NormalizedRunRequest,
@@ -6789,7 +6791,10 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("semantically routes a fresh recovered Auto discovery call and attributes its usage", async () => {
+  it.each([
+    { mode: "single", goals: ["remember this detail"] },
+    { mode: "batch", goals: ["a".repeat(400), "remember this detail"] }
+  ])("routes all fresh recovered $mode goals and attributes usage once", async ({ goals }) => {
     const requests: ProviderRunRequest[] = [];
     const snapshot = normalizedToolRequest().mcp!;
     const catalog = {
@@ -6825,17 +6830,7 @@ describe("run recovery", () => {
       ok: true as const,
       snapshot
     }));
-    const discovery = {
-      catalog,
-      epochs: [{
-        epoch: 1,
-        goal: "remember this detail",
-        modelRunToolCallId: "stored-find-tools-call",
-        roundIndex: 1,
-        toolIds: [recoveryToolName]
-      }],
-      version: 2 as const
-    };
+    const discovery: McpDiscoveryState = { catalog, epochs: [], version: 2 };
     const harness = createHarness({
       mcp: {
         materialize,
@@ -6860,30 +6855,41 @@ describe("run recovery", () => {
         }
       }
     });
-    const appendEpoch = vi.fn(async () => ({ discovery, snapshot }));
+    const appendEpoch = vi.fn(async (input: {
+      goal: string; modelRunToolCallId: string; roundIndex: number;
+    }) => {
+      discovery.epochs.push({
+        epoch: discovery.epochs.length + 1,
+        goal: input.goal,
+        modelRunToolCallId: input.modelRunToolCallId,
+        roundIndex: input.roundIndex,
+        toolIds: [recoveryToolName]
+      });
+      return { discovery, snapshot };
+    });
     harness.repository.appendMcpDiscoveryEpoch = appendEpoch;
-    const findToolsCall: PersistedToolLoopCall = {
-      arguments: { goal: "remember this detail" },
+    const findToolsCalls: PersistedToolLoopCall[] = goals.map((goal, index) => ({
+      arguments: { goal },
       completedAt: null,
-      id: "stored-find-tools-call",
+      id: `stored-find-tools-call-${index}`,
       mcpBinding: null,
-      ordinal: 0,
-      providerCallId: "provider-find-tools-call",
+      ordinal: index,
+      providerCallId: `provider-find-tools-call-${index}`,
       result: null,
       roundIndex: 1,
       startedAt: null,
       state: "pending",
       toolName: MCP_FIND_TOOLS_NAME
-    };
+    }));
     const durable = checkpointedRun({
-      calls: [findToolsCall],
+      calls: findToolsCalls,
       phase: "tools_pending",
-      providerToolMessages: [{
-        arguments: JSON.stringify({ goal: "remember this detail" }),
-        call_id: "provider-find-tools-call",
+      providerToolMessages: findToolsCalls.map((call) => ({
+        arguments: JSON.stringify(call.arguments),
+        call_id: call.providerCallId,
         name: MCP_FIND_TOOLS_NAME,
         type: "function_call"
-      }]
+      }))
     });
     installCheckpointState(harness, {
       ...durable,
@@ -6900,10 +6906,10 @@ describe("run recovery", () => {
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(route).toHaveBeenCalledWith(expect.objectContaining({
+    expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       activeToolNames: new Set(),
       catalog,
-      goal: "remember this detail",
+      goals,
       limit: 5
     }));
     expect(materialize).toHaveBeenCalledWith(userId, [{
@@ -6911,13 +6917,8 @@ describe("run recovery", () => {
       revisionId: "revision-1",
       serverId: "server-1"
     }]);
-    expect(appendEpoch).toHaveBeenCalledWith(expect.objectContaining({
-      goal: "remember this detail",
-      modelRunToolCallId: "stored-find-tools-call",
-      roundIndex: 1,
-      runId,
-      userId
-    }));
+    expect(appendEpoch).toHaveBeenCalledTimes(goals.length);
+    expect(discovery.epochs.map((epoch) => epoch.goal)).toEqual(goals);
     expect(requests[0]?.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: recoveryToolName })
     ]));
@@ -7025,15 +7026,25 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("settles a recovered router failure with the safe public discovery error", async () => {
+  it.each(["unexpected", "reported", "cancelled"] as const)(
+    "settles recovered discovery %s with safe errors and cumulative usage", async (outcome) => {
     const rawFailure = "PRIVATE_RECOVERY_ROUTER_FAILURE";
-    const route = vi.fn(async () => { throw new Error(rawFailure); });
+    const recoveryRegistry = registry();
+    const route = vi.fn(async () => {
+      if (outcome === "unexpected") throw new Error(rawFailure);
+      if (outcome === "cancelled") expect(recoveryRegistry.abort(runId)).toBe(true);
+      throw new McpSemanticRouterError(
+        outcome === "cancelled" ? "mcp_router_cancelled" : "mcp_router_request_failed",
+        { modelId: "router-model", provider: "openai", usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 } }
+      );
+    });
     const materialize = vi.fn(async () => ({
       bindings: [],
       ok: true as const,
       snapshot: { servers: [], tools: [], version: 1 as const }
     }));
     const harness = createHarness({
+      registry: recoveryRegistry,
       mcp: {
         materialize,
         prepare: materialize,
@@ -7086,18 +7097,41 @@ describe("run recovery", () => {
       }
     });
 
+    const loadUsage = harness.repository.loadRunUsageAttributions;
+    harness.repository.loadRunUsageAttributions = async (input) => [
+      ...await loadUsage(input),
+      {
+        modelId: "router-model", provider: "openai", recordedAt: "2026-09-06T10:00:00.000Z",
+        usage: { inputTokens: 4, outputTokens: 1, reasoningTokens: 0 }
+      }
+    ];
+
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+    if (outcome !== "cancelled") expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
       error: {
         code: "mcp_auto_discovery_unavailable",
         message: "Automatic tool discovery is unavailable."
       }
     })]);
     expect(JSON.stringify(harness.state.recoveredErrors)).not.toContain(rawFailure);
-    expect(checkpointState.calls()).toEqual([
+    if (outcome !== "cancelled") expect(checkpointState.calls()).toEqual([
       expect.objectContaining({ state: "error", toolName: MCP_FIND_TOOLS_NAME })
     ]);
+    const attributions = outcome === "cancelled"
+      ? harness.state.usageAttributions.at(-1)
+      : harness.state.recoveredErrors[0]?.usageAttributions;
+    expect(attributions?.filter((entry) => entry.modelId === "router-model")).toEqual([
+      expect.objectContaining({
+        provider: "openai",
+        usage: expect.objectContaining({
+          inputTokens: outcome === "unexpected" ? 4 : 16,
+          outputTokens: outcome === "unexpected" ? 1 : 4
+        })
+      })
+    ]);
+    if (outcome === "cancelled") expect(harness.state.recoveredErrors).toEqual([]);
+    expect(route).toHaveBeenCalledOnce();
     expect(materialize).not.toHaveBeenCalled();
     expect(appendEpoch).not.toHaveBeenCalled();
   });

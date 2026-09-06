@@ -969,10 +969,14 @@ export function ComposerV2({
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   // Transitional states (activating, on-demand idle) are not problems; only
   // the Settings-level "attention"/"failed" presentations count here.
-  const mcpServersNeedingAttention = enabledMcpServers.filter((server) => {
-    const kind = mcpReadinessPresentation(server.readiness).kind;
-    return kind === "attention" || kind === "failed";
-  }).length;
+  const mcpAttentionServers = (config?.mcpServers ?? []).filter((server) => {
+    const kind = mcpReadinessPresentation(server.attention ?? server.readiness).kind;
+    return (server.enabled || server.attention) && (kind === "attention" || kind === "failed");
+  });
+  const mcpServersNeedingAttention = mcpAttentionServers.length;
+  const mcpAttentionLabel = mcpServersNeedingAttention
+    ? `${mcpServersNeedingAttention} MCP ${mcpServersNeedingAttention === 1 ? "server needs" : "servers need"} attention. Open MCP settings.`
+    : undefined;
 
   return (
     <div className="v2-composer-wrap" data-testid="composer-v2">
@@ -1270,6 +1274,8 @@ export function ComposerV2({
                 aria-expanded={layer === "tools"}
                 aria-haspopup="menu"
                 aria-label="Change MCP mode"
+                aria-describedby={mcpAttentionLabel ? `${layerId}-mcp-attention` : undefined}
+                title={mcpAttentionLabel}
                 onClick={(event) => openLayer("tools", event.currentTarget)}
               >
                 {/* The accent dot marks a loaded capability; Auto (discover
@@ -1283,9 +1289,13 @@ export function ComposerV2({
                     ? "Load all"
                     : mcpSelection.mode === "off" ? "Off" : "Auto"}
                 </span>
+                {mcpAttentionLabel ? (
+                  <span aria-hidden="true" className="v2-composer-mcp-attention">!</span>
+                ) : null}
                 <UiV2Icon name="chevron-down" />
               </button>
             ) : null}
+            {mcpAttentionLabel ? <span className="v2-sr-only" id={`${layerId}-mcp-attention`}>{mcpAttentionLabel}</span> : null}
             {selectedSkillIds.length > 0 ? (
               <button
                 className="v2-composer-indicator v2-focusable"
@@ -1478,6 +1488,14 @@ export function ComposerV2({
                     /* What the modes act on: enabling stays a Settings action
                        (FRONTEND.md), so this is disclosure, not selection. */
                     <div className="v2-composer-layer-footer">
+                      {mcpAttentionServers.length > 0 ? (
+                        <div className="v2-composer-mcp-problems" role="status">
+                          <p>MCP servers need attention</p>
+                          {mcpAttentionServers.map((server) => (
+                            <p key={server.id}>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness).label}</p>
+                          ))}
+                        </div>
+                      ) : null}
                       <div className="v2-composer-layer-footer-row">
                         <p className="v2-composer-layer-note" data-testid="composer-v2-mcp-enabled">
                           {enabledMcpServers.length === 0
@@ -1490,7 +1508,7 @@ export function ComposerV2({
                         </p>
                         {onOpenMcpSettings ? (
                           <button
-                            className="v2-composer-layer-link v2-focusable"
+                            className="v2-composer-layer-link v2-composer-mcp-settings v2-focusable"
                             data-v2-composer-option="true"
                             type="button"
                             role="menuitem"
@@ -1500,7 +1518,7 @@ export function ComposerV2({
                               closeLayer();
                             }}
                           >
-                            Manage
+                            {mcpServersNeedingAttention ? "Configure" : "Manage"}
                             <UiV2Icon name="chevron-right" />
                           </button>
                         ) : null}

@@ -646,7 +646,8 @@ export class McpOAuthService {
       serverId: input.serverId,
       userId: input.userId
     });
-    if (!connection || connection.policy.configurationIdentity !== policy.configurationIdentity ||
+    if (!connection || connection.policy.serverUrl !== policy.serverUrl ||
+      connection.policy.allowPrivateNetwork !== policy.allowPrivateNetwork ||
       connection.policy.redirectUri !== policy.redirectUri ||
       connection.policyFingerprint !== mcpOAuthPolicyFingerprint(
         policy,

@@ -193,6 +193,7 @@ async function openMcpServers(page: Page) {
 test("admin MCP task workspace preserves compact context and drives the tested revision lifecycle", async ({ page }) => {
   test.setTimeout(60_000);
   let servers: AdminMcpServer[] = [existingServer()];
+  let failNextCheck = false;
   const requests: Array<{
     body: Record<string, unknown> | null;
     method: string;
@@ -268,10 +269,17 @@ test("admin MCP task workspace preserves compact context and drives the tested r
     }
 
     if (method === "POST" && path.endsWith("/test")) {
+      if (failNextCheck) {
+        failNextCheck = false;
+        await route.fulfill({ status: 400, json: { error: "mcp_draft_test_failed", issues: [{ code: "mcp_remote_validation_failed", path: "source" }] } });
+        return;
+      }
+      const active = { ...revision("saved-revision", 3, "tested-identity", "available"), disabledToolNames: current.draft.disabledToolNames };
       const tested = replace({
         ...current,
         draftTest: testedDraft("tested-identity"),
-        draftTested: true
+        draftTested: true,
+        ...(body?.publish ? { activeRevision: active, revisions: [active, ...current.revisions.filter((revision) => revision.id !== active.id)] } : {})
       });
       await route.fulfill({ contentType: "application/json", json: { server: tested } });
       return;
@@ -310,6 +318,9 @@ test("admin MCP task workspace preserves compact context and drives the tested r
       const updated = replace({
         ...current,
         ...(typeof update.enabled === "boolean" ? { enabled: update.enabled } : {}),
+        ...(update.draft ? { draft: update.draft, draftTested: false } : {}),
+        ...(update.name ? { name: update.name } : {}),
+        ...(update.description !== undefined ? { description: update.description } : {}),
         updatedAt: fixedTime
       });
       await route.fulfill({ contentType: "application/json", json: { server: updated } });
@@ -347,7 +358,7 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await expectNoHorizontalOverflow(page);
   const search = section.getByRole("searchbox", { name: "Search MCP servers" });
   await search.fill("Existing Search");
-  const existingRow = section.getByRole("listitem").filter({ hasText: "Existing Search Server" });
+  const existingRow = section.getByRole("listitem").filter({ hasText: "Existing Search Server" }).getByRole("button");
   await existingRow.focus();
   await existingRow.press("Enter");
   const backToCatalog = section.getByRole("button", { name: "Back to MCP servers" });
@@ -397,7 +408,7 @@ test("admin MCP task workspace preserves compact context and drives the tested r
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await expectNoHorizontalOverflow(page);
-  await section.getByRole("button", { name: "Activate" }).click();
+  await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByText(/activation started/u)).toBeVisible();
   await expect(section.getByTestId("admin-mcp-activation-progress")).toContainText("Starting");
 
@@ -413,7 +424,7 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await expectNoHorizontalOverflow(page);
   await expect(section.getByRole("button", { name: "Back to server tasks" })).toHaveCount(0);
   await expect(section.getByRole("navigation", { name: "MCP server tasks" })).toBeVisible();
-  await expectTouchSafe(section.getByRole("button", { name: /Validate & tools/u }));
+  await expectTouchSafe(section.getByRole("button", { name: /Connection & tools/u }));
 
   for (const viewport of [
     { height: 768, width: 1024 },
@@ -435,17 +446,44 @@ test("admin MCP task workspace preserves compact context and drives the tested r
       expect(definitionBox.x).toBeGreaterThan(overviewBox.x);
     }
     if (viewport.width === 1280) {
-      await taskNavigation.getByRole("button", { name: /Validate & tools/u }).click();
-      await expect(section.getByRole("heading", { name: "Validate & tools" })).toBeVisible();
+      await taskNavigation.getByRole("button", { name: /Connection & tools/u }).click();
+      await expect(section.getByRole("heading", { name: "Connection & tools" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await taskNavigation.getByRole("button", { name: /Overview/u }).click();
     }
   }
 
-  await section.getByRole("button", { name: /Validate & tools/u }).click();
+  await section.getByRole("button", { name: /Connection & tools/u }).click();
   await section.getByRole("button", { name: /Overview Publication and trust/u }).click();
   await expect(section.getByText("Active revision tested")).toBeVisible();
-  await expect(section.getByRole("button", { name: "Activate tested revision" })).toHaveCount(0);
+  await expect(section.getByRole("button", { name: "Test & Save" })).toHaveCount(0);
+
+  await section.getByRole("button", { name: "Connection & tools Connection and enabled tools" }).click();
+  await section.getByRole("checkbox", { name: "Enabled for fixture_write" }).click();
+  await expect(section.getByRole("checkbox", { name: "Enabled for fixture_write" })).not.toBeChecked();
+  await expect(section.getByText("Your tool selection has unapplied changes.")).toBeVisible();
+  expect(servers.find((server) => server.id === "browser-mcp")?.activeRevision?.disabledToolNames ?? []).toEqual([]);
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByText("MCP settings checked and applied.")).toBeVisible();
+  expect(servers.find((server) => server.id === "browser-mcp")?.activeRevision?.disabledToolNames).toEqual(["fixture_write"]);
+  await section.getByRole("checkbox", { name: "Enabled for fixture_write" }).click();
+  await expect(section.getByRole("checkbox", { name: "Enabled for fixture_write" })).toBeChecked();
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByText("Your tool selection has unapplied changes.")).toHaveCount(0);
+  expect(servers.find((server) => server.id === "browser-mcp")?.activeRevision?.disabledToolNames ?? []).toEqual([]);
+
+  await section.getByRole("button", { name: /Definition/u }).click();
+  await section.getByRole("button", { name: "Edit settings" }).click();
+  await section.getByLabel("Display name").fill("Renamed browser MCP");
+  await section.getByLabel("New shared value for API_KEY").fill("replacement-browser-secret");
+  failNextCheck = true;
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByRole("alert")).toContainText("Your changes were not applied");
+  await expect(section.getByLabel("Display name")).toHaveValue("Renamed browser MCP");
+  await expect(section.getByLabel("New shared value for API_KEY")).toHaveValue("replacement-browser-secret");
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByText("MCP settings checked and applied.")).toBeVisible();
+  await expect(section.getByRole("heading", { name: "Edit MCP server" })).toHaveCount(0);
 
   await section.getByRole("button", { name: /Revisions Rollback and rebuild/u }).click();
   const missingRevision = section.getByRole("heading", { name: "Revision 1" }).locator("xpath=ancestor::section[1]");
@@ -459,7 +497,7 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
   await section.getByRole("button", { name: "Disable" }).click();
   await expect(runtimeDetail.locator('[data-resource-availability="disabled"]')).toHaveText("Disabled");
-  await section.getByRole("button", { name: "Enable" }).click();
+  await section.getByRole("button", { name: "Enable", exact: true }).click();
   await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
 
   await page.setViewportSize({ height: 900, width: 768 });
@@ -488,8 +526,37 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   ]));
   expect(requests.filter((request) => [
     "/api/admin/mcp/browser-mcp/check-update",
-    "/api/admin/mcp/browser-mcp/test",
     "/api/admin/mcp/browser-mcp/activate"
   ].includes(request.path))).toEqual([]);
+  const saves = requests.filter((request) => request.path.endsWith("/test"));
+  expect(saves).toHaveLength(4);
+  expect(saves.every((request) => request.body?.publish === true)).toBe(true);
+  expect(requests.filter((request) => request.method === "PATCH").every((request) => !request.body?.sharedValues)).toBe(true);
   expect(JSON.stringify(servers)).not.toContain("browser-write-only-secret");
+  expect(JSON.stringify(servers)).not.toContain("replacement-browser-secret");
+});
+
+test("MCP catalog exposes reconnect and runtime failures without opening each server", async ({ page }) => {
+  const oauth: AdminMcpServer = {
+    ...existingServer(), id: "oauth-tools", name: "Workspace tools",
+    draft: { ...existingServer().draft, auth: { mode: "oauth", scopes: [], allowedAuthorizationServerOrigins: ["https://auth.example.test"] } },
+    validationOAuth: { state: "reauthorization_required", accountLabel: "Admin", connectedAt: fixedTime }
+  };
+  const unavailable: AdminMcpServer = { ...existingServer(), runtimeProblem: "unavailable" };
+  await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+  await page.route("**/api/admin/mcp", (route) => route.fulfill({ json: { servers: [oauth, unavailable] } }));
+  await signInWithLocalToken(page);
+  await page.goto("/admin");
+  const section = await openMcpServers(page);
+  for (const [width, theme] of [[1440, "light"], [390, "dark"]] as const) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.emulateMedia({ colorScheme: theme });
+    const row = section.getByRole("listitem").filter({ hasText: "Workspace tools" });
+    await expect(row.getByText("Reconnect to check changes")).toBeVisible();
+    const reconnect = row.getByRole("link", { name: "Reconnect Workspace tools for checking changes" });
+    await expect(reconnect).toHaveAttribute("href", "/api/admin/mcp/oauth-tools/oauth/validation/reconnect");
+    await expectTouchSafe(reconnect);
+    await expect(section.getByText("MCP runtime unavailable")).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+  }
 });

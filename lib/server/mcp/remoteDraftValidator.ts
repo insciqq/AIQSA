@@ -127,9 +127,8 @@ function sensitiveStrings(input: McpDraftValidationInput): string[] {
     for (const value of endpoint.searchParams.values()) {
       if (value) values.push(value);
     }
-    for (const segment of endpoint.pathname.split("/")) {
-      if (segment.length >= 8) values.push(segment);
-    }
+    // Ordinary route components are not credentials. Sensitive slots and the
+    // OAuth provider identify exact secrets, including any also used in a path.
   }
   return [...new Set(values)];
 }

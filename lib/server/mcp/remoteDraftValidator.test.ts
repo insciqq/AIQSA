@@ -3,6 +3,7 @@ import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   McpClientSessionError,
+  type AiqsaMcpServerEvidence,
   type AiqsaMcpToolDefinition,
   type McpClientSessionOptions
 } from "./clientSession";
@@ -108,7 +109,109 @@ function sessionHarness(input: {
 
 const safeFetch: McpClientSessionOptions["fetch"] = async () => new Response("unused");
 
+function serverEvidence(name: string, version = "1.0.0"): AiqsaMcpServerEvidence {
+  return {
+    capabilities: {
+      completions: false, logging: false, prompts: null, resources: null,
+      tasks: false, tools: { listChanged: false }
+    },
+    implementation: { name, title: name, version },
+    instructions: `Use ${name} for scoped reads.`
+  };
+}
+
 describe("remote MCP draft validator", () => {
+  it("retains ordinary route metadata and the exact empty informational version", async () => {
+    const route = "catalog-adapter";
+    const evidence = serverEvidence(route, "");
+    const harness = sessionHarness({
+      serverEvidence: evidence,
+      tools: [tool({
+        name: `${route}_read`, title: `Read ${route}`, description: `Read from ${route}`,
+        inputSchema: { type: "object", properties: {
+          query: { type: "string", description: `Query ${route}` }
+        } }
+      })]
+    });
+    const validator = createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory: harness.sessionFactory });
+    const outcome = await validator.validate({
+      draft: remoteDraft({ auth: { mode: "none" }, slots: [], url: `https://mcp.example.test/${route}/mcp` }),
+      values: {}
+    });
+    expect(outcome).toMatchObject({
+      kind: "ok", evidence: { server: evidence },
+      toolInventory: [{
+        name: `${route}_read`, title: `Read ${route}`, description: `Read from ${route}`,
+        arguments: [{ name: "query", types: ["string"], description: `Query ${route}` }]
+      }]
+    });
+    expect(JSON.stringify(outcome)).not.toContain("https://mcp.example.test");
+  });
+
+  describe.each(["static", "oauth"] as const)("%s credential reflection", (authMode) => {
+    it.each(["server metadata", "tool name", "title", "description", "argument description", "nested input", "output schema"])(
+      "rejects a known secret in %s, even when it also occurs in the URL path",
+      async (location) => {
+        const secret = "known-validation-secret";
+        const definition = { ...tool({ name: "read_record" }) };
+        const evidence = { ...serverEvidence("catalog-adapter") };
+        if (location === "server metadata") evidence.instructions = `Echoed ${secret}`;
+        if (location === "tool name") definition.name = `read_${secret}`;
+        if (location === "title") definition.title = `Read ${secret}`;
+        if (location === "description") definition.description = `Echoed ${secret}`;
+        if (location === "argument description") definition.inputSchema = {
+          type: "object", properties: { query: { type: "string", description: secret } }
+        };
+        if (location === "nested input") definition.inputSchema = {
+          type: "object", properties: { nested: { type: "object", properties: {
+            token: { type: "string", default: secret }
+          } } }
+        };
+        if (location === "output schema") definition.outputSchema = {
+          type: "object", properties: { value: { type: "string", examples: [secret] } }
+        };
+        const harness = sessionHarness({ serverEvidence: evidence, tools: [definition] });
+        const provider = { exactKnownSecrets: () => [secret] } as unknown as OAuthClientProvider;
+        const validator = createRemoteMcpDraftValidator({
+          fetch: safeFetch, sessionFactory: harness.sessionFactory,
+          oauthProviderForDraft: async () => provider
+        });
+        const outcome = await validator.validate({
+          draft: remoteDraft({
+            auth: authMode === "static" ? { mode: "static" } : {
+              mode: "oauth", allowedAuthorizationServerOrigins: [], scopes: []
+            },
+            slots: authMode === "static" ? [remoteDraft().slots[0]!] : [],
+            url: `https://mcp.example.test/${secret}/mcp`
+          }),
+          values: authMode === "static" ? { authorization: secret } : {}
+        });
+        expect(outcome).toEqual({
+          kind: "invalid", issues: [{ code: "mcp_remote_inventory_unsafe", path:
+            location === "server metadata" ? "source" : location === "tool name" ? "tools.0.name" : "tools"
+          }]
+        });
+        expect(JSON.stringify(outcome)).not.toContain(secret);
+      }
+    );
+  });
+
+  it.each(["endpoint", "query value"])("retains defensive rejection of an echoed %s", async (location) => {
+    const url = `https://mcp.example.test/rpc?api_key=${URL_SECRET}`;
+    const harness = sessionHarness({ tools: [tool({
+      name: "read_record", description: location === "endpoint" ? url : URL_SECRET
+    })] });
+    const validator = createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory: harness.sessionFactory });
+    const outcome = await validator.validate({
+      draft: remoteDraft({ auth: { mode: "none" }, slots: [], url }), values: {}
+    });
+    expect(outcome).toEqual({
+      kind: "invalid", issues: [{ code: "mcp_remote_inventory_unsafe", path: "tools" }]
+    });
+    expect(JSON.stringify(outcome)).not.toContain(URL_SECRET);
+    expect(JSON.stringify(outcome)).not.toContain(url);
+  });
+
   it("discovers a static-header remote draft through the injected safe session", async () => {
     const progress: string[] = [];
     const harness = sessionHarness({

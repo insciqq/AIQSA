@@ -1,5 +1,6 @@
 import type {
   AdminMcpCatalogResponse,
+  AdminMcpServer,
   McpDraftConfiguration,
   McpErrorCode,
   McpErrorResponse,
@@ -152,10 +153,17 @@ export function createAdminMcpCatalogHandler(deps: McpHandlerDeps) {
   return async function GET(request: Request): Promise<Response> {
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const servers = await safely(() => deps.repository.listAdminServers());
+    const servers = await safely(() => deps.repository.listAdminServers(auth.session.userId));
     if (servers instanceof Response) return servers;
     return Response.json({ servers } satisfies AdminMcpCatalogResponse);
   };
+}
+
+async function adminServerResponse(deps: McpHandlerDeps, server: AdminMcpServer, userId: string, status = 200): Promise<Response> {
+  const catalog = await safely(() => deps.repository.listAdminServers(userId));
+  if (catalog instanceof Response) return catalog;
+  const validationOAuth = catalog.find((candidate) => candidate.id === server.id)?.validationOAuth ?? null;
+  return Response.json({ server: { ...server, validationOAuth } }, { status });
 }
 
 export function createAdminMcpCreateHandler(deps: McpHandlerDeps) {
@@ -185,10 +193,7 @@ export function createAdminMcpCreateHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     if (body?.activate === true) notifyActivationRequested(deps);
-    return Response.json(
-      { server: result.value },
-      { status: body?.activate === true ? 202 : 201 }
-    );
+    return adminServerResponse(deps, result.value, auth.session.userId, body?.activate === true ? 202 : 201);
   };
 }
 
@@ -203,6 +208,8 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const name = optionalText(body.name, 120);
     const description = optionalDescriptionText(body.description, 4_000);
     if (name === null || description === null ||
+      (body.expectedUpdatedAt !== undefined && (typeof body.expectedUpdatedAt !== "string" ||
+        !Number.isFinite(Date.parse(body.expectedUpdatedAt)))) ||
       (typeof body.enabled !== "undefined" && typeof body.enabled !== "boolean")) {
       return errorJson("invalid_draft", 400);
     }
@@ -220,6 +227,7 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.updateServer({
+      ...(typeof body.expectedUpdatedAt === "string" ? { expectedUpdatedAt: body.expectedUpdatedAt } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(draft ? { draft } : {}),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
@@ -230,7 +238,7 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
-    return Response.json({ server: result.value });
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 
@@ -243,7 +251,7 @@ export function createAdminMcpDeleteHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
-    return Response.json({ server: result.value });
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 
@@ -259,15 +267,28 @@ export function createAdminMcpDraftTestHandler(deps: McpHandlerDeps) {
     if (!parsedValues || Object.values(parsedValues).some((value) => value === null)) {
       return errorJson("invalid_mcp_values", 400);
     }
+    const publish = body.publish === true;
+    const sharedValues = body.sharedValues === undefined ? undefined : slotValues(body.sharedValues);
+    if ((body.publish !== undefined && typeof body.publish !== "boolean") ||
+      (body.expectedUpdatedAt !== undefined && (typeof body.expectedUpdatedAt !== "string" ||
+        !Number.isFinite(Date.parse(body.expectedUpdatedAt)))) ||
+      (publish && typeof body.expectedUpdatedAt !== "string") ||
+      sharedValues === null || (!publish && sharedValues !== undefined)) {
+      return errorJson("invalid_mcp_values", 400);
+    }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.testDraft({
+      ...(typeof body.expectedUpdatedAt === "string" ? { expectedUpdatedAt: body.expectedUpdatedAt } : {}),
       oneTimeValues: parsedValues as Record<string, McpSlotValue>,
+      ...(publish ? { publish: true } : {}),
+      ...(sharedValues ? { sharedValues } : {}),
       serverId,
       validationUserId: auth.session.userId
     }));
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
-    return Response.json({ server: result.value });
+    if (publish) notifyRuntimeChanged(deps);
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 
@@ -299,7 +320,7 @@ export function createAdminMcpRebuildHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
-    return Response.json({ server: result.value });
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 
@@ -318,11 +339,11 @@ export function createAdminMcpActivateHandler(deps: McpHandlerDeps) {
       if (queued instanceof Response) return queued;
       if (queued.kind !== "ok") return repositoryError(queued);
       notifyActivationRequested(deps);
-      return Response.json({ server: queued.value }, { status: 202 });
+      return adminServerResponse(deps, queued.value, auth.session.userId, 202);
     }
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
-    return Response.json({ server: result.value });
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 
@@ -340,7 +361,7 @@ export function createAdminMcpRollbackHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
-    return Response.json({ server: result.value });
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 
@@ -382,7 +403,7 @@ export function createAdminMcpGrantHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
-    return Response.json({ server: result.value });
+    return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }
 

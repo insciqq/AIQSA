@@ -2,6 +2,7 @@ import type {
   RunLifecycleStateV2,
   RunLifecycleStatusV2
 } from "@/features/run-lifecycle-v2/runPresentation";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE } from "@/lib/contracts/runs";
 
 /**
  * The run-lifecycle store's record of a stream whose transport failed without
@@ -15,6 +16,7 @@ export type InterruptedRunV2 = Readonly<{
 }>;
 
 type TransportMessageV2 = Readonly<{
+  errorMessage?: string | null;
   id: string;
   runId: string | null;
   status: "cancelled" | "complete" | "error" | "streaming";
@@ -49,7 +51,7 @@ export function runTransportStateV2(input: Readonly<{
   persistedRunStatus: RunLifecycleStatusV2 | null;
 }>): Pick<
   RunLifecycleStateV2,
-  "authoritativeMessageStatus" | "connectionLost" | "status"
+  "authoritativeMessageStatus" | "connectionLost" | "failure" | "status"
 > {
   if (transportLostForMessageV2(input.interruptedRun, input.message)) {
     return {
@@ -60,6 +62,14 @@ export function runTransportStateV2(input: Readonly<{
   }
 
   return {
+    ...(input.message.status === "error" &&
+      input.message.errorMessage === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE ? {
+        failure: {
+          code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+          message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE,
+          recovery: "retry" as const
+        }
+      } : {}),
     authoritativeMessageStatus:
       input.message.status === "streaming" ? null : input.message.status,
     connectionLost:

@@ -159,6 +159,7 @@ export type AdminMcpPersonalSlotSummary = {
 };
 
 export type AdminMcpServer = {
+  runtimeProblem?: "reauthorization_required" | "unavailable" | null;
   activation: AdminMcpActivationSummary | null;
   activePersonalSlots: AdminMcpPersonalSlotSummary[];
   activeRevision: McpRevisionSummary | null;
@@ -293,6 +294,7 @@ export type AdminMcpCreateRequest = {
 };
 
 export type AdminMcpUpdateRequest = {
+  expectedUpdatedAt?: string;
   description?: string;
   draft?: McpDraftConfiguration;
   enabled?: boolean;
@@ -308,7 +310,10 @@ export type AdminMcpGrantRequest = {
 };
 
 export type AdminMcpDraftTestRequest = {
+  expectedUpdatedAt?: string;
   oneTimeValues?: Record<string, McpSlotValue>;
+  publish?: boolean;
+  sharedValues?: Record<string, McpSlotValue | null>;
 };
 
 export type AdminMcpRollbackRequest = {

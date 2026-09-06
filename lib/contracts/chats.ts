@@ -65,6 +65,7 @@ export type {
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
+  errorMessage?: string | null;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;

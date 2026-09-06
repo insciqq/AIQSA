@@ -47,6 +47,30 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
+  it("warns about pending MCP setup on the chip and offers a touch-accessible settings action", async () => {
+    const onOpenMcpSettings = vi.fn();
+    const config: ComposerConfig = {
+      ...composerGalleryConfig,
+      mcpServers: [
+        { id: "tracker", name: "Tracker", description: "", enabled: false, knownToolCount: 0, readiness: "disabled", attention: "needs_authorization" },
+        { id: "files", name: "Files", description: "", enabled: true, knownToolCount: 1, readiness: "reauthorization_required" },
+        { id: "idle", name: "Idle", description: "", enabled: true, knownToolCount: 1, readiness: "idle" }
+      ]
+    };
+    const { rerender } = render(<ComposerV2 {...props({ config, onOpenMcpSettings })} />);
+    const chip = screen.getByRole("button", { name: "Change MCP mode" });
+    expect(chip).toHaveTextContent("!");
+    expect(chip).toHaveAttribute("title", "2 MCP servers need attention. Open MCP settings.");
+    expect(chip).toHaveAccessibleDescription("2 MCP servers need attention. Open MCP settings.");
+    fireEvent.click(chip);
+    expect(screen.getByRole("status")).toHaveTextContent("Tracker · Needs authorization");
+    expect(screen.getByRole("status")).toHaveTextContent("Files · Reconnect required");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage enabled MCP servers" }));
+    expect(onOpenMcpSettings).toHaveBeenCalledOnce();
+    rerender(<ComposerV2 {...props({ config: { ...config, mcpServers: [config.mcpServers[2]] }, onOpenMcpSettings })} />);
+    expect(chip).not.toHaveTextContent("!");
+    expect(chip).not.toHaveAttribute("aria-describedby");
+  });
   it("keeps context controls in the header, outside the composer", () => {
     const { container } = render(<ComposerV2 {...props()} />);
     expect(screen.queryByTestId("composer-memory-mode")).toBeNull();

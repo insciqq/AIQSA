@@ -100,7 +100,7 @@ function refreshVisibleSettings(): void {
   }
 }
 
-/** Own polling only while the Settings section is mounted and the tab is visible. */
+/** Share visible-tab polling between Settings and the personal chat MCP indicator. */
 export function observeMcpSettings(): () => void {
   settingsObservers += 1;
   if (settingsObservers === 1) {

@@ -326,6 +326,26 @@
   cursor: default;
 }
 
+.v2-composer-mcp-attention {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--v2-color-warn);
+  font-weight: 700;
+}
+
+.v2-composer-mcp-problems {
+  min-width: 0;
+  color: var(--v2-color-warn);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 /* Workspace is a compact workbench rail: the toggle is the control, while
    runtime and network are factual read-only lamps beside it. */
 .v2-composer-workspace-state,
@@ -784,6 +804,10 @@
 
 .v2-composer-layer-link:hover {
   background: var(--v2-color-accent-dim);
+}
+
+.v2-composer-layer-link.v2-composer-mcp-settings {
+  min-height: 2.75rem;
 }
 
 .v2-composer-layer-link .v2-icon {

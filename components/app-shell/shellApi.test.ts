@@ -223,6 +223,7 @@ describe("chat wire mapping", () => {
     expect(chatDetailFromApi(detail).messages).toEqual([
       expect.objectContaining({
         content: "Provider failed",
+        errorMessage: "Provider failed",
         id: "message-error",
         status: "error"
       }),
