@@ -20,6 +20,15 @@ const activeConfiguration = {
   modelClass: "answer",
   upstreamModelId: "vendor/answer"
 };
+const reasoningConfiguration = {
+  ...activeConfiguration,
+  capabilities: {
+    ...activeConfiguration.capabilities,
+    reasoning: true,
+    reasoningEfforts: ["low", "high", "max"],
+    defaultReasoningEffort: "low"
+  }
+};
 
 function activeModel(overrides: Record<string, unknown> = {}) {
   return {
@@ -43,12 +52,54 @@ function activeModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator model policy service", () => {
+  it.each(["high", "max", null])("saves supported reasoning or Provider default: %s", async (reasoningEffort) => {
+    const queryRaw = vi.fn()
+      .mockResolvedValueOnce([{ version: 3 }])
+      .mockResolvedValueOnce([{
+        ...activeModel(),
+        activeConfig: reasoningConfiguration,
+        connectionActiveConfig: {}, connectionActiveVersion: 1,
+        connectionActivatedAt: NOW, connectionEnabled: true, connectionFamily: "openai_compatible"
+      }]);
+    const update = vi.fn();
+    const tx = { $queryRaw: queryRaw, modelPolicy: { update } };
+    const prisma = { $transaction: async (run: (store: typeof tx) => Promise<void>) => run(tx) };
+    await createAdminModelPolicyService(prisma as never).update({
+      expectedVersion: 3, providerModelId: "model-1", reasoningEffort, userId: "admin-1"
+    });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      defaultProviderModelId: "model-1", reasoningEffort, version: { increment: 1 }
+    }) }));
+  });
+
+  it.each([
+    { reasoning: false, effort: "high", modelId: "model-1" },
+    { reasoning: true, effort: "unsupported", modelId: "model-1" },
+    { reasoning: true, effort: "high", modelId: null }
+  ])("rejects invalid reasoning without updating the policy: %j", async ({ reasoning, effort, modelId }) => {
+    const update = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValueOnce([{ version: 1 }]).mockResolvedValueOnce([{
+        ...activeModel(), activeConfig: { ...activeConfiguration, capabilities: { ...activeConfiguration.capabilities, reasoning } },
+        connectionActiveConfig: {}, connectionActiveVersion: 1,
+        connectionActivatedAt: NOW, connectionEnabled: true, connectionFamily: "openai_compatible"
+      }]),
+      modelPolicy: { update }
+    };
+    const prisma = { $transaction: async (run: (store: typeof tx) => Promise<void>) => run(tx) };
+    await expect(createAdminModelPolicyService(prisma as never).update({
+      expectedVersion: 1, providerModelId: modelId, reasoningEffort: effort, userId: "admin-1"
+    })).rejects.toMatchObject({ code: "model_policy_reasoning_invalid" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("projects only active answer-selectable candidates and retains an unavailable target", async () => {
     const unavailableTarget = activeModel({ enabled: false, id: "model-old" });
     const prisma = {
       modelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           defaultProviderModel: unavailableTarget,
+          reasoningEffort: null,
           mcpAutoDiscoveryTimeoutSeconds: 60n,
           maxMcpToolsPerDiscovery: 10n,
           maxToolCalls: 20n,
@@ -60,7 +111,7 @@ describe("administrator model policy service", () => {
       },
       providerModel: {
         findMany: vi.fn().mockResolvedValue([
-          activeModel(),
+          activeModel({ activeConfig: reasoningConfiguration }),
           activeModel({
             activeConfig: { ...activeConfiguration, answerSelectable: false },
             id: "technical-model"
@@ -75,7 +126,9 @@ describe("administrator model policy service", () => {
         connectionDisplayName: "Answer provider",
         connectionId: "connection-1",
         displayName: "Answer model",
-        id: "model-1"
+        id: "model-1",
+        defaultReasoningEffort: "low",
+        reasoningEfforts: ["low", "high", "max"]
       }],
       policy: {
         defaultModel: {
@@ -83,8 +136,11 @@ describe("administrator model policy service", () => {
           connectionDisplayName: "Answer provider",
           connectionId: "connection-1",
           displayName: "Answer model",
-          id: "model-old"
+          id: "model-old",
+          defaultReasoningEffort: null,
+          reasoningEfforts: []
         },
+        reasoningEffort: null,
         mcpAutoDiscoveryTimeoutSeconds: 60,
         maxMcpToolsPerDiscovery: 10,
         maxToolCalls: 20,
@@ -107,6 +163,7 @@ describe("administrator model policy service", () => {
         connectionActivatedAt: NOW,
         connectionActiveVersion: 1,
         connectionEnabled: true,
+        connectionFamily: "openai_compatible",
         enabled: true,
         id: "model-1"
       }]);
@@ -119,12 +176,14 @@ describe("administrator model policy service", () => {
     await createAdminModelPolicyService(prisma).update({
       expectedVersion: 3,
       providerModelId: "model-1",
+      reasoningEffort: null,
       userId: "admin-1"
     });
 
     expect(update).toHaveBeenCalledWith({
       data: {
         defaultProviderModelId: "model-1",
+        reasoningEffort: null,
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
@@ -144,6 +203,7 @@ describe("administrator model policy service", () => {
     await expect(createAdminModelPolicyService(stalePrisma).update({
       expectedVersion: 1,
       providerModelId: null,
+      reasoningEffort: null,
       userId: "admin-1"
     })).rejects.toEqual(new AdminModelPolicyServiceError("model_policy_stale"));
     expect(staleTx.modelPolicy.update).not.toHaveBeenCalled();
@@ -159,6 +219,7 @@ describe("administrator model policy service", () => {
           connectionActivatedAt: NOW,
           connectionActiveVersion: 1,
           connectionEnabled: true,
+          connectionFamily: "openai_compatible",
           enabled: true,
           id: "technical-model"
         }]),
@@ -171,6 +232,7 @@ describe("administrator model policy service", () => {
     await expect(createAdminModelPolicyService(targetPrisma).update({
       expectedVersion: 2,
       providerModelId: "technical-model",
+      reasoningEffort: null,
       userId: "admin-1"
     })).rejects.toEqual(
       new AdminModelPolicyServiceError("model_policy_target_unavailable")
@@ -222,6 +284,7 @@ describe("administrator model policy service", () => {
     await expect(createAdminModelPolicyService(prisma).update({
       expectedVersion: 1,
       providerModelId: null,
+      reasoningEffort: null,
       userId: "admin-1"
     })).rejects.toEqual(new AdminModelPolicyServiceError("model_policy_stale"));
   });

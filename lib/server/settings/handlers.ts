@@ -18,6 +18,7 @@ import {
 import {
   resolveChatDefaults,
   resolveCurrentUserCatalogSelection,
+  resolveCurrentUserControlValues,
   resolveSearchPreference,
   type CatalogSelectionData,
   type CatalogSettingsRecord
@@ -292,7 +293,7 @@ function serializeSettings(
   });
   const chatDefaults = resolveChatDefaults(settings);
   return {
-    defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
+    defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
     hasPersonalModelDefault: selection.hasPersonalModelDefault,

@@ -41,6 +41,26 @@ afterEach(() => {
 });
 
 describe("settings mutation coordinator", () => {
+  it.each([true, false])("replaces inherited reasoning when switching to organization default: %s", async (inherit) => {
+    const model = { modelId: "gpt-5.5", provider: "openai" };
+    const onReconcile = vi.fn();
+    const coordinator = createSettingsMutationCoordinator({
+      callbacks: { onFailure: vi.fn(), onReconcile, onRecovered: vi.fn() },
+      send: async () => settings({
+        defaultControlValues: inherit ? { "openai:gpt-5.5": { reasoningEffort: "high" } } : {},
+        hasPersonalModelDefault: !inherit,
+        modelPreferenceSource: inherit ? "organization" : "personal",
+        organizationModelDefault: model,
+        personalModelDefault: inherit ? null : model
+      })
+    });
+    expect(await coordinator.enqueue({ personalModelDefault: inherit ? null : model })).toBe(true);
+    expect(onReconcile).toHaveBeenCalledWith(expect.objectContaining({
+      controlValues: { "openai:gpt-5.5": inherit ? { reasoningEffort: "high" } : {} },
+      modelPreferenceSource: inherit ? "organization" : "personal"
+    }), new Set(["openai:gpt-5.5"]));
+  });
+
   it("serializes requests, deep-coalesces pending keys, and overlays newer intent on an older response", async () => {
     const responses = [deferred<UserSettingsWire>(), deferred<UserSettingsWire>()];
     let activeRequests = 0;

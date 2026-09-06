@@ -1030,6 +1030,7 @@ model SearchPolicy {
 model ModelPolicy {
   id                             String         @id
   defaultProviderModelId         String?
+  reasoningEffort                String?        @db.VarChar(32)
   memoryAdmissionTimeoutSeconds  BigInt         @default(30)
   maxToolCalls                   BigInt         @default(20)
   maxToolRounds                  BigInt         @default(8)

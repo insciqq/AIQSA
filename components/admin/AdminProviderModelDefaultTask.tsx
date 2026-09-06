@@ -11,7 +11,7 @@ import {
   quietButton
 } from "@/components/admin/adminPrimitives";
 import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
-import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
+import type { AdminModelDefaultCandidate, AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +25,7 @@ export function AdminProviderModelDefaultTask({
 }>) {
   const [catalog, setCatalog] = useState<AdminModelPolicyCatalog | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,13 +40,21 @@ export function AdminProviderModelDefaultTask({
         }]
       : [])
   ]), [catalog]);
-  const deploymentLabel = (deployment: AdminModelPolicyCatalog["candidates"][number]) =>
+  const deploymentLabel = (deployment: AdminModelDefaultCandidate) =>
     `${connectionLabels.get(deployment.connectionId) ?? deployment.connectionDisplayName} / ${deployment.displayName}`;
   const currentId = catalog?.policy.defaultModel?.id ?? "";
-  const draftDirty = Boolean(catalog) && selectedId !== currentId;
+  const currentEffort = catalog?.policy.reasoningEffort ?? "";
+  const selectedModel = catalog?.candidates.find((model) => model.id === selectedId) ??
+    (catalog?.policy.defaultModel?.id === selectedId ? catalog.policy.defaultModel : null);
+  const reasoningOptions = selectedModel?.reasoningEfforts ?? [];
+  const validEffort = !reasoningEffort || reasoningOptions.includes(reasoningEffort);
+  const draftDirty = Boolean(catalog) && (selectedId !== currentId || reasoningEffort !== currentEffort);
   const requestDraftDiscard = useAdminDraftProtection({
     dirty: draftDirty,
-    onDiscard: () => setSelectedId(currentId),
+    onDiscard: () => {
+      setSelectedId(currentId);
+      setReasoningEffort(currentEffort);
+    },
     owner: "provider-default-model-policy",
     pending: draftDirty && busy
   });
@@ -53,6 +62,7 @@ export function AdminProviderModelDefaultTask({
   const apply = useCallback((next: AdminModelPolicyCatalog) => {
     setCatalog(next);
     setSelectedId(next.policy.defaultModel?.id ?? "");
+    setReasoningEffort(next.policy.reasoningEffort ?? "");
   }, []);
 
   const refresh = useCallback(async () => {
@@ -91,7 +101,8 @@ export function AdminProviderModelDefaultTask({
     setNotice(null);
     const result = await updateAdminModelPolicy({
       expectedVersion: catalog.policy.version,
-      providerModelId
+      providerModelId,
+      reasoningEffort: providerModelId ? reasoningEffort || null : null
     });
     setBusy(false);
     if (!result.ok) {
@@ -141,6 +152,7 @@ export function AdminProviderModelDefaultTask({
               {catalog.policy.defaultModel && !catalog.policy.defaultModel.available ? (
                 <p className="text-caution">The configured deployment is currently unavailable. It remains selected until you replace or clear it.</p>
               ) : null}
+              {catalog.policy.defaultModel ? <p>Reasoning: {catalog.policy.reasoningEffort ?? "Provider default"}.</p> : null}
               <p>Policy version: {catalog.policy.version}.</p>
               {catalog.policy.updatedBy ? <p>Last changed by {catalog.policy.updatedBy.displayName}.</p> : null}
             </div>
@@ -151,7 +163,10 @@ export function AdminProviderModelDefaultTask({
                 className={inputClass}
                 disabled={busy || loading}
                 id="installation-default-model"
-                onChange={(event) => setSelectedId(event.currentTarget.value)}
+                onChange={(event) => {
+                  setSelectedId(event.currentTarget.value);
+                  setReasoningEffort("");
+                }}
                 value={selectedId}
               >
                 <option value="">No installation default</option>
@@ -169,10 +184,32 @@ export function AdminProviderModelDefaultTask({
               </select>
             </label>
 
+            <div className="grid gap-1.5 text-xs font-medium text-ink-secondary">
+              <label htmlFor="installation-default-reasoning">Default reasoning effort</label>
+              <select
+                className={inputClass}
+                disabled={busy || loading || reasoningOptions.length === 0 && !reasoningEffort}
+                id="installation-default-reasoning"
+                aria-describedby="installation-default-reasoning-help"
+                value={reasoningEffort}
+                onChange={(event) => setReasoningEffort(event.currentTarget.value)}
+              >
+                <option value="">Provider default{selectedModel?.defaultReasoningEffort
+                  ? ` (${selectedModel.defaultReasoningEffort})` : ""}</option>
+                {!validEffort ? <option disabled value={reasoningEffort}>Unavailable — {reasoningEffort}</option> : null}
+                {reasoningOptions.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+              </select>
+              <span className="font-normal leading-5 text-ink-muted" id="installation-default-reasoning-help">
+                {selectedModel && reasoningOptions.length === 0
+                  ? "This model does not support adjustable reasoning."
+                  : "New chats inherit this setting. Personal reasoning preferences take priority."}
+              </span>
+            </div>
+
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className={primaryButton}
-                disabled={busy || selectedId === (catalog.policy.defaultModel?.id ?? "")}
+                disabled={busy || loading || !draftDirty || !validEffort}
                 onClick={() => void save(selectedId || null)}
                 type="button"
               >

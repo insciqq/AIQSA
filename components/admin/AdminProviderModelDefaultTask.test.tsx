@@ -7,10 +7,13 @@ const catalog = {
     connectionDisplayName: "Provider A",
     connectionId: "connection-a",
     displayName: "Model A",
+    defaultReasoningEffort: "medium",
+    reasoningEfforts: ["low", "medium", "high"],
     id: "model-a"
   }],
   policy: {
     defaultModel: null,
+    reasoningEffort: null,
     mcpAutoDiscoveryTimeoutSeconds: 60,
     maxMcpToolsPerDiscovery: 10,
     maxToolCalls: 20,
@@ -26,6 +29,66 @@ afterEach(() => {
 });
 
 describe("administrator provider model default task", () => {
+  it("saves a reasoning-only edit and reloads it with the same model", async () => {
+    let current = {
+      ...catalog,
+      policy: { ...catalog.policy, defaultModel: { ...catalog.candidates[0]!, available: true }, reasoningEffort: null as string | null }
+    };
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PATCH") {
+        const update = JSON.parse(String(init.body));
+        current = { ...current, policy: { ...current.policy, reasoningEffort: update.reasoningEffort, version: current.policy.version + 1 } };
+      }
+      return Response.json({ modelPolicy: current });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = render(<AdminProviderModelDefaultTask active />);
+    const reasoning = await screen.findByLabelText("Default reasoning effort");
+    expect(screen.getByRole("button", { name: "Save default" })).toBeDisabled();
+    fireEvent.change(reasoning, { target: { value: "high" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save default" }));
+    await screen.findByText("Reasoning: high.");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]!.body))).toEqual({
+      expectedVersion: 1, providerModelId: "model-a", reasoningEffort: "high"
+    });
+    unmount();
+    render(<AdminProviderModelDefaultTask active />);
+    expect(await screen.findByLabelText("Default reasoning effort")).toHaveValue("high");
+    expect(screen.getByRole("button", { name: "Save default" })).toBeDisabled();
+  });
+
+  it("resets reasoning when the model changes and disables unsupported controls", async () => {
+    const plain = { ...catalog.candidates[0]!, id: "plain", displayName: "Plain", reasoningEfforts: [], defaultReasoningEffort: null };
+    const current = {
+      ...catalog, candidates: [...catalog.candidates, plain],
+      policy: { ...catalog.policy, defaultModel: { ...catalog.candidates[0]!, available: true }, reasoningEffort: "high" }
+    };
+    const fetchMock = vi.fn(async () => Response.json({ modelPolicy: current }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminProviderModelDefaultTask active />);
+    fireEvent.change(await screen.findByLabelText("Active answer model deployment"), { target: { value: "plain" } });
+    expect(screen.getByLabelText("Default reasoning effort")).toHaveValue("");
+    expect(screen.getByLabelText("Default reasoning effort")).toBeDisabled();
+    expect(screen.getByText("This model does not support adjustable reasoning.")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Active answer model deployment"), { target: { value: "model-a" } });
+    expect(screen.getByLabelText("Default reasoning effort")).toHaveValue("");
+    expect(screen.getByLabelText("Default reasoning effort")).toBeEnabled();
+  });
+
+  it("lets an obsolete reasoning selection be reset to Provider default", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ modelPolicy: {
+      ...catalog,
+      candidates: [{ ...catalog.candidates[0]!, reasoningEfforts: [], defaultReasoningEffort: null }],
+      policy: { ...catalog.policy, defaultModel: { ...catalog.candidates[0]!, available: true }, reasoningEffort: "obsolete" }
+    } })));
+    render(<AdminProviderModelDefaultTask active />);
+    const reasoning = await screen.findByLabelText("Default reasoning effort");
+    expect(reasoning).toHaveValue("obsolete");
+    expect(screen.getByRole("button", { name: "Save default" })).toBeDisabled();
+    fireEvent.change(reasoning, { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Save default" })).toBeEnabled();
+  });
+
   it("loads candidates and saves one exact deployment with the observed version", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ modelPolicy: catalog }), { status: 200 }))
@@ -50,7 +113,8 @@ describe("administrator provider model default task", () => {
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
       expectedVersion: 1,
-      providerModelId: "model-a"
+      providerModelId: "model-a",
+      reasoningEffort: null
     });
   });
 

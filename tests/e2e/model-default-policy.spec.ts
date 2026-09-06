@@ -50,6 +50,7 @@ const modelConfiguration = {
 let createdChatId: string | null = null;
 let originalPolicy: {
   defaultProviderModelId: string | null;
+  reasoningEffort: string | null;
   updatedByUserId: string | null;
 } | null = null;
 let originalUserDefault: string | null = null;
@@ -75,6 +76,7 @@ test.describe("installation model default policy", () => {
     ]);
     originalPolicy = {
       defaultProviderModelId: policy.defaultProviderModelId,
+      reasoningEffort: policy.reasoningEffort,
       updatedByUserId: policy.updatedByUserId
     };
     originalUserDefault = settings.defaultProviderModelId;
@@ -177,6 +179,7 @@ test.describe("installation model default policy", () => {
       await tx.modelPolicy.update({
         data: {
           defaultProviderModelId: null,
+          reasoningEffort: null,
           updatedByUserId: null,
           version: { increment: 1 }
         },
@@ -192,6 +195,7 @@ test.describe("installation model default policy", () => {
         await tx.modelPolicy.update({
           data: {
             defaultProviderModelId: originalPolicy!.defaultProviderModelId,
+            reasoningEffort: originalPolicy!.reasoningEffort,
             updatedByUserId: originalPolicy!.updatedByUserId,
             version: { increment: 1 }
           },

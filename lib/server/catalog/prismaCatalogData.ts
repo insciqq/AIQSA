@@ -1,5 +1,4 @@
 import {
-  resolveProviderModelParameterControls,
   type CatalogAdapterKind,
   type ProviderModelCatalogEntry,
   type SearchStrategyCatalogEntry,
@@ -22,7 +21,7 @@ import {
   normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
 } from "@/lib/server/providers/providerConfiguration";
-import { resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
+import { configuredModelParameterControls, resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
 import { hasVerifiedPdfInput } from "@/lib/server/providers/pdfInputEvidence";
 import {
   compatibleTechnicalAdapter,
@@ -414,21 +413,7 @@ export function providerModelToCatalogEntry(
     inputTokenPriceMicros: model.inputTokenPriceMicros,
     modelId: model.id,
     outputTokenPriceMicros: model.outputTokenPriceMicros,
-    parameterControls: resolveProviderModelParameterControls({
-      adapterKind: configuration.adapterKind as CatalogAdapterKind,
-      defaultMaxOutputTokens: resolvedCapabilities.defaultMaxOutputTokens,
-      defaultReasoningEffort: resolvedCapabilities.defaultReasoningEffort,
-      defaultReasoningMode: resolvedCapabilities.defaultReasoningMode,
-      defaultParams: configuration.defaultParams,
-      providerFamily: model.connection.family,
-      reasoningEfforts: resolvedCapabilities.reasoningEfforts,
-      reasoningModes: resolvedCapabilities.reasoningModes,
-      supportsReasoningMode: "reasoningRequestMapping" in configuration &&
-        Boolean(configuration.reasoningRequestMapping?.modePath),
-      supportsReasoning: capabilities.reasoning,
-      supportsStreaming: capabilities.streaming,
-      upstreamModelId: configuration.upstreamModelId
-    }),
+    parameterControls: configuredModelParameterControls(configuration, model.connection.family),
     provider: model.connectionId,
     providerDisplayName: model.connection.displayName,
     providerFamily: model.connection.family,
@@ -689,7 +674,7 @@ export function createPrismaCatalogDataLoader({
       }),
       loadEntitlements(userId),
       prisma.modelPolicy?.findUnique({
-        select: { defaultProviderModelId: true },
+        select: { defaultProviderModelId: true, reasoningEffort: true },
         where: { id: "installation" }
       }) ?? Promise.resolve(null),
       prisma.searchPolicy?.findUnique({

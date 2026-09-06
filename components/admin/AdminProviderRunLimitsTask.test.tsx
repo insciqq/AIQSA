@@ -6,6 +6,7 @@ const catalog = {
   candidates: [],
   policy: {
     defaultModel: null,
+    reasoningEffort: null,
     mcpAutoDiscoveryTimeoutSeconds: 60,
     maxMcpToolsPerDiscovery: 10,
     maxToolCalls: 20,

@@ -16,6 +16,37 @@ const auth = createTestAuth({
 });
 
 describe("catalog handler", () => {
+  it.each([
+    { effort: "high", personalModel: null, personal: {}, allowed: true, expected: "high" },
+    { effort: "high", personalModel: null, personal: { temperature: "0.5" }, allowed: true, expected: "high" },
+    { effort: "high", personalModel: null, personal: { reasoningEffort: "low" }, allowed: true, expected: "low" },
+    { effort: "unsupported", personalModel: null, personal: {}, allowed: true, expected: undefined },
+    { effort: null, personalModel: null, personal: {}, allowed: true, expected: undefined },
+    { effort: "high", personalModel: "gpt-5.5", personal: {}, allowed: true, expected: undefined },
+    { effort: "high", personalModel: "unavailable", personal: {}, allowed: true, expected: undefined },
+    { effort: "high", personalModel: null, personal: {}, allowed: false, expected: undefined }
+  ])("resolves installation reasoning with personal and entitlement precedence: %j", ({
+    effort, personalModel, personal, allowed, expected
+  }) => {
+    const key = "openai:gpt-5.5";
+    const catalog = buildCurrentUserCatalog({
+      entitlements: { modelKeys: new Set(allowed ? [key] : []), providerKeys: new Set(), searchStrategies: new Set() },
+      modelPolicy: { defaultProviderModelId: "gpt-5.5", reasoningEffort: effort },
+      models: defaultProviderModels,
+      searchStrategies: [],
+      settings: {
+        defaultControlValues: { [key]: personal },
+        defaultProviderModelId: personalModel,
+        defaultSearchPlan: null,
+        showCitations: true,
+        showReasoningBlocks: false
+      }
+    });
+    expect(catalog.defaults.controlValues[key]).toEqual({
+      ...(expected ? { reasoningEffort: expected } : {}), ...personal
+    });
+  });
+
   it("filters models and search strategies by the current user's entitlements", async () => {
     const GET = createCatalogHandler({
       loadCatalogData: async () => ({

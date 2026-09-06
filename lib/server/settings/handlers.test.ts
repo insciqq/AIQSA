@@ -55,6 +55,37 @@ function baseSettingsData(): SettingsHandlerData {
 }
 
 describe("settings handler", () => {
+  it.each([
+    { personalModel: null, personalEffort: null, expected: "high" },
+    { personalModel: null, personalEffort: "low", expected: "low" },
+    { personalModel: "gpt-5.5", personalEffort: null, expected: undefined }
+  ])("reconciles reasoning when changing the model default without persisting inheritance: %j", async ({
+    personalModel, personalEffort, expected
+  }) => {
+    const data = baseSettingsData();
+    data.modelPolicy = { defaultProviderModelId: "gpt-5.5", reasoningEffort: "high" };
+    data.settings.defaultControlValues = personalEffort
+      ? { "openai:gpt-5.5": { reasoningEffort: personalEffort } } : {};
+    let capturedUpdate: UserSettingsUpdate | undefined;
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => {
+        capturedUpdate = update;
+        return updated({ ...data.settings, ...update });
+      }
+    });
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify({ defaultProviderModelId: personalModel }),
+      headers: { cookie: authCookie(), "content-type": "application/json" },
+      method: "PATCH"
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.settings.defaultControlValues["openai:gpt-5.5"]?.reasoningEffort).toBe(expected);
+    expect(capturedUpdate).toEqual({ defaultProviderModelId: personalModel });
+  });
+
   it("updates user defaults and sanitizes per-model control drafts", async () => {
     let capturedUpdate: unknown = null;
     let capturedValidationModels: SettingsValidationModel[] = [];

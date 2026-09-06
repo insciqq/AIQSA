@@ -52,7 +52,7 @@ export function resolveChatDefaults(
 
 export type CatalogData = {
   entitlements: ResolvedEntitlements;
-  modelPolicy?: { defaultProviderModelId: string | null } | null;
+  modelPolicy?: { defaultProviderModelId: string | null; reasoningEffort?: string | null } | null;
   models: ProviderModelCatalogEntry[];
   searchPolicy?: { defaultPlan: unknown } | null;
   searchStrategies: SearchStrategyCatalogEntry[];
@@ -167,7 +167,29 @@ export function resolveSearchPreference(input: Readonly<{
   };
 }
 
+export function resolveCurrentUserControlValues(
+  input: CatalogSelectionData,
+  { defaultModel, modelPreferenceSource }: CurrentUserCatalogSelection
+): Record<string, unknown> {
+  const effort = input.modelPolicy?.reasoningEffort;
+  const reasoning = defaultModel?.parameterControls.reasoningEffort;
+  const controlValues = isRecord(input.settings.defaultControlValues)
+    ? { ...input.settings.defaultControlValues }
+    : {};
+  if (modelPreferenceSource === "organization" && defaultModel && effort &&
+    reasoning?.supported && reasoning.options.includes(effort)) {
+    const key = `${defaultModel.provider}:${defaultModel.modelId}`;
+    const personal = controlValues[key];
+    controlValues[key] = {
+      reasoningEffort: effort,
+      ...(isRecord(personal) ? personal : {})
+    };
+  }
+  return controlValues;
+}
+
 export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogWire {
+  const selection = resolveCurrentUserCatalogSelection(input);
   const {
     defaultModel,
     entitledStrategies,
@@ -176,7 +198,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
     models,
     organizationModelDefault,
     personalModelDefault
-  } = resolveCurrentUserCatalogSelection(input);
+  } = selection;
   const providers = Array.from(new Set(models.map((model) => model.provider))).map((provider) => {
     const providerModels = models.filter((model) => model.provider === provider);
     const source = input.models.find((model) => model.provider === provider);
@@ -193,12 +215,9 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
     settings: input.settings,
     strategies: entitledStrategies
   });
-
   return {
     defaults: {
-      controlValues: isRecord(input.settings.defaultControlValues)
-        ? input.settings.defaultControlValues
-        : {},
+      controlValues: resolveCurrentUserControlValues(input, selection),
       modelId: defaultModel?.modelId ?? "",
       hasPersonalModelDefault,
       modelPreferenceSource,

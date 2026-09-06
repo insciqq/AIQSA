@@ -1,12 +1,15 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   AdminModelDefaultCandidate,
+  AdminDefaultAnswerModelCandidate,
   AdminModelPolicyCatalog
 } from "../../../contracts/adminModelPolicy";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { configuredModelParameterControls } from "../../providers/providerModelCapabilities";
 
 export type AdminModelPolicyServiceErrorCode =
   | "model_policy_stale"
+  | "model_policy_reasoning_invalid"
   | "model_policy_target_unavailable";
 
 export class AdminModelPolicyServiceError extends Error {
@@ -26,6 +29,7 @@ export type AdminAnswerModelRow = {
     activatedAt: Date | null;
     displayName: string;
     enabled: boolean;
+    family?: string;
     id: string;
   };
   connectionId: string;
@@ -60,6 +64,27 @@ export function serializeAdminAnswerModel(
   };
 }
 
+function reasoningControls(activeConfig: unknown, family: string) {
+  return configuredModelParameterControls(
+    normalizeProviderModelConfiguration(activeConfig), family
+  ).reasoningEffort;
+}
+
+function serializeDefaultAnswerModel(row: AdminAnswerModelRow): AdminDefaultAnswerModelCandidate {
+  let reasoningEfforts: string[] = [];
+  let defaultReasoningEffort: string | null = null;
+  try {
+    const controls = reasoningControls(row.activeConfig, row.connection.family ?? "");
+    if (controls.supported) {
+      reasoningEfforts = [...controls.options];
+      defaultReasoningEffort = controls.defaultValue;
+    }
+  } catch {
+    // A retained unavailable deployment still has an identity, not trusted controls.
+  }
+  return { ...serializeAdminAnswerModel(row), defaultReasoningEffort, reasoningEfforts };
+}
+
 type LockedModelRow = {
   activeConfig: unknown;
   activeVersion: number;
@@ -68,6 +93,7 @@ type LockedModelRow = {
   connectionActivatedAt: Date | null;
   connectionActiveVersion: number;
   connectionEnabled: boolean;
+  connectionFamily: string;
   enabled: boolean;
   id: string;
 };
@@ -103,16 +129,17 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
       if (!policy) throw new Error("installation_model_policy_missing");
       const models = rows as AdminAnswerModelRow[];
       return {
-        candidates: models.filter(adminAnswerModelAvailable).map(serializeAdminAnswerModel),
+        candidates: models.filter(adminAnswerModelAvailable).map(serializeDefaultAnswerModel),
         policy: {
           defaultModel: policy.defaultProviderModel
             ? {
-                ...serializeAdminAnswerModel(policy.defaultProviderModel as AdminAnswerModelRow),
+                ...serializeDefaultAnswerModel(policy.defaultProviderModel as AdminAnswerModelRow),
                 available: adminAnswerModelAvailable(
                   policy.defaultProviderModel as AdminAnswerModelRow
                 )
               }
             : null,
+          reasoningEffort: policy.reasoningEffort,
           mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
           maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
           maxToolCalls: Number(policy.maxToolCalls),
@@ -127,6 +154,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
     async update(input: Readonly<{
       expectedVersion: number;
       providerModelId: string | null;
+      reasoningEffort: string | null;
       userId: string;
     }>): Promise<void> {
       try {
@@ -151,6 +179,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
                 model."activeVersion",
                 model."activatedAt",
                 connection."enabled" AS "connectionEnabled",
+                connection."family" AS "connectionFamily",
                 connection."activeConfig" AS "connectionActiveConfig",
                 connection."activeVersion" AS "connectionActiveVersion",
                 connection."activatedAt" AS "connectionActivatedAt"
@@ -164,11 +193,20 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
             if (!models[0] || !lockedModelAvailable(models[0])) {
               throw new AdminModelPolicyServiceError("model_policy_target_unavailable");
             }
+            if (input.reasoningEffort !== null) {
+              const controls = reasoningControls(models[0].activeConfig, models[0].connectionFamily);
+              if (!controls.supported || !controls.options.includes(input.reasoningEffort)) {
+                throw new AdminModelPolicyServiceError("model_policy_reasoning_invalid");
+              }
+            }
+          } else if (input.reasoningEffort !== null) {
+            throw new AdminModelPolicyServiceError("model_policy_reasoning_invalid");
           }
 
           await tx.modelPolicy.update({
             data: {
               defaultProviderModelId: input.providerModelId,
+              reasoningEffort: input.reasoningEffort,
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },
