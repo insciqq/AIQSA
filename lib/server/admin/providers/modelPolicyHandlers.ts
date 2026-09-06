@@ -81,7 +81,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
             Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
             !Number.isSafeInteger(value.maxToolCalls) || Number(value.maxToolCalls) < 1 ||
             !Number.isSafeInteger(value.maxToolRounds) || Number(value.maxToolRounds) < 1 ||
-            "providerModelId" in value) {
+            "providerModelId" in value || "reasoningEffort" in value) {
             return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
           }
           await input.service.updateToolBudgets({
@@ -99,9 +99,17 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
             !/[\u0000-\u001f\u007f]/u.test(value.providerModelId))) {
             return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
           }
+          if (!(value.reasoningEffort === null || typeof value.reasoningEffort === "string" &&
+            value.reasoningEffort.trim() === value.reasoningEffort &&
+            value.reasoningEffort.length > 0 && value.reasoningEffort.length <= 32 &&
+            !/[\u0000-\u001f\u007f]/u.test(value.reasoningEffort)) ||
+            value.providerModelId === null && value.reasoningEffort !== null) {
+            return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
+          }
           await input.service.update({
             expectedVersion: Number(value.expectedVersion),
             providerModelId: value.providerModelId,
+            reasoningEffort: value.reasoningEffort,
             userId: auth.session.userId
           });
         }

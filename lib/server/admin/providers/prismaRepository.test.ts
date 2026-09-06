@@ -1117,6 +1117,7 @@ describe("Prisma admin provider repository", () => {
     expect(db.modelPolicy.updateMany).toHaveBeenCalledWith({
       data: {
         defaultProviderModelId: null,
+        reasoningEffort: null,
         updatedByUserId: null,
         version: { increment: 1 }
       },

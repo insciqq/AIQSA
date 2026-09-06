@@ -2033,6 +2033,7 @@ export function createPrismaAdminProviderRepository(
           await tx.modelPolicy.updateMany({
             data: {
               defaultProviderModelId: null,
+              reasoningEffort: null,
               updatedByUserId: null,
               version: { increment: 1 }
             },

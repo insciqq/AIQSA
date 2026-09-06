@@ -169,6 +169,11 @@ function reconciledPatch(
     patch.modelPreferenceSource = settings.modelPreferenceSource;
     patch.organizationModelDefault = settings.organizationModelDefault;
     patch.personalModelDefault = settings.personalModelDefault;
+    if (settings.organizationModelDefault) {
+      const { provider, modelId } = settings.organizationModelDefault;
+      const key = `${provider}:${modelId}`;
+      patch.controlValues = { [key]: settings.defaultControlValues[key] ?? {} };
+    }
   }
   if (Object.prototype.hasOwnProperty.call(sent, "searchPlan")) {
     patch.searchPlan = settings.defaultSearchPlan;
@@ -191,9 +196,12 @@ function reconciledPatch(
     patch.showReasoningBlocks = settings.showReasoningBlocks;
   }
   if (sent.controlValues) {
-    patch.controlValues = Object.fromEntries(
-      Object.keys(sent.controlValues).map((key) => [key, settings.defaultControlValues[key] ?? {}])
-    );
+    patch.controlValues = {
+      ...patch.controlValues,
+      ...Object.fromEntries(
+        Object.keys(sent.controlValues).map((key) => [key, settings.defaultControlValues[key] ?? {}])
+      )
+    };
   }
 
   return patch;
@@ -238,9 +246,10 @@ export function createSettingsMutationCoordinator({
     try {
       const settings = await send(batch.patch);
       const newerPatch = pendingBatch()?.patch ?? {};
+      const reconciled = reconciledPatch(batch.patch, settings);
       callbacks.onReconcile(
-        mergeSettingsDefaultsPatches(reconciledPatch(batch.patch, settings), newerPatch),
-        new Set(Object.keys(batch.patch.controlValues ?? {}))
+        mergeSettingsDefaultsPatches(reconciled, newerPatch),
+        new Set(Object.keys(reconciled.controlValues ?? {}))
       );
       settleWaiters(batch.throughSequence, true);
       if (failureOutstanding) {

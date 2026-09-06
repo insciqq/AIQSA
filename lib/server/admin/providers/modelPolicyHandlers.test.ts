@@ -10,6 +10,21 @@ function session(role: "admin" | "user" = "admin") {
 }
 
 describe("administrator model policy handlers", () => {
+  it.each([undefined, 4, "", " high", "high\u0000", "x".repeat(33)])(
+    "rejects malformed reasoning before mutation: %j", async (reasoningEffort) => {
+      const service = { list: vi.fn(), update: vi.fn() };
+      const handlers = createAdminModelPolicyHandlers({
+        resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+      });
+      const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/model-policy", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedVersion: 1, providerModelId: "model-1", reasoningEffort })
+      }));
+      expect(response.status).toBe(400);
+      expect(service.update).not.toHaveBeenCalled();
+    }
+  );
+
   it("denies non-administrators before reading policy state", async () => {
     const service = { list: vi.fn(), update: vi.fn() };
     const handlers = createAdminModelPolicyHandlers({
@@ -33,7 +48,7 @@ describe("administrator model policy handlers", () => {
     const response = await handlers.PATCH(new Request(
       "http://local.test/api/admin/providers/model-policy",
       {
-        body: JSON.stringify({ expectedVersion: 2, providerModelId: "model-1" }),
+        body: JSON.stringify({ expectedVersion: 2, providerModelId: "model-1", reasoningEffort: null }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       }
@@ -43,6 +58,7 @@ describe("administrator model policy handlers", () => {
     expect(service.update).toHaveBeenCalledWith({
       expectedVersion: 2,
       providerModelId: "model-1",
+      reasoningEffort: null,
       userId: "user-1"
     });
   });

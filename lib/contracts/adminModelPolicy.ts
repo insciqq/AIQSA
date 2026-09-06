@@ -10,10 +10,16 @@ export type AdminModelDefaultCandidate = {
   id: string;
 };
 
+export type AdminDefaultAnswerModelCandidate = AdminModelDefaultCandidate & {
+  defaultReasoningEffort: string | null;
+  reasoningEfforts: string[];
+};
+
 export type AdminModelPolicyCatalog = {
-  candidates: AdminModelDefaultCandidate[];
+  candidates: AdminDefaultAnswerModelCandidate[];
   policy: {
-    defaultModel: (AdminModelDefaultCandidate & { available: boolean }) | null;
+    defaultModel: (AdminDefaultAnswerModelCandidate & { available: boolean }) | null;
+    reasoningEffort: string | null;
     mcpAutoDiscoveryTimeoutSeconds: number;
     maxMcpToolsPerDiscovery: number;
     maxToolCalls: number;
@@ -37,10 +43,16 @@ function boundedText(value: unknown, maxLength: number): value is string {
     value.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
-function candidate(value: unknown): value is AdminModelDefaultCandidate {
+function candidate(value: unknown): value is AdminDefaultAnswerModelCandidate {
   return record(value) && boundedText(value.connectionDisplayName, 160) &&
     boundedText(value.connectionId, 256) && boundedText(value.displayName, 160) &&
-    boundedText(value.id, 256);
+    boundedText(value.id, 256) && Array.isArray(value.reasoningEfforts) &&
+    value.reasoningEfforts.length <= 32 &&
+    value.reasoningEfforts.every((effort) => boundedText(effort, 32)) &&
+    new Set(value.reasoningEfforts).size === value.reasoningEfforts.length &&
+    (value.defaultReasoningEffort === null ||
+      boundedText(value.defaultReasoningEffort, 32) &&
+      value.reasoningEfforts.includes(value.defaultReasoningEffort));
 }
 
 export function decodeAdminModelPolicyResponse(
@@ -55,6 +67,8 @@ export function decodeAdminModelPolicyResponse(
   const updatedBy = policy.updatedBy;
   if ((defaultModel !== null && (!record(defaultModel) || !candidate(defaultModel) ||
       typeof (defaultModel as Record<string, unknown>).available !== "boolean")) ||
+    !(policy.reasoningEffort === null || boundedText(policy.reasoningEffort, 32)) ||
+    (defaultModel === null && policy.reasoningEffort !== null) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
     !Number.isSafeInteger(policy.mcpAutoDiscoveryTimeoutSeconds) ||
@@ -75,7 +89,8 @@ export function decodeAdminModelPolicyResponse(
     modelPolicy: {
       candidates: catalog.candidates,
       policy: {
-        defaultModel: defaultModel as (AdminModelDefaultCandidate & { available: boolean }) | null,
+        defaultModel: defaultModel as AdminModelPolicyCatalog["policy"]["defaultModel"],
+        reasoningEffort: policy.reasoningEffort as string | null,
         mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
         maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
         maxToolCalls: Number(policy.maxToolCalls),

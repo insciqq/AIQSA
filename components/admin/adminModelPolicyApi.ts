@@ -41,6 +41,7 @@ export function getAdminModelPolicy(fetcher: Fetcher = fetch) {
 export function updateAdminModelPolicy(input: Readonly<{
   expectedVersion: number;
   providerModelId: string | null;
+  reasoningEffort: string | null;
 }>, fetcher: Fetcher = fetch) {
   return request({
     body: JSON.stringify(input),
@@ -69,6 +70,7 @@ export function adminModelPolicyErrorMessage(code: string): string {
     model_policy_response_invalid: "The installation default response was invalid.",
     model_policy_stale: "The installation default changed elsewhere. Reload and apply your choice again.",
     model_policy_target_unavailable: "Choose an active answer model deployment.",
+    model_policy_reasoning_invalid: "Choose a reasoning effort supported by the selected model.",
     network_error: "The installation default could not be reached."
   };
   return messages[code] ?? code.replaceAll("_", " ");
