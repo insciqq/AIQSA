@@ -164,6 +164,38 @@ function renderedHeader(pack: MemoryContextPack): Record<string, unknown> | null
 }
 
 describe("Personal Memory context pack", () => {
+  it("packs contained same-message history once while retaining distinct episodes and chats", () => {
+    const question = "User: Which index did we choose?";
+    const answer = `${question}\nAssistant: The cedar index.`;
+    const ids = ["question", "round", "different-episode", "other-chat"];
+    const pack = packMemoryPersonalContext({
+      plan: aggregationPlan,
+      ranked: ids.map((id) => ranked(id, true, "DYNAMIC", id === "other-chat" ? "other" : "chat-source")),
+      expanded: ids.map((id) => ({
+        ...expansion(id, true, id === "round" ? answer : question,
+          id === "other-chat" ? "other" : "chat-source"),
+        sourceMessageIds: id === "round" ? ["user-1", "assistant-1"]
+          : [id === "different-episode" ? "user-2" : "user-1"]
+      }))
+    });
+    expect(new Set(pack.items.map(({ itemId }) => itemId))).toEqual(new Set([
+      "round", "different-episode", "other-chat"
+    ]));
+    expect(pack.items.find(({ itemId }) => itemId === "round")?.rawSafeText).toBe(answer);
+  });
+
+  it("never removes a compact excerpt in favor of an unsafe containing projection", () => {
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: [ranked("compact", true), ranked("unsafe", true)],
+      expanded: [
+        { ...expansion("compact", true, "User: Cedar."), sourceMessageIds: ["user-1"] },
+        { ...expansion("unsafe", true, "User: Cedar.\u0000"), sourceMessageIds: ["user-1"] }
+      ]
+    });
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["compact"]);
+  });
+
   it("packs bounded response preferences before relevant facts/history", () => {
     const dynamic = [ranked("fact"), ranked("history", true)];
     const pack = packMemoryPersonalContext({
@@ -189,7 +221,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v40");
+    expect(pack.packerVersion).toBe("memory-context-packer-v41");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {

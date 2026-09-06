@@ -72,16 +72,18 @@ function client() {
 }
 
 function historyClient(overrides: Readonly<{
+  source?: number;
   branchGeneration?: number;
   chunkingVersion?: string;
   pipelineVersion?: string;
   sourceProjectionVersion?: string;
 }> = {}) {
+  const source = overrides.source ?? 1;
   return {
     $queryRaw: vi.fn(async () => []),
     chat: { findMany: vi.fn(async () => [{
-      activeLeafMessageId: "source-message-1",
-      id: "source-chat-1",
+      activeLeafMessageId: `source-message-${source}`,
+      id: `source-chat-${source}`,
       memoryBranchGeneration: 4,
       memoryMode: "NORMAL",
       memorySourceRevision: 3,
@@ -90,18 +92,18 @@ function historyClient(overrides: Readonly<{
       title: "Archived source"
     }]) },
     chatMemoryCheckpoint: { findMany: vi.fn(async () => [{
-      activeLeafMessageId: "source-message-1",
+      activeLeafMessageId: `source-message-${source}`,
       branchGeneration: 4,
-      chatId: "source-chat-1",
-      lastIndexedMessageId: "source-message-1",
+      chatId: `source-chat-${source}`,
+      lastIndexedMessageId: `source-message-${source}`,
       pipelineVersion: overrides.pipelineVersion ?? MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: "s".repeat(64),
       sourceRevision: 3,
       status: "READY"
     }]) },
     chatMemoryCheckpointMessage: { findMany: vi.fn(async () => [{
-      chatId: "source-chat-1",
-      messageId: "source-message-1",
+      chatId: `source-chat-${source}`,
+      messageId: `source-message-${source}`,
       sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
     chatMemoryDigest: { findMany: vi.fn(async () => []) },
@@ -111,9 +113,9 @@ function historyClient(overrides: Readonly<{
     memoryScope: { findMany: vi.fn(async () => []) },
     memoryRecallChunk: { findMany: vi.fn(async () => [{
       branchGeneration: overrides.branchGeneration ?? 4,
-      chatId: "source-chat-1",
+      chatId: `source-chat-${source}`,
       chunkingVersion: overrides.chunkingVersion ?? MEMORY_HISTORY_CHUNKING_VERSION,
-      id: "private-chunk-1",
+      id: `private-chunk-${source}`,
       contentHash: "c".repeat(64),
       occurredTo: new Date("2026-08-21T04:00:00.000Z"),
       redactionState: "NOT_NEEDED",
@@ -124,9 +126,9 @@ function historyClient(overrides: Readonly<{
       state: "ACTIVE"
     }]) },
     memoryRecallChunkMessage: { findMany: vi.fn(async () => [{
-      chatId: "source-chat-1",
-      chunkId: "private-chunk-1",
-      messageId: "source-message-1",
+      chatId: `source-chat-${source}`,
+      chunkId: `private-chunk-${source}`,
+      messageId: `source-message-${source}`,
       sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
     memoryRecallRound: { findMany: vi.fn(async () => []) },
@@ -137,8 +139,8 @@ function historyClient(overrides: Readonly<{
       sourceMessageId: string | null;
     }>> => []) },
     message: { findMany: vi.fn(async () => [{
-      chatId: "source-chat-1",
-      id: "source-message-1",
+      chatId: `source-chat-${source}`,
+      id: `source-message-${source}`,
       updatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
     modelRun: { findMany: vi.fn(async () => [{ id: "run-1" }]) },
@@ -151,11 +153,11 @@ function historyClient(overrides: Readonly<{
       featureSnapshot: { projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT" },
       includedText: "The previous chat chose cedar deployment.",
       itemType: "RECALL_CHUNK",
-      recallChunkId: "private-chunk-1",
+      recallChunkId: `private-chunk-${source}`,
       sourceBranchGenerationSnapshot: 4,
-      sourceChatIdSnapshot: "source-chat-1",
+      sourceChatIdSnapshot: `source-chat-${source}`,
       sourceContentHashSnapshot: "c".repeat(64),
-      sourceMessageIdsSnapshot: ["source-message-1"],
+      sourceMessageIdsSnapshot: [`source-message-${source}`],
       sourceRevisionSnapshot: 3
     }]) }
   };
@@ -179,6 +181,45 @@ describe("answer Memory source projection", () => {
     expect(serialized).not.toContain("internal-document-time-sentinel");
     expect(serialized).not.toContain("internal-evidence-handle-sentinel");
     expect(serialized).not.toContain("internal-session-handle-sentinel");
+  });
+
+  it("groups exact source chats within an answer without merging equal titles or exposing ids", async () => {
+    const database = historyClient();
+    const other = historyClient({ source: 2 });
+    const chunks = await database.memoryRecallChunk.findMany();
+    const joins = await database.memoryRecallChunkMessage.findMany();
+    const items = await database.modelRunMemoryItem.findMany();
+    database.chat.findMany.mockResolvedValue([
+      ...await database.chat.findMany(), ...await other.chat.findMany()
+    ]);
+    database.chatMemoryCheckpoint.findMany.mockResolvedValue([
+      ...await database.chatMemoryCheckpoint.findMany(), ...await other.chatMemoryCheckpoint.findMany()
+    ]);
+    database.chatMemoryCheckpointMessage.findMany.mockResolvedValue([
+      ...await database.chatMemoryCheckpointMessage.findMany(), ...await other.chatMemoryCheckpointMessage.findMany()
+    ]);
+    database.message.findMany.mockResolvedValue([
+      ...await database.message.findMany(), ...await other.message.findMany()
+    ]);
+    database.memoryRecallChunk.findMany.mockResolvedValue([
+      ...chunks, ...await other.memoryRecallChunk.findMany(), { ...chunks[0]!, id: "private-chunk-3" }
+    ]);
+    database.memoryRecallChunkMessage.findMany.mockResolvedValue([
+      ...joins, ...await other.memoryRecallChunkMessage.findMany(), { ...joins[0]!, chunkId: "private-chunk-3" }
+    ]);
+    database.modelRunMemoryItem.findMany.mockResolvedValue([
+      ...items, ...await other.modelRunMemoryItem.findMany(), { ...items[0]!, recallChunkId: "private-chunk-3" }
+    ]);
+    const sources = (await loadMemoryRunSources(database as never, {
+      clientRefs: createMemoryClientRefService({ encryptionKey: () => randomBytes(32) }),
+      runIds: ["run-1"], userId: "user-1"
+    })).get("run-1")!;
+    expect(sources).toMatchObject([
+      { chatGroup: "chat-1", origin: "Archived source" },
+      { chatGroup: "chat-2", origin: "Archived source" },
+      { chatGroup: "chat-1", origin: "Archived source" }
+    ]);
+    expect(JSON.stringify(sources)).not.toMatch(/source-chat-|private-chunk-|source-message-/u);
   });
 
   it("projects history only when both persisted projection versions are current", async () => {

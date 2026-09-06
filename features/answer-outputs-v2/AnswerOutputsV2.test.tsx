@@ -44,7 +44,7 @@ function memorySource(): MemoryAnswerSource {
 
 /** The process fold is collapsed by default; tests open it first. */
 function openProcess() {
-  for (const fold of screen.getAllByTestId("tool-activity-disclosure")) {
+  for (const fold of document.querySelectorAll("details")) {
     (fold as HTMLDetailsElement).open = true;
   }
 }
@@ -196,10 +196,10 @@ describe("answer outputs v2", () => {
   it("renders a quiet Memory source row without refs, scores, or technical metadata", () => {
     shellFetch.mockReset();
     render(<AnswerProcessV2 memorySources={[memorySource()]} />);
-    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Used 1 memory");
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Memory · 1");
     openProcess();
 
-    expect(screen.getByRole("heading", { name: "Memory" })).toBeVisible();
+    expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
     expect(screen.getByText("Saved memory")).toBeInTheDocument();
     expect(screen.getByText("I prefer concise answers.")).toBeVisible();
     expect(screen.getByText("Saved by you")).toBeVisible();
@@ -235,11 +235,6 @@ describe("answer outputs v2", () => {
     const ids = Array.from(container.querySelectorAll<HTMLElement>("[id]"))
       .map((element) => element.id);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const section of screen.getAllByTestId("answer-memory-sources")) {
-      const headingId = section.getAttribute("aria-labelledby");
-      expect(headingId).toBeTruthy();
-      expect(document.getElementById(headingId ?? "")).toBeInstanceOf(HTMLHeadingElement);
-    }
     expect(screen.getAllByRole("textbox", { name: "Correct this statement" })).toHaveLength(2);
     for (const textbox of screen.getAllByRole("textbox", { name: "Correct this statement" })) {
       const helpId = textbox.getAttribute("aria-describedby");
@@ -324,6 +319,7 @@ describe("answer outputs v2", () => {
       memoryRef: "opaque-memory-ref",
       origin: "Previous discussion",
       sourceAvailable: true,
+      chatGroup: "chat-1",
       sourceType: "PAST_CHAT",
       text: "The earlier discussion chose concise answers."
     }]} />);

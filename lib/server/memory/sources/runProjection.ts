@@ -401,6 +401,14 @@ export async function loadMemoryRunSources(
     `${message.chatId}\u0000${message.id}\u0000${message.updatedAt.toISOString()}`));
   const refs = input.clientRefs ?? defaultMemoryClientRefService;
   const sourcesByRun = new Map<string, MemoryAnswerSource[]>();
+  const chatGroupsByRun = new Map<string, Map<string, string>>();
+  const chatGroup = (runId: string, chatId: string): string => {
+    const groups = chatGroupsByRun.get(runId) ?? new Map<string, string>();
+    const group = groups.get(chatId) ?? `chat-${groups.size + 1}`;
+    groups.set(chatId, group);
+    chatGroupsByRun.set(runId, groups);
+    return group;
+  };
 
   for (const item of items) {
     const runId = runByBindingId.get(item.bindingId);
@@ -573,6 +581,7 @@ export async function loadMemoryRunSources(
           : {}),
         sourceAvailable: true,
         sourceType: "PAST_CHAT",
+        chatGroup: chatGroup(runId, chat!.id),
         text: boundedText(item.includedText, 1_000)
       };
     } else if (item.itemType === "RECALL_ROUND" && item.recallRoundId &&
@@ -655,6 +664,7 @@ export async function loadMemoryRunSources(
         ...(chat!.title.trim() ? { origin: boundedText(chat!.title, 200) } : {}),
         sourceAvailable: true,
         sourceType: "PAST_CHAT",
+        chatGroup: chatGroup(runId, chat!.id),
         text: boundedText(item.includedText, 1_000)
       };
     }

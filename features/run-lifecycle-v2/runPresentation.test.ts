@@ -245,10 +245,10 @@ describe("answer process label", () => {
     })).toBe("Thought for 12s");
     expect(answerProcessLabelV2({
       hasReasoning: true, memoryCount: 2, stepCount: 3, workDurationMs: 8_000
-    })).toBe("Worked for 8s · Used 2 memories");
+    })).toBe("Worked for 8s · Memory · 2");
     expect(answerProcessLabelV2({
       hasReasoning: false, memoryCount: 1, stepCount: 0, workDurationMs: null
-    })).toBe("Used 1 memory");
+    })).toBe("Memory · 1");
     expect(answerProcessLabelV2({
       hasReasoning: false, memoryCount: 0, stepCount: 2, workDurationMs: null
     })).toBe("Steps");
