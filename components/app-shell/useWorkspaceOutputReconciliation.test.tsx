@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { shellFetch } from "./shellApi";
 import type { ThreadMessage } from "./types";
 import { useWorkspaceOutputReconciliation } from "./useWorkspaceOutputReconciliation";
+import type { WorkspaceSessionStateWire } from "@/lib/contracts/workspace";
 
 const pending: ThreadMessage = {
   id: "answer", parentMessageId: null, role: "assistant", status: "complete", content: "Answer stays complete",
@@ -30,6 +31,25 @@ describe("personal Workspace output reconciliation", () => {
     await advance(120_000); expect(refresh).toHaveBeenCalledOnce();
     expect(pending.content).toBe("Answer stays complete");
     expect(pending.artifactSummary?.generatedFiles).toHaveLength(1);
+  });
+
+  it("keeps refreshing after files settle until the runtime finishes stopping", async () => {
+    const refresh = vi.fn(async () => ({}));
+    const completed: ThreadMessage = {
+      ...pending, workspaceActivity: { entries: [], outputStatus: { state: "complete" } }
+    };
+    const { rerender } = renderHook((value) => useWorkspaceOutputReconciliation({
+      ...value, refreshActiveChat: refresh
+    }), { initialProps: {
+      ...props, messages: [completed], sessionState: "ready" as WorkspaceSessionStateWire
+    } });
+
+    await advance(2_000);
+    expect(refresh).toHaveBeenCalledOnce();
+    rerender({ ...props, messages: [completed], sessionState: "stopped" });
+    await advance(120_000);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(completed.artifactSummary?.generatedFiles).toHaveLength(1);
   });
 
   it.each(["project", "streaming", "terminal", "no_chat"] as const)("does not create an extra refresh owner for %s", async (kind) => {

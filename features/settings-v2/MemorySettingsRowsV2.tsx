@@ -30,10 +30,31 @@ export function MemorySettingsRowsV2({
   const [resetNotice, setResetNotice] = useState<ResetNotice>(null);
   const resetInFlight = useRef(false);
   const resetTriggerRef = useRef<HTMLButtonElement>(null);
+  const resetPending = resetNotice === "started" || data?.resetState === "IN_PROGRESS";
 
   useEffect(() => {
     void refreshMemorySettings().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!resetPending) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      const current = await refreshMemorySettings(true).catch(() => null);
+      if (cancelled) return;
+      if (current?.resetState === "IDLE") {
+        setResetNotice("complete");
+      } else {
+        timer = setTimeout(() => void refresh(), 2_000);
+      }
+    };
+    timer = setTimeout(() => void refresh(), 2_000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [resetPending]);
 
   if (!data) {
     return loadState === "error" ? (
@@ -72,49 +93,42 @@ export function MemorySettingsRowsV2({
     void updateMemoryGate(key, value).catch(() => undefined);
   };
   const rows: ReadonlyArray<Readonly<{
-    available: boolean;
     description: string;
     key: MemorySettingsMutation;
     label: string;
     value: boolean;
   }>> = [
     {
-      available: data.capabilities.naturalLanguageActionsAvailable && data.capabilities.retrievalAvailable,
       description: t("settings.memoryDescription"),
       key: "useMemoryFacts",
       label: t("settings.memoryLabel"),
       value: data.settings.useMemoryFacts
     },
     {
-      available: data.capabilities.pastChatIndexingAvailable && data.capabilities.retrievalAvailable,
       description: t("settings.searchPastChatsDescription"),
       key: "referenceChatHistory",
       label: t("settings.searchPastChatsLabel"),
       value: data.settings.referenceChatHistory
     },
     {
-      available: data.capabilities.automaticLearningAvailable,
       description: t("settings.learnAutomaticallySimpleDescription"),
       key: "learnAutomatically",
       label: t("settings.learnAutomaticallyLabel"),
       value: data.settings.learnAutomatically
     },
     {
-      available: data.capabilities.synthesisAvailable,
       description: t("settings.synthesisDescription"),
       key: "synthesisEnabled",
       label: t("settings.synthesisLabel"),
       value: data.settings.synthesisEnabled
     },
     {
-      available: data.capabilities.decayAvailable,
       description: t("settings.decayDescription"),
       key: "decayEnabled",
       label: t("settings.decayLabel"),
       value: data.settings.decayEnabled
     }
   ];
-  const resetPending = resetNotice === "started" || data.resetState === "IN_PROGRESS";
   const resetStatus = resetPending
     ? t("settings.resetStarted")
     : resetNotice === "complete"
@@ -188,7 +202,7 @@ export function MemorySettingsRowsV2({
         <SettingsRowV2 description={row.description} key={row.key} title={row.label}>
           <SettingsSwitchV2
             checked={row.value}
-            disabled={busy !== null || !managementAvailable || !row.available}
+            disabled={busy !== null || !managementAvailable || resetBusy || resetPending}
             label={`${row.label}: ${row.value ? "on" : "off"}`}
             onChange={(next) => gate(row.key, next)}
           />

@@ -397,7 +397,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
       `);
       await tx.$executeRaw(Prisma.sql`
         UPDATE "UsageEvent" AS usage
-        SET "memoryExecutionBindingId" = NULL
+        SET "memoryExecutionBindingId" = NULL, "providerModelId" = NULL
         FROM "MemoryExecutionBinding" AS binding
         INNER JOIN "MemoryRetrievalAttempt" AS attempt
           ON attempt."userId" = binding."userId"

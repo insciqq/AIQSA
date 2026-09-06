@@ -434,7 +434,7 @@ export const allReusableWorkContributor: MemoryDeletionContributor = Object.free
     });
     await tx.$executeRaw(Prisma.sql`
       UPDATE "UsageEvent" AS usage
-      SET "memoryExecutionBindingId" = NULL
+      SET "memoryExecutionBindingId" = NULL, "providerModelId" = NULL
       FROM "MemoryExecutionBinding" AS binding
       INNER JOIN "MemoryJob" AS job
         ON job."userId" = binding."userId" AND job."id" = binding."memoryJobId"

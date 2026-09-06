@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import type { WorkspaceSessionStateWire } from "@/lib/contracts/workspace";
 import type { ThreadMessage } from "./types";
 import { subscribeToSessionExpired } from "./shellApi";
 import { useEventCallback } from "./useEventCallback";
@@ -11,19 +12,21 @@ type RefreshOptions = Readonly<{
   onUnavailable(): void;
 }>;
 
-/** Only personal terminal outputs need this source; Projects own their SSE refresh. */
+/** Personal terminal outputs and runtime retirement share one refresh source. */
 export function useWorkspaceOutputReconciliation(input: Readonly<{
   accountId: string;
   chatId: string | null;
   messages: readonly ThreadMessage[];
   projectId?: string | null;
+  sessionState?: WorkspaceSessionStateWire | null;
   streaming: boolean;
   refreshActiveChat(chatId: string, options: RefreshOptions): Promise<unknown>;
 }>): void {
   const pending = input.messages.filter((message) => message.status === "complete" &&
     ["exporting", "retrying"].includes(message.workspaceActivity?.outputStatus?.state ?? ""))
     .map((message) => message.id).join("\0");
-  const enabled = !input.projectId && !input.streaming && pending.length > 0 &&
+  const runtimePending = ["creating", "ready", "running"].includes(input.sessionState ?? "");
+  const enabled = !input.projectId && !input.streaming && (pending.length > 0 || runtimePending) &&
     !input.messages.some((message) => message.status === "streaming");
   const refresh = useEventCallback(input.refreshActiveChat);
   useEffect(() => {

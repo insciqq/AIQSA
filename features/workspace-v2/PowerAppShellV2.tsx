@@ -795,7 +795,8 @@ export function PowerAppShellV2({
   });
   useWorkspaceOutputReconciliation({
     accountId, chatId: activeChatId, messages: visibleMessages,
-    projectId: activeChat?.projectId, streaming: Boolean(activeChatStream), refreshActiveChat
+    projectId: activeChat?.projectId, sessionState: activeChat?.workspace?.sessionState,
+    streaming: Boolean(activeChatStream), refreshActiveChat
   });
   const pruneThreadCacheEvent = useEventCallback(pruneThreadCache);
   const activatePersonalChatDeepLink = useEventCallback(async (chatId: string) =>

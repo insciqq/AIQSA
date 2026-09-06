@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
@@ -7,6 +7,7 @@ import { MemorySettingsRowsV2 } from "./MemorySettingsRowsV2";
 
 const memoryApi = vi.hoisted(() => ({
   loadMemorySettings: vi.fn(),
+  patchMemorySettings: vi.fn(),
   resetPersonalMemory: vi.fn()
 }));
 
@@ -21,11 +22,46 @@ describe("MemorySettingsRowsV2", () => {
   beforeEach(() => {
     resetMemorySettingsStoreForTest();
     memoryApi.loadMemorySettings.mockReset();
+    memoryApi.patchMemorySettings.mockReset();
     memoryApi.resetPersonalMemory.mockReset();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     resetMemorySettingsStoreForTest();
+  });
+
+  it.each([
+    ["Use memories in answers", "useMemoryFacts"],
+    ["Search past chats", "referenceChatHistory"],
+    ["Learn automatically", "learnAutomatically"],
+    ["Notice repeated details", "synthesisEnabled"],
+    ["Learn from what you use", "decayEnabled"]
+  ] as const)("can enable %s while its runtime capability is inactive", async (label, key) => {
+    const data = memoryConsumerSettingsFixture({
+      capabilities: {
+        automaticLearningAvailable: false,
+        decayAvailable: false,
+        naturalLanguageActionsAvailable: false,
+        pastChatIndexingAvailable: false,
+        retrievalAvailable: false,
+        synthesisAvailable: false
+      }
+    });
+    useMemorySettingsStore.setState({ data, loadState: "ready" });
+    memoryApi.patchMemorySettings.mockResolvedValue({
+      ...data,
+      settings: { ...data.settings, [key]: true }
+    });
+    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+
+    const control = screen.getByRole("switch", { name: `${label}: off` });
+    expect(control).toBeEnabled();
+    fireEvent.click(control);
+
+    await waitFor(() => expect(memoryApi.patchMemorySettings).toHaveBeenCalledWith({ [key]: true }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: `${label}: on` }))
+      .toHaveAttribute("aria-checked", "true"));
   });
 
   it("renders one master switch and keeps saved-memory management available while paused", () => {
@@ -64,6 +100,7 @@ describe("MemorySettingsRowsV2", () => {
       "Memory is off. Reset cleanup is continuing in the background."
     );
     expect(screen.getByRole("button", { name: "Forget everything…" })).toBeDisabled();
+    for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled();
   });
 
   it("resets only after the consequence-naming confirmation and supports Escape", async () => {
@@ -97,6 +134,31 @@ describe("MemorySettingsRowsV2", () => {
     expect(memoryApi.resetPersonalMemory).toHaveBeenCalledOnce();
     await waitFor(() => expect(confirmation).not.toBeInTheDocument());
     expect(screen.getByTestId("settings-memory-reset")).toHaveTextContent("Personal Memory was reset.");
+  });
+
+  it("settles background reset progress and re-enables controls without reopening Settings", async () => {
+    vi.useFakeTimers();
+    useMemorySettingsStore.setState({
+      data: memoryConsumerSettingsFixture({ status: "ON" }),
+      loadState: "ready"
+    });
+    memoryApi.resetPersonalMemory.mockResolvedValue({ status: "IN_PROGRESS" });
+    memoryApi.loadMemorySettings
+      .mockResolvedValueOnce(memoryConsumerSettingsFixture({ resetState: "IN_PROGRESS" }))
+      .mockResolvedValue(memoryConsumerSettingsFixture({ resetState: "IDLE" }));
+    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Forget everything…" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Forget everything" }));
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Reset cleanup is continuing");
+    for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Personal Memory was reset.");
+    for (const control of screen.getAllByRole("switch")) expect(control).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Forget everything…" })).toBeEnabled();
   });
 
   it("keeps reset open on failure and suppresses a duplicate in-flight request", async () => {

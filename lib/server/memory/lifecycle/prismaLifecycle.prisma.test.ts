@@ -2255,6 +2255,11 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         statement,
         userId
       });
+      const decayTouchedAt = new Date();
+      await prisma.modelRunMemoryItem.update({
+        data: { decayTouchedAt, decayTouchPolicyVersion: "memory-decay-v1" },
+        where: { id: acceptedReceipt.memoryItemId }
+      });
       const unacceptedAttempt = await createUnacceptedAttemptItem({
         factVersionId: versionId,
         requestContent: statement,
@@ -2271,6 +2276,23 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         displayText: statement,
         messageId: unacceptedAttempt.messageId,
         userId
+      });
+      const candidate = await prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: candidateId }
+      });
+      const usageAuthority = await loadExecutionAuthority();
+      const usage = await prisma.usageEvent.create({
+        data: {
+          estimatedCostMicros: 17,
+          inputTokens: 11,
+          memoryExecutionBindingId: candidate.createdByExecutionId,
+          modelId: "memory-lifecycle-usage",
+          outputTokens: 3,
+          provider: "memory-lifecycle-fixture",
+          providerModelId: usageAuthority.providerModelId,
+          totalTokens: 14,
+          userId
+        }
       });
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
@@ -2518,6 +2540,18 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         prisma.memoryScope.count({ where: { userId } })
       ]);
       expect(zeroCountOwners).toEqual(Array.from({ length: 9 }, () => 0));
+      await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: usage.id } }))
+        .resolves.toMatchObject({
+          estimatedCostMicros: 17,
+          inputTokens: 11,
+          memoryExecutionBindingId: null,
+          modelId: "memory-lifecycle-usage",
+          outputTokens: 3,
+          provider: "memory-lifecycle-fixture",
+          providerModelId: null,
+          totalTokens: 14,
+          userId
+        });
       await expect(prisma.memoryRetrievalAttempt.findUnique({
         where: { id: unacceptedAttempt.attemptId }
       })).resolves.toBeNull();
@@ -2557,9 +2591,32 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
         where: { id: acceptedReceipt.memoryItemId }
       })).resolves.toMatchObject({
+        decayTouchedAt,
+        decayTouchPolicyVersion: "memory-decay-v1",
         factVersionId: null,
         includedText: statement
       });
+      await expect(prisma.modelRunMemoryItem.update({
+        data: { decayTouchedAt: null, decayTouchPolicyVersion: null },
+        where: { id: acceptedReceipt.memoryItemId }
+      })).rejects.toThrow();
+      await expect(prisma.modelRunMemoryItem.create({
+        data: {
+          bindingId: acceptedReceipt.bindingId,
+          createdAt: decayTouchedAt,
+          decayTouchedAt,
+          decayTouchPolicyVersion: "memory-decay-v1",
+          exactItemId: versionId,
+          finalScore: 0.9,
+          includedText: statement,
+          includedTextHash: memorySha256(statement),
+          itemStateAtAdmission: "ACTIVE",
+          itemType: "FACT_VERSION",
+          ordinal: 1,
+          selectionReason: "memory-lifecycle-detached-touch",
+          userId
+        }
+      })).rejects.toThrow("A new Memory decay touch requires a current fact version");
       await expectAcceptedReceiptDerivatives(acceptedReceipt, "SCRUBBED", "PURGED");
       await expect(prisma.message.findUniqueOrThrow({
         where: { id: acceptedAttempt.messageId }
