@@ -55,7 +55,7 @@ describe("Memory control runtime contract", () => {
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
       pipelineVersion: "memory-control-v23",
       policyVersion: "memory-control-policy-v23",
-      promptVersion: "memory-control-prompt-v26",
+      promptVersion: "memory-control-prompt-v27",
       schemaVersion: "memory-action-intent-v11"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
