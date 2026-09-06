@@ -183,7 +183,11 @@ function memorySourceActionMessage(action: Exclude<MemorySourceAction, "OPEN_SOU
   }
 }
 
-export function MemorySourceRowV2({ source }: Readonly<{ source: MemoryAnswerSource }>) {
+export function MemorySourceRowV2({ source, onSettled }: Readonly<{
+  source: MemoryAnswerSource;
+  onSettled?: () => void;
+}>) {
+  const [textExpanded, setTextExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [statement, setStatement] = useState(source.text ?? "");
   const [pending, setPending] = useState<MemorySourceAction | null>(null);
@@ -238,6 +242,7 @@ export function MemorySourceRowV2({ source }: Readonly<{ source: MemoryAnswerSou
         setCompleted(action);
         setEditing(false);
         setNotice(memorySourceActionMessage(action));
+        onSettled?.();
       }
     } catch {
       setError(mt("source.actionError"));
@@ -304,7 +309,7 @@ export function MemorySourceRowV2({ source }: Readonly<{ source: MemoryAnswerSou
         />
         <span className="v2-sr-only">{memorySourceTypeLabel(source.sourceType)}</span>
         <span className="v2-memory-source-main">
-          <p className="v2-memory-source-text">
+          <p className="v2-memory-source-text" data-expanded={textExpanded || undefined} id={`${statementId}-excerpt`}>
             {sourceAvailable
               ? completed === "CORRECT" ? statement : source.text
               : mt("source.unavailableBody")}
@@ -370,6 +375,13 @@ export function MemorySourceRowV2({ source }: Readonly<{ source: MemoryAnswerSou
           </span>
         ) : null}
       </div>
+      {sourceAvailable ? (
+        <button type="button" className="v2-memory-source-expand v2-focusable"
+          aria-controls={`${statementId}-excerpt`} aria-expanded={textExpanded}
+          onClick={() => setTextExpanded((value) => !value)}>
+          {mt(textExpanded ? "source.showLess" : "source.details")}
+        </button>
+      ) : null}
       {editing ? (
         <form className="v2-memory-source-correction" onSubmit={submitCorrection}>
           <label htmlFor={statementId}>{mt("source.correctStatement")}</label>

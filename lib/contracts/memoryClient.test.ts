@@ -44,6 +44,7 @@ describe("Memory client-only contracts", () => {
       memoryRef: "opaque-ref",
       origin: "Previous discussion",
       sourceAvailable: true,
+      chatGroup: "chat-1",
       sourceType: "PAST_CHAT",
       text: "The earlier discussion chose the cedar deployment."
     } as const;

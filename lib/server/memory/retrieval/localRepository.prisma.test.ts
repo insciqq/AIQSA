@@ -1964,20 +1964,6 @@ describe("local Memory retrieval on PostgreSQL", () => {
         itemId: rawOnlyChunkId,
         selectionReason: expect.stringContaining("aggregation_session_raw_fallback")
       }));
-      const aggregationNavigation = await repository.expandAggregationNavigation(
-        aggregation.snapshot,
-        aggregationPlan,
-        aggregationSessions
-      );
-      expect(aggregationNavigation).toHaveLength(4);
-      expect(aggregationNavigation.filter(({ projectionKind }) =>
-        projectionKind === "CHAT_DIGEST_SAFE_TEXT")).toHaveLength(3);
-      expect(aggregationNavigation).toContainEqual(expect.objectContaining({
-        itemId: rawOnlyChunkId,
-        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-        safeText: "User:\nThe oak deployment selected a canary rollout.",
-        supportingItemId: null
-      }));
       const aggregationRaw = await repository.expand(
         aggregation.snapshot,
         aggregationPlan,

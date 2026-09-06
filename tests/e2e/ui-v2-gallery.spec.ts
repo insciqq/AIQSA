@@ -654,12 +654,12 @@ test("v2 memory recall and the saved-memory notice keep their verbs behind menus
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=memory");
   const answer = page.locator('article[data-role="assistant"]').first();
   const process = answer.getByTestId("tool-activity-disclosure");
-  await expect(process.locator("summary")).toHaveText("Worked for 8s · Used 2 memories");
+  await expect(process.locator(":scope > summary")).toHaveText("Worked for 8s · Memory · 2");
   await expect(answer.getByTestId("memory-action-confirmation")).toContainText("Memory saved.");
   await expect(answer.getByRole("button", { name: "Edit" })).toHaveCount(0);
-  await process.locator("summary").click();
+  await process.locator(":scope > summary").click();
   await expect(answer.getByRole("heading", { name: "Steps" })).toBeVisible();
-  await expect(answer.getByRole("heading", { name: "Memory" })).toBeVisible();
+  await answer.getByTestId("memories-disclosure").locator(":scope > summary").click();
   const rows = answer.getByTestId("memory-source-card");
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText("My dog is called Bruno and he is a beagle.");

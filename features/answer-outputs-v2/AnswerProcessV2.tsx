@@ -14,8 +14,8 @@ import {
   workspaceActivityHasFailureV2,
   workspaceProcessLabelV2
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
-import { useId } from "react";
-import { MemorySourceRowV2 } from "./AnswerOutputsV2";
+import { MemorySourcesV2 } from "./MemorySourcesV2";
+import { presentMemorySourcesV2 } from "./memorySourcePresentation";
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
 
@@ -64,8 +64,8 @@ export type AnswerProcessV2Props = Readonly<{
 /**
  * The one disclosure above an answer. While the run works it is the live
  * status ("Thinking…", "Searching the web…") in the same 28px slot; settled
- * it folds Thinking → Steps → Memory under a human label ("Worked for 8s ·
- * Used 2 memories"). A reached tool limit stays visible outside the fold.
+ * it folds Thinking → Steps and independent Past chats/Memory disclosures
+ * under a factual label ("Worked for 8s · Past chats · 2"). A reached tool limit stays visible outside the fold.
  */
 export function AnswerProcessV2({
   liveLabel = null,
@@ -75,7 +75,7 @@ export function AnswerProcessV2({
   workDurationMs = null,
   workspaceActivity = null
 }: AnswerProcessV2Props) {
-  const memoryHeadingId = `answer-memory-sources-heading-${useId()}`;
+  const { memories, pastChats } = presentMemorySourcesV2(memorySources);
   const reasoning = reasoningTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
@@ -104,7 +104,8 @@ export function AnswerProcessV2({
     ? workspaceProcessLabelV2({ live, workDurationMs })
     : answerProcessLabelV2({
         hasReasoning: reasoning.length > 0,
-        memoryCount: memorySources.length,
+        memoryCount: memories.length,
+        pastChatCount: pastChats.length,
         stepCount: calls.length,
         workDurationMs
       });
@@ -166,23 +167,7 @@ export function AnswerProcessV2({
             </section>
           ) : null}
           {memorySources.length > 0 ? (
-            <section
-              aria-labelledby={memoryHeadingId}
-              className="v2-answer-process-section v2-memory-sources"
-              data-testid="answer-memory-sources"
-            >
-              <h3 id={memoryHeadingId}>Memory</h3>
-              <div className="v2-memory-source-list">
-                {memorySources.map((source, index) => (
-                  <MemorySourceRowV2
-                    key={source.sourceAvailable
-                      ? `memory-source-${source.memoryRef}`
-                      : `memory-source-${source.sourceType}-${source.date}-${index}`}
-                    source={source}
-                  />
-                ))}
-              </div>
-            </section>
+            <MemorySourcesV2 memories={memories} pastChats={pastChats} />
           ) : null}
         </div>
       </details>

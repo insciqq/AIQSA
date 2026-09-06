@@ -468,7 +468,6 @@ function repository(options: Readonly<{
     : null;
   const value = {
     expand,
-    expandAggregationNavigation: expand,
     ...(completeSessionEvidence ? { completeSessionEvidence } : {}),
     projectAggregationSessions,
     retrieve,
@@ -2557,7 +2556,7 @@ describe("Personal Memory v1 run admission", () => {
     );
   });
 
-  it("expands reranked aggregation sources back to diverse raw evidence", () => {
+  it("selects raw aggregation candidates without inheriting session scores", () => {
     const raw = [
       ["alpha-first", "chat-alpha"],
       ["alpha-second", "chat-alpha"],
@@ -2584,13 +2583,29 @@ describe("Personal Memory v1 run admission", () => {
       "alpha-first",
       "alpha-second"
     ]);
-    expect(expanded.map(({ finalScore }) => finalScore)).toEqual([0.98, 0.91, 0.91]);
-    expect(expanded.map(({ selectionReason }) => selectionReason)).toEqual([
-      expect.stringContaining("aggregation_source_selected"),
-      "aggregation_source_selected",
-      expect.stringContaining("aggregation_source_selected")
-    ]);
+    expect(expanded.map(({ finalScore }) => finalScore)).toEqual([0.8, 1, 0.9]);
+    expect(expanded).toEqual([raw[2], raw[0], raw[1]]);
     expect(expanded.every(({ selectionReason }) => selectionReason.length <= 128)).toBe(true);
+  });
+
+  it("sends only distinct same-source evidence to the reranker, retaining every unique message", async () => {
+    const question = "User: Which index did we select?";
+    const round = `${question}\nAssistant: Cedar.`;
+    const local = repository({
+      candidates: [laneCandidate("question"), laneCandidate("round"), laneCandidate("separate")],
+      expandedById: {
+        question: { ...expandedHistory("question"), safeText: question, sourceMessageIds: ["u1"] },
+        round: { ...expandedHistory("round"), safeText: round, sourceMessageIds: ["u1", "a1"] },
+        separate: { ...expandedHistory("separate"), safeText: question, sourceMessageIds: ["u2"] }
+      }
+    });
+    const runUtilities = utilities(["c0", "c1"]);
+    const result = await createMemoryRunRetrievalService(local.value, { utilities: runUtilities })
+      .retrieve(runInput("Which index did we select?"));
+    const rankedTexts = vi.mocked(runUtilities.rerank).mock.calls[0]![0].candidates.map(({ text }) => text);
+    expect(rankedTexts).toHaveLength(2);
+    expect(rankedTexts).toEqual(expect.arrayContaining([question, round]));
+    expect(new Set(result.items.map(({ exactItemId }) => exactItemId))).toEqual(new Set(["round", "separate"]));
   });
 
   it("keeps query anchors ahead of source completion and deduplicates evidence roots", () => {
@@ -2772,7 +2787,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(merged.completionCandidateCount).toBe(1);
   });
 
-  it("preserves an exact reranked aggregation anchor before source fallback", () => {
+  it("preserves an exact navigation anchor before source fallback", () => {
     const raw = [
       ["alpha-fused-first", "chat-alpha"],
       ["alpha-navigation-anchor", "chat-alpha"],
@@ -2797,7 +2812,7 @@ describe("Personal Memory v1 run admission", () => {
       "beta-fused-first",
       "alpha-fused-first"
     ]);
-    expect(expanded.map(({ finalScore }) => finalScore)).toEqual([0.99, 0.8, 0.99]);
+    expect(expanded.map(({ finalScore }) => finalScore)).toEqual([0.9, 0.8, 1]);
   });
 
   it("descends into raw children of strong sessions before the weak-session tail", () => {
@@ -4411,7 +4426,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).not.toContain("distinct_members=");
   });
 
-  it("authoritatively re-expands source-completion rounds before packing them", async () => {
+  it.each([true, false])("ranks linked excerpts before rejoin and never revives rejected excerpts: relevant=%s", async (completionRelevant) => {
     const completedRound: MemoryRankedCandidate = {
       ...rankedHistory("completed-round", "NORMAL"),
       entryId: null,
@@ -4442,37 +4457,58 @@ describe("Personal Memory v1 run admission", () => {
       temporalIntent: "ANY"
     });
 
+    vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
+      status: "READY",
+      relevanceScoreFloor: 0.01,
+      decisions: input.candidates.map((candidate) => ({
+        handle: candidate.handle,
+        applicable: null,
+        current: null,
+        reasonCode: "SCORE_ONLY",
+        relevanceScore: candidate.text.includes("completed-round")
+          ? completionRelevant ? 0.7 : 0
+          : 0.9
+      }))
+    }));
+
     const result = await createMemoryRunRetrievalService(local.value, options)
       .retrieve(runInput("What is the total across all completed trips?"));
 
     expect(local.completeSessionEvidence).toHaveBeenCalledOnce();
+    expect(local.completeSessionEvidence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ aggregationRequested: true }),
+      expect.any(Array),
+      {}
+    );
     expect(options.utilities.rerank).toHaveBeenCalledOnce();
     expect(vi.mocked(options.utilities.rerank).mock.calls[0]![0].candidates).toEqual(
-      expect.not.arrayContaining([
+      expect.arrayContaining([
         expect.objectContaining({ text: "relevant round text completed-round" })
       ])
     );
     expect(vi.mocked(options.utilities.rerank).mock.invocationCallOrder[0])
-      .toBeLessThan(local.completeSessionEvidence!.mock.invocationCallOrder[0]!);
+      .toBeGreaterThan(local.completeSessionEvidence!.mock.invocationCallOrder[0]!);
     expect(local.expand).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ mode: "PAST_CHAT_SEARCH" }),
-      [expect.objectContaining({ itemId: "completed-round", itemType: "RECALL_ROUND" })]
+      expect.arrayContaining([expect.objectContaining({ itemId: "completed-round", itemType: "RECALL_ROUND" })])
     );
     expect(result).toMatchObject({
       budgetSnapshot: {
         componentMetrics: {
           sessionCompletionCandidateCount: 1,
-          sessionCompletionExpandedSourceChatCount: 1,
+          sessionCompletionExpandedSourceChatCount: completionRelevant ? 1 : 0,
           sessionCompletionState: "READY"
         }
       },
-      items: expect.arrayContaining([
-        expect.objectContaining({ exactItemId: "completed-round", itemType: "RECALL_ROUND" })
-      ]),
       outcome: "USED"
     });
-    expect(result.preparedContext?.text).toContain("relevant round text completed-round");
+    expect(result.items.some(({ exactItemId }) => exactItemId === "completed-round")).toBe(completionRelevant);
+    expect(result.preparedContext?.text.includes("relevant round text completed-round")).toBe(completionRelevant);
+    if (completionRelevant) {
+      expect(result.items.find(({ exactItemId }) => exactItemId === "completed-round")?.finalScore).toBe(0.7);
+    }
   });
 
   it("query-ranks bounded exact user episodes before targeted packing", async () => {

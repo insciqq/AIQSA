@@ -250,6 +250,8 @@ const memoryAnswerSourceSchema = z.union([
       z.literal("OPEN_SOURCE")
     ]),
     origin: safeText(200).optional(),
+    // Answer-local presentation identity; never a chat ID or action authority.
+    chatGroup: z.string().regex(/^chat-[1-9][0-9]{0,2}$/u),
     sourceType: z.literal("PAST_CHAT")
   }),
   z.strictObject({
@@ -267,6 +269,7 @@ const memoryAnswerSourceSchema = z.union([
   }),
   z.strictObject({
     ...unavailableMemoryAnswerSourceBaseSchema,
+    chatGroup: z.string().regex(/^chat-[1-9][0-9]{0,2}$/u),
     sourceType: z.literal("PAST_CHAT")
   }),
   z.strictObject({

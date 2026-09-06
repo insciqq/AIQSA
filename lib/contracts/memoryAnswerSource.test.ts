@@ -51,8 +51,15 @@ describe("Memory answer-source contracts", () => {
       ...source,
       actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
       origin: "A chat title",
+      chatGroup: "chat-1",
       sourceType: "PAST_CHAT"
     })).toMatchObject({ ok: true });
+    expect(decodeMemoryAnswerSource({
+      ...source,
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+      chatGroup: "private-chat-id",
+      sourceType: "PAST_CHAT"
+    })).toMatchObject({ ok: false });
   });
 
   it("accepts only the bounded source-action request and response shapes", () => {

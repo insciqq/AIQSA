@@ -1,8 +1,8 @@
 import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "../../../contracts/memoryClient";
 
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v68";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v69";
 export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v16";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v40";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v41";
 export const MEMORY_QUERY_SCOPE_CONSTRAINT_MAX_TOKENS = 384;
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;

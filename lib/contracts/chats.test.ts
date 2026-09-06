@@ -516,6 +516,7 @@ describe("chat wire contracts", () => {
         memoryRef: `opaque-memory-${index}`,
         origin: "Earlier planning chat",
         sourceAvailable: true,
+        chatGroup: "chat-1",
         sourceType: "PAST_CHAT",
         text: `Planning note ${index + 1}`
       }));

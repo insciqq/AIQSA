@@ -54,6 +54,7 @@ import {
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../admissionDeadline";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
+import { deduplicateContainedHistory } from "../../../domain/memory/retrieval/historyContainment";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
@@ -121,7 +122,7 @@ import {
 } from "./deadline";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v56";
+  "memory-run-retrieval-admission-v57";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v19";
 
@@ -619,7 +620,6 @@ function requiresBaselineAuthority(
 
 async function expandWithSourceFamilyPlans(input: Readonly<{
   candidates: readonly MemoryRankedCandidate[];
-  navigation: boolean;
   plans: MemoryRetrievalPlanBundle;
   repository: PrismaLocalMemoryRetrievalRepository;
   snapshot: MemoryLocalRetrievalSnapshot;
@@ -638,17 +638,11 @@ async function expandWithSourceFamilyPlans(input: Readonly<{
       ? input.repository.expand(input.snapshot, baseline, baselineCandidates)
       : Promise.resolve([]),
     enrichedCandidates.length > 0
-      ? input.navigation
-        ? input.repository.expandAggregationNavigation(
-            input.snapshot,
-            input.plans.enriched,
-            enrichedCandidates
-          )
-        : input.repository.expand(
-            input.snapshot,
-            input.plans.enriched,
-            enrichedCandidates
-          )
+      ? input.repository.expand(
+          input.snapshot,
+          input.plans.enriched,
+          enrichedCandidates
+        )
       : Promise.resolve([])
   ]);
   const expanded = new Map([...baselineExpanded, ...enrichedExpanded].map((candidate) => [
@@ -1537,19 +1531,7 @@ function sourceDiversityOrder(
   );
 }
 
-function aggregationSelectedRawCandidate(
-  candidate: MemoryRankedCandidate,
-  source: MemoryRankedCandidate
-): MemoryRankedCandidate {
-  const reason = `${candidate.selectionReason}+aggregation_source_selected`;
-  return {
-    ...candidate,
-    finalScore: source.finalScore,
-    selectionReason: reason.length <= 128 ? reason : "aggregation_source_selected"
-  };
-}
-
-/** Converts reranked session-navigation candidates back to authoritative raw
+/** Converts locally selected session-navigation candidates to authoritative raw
  * search hits. A digest navigation candidate keeps its exact raw anchor when
  * that anchor was retrieved; otherwise the source falls back to its strongest
  * fused hit. The parent-session rank and child-hit rank form a deterministic
@@ -1586,7 +1568,7 @@ export function selectMemoryAggregationRawCandidates(
     sourceGroups.push([
       raw[firstRawIndex]!,
       ...raw.filter((_candidate, index) => index !== firstRawIndex)
-    ].map((candidate) => aggregationSelectedRawCandidate(candidate, selected)));
+    ]);
   }
   return sourceGroups.flatMap((candidates, sourceRank) =>
     candidates.map((candidate, childRank) => ({
@@ -1752,7 +1734,7 @@ export function memoryRelevanceCandidates(
     `${candidate.itemType}:${candidate.itemId}`,
     candidate
   ]));
-  const projected = ranked.flatMap((candidate) => {
+  const projected = deduplicateContainedHistory(ranked, expanded).flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
     const sourceKind = candidate.itemType === "TOOL_EVENT"
@@ -3056,36 +3038,37 @@ export function createMemoryRunRetrievalService(
       let sessionCompletionExpansions: readonly MemoryExpandedCandidate[] = [];
       let sessionCompletionState: "READY" | "SKIPPED" | "UNAVAILABLE" = "SKIPPED";
       let sessionCompletionCandidateCount = 0;
-      const targetedSessionCompletionEnabled = !plan.aggregationRequested &&
-        plan.mode === "PAST_CHAT_SEARCH" &&
+      const sessionCompletionEnabled = plan.mode === "PAST_CHAT_SEARCH" &&
         typeof repository.completeSessionEvidence === "function";
       if (dynamicFused.length > 0) {
         try {
           dynamicCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
-            ? await timings.measure("localRetrievalMs", () =>
-                runBoundedMemoryRead(
+            ? selectMemoryAggregationRawCandidates(dynamicFused,
+              await timings.measure("localRetrievalMs", () => runBoundedMemoryRead(
                   deadline,
                   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
                   (projectionSignal) => abortableRead(
                     repository.projectAggregationSessions(local.snapshot, plan, dynamicFused),
                     projectionSignal
                   )
-                ))
+                )))
             : dynamicFused;
           if (dynamicCandidates.length > 0) {
-            const targetedCompletionSources = targetedSessionCompletionEnabled
-              ? selectMemoryTargetedSessionRepresentatives(dynamicCandidates)
+            const completionSources = sessionCompletionEnabled
+              ? plan.aggregationRequested
+                ? dynamicCandidates
+                : selectMemoryTargetedSessionRepresentatives(dynamicCandidates)
               : [];
-            const targetedCompletionSourceChatCount = new Set(
-              targetedCompletionSources.flatMap((candidate) =>
+            const completionSourceChatCount = new Set(
+              completionSources.flatMap((candidate) =>
                 candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
                   ? [candidate.metadata.sourceChatId]
                   : [])
             ).size;
-            if (targetedCompletionSourceChatCount > 0) {
+            if (completionSourceChatCount > 0) {
               sessionCompletion = Object.freeze({
                 candidates: Object.freeze([]),
-                sourceChatCount: targetedCompletionSourceChatCount
+                sourceChatCount: completionSourceChatCount
               });
             }
             const [expandedResult, completionResult] = await timings.measure(
@@ -3097,8 +3080,6 @@ export function createMemoryRunRetrievalService(
                   (expansionSignal) => abortableRead(
                     expandWithSourceFamilyPlans({
                       candidates: dynamicCandidates,
-                      navigation: plan.aggregationRequested &&
-                        plan.mode === "PAST_CHAT_SEARCH",
                       plans,
                       repository,
                       snapshot: local.snapshot
@@ -3112,7 +3093,7 @@ export function createMemoryRunRetrievalService(
                     value: [] as readonly MemoryExpandedCandidate[]
                   })
                 ),
-                targetedCompletionSourceChatCount > 0
+                completionSourceChatCount > 0
                   ? runBoundedMemoryRead(
                       deadline,
                       MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
@@ -3120,8 +3101,8 @@ export function createMemoryRunRetrievalService(
                         const value = await repository.completeSessionEvidence!(
                           local.snapshot,
                           plan,
-                          targetedCompletionSources,
-                          {
+                          completionSources,
+                          plan.aggregationRequested ? {} : {
                             queryCandidates: dynamicCandidates,
                             ...(queryEmbedding?.status === "READY"
                               ? { vector: {
@@ -3135,7 +3116,6 @@ export function createMemoryRunRetrievalService(
                         );
                         const expansions = await expandWithSourceFamilyPlans({
                           candidates: value.candidates,
-                          navigation: false,
                           plans,
                           repository,
                           snapshot: local.snapshot
@@ -3159,7 +3139,7 @@ export function createMemoryRunRetrievalService(
             );
             if (expandedResult.error) throw expandedResult.error;
             navigationExpanded = expandedResult.value;
-            if (targetedCompletionSourceChatCount > 0) {
+            if (completionSourceChatCount > 0) {
               if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
               else {
                 sessionCompletion = completionResult.value;
@@ -3265,101 +3245,23 @@ export function createMemoryRunRetrievalService(
       }
       const relevance = atomicMemoryRerankResult(relevanceInput, initialRelevance);
       const relevant = applyMemoryRelevance(relevanceInput, relevance, plan, eligibleCore);
-      const rejoinCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
-        ? selectMemoryAggregationRawCandidates(dynamicFused, relevant)
-        : relevant;
+      // Rejoin only individually ranked excerpts. Linked evidence was collected
+      // before the reranker, so neither a session score nor a later expansion
+      // can introduce another item into the frozen reader pack.
+      const rejoinCandidates = relevant;
       let rejoined: readonly MemoryExpandedCandidate[] = [];
-      const aggregationSessionCompletionEnabled = plan.aggregationRequested &&
-        plan.mode === "PAST_CHAT_SEARCH" &&
-        typeof repository.completeSessionEvidence === "function";
-      const aggregationSessionCompletionSources = aggregationSessionCompletionEnabled
-        ? relevant
-        : [];
-      const aggregationSessionCompletionSourceChatCount = new Set(
-        aggregationSessionCompletionSources.flatMap((candidate) =>
-          candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
-            ? [candidate.metadata.sourceChatId]
-            : [])
-      ).size;
-      if (aggregationSessionCompletionSourceChatCount > 0) {
-        sessionCompletion = Object.freeze({
-          candidates: Object.freeze([]),
-          sourceChatCount: aggregationSessionCompletionSourceChatCount
-        });
-      }
       if (rejoinCandidates.length > 0) {
         try {
-          // The reranker operates on the first safe expansion. Reload its
-          // bounded accepted set so decay and packing see only rows that still
-          // satisfy every authoritative admission fence. Aggregation alone
-          // completes reranker-selected source sessions here because its
-          // chronological window is part of answer-time comparison. Targeted
-          // user episodes already entered the single rerank batch above. Every
-          // linked item passes the same final authoritative expansion as an
-          // ordinary retrieval hit, and completion failure never hides an
-          // admitted anchor.
-          const [expandedResult, completionResult] = await timings.measure("rejoinMs", () =>
-            Promise.all([
-              runBoundedMemoryRead(
-                deadline,
-                MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-                (rejoinSignal) => abortableRead(expandWithSourceFamilyPlans({
-                  candidates: rejoinCandidates,
-                  navigation: false,
-                  plans,
-                  repository,
-                  snapshot: local.snapshot
-                }), rejoinSignal)
-              ).then(
-                (value) => ({ error: null, value }),
-                (error: unknown) => ({
-                  error,
-                  value: [] as readonly MemoryExpandedCandidate[]
-                })
-              ),
-              aggregationSessionCompletionSourceChatCount > 0
-                ? runBoundedMemoryRead(
-                    deadline,
-                    MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
-                    (completionSignal) => abortableRead((async () => {
-                        const value = await repository.completeSessionEvidence!(
-                          local.snapshot,
-                          plan,
-                          aggregationSessionCompletionSources
-                        );
-                      const expansions = await expandWithSourceFamilyPlans({
-                        candidates: value.candidates,
-                        navigation: false,
-                        plans,
-                        repository,
-                        snapshot: local.snapshot
-                      });
-                      return { expansions, value };
-                    })(), completionSignal)
-                  ).then(
-                    ({ expansions, value }) => ({ error: null, expansions, value }),
-                    (error: unknown) => ({
-                      error,
-                      expansions: [] as readonly MemoryExpandedCandidate[],
-                      value: sessionCompletion
-                    })
-                  )
-                : Promise.resolve({
-                    error: null,
-                    expansions: [] as readonly MemoryExpandedCandidate[],
-                    value: sessionCompletion
-                  })
-            ]));
-          if (expandedResult.error) throw expandedResult.error;
-          rejoined = expandedResult.value;
-          if (aggregationSessionCompletionSourceChatCount > 0) {
-            if (completionResult.error) sessionCompletionState = "UNAVAILABLE";
-            else {
-              sessionCompletion = completionResult.value;
-              sessionCompletionExpansions = completionResult.expansions;
-              sessionCompletionState = "READY";
-            }
-          }
+          rejoined = await timings.measure("rejoinMs", () => runBoundedMemoryRead(
+            deadline,
+            MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+            (rejoinSignal) => abortableRead(expandWithSourceFamilyPlans({
+              candidates: rejoinCandidates,
+              plans,
+              repository,
+              snapshot: local.snapshot
+            }), rejoinSignal)
+          ));
         } catch (error) {
           if (deadline.expired()) {
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
@@ -3382,26 +3284,7 @@ export function createMemoryRunRetrievalService(
         rejoinedByKey.has(`${candidate.itemType}:${candidate.itemId}`));
       const sessionCompletionCandidateKeys = new Set(sessionCompletion.candidates.map(
         (candidate) => `${candidate.itemType}:${candidate.itemId}`));
-      const mergedRejoin = aggregationSessionCompletionSourceChatCount > 0 &&
-        sessionCompletionState === "READY"
-        ? mergeMemorySessionEvidenceCompletion(
-            queryMatchedRelevant,
-            rejoined,
-            sessionCompletion,
-            sessionCompletionExpansions
-          )
-        : Object.freeze({
-            candidates: queryMatchedRelevant,
-            completionCandidateCount: sessionCompletionCandidateCount ||
-              queryMatchedRelevant.filter((candidate) =>
-              candidate.historyEvidenceView === "USER_TESTIMONY" &&
-              sessionCompletionCandidateKeys.has(
-                `${candidate.itemType}:${candidate.itemId}`
-              )).length,
-            expansions: rejoined
-          });
-      const rejoinedRelevant = mergedRejoin.candidates;
-      rejoined = mergedRejoin.expansions;
+      const rejoinedRelevant = queryMatchedRelevant;
       sessionCompletionExpansions = rejoined.filter((expansion) =>
         sessionCompletionCandidateKeys.has(`${expansion.itemType}:${expansion.itemId}`));
       const sessionCompletionExpansionKeys = new Set(sessionCompletionExpansions.map(
@@ -3596,7 +3479,7 @@ export function createMemoryRunRetrievalService(
           pack,
           plan,
           plannerFallbackReason,
-          sessionCompletionCandidateCount: mergedRejoin.completionCandidateCount,
+          sessionCompletionCandidateCount,
           sessionCompletionExpandedSourceChatCount: completedSourceChats.size,
           sessionCompletionSelectedSourceChatCount: sessionCompletion.sourceChatCount,
           sessionCompletionState,

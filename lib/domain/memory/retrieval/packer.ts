@@ -1,4 +1,5 @@
 import { estimateApproxTokens } from "../../contextBudget";
+import { deduplicateContainedHistory } from "./historyContainment";
 import {
   MEMORY_CONTEXT_AGGREGATION_HISTORY_TARGET_TOKENS,
   MEMORY_CONTEXT_AGGREGATION_MAX_HISTORY_SNIPPETS,
@@ -948,7 +949,7 @@ export function packMemoryPersonalContext(input: Readonly<{
   let dynamicFactTokens = 0;
   let historyTokens = 0;
   for (const candidate of sourceDiversityOrder(
-    input.ranked,
+    deduplicateContainedHistory(input.ranked, [...dynamicExpansions.values()]),
     input.plan,
     dynamicExpansions
   )) {

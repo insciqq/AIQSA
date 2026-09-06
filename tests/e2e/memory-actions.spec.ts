@@ -154,6 +154,7 @@ test("opens an exact Personal Memory source through the opaque action redirect",
         memoryRef: "opaque-past-chat-source",
         origin: "Earlier conversation",
         sourceAvailable: true,
+        chatGroup: "chat-1",
         sourceType: "PAST_CHAT",
         text: "The exact earlier source statement."
       }],
@@ -218,8 +219,10 @@ test("opens an exact Personal Memory source through the opaque action redirect",
   });
   await signInWithLocalToken(page);
 
-  // Memory recall lives inside the answer's process fold ("Used 1 memory").
-  await page.getByTestId("tool-activity-disclosure").locator("summary").click();
+  // Past-chat excerpts open independently inside the answer process fold.
+  await page.getByTestId("tool-activity-disclosure").locator(":scope > summary").click();
+  await page.getByTestId("past-chats-disclosure").locator(":scope > summary").click();
+  await page.locator(".v2-past-chat-excerpts > summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });
@@ -248,6 +251,7 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
         memoryRef: "opaque-stale-source",
         origin: "Earlier conversation",
         sourceAvailable: true,
+        chatGroup: "chat-1",
         sourceType: "PAST_CHAT",
         text: "Source that became unavailable."
       }],
@@ -295,8 +299,10 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
   });
   await signInWithLocalToken(page);
 
-  // Memory recall lives inside the answer's process fold ("Used 1 memory").
-  await page.getByTestId("tool-activity-disclosure").locator("summary").click();
+  // Past-chat excerpts open independently inside the answer process fold.
+  await page.getByTestId("tool-activity-disclosure").locator(":scope > summary").click();
+  await page.getByTestId("past-chats-disclosure").locator(":scope > summary").click();
+  await page.locator(".v2-past-chat-excerpts > summary").click();
   const sourceCard = page.getByTestId("memory-source-card");
   await sourceCard.getByRole("button", { name: "Open source" }).click();
   const openLink = sourceCard.getByRole("link", { name: "Open source" });

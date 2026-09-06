@@ -4,7 +4,7 @@ import type {
   RunEventView
 } from "@/lib/contracts/runs";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
-import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { formatMemoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -205,6 +205,7 @@ export function describeToolCallV2(
 export type AnswerProcessFactsV2 = Readonly<{
   hasReasoning: boolean;
   memoryCount: number;
+  pastChatCount?: number;
   stepCount: number;
   workDurationMs: number | null;
 }>;
@@ -234,8 +235,8 @@ export function stepDurationSumV2(activity: ThreadToolActivity | null | undefine
 
 /**
  * The settled process line reads the way a person would say it — "Thought
- * for 12s", "Worked for 1m 4s", "Used 2 memories" — never as a count of tool
- * calls or sources. Only facts that exist appear; none at all means no line.
+ * for 12s", "Worked for 1m 4s" — followed by separate context counts.
+ * Only facts that exist appear; none at all means no line.
  */
 export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null {
   const segments: string[] = [];
@@ -247,10 +248,11 @@ export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null
       segments.push(`${verb} for ${formatWorkDurationV2(facts.workDurationMs)}`);
     }
   }
+  if ((facts.pastChatCount ?? 0) > 0) {
+    segments.push(formatMemoryUiCopy("source.pastChatsHeading", { count: facts.pastChatCount! }));
+  }
   if (facts.memoryCount > 0) {
-    segments.push(facts.memoryCount === 1
-      ? memoryUiCopy("source.usedOne")
-      : formatMemoryUiCopy("source.usedMany", { count: facts.memoryCount }));
+    segments.push(formatMemoryUiCopy("source.heading", { count: facts.memoryCount }));
   }
   return segments.length > 0 ? segments.join(" · ") : null;
 }
