@@ -17,6 +17,7 @@ export type NormalizedMcpImport = Readonly<{
 export type AdminMcpSharedValueDraft = Record<string, McpSlotValue | null | undefined>;
 
 export type AdminMcpServerForm = {
+  expectedUpdatedAt?: string;
   description: string;
   draft: McpDraftConfiguration;
   name: string;
@@ -135,6 +136,7 @@ export function editableMcpServerForm(server: AdminMcpServer): AdminMcpServerFor
   }
   return {
     description: server.description,
+    expectedUpdatedAt: server.updatedAt,
     draft,
     name: server.name,
     sharedValues: {}

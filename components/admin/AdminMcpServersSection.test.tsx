@@ -84,6 +84,7 @@ function viewController(selectedServer: AdminMcpServer = server) {
     refresh: vi.fn().mockResolvedValue(undefined),
     rollback: vi.fn().mockResolvedValue(true),
     select: vi.fn(),
+    save: vi.fn().mockResolvedValue({ applied: true }),
     test: vi.fn().mockResolvedValue(true),
     update: vi.fn().mockResolvedValue(true)
   };
@@ -134,7 +135,7 @@ describe("AdminMcpServersSection", () => {
     expect(screen.getByText(/newly discovered tool names are enabled by default/i)).toBeInTheDocument();
     expect(screen.getByText(/user-scoped; not returned by this admin catalog/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Connection & tools Connection and enabled tools" }));
     expect(screen.getByText("External account: AIQSA test workspace")).toBeInTheDocument();
     const checkConnection = screen.getByRole("link", { name: "Check connection" });
     expect(checkConnection).toHaveAttribute(
@@ -149,8 +150,8 @@ describe("AdminMcpServersSection", () => {
     expect(screen.getByText(/\+1 added · 1 changed · −0 removed/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Test workspace"), { target: { value: "one-use-only" } });
-    fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
-    expect(view.actions.test).toHaveBeenCalledWith("server-1", {
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+    expect(view.actions.save).toHaveBeenCalledWith("server-1", {
       oneTimeValues: { workspace_key: "one-use-only" }
     });
     await waitFor(() => expect(screen.getByLabelText("Test workspace")).toHaveValue(""));
@@ -159,13 +160,49 @@ describe("AdminMcpServersSection", () => {
   it("clears one-time validation values after a request settles", async () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);
-    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Connection & tools Connection and enabled tools" }));
 
     const oneTime = screen.getByLabelText("Test workspace");
     fireEvent.change(oneTime, { target: { value: "one-use-only" } });
-    fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
     await waitFor(() => expect(oneTime).toHaveValue(""));
+  });
+
+  it("keeps one-time values when Test & Save fails so the check can be retried", async () => {
+    const view = viewController();
+    view.actions.save.mockResolvedValue({ applied: false });
+    render(<TestSection controller={view.controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connection & tools Connection and enabled tools" }));
+    const oneTime = screen.getByLabelText("Test workspace");
+    fireEvent.change(oneTime, { target: { value: "one-use-only" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(view.actions.save).toHaveBeenCalledOnce());
+    expect(oneTime).toHaveValue("one-use-only");
+  });
+
+  it.each([
+    [null, "Authorization required to check changes", "Connect", "connect"],
+    ["reauthorization_required", "Reconnect to check changes", "Reconnect", "reconnect"]
+  ] as const)("shows %s authorization in the catalog with a direct action", (state, label, action, path) => {
+    const view = viewController({ ...server, validationOAuth: state ? { state, accountLabel: null, connectedAt: server.updatedAt } : null });
+    render(<TestSection controller={view.controller} />);
+    const row = screen.getByRole("listitem");
+    expect(within(row).getByText(label)).toBeVisible();
+    expect(within(row).getByRole("link", { name: `${action} Memory for checking changes` })).toHaveAttribute(
+      "href", `/api/admin/mcp/server-1/oauth/validation/${path}`
+    );
+    fireEvent.click(within(row).getByRole("button"));
+    expect(screen.getByRole("heading", { name: "Connection & tools" })).toBeVisible();
+  });
+
+  it("shows a failed runtime in the catalog and opens its recovery controls", () => {
+    const view = viewController({ ...server, runtimeProblem: "unavailable" });
+    render(<TestSection controller={view.controller} />);
+    const row = screen.getByRole("listitem");
+    expect(within(row).getByText("MCP runtime unavailable")).toBeVisible();
+    fireEvent.click(within(row).getByRole("button"));
+    expect(screen.getByRole("heading", { name: "Runtime" })).toBeVisible();
   });
 
   it("edits candidate tool policy without implying the active revision changed", () => {
@@ -183,11 +220,11 @@ describe("AdminMcpServersSection", () => {
     const view = viewController(policyServer);
     render(<TestSection controller={view.controller} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Connection & tools Connection and enabled tools" }));
 
-    expect(screen.getByText("Candidate draft — 1 enabled · 1 disabled")).toBeInTheDocument();
+    expect(screen.getByText("Selected — 1 enabled · 1 disabled")).toBeInTheDocument();
     expect(screen.getByText("Active revision 1 — 0 enabled · 1 disabled")).toBeInTheDocument();
-    expect(screen.getByText(/inventory came from the previous draft test/i)).toBeInTheDocument();
+    expect(screen.getByText(/tool selection has unapplied changes/i)).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Enabled for remember" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Enabled for recall" })).not.toBeChecked();
     expect(screen.getByText("stale_tool")).toBeInTheDocument();
@@ -254,7 +291,7 @@ describe("AdminMcpServersSection", () => {
     expect(secret).toHaveAttribute("type", "password");
     expect(secret).toHaveValue("fixture-secret");
 
-    fireEvent.click(screen.getByRole("button", { name: "Activate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
     await waitFor(() => expect(view.actions.create).toHaveBeenCalledTimes(1));
     expect(view.actions.create).toHaveBeenCalledWith(expect.objectContaining({
       activate: true,
@@ -343,7 +380,7 @@ describe("AdminMcpServersSection", () => {
     const view = viewController(active);
     render(<TestSection controller={view.controller} />);
 
-    expect(screen.queryByRole("button", { name: "Activate tested revision" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Test & Save" })).not.toBeInTheDocument();
     expect(screen.getByText(/latest tested identity is already active/i)).toBeInTheDocument();
   });
 
@@ -355,7 +392,7 @@ describe("AdminMcpServersSection", () => {
     };
     render(<TestSection controller={viewController(update).controller} />);
 
-    expect(screen.getByRole("button", { name: "Activate tested revision" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test & Save" })).toBeInTheDocument();
   });
 
   it("shows the exact background activation stage without asking for another activation", () => {
@@ -382,8 +419,8 @@ describe("AdminMcpServersSection", () => {
     expect(within(receipt).getByText("Step 3 of 4")).toBeInTheDocument();
     const catalogRow = screen.getByRole("listitem");
     expect(within(catalogRow).getByText("Disabled")).toBeInTheDocument();
-    expect(catalogRow).toHaveAttribute("data-resource-availability-row", "disabled");
-    expect(screen.queryByRole("button", { name: "Activate tested revision" })).not.toBeInTheDocument();
+    expect(within(catalogRow).getByRole("button")).toHaveAttribute("data-resource-availability-row", "disabled");
+    expect(screen.queryByRole("button", { name: "Test & Save" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Validate draft" })).not.toBeInTheDocument();
   });
 
@@ -474,8 +511,8 @@ describe("AdminMcpServersSection", () => {
 
     expect(screen.getAllByText("Archived").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Definition Source, auth, and fields/i }));
-    expect(screen.getByRole("button", { name: "Edit draft" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+    expect(screen.getByRole("button", { name: "Edit settings" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Connection & tools Connection and enabled tools" }));
     expect(screen.getByRole("checkbox", { name: "Enabled for remember" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /Delete Irreversible removal/i }));
     expect(screen.getByText(/Archived records are read-only/i)).toBeInTheDocument();
@@ -506,7 +543,7 @@ describe("AdminMcpServersSection", () => {
     expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("block");
     expect(screen.getByTestId("mcp-detail-view")).toHaveClass("hidden");
 
-    fireEvent.click(screen.getByRole("listitem"));
+    fireEvent.click(within(screen.getByRole("listitem")).getByRole("button"));
     expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("hidden");
     expect(screen.getByTestId("mcp-detail-view")).toHaveClass("block");
     expect(screen.queryByTestId("mcp-server-task-index")).not.toBeInTheDocument();
@@ -517,12 +554,12 @@ describe("AdminMcpServersSection", () => {
       "page"
     );
 
-    fireEvent.click(within(taskNavigation).getByRole("button", { name: /Validate & tools/i }));
-    expect(within(taskNavigation).getByRole("button", { name: /Validate & tools/i })).toHaveAttribute(
+    fireEvent.click(within(taskNavigation).getByRole("button", { name: "Connection & tools Connection and enabled tools" }));
+    expect(within(taskNavigation).getByRole("button", { name: "Connection & tools Connection and enabled tools" })).toHaveAttribute(
       "aria-current",
       "page"
     );
-    expect(screen.getByRole("heading", { name: "Validate & tools" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connection & tools" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to server tasks" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Back to MCP servers" }));
@@ -533,7 +570,7 @@ describe("AdminMcpServersSection", () => {
     const view = viewController();
     const { rerender } = render(<TestSection controller={view.controller} />);
 
-    fireEvent.click(screen.getByRole("listitem"));
+    fireEvent.click(within(screen.getByRole("listitem")).getByRole("button"));
     expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("hidden");
     expect(screen.getByTestId("mcp-detail-view")).toHaveClass("block");
 

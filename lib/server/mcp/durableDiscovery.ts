@@ -1,5 +1,6 @@
 import type { ProviderRunRequest } from "../providers/types";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import {
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
@@ -94,7 +95,7 @@ type ExecuteDurableMcpDiscoveryInput = Readonly<{
   modelRunToolCallId: string;
   onUsage?(attribution: McpRouterUsageAttribution): void;
   request: Pick<ProviderRunRequest, "content" | "context">;
-  routingGoal?: string;
+  routingGoals?: readonly string[];
   roundIndex: number;
   router?: McpSemanticRouter;
   runId: string;
@@ -151,13 +152,16 @@ export async function executeDurableMcpDiscovery(
     routed = await input.router.route({
       activeToolNames: activeNames,
       catalog: input.activeDiscovery.catalog,
-      goal: input.routingGoal ?? parsed.goal,
+      goals: input.routingGoals ?? [parsed.goal],
       limit: routeLimit,
       request: input.request,
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {})
     });
   } catch (error) {
+    if (error instanceof McpSemanticRouterError && error.usageAttribution) {
+      input.onUsage?.(error.usageAttribution);
+    }
     if (input.signal?.aborted) throw error;
     throw new McpAutoDiscoveryUnavailableError(
       error instanceof McpSemanticRouterError ? error.code : "mcp_router_request_failed"
@@ -227,7 +231,7 @@ export async function executeDurableMcpDiscovery(
 }
 
 export async function executeDurableMcpDiscoveryBatch(
-  input: Omit<ExecuteDurableMcpDiscoveryInput, "call" | "modelRunToolCallId" | "routingGoal"> &
+  input: Omit<ExecuteDurableMcpDiscoveryInput, "call" | "modelRunToolCallId" | "routingGoals"> &
     Readonly<{
       calls: readonly Readonly<{
         call: ModelToolCall;
@@ -239,21 +243,20 @@ export async function executeDurableMcpDiscoveryBatch(
   snapshot: McpRunPlanSnapshot;
   toolResults: ReadonlyMap<string, ToolExecutionResult>;
 }>> {
-  if (input.calls.length === 0) throw new Error("mcp_discovery_arguments_invalid");
+  if (input.calls.length === 0 || input.calls.length > toolLoopPersistenceLimits.batchCalls) {
+    throw new Error("mcp_discovery_arguments_invalid");
+  }
   const parsed = input.calls.map(({ call }) => mcpFindToolsArguments(call.arguments));
   if (parsed.some((goal) => goal === null)) {
     throw new Error("mcp_discovery_arguments_invalid");
   }
-  const routingGoal = [...new Set(parsed.map((goal) => goal!.goal))]
-    .map((goal, index) => `${index + 1}. ${goal}`)
-    .join("\n")
-    .slice(0, 400);
+  const routingGoals = [...new Set(parsed.map((goal) => goal!.goal))];
   const [leader, ...followers] = input.calls;
   const executed = await executeDurableMcpDiscovery({
     ...input,
     call: leader!.call,
     modelRunToolCallId: leader!.modelRunToolCallId,
-    routingGoal
+    routingGoals
   });
   let discovery = executed.discovery;
   let snapshot = executed.snapshot;

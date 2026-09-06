@@ -1031,6 +1031,9 @@ async function loadSnapshot(
   if (!directFactRead && row.chatMemoryMode === "TEMPORARY") {
     return { ...base, reason: "temporary_chat", status: "DISABLED" };
   }
+  if (!directFactRead && row.chatMemoryMode === "EXCLUDED") {
+    return { ...base, reason: "chat_memory_off", status: "DISABLED" };
+  }
   if (!useMemoryFacts) {
     return { ...base, reason: "memory_paused", status: "DISABLED" };
   }

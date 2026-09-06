@@ -35,7 +35,7 @@ export type McpRepository = {
     validationUserId?: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   deleteServer(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
-  listAdminServers(): Promise<AdminMcpServer[]>;
+  listAdminServers(validationUserId?: string): Promise<AdminMcpServer[]>;
   listUserServers(userId: string): Promise<McpUserServerState[]>;
   rebuildRevision(input: {
     oneTimeValues: Record<string, McpSlotValue>;
@@ -62,11 +62,15 @@ export type McpRepository = {
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   testDraft(input: {
     expectedDraftHash?: string;
+    expectedUpdatedAt?: string;
     oneTimeValues: Record<string, McpSlotValue>;
+    publish?: boolean;
     serverId: string;
+    sharedValues?: Record<string, McpSlotValue | null>;
     validationUserId?: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   updateServer(input: {
+    expectedUpdatedAt?: string;
     description?: string;
     draft?: McpDraftConfiguration;
     enabled?: boolean;

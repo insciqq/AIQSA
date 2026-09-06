@@ -72,7 +72,8 @@ const adminServerInclude = {
       runtimeGenerations: {
         orderBy: { updatedAt: "desc" as const },
         select: { errorCode: true, state: true },
-        take: 1
+        take: 1,
+        where: { desiredFor: { enabled: true }, state: "failed" as const }
       },
       validationEvidence: true
     }
@@ -426,7 +427,8 @@ async function loadAdminServer(client: McpDataClient, serverId: string): Promise
 function serializeAdminServer(
   record: AdminServerRecord,
   key: Buffer,
-  oauthValidationRedirectUri?: (serverId: string) => string
+  oauthValidationRedirectUri?: (serverId: string) => string,
+  validationUserId?: string
 ): AdminMcpServer {
   const draft = draftFrom(record.draft);
   const draftHash = hashCanonicalMcpValue(draft);
@@ -438,11 +440,13 @@ function serializeAdminServer(
       ? mcpSharedConfigEnvelopeContext(record.id, record.sharedConfigVersion)
       : undefined
   );
+  const viewerConnections = record.oauthConnections.filter((connection) =>
+    connection.userId === validationUserId);
   let validationOAuth: AdminServerRecord["oauthConnections"][number] | null =
-    record.oauthConnections[0] ?? null;
+    viewerConnections[0] ?? null;
   if (draft.auth.mode === "oauth" && oauthValidationRedirectUri) {
     try {
-      validationOAuth = record.oauthConnections.find((connection) => connection.oauthClient &&
+      validationOAuth = viewerConnections.find((connection) => connection.oauthClient &&
         connection.policyFingerprint === mcpOAuthPolicyFingerprint(
           buildMcpOAuthPolicy({
             configurationIdentity: draftHash,
@@ -466,7 +470,9 @@ function serializeAdminServer(
             (slot.policy.kind === "shared" && slot.policy.allowPersonalOverride))
           .map((slot) => ({ label: slot.label, slotKey: slot.slotKey }))
       : [],
-    activeRevision: record.activeRevision ? serializeRevision(record.activeRevision) : null,
+    activeRevision: record.activeRevision
+      ? serializeRevision(record.revisions.find((revision) => revision.id === record.activeRevision!.id) ?? record.activeRevision)
+      : null,
     archivedAt: record.archivedAt?.toISOString() ?? null,
     description: record.description,
     draft,
@@ -486,6 +492,11 @@ function serializeAdminServer(
     name: record.displayName,
     namespace: record.namespace,
     revisions: record.revisions.map(serializeRevision),
+    runtimeProblem: record.activeRevision?.runtimeGenerations[0]?.state === "failed"
+      ? record.activeRevision.runtimeGenerations[0].errorCode === "mcp_oauth_reauthorization_required"
+        ? "reauthorization_required"
+        : "unavailable"
+      : null,
     sharedValues: Object.fromEntries(
       draft.slots
         .filter((slot) => slot.policy.kind === "shared")
@@ -925,84 +936,90 @@ export function createPrismaMcpRepository(input: {
     return { kind: "ok" };
   }
 
+  async function activateDraftLocked(
+    tx: Prisma.TransactionClient,
+    serverId: string,
+    key: Buffer
+  ): Promise<McpRepositoryResult<AdminMcpServer>> {
+    if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
+    const server = await tx.mcpServer.findUnique({ where: { id: serverId } });
+    if (!server || server.archivedAt) return { kind: "not_found" as const };
+    const draft = draftFrom(server.draft);
+    const draftHash = hashCanonicalMcpValue(draft);
+    const draftTest = draftTestFrom(server.draftTestEvidence, server.testedDraftHash);
+    if (!draftTest || server.testedDraftHash !== draftHash || draftTest.draftHash !== draftHash) {
+      return { kind: "revision_required" as const };
+    }
+
+    const identityHash = revisionIdentityHash({
+      draftHash,
+      evidence: draftTest.evidence,
+      resolvedArtifact: draftTest.resolvedArtifact,
+      toolInventory: draftTest.toolInventory
+    });
+    const matchingRevisions = await tx.mcpRevision.findMany({
+      select: {
+        configuration: true,
+        createdAt: true,
+        draftHash: true,
+        id: true,
+        resolvedArtifact: true,
+        revisionNumber: true,
+        validationEvidence: true
+      },
+      where: { serverId }
+    });
+    const lineageIssues = slotLineageIssues(draft, matchingRevisions);
+    if (lineageIssues.length) {
+      return { issues: lineageIssues, kind: "draft_validation_failed" as const };
+    }
+    const existingRevision = matchingRevisions.find(
+      (revision) => storedRevisionIdentityHash(revision) === identityHash
+    );
+    let revisionId = existingRevision?.id;
+    if (!revisionId) {
+      const latest = await tx.mcpRevision.aggregate({
+        _max: { revisionNumber: true },
+        where: { serverId }
+      });
+      const validationEvidence: McpValidationEvidence = {
+        evidence: draftTest.evidence,
+        testedAt: draftTest.testedAt,
+        toolInventory: draftTest.toolInventory
+      };
+      const revision = await tx.mcpRevision.create({
+        data: {
+          configuration: draft as Prisma.InputJsonValue,
+          draftHash,
+          identityHash,
+          revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
+          serverId,
+          validationEvidence: validationEvidence as Prisma.InputJsonValue,
+          ...(draftTest.resolvedArtifact ? {
+            resolvedArtifact: draftTest.resolvedArtifact as Prisma.InputJsonValue
+          } : {})
+        },
+        select: { id: true }
+      });
+      revisionId = revision.id;
+    }
+
+    await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+    await tx.mcpServer.update({
+      data: { activeRevisionId: revisionId, enabled: server.activeRevisionId ? server.enabled : true },
+      where: { id: serverId }
+    });
+    await tx.mcpUserServer.updateMany({
+      data: { desiredRuntimeGenerationId: null },
+      where: { enabled: true, serverId }
+    });
+    return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
+  }
+
   const repository: PrismaMcpRepository = {
     activateDraft: async (serverId) => {
       const key = encryptionKey();
-      return client.$transaction(async (tx) => {
-        if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
-        const server = await tx.mcpServer.findUnique({ where: { id: serverId } });
-        if (!server) return { kind: "not_found" as const };
-        const draft = draftFrom(server.draft);
-        const draftHash = hashCanonicalMcpValue(draft);
-        const draftTest = draftTestFrom(server.draftTestEvidence, server.testedDraftHash);
-        if (!draftTest || server.testedDraftHash !== draftHash || draftTest.draftHash !== draftHash) {
-          return { kind: "revision_required" as const };
-        }
-
-        const identityHash = revisionIdentityHash({
-          draftHash,
-          evidence: draftTest.evidence,
-          resolvedArtifact: draftTest.resolvedArtifact,
-          toolInventory: draftTest.toolInventory
-        });
-        const matchingRevisions = await tx.mcpRevision.findMany({
-          select: {
-            configuration: true,
-            createdAt: true,
-            draftHash: true,
-            id: true,
-            resolvedArtifact: true,
-            revisionNumber: true,
-            validationEvidence: true
-          },
-          where: { serverId }
-        });
-        const lineageIssues = slotLineageIssues(draft, matchingRevisions);
-        if (lineageIssues.length) {
-          return { issues: lineageIssues, kind: "draft_validation_failed" as const };
-        }
-        const existingRevision = matchingRevisions.find(
-          (revision) => storedRevisionIdentityHash(revision) === identityHash
-        );
-        let revisionId = existingRevision?.id;
-        if (!revisionId) {
-          const latest = await tx.mcpRevision.aggregate({
-            _max: { revisionNumber: true },
-            where: { serverId }
-          });
-          const validationEvidence: McpValidationEvidence = {
-            evidence: draftTest.evidence,
-            testedAt: draftTest.testedAt,
-            toolInventory: draftTest.toolInventory
-          };
-          const revision = await tx.mcpRevision.create({
-            data: {
-              configuration: draft as Prisma.InputJsonValue,
-              draftHash,
-              identityHash,
-              revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
-              serverId,
-              validationEvidence: validationEvidence as Prisma.InputJsonValue,
-              ...(draftTest.resolvedArtifact ? {
-                resolvedArtifact: draftTest.resolvedArtifact as Prisma.InputJsonValue
-              } : {})
-            },
-            select: { id: true }
-          });
-          revisionId = revision.id;
-        }
-
-        await tx.mcpActivationJob.deleteMany({ where: { serverId } });
-        await tx.mcpServer.update({
-          data: { activeRevisionId: revisionId, enabled: true },
-          where: { id: serverId }
-        });
-        await tx.mcpUserServer.updateMany({
-          data: { desiredRuntimeGenerationId: null },
-          where: { enabled: true, serverId }
-        });
-        return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
-      });
+      return client.$transaction((tx) => activateDraftLocked(tx, serverId, key));
     },
 
     deleteServer: async (serverId) => {
@@ -1100,7 +1117,7 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    listAdminServers: async () => {
+    listAdminServers: async (validationUserId) => {
       const key = encryptionKey();
       const records = await client.mcpServer.findMany({
         include: adminServerInclude,
@@ -1110,7 +1127,8 @@ export function createPrismaMcpRepository(input: {
       return records.map((record) => serializeAdminServer(
         record,
         key,
-        input.oauthValidationRedirectUri
+        input.oauthValidationRedirectUri,
+        validationUserId
       ));
     },
 
@@ -1327,7 +1345,9 @@ export function createPrismaMcpRepository(input: {
           }),
           tx.mcpServer.findFirst({
             select: {
+              activeRevisionId: true,
               draft: true,
+              enabled: true,
               revisions: {
                 select: {
                   configuration: true,
@@ -1452,7 +1472,7 @@ export function createPrismaMcpRepository(input: {
           data: {
             activeRevisionId: revisionId,
             draftTestEvidence: draftTestEvidence as Prisma.InputJsonValue,
-            enabled: true,
+            enabled: server.activeRevisionId ? server.enabled : true,
             testedDraftHash: draftHash
           },
           where: { id: claim.serverId }
@@ -1570,19 +1590,29 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    testDraft: async ({ expectedDraftHash, oneTimeValues, serverId, validationUserId }) => {
+    testDraft: async ({ expectedDraftHash, expectedUpdatedAt, oneTimeValues, publish, serverId, sharedValues, validationUserId }) => {
       const key = encryptionKey();
+      if (publish && (!expectedUpdatedAt || !validationUserId || !await client.user.findFirst({
+        select: { id: true },
+        where: { id: validationUserId, role: "admin", status: "active" }
+      }))) {
+        return { kind: "invalid_values" as const, issues: [{ code: "validation_identity_invalid", path: "validation" }] };
+      }
       const server = await client.mcpServer.findFirst({
         select: {
           draft: true,
           id: true,
           revisions: { select: { configuration: true } },
           sharedConfigEnvelope: true,
-          sharedConfigVersion: true
+          sharedConfigVersion: true,
+          updatedAt: true
         },
         where: { archivedAt: null, id: serverId }
       });
       if (!server) return { kind: "not_found" as const };
+      if (expectedUpdatedAt && server.updatedAt.toISOString() !== expectedUpdatedAt) {
+        return { kind: "draft_changed" as const };
+      }
       const draft = draftFrom(server.draft);
       const draftHash = hashCanonicalMcpValue(draft);
       if (expectedDraftHash && draftHash !== expectedDraftHash) {
@@ -1592,17 +1622,22 @@ export function createPrismaMcpRepository(input: {
       if (lineageIssues.length) {
         return { issues: lineageIssues, kind: "draft_validation_failed" as const };
       }
-      const sharedValues = readStoredValues(
+      if (sharedValues) {
+        if (!publish) return { kind: "invalid_values" as const, issues: [{ code: "publication_required", path: "sharedValues" }] };
+        const issues = valueIssues(draft.slots, sharedValues, (slot) => slot.policy.kind === "shared");
+        if (issues.length) return { issues, kind: "invalid_values" as const };
+      }
+      const storedValues = applyStoredValuePatch(readStoredValues(
         server.sharedConfigEnvelope,
         key,
         server.sharedConfigEnvelope
           ? mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)
           : undefined
-      );
+      ), sharedValues ?? {}, new Date());
       const validationInput = draftValidationValues({
         draft,
         oneTimeValues,
-        sharedValues: sharedValues.values
+        sharedValues: storedValues.values
       });
       if (validationInput.issues.length) {
         return { issues: validationInput.issues, kind: "invalid_values" as const };
@@ -1652,23 +1687,52 @@ export function createPrismaMcpRepository(input: {
       };
       return client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
-        const current = await tx.mcpServer.findUnique({ select: { draft: true }, where: { id: serverId } });
-        if (!current) return { kind: "not_found" as const };
-        if (hashCanonicalMcpValue(draftFrom(current.draft)) !== draftHash) {
+        const current = await tx.mcpServer.findUnique({
+          select: { archivedAt: true, draft: true, sharedConfigVersion: true, updatedAt: true },
+          where: { id: serverId }
+        });
+        if (!current || current.archivedAt) return { kind: "not_found" as const };
+        if (hashCanonicalMcpValue(draftFrom(current.draft)) !== draftHash ||
+          current.sharedConfigVersion !== server.sharedConfigVersion ||
+          (publish && current.updatedAt.getTime() !== server.updatedAt.getTime())) {
           return { kind: "draft_changed" as const };
         }
+        if (publish && !await tx.user.findFirst({
+          select: { id: true },
+          where: { id: validationUserId, role: "admin", status: "active" }
+        })) {
+          return { kind: "invalid_values" as const, issues: [{ code: "validation_identity_invalid", path: "validation" }] };
+        }
+        const sharedConfigVersion = current.sharedConfigVersion + 1;
+        const sharedPatch = publish && sharedValues && Object.keys(sharedValues).length
+          ? {
+              sharedConfigVersion,
+              sharedConfigEnvelope: Object.keys(storedValues.values).length
+                ? encryptMcpEnvelope(storedValues, key, mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion))
+                : null
+            }
+          : {};
         await tx.mcpServer.update({
           data: {
+            ...sharedPatch,
             draftTestEvidence: draftTestEvidence as Prisma.InputJsonValue,
             testedDraftHash: draftHash
           },
           where: { id: serverId }
         });
+        if (publish) {
+          const activated = await activateDraftLocked(tx, serverId, key);
+          // All expected conflicts were checked under this lock. An unexpected
+          // publication failure must also roll back the credential/evidence write.
+          if (activated.kind !== "ok") throw new Error("mcp_publication_failed");
+          return activated;
+        }
         return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
       });
     },
 
     updateServer: async ({
+      expectedUpdatedAt,
       description,
       draft,
       enabled,
@@ -1681,6 +1745,9 @@ export function createPrismaMcpRepository(input: {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const existing = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId } });
         if (!existing) return { kind: "not_found" as const };
+        if (expectedUpdatedAt && existing.updatedAt.toISOString() !== expectedUpdatedAt) {
+          return { kind: "draft_changed" as const };
+        }
         if (enabled === true && !existing.activeRevisionId) return { kind: "revision_required" as const };
         const storedDraft = draftFrom(existing.draft);
         const effectiveDraft = draft ?? storedDraft;

@@ -182,10 +182,23 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await signIn(page);
   const capabilitiesTrigger = page.getByRole("button", { name: "Add" });
   const toolsTrigger = page.getByRole("button", { name: "Change MCP mode" });
+  await expect(toolsTrigger).toContainText("!");
+  await expect(toolsTrigger).toHaveAttribute("title", "2 MCP servers need attention. Open MCP settings.");
+  await expect(toolsTrigger).toHaveAccessibleDescription("2 MCP servers need attention. Open MCP settings.");
   await page.setViewportSize({ height: 844, width: 390 });
   await expectTouchSafe(capabilitiesTrigger);
   await expectTouchSafe(toolsTrigger);
   await expectNoHorizontalOverflow(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await toolsTrigger.click();
+  const problems = page.getByRole("menu", { name: "MCP tools" });
+  await expect(problems.getByRole("status")).toContainText("Mem0 · Needs setup");
+  await expect(problems.getByRole("status")).toContainText("Notion · Needs authorization");
+  await expectWithinViewport(page, problems);
+  await expectTouchSafe(problems.getByRole("menuitem", { name: "Manage enabled MCP servers" }));
+  await page.keyboard.press("Escape");
+  await expect(toolsTrigger).toBeFocused();
+  await page.emulateMedia({ colorScheme: "light" });
   await page.setViewportSize({ height: 900, width: 1440 });
   // MCP modes live in the Tools chip's own picker, not in the "+" menu.
   await capabilitiesTrigger.click();
@@ -319,4 +332,6 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   const refreshStatus = settings.getByRole("button", { name: "Refresh status" });
   await refreshStatus.scrollIntoViewIfNeeded();
   await expect(refreshStatus).toBeInViewport();
+  await settings.getByRole("button", { name: "Close settings" }).click();
+  await expect(toolsTrigger).not.toContainText("!");
 });

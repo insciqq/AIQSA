@@ -49,6 +49,8 @@ Knowledge answer state is explicit and concise. Zero ready selected Sources show
 
 Ordinary MCP Settings may display `Active` only from fresh server-owned evidence that the accepted runtime responds to the MCP protocol. `Use in chats` is an independent permission, and an enabled on-demand server may be inactive. Opening Settings does not wake idle servers. Runtime status is informational; exact run admission and dispatch remain authoritative. Internal infrastructure failures and repair details stay in administrator surfaces, while ordinary Settings retain concise operational states and actionable setup or account-connection controls.
 
+Administrator MCP Test & Save checks changes before replacing the active configuration and preserves intentional disablement; a failed check retains the prior active settings. Authorization for this check belongs to the current administrator, separate from users’ chat connections. Pending setup and reconnect must be visible where MCPs are listed and selected, without treating an intentional Off or on-demand idle as a failure.
+
 ## Responsive And Interaction Contract
 
 Composition follows available space and input capability, not device names. The current shell changes from normal-flow sidebar to collapsed layout and then a scrim-backed drawer at its owned breakpoints; source CSS/tests own exact values. Width never creates a second store, draft, selection, or navigation tree. Composer and overlays respect dynamic viewport, safe areas, software keyboards, and one deliberate local scroll owner.

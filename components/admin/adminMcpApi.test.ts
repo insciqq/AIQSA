@@ -41,6 +41,27 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("adminMcpApi", () => {
+  it.each([
+    ["mcp_request_timeout", "did not respond in time"],
+    ["mcp_initialize_failed", "Check its URL, credentials and network access"],
+    ["mcp_list_tools_failed", "account's permissions"],
+    ["mcp_oauth_reauthorization_required", "Reconnect in Connection & tools"]
+  ])("gives an actionable explanation for %s", (code, expected) => {
+    const message = adminMcpErrorMessage({ code: "mcp_draft_test_failed", issues: [{ code, path: "source" }] });
+    expect(message).toContain(expected);
+    expect(message).not.toContain(code);
+  });
+  it("explains how to authorize draft validation without replacing a personal connection", () => {
+    const message = adminMcpErrorMessage({
+      code: "mcp_draft_test_failed",
+      issues: [{ code: "mcp_oauth_validation_deferred", path: "auth.mode" }]
+    });
+    expect(message).toContain("Connect your administrator account");
+    expect(message).toContain("Connection & tools section");
+    expect(message).toContain("used to check settings");
+    expect(message).not.toContain("mcp_oauth_validation_deferred");
+  });
+
   it("decodes the catalog and sends typed create/update requests to narrow endpoints", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [server] }))

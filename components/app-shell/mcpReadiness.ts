@@ -23,6 +23,17 @@ export function mcpReadinessPresentation(readiness: McpReadiness): McpReadinessP
   return presentations[readiness];
 }
 
+export function mcpSetupAttention(server: Pick<UserMcpServer, "fields" | "oauthState" | "readiness">) {
+  if (server.fields.some((field) => !field.configured)) return "needs_setup" as const;
+  if (server.oauthState === "reauthorization_required") return "reauthorization_required" as const;
+  if (server.oauthState === "disconnected") return "needs_authorization" as const;
+  if (server.readiness === "needs_setup" || server.readiness === "needs_authorization" ||
+    server.readiness === "reauthorization_required" || server.readiness === "unavailable") {
+    return server.readiness;
+  }
+  return null;
+}
+
 export function isMcpReadinessTransitioning(readiness: McpReadiness): boolean {
   return presentations[readiness].kind === "progress";
 }

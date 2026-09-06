@@ -413,7 +413,8 @@ function normalizeServerEvidence(
   capabilities: ServerCapabilities | undefined,
   instructions: string | undefined
 ): AiqsaMcpServerEvidence {
-  if (!implementation || !capabilities || !implementation.name || !implementation.version) {
+  if (!implementation || !capabilities || !implementation.name ||
+    typeof implementation.version !== "string") {
     throw sessionError("mcp_initialize_failed", "initialize");
   }
   const evidence: AiqsaMcpServerEvidence = {

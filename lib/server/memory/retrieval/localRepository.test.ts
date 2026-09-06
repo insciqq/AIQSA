@@ -2415,8 +2415,11 @@ describe("local Memory retrieval repository", () => {
     expect(withRecency.laneSql.join("\n")).toContain("EXTRACT(EPOCH FROM");
   });
 
-  it("disables every read for Temporary chats before querying lanes", async () => {
-    const mocked = mockClient(snapshotRow({ chatMemoryMode: "TEMPORARY" }));
+  it.each([
+    ["TEMPORARY", "temporary_chat"],
+    ["EXCLUDED", "chat_memory_off"]
+  ] as const)("disables every read for %s chats before querying lanes", async (chatMemoryMode, reason) => {
+    const mocked = mockClient(snapshotRow({ chatMemoryMode }));
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     await expect(repository.retrieve({
       assistantId: null,
@@ -2426,7 +2429,7 @@ describe("local Memory retrieval repository", () => {
       userId: "user-1"
     })).resolves.toMatchObject({
       laneResults: [],
-      snapshot: { reason: "temporary_chat", status: "DISABLED" }
+      snapshot: { reason, status: "DISABLED" }
     });
     expect(mocked.laneSql).toEqual([]);
   });

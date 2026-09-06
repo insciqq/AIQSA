@@ -4048,7 +4048,7 @@ describe("Personal Memory v1 run admission", () => {
     }));
   });
 
-  it("keeps Temporary and disabled paths on the no-commit bridge without utility work", async () => {
+  it.each(["TEMPORARY", "EXCLUDED"] as const)("keeps %s and disabled paths on the no-commit bridge without utility work", async (chatMemoryMode) => {
     const temporaryRepository = repository({});
     const temporaryControl = { decide: vi.fn() };
     const temporaryAction = { execute: vi.fn() };
@@ -4057,7 +4057,7 @@ describe("Personal Memory v1 run admission", () => {
       control: temporaryControl as MemoryControlService
     }).retrieve({
       ...runInput("Remember this only here."),
-      expected: { ...expected("generation-1"), chatMemoryMode: "TEMPORARY" }
+      expected: { ...expected("generation-1"), chatMemoryMode }
     });
 
     const disabledRepository = repository({});
@@ -4085,6 +4085,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(temporary).toMatchObject({ outcome: "DISABLED" });
     expect(disabled).toMatchObject({ outcome: "DISABLED" });
     expect(temporaryRepository.value.snapshot).not.toHaveBeenCalled();
+    expect(temporaryRepository.retrieve).not.toHaveBeenCalled();
     expect(temporaryControl.decide).not.toHaveBeenCalled();
     expect(temporaryAction.execute).not.toHaveBeenCalled();
     expect(disabledControl.decide).not.toHaveBeenCalled();

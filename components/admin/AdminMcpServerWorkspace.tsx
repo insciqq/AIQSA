@@ -58,7 +58,7 @@ const tasks: ReadonlyArray<{
 }> = [
   { description: "Publication and trust", id: "overview", label: "Overview" },
   { description: "Source, auth, and fields", id: "definition", label: "Definition" },
-  { description: "Evidence and tool changes", id: "validation", label: "Validate & tools" },
+  { description: "Connection and enabled tools", id: "validation", label: "Connection & tools" },
   { description: "Rollback and rebuild", id: "revisions", label: "Revisions" },
   { description: "Availability to users", id: "runtime", label: "Runtime" },
   { description: "Irreversible removal", id: "danger", label: "Delete" }
@@ -107,8 +107,8 @@ function publicationState(server: AdminMcpServer): { detail: string; label: stri
   }
   if (server.activeRevision) {
     return {
-      detail: "The active revision is unchanged; the mutable draft needs a new test.",
-      label: "Draft changes need test",
+      detail: "Use Test & Save to check and apply your changes.",
+      label: "Changes not applied",
       tone: "text-caution"
     };
   }
@@ -323,7 +323,7 @@ function ToolPolicyList({ disabled, disabledToolNames, empty, onChange, tools }:
               <div className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</div>
               {tool.description ? <p className="mt-1 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p> : null}
               <p className={`mt-1 text-metadata ${enabled ? "text-positive" : "text-ink-muted"}`}>
-                {enabled ? "Included in the candidate revision" : "Excluded from the candidate revision"}
+                {enabled ? "Selected for use" : "Not selected"}
               </p>
             </div>
             <label className={`flex min-h-touch shrink-0 cursor-pointer items-center gap-2 text-xs font-medium text-ink-secondary ${disabled ? "cursor-not-allowed opacity-60" : ""}`}>
@@ -358,7 +358,7 @@ function OAuthValidation({ controller, server }: Readonly<{
   return (
     <section className="border-b border-trace-subtle pb-5">
       <h4 className="text-sm font-semibold text-ink">Validation OAuth identity</h4>
-      <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">This administrator-owned identity validates the installation draft only. Users authorize their own identities separately.</p>
+      <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Connect your administrator account to check changes. Chat users connect their own accounts separately.</p>
       <div className={`mt-3 border-l-2 px-3 py-2 text-xs leading-5 ${ready ? "border-positive bg-positive/10 text-positive" : needsReconnect ? "border-caution bg-caution/10 text-caution" : "border-trace-strong bg-workspace-rail/45 text-ink-secondary"}`}>
         <div>{ready ? "Connected" : needsReconnect ? "Reauthorization required" : disconnecting ? "Disconnecting" : "Not connected"}</div>
         {connection?.accountLabel ? <div className="mt-1 break-words text-metadata [overflow-wrap:anywhere]">External account: {connection.accountLabel}</div> : null}
@@ -433,7 +433,7 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
       </section>
 
       <section>
-        <h4 className="text-sm font-semibold text-ink">Next publication step</h4>
+        <h4 className="text-sm font-semibold text-ink">Settings</h4>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">
           {archived
             ? "This archived record is read-only."
@@ -442,18 +442,18 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
               : activationFailed
                 ? "Review the activation failure above, then retry the same activation or adjust the definition."
             : activationAvailable
-              ? "Review the tested inventory, then activate this exact identity. The current active revision remains unchanged until activation."
+              ? "Use Test & Save to check and apply these settings."
               : activeMatch
                 ? "The latest tested identity is already active."
-                : "Validate the unchanged current draft before activation."}
+                : "Check the connection and selected tools, then apply your settings."}
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           {activationAvailable ? (
-            <button className={primaryButton} disabled={controller.state.busy || archived} onClick={() => void controller.actions.activate(server.id)} type="button">
-              Activate tested revision
+            <button className={primaryButton} disabled={controller.state.busy || archived} onClick={() => void controller.actions.save(server.id, {})} type="button">
+              Test & Save
             </button>
           ) : !activeMatch && !archived && !activationInProgress && !activationFailed ? (
-            <button className={primaryButton} onClick={() => onOpenTask("validation")} type="button">Validate draft</button>
+            <button className={primaryButton} onClick={() => onOpenTask("validation")} type="button">Connection & tools</button>
           ) : null}
           <button className={quietButton} onClick={() => onOpenTask("definition")} type="button">Review definition</button>
         </div>
@@ -463,7 +463,7 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Installation evidence</h4>
         <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-3">
           <div><dt className="text-ink-muted">Active revision</dt><dd className="mt-1 text-ink">{server.activeRevision ? `Revision ${server.activeRevision.revisionNumber}` : "None"}</dd></div>
-          <div><dt className="text-ink-muted">Draft evidence</dt><dd className="mt-1 text-ink">{server.draftTested ? "Current and tested" : "Not tested or changed"}</dd></div>
+          <div><dt className="text-ink-muted">Last check</dt><dd className="mt-1 text-ink">{server.draftTested ? "Current and tested" : "Not tested or changed"}</dd></div>
           <div><dt className="text-ink-muted">Runtime evidence</dt><dd className="mt-1 text-ink">User-scoped; not returned by this admin catalog</dd></div>
         </dl>
       </section>
@@ -484,8 +484,8 @@ function DefinitionTask({ controller, onEdit, server }: Readonly<{
   return (
     <div className="grid gap-6">
       <section>
-        <h4 className="text-sm font-semibold text-ink">Current mutable draft</h4>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Editing invalidates the prior activation binding. Tool-policy edits retain the last discovery as stale evidence, but the active revision keeps running until the candidate is tested and activated.</p>
+        <h4 className="text-sm font-semibold text-ink">Server settings</h4>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Edit settings, then use Test & Save to check and apply them.</p>
         <dl className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle text-xs">
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Source</dt><dd className="break-words font-mono text-ink [overflow-wrap:anywhere]">{sourceDisplay(server.draft.source)}</dd></div>
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Transport</dt><dd className="text-ink">{server.draft.transport === "streamable_http" ? "Streamable HTTP" : "stdio"}</dd></div>
@@ -496,7 +496,7 @@ function DefinitionTask({ controller, onEdit, server }: Readonly<{
         </dl>
         <button className={`${primaryButton} mt-4`} disabled={controller.state.busy || Boolean(server.archivedAt)} onClick={onEdit} type="button">
           <Pencil aria-hidden="true" className="size-3.5" />
-          Edit draft
+          Edit settings
         </button>
       </section>
       {server.draft.source.kind !== "remote" ? (
@@ -529,15 +529,10 @@ function ValidationTask({
   const values = oneTimeRequest(server, oneTimeValues);
   const busy = controller.state.busy || Boolean(server.archivedAt);
   const run = async (operation: "check" | "test") => {
-    try {
-      if (operation === "test") {
-        await controller.actions.test(server.id, { oneTimeValues: values });
-      } else {
-        await controller.actions.checkUpdate(server.id, { oneTimeValues: values });
-      }
-    } finally {
-      setOneTimeValues({});
-    }
+    const applied = operation === "test"
+      ? (await controller.actions.save(server.id, { oneTimeValues: values })).applied
+      : await controller.actions.checkUpdate(server.id, { oneTimeValues: values });
+    if (applied) setOneTimeValues({});
   };
   return (
     <div className="grid gap-6">
@@ -545,13 +540,13 @@ function ValidationTask({
       <section>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h4 className="text-sm font-semibold text-ink">Exact draft validation</h4>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Test connects to the exact draft, discovers its complete tool inventory, and records the evidence required for activation.</p>
+            <h4 className="text-sm font-semibold text-ink">Check and save settings</h4>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Test & Save checks the connection and applies the enabled tools below. A failed check keeps the current configuration running.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className={primaryButton} disabled={busy} onClick={() => void run("test")} type="button">
               <TestTube2 aria-hidden="true" className="size-3.5" />
-              Test draft
+              Test & Save
             </button>
             <button className={quietButton} disabled={busy} onClick={() => void run("check")} type="button">
               <Wrench aria-hidden="true" className="size-3.5" />
@@ -572,29 +567,29 @@ function ValidationTask({
       <section className="grid gap-5 xl:grid-cols-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-sm font-semibold text-ink">Discovered draft tools</h4>
+            <h4 className="text-sm font-semibold text-ink">Available tools</h4>
             <span className="text-metadata text-ink-muted">{candidate.length} upstream</span>
           </div>
           <div className="my-3 grid gap-1 border-l-2 border-proof px-3 text-xs leading-5">
-            <p className="font-medium text-ink">Candidate draft — {candidateEnabled.length} enabled · {candidate.length - candidateEnabled.length} disabled</p>
+            <p className="font-medium text-ink">Selected — {candidateEnabled.length} enabled · {candidate.length - candidateEnabled.length} disabled</p>
             <p className="text-ink-muted">
               {server.activeRevision
                 ? `Active revision ${server.activeRevision.revisionNumber} — ${activeEnabled.length} enabled · ${active.length - activeEnabled.length} disabled`
                 : "No active revision"}
             </p>
-            <p className="text-ink-muted">Changes here update only the candidate draft. Test and activate it before the active policy changes.</p>
+            <p className="text-ink-muted">Use Test & Save to apply your tool selection.</p>
           </div>
           {staleEvidence ? (
-            <p className="mb-3 border-l-2 border-caution px-3 text-xs leading-5 text-caution">This complete inventory came from the previous draft test. The tool policy changed, so retest before activation.</p>
+            <p className="mb-3 border-l-2 border-caution px-3 text-xs leading-5 text-caution">Your tool selection has unapplied changes.</p>
           ) : null}
           <ToolPolicyList
             disabled={busy}
             disabledToolNames={server.draft.disabledToolNames ?? []}
             empty={staleEvidence
-              ? "Previous test evidence exposed no tools. Retest this policy before activation."
+              ? "The last check found no tools. Use Test & Save to check again."
               : server.draftTested
                 ? "The tested server exposed no tools."
-                : "Test the current draft to discover tools."}
+                : "Use Test & Save to discover tools."}
             onChange={(name, enabled) => void controller.actions.update(server.id, {
               draft: withMcpToolEnabled(server.draft, name, enabled)
             })}
@@ -750,13 +745,22 @@ function RevisionsTask({
   );
 }
 
-function RuntimeTask({ controller, server }: Readonly<{
+function RuntimeTask({ controller, onOpenTask, server }: Readonly<{
   controller: AdminMcpController;
+  onOpenTask(task: AdminMcpTask): void;
   server: AdminMcpServer;
 }>) {
   const archived = Boolean(server.archivedAt);
   return (
     <div className="grid gap-6">
+      {server.runtimeProblem ? (
+        <section className="border-l-2 border-caution bg-caution/10 px-4 py-3 text-xs leading-5 text-caution" role="status">
+          <p>{server.runtimeProblem === "reauthorization_required"
+            ? "An account connection needs authorization again. Each affected user can reconnect in Settings → MCP & tools."
+            : "A runtime failed to connect. Check the server connection and configuration, then retry."}</p>
+          <button className={`${quietButton} mt-3`} onClick={() => onOpenTask("validation")} type="button">Check connection and tools</button>
+        </section>
+      ) : null}
       <section>
         <h4 className="text-sm font-semibold text-ink">Availability to users</h4>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Enable or disable whether the active installation revision is offered to users who already have MCP access. Access assignments remain in Users and Access & groups.</p>
@@ -779,8 +783,8 @@ function RuntimeTask({ controller, server }: Readonly<{
         </div>
       </section>
       <section className="border-t border-trace-subtle pt-4">
-        <h4 className="text-sm font-semibold text-ink">Runtime evidence boundary</h4>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">MCP readiness is user-scoped and can depend on each user’s OAuth or personal values. This admin catalog does not return aggregate runtime health, so validation evidence is not presented as live health.</p>
+        <h4 className="text-sm font-semibold text-ink">User connections</h4>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Each user’s connection can depend on their own authorization or personal values. Test & Save checks the administrator’s configuration; users manage their connections in Settings → MCP & tools.</p>
       </section>
     </div>
   );
@@ -843,7 +847,7 @@ function TaskBody({
   if (task === "definition") return <DefinitionTask controller={controller} onEdit={onEdit} server={server} />;
   if (task === "validation") return <ValidationTask controller={controller} oneTimeValues={oneTimeValues} server={server} setOneTimeValues={setOneTimeValues} />;
   if (task === "revisions") return <RevisionsTask controller={controller} oneTimeValues={oneTimeValues} rebuildRevisionId={rebuildRevisionId} server={server} setOneTimeValues={setOneTimeValues} setRebuildRevisionId={setRebuildRevisionId} />;
-  if (task === "runtime") return <RuntimeTask controller={controller} server={server} />;
+  if (task === "runtime") return <RuntimeTask controller={controller} onOpenTask={onOpenTask} server={server} />;
   if (task === "danger") return <DangerTask controller={controller} server={server} />;
   return <OverviewTask controller={controller} onOpenTask={onOpenTask} server={server} />;
 }

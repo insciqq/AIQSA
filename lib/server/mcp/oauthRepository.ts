@@ -216,7 +216,7 @@ function hasCurrentMcpOAuthPolicy(record: OAuthEligibilityRecord, key: Buffer): 
         const draft = draftFrom(record.server.draft);
         if (!draft || draft.auth.mode !== "oauth") return null;
         const identity = hashCanonicalMcpValue(draft);
-        return record.server.testedDraftHash === identity ? { draft, identity } : null;
+        return { draft, identity };
       })()
     : (() => {
         const revision = record.server.activeRevision;
@@ -414,13 +414,12 @@ async function policyForSubject(
   if (input.purpose === "validation") {
     if (user.role !== "admin") return null;
     const server = await client.mcpServer.findFirst({
-      select: { archivedAt: true, draft: true, testedDraftHash: true },
+      select: { archivedAt: true, draft: true },
       where: { archivedAt: null, id: input.serverId }
     });
     const draft = server ? draftFrom(server.draft) : null;
     if (!server || !draft || draft.auth.mode !== "oauth") return null;
     const draftHash = hashCanonicalMcpValue(draft);
-    if (server.testedDraftHash !== draftHash) return null;
     return buildMcpOAuthPolicy({
       configurationIdentity: draftHash,
       draft,

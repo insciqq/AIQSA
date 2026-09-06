@@ -34,9 +34,10 @@ import {
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
 import {
-  refreshMcpSettings,
+  observeMcpSettings,
   useMcpSettingsStore
 } from "@/components/app-shell/mcpSettingsStore";
+import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import {
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
@@ -424,8 +425,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }, [projectsSurfaceOpen, session.activeChatId]);
 
   useEffect(() => {
-    void refreshMcpSettings().catch(() => undefined);
-  }, []);
+    if (!projectContext) return observeMcpSettings();
+  }, [projectContext]);
   useEffect(() => {
     if (projectContext) {
       const available = new Map((activeProject?.resources ?? []).flatMap((resource) =>
@@ -520,6 +521,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         ? activeProject.composer?.mcpServers ?? []
         : []
       : mcpServers.map((server) => ({
+          attention: mcpSetupAttention(server),
           description: server.description,
           enabled: server.enabled,
           id: server.id,
@@ -864,7 +866,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ...runTransportStateV2({
         activeChatStreaming: thread.activeChatStreaming,
         interruptedRun: thread.interruptedRun,
-        message: { id: source.id, runId: source.runId ?? null, status: source.status },
+        message: { errorMessage: source.errorMessage, id: source.id, runId: source.runId ?? null, status: source.status },
         persistedRunStatus: null
       }),
       content: messageText(source),

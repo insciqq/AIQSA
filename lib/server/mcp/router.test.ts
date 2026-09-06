@@ -157,6 +157,153 @@ function resolution(structuredOutput = true) {
 }
 
 describe("semantic MCP router", () => {
+  it.each([false, true])("corrects a global selection overflow once, repeated overflow: %s", async (repeatOverflow) => {
+    const prompts: Record<string, unknown>[] = [];
+    const executeStructuredOutput = vi.fn(async (_role, structuredRequest, options) => {
+      prompts.push(JSON.parse(structuredRequest.userPrompt));
+      options?.onUsage?.({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 });
+      return {
+        mcp_needed: true,
+        requirements: [
+          { outcome: "Issue", status: "covered", tool_ids: [jiraTool] },
+          { outcome: "Pull request", status: "covered", tool_ids: [githubTool] },
+          ...(prompts.length === 1 || repeatOverflow
+            ? [{ outcome: "Calendar", status: "covered", tool_ids: [calendarTool] }]
+            : [{ outcome: "Calendar", status: "uncovered", tool_ids: [] }])
+        ]
+      };
+    });
+    const router = createMcpSemanticRouter({
+      executeStructuredOutput, resolveSystemModel: async () => resolution()
+    });
+    const routed = router.route({
+      activeToolNames: new Set(), catalog,
+      goals: ["Create an issue, a pull request, and a calendar event"],
+      limit: 2, request: request()
+    });
+    const usageAttribution = {
+      modelId: "gpt-router", provider: "openai",
+      usage: expect.objectContaining({ inputTokens: 24, outputTokens: 6 })
+    };
+    if (repeatOverflow) {
+      await expect(routed).rejects.toMatchObject({ code: "mcp_router_output_invalid", usageAttribution });
+    } else {
+      await expect(routed).resolves.toEqual({ toolNames: [jiraTool, githubTool], usageAttribution });
+    }
+    expect(executeStructuredOutput).toHaveBeenCalledTimes(2);
+    expect(prompts[0]).toMatchObject({ max_unique_tools: 2 });
+    expect(prompts[1]).toMatchObject({ max_unique_tools: 2, correction: { previous_unique_tool_count: 3 } });
+  });
+
+  it.each([
+    { reason: "empty batch", goals: [] },
+    { reason: "oversized goal", goals: ["a".repeat(401)] },
+    { reason: "oversized batch", goals: Array.from({ length: 65 }, (_, index) => `Goal ${index}`) }
+  ])("rejects $reason before provider I/O", async ({ goals }) => {
+    const executeStructuredOutput = vi.fn();
+    const resolveSystemModel = vi.fn(async () => resolution());
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel });
+
+    await expect(router.route({
+      activeToolNames: new Set(), catalog, goals, limit: 5, request: request()
+    })).rejects.toMatchObject({ code: "mcp_router_request_failed", usageAttribution: null });
+    expect(executeStructuredOutput).not.toHaveBeenCalled();
+    expect(resolveSystemModel).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "request_failure", "invalid_output", "cancelled"] as const)(
+    "preserves every batch goal and reported attempt usage on %s",
+    async (outcome) => {
+      const goals = ["a".repeat(400), "Create a calendar event"];
+      const controller = new AbortController();
+      const prompts: Record<string, unknown>[] = [];
+      const executeStructuredOutput = vi.fn(async (_role, structuredRequest, options) => {
+        prompts.push(JSON.parse(structuredRequest.userPrompt));
+        options?.onUsage?.({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 });
+        if (prompts.length === 1) {
+          return {
+            mcp_needed: true,
+            requirements: [{ outcome: "Calendar event", status: "uncovered", tool_ids: [] }]
+          };
+        }
+        if (outcome === "cancelled") controller.abort();
+        if (outcome === "cancelled" || outcome === "request_failure") {
+          throw new Error("PRIVATE_UPSTREAM_FAILURE");
+        }
+        return {
+          mcp_needed: true,
+          requirements: [{
+            outcome: "Calendar event",
+            status: "covered",
+            tool_ids: [outcome === "invalid_output" ? "unknown-tool" : calendarTool]
+          }]
+        };
+      });
+      const router = createMcpSemanticRouter({
+        executeStructuredOutput,
+        resolveSystemModel: async () => resolution()
+      });
+      const routed = router.route({
+        activeToolNames: new Set(),
+        catalog,
+        goals,
+        limit: 5,
+        request: request(),
+        signal: controller.signal
+      });
+      const usageAttribution = {
+        modelId: "gpt-router",
+        provider: "openai",
+        usage: expect.objectContaining({ inputTokens: 24, outputTokens: 6 })
+      };
+
+      if (outcome === "success") {
+        await expect(routed).resolves.toEqual({ toolNames: [calendarTool], usageAttribution });
+      } else {
+        await expect(routed).rejects.toMatchObject({
+          code: outcome === "invalid_output" ? "mcp_router_output_invalid"
+            : outcome === "cancelled" ? "mcp_router_cancelled" : "mcp_router_request_failed",
+          usageAttribution
+        });
+      }
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toMatchObject({ goals });
+      expect(prompts[1]).toMatchObject({ goals, correction: expect.any(Object) });
+    }
+  );
+
+  it("retains first-attempt usage when the corrective request fails before reporting usage", async () => {
+    const executeStructuredOutput = vi.fn()
+      .mockImplementationOnce(async (_role, _request, options) => {
+        options?.onUsage?.({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 });
+        return {
+          mcp_needed: true,
+          requirements: [{ outcome: "Create an issue", status: "uncovered", tool_ids: [] }]
+        };
+      })
+      .mockRejectedValueOnce(new Error("PRIVATE_UPSTREAM_FAILURE"));
+    const router = createMcpSemanticRouter({
+      executeStructuredOutput,
+      resolveSystemModel: async () => resolution()
+    });
+
+    await expect(router.route({
+      activeToolNames: new Set(),
+      catalog,
+      goals: ["Create an issue"],
+      limit: 5,
+      request: request()
+    })).rejects.toMatchObject({
+      code: "mcp_router_request_failed",
+      message: "mcp_router_request_failed",
+      usageAttribution: {
+        modelId: "gpt-router",
+        provider: "openai",
+        usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 }
+      }
+    });
+  });
+
   it.each([
     ["создай задачу в проекте", jiraTool],
     ["open a pul reqest for this change", githubTool],
@@ -192,7 +339,7 @@ describe("semantic MCP router", () => {
     await expect(router.route({
       activeToolNames: new Set(),
       catalog,
-      goal,
+      goals: [goal],
       limit: 5,
       request: request(),
     })).resolves.toEqual({
@@ -218,7 +365,7 @@ describe("semantic MCP router", () => {
     await expect(router.route({
       activeToolNames: new Set([jiraTool]),
       catalog,
-      goal: "Just explain the architecture; do not perform an action",
+      goals: ["Just explain the architecture; do not perform an action"],
       limit: 5,
       request: request()
     })).resolves.toEqual({ toolNames: [], usageAttribution: null });
@@ -228,7 +375,8 @@ describe("semantic MCP router", () => {
     const prompt = buildMcpRouterPrompt({
       activeToolNames: new Set(),
       catalog,
-      goal: "Create the issue",
+      goals: ["Create the issue"],
+      limit: 5,
       request: request()
     });
     const serialized = `${prompt.systemPrompt}\n${prompt.userPrompt}`;
@@ -269,7 +417,7 @@ describe("semantic MCP router", () => {
     const route = () => router.route({
       activeToolNames: new Set(),
       catalog,
-      goal: "Create an issue",
+      goals: ["Create an issue"],
       limit: 5,
       request: request()
     });
@@ -295,7 +443,7 @@ describe("semantic MCP router", () => {
     const input = {
       activeToolNames: new Set<string>(),
       catalog,
-      goal: "Create an issue",
+      goals: ["Create an issue"],
       limit: 5,
       request: request()
     };

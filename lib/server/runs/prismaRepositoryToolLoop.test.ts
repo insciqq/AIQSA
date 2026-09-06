@@ -404,6 +404,75 @@ describe("provider dispatch recovery request loading", () => {
     toolMode: "none"
   } satisfies NormalizedRunRequest;
 
+  it.each([
+    [100, 128, true], [101, 128, true], [128, 128, true], [129, 128, false],
+    [5, 5, true], [6, 5, false], [5, undefined, true], [6, undefined, false]
+  ] as const)("validates %s discovered tools against the frozen budget %s", async (count, budget, accepted) => {
+    const names = Array.from({ length: count }, (_, index) => `mcp_catalog_action_${index}`);
+    const request: NormalizedRunRequest = {
+      ...normalizedRequest,
+      toolMode: "auto",
+      mcp: {
+        servers: [{
+          fingerprint: "a".repeat(64), revisionId: "revision-one",
+          serverId: "server-one", serverName: "Catalog"
+        }],
+        tools: names.map((namespacedName, index) => ({
+          definitionHash: index.toString(16).padStart(64, "0"),
+          description: null,
+          inputSchema: { type: "object" },
+          name: `action_${index}`,
+          namespacedName,
+          originalName: `action_${index}`,
+          serverId: "server-one",
+          serverName: "Catalog"
+        })),
+        version: 1
+      },
+      mcpDiscovery: {
+        catalog: {
+          servers: [{
+            description: "Synthetic integration",
+            namespace: "catalog",
+            revisionId: "revision-one",
+            serverId: "server-one",
+            serverName: "Catalog",
+            tools: names.map((namespacedName, index) => ({
+              arguments: [], description: null, namespacedName, originalName: `action_${index}`
+            }))
+          }],
+          version: 1
+        },
+        epochs: [{
+          epoch: 1, goal: "Read catalog", modelRunToolCallId: "stored-call",
+          roundIndex: 0, toolIds: names
+        }],
+        version: 2
+      },
+      ...(budget === undefined ? {} : {
+        toolBudgets: {
+          maxMcpToolsPerDiscovery: budget,
+          maxToolCalls: 20,
+          maxToolRounds: 8
+        }
+      })
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: { findUnique: async () => ({
+        chat: { projectId: null, userId: "owner-one" },
+        chatId: "chat-one",
+        modelId: "model-one",
+        normalizedRequest: request,
+        provider: "provider-one"
+      }) }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const loaded = operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one", userId: "owner-one"
+    });
+    if (accepted) await expect(loaded).resolves.toEqual(request);
+    else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("selects only the accepted request and ownership fields", async () => {
     const findUnique = vi.fn(async () => ({
       chat: { projectId: null, userId: "owner-one" },

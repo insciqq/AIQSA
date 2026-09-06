@@ -47,6 +47,7 @@ export type AdminMcpController = Readonly<{
     refresh(): Promise<void>;
     rollback(serverId: string, body: AdminMcpRollbackRequest): Promise<boolean>;
     select(serverId: string): void;
+    save(serverId: string, body: AdminMcpUpdateRequest & AdminMcpDraftTestRequest): Promise<{ applied: boolean; updatedAt?: string }>;
     test(serverId: string, body: AdminMcpDraftTestRequest): Promise<boolean>;
     update(serverId: string, body: AdminMcpUpdateRequest): Promise<boolean>;
   }>;
@@ -93,6 +94,7 @@ export function useAdminMcpController({
   const [notice, setNotice] = useState<string | null>(null);
   const loadRef = useRef<Promise<void> | null>(null);
   const busyRef = useRef(false);
+  const mutationEpochRef = useRef(0);
   const autoLoadAttemptedRef = useRef(false);
 
   const replaceServer = useCallback((server: AdminMcpServer) => {
@@ -103,11 +105,14 @@ export function useAdminMcpController({
   }, []);
 
   const loadCatalog = useCallback(async (silent: boolean) => {
+    if (busyRef.current) return;
     if (loadRef.current) return loadRef.current;
+    const epoch = mutationEpochRef.current;
     const operation = (async () => {
       if (!silent) setLoading(true);
       try {
         const result = await requestAdminMcpCatalog(fetcher);
+        if (epoch !== mutationEpochRef.current) return;
         if (result.ok) {
           setServers(sortServers(result.data.servers));
           setLoaded(true);
@@ -134,30 +139,31 @@ export function useAdminMcpController({
       autoLoadAttemptedRef.current = false;
       return;
     }
-    if (!loaded && !loading && !autoLoadAttemptedRef.current) {
+    if (!loading && !autoLoadAttemptedRef.current) {
       autoLoadAttemptedRef.current = true;
-      void refresh();
+      void loadCatalog(loaded);
     }
-  }, [active, loaded, loading, refresh]);
+  }, [active, loaded, loading, loadCatalog]);
 
   const activationPending = servers.some((server) =>
     isAdminMcpActivationPending(server.activation)
   );
 
   useEffect(() => {
-    if (!active || !loaded || !activationPending) return;
+    if (!active || !loaded) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const interval = activationPending ? 1_200 : 30_000;
     const poll = async () => {
       if (cancelled) return;
-      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+      if (!busyRef.current && (typeof document === "undefined" || document.visibilityState !== "hidden")) {
         await loadCatalog(true);
       }
-      if (!cancelled) timer = setTimeout(() => void poll(), 1_200);
+      if (!cancelled) timer = setTimeout(() => void poll(), interval);
     };
 
-    timer = setTimeout(() => void poll(), 1_200);
+    timer = setTimeout(() => void poll(), interval);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
@@ -170,8 +176,10 @@ export function useAdminMcpController({
   ): Promise<AdminMcpServer | null> => {
     if (busyRef.current) return null;
     busyRef.current = true;
+    mutationEpochRef.current += 1;
     setBusy(true);
     setError(null);
+    setNotice(null);
     const result = await operation();
     busyRef.current = false;
     setBusy(false);
@@ -188,6 +196,7 @@ export function useAdminMcpController({
   const create = useCallback(async (body: AdminMcpCreateRequest) => {
     if (busyRef.current) return null;
     busyRef.current = true;
+    mutationEpochRef.current += 1;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -202,13 +211,13 @@ export function useAdminMcpController({
       notifyMutationCommitted(onMutationCommitted);
 
       if (body.draft.auth.mode === "oauth") {
-        setNotice("MCP server draft created. Connect OAuth; AIQSA will then test and activate it automatically.");
+        setNotice("MCP settings prepared. Connect OAuth to check and apply them automatically.");
         return created.data;
       }
 
       setNotice(body.activate
         ? "MCP activation started. Setup continues in the background."
-        : "MCP server draft created.");
+        : "MCP settings prepared. Use Test & Save to apply them.");
       return created.data;
     } finally {
       busyRef.current = false;
@@ -222,8 +231,55 @@ export function useAdminMcpController({
   ) => Boolean(await runServerMutation(operation, success)), [runServerMutation]);
 
   const update = useCallback((serverId: string, body: AdminMcpUpdateRequest) =>
-    booleanMutation(() => updateAdminMcpServer(serverId, body, fetcher), "MCP server draft saved."),
-  [booleanMutation, fetcher]);
+    booleanMutation(() => updateAdminMcpServer(serverId, body.draft ? {
+      ...body, expectedUpdatedAt: body.expectedUpdatedAt ?? servers.find((server) => server.id === serverId)?.updatedAt
+    } : body, fetcher), body.draft
+      ? "Use Test & Save to apply your changes."
+      : "MCP settings updated."),
+  [booleanMutation, fetcher, servers]);
+  const save = useCallback(async (serverId: string, body: AdminMcpUpdateRequest & AdminMcpDraftTestRequest) => {
+    if (busyRef.current) return { applied: false };
+    const current = servers.find((server) => server.id === serverId);
+    if (!current) return { applied: false };
+    busyRef.current = true;
+    mutationEpochRef.current += 1;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const { oneTimeValues, sharedValues, publish: _publish, ...patch } = body;
+      let candidate = current;
+      if (patch.draft !== undefined || patch.name !== undefined || patch.description !== undefined) {
+        const staged = await updateAdminMcpServer(serverId, {
+          ...patch,
+          expectedUpdatedAt: patch.expectedUpdatedAt ?? current.updatedAt
+        }, fetcher);
+        if (!staged.ok) {
+          setError(adminMcpErrorMessage(staged.error));
+          return { applied: false };
+        }
+        candidate = staged.data;
+        replaceServer(candidate);
+      }
+      const saved = await testAdminMcpDraft(serverId, {
+        expectedUpdatedAt: candidate.updatedAt,
+        oneTimeValues,
+        publish: true,
+        ...(sharedValues ? { sharedValues } : {})
+      }, fetcher);
+      if (!saved.ok) {
+        setError(adminMcpErrorMessage(saved.error));
+        return { applied: false, updatedAt: candidate.updatedAt };
+      }
+      replaceServer(saved.data);
+      setNotice("MCP settings checked and applied.");
+      notifyMutationCommitted(onMutationCommitted);
+      return { applied: true, updatedAt: saved.data.updatedAt };
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, [fetcher, onMutationCommitted, replaceServer, servers]);
   const deleteServer = useCallback(async (serverId: string) => {
     const deleted = await runServerMutation(
       () => deleteAdminMcpServer(serverId, fetcher),
@@ -266,6 +322,7 @@ export function useAdminMcpController({
   const disconnectValidationOAuth = useCallback(async (serverId: string) => {
     if (busyRef.current) return false;
     busyRef.current = true;
+    mutationEpochRef.current += 1;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -310,6 +367,7 @@ export function useAdminMcpController({
       rebuild,
       refresh,
       rollback,
+      save,
       select: setSelectedId,
       test,
       update

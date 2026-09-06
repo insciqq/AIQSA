@@ -7,6 +7,7 @@ import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { hashCanonicalMcpValue } from "./definitions";
 import {
   decryptMcpEnvelope,
+  encryptMcpEnvelope,
   mcpOAuthClientSecretEnvelopeContext,
   mcpOAuthTokenEnvelopeContext
 } from "./encryption";
@@ -229,6 +230,50 @@ function fakePrisma() {
 }
 
 describe("Prisma MCP OAuth repository", () => {
+  it.each(["tool_filter", "timeout", "scopes"] as const)(
+    "keeps validation authorization independent of draft testing for %s edits",
+    async (edit) => {
+      const changedDraft: McpDraftConfiguration = edit === "tool_filter"
+        ? { ...draft, disabledToolNames: ["write_item"] }
+        : edit === "timeout"
+          ? { ...draft, runtime: { ...draft.runtime, callTimeoutMs: 45_000 } }
+          : { ...draft, auth: { mode: "oauth", allowedAuthorizationServerOrigins: ["https://auth.example.test"], scopes: ["mcp.write"] } };
+      const validationPolicy = buildMcpOAuthPolicy({
+        configurationIdentity: hashCanonicalMcpValue(draft), draft,
+        purpose: "validation", redirectUri: REDIRECT_URI, serverId: SERVER_ID, userId: USER_ID
+      });
+      const record = {
+        id: "validation-connection", purpose: "validation", serverId: SERVER_ID, userId: USER_ID,
+        tokenGeneration: 1,
+        tokenEnvelope: encryptMcpEnvelope({
+          version: 1, issuedAt: NOW.toISOString(), policy: validationPolicy,
+          tokens: { access_token: "fixture-access", token_type: "Bearer" }
+        }, KEY, mcpOAuthTokenEnvelopeContext("validation-connection", 1)),
+        policyFingerprint: mcpOAuthPolicyFingerprint(validationPolicy, "client-id"),
+        oauthClient: { clientId: "client-id" },
+        server: { archivedAt: null, draft: changedDraft, testedDraftHash: null, grants: [] },
+        user: { role: "admin", status: "active", groups: [] }
+      };
+      const updateMany = vi.fn(async () => ({ count: 1 }));
+      const dataClient = {
+        $transaction: async (operation: (tx: unknown) => Promise<unknown>) => operation(dataClient),
+        mcpOAuthConnection: { findMany: async () => [record], updateMany },
+        mcpUserServer: { updateMany: vi.fn(async () => ({ count: 1 })) },
+        mcpServer: { findFirst: async () => record.server },
+        user: { findUnique: async () => record.user }
+      };
+      const repository = createPrismaMcpOAuthRepository({
+        encryptionKey: () => KEY, prisma: dataClient as unknown as PrismaClient
+      });
+      await expect(repository.loadPolicy({
+        purpose: "validation", redirectUri: REDIRECT_URI, serverId: SERVER_ID, userId: USER_ID
+      })).resolves.toMatchObject({ configurationIdentity: hashCanonicalMcpValue(changedDraft) });
+      await expect(repository.requestDisconnectForIneligibleConnections()).resolves.toBe(edit === "scopes" ? 1 : 0);
+      expect(updateMany).toHaveBeenCalledTimes(edit === "scopes" ? 1 : 0);
+      expect(record.server.testedDraftHash).toBeNull();
+    }
+  );
+
   it("derives connection eligibility from archival, user status, role, and effective grants", () => {
     type EligibilityRecord = Parameters<typeof isMcpOAuthConnectionEligible>[0];
     const record = (overrides: Partial<EligibilityRecord> = {}): EligibilityRecord => ({

@@ -63,6 +63,7 @@ import {
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type { RunRepository } from "./runRepositoryContract";
+import { toolRunBudgetsForRequest } from "./toolBudgets";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { settleTerminalMemorySource } from "./prismaRepositoryPreparation";
 import {
@@ -885,7 +886,10 @@ function decodeProviderDispatchRecoveryRequest(
   if (!decodeKnowledgePlan(value.knowledgePlan).ok ||
     value.knowledgeFocusedRequest !== undefined &&
       decodeKnowledgeFocusedRequest(value.knowledgeFocusedRequest) === null ||
-    value.mcpDiscovery !== undefined && !decodeMcpDiscoveryState(value.mcpDiscovery, 100)) return null;
+    value.mcpDiscovery !== undefined && !decodeMcpDiscoveryState(
+      value.mcpDiscovery,
+      toolRunBudgetsForRequest(value).maxMcpToolsPerDiscovery
+    )) return null;
   if (value.knowledgeFocusedRequest !== undefined && (
     value.knowledgeAnswering !== undefined ||
     value.toolMode !== "none" ||
