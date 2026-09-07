@@ -17,9 +17,5 @@ agent_docs
 .env
 .env.*
 !.env.example
-DEPLOY.md
-GITHUB_RELEASE.md
-prepare-secrets.sh
-ops/deploy
 sa.json*
 npm-debug.log*

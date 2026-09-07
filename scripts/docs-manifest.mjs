@@ -38,7 +38,7 @@ export const AGENT_DOC_BUDGETS = Object.freeze({
 });
 
 const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];
-const COLOCATED_MARKDOWN = ["ops/nginx/README.md", "ops/systemd/README.md"];
+const COLOCATED_MARKDOWN = [];
 
 export const REQUIRED_DOCS = Object.freeze([
   ...ROOT_MARKDOWN,

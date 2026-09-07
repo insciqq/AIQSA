@@ -46,7 +46,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 
-The full lane deploys committed migrations and runs deterministic plus stateful tests against the exact acknowledged disposable database. Stateful/container checks are serialized. The default `docker-compose.yml` is a persistent installation and is never a test target.
+The full lane deploys committed migrations and runs deterministic plus stateful tests against the exact acknowledged disposable database. Stateful/container checks are serialized. Production deployment and its operational tests are maintained separately; they must never target the local development profile.
 
 `test:full:inner` is an internal command for the disposable development container and intentionally fails closed on the host. Use `check:container` for the full lane; when an already migrated disposable stack is running, a focused stateful file may be passed to `test:full:inner` only from that app container.
 
@@ -108,7 +108,7 @@ Independent public Knowledge retrieval evaluation is a separate opt-in workspace
 
 `npm run security:deps` is the approved external npm advisory check during dependency work. Network failure may be retried with the required sandbox escalation. Its remediation suggestions are evidence, not authority for a breaking upgrade.
 
-Parser, Memory semantic, backup/restore, MCP runtime, and deployment smokes use their checked-in scripts as the executable command/source of bounds. Read the script and relevant owner before running; do not copy exact test-file matrices into prose. `npm run smoke:memory-semantic` has standing permission only for the bounded loopback disposable app using credentials already stored through Admin and sanitized aggregate output; it has no permission for a persistent or non-loopback installation.
+Parser, Memory semantic and MCP runtime smokes use their checked-in scripts as the executable command/source of bounds. Production backup/restore and deployment checks belong to the separate infrastructure workspace. Read the script and relevant owner before running; do not copy exact test-file matrices into prose. `npm run smoke:memory-semantic` has standing permission only for the bounded loopback disposable app using credentials already stored through Admin and sanitized aggregate output; it has no permission for a persistent or non-loopback installation.
 
 The opt-in [Workspace receiver browser fixture](../tests/e2e/workspace-operation-fence.spec.ts) runs alone against a dedicated loopback receiver and verifies rejected resend plus draft preservation while cleanup is held. The [operation-fence live smoke](../scripts/smoke-workspace-operation-fence.ts) runs as the sole command of a disposable KVM runner container: one receiver process at a time and one 1024-MiB guest. It qualifies delayed requests across an actual receiver process restart; real PostgreSQL lease-expiry barriers remain separate required evidence.
 
