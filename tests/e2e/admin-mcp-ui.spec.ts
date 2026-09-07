@@ -14,6 +14,7 @@ import {
 import { signInWithLocalToken } from "./support/localAuth";
 
 const fixedTime = "2026-07-26T08:00:00.000Z";
+const bannedWords = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerprint|\bversion\b|\bCAS\b|tuple/iu;
 
 async function expectReadableDetail(page: Page, detail: Locator) {
   const box = await detail.boundingBox();
@@ -26,11 +27,14 @@ async function expectReadableDetail(page: Page, detail: Locator) {
   expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
 }
 
-function emptyAdminDashboard(): AdminDashboard {
+function adminDashboard(): AdminDashboard {
   return {
     accessRules: [],
     catalog: { models: [], providers: [], searchStrategies: [] },
-    groups: [],
+    groups: [
+      { accessGrants: [], archivedAt: null, id: "group-operators", name: "operators", systemRole: null, userCount: 1 },
+      { accessGrants: [], archivedAt: null, id: "group-full", name: "Full access", systemRole: "full_access", userCount: 1 }
+    ],
     invites: [],
     navigation: {
       advancedConfigured: true,
@@ -55,7 +59,17 @@ function emptyAdminDashboard(): AdminDashboard {
         totalTokens: 0
       }
     },
-    users: []
+    users: [{
+      displayName: "Alice Operator",
+      effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
+      email: "alice@example.test",
+      groups: [{ groupId: "group-operators", name: "operators", role: "member" }],
+      hasVerifiedIdentity: true,
+      id: "user-alice",
+      lastSessionAt: null,
+      role: "user",
+      status: "active"
+    }]
   };
 }
 
@@ -107,7 +121,7 @@ function existingServer(): AdminMcpServer {
     activeRevision: active,
     activation: null,
     archivedAt: null,
-    description: "Existing server used to prove compact catalog search state.",
+    description: "Existing server used to prove the list and page flows.",
     draft: {
       auth: { mode: "none" },
       runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 60_000 },
@@ -171,27 +185,15 @@ function serverFromCreate(body: AdminMcpCreateRequest): AdminMcpServer {
 }
 
 async function openMcpServers(page: Page) {
+  await page.goto("/admin?section=mcp");
   const section = page.getByTestId("admin-section-mcp");
-  if (await section.isVisible().catch(() => false)) return section;
-
-  const allSections = page.getByRole("button", { name: "All sections" });
-  if (await allSections.isVisible().catch(() => false)) {
-    await allSections.click();
-    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
-  }
-
-  let tab = page.getByRole("tab", { exact: true, name: "MCP servers" });
-  if ((await tab.count()) === 0) {
-    await page.getByRole("button", { exact: true, name: "Advanced" }).click();
-    tab = page.getByRole("tab", { exact: true, name: "MCP servers" });
-  }
-  await tab.click();
   await expect(section).toBeVisible();
+  await expect(page.getByTestId("admin-topbar-title")).toHaveText("MCP servers");
   return section;
 }
 
-test("admin MCP task workspace preserves compact context and drives the tested revision lifecycle", async ({ page }) => {
-  test.setTimeout(60_000);
+test("administrator adds a server from a pasted configuration, watches the setup on its page and manages it without tabs", async ({ page }) => {
+  test.setTimeout(90_000);
   let servers: AdminMcpServer[] = [existingServer()];
   let failNextCheck = false;
   const requests: Array<{
@@ -201,7 +203,7 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   }> = [];
 
   await page.route("**/api/admin", async (route) => {
-    await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
+    await route.fulfill({ contentType: "application/json", json: adminDashboard() });
   });
 
   await page.route("**/api/admin/mcp**", async (route) => {
@@ -279,22 +281,9 @@ test("admin MCP task workspace preserves compact context and drives the tested r
         ...current,
         draftTest: testedDraft("tested-identity"),
         draftTested: true,
-        ...(body?.publish ? { activeRevision: active, revisions: [active, ...current.revisions.filter((revision) => revision.id !== active.id)] } : {})
+        ...(body?.publish ? { activeRevision: active, revisions: [active, ...current.revisions.filter((candidate) => candidate.id !== active.id)] } : {})
       });
       await route.fulfill({ contentType: "application/json", json: { server: tested } });
-      return;
-    }
-
-    if (method === "POST" && path.endsWith("/activate")) {
-      const active = revision("active-revision", 2, current.draftTest?.identityHash ?? "tested-identity", "available");
-      const missing = revision("missing-revision", 1, "missing-identity", "missing");
-      const activated = replace({
-        ...current,
-        activeRevision: active,
-        enabled: true,
-        revisions: [active, missing]
-      });
-      await route.fulfill({ contentType: "application/json", json: { server: activated } });
       return;
     }
 
@@ -310,6 +299,21 @@ test("admin MCP task workspace preserves compact context and drives the tested r
         revisions: [rebuiltRevision, ...current.revisions]
       });
       await route.fulfill({ contentType: "application/json", json: { server: rebuilt } });
+      return;
+    }
+
+    if (method === "PUT" && path.endsWith("/grants")) {
+      const grant = {
+        canUse: Boolean(body?.canUse),
+        groupId: (body?.groupId as string | undefined) ?? null,
+        groupName: null,
+        id: `grant-${requests.length}`,
+        personalSlotKeys: (body?.personalSlotKeys as string[] | undefined) ?? [],
+        userId: (body?.userId as string | undefined) ?? null,
+        userName: null
+      };
+      const granted = replace({ ...current, grants: [...current.grants, grant] });
+      await route.fulfill({ contentType: "application/json", json: { server: granted } });
       return;
     }
 
@@ -346,49 +350,46 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   });
 
   await signInWithLocalToken(page);
-  await page.goto("/admin");
   const section = await openMcpServers(page);
 
-  await expect(section.getByTestId("mcp-catalog-view")).toBeVisible();
-  await expect(section.getByTestId("mcp-detail-view")).toBeVisible();
-  await expect(section.getByText("No MCP server selected")).toBeVisible();
+  // List: one status word per row, a search box, no horizontal overflow at every width.
+  const list = section.getByTestId("mcp-server-list");
+  const existingRow = section.getByTestId("mcp-server-row-existing-server");
+  await expect(existingRow.getByTestId("mcp-server-status")).toHaveText("Working");
+  await expect(existingRow).toContainText("2 tools on");
+  await expect(section).not.toContainText(bannedWords);
   await expectNoHorizontalOverflow(page);
-
   await page.setViewportSize({ height: 900, width: 768 });
   await expectNoHorizontalOverflow(page);
-  const search = section.getByRole("searchbox", { name: "Search MCP servers" });
-  await search.fill("Existing Search");
-  const existingRow = section.getByRole("listitem").filter({ hasText: "Existing Search Server" }).getByRole("button");
-  await existingRow.focus();
-  await existingRow.press("Enter");
-  const backToCatalog = section.getByRole("button", { name: "Back to MCP servers" });
-  await expect(backToCatalog).toBeFocused();
-  await expect(section.getByRole("navigation", { name: "MCP server tasks" })).toBeVisible();
-  await expect(section.getByTestId("mcp-server-task-index")).toHaveCount(0);
-  await backToCatalog.press("Enter");
-  await expect(existingRow).toBeFocused();
-  await expect(search).toHaveValue("Existing Search");
+  const search = section.getByRole("searchbox", { name: "Search servers" });
+  await search.fill("nothing here");
+  await expect(list).toContainText("No servers match this search.");
   await search.fill("");
 
-  await section.getByRole("button", { name: "New server" }).click();
-  const importEditor = section.getByLabel("Configuration JSON, URL, or install command");
-  const normalizeImport = section.getByRole("button", { name: "Parse" });
-  expect((await importEditor.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(280);
+  // Row → page through the URL resource, crumbs back to the list.
+  await existingRow.getByRole("link", { name: /^Open Existing Search Server/u }).click();
+  await expect(page).toHaveURL(/section=mcp&resource=existing-server/u);
+  await expect(page.getByTestId("admin-topbar-title")).toContainText("Existing Search Server");
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Working · 2 tools on · checked");
+  await expect(section.getByRole("tab")).toHaveCount(0);
+  await page.getByTestId("admin-topbar-title").getByRole("link", { name: "MCP servers" }).click();
+  await expect(page).not.toHaveURL(/resource=/u);
+  await expect(list).toBeVisible();
+
+  // New server: the settings sheet in create mode, paste → Parse → Test & Save.
+  await page.getByTestId("mcp-new-server").click();
+  const sheet = page.getByRole("dialog", { name: "New server" });
+  await expect(sheet).toBeVisible();
+  const importEditor = sheet.getByLabel("Configuration JSON, URL, or install command");
+  const parse = sheet.getByRole("button", { name: "Parse" });
+  await expect(parse).toBeDisabled();
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
-  await importEditor.scrollIntoViewIfNeeded();
-  expect((await importEditor.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(280);
-  await expectTouchSafe(normalizeImport);
+  await importEditor.fill("npx -y @example/mcp@latest");
+  await expectTouchSafe(parse);
 
-  await page.setViewportSize({ height: 390, width: 844 });
-  await expectNoHorizontalOverflow(page);
-  await importEditor.scrollIntoViewIfNeeded();
-  expect((await importEditor.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(150);
-  await normalizeImport.scrollIntoViewIfNeeded();
-  await expectTouchSafe(normalizeImport);
-
-  await page.setViewportSize({ height: 900, width: 768 });
+  await page.setViewportSize({ height: 900, width: 1440 });
   await importEditor.fill(`{
   "mcpServers": {
     "browser-mcp": {
@@ -398,116 +399,131 @@ test("admin MCP task workspace preserves compact context and drives the tested r
     },
   },
 }`);
-  await normalizeImport.click();
-  await expect(section.getByLabel("Display name")).toHaveValue("browser-mcp");
-  await expect(section.getByLabel("Display name")).toBeFocused();
-  await expect(section.getByLabel("Source")).toHaveValue("npm");
-  const importedSecret = section.getByLabel("New shared value for API_KEY");
+  await parse.click();
+  await expect(sheet.getByLabel("Name")).toHaveValue("browser-mcp");
+  await expect(sheet.getByLabel("Name")).toBeFocused();
+  await expect(sheet.getByLabel("Source")).toHaveValue("npm");
+  const importedSecret = sheet.getByLabel("New shared value for API_KEY");
   await expect(importedSecret).toHaveAttribute("type", "password");
   await expect(importedSecret).toHaveValue("browser-write-only-secret");
-
-  await page.setViewportSize({ height: 900, width: 1440 });
+  await expect(sheet).not.toContainText(bannedWords);
   await expectNoHorizontalOverflow(page);
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByText(/activation started/u)).toBeVisible();
-  await expect(section.getByTestId("admin-mcp-activation-progress")).toContainText("Starting");
 
-  await page.setViewportSize({ height: 844, width: 390 });
-  await expectNoHorizontalOverflow(page);
-  const overviewTask = section.getByRole("button", { name: /Overview Publication and trust/u });
-  await expectTouchSafe(overviewTask);
-  await overviewTask.click();
-  await expect(section.getByTestId("mcp-server-task-detail")).toBeVisible();
-  await expect(overviewTask).toHaveAttribute("aria-current", "page");
+  await sheet.getByRole("button", { name: "Test & Save" }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(page).toHaveURL(/resource=browser-mcp/u);
+  await expect(page.getByTestId("admin-feedback")).toContainText("Setup continues in the background");
 
-  await page.setViewportSize({ height: 390, width: 844 });
-  await expectNoHorizontalOverflow(page);
-  await expect(section.getByRole("button", { name: "Back to server tasks" })).toHaveCount(0);
-  await expect(section.getByRole("navigation", { name: "MCP server tasks" })).toBeVisible();
-  await expectTouchSafe(section.getByRole("button", { name: /Connection & tools/u }));
+  // Activation progress is a banner on the page; polling finishes it.
+  const page_ = section.getByTestId("mcp-server-page");
+  const progress = section.getByTestId("admin-mcp-activation-progress");
+  await expect(progress).toContainText("Starting");
+  await expect(progress).toContainText("Step 1 of 6");
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Applying");
+  await expect(section.getByTestId("mcp-test-save")).toBeDisabled();
+  await expect(progress).toHaveCount(0, { timeout: 10_000 });
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Working · 2 tools on");
 
   for (const viewport of [
     { height: 768, width: 1024 },
-    { height: 500, width: 1280 },
     { height: 900, width: 1440 }
   ]) {
     await page.setViewportSize(viewport);
     await expectNoHorizontalOverflow(page);
-    await expectReadableDetail(page, section.getByTestId("mcp-detail-view"));
-    const taskNavigation = section.getByRole("navigation", { name: "MCP server tasks" });
-    await expect(taskNavigation).toBeVisible();
-    await expect(section.getByTestId("mcp-server-task-index")).toHaveCount(0);
-    const overviewBox = await taskNavigation.getByRole("button", { name: /Overview/u }).boundingBox();
-    const definitionBox = await taskNavigation.getByRole("button", { name: /Definition/u }).boundingBox();
-    expect(overviewBox).not.toBeNull();
-    expect(definitionBox).not.toBeNull();
-    if (overviewBox && definitionBox) {
-      expect(Math.abs(overviewBox.y - definitionBox.y)).toBeLessThanOrEqual(1);
-      expect(definitionBox.x).toBeGreaterThan(overviewBox.x);
-    }
-    if (viewport.width === 1280) {
-      await taskNavigation.getByRole("button", { name: /Connection & tools/u }).click();
-      await expect(section.getByRole("heading", { name: "Connection & tools" })).toBeVisible();
-      await expectNoHorizontalOverflow(page);
-      await taskNavigation.getByRole("button", { name: /Overview/u }).click();
-    }
+    await expectReadableDetail(page, page_);
   }
+  for (const viewport of [
+    { height: 1024, width: 768 },
+    { height: 844, width: 390 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(page_).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+  }
+  await page.setViewportSize({ height: 900, width: 1440 });
 
-  await section.getByRole("button", { name: /Connection & tools/u }).click();
-  await section.getByRole("button", { name: /Overview Publication and trust/u }).click();
-  await expect(section.getByText("Active revision tested")).toBeVisible();
-  await expect(section.getByRole("button", { name: "Test & Save" })).toHaveCount(0);
+  // Tools: one switch per tool; the change is staged until Test & Save applies it.
+  const writeTool = section.getByRole("switch", { name: "Use fixture_write" });
+  await expect(writeTool).toBeChecked();
+  await writeTool.click();
+  await expect(writeTool).not.toBeChecked();
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Changes not applied");
+  await expect(section.getByTestId("mcp-tools-pending")).toContainText("apply after Test & Save");
 
-  await section.getByRole("button", { name: "Connection & tools Connection and enabled tools" }).click();
-  await section.getByRole("checkbox", { name: "Enabled for fixture_write" }).click();
-  await expect(section.getByRole("checkbox", { name: "Enabled for fixture_write" })).not.toBeChecked();
-  await expect(section.getByText("Your tool selection has unapplied changes.")).toBeVisible();
-  expect(servers.find((server) => server.id === "browser-mcp")?.activeRevision?.disabledToolNames ?? []).toEqual([]);
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByText("MCP settings checked and applied.")).toBeVisible();
-  expect(servers.find((server) => server.id === "browser-mcp")?.activeRevision?.disabledToolNames).toEqual(["fixture_write"]);
-  await section.getByRole("checkbox", { name: "Enabled for fixture_write" }).click();
-  await expect(section.getByRole("checkbox", { name: "Enabled for fixture_write" })).toBeChecked();
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByText("Your tool selection has unapplied changes.")).toHaveCount(0);
-  expect(servers.find((server) => server.id === "browser-mcp")?.activeRevision?.disabledToolNames ?? []).toEqual([]);
-
-  await section.getByRole("button", { name: /Definition/u }).click();
-  await section.getByRole("button", { name: "Edit settings" }).click();
-  await section.getByLabel("Display name").fill("Renamed browser MCP");
-  await section.getByLabel("New shared value for API_KEY").fill("replacement-browser-secret");
   failNextCheck = true;
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByRole("alert")).toContainText("Your changes were not applied");
-  await expect(section.getByLabel("Display name")).toHaveValue("Renamed browser MCP");
-  await expect(section.getByLabel("New shared value for API_KEY")).toHaveValue("replacement-browser-secret");
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByText("MCP settings checked and applied.")).toBeVisible();
-  await expect(section.getByRole("heading", { name: "Edit MCP server" })).toHaveCount(0);
+  await section.getByTestId("mcp-test-save").click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Your changes were not applied");
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Changes not applied");
+  await page.getByRole("button", { name: "Dismiss error" }).click();
 
-  await section.getByRole("button", { name: /Revisions Rollback and rebuild/u }).click();
-  const missingRevision = section.getByRole("heading", { name: "Revision 1" }).locator("xpath=ancestor::section[1]");
-  await expect(missingRevision.getByText("Artifact missing")).toBeVisible();
-  await missingRevision.getByRole("button", { name: "Rebuild" }).click();
-  await missingRevision.getByRole("button", { name: /Replace draft, rebuild, and activate/u }).click();
-  await expect(section.getByText(/newly materialized MCP revision activated/u)).toBeVisible();
+  await section.getByTestId("mcp-test-save").click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Settings checked and applied.");
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Working · 1 of 2 tools on");
+  await expect(section.getByRole("switch", { name: "Use fixture_write" })).not.toBeChecked();
 
-  await section.getByRole("button", { name: /Runtime Availability to users/u }).click();
-  const runtimeDetail = section.getByTestId("mcp-server-task-detail");
-  await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
-  await section.getByRole("button", { name: "Disable" }).click();
-  await expect(runtimeDetail.locator('[data-resource-availability="disabled"]')).toHaveText("Disabled");
-  await section.getByRole("button", { name: "Enable", exact: true }).click();
-  await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
+  // Access: groups and people with switches; Full access is always included.
+  const groupsList = section.getByRole("list", { name: "Groups with access to browser-mcp" });
+  await expect(groupsList.getByTestId("system-mcp-grant-group-full")).toHaveText("Included");
+  await groupsList.getByRole("switch", { name: "browser-mcp for operators" }).click();
+  await expect(groupsList.getByRole("switch", { name: "browser-mcp for operators" })).toBeChecked();
+  const peopleList = section.getByRole("list", { name: "Users with access to browser-mcp" });
+  await expect(peopleList).toContainText("Included via operators");
+  await peopleList.getByRole("switch", { name: "browser-mcp for Alice Operator" }).click();
+  await expect(peopleList.getByRole("switch", { name: "browser-mcp for Alice Operator" })).toBeChecked();
+
+  // Settings sheet: the full form, Escape closes it, edits ask before discarding.
+  await page.getByTestId("mcp-open-settings").click();
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await expect(settings.getByRole("button", { name: "Close" })).toBeFocused();
+  await expect(settings.getByLabel("Name")).toHaveValue("browser-mcp");
+  await expect(settings).not.toContainText(bannedWords);
+  await page.keyboard.press("Escape");
+  await expect(settings).toHaveCount(0);
+  await expect(page.getByTestId("mcp-open-settings")).toBeFocused();
+  await page.getByTestId("mcp-open-settings").click();
+  await settings.getByLabel("Name").fill("browser-mcp renamed");
+  await page.keyboard.press("Escape");
+  const discard = page.getByTestId("mcp-settings-discard");
+  await expect(discard).toContainText("Discard unsaved changes?");
+  await discard.getByRole("button", { name: "Discard changes" }).click();
+  await expect(settings).toHaveCount(0);
+  await expect(page.getByTestId("admin-topbar-title")).toContainText("browser-mcp");
+
+  // ⋯ menu: Check for update, Earlier configurations (rebuild a missing build), Disable/Enable, Delete.
+  const menu = page.getByRole("button", { name: "More actions for browser-mcp" });
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Check for update" }).click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Update check finished");
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Update ready");
+
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Earlier configurations" }).click();
+  const configurations = page.getByRole("dialog", { name: "Earlier configurations" });
+  await expect(configurations).not.toContainText(bannedWords);
+  const missingConfiguration = configurations.getByTestId("mcp-configuration-missing-revision");
+  await expect(missingConfiguration.getByTestId("mcp-configuration-build")).toHaveText("Needs rebuild");
+  await expect(missingConfiguration.getByRole("button", { name: "Restore" })).toHaveCount(0);
+  await missingConfiguration.getByRole("button", { name: "Rebuild and apply" }).click();
+  await expect(configurations).toHaveCount(0);
+  await expect(page.getByTestId("admin-feedback")).toContainText("Configuration rebuilt and applied.");
+
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Disable" }).click();
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Disabled");
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Enable" }).click();
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Working");
 
   await page.setViewportSize({ height: 900, width: 768 });
-  await section.getByRole("button", { name: /Delete Irreversible removal/u }).click();
-  await section.getByRole("button", { name: "Delete…" }).click();
-  await section.getByRole("button", { name: "Delete server" }).click();
-  await expect(section.getByText("MCP server deleted.")).toBeVisible();
-  await expect(section.getByTestId("mcp-catalog-view")).toBeVisible();
-  await expect(section.getByTestId("mcp-detail-view")).toBeHidden();
-  await expect(section.getByRole("listitem").filter({ hasText: "browser-mcp" })).toHaveCount(0);
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  const confirmation = page.getByTestId("admin-confirm-delete-mcp-server");
+  await expect(confirmation).toContainText("Delete “browser-mcp”?");
+  await confirmation.getByRole("button", { name: "Delete server" }).click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("MCP server deleted.");
+  await expect(page).not.toHaveURL(/resource=/u);
+  await expect(list).toBeVisible();
+  await expect(section.getByTestId("mcp-server-row-browser-mcp")).toHaveCount(0);
 
   expect(requests).toEqual(expect.arrayContaining([
     expect.objectContaining({
@@ -515,6 +531,14 @@ test("admin MCP task workspace preserves compact context and drives the tested r
       method: "POST",
       path: "/api/admin/mcp"
     }),
+    expect.objectContaining({
+      body: expect.objectContaining({ draft: expect.objectContaining({ disabledToolNames: ["fixture_write"] }) }),
+      method: "PATCH",
+      path: "/api/admin/mcp/browser-mcp"
+    }),
+    expect.objectContaining({ body: { canUse: true, groupId: "group-operators" }, method: "PUT", path: "/api/admin/mcp/browser-mcp/grants" }),
+    expect.objectContaining({ body: { canUse: true, personalSlotKeys: [], userId: "user-alice" }, method: "PUT", path: "/api/admin/mcp/browser-mcp/grants" }),
+    expect.objectContaining({ method: "POST", path: "/api/admin/mcp/browser-mcp/check-update" }),
     expect.objectContaining({
       body: expect.objectContaining({ replaceDraft: true, revisionId: "missing-revision" }),
       method: "POST",
@@ -524,39 +548,46 @@ test("admin MCP task workspace preserves compact context and drives the tested r
     expect.objectContaining({ body: { enabled: true }, method: "PATCH", path: "/api/admin/mcp/browser-mcp" }),
     expect.objectContaining({ method: "DELETE", path: "/api/admin/mcp/browser-mcp" })
   ]));
-  expect(requests.filter((request) => [
-    "/api/admin/mcp/browser-mcp/check-update",
-    "/api/admin/mcp/browser-mcp/activate"
-  ].includes(request.path))).toEqual([]);
+  expect(requests.filter((request) => request.path === "/api/admin/mcp/browser-mcp/activate")).toEqual([]);
   const saves = requests.filter((request) => request.path.endsWith("/test"));
-  expect(saves).toHaveLength(4);
+  expect(saves).toHaveLength(2);
   expect(saves.every((request) => request.body?.publish === true)).toBe(true);
   expect(requests.filter((request) => request.method === "PATCH").every((request) => !request.body?.sharedValues)).toBe(true);
   expect(JSON.stringify(servers)).not.toContain("browser-write-only-secret");
-  expect(JSON.stringify(servers)).not.toContain("replacement-browser-secret");
 });
 
-test("MCP catalog exposes reconnect and runtime failures without opening each server", async ({ page }) => {
+test("MCP list exposes authorization and runtime problems without opening each server", async ({ page }) => {
   const oauth: AdminMcpServer = {
     ...existingServer(), id: "oauth-tools", name: "Workspace tools",
     draft: { ...existingServer().draft, auth: { mode: "oauth", scopes: [], allowedAuthorizationServerOrigins: ["https://auth.example.test"] } },
     validationOAuth: { state: "reauthorization_required", accountLabel: "Admin", connectedAt: fixedTime }
   };
   const unavailable: AdminMcpServer = { ...existingServer(), runtimeProblem: "unavailable" };
-  await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+  await page.route("**/api/admin", (route) => route.fulfill({ json: adminDashboard() }));
   await page.route("**/api/admin/mcp", (route) => route.fulfill({ json: { servers: [oauth, unavailable] } }));
   await signInWithLocalToken(page);
-  await page.goto("/admin");
   const section = await openMcpServers(page);
   for (const [width, theme] of [[1440, "light"], [390, "dark"]] as const) {
     await page.setViewportSize({ width, height: 844 });
     await page.emulateMedia({ colorScheme: theme });
-    const row = section.getByRole("listitem").filter({ hasText: "Workspace tools" });
-    await expect(row.getByText("Reconnect to check changes")).toBeVisible();
-    const reconnect = row.getByRole("link", { name: "Reconnect Workspace tools for checking changes" });
+    const row = section.getByTestId("mcp-server-row-oauth-tools");
+    await expect(row.getByTestId("mcp-server-status")).toHaveText("Setup needed");
+    await expect(row).toContainText("Reconnect to check changes");
+    const reconnect = row.getByRole("link", { name: "Reconnect Workspace tools" });
     await expect(reconnect).toHaveAttribute("href", "/api/admin/mcp/oauth-tools/oauth/validation/reconnect");
     await expectTouchSafe(reconnect);
-    await expect(section.getByText("MCP runtime unavailable")).toBeVisible();
+    const failing = section.getByTestId("mcp-server-row-existing-server");
+    await expect(failing.getByTestId("mcp-server-status")).toHaveText("Runtime unavailable");
+    await expect(failing).toContainText("MCP runtime unavailable");
     await expectNoHorizontalOverflow(page);
   }
+
+  // The OAuth return lands on the server page with one banner and leaves no callback parameters behind.
+  await page.goto("/admin?section=mcp&oauth=connected&server=oauth-tools");
+  await expect(page).toHaveURL(/section=mcp&resource=oauth-tools/u);
+  await expect(page).not.toHaveURL(/oauth=|server=/u);
+  await expect(section.getByTestId("admin-mcp-oauth-return")).toContainText("Your account is connected");
+  await expect(section.getByTestId("mcp-authorization-state")).toHaveText("Reconnect needed");
+  await expect(section.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/api/admin/mcp/oauth-tools/oauth/validation/reconnect");
+  await expect(section).not.toContainText(bannedWords);
 });
