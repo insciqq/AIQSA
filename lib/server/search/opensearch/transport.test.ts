@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createKnowledgePassageBm25Search } from "../../knowledge/searchRetrieval";
 import {
   KNOWLEDGE_SEARCH_BULK_MAX_BYTES,
   KNOWLEDGE_SEARCH_INDEX_DEFINITION,
@@ -306,6 +307,7 @@ describe("AIQSA OpenSearch transport", () => {
   it("applies owner, artifact, and mapping filters before top-k and returns identity only", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(jsonResponse({
       responses: [{
+        timed_out: false,
         _shards: { failed: 0 },
         hits: {
           hits: [{
@@ -365,8 +367,8 @@ describe("AIQSA OpenSearch transport", () => {
   it("accepts one 120,000-artifact search even when two variants exceed the bulk cap", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(jsonResponse({
       responses: [
-        { _shards: { failed: 0 }, hits: { hits: [] } },
-        { _shards: { failed: 0 }, hits: { hits: [] } }
+        { timed_out: false, _shards: { failed: 0 }, hits: { hits: [] } },
+        { timed_out: false, _shards: { failed: 0 }, hits: { hits: [] } }
       ]
     }));
     vi.stubGlobal("fetch", fetch);
@@ -405,7 +407,7 @@ describe("AIQSA OpenSearch transport", () => {
 
   it("rejects partial shard results and never returns them as a degraded candidate set", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({
-      responses: [{ _shards: { failed: 1 }, hits: { hits: [] } }]
+      responses: [{ timed_out: false, _shards: { failed: 1 }, hits: { hits: [] } }]
     })));
 
     await expect(transport().searchKnowledgePassages({
@@ -413,5 +415,25 @@ describe("AIQSA OpenSearch transport", () => {
       ownerUserId: "owner-1",
       queryVariants: ["query"]
     })).rejects.toBeInstanceOf(OpenSearchTransportError);
+  });
+
+  it.each([
+    { state: { timed_out: true }, code: "opensearch_timeout", timedOut: true },
+    { state: {}, code: "opensearch_response_invalid", timedOut: false },
+    { state: { timed_out: "false" }, code: "opensearch_response_invalid", timedOut: false },
+    { state: { timed_out: false, terminated_early: true }, code: "opensearch_response_invalid", timedOut: false }
+  ])("does not certify an incomplete search as complete: $state", async ({ state, code, timedOut }) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({
+      responses: [
+        { timed_out: false, _shards: { failed: 0 }, hits: { hits: [] } },
+        { ...state, _shards: { failed: 0 }, hits: { hits: [] } }
+      ]
+    })));
+
+    await expect(createKnowledgePassageBm25Search(transport())({
+      indexArtifactIds: ["hierarchy-1"],
+      ownerUserId: "owner-1",
+      queryVariants: ["annual revenue", "revenue"]
+    })).rejects.toMatchObject({ code, timedOut });
   });
 });

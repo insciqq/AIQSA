@@ -48,9 +48,26 @@ describe("private normalized BRIGHT trace", () => {
     expect(JSON.stringify(trace)).not.toContain("MUST_NOT_EXPORT");
     expect(trace).not.toHaveProperty("providerRunBindings");
     expect(trace).not.toHaveProperty("normalizedRequest");
-    expect(trace).toMatchObject({ traceContractVersion: 2, packingReplayContext: {
+    expect(trace).toMatchObject({ traceContractVersion: 3, packingReplayContext: {
       version: 1, provider: "fake", modelId: "fixture-model", packingVersion: 4, contextWindow: 32768, exclusions: []
     } });
+  });
+
+  it("rejects ignored controls and exports only their accepted fingerprint", async () => {
+    const { row, input } = fixture();
+    const params = { maxOutputTokens: 1000, reasoning: { effort: "low" }, temperature: 0 };
+    const expectedControls = { version: 1 as const, params, paramsHash: brightAnswerHash(params), reasoningEffort: "low" };
+    const normalized = row.normalizedRequest as Record<string, unknown>;
+    normalized.params = {};
+    normalized.reasoningEffort = "medium";
+    await expect(captureBrightAnswerTrace({ ...input, expectedControls })).rejects.toThrow("accepted_controls_mismatch");
+    normalized.params = { temperature: 0, reasoning: { effort: "low" }, maxOutputTokens: 1000 };
+    normalized.reasoningEffort = "low";
+    const trace = await captureBrightAnswerTrace({ ...input, expectedControls });
+    expect(trace?.admittedControls).toEqual({ version: 1, paramsHash: brightAnswerHash(params), reasoningEffort: "low" });
+    expect(trace?.admittedControls).not.toHaveProperty("params");
+    normalized.reasoningEffort = "medium";
+    await expect(captureBrightAnswerTrace({ ...input, expectedControls })).rejects.toThrow("accepted_controls_mismatch");
   });
 
   it("rejects a different question, deployment, or frozen Source snapshot", async () => {

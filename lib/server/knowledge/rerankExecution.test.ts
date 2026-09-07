@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { RerankAdapterError, type RerankAdapter } from "../providers/rerank";
+import { MAX_RERANK_QUERY_CHARACTERS, RerankAdapterError, type RerankAdapter } from "../providers/rerank";
 import { decodeKnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import {
   createKnowledgeRerankStage,
@@ -136,6 +136,36 @@ describe("Knowledge rerank execution stage", () => {
       expect(document.text).toBe(`источник.pdf\nРаздел\npassage for ${document.handle}`);
       expect(document.text).not.toMatch(/Source:|Location:|Evidence layout:/u);
     }
+  });
+
+  it("preserves the final constraint of an admitted 3000-code-point query", async () => {
+    const constraint = "Keep the session open.";
+    const query = "🔎".repeat(3000 - [...constraint].length) + constraint;
+    const rerank = vi.fn(async (request: Parameters<RerankAdapter["rerank"]>[0]) => ({
+      model: "qwen3-reranker-8b",
+      provider: null,
+      requestId: null,
+      scores: request.documents.map((document, index) => ({
+        handle: document.handle, index, relevanceScore: 1 - index * 0.1
+      })),
+      usage: { inputTokens: null, searchUnits: null, totalTokens: null }
+    }));
+    const stage = createKnowledgeRerankStage({ adapter: fakeAdapter(rerank), pin, query });
+
+    await stage({ candidates: [candidate("chunk-a"), candidate("chunk-b")] });
+
+    const actual = rerank.mock.calls[0]![0].query;
+    expect(actual.endsWith(constraint)).toBe(true);
+    expect(actual).toBe(query);
+    expect(rerank).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an oversized query instead of ranking against a silent prefix", () => {
+    const rerank = vi.fn();
+    expect(() => createKnowledgeRerankStage({
+      adapter: fakeAdapter(rerank), pin, query: "x".repeat(MAX_RERANK_QUERY_CHARACTERS + 1)
+    })).toThrow("rerank_input_invalid");
+    expect(rerank).not.toHaveBeenCalled();
   });
 
   it("skips the provider for zero or one unique candidate", async () => {

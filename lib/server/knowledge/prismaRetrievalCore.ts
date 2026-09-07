@@ -70,6 +70,13 @@ import {
   KnowledgeLexicalBackendEvidenceV1,
   KnowledgePassageBm25Search
 } from "./searchRetrieval";
+import {
+  decodeKnowledgeSemanticHits,
+  knowledgeSemanticCandidateLookupSql,
+  knowledgeSemanticCandidateRevalidationSql,
+  type KnowledgeSemanticHit,
+  type KnowledgeSemanticQueryVector as QueryVector
+} from "./semanticCandidates";
 
 const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
 const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
@@ -79,6 +86,8 @@ const KNOWLEDGE_LINEAR_CONTEXT_MAX = 2;
 
 type RetrievalCoreClient = Readonly<{
   $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+  /** Dedicated transaction with vector-index planning preferences. */
+  $querySemantic?<T = unknown>(query: Prisma.Sql): Promise<T>;
   transactionLocalRetrievalSettings?: true;
 }>;
 
@@ -104,14 +113,6 @@ export function knowledgeRetrievalRuntimeSettingsSql(): Prisma.Sql {
 const compatibleIndexVersionsSql = Prisma.sql`ANY(ARRAY[${Prisma.join([
   ...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS
 ])}]::integer[])`;
-
-type QueryVector = Readonly<{
-  bindingOrdinal: number;
-  indexGenerationId: string;
-  knowledgeBaseId: string;
-  targetDimension: 1_024 | 1_536;
-  vector: readonly number[];
-}>;
 
 export type KnowledgeRetrievalScopeFilter = Readonly<{
   bindingOrdinals?: readonly number[];
@@ -144,7 +145,8 @@ type CandidateRow = Omit<KnowledgeRetrievalCandidate, "signals" | "sourceArtifac
 
 type HybridQueryEnvelopeRow = Readonly<{
   candidates: unknown;
-  scopes: unknown;
+  scopeVerified: unknown;
+  semanticRevalidatedCount: unknown;
 }>;
 
 export type KnowledgeVectorSearchEvidence = Readonly<{
@@ -316,22 +318,25 @@ function retrievalBindingsSql(input: Readonly<{
   `;
 }
 
-function scopedPassagesSql(): Prisma.Sql {
-  return Prisma.sql`
-    WITH scoped_index_artifacts AS MATERIALIZED (${scopedIndexArtifactsSql()})
-    ${sharedScopedPassagesSql()}
-  `;
-}
-
 /**
  * Narrow scope projection used before retrieval. Scope attestation does not
  * need passage text or layout metadata, and routing it through
- * `scopedPassagesSql` forces the database to assemble every retrieval row
+ * passage hydration forces the database to assemble every retrieval row
  * before it can return the accepted hierarchy ids. Keep the same canonical
  * Source selection and ready/version checks while stopping at the immutable
  * hierarchy artifact boundary.
  */
-function scopedIndexArtifactsSql(): Prisma.Sql {
+function scopedIndexArtifactsSql(candidateIndexArtifactIds?: readonly string[]): Prisma.Sql {
+  // Candidate identities only narrow the work before canonicalization; they
+  // never grant scope. Every retained Source still passes the same immutable
+  // binding, owner, version, readiness and latest-compatible-index checks.
+  const candidateSourceArtifacts = candidateIndexArtifactIds === undefined
+    ? null
+    : Prisma.sql`
+        SELECT candidate."sourceArtifactId"
+        FROM "KnowledgeHierarchicalIndexArtifact" AS candidate
+        WHERE candidate."id" = ANY(${candidateIndexArtifactIds}::text[])
+      `;
   return Prisma.sql`
     WITH binding_sources AS MATERIALIZED (
       SELECT
@@ -349,6 +354,9 @@ function scopedIndexArtifactsSql(): Prisma.Sql {
         ON snapshot_source."snapshotId" = binding."knowledgeBaseSnapshotId"
        AND snapshot_source."knowledgeBaseId" = binding."knowledgeBaseId"
       WHERE binding."scopeKind" = 'base'
+        ${candidateSourceArtifacts ? Prisma.sql`
+          AND snapshot_source."artifactId" IN (${candidateSourceArtifacts})
+        ` : Prisma.empty}
         AND binding."knowledgeBaseSnapshotId" IS NOT NULL
         AND (
           binding."includeWholeBase" = true
@@ -374,6 +382,9 @@ function scopedIndexArtifactsSql(): Prisma.Sql {
       INNER JOIN "KnowledgeSource" AS source
         ON source."id" = source_binding."sourceId"
       WHERE binding."scopeKind" = 'profile'
+        ${candidateSourceArtifacts ? Prisma.sql`
+          AND source_binding."sourceArtifactId" IN (${candidateSourceArtifacts})
+        ` : Prisma.empty}
         AND source_binding."sourceId" IS NOT NULL
         AND source_binding."sourceVersionId" IS NOT NULL
         AND source_binding."sourceArtifactId" IS NOT NULL
@@ -500,7 +511,16 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
-    scoped_index_artifacts AS NOT MATERIALIZED (${scopedIndexArtifacts}),
+    scoped_index_artifacts AS NOT MATERIALIZED (${scopedIndexArtifacts})
+    SELECT * FROM (${knowledgeRetrievalScopeRowsSql()}) AS scope
+  `;
+}
+
+/** Use the same current ready-artifact/projection census at admission and
+ * before external search, sharing the hybrid query's canonical artifact map. */
+function knowledgeRetrievalScopeRowsSql(): Prisma.Sql {
+  return Prisma.sql`
+    WITH
     embedding_counts AS MATERIALIZED (
       SELECT
         embedding."indexArtifactId",
@@ -554,6 +574,44 @@ export function knowledgeRetrievalScopeSql(input: Readonly<{
   `;
 }
 
+/** Compare native scope values inside PostgreSQL. Returning the whole corpus
+ * map again adds large JSON conversion and transfer costs; echoing the input
+ * cannot detect a readiness or scope change between retrieval statements. */
+function knowledgeRetrievalScopeVerificationSql(scopes: readonly ScopeRow[]): Prisma.Sql {
+  const rows = Prisma.join(scopes.map((scope) => Prisma.sql`(
+    ${scope.bindingOrdinal}::integer,
+    ${scope.knowledgeBaseId}::text,
+    ${scope.indexGenerationId}::text,
+    ${scope.targetDimension}::integer,
+    ${scope.baseName}::text,
+    ${scope.acceptedIndexArtifactIds}::text[],
+    ${scope.projectionComplete}::boolean,
+    ${scope.eligibleRows}::integer
+  )`));
+  return Prisma.sql`
+    WITH
+    actual_scopes AS MATERIALIZED (${knowledgeRetrievalScopeRowsSql()}),
+    expected_scopes(
+      "bindingOrdinal", "knowledgeBaseId", "indexGenerationId", "targetDimension",
+      "baseName", "acceptedIndexArtifactIds", "projectionComplete", "eligibleRows"
+    ) AS MATERIALIZED (VALUES ${rows})
+    SELECT NOT EXISTS (
+      SELECT 1
+      FROM actual_scopes AS actual
+      FULL OUTER JOIN expected_scopes AS expected
+        ON actual."bindingOrdinal" = expected."bindingOrdinal"
+      WHERE actual."bindingOrdinal" IS NULL OR expected."bindingOrdinal" IS NULL
+        OR actual."knowledgeBaseId" IS DISTINCT FROM expected."knowledgeBaseId"
+        OR actual."indexGenerationId" IS DISTINCT FROM expected."indexGenerationId"
+        OR actual."targetDimension" IS DISTINCT FROM expected."targetDimension"
+        OR actual."baseName" IS DISTINCT FROM expected."baseName"
+        OR actual."acceptedIndexArtifactIds" IS DISTINCT FROM expected."acceptedIndexArtifactIds"
+        OR actual."projectionComplete" IS DISTINCT FROM expected."projectionComplete"
+        OR actual."eligibleRows" IS DISTINCT FROM expected."eligibleRows"
+    ) AS verified
+  `;
+}
+
 function decodeScope(value: unknown): ScopeRow | null {
   if (!record(value)) return null;
   const bindingOrdinal = integer(value.bindingOrdinal);
@@ -586,137 +644,8 @@ function decodeScope(value: unknown): ScopeRow | null {
   };
 }
 
-function vectorLiteral(vector: readonly number[]): string {
-  return `[${vector.join(",")}]`;
-}
-
 function knowledgeVectorRetrievalBucket(knowledgeBaseId: string): number {
   return createHash("md5").update(knowledgeBaseId).digest()[0]! % KNOWLEDGE_VECTOR_BUCKET_COUNT;
-}
-
-function vectorExpression(vector: QueryVector): Prisma.Sql {
-  const literal = vectorLiteral(vector.vector);
-  return vector.targetDimension === 1_024
-    ? Prisma.sql`${literal}::vector(1024)`
-    : Prisma.sql`${literal}::vector(1536)`;
-}
-
-function vectorDistanceExpression(vector: QueryVector, alias: string): Prisma.Sql {
-  const queryVector = vectorExpression(vector);
-  const row = Prisma.raw(alias);
-  return vector.targetDimension === 1_024
-    ? Prisma.sql`${row}."embedding"::vector(1024) <=> ${queryVector}`
-    : Prisma.sql`${row}."embedding"::vector(1536) <=> ${queryVector}`;
-}
-
-function knowledgeVectorLaneSql(input: Readonly<{
-  acceptedIndexArtifactIds: readonly string[];
-  bindingOrdinals?: readonly number[];
-  candidateLimit: number;
-  relaxRelevanceFloors?: boolean;
-  runId: string;
-  sharedScope?: boolean;
-  sourceIds?: readonly string[];
-  userId: string;
-  vector: QueryVector;
-}>): Prisma.Sql {
-  const bindings = retrievalBindingsSql(input);
-  const scopedPassages = scopedPassagesSql();
-  const scopedPassagesCte = input.sharedScope
-    ? Prisma.empty
-    : Prisma.sql`
-      bindings AS MATERIALIZED (${bindings}),
-      scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
-    `;
-  const globalDistance = vectorDistanceExpression(input.vector, "embedding");
-  const acceptedIndexArtifactIds = input.acceptedIndexArtifactIds.length > 0
-    // A whole retained Base can contain well over PostgreSQL's practical
-    // per-statement parameter budget. Bind the immutable scope as one native
-    // array instead of expanding every hierarchy id into its own parameter.
-    ? Prisma.sql`${input.acceptedIndexArtifactIds}::text[]`
-    : Prisma.sql`ARRAY[]::text[]`;
-  const acceptedScope = input.sharedScope
-    ? Prisma.sql`
-      SELECT COALESCE(
-        jsonb_object_agg(artifact."indexArtifactId", true),
-        '{}'::jsonb
-      ) AS "indexArtifactMap"
-      FROM scoped_index_artifacts AS artifact
-      WHERE artifact."bindingOrdinal" = ${input.vector.bindingOrdinal}
-    `
-    : Prisma.sql`
-      SELECT COALESCE(
-        jsonb_object_agg(accepted."indexArtifactId", true),
-        '{}'::jsonb
-      ) AS "indexArtifactMap"
-      FROM unnest(${acceptedIndexArtifactIds}) AS accepted("indexArtifactId")
-    `;
-  // The distance ceiling is monotone in the nearest-first order, so applying
-  // it after the scoped top-K preserves the same eligible prefix. Applying
-  // it inside iterative ANN instead can scan the whole index trying to fill
-  // K slots when fewer than K passages satisfy the relevance floor.
-  // A hosted reranker still receives the complete bounded nearest pool.
-  const denseFloor = input.relaxRelevanceFloors
-    ? Prisma.empty
-    : Prisma.sql`WHERE hit."vectorDistance" <= ${1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR}`;
-  return Prisma.sql`
-    WITH
-    ${scopedPassagesCte}
-    accepted_scope AS MATERIALIZED (${acceptedScope}),
-    vector_hits AS (
-      SELECT
-        embedding."indexArtifactId",
-        embedding."passageId" AS "chunkId",
-        ${globalDistance} AS "vectorDistance"
-      FROM "KnowledgeArtifactPassageEmbedding" AS embedding
-      WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
-        AND COALESCE(
-          (SELECT scope."indexArtifactMap" FROM accepted_scope AS scope)
-            ? embedding."indexArtifactId",
-          false
-        )
-      ORDER BY ${globalDistance}
-      LIMIT ${input.candidateLimit}
-    ),
-    ranked AS (
-      SELECT hit.*,
-        row_number() OVER (ORDER BY hit."vectorDistance")::integer AS "laneRank"
-      FROM vector_hits AS hit
-      ${denseFloor}
-    )
-    SELECT
-      passage."baseName",
-      passage."bindingOrdinal",
-      passage."contributingBindingOrdinals",
-      passage."chunkId",
-      passage."chunkIndex",
-      passage."contentHash",
-      passage."documentId",
-      passage."documentVersionId",
-      passage."documentVersionNumber",
-      passage."documentContext",
-      passage."fileName",
-      passage."headingPath",
-      passage."layoutKind",
-      passage."knowledgeBaseId",
-      passage."page",
-      passage."sectionId",
-      passage."sourceArtifactId",
-      passage."sourceName",
-      passage."text",
-      'passage_semantic'::text AS lane,
-      ranked."laneRank",
-      (1.0 - ranked."vectorDistance")::double precision AS "rawScore",
-      NULL::text AS "exactKind",
-      ranked."vectorDistance"::double precision AS "vectorDistance",
-      'ann'::text AS "vectorMode"
-    FROM ranked
-    INNER JOIN scoped_passages AS passage
-      ON passage."bindingOrdinal" = ${input.vector.bindingOrdinal}
-     AND passage."indexArtifactId" = ranked."indexArtifactId"
-     AND passage."chunkId" = ranked."chunkId"
-    ORDER BY ranked."laneRank"
-  `;
 }
 
 /** BM25 owns global full-text candidate generation. PostgreSQL adds exact
@@ -969,9 +898,9 @@ function knowledgeExactAndMetadataSearchSql(input: Readonly<{
 }
 
 /**
- * Builds the complete focused hybrid retrieval as one PostgreSQL statement.
- * The nested lane statements remain private implementation details of this
- * single operation; callers receive one envelope from one `$queryRaw` call.
+ * Revalidate semantic identities and combine them with exact/metadata hits
+ * and bounded neighbors. Nearest-neighbor planning belongs to the preceding
+ * semantic statement; this statement retains the current canonical scope proof.
  */
 function knowledgeFocusedHybridSearchSql(input: Readonly<{
   acceptedScopes: readonly ScopeRow[];
@@ -979,9 +908,9 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   query: string;
-  relaxRelevanceFloors?: boolean;
   resultLimit: number;
   runId: string;
+  semanticHits: readonly KnowledgeSemanticHit[];
   sourceIds?: readonly string[];
   transactionLocalRetrievalSettings?: true;
   userId: string;
@@ -994,32 +923,69 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
     ...input,
     sharedScope: true
   });
-  const acceptedScopesJson = JSON.stringify(input.acceptedScopes);
-  const acceptedScopesByOrdinal = new Map(input.acceptedScopes.map((scope) => [
-    scope.bindingOrdinal,
-    scope
-  ]));
-  const vectorQueryUnion = input.vectors.length === 0
-    ? Prisma.sql`SELECT candidate.* FROM lexical_candidates AS candidate WHERE false`
-    : Prisma.join(input.vectors.map((vector) => {
-      const query = knowledgeVectorLaneSql({
-        acceptedIndexArtifactIds:
-          acceptedScopesByOrdinal.get(vector.bindingOrdinal)?.acceptedIndexArtifactIds ?? [],
-        ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
-        candidateLimit: input.candidateLimit,
-        ...(input.relaxRelevanceFloors ? { relaxRelevanceFloors: true } : {}),
-        runId: input.runId,
-        sharedScope: true,
-        ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
-        userId: input.userId,
-        vector
-      });
-      return Prisma.sql`
-        SELECT vector_candidate.*
-        FROM runtime_settings
-        CROSS JOIN LATERAL (${query}) AS vector_candidate
-      `;
-    }), " UNION ALL ");
+  const vectorQueryUnion = Prisma.sql`SELECT
+      "baseName", "bindingOrdinal", "contributingBindingOrdinals", "chunkId",
+      "chunkIndex", "contentHash", "documentId", "documentVersionId", "documentVersionNumber",
+      "documentContext", "fileName", "headingPath", "layoutKind", "knowledgeBaseId", "page", "sectionId",
+      "sourceArtifactId", "sourceName", "text", "lane", "laneRank", "rawScore", "exactKind", "vectorDistance", "vectorMode"
+      FROM revalidated_semantic_hits`;
+  // Global semantic positions apply only after multiple distinct query
+  // vectors have been combined within the same authorized binding.
+  const vectorQueriesByBinding = new Map<number, Set<string>>();
+  for (const vector of input.vectors) {
+    const identities = vectorQueriesByBinding.get(vector.bindingOrdinal) ?? new Set<string>();
+    identities.add(JSON.stringify([vector.targetDimension, vector.vector]));
+    vectorQueriesByBinding.set(vector.bindingOrdinal, identities);
+  }
+  const globalSemanticBindings = [...vectorQueriesByBinding]
+    .filter(([, identities]) => identities.size > 1)
+    .map(([bindingOrdinal]) => bindingOrdinal)
+    .sort((left, right) => left - right);
+  const vectorCandidateCtes = globalSemanticBindings.length === 0
+    ? Prisma.sql`vector_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (candidate."bindingOrdinal", candidate."chunkId") candidate.*
+      FROM vector_candidate_union AS candidate
+      ORDER BY candidate."bindingOrdinal", candidate."chunkId", candidate."laneRank",
+        candidate."vectorDistance"
+    )`
+    : Prisma.sql`vector_candidate_best AS MATERIALIZED (
+      SELECT DISTINCT ON (candidate."bindingOrdinal", candidate."chunkId") candidate.*
+      FROM vector_candidate_union AS candidate
+      ORDER BY candidate."bindingOrdinal", candidate."chunkId", candidate."laneRank",
+        candidate."vectorDistance"
+    ),
+    vector_candidates AS MATERIALIZED (
+      SELECT
+        candidate."baseName",
+        candidate."bindingOrdinal",
+        candidate."contributingBindingOrdinals",
+        candidate."chunkId",
+        candidate."chunkIndex",
+        candidate."contentHash",
+        candidate."documentId",
+        candidate."documentVersionId",
+        candidate."documentVersionNumber",
+        candidate."documentContext",
+        candidate."fileName",
+        candidate."headingPath",
+        candidate."layoutKind",
+        candidate."knowledgeBaseId",
+        candidate."page",
+        candidate."sectionId",
+        candidate."sourceArtifactId",
+        candidate."sourceName",
+        candidate."text",
+        candidate.lane,
+        CASE WHEN candidate."bindingOrdinal" = ANY(${globalSemanticBindings}::integer[])
+          THEN row_number() OVER (
+            PARTITION BY candidate."bindingOrdinal"
+            ORDER BY candidate."laneRank", candidate."vectorDistance", candidate."chunkId"
+          )::integer
+          ELSE candidate."laneRank"
+        END AS "laneRank",
+        candidate."rawScore", candidate."exactKind", candidate."vectorDistance", candidate."vectorMode"
+      FROM vector_candidate_best AS candidate
+    )`;
   const neighborCandidates = Prisma.sql`
       SELECT neighbor.*
       FROM ranked_neighbor_candidates AS neighbor
@@ -1027,22 +993,13 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
     `;
   return Prisma.sql`
     WITH
-    runtime_settings AS MATERIALIZED (
-      ${input.transactionLocalRetrievalSettings
-        ? Prisma.sql`SELECT 1`
-        : knowledgeRetrievalRuntimeSettingsSql()}
-    ),
     bindings AS MATERIALIZED (${bindings}),
     scoped_index_artifacts AS MATERIALIZED (${scopedIndexArtifacts}),
     scoped_passages AS NOT MATERIALIZED (${scopedPassages}),
     lexical_candidates AS MATERIALIZED (${lexicalQuery}),
+    revalidated_semantic_hits AS MATERIALIZED (${knowledgeSemanticCandidateRevalidationSql(input.semanticHits)}),
     vector_candidate_union AS MATERIALIZED (${vectorQueryUnion}),
-    vector_candidates AS MATERIALIZED (
-      SELECT DISTINCT ON (candidate."bindingOrdinal", candidate."chunkId") candidate.*
-      FROM vector_candidate_union AS candidate
-      ORDER BY candidate."bindingOrdinal", candidate."chunkId", candidate."laneRank",
-        candidate."vectorDistance"
-    ),
+    ${vectorCandidateCtes},
     primary_candidates AS MATERIALIZED (
       SELECT * FROM lexical_candidates
       UNION ALL
@@ -1174,7 +1131,8 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
         )
         FROM all_candidates AS candidate
       ), '[]'::jsonb) AS candidates,
-      ${acceptedScopesJson}::jsonb AS scopes
+      (${knowledgeRetrievalScopeVerificationSql(input.acceptedScopes)}) AS "scopeVerified",
+      (SELECT count(*)::integer FROM revalidated_semantic_hits) AS "semanticRevalidatedCount"
   `;
 }
 
@@ -1189,7 +1147,9 @@ function knowledgeBm25RevalidationSql(input: Readonly<{
     throw new Error("knowledge_bm25_hits_invalid");
   }
   const bindings = retrievalBindingsSql(input);
-  const scopedIndexArtifacts = scopedIndexArtifactsSql();
+  const scopedIndexArtifacts = scopedIndexArtifactsSql(
+    [...new Set(input.hits.map((hit) => hit.indexArtifactId))]
+  );
   const hits = Prisma.join(input.hits.map((hit) => Prisma.sql`(
     ${hit.indexArtifactId},
     ${hit.passageId},
@@ -1531,22 +1491,22 @@ function decodeRows(rows: readonly unknown[]): CandidateRow[] {
 
 function decodeHybridQueryEnvelope(rows: readonly unknown[]): Readonly<{
   candidates: CandidateRow[];
-  scopes: ScopeRow[];
+  scopeVerified: boolean;
+  semanticRevalidatedCount: number;
 }> {
   if (rows.length !== 1 || !record(rows[0])) {
     throw new Error("knowledge_retrieval_envelope_invalid");
   }
   const envelope = rows[0] as HybridQueryEnvelopeRow;
-  if (!Array.isArray(envelope.candidates) || !Array.isArray(envelope.scopes)) {
+  const semanticRevalidatedCount = integer(envelope.semanticRevalidatedCount);
+  if (!Array.isArray(envelope.candidates) || typeof envelope.scopeVerified !== "boolean" ||
+    semanticRevalidatedCount === null || semanticRevalidatedCount < 0) {
     throw new Error("knowledge_retrieval_envelope_invalid");
-  }
-  const scopes = envelope.scopes.map(decodeScope);
-  if (scopes.some((scope) => scope === null)) {
-    throw new Error("knowledge_retrieval_scope_invalid");
   }
   return Object.freeze({
     candidates: decodeRows(envelope.candidates),
-    scopes: scopes as ScopeRow[]
+    scopeVerified: envelope.scopeVerified,
+    semanticRevalidatedCount
   });
 }
 
@@ -1777,7 +1737,22 @@ export async function executeKnowledgeRetrievalCore(
       vector.vector.some((value) => !Number.isFinite(value)))
   ) throw new Error("knowledge_query_vector_invalid");
 
-  const scopeRows = await client.$queryRaw<unknown[]>(knowledgeRetrievalScopeSql({
+  const queryRows = async <T>(query: Prisma.Sql, semantic = false): Promise<T> => {
+    input.rerank?.signal?.throwIfAborted();
+    // Raw-core callers do not own the repository's transaction wrapper.
+    // Retain their runtime settings dependency inside the semantic statement.
+    const statement = semantic && !client.transactionLocalRetrievalSettings
+      ? Prisma.sql`WITH runtime_settings AS MATERIALIZED (${knowledgeRetrievalRuntimeSettingsSql()})
+          SELECT candidate.* FROM runtime_settings
+          CROSS JOIN LATERAL (${query}) AS candidate`
+      : query;
+    const rows = semantic && client.$querySemantic
+      ? await client.$querySemantic<T>(statement)
+      : await client.$queryRaw<T>(statement);
+    input.rerank?.signal?.throwIfAborted();
+    return rows;
+  };
+  const scopeRows = await queryRows<unknown[]>(knowledgeRetrievalScopeSql({
     ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
     runId: input.runId,
     ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
@@ -1800,16 +1775,26 @@ export async function executeKnowledgeRetrievalCore(
     throw new KnowledgeSearchFailure("knowledge_search_projection_incomplete", scopeFingerprint);
   }
   const rerankConfigured = Boolean(input.rerank);
-  const envelope = decodeHybridQueryEnvelope(await client.$queryRaw<unknown[]>(
+  const semanticInput = {
+    candidateLimit: input.candidateLimit,
+    ...(rerankConfigured ? { relaxRelevanceFloors: true } : {}),
+    vectors: input.vectors
+  };
+  const semanticHits = input.vectors.length === 0 ? [] : decodeKnowledgeSemanticHits(
+    await queryRows<unknown[]>(knowledgeSemanticCandidateLookupSql(semanticInput, acceptedScopes), true),
+    semanticInput,
+    acceptedScopes
+  );
+  const envelope = decodeHybridQueryEnvelope(await queryRows<unknown[]>(
     knowledgeFocusedHybridSearchSql({
       acceptedScopes,
       ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
       ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
       candidateLimit: input.candidateLimit,
       query: input.query,
-      ...(rerankConfigured ? { relaxRelevanceFloors: true } : {}),
       resultLimit: input.resultLimit,
       runId: input.runId,
+      semanticHits,
       ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
       ...(client.transactionLocalRetrievalSettings
         ? { transactionLocalRetrievalSettings: true as const } : {}),
@@ -1817,8 +1802,12 @@ export async function executeKnowledgeRetrievalCore(
       vectors: input.vectors
     })
   ));
-  if (JSON.stringify(envelope.scopes) !== JSON.stringify(acceptedScopes)) {
+  if (!envelope.scopeVerified) {
     throw new KnowledgeSearchFailure("knowledge_retrieval_scope_changed", scopeFingerprint);
+  }
+
+  if (envelope.semanticRevalidatedCount !== semanticHits.length) {
+    throw new KnowledgeSearchFailure("knowledge_search_candidate_revalidation_failed", scopeFingerprint);
   }
 
   const acceptedIndexArtifactIds = [...new Set(acceptedScopes.flatMap((scope) =>
@@ -1837,9 +1826,10 @@ export async function executeKnowledgeRetrievalCore(
     if (code) throw new KnowledgeSearchFailure(code, scopeFingerprint);
     throw error;
   });
+  input.rerank?.signal?.throwIfAborted();
   const bm25Rows = bm25.hits.length === 0
     ? []
-    : decodeRows(await client.$queryRaw<unknown[]>(knowledgeBm25RevalidationSql({
+    : decodeRows(await queryRows<unknown[]>(knowledgeBm25RevalidationSql({
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         hits: bm25.hits,
         runId: input.runId,

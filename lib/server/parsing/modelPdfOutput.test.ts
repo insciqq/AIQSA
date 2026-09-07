@@ -35,12 +35,19 @@ describe("model PDF transcription contract", () => {
     expect(prompt).toContain(modelPdfPageStartMarker(2));
     expect(prompt).toContain("every non-empty table cell");
     expect(prompt).toContain(MODEL_PDF_ROW_CONTINUATION_CELL);
-    expect(MODEL_PDF_PROMPT_VERSION).toBe(7);
+    expect(MODEL_PDF_PROMPT_VERSION).toBe(8);
     expect(prompt).toContain("never establish a span");
     expect(MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION).toBe(14);
     expect(prompt).toContain("Start the record with exactly `Visual data:`");
     expect(prompt).toContain("cover every visible series");
     expect(prompt).toContain("plateaus, crossings, and stability");
+    expect(prompt).toContain("an explicitly approximate point value");
+    expect(prompt).toContain("Distinguish the central mark from error bars");
+    const priorVisualPrompt = modelPdfTranscriptionPrompt({
+      mode: "system_model_vision", pageStart: 1, pageEnd: 2, promptVersion: 7
+    });
+    expect(priorVisualPrompt).toContain("state only visually evident approximate ranges");
+    expect(priorVisualPrompt).not.toContain("an explicitly approximate point value");
     expect(modelPdfTranscriptionPrompt({
       mode: "system_model_direct_pdf",
       pageEnd: 2,

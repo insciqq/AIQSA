@@ -679,6 +679,8 @@ export type KnowledgeQueryPreparation = Readonly<{
 export type KnowledgeFrozenRunManifest = Readonly<{
   candidateLimits: KnowledgeCandidateLimits;
   chunkingProfile: string;
+  /** Present on new runs; historical manifests retain their original hash. */
+  codeFingerprint?: string;
   configLabel: KnowledgeConfigLabel;
   corpusContentSha256: string;
   datasetSources: readonly Readonly<{ datasetId: string; revision: string }>[];
@@ -776,6 +778,10 @@ export function decodeKnowledgeFrozenRunManifest(
     throw new Error(frozenManifestCode);
   }
   const rerankerModelId = value.rerankerModelId;
+  if (value.codeFingerprint !== undefined && (typeof value.codeFingerprint !== "string" ||
+    !sha256Pattern.test(value.codeFingerprint))) {
+    throw new Error(frozenManifestCode);
+  }
   if (rerankerModelId !== null && (typeof rerankerModelId !== "string" ||
     rerankerModelId.length === 0)) {
     throw new Error(frozenManifestCode);
@@ -783,6 +789,7 @@ export function decodeKnowledgeFrozenRunManifest(
   return Object.freeze({
     candidateLimits: decodeCandidateLimits(value.candidateLimits),
     chunkingProfile: requiredString(value.chunkingProfile, frozenManifestCode),
+    ...(value.codeFingerprint !== undefined ? { codeFingerprint: value.codeFingerprint as string } : {}),
     configLabel: value.configLabel as KnowledgeConfigLabel,
     corpusContentSha256,
     datasetSources,
@@ -848,6 +855,7 @@ export function knowledgeConfigFingerprint(
   return sha256HexUtf8(canonicalJson({
     candidateLimits: manifest.candidateLimits,
     chunkingProfile: manifest.chunkingProfile,
+    ...(manifest.codeFingerprint !== undefined ? { codeFingerprint: manifest.codeFingerprint } : {}),
     configLabel: manifest.configLabel,
     embeddingDimension: manifest.embeddingDimension,
     embeddingFormatterVersion: manifest.embeddingFormatterVersion,

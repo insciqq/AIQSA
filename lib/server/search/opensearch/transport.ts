@@ -141,7 +141,12 @@ function decodeCompositeArtifactBuckets(
 }
 
 function decodeVariantHits(value: unknown): readonly KnowledgeBm25VariantHit[] {
-  if (!record(value) || !record(value._shards) || value._shards.failed !== 0 ||
+  if (record(value) && value.timed_out === true) {
+    throw new OpenSearchTransportError("opensearch_timeout", true);
+  }
+  if (!record(value) || value.timed_out !== false ||
+    value.terminated_early !== undefined && value.terminated_early !== false ||
+    !record(value._shards) || value._shards.failed !== 0 ||
     !record(value.hits) || !Array.isArray(value.hits.hits) ||
     value.hits.hits.length > KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT) {
     throw new OpenSearchTransportError("opensearch_response_invalid");

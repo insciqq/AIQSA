@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +86,9 @@ import {
 import {
   verifyBrightPreparedDataset
 } from "./brightStackOverflowPrepared";
+import { brightAnswerCodeFingerprint, type BrightAnswerStore } from "./brightAnswerHarness";
+import { createKnowledgeRetrievalRecorder, prepareKnowledgeRetrievalReplayStore } from "./retrievalReplay";
+import { createKnowledgePassageBm25Search } from "../../lib/server/knowledge/searchRetrieval";
 import {
   activeImportProfile,
   importIdentity,
@@ -128,6 +131,8 @@ const RETRIEVAL_CHECKPOINT_OUTCOMES_DIRECTORY = "retrieval-checkpoint-outcomes";
 let failureStage = "startup";
 
 type CliOptions = Readonly<{
+  batchSize: number | undefined;
+  captureReplay: boolean;
   concurrency: number;
   configLabel: KnowledgeConfigLabel;
   diagnosticCandidateAudit: boolean;
@@ -166,6 +171,8 @@ function emit(event: string, details: Readonly<Record<string, unknown>> = {}): v
 }
 
 export function parseKnowledgeRetrievalCli(argv: readonly string[]): CliOptions {
+  let batchSize: number | undefined;
+  let captureReplay = false;
   let paidConfirmation: string | null = null;
   let suiteId: KnowledgeSuiteId | undefined;
   let configLabel: KnowledgeConfigLabel | undefined;
@@ -186,6 +193,17 @@ export function parseKnowledgeRetrievalCli(argv: readonly string[]): CliOptions 
     const argument = argv[index];
     const next = argv[index + 1];
     switch (argument) {
+      case "--capture-replay":
+        captureReplay = true;
+        break;
+      case "--batch-size": {
+        if (!next || !/^[1-5]$/u.test(next)) {
+          throw new Error("knowledge_benchmark_batch_size_invalid");
+        }
+        batchSize = Number(next);
+        index += 1;
+        break;
+      }
       case "--confirm-paid":
         if (!next?.trim()) {
           throw new Error("knowledge_benchmark_paid_confirmation_invalid");
@@ -287,6 +305,9 @@ export function parseKnowledgeRetrievalCli(argv: readonly string[]): CliOptions 
   }
   if (!suiteId) throw new Error("knowledge_benchmark_suite_required");
   if (!configLabel) throw new Error("knowledge_benchmark_config_label_required");
+  if (captureReplay && (concurrency !== 1 || batchSize === undefined || preflightOnly)) {
+    throw new Error("knowledge_benchmark_replay_schedule_invalid");
+  }
   if (!preflightOnly) {
     const expectedConfirmation = suiteId === "bright-stackoverflow-50m"
       ? "BRIGHT_RETRIEVAL"
@@ -316,10 +337,12 @@ export function parseKnowledgeRetrievalCli(argv: readonly string[]): CliOptions 
   }
   if (preflightOnly && (resume || outputDirectory !== undefined ||
     queryIds.length > 0 || queryLimit !== undefined ||
-    diagnosticCandidateAudit || diagnosticDisableReranker)) {
+    diagnosticCandidateAudit || diagnosticDisableReranker || batchSize !== undefined)) {
     throw new Error("knowledge_benchmark_preflight_mode_invalid");
   }
   return Object.freeze({
+    batchSize,
+    captureReplay,
     concurrency,
     configLabel,
     diagnosticCandidateAudit,
@@ -390,6 +413,45 @@ function checkpointOutcomePath(directory: string, index: number): string {
   return resolve(directory, `${String(index).padStart(6, "0")}.json`);
 }
 
+function checkpointAttemptPath(directory: string, index: number): string {
+  return resolve(directory, `${String(index).padStart(6, "0")}.attempt.json`);
+}
+
+/** A missing outcome after admission is ambiguous paid work, never a retry. */
+export async function claimKnowledgeRetrievalQuery(input: Readonly<{
+  outcomeDirectory: string; queryIndex: number; manifestFingerprint: string;
+}>): Promise<void> {
+  const claim = await open(checkpointAttemptPath(input.outcomeDirectory, input.queryIndex), "wx", 0o600)
+    .catch(() => { throw new Error("knowledge_benchmark_retrieval_query_claim_failed"); });
+  try {
+    await claim.writeFile(JSON.stringify({ manifestFingerprint: input.manifestFingerprint, queryIndex: input.queryIndex }));
+    await claim.sync();
+  } finally { await claim.close(); }
+}
+
+/** Cap new executions while keeping original indices and all settled results. */
+export async function runKnowledgeRetrievalBatch<T, R>(input: Readonly<{
+  queries: readonly T[];
+  resumedOutcomes: ReadonlyMap<number, R>;
+  batchSize?: number;
+  concurrency: number;
+  execute(query: T, queryIndex: number): Promise<R>;
+}>): Promise<Readonly<{ complete: boolean; outcomes: readonly R[] }>> {
+  if (input.queries.length === 0 || input.batchSize !== undefined &&
+    (!Number.isSafeInteger(input.batchSize) || input.batchSize < 1 || input.batchSize > 5) ||
+    [...input.resumedOutcomes.keys()].some(index => !Number.isSafeInteger(index) || index < 0 || index >= input.queries.length)) {
+    throw new Error("knowledge_benchmark_retrieval_batch_invalid");
+  }
+  const pending = input.queries.map((query, index) => ({ query, index }))
+    .filter(item => !input.resumedOutcomes.has(item.index)).slice(0, input.batchSize);
+  const fresh = await mapConcurrentOrdered(pending, input.concurrency,
+    item => input.execute(item.query, item.index));
+  const settled = new Map(input.resumedOutcomes);
+  for (const [index, outcome] of fresh.entries()) settled.set(pending[index]!.index, outcome);
+  return Object.freeze({ complete: settled.size === input.queries.length,
+    outcomes: Object.freeze(input.queries.flatMap((_, index) => settled.has(index) ? [settled.get(index)!] : [])) });
+}
+
 export async function prepareRetrievalCheckpoint(input: Readonly<{
   manifestFingerprint: string;
   outputDirectory: string;
@@ -457,7 +519,13 @@ export async function prepareRetrievalCheckpoint(input: Readonly<{
       checkpointOutcomePath(outcomeDirectory, index),
       "knowledge_benchmark_retrieval_checkpoint_file_invalid"
     );
-    if (raw === null) continue;
+    if (raw === null) {
+      if (await readOptionalJson(checkpointAttemptPath(outcomeDirectory, index),
+        "knowledge_benchmark_retrieval_attempt_invalid") !== null) {
+        throw new Error("knowledge_benchmark_retrieval_query_ambiguous");
+      }
+      continue;
+    }
     resumedOutcomes.set(index, decodeKnowledgeRetrievalCheckpointFile(
       raw,
       input.manifestFingerprint,
@@ -915,7 +983,8 @@ function buildFrozenManifest(
     }>;
     provider: string;
   }>,
-  reranker: KnowledgeRerankerRoleResolution
+  reranker: KnowledgeRerankerRoleResolution,
+  codeFingerprint: string
 ): KnowledgeFrozenRunManifest {
   const instructionTemplate =
     runtime.configuration.embedding?.queryInstructionTemplate ?? null;
@@ -926,6 +995,7 @@ function buildFrozenManifest(
       vector: KNOWLEDGE_LANE_CANDIDATE_LIMIT
     },
     chunkingProfile: `chunking-v${KNOWLEDGE_CHUNKING_PROFILE_VERSION}`,
+    codeFingerprint,
     configLabel,
     corpusContentSha256: state.corpusContentSha256,
     datasetSources: state.datasetSources,
@@ -1063,6 +1133,7 @@ async function main(): Promise<void> {
     options.outputDirectory ?? `results/${generatedRunId}`
   );
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
+  let replayStore: BrightAnswerStore | null = null;
   try {
     failureStage = "database_identity";
     await assertDatabaseIdentity(prisma);
@@ -1120,6 +1191,7 @@ async function main(): Promise<void> {
       options.diagnosticDisableReranker
         ? Object.freeze({ kind: "absent" as const })
         : configuredReranker;
+    const codeFingerprint = await brightAnswerCodeFingerprint(repositoryRoot);
     const frozenManifest = buildFrozenManifest(
       state,
       suite,
@@ -1128,7 +1200,8 @@ async function main(): Promise<void> {
       bindings[0]!,
       loadedQueries,
       runtime,
-      reranker
+      reranker,
+      codeFingerprint
     );
     const manifestFingerprint = knowledgeRunManifestFingerprint(frozenManifest);
     const schedule = Object.freeze({
@@ -1146,7 +1219,12 @@ async function main(): Promise<void> {
       schedule
     });
     const runId = checkpoint.runId;
+    replayStore = await prepareKnowledgeRetrievalReplayStore({ repositoryRoot, outputDirectory,
+      enabled: options.captureReplay, resume: options.resume,
+      manifest: { codeFingerprint, manifestFingerprint, retrievalManifest: frozenManifest,
+        selectedQueryHash: knowledgeQuerySetContentSha256(queries) } });
     emit("run_started", {
+      captureReplay: options.captureReplay,
       configLabel: options.configLabel,
       datasetFingerprint: knowledgeDatasetFingerprint(frozenManifest),
       diagnosticCandidateAudit: options.diagnosticCandidateAudit,
@@ -1156,7 +1234,8 @@ async function main(): Promise<void> {
       resultLabel: suite.resultLabel,
       resumedQueryCount: checkpoint?.resumedOutcomes.size ?? 0,
       runId,
-      scoreable,
+      fullSelection: scoreable,
+      scoreable: false,
       schedule
     });
     failureStage = "queries";
@@ -1194,19 +1273,21 @@ async function main(): Promise<void> {
       });
       nextProgressAt = Date.now() + 15_000;
     };
-    const outcomes = await mapConcurrentOrdered(
-      queries,
-      options.concurrency,
-      async (query, queryIndex): Promise<KnowledgeRetrievalCheckpointOutcome> => {
-        const resumed = checkpoint?.resumedOutcomes.get(queryIndex);
-        if (resumed) {
-          resumedQueryCount += 1;
-          completed += 1;
-          recordFallbackReason(resumed.rerankerDiagnostic.fallbackReason);
-          emitProgress();
-          return resumed;
-        }
+    for (const resumed of checkpoint.resumedOutcomes.values()) {
+      resumedQueryCount += 1;
+      completed += 1;
+      recordFallbackReason(resumed.rerankerDiagnostic.fallbackReason);
+    }
+    const batch = await runKnowledgeRetrievalBatch({
+      queries, resumedOutcomes: checkpoint.resumedOutcomes, batchSize: options.batchSize,
+      concurrency: options.concurrency,
+      execute: async (query, queryIndex): Promise<KnowledgeRetrievalCheckpointOutcome> => {
         await requestPacer.admit();
+        if (await brightAnswerCodeFingerprint(repositoryRoot) !== codeFingerprint) {
+          throw new Error("knowledge_benchmark_executable_drift");
+        }
+        await claimKnowledgeRetrievalQuery({ outcomeDirectory: checkpoint.outcomeDirectory,
+          queryIndex, manifestFingerprint });
         const cachePath = resolve(
           cacheRoot,
           `${queryEmbeddingCacheKey(frozenManifest, query.text)}.json`
@@ -1253,20 +1334,23 @@ async function main(): Promise<void> {
           cacheHits += 1;
         }
         const searchStartedAt = Date.now();
+        const recorder = replayStore ? createKnowledgeRetrievalRecorder() : null;
         const rerankExecutor = reranker.kind === "ready"
           ? createKnowledgeRerankStage({
-              adapter: reranker.adapter,
+              adapter: recorder ? recorder.adapter(reranker.adapter) : reranker.adapter,
               pin: reranker.pin,
               query: query.text
             })
           : null;
-        const result = await store.hybridSearch({
+        const searchInput: Parameters<typeof store.hybridSearch>[0] = {
           anchorQuery: query.text,
           candidateLimit: KNOWLEDGE_LANE_CANDIDATE_LIMIT,
           excludedOccurrenceKeys: [],
           operation: "automatic_search",
           query: query.text,
-          ...(rerankExecutor ? { rerank: { executor: rerankExecutor } } : {}),
+          ...(rerankExecutor ? { rerank: {
+            executor: recorder ? recorder.executor(rerankExecutor) : rerankExecutor
+          } } : {}),
           resultLimit: KNOWLEDGE_RESULT_LIMIT,
           runId: benchmarkRunId,
           userId: state.userId!,
@@ -1277,7 +1361,15 @@ async function main(): Promise<void> {
             targetDimension: binding.targetDimension,
             vector: cached!.vector
           }))
-        });
+        };
+        const searchStore = recorder ? createPrismaKnowledgeRetrievalStore(
+          recorder.client(prisma), recorder.lexical(createKnowledgePassageBm25Search())
+        ) : store;
+        const result = await searchStore.hybridSearch(searchInput);
+        const searchMs = Date.now() - searchStartedAt;
+        if (recorder && replayStore) {
+          await recorder.finish({ store: replayStore, queryIndex, searchInput, result });
+        }
         const rerankerEvidence = result.rerankerBinding;
         if (options.diagnosticCandidateAudit) {
           const candidateOrder = result.rankingEvidence?.candidateOrder;
@@ -1358,7 +1450,6 @@ async function main(): Promise<void> {
             relevantPreRerankRanks
           });
         }
-        const searchMs = Date.now() - searchStartedAt;
         if (reranker.kind === "ready" && !rerankerEvidence) {
           throw new Error("knowledge_benchmark_reranker_evidence_missing");
         }
@@ -1458,7 +1549,18 @@ async function main(): Promise<void> {
         emitProgress();
         return outcome;
       }
-    );
+    });
+    const outcomes = batch.outcomes;
+    if (!batch.complete) {
+      const progress = { complete: false, scoreable: false, requested: queries.length,
+        settled: outcomes.length, executed: outcomes.length - resumedQueryCount,
+        manifest: frozenManifest, manifestFingerprint, runId, schedule };
+      await writeJsonAtomic(resolve(outputDirectory, "progress.json"), progress);
+      emit("retrieval_batch_complete", { complete: false, scoreable: false,
+        requested: progress.requested, settled: progress.settled, executed: progress.executed,
+        manifestFingerprint });
+      return;
+    }
     const metrics = aggregateKnowledgeSuiteMetrics(outcomes);
     const brightMetrics = options.suiteId === "bright-stackoverflow-50m"
       ? aggregateBrightRetrievalMetrics(outcomes, KNOWLEDGE_RESULT_LIMIT, !options.resume)
@@ -1533,7 +1635,7 @@ async function main(): Promise<void> {
       scoreable
     });
   } finally {
-    await prisma.$disconnect();
+    try { await replayStore?.close(); } finally { await prisma.$disconnect(); }
   }
 }
 

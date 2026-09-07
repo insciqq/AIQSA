@@ -24,6 +24,7 @@ import {
 import { answerBenchmarkApi, consumeAnswerBenchmarkSse } from "./brightAnswerLive";
 import { captureBrightAnswerTrace } from "./brightAnswerTrace";
 import { assertOpenRagCurrentSchema, parseOpenRagCurrentCli, runOpenRagCurrentCases } from "./openRagCurrentAnswer";
+import { ANSWER_BENCHMARK_CONTROL_VERSION, answerBenchmarkControlPlan, answerBenchmarkMessageRequest, assertAnswerBenchmarkControls } from "./answerControls";
 
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(benchmarkRoot, "../..");
@@ -41,8 +42,8 @@ function loopback(value: string | undefined) {
 }
 
 /** Current workflow adapter; the historical runner and its immutable replay
- * protocol remain separate. Corpus/model/evaluator controls must match the
- * supplied historical full-run checkpoint before any paid dispatch. */
+ * protocol remain separate. Historical control fingerprints describe declared
+ * defaults only; each new run additionally attests its accepted dialect params. */
 export async function runOpenRagCurrentAnswerLive(argv: readonly string[]) {
   loadEnvConfig(repositoryRoot);
   const options = parseOpenRagCurrentCli(argv);
@@ -126,6 +127,8 @@ export async function runOpenRagCurrentAnswerLive(argv: readonly string[]) {
     await assertAcceptedStructuredOutputSnapshotExecutable(prisma, answer.snapshot);
     await assertAcceptedStructuredOutputSnapshotExecutable(prisma, judge.snapshot);
     const answerControls = controlDefaults(answerModel, "answer"), judgeControls = controlDefaults(judgeModel, "judge");
+    const answerControlPlan = answerBenchmarkControlPlan(answer.snapshot, answerControls);
+    const judgeControlPlan = answerBenchmarkControlPlan(judge.snapshot, judgeControls);
     if (brightAnswerHash(answer.pin) !== brightAnswerHash(old.answerModel) ||
       brightAnswerHash(judge.pin) !== brightAnswerHash(old.judgeModel) ||
       brightAnswerHash(answerControls) !== old.answerControlsFingerprint ||
@@ -143,19 +146,22 @@ export async function runOpenRagCurrentAnswerLive(argv: readonly string[]) {
       return { knowledge, tools: { maxToolCalls: String(tools.maxToolCalls), maxToolRounds: String(tools.maxToolRounds) } };
     };
     const policies = await readPolicies();
-    const manifest = { schemaVersion: 1, contractVersion: 1, protocol: "aiqsa_current_openrag_answer",
+    const manifest = { schemaVersion: 1, contractVersion: 2, protocol: "aiqsa_current_openrag_answer",
       baselineFingerprint: baseline.manifestFingerprint, datasetId: old.datasetId, revision: old.revision,
       selectionFingerprint: old.selectionFingerprint, caseIds: cases.map(item => item.caseId),
       casesFingerprint: brightAnswerHash(cases), fullSlice: options.full, concurrency: 1,
       judgeContractVersion: old.judgeContractVersion, answerModel: answer.pin, judgeModel: judge.pin,
       answerControls, judgeControls, corpus: retained, sourceCount: corpus.snapshot.readySourceCount, policies,
+      controlContractVersion: ANSWER_BENCHMARK_CONTROL_VERSION, answerControlPlan, judgeControlPlan,
+      historicalControlComparison: "declared_defaults_only",
       engine: { contracts: KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2, groundingReceiptVersion: 58,
         rankingProfileVersion: KNOWLEDGE_RANKING_PROFILE_VERSION },
       codeFingerprint: await brightAnswerCodeFingerprint(repositoryRoot), schema };
     const manifestFingerprint = brightAnswerHash(manifest);
     emit({ event: "open_rag_current_preflight_complete", questionCount: cases.length, sourceCount: corpus.snapshot.readySourceCount,
       answerModel: answer.pin.upstreamModelId, judgeModel: judge.pin.upstreamModelId,
-      baselineCorpusMatches: true, baselineModelsMatch: true, baselineControlsMatch: true,
+      baselineCorpusMatches: true, baselineModelsMatch: true, baselineDeclaredControlsMatch: true,
+      controlContractVersion: ANSWER_BENCHMARK_CONTROL_VERSION,
       historicalMigrationChecksumDifferences: schema.historicalChecksumDifferences, providerCalls: 0, manifestFingerprint });
     if (options.preflightOnly) return;
     phase = "checkpoint";
@@ -182,12 +188,9 @@ export async function runOpenRagCurrentAnswerLive(argv: readonly string[]) {
         const prefix = `${String(index + 1).padStart(3, "0")}/${stage}`;
         const selectedBase = stage === "answer" ? corpus.baseId : null;
         const model = stage === "answer" ? answerModel : judgeModel;
-        const request = { content: { blocks: [{ type: "text", text: prompt }] },
-          controlDefaults: stage === "answer" ? answerControls : judgeControls, expectedActiveLeafId: null,
-          knowledgePlan: { baseIds: selectedBase ? [selectedBase] : [], mode: selectedBase ? "explicit" : "none", sourceIds: [], version: 1 },
-          modelId: model.modelId, params: {}, provider: model.provider,
-          searchPlan: { mode: "all_selected", optionIds: [] }, timeZone: "UTC", tools: "none" };
-        return settleBrightChatStage({ store: checkpoint, prefix, request, beforeSend: assertPins, deadlineMs,
+        const controlPlan = stage === "answer" ? answerControlPlan : judgeControlPlan;
+        const request = answerBenchmarkMessageRequest({ baseId: selectedBase, controlPlan, model, prompt });
+        const trace = await settleBrightChatStage({ store: checkpoint, prefix, request, beforeSend: assertPins, deadlineMs,
           continueKnowledgeFailures: stage === "answer",
           async createChat() {
             const payload = await api.json("/api/chats", { folderId: null, memoryMode: "EXCLUDED", title: `OpenRAG ${index + 1} ${stage}` });
@@ -201,6 +204,7 @@ export async function runOpenRagCurrentAnswerLive(argv: readonly string[]) {
           },
           capture: chatId => captureBrightAnswerTrace({ prisma, chatId, userId, question: prompt, baseId: selectedBase,
             expectedPin: stage === "answer" ? answer.pin : judge.pin, expectedSourceCount: corpus.snapshot.readySourceCount,
+            expectedControls: controlPlan,
             scopePin: selectedBase ? { snapshotId: corpus.snapshot.id, generationId: corpus.generation.id,
               profileRevisionId: corpus.revision.id, targetDimension: corpus.generation.targetDimension,
               vectorSpaceFingerprint: corpus.generation.vectorSpaceFingerprint } : null }),
@@ -208,6 +212,8 @@ export async function runOpenRagCurrentAnswerLive(argv: readonly string[]) {
           progress: trace => emit({ event: "open_rag_current_run_observed", ordinal: index + 1, stage,
             status: trace.status, searches: trace.knowledgeRuns.length, operations: trace.knowledgeProviderAttempts.length })
         });
+        assertAnswerBenchmarkControls(trace.admittedControls, controlPlan);
+        return trace;
       }
     });
   } catch (error) {

@@ -35,10 +35,16 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
  * coverage merely by changing the number of scored candidates.
  * Version 10 keeps diversity within the combined relevance band as well as
  * the learned-score band, preserving stronger query coverage in final results.
+ * Version 11 budgets distinct query terms so a repetitive preamble cannot
+ * consume the coverage vocabulary before later constraints are considered.
+ * Version 12 assigns one position in the deduplicated semantic union when
+ * a binding has multiple distinct query vectors, retaining best local rank
+ * and distance order before fusion and neighbor selection.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 10 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 12 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
+export const KNOWLEDGE_SEMANTIC_UNION_RANK_MAX = KNOWLEDGE_LANE_CANDIDATE_LIMIT * 2;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
 export const KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR = 0.1;
@@ -360,12 +366,15 @@ export type KnowledgeRerankedCandidate = KnowledgeRankedCandidate & Readonly<{
   rerankScore: number | null;
 }>;
 
-function genericWordTokens(value: string, maximum: number): string[] {
+function genericWordTokens(value: string, maximum: number, distinct = false): string[] {
   const tokens: string[] = [];
+  const seen = distinct ? new Set<string>() : null;
   const normalized = value.normalize("NFKC").toLocaleLowerCase("und");
   for (const match of normalized.matchAll(GENERIC_WORD)) {
     const token = match[0];
     if (!token || [...token].length > 128) continue;
+    if (seen?.has(token)) continue;
+    seen?.add(token);
     tokens.push(token);
     if (tokens.length >= maximum) break;
   }
@@ -401,7 +410,8 @@ function tokenCoverageScores(
 ): ReadonlyMap<string, number> {
   const queryTokens = [...new Set(genericWordTokens(
     query,
-    KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX
+    KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX,
+    true
   ))];
   if (queryTokens.length === 0 || candidates.length === 0) return new Map();
   const candidateTokens = new Map<string, ReadonlySet<string>>();

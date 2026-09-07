@@ -133,7 +133,10 @@ function requestBody(input: SidecarParseInput, engine: SidecarParserEngine): Bod
   form.append("abort_on_error", "true");
   form.append("do_ocr", String(doOcr));
   form.append("force_ocr", "false");
-  if (pageRange) form.append("page_range", JSON.stringify([pageRange.start, pageRange.end]));
+  if (pageRange) {
+    form.append("page_range", String(pageRange.start));
+    form.append("page_range", String(pageRange.end));
+  }
   if (doOcr) {
     form.append("ocr_preset", "easyocr");
     form.append("ocr_lang", "ru");

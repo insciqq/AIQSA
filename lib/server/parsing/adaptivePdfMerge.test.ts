@@ -91,7 +91,98 @@ const plan = Object.freeze({
   visionRequiredPageCount: 1
 }) satisfies AdaptivePdfPlan;
 
+function nativeColumns(cells: readonly string[], index = 0): ParsedDocumentBlock {
+  return {
+    ...block(cells.join("\t"), index),
+    isTable: true,
+    table: {
+      cells: cells.map((text, column) => ({
+        column, columnSpan: 1, row: 0, rowSpan: 1, text
+      })),
+      columnCount: cells.length,
+      rowCount: 1
+    },
+    type: "table"
+  };
+}
+
 describe("adaptive PDF deterministic merge", () => {
+  it("does not add a synthetic table joining prose already read in separate columns", () => {
+    const left = "The northern workshop builds wooden boats.";
+    const right = "The southern workshop repairs bicycles.";
+    const native = nativeColumns([left, right]);
+    const paragraphs = [
+      `${left} Every hull is assembled by hand.`,
+      `${right} Broken wheels are replaced locally.`
+    ];
+    const input = {
+      docling: null,
+      geometry: geometry([native]),
+      maxBlocks: 20,
+      maxCharacters: 2_000,
+      plan,
+      vision: vision(paragraphs.map((text, index) => block(text, index)))
+    };
+
+    expect(mergeAdaptivePdfDocument(input).blocks.map(({ text }) => text))
+      .toEqual([...paragraphs, native.text]);
+    const result = mergeAdaptivePdfDocument({ ...input, deduplicateNativeProseRows: true });
+    expect(result.blocks.map(({ text }) => text)).toEqual(paragraphs);
+    expect(result.blocks.every((value) => value.table === null)).toBe(true);
+  });
+
+  it.each([
+    ["missing column", "Unrelated notes about a different workshop."],
+    ["numeric disagreement", "The southern workshop repairs 28 bicycles."]
+  ])("retains all native cells when Vision has a %s", (_label, rightModel) => {
+    const left = "The northern workshop builds wooden boats.";
+    const right = "The southern workshop repairs 29 bicycles.";
+    const native = nativeColumns([left, right]);
+    const result = mergeAdaptivePdfDocument({
+      deduplicateNativeProseRows: true,
+      docling: null,
+      geometry: geometry([native]),
+      maxBlocks: 20,
+      maxCharacters: 2_000,
+      plan,
+      vision: vision([block(left), block(rightModel, 1)])
+    });
+
+    expect(result.blocks.at(-1)?.table).toEqual(native.table);
+  });
+
+  it("does not discard a table relationship because its labels occur elsewhere", () => {
+    const native = nativeColumns(["Northern workshop", "Southern workshop"]);
+    const first = { ...nativeColumns(["Northern workshop", "Boats"]), text: "Northern workshop\tBoats" };
+    const second = { ...nativeColumns(["Southern workshop", "Bicycles"], 1), text: "Southern workshop\tBicycles" };
+    const result = mergeAdaptivePdfDocument({
+      deduplicateNativeProseRows: true,
+      docling: null,
+      geometry: geometry([native]),
+      maxBlocks: 20,
+      maxCharacters: 2_000,
+      plan,
+      vision: vision([first, second])
+    });
+
+    expect(result.blocks.at(-1)?.table).toEqual(native.table);
+  });
+
+  it("does not treat substrings inside other words as an already preserved cell", () => {
+    const native = nativeColumns(["international", "unremarkable"]);
+    const result = mergeAdaptivePdfDocument({
+      deduplicateNativeProseRows: true,
+      docling: null,
+      geometry: geometry([native]),
+      maxBlocks: 20,
+      maxCharacters: 2_000,
+      plan,
+      vision: vision([block("internationalization"), block("unremarkable", 1)])
+    });
+
+    expect(result.blocks.at(-1)?.table).toEqual(native.table);
+  });
+
   it("does not silently discard native evidence when no safe alignment exists", () => {
     const native = "Native exact identifier ZX-2048";
     const model = "Completely unrelated visual statement";

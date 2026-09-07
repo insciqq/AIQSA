@@ -54,7 +54,7 @@ Reverify the affected primary source when provider work depends on mutable behav
 | Gemini Interactions | 2026-08-12 | [Interactions v1](https://ai.google.dev/api/interactions-api-v1), [function calling](https://ai.google.dev/gemini-api/docs/function-calling), [Google Search](https://ai.google.dev/gemini-api/docs/google-search) |
 | OpenRouter | 2026-08-31 | [API overview](https://openrouter.ai/docs/api/reference/overview), [limits](https://openrouter.ai/docs/api_reference/limits), [streaming](https://openrouter.ai/docs/api/reference/streaming), [routing](https://openrouter.ai/docs/guides/routing/provider-selection) |
 | Embeddings | 2026-08-08 | [OpenAI embeddings](https://developers.openai.com/api/docs/guides/embeddings), [OpenRouter embeddings](https://openrouter.ai/docs/api/reference/embeddings) |
-| Reranking | 2026-08-27 | [OpenRouter rerank API](https://openrouter.ai/docs/api/api-reference/rerank/create-rerank) |
+| Reranking | 2026-09-06 | [OpenRouter rerank API](https://openrouter.ai/docs/api/api-reference/rerank/create-rerank), [Voyage query and document limits](https://docs.voyageai.com/reference/reranker-api) |
 | MCP OAuth | 2026-07-29 | [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) |
 
 Run/recovery semantics are in [Run contracts](RUN_CONTRACTS.md); trust and SSRF rules are in [Security](SECURITY.md).

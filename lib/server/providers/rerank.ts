@@ -30,7 +30,9 @@ import {
 import { parseRetryAfterMs } from "../retryAfter";
 
 export const MAX_RERANK_DOCUMENTS = 96;
-export const MAX_RERANK_QUERY_CHARACTERS = 2_000;
+// Transport counts UTF-16 units. A valid Knowledge query may contain 3000
+// Unicode code points, including supplementary characters that take two units.
+export const MAX_RERANK_QUERY_CHARACTERS = 6_000;
 export const MAX_RERANK_INSTRUCTION_CHARACTERS = 2_000;
 export const MAX_RERANK_DOCUMENT_CHARACTERS = 8_192;
 export const MAX_RERANK_REQUEST_BYTES = 512 * 1024;

@@ -224,12 +224,12 @@ describe("document parser boundary", () => {
     });
   });
 
-  it("supports an OCR-free bounded Docling layout request for adaptive PDFs", async () => {
+  it("encodes an OCR-free Docling page range as two multipart integers", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
       const form = init?.body as FormData;
       expect(form.get("do_ocr")).toBe("false");
       expect(form.get("force_ocr")).toBe("false");
-      expect(form.get("page_range")).toBe("[3,7]");
+      expect(form.getAll("page_range")).toEqual(["3", "7"]);
       expect(form.has("ocr_preset")).toBe(false);
       expect(form.getAll("ocr_lang")).toEqual([]);
       return new Response(JSON.stringify(doclingEnvelope), {

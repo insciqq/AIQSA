@@ -4,6 +4,7 @@ import type { OpenRagAnswerModelPin } from "./openRagAnswerContract";
 import { textFromContent } from "./openRagAnswerLive";
 import { brightAnswerHash, isRecord } from "./brightAnswerHarness";
 import { captureBrightPackingReplayContext } from "./brightPackingReplay";
+import { answerBenchmarkControlReceipt, assertAnswerBenchmarkControls, type AnswerBenchmarkControlPlan } from "./answerControls";
 
 /** Purpose-bound export of the benchmark's own run only. Explicit selects
  * deliberately omit credentials, HTTP envelopes, opaque continuation, raw
@@ -13,6 +14,7 @@ export async function captureBrightAnswerTrace(input: Readonly<{
   chatId: string;
   userId: string;
   expectedPin: OpenRagAnswerModelPin;
+  expectedControls?: AnswerBenchmarkControlPlan;
   question: string;
   baseId: string | null;
   expectedSourceCount?: number;
@@ -175,18 +177,21 @@ export async function captureBrightAnswerTrace(input: Readonly<{
     assistantMessage: _answer, errorPayload: _error, normalizedRequest: _request, ...trace } = run;
   const normalized = isRecord(run.normalizedRequest) ? run.normalizedRequest : null;
   const prompt = isRecord(normalized?.prompt) ? normalized.prompt : null;
+  const admittedControls = answerBenchmarkControlReceipt(normalized);
+  if (input.expectedControls) assertAnswerBenchmarkControls(admittedControls, input.expectedControls);
   return Object.freeze({
     ...trace,
     answer: textFromContent(run.assistantMessage?.content),
     question: input.question,
     error,
     model: input.expectedPin,
+    admittedControls,
     admittedPrompt: {
       system: typeof prompt?.system === "string" ? prompt.system : null,
       developer: typeof prompt?.developer === "string" ? prompt.developer : null,
       reasoningEffort: typeof normalized?.reasoningEffort === "string" ? normalized.reasoningEffort : null
     },
-    traceContractVersion: 2,
+    traceContractVersion: 3,
     packingReplayContext: captureBrightPackingReplayContext(normalized, scope?.exclusions),
     limitations: [
       "Normalized persisted execution only; no raw HTTP/provider bodies or hidden reasoning.",

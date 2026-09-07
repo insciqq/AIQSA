@@ -6,6 +6,8 @@ import {
   decodeModelPdfBatchOutput,
   MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION,
   MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
+  MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION,
+  MODEL_PDF_FIGURE_CROP_PROFILE_VERSION,
   modelPdfPagesToDocument,
   modelPdfTranscriptionPrompt
 } from "../parsing/modelPdfOutput";
@@ -30,6 +32,7 @@ import {
 import { mergeAdaptivePdfDocument } from "../parsing/adaptivePdfMerge";
 import {
   adaptivePdfVisionPrompt,
+  adaptivePdfVisionCropAttachmentId,
   prepareAdaptivePdfVisionSupplement,
   type AdaptivePdfVisionSupplement
 } from "../parsing/adaptivePdfVision";
@@ -37,6 +40,7 @@ import type { DoclingLayoutParser } from "../parsing/doclingLayout";
 import {
   enrichModelPdfGeometry,
   mergeModelPdfWithNativeText,
+  MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION,
   MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION,
   MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION
 } from "../parsing/pdfGeometry";
@@ -52,7 +56,6 @@ import {
   isRetryableProviderNetworkError,
   type ProviderRetryOptions
 } from "../providers/providerRetry";
-import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "./knowledgeProfile";
 import type {
   ProviderAttachment,
   ProviderRunRequest,
@@ -205,6 +208,7 @@ function digestPreparedBatch(input: Readonly<{
       hash.update(JSON.stringify({
         height: crop.height,
         index: crop.index,
+        ...(crop.kind === "figure" ? { kind: crop.kind } : {}),
         mimeType: crop.mimeType,
         nativeText: crop.nativeText,
         page: crop.page,
@@ -264,13 +268,13 @@ function attachments(
     };
   });
   const crops: ProviderAttachment[] = (supplement?.crops ?? []).map((crop) => {
-    const pageName = `page-${String(crop.page).padStart(6, "0")}-table-crop-${crop.index + 1}`;
+    const pageName = `page-${String(crop.page).padStart(6, "0")}-${crop.kind}-crop-${crop.index + 1}`;
     return {
       byteSize: crop.bytes.byteLength,
       dataUrl: `data:${crop.mimeType};base64,${crop.bytes.toString("base64")}`,
       extractedText: null,
       fileName: `${pageName}.${crop.mimeType === "image/png" ? "png" : "jpg"}`,
-      id: `knowledge-pdf-page-${crop.page}-table-crop-${crop.index + 1}`,
+      id: adaptivePdfVisionCropAttachmentId(crop),
       kind: "image",
       metadata: {
         image: {
@@ -334,8 +338,10 @@ function providerRequest(input: Readonly<{
 function validSnapshot(
   input: Parameters<KnowledgeModelPdfParser["parse"]>[0]
 ): ProviderExecutionSnapshot {
+  // Explicitly pinned supported profiles remain usable independently of the
+  // profile selected by default for new installation revisions.
   if (!Number.isSafeInteger(input.parserProfileVersion) || input.parserProfileVersion < 1 ||
-    input.parserProfileVersion > KNOWLEDGE_PDF_PARSER_PROFILE_VERSION ||
+    input.parserProfileVersion > MODEL_PDF_FIGURE_CROP_PROFILE_VERSION ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
     throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
@@ -502,6 +508,8 @@ export function createKnowledgeModelPdfParser(
           pageEnd,
           pageStart,
           promptVersion: input.parserProfileVersion >=
+            MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION ? 8
+            : input.parserProfileVersion >=
             MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION ? 7
             : input.parserProfileVersion >=
             MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION
@@ -518,7 +526,8 @@ export function createKnowledgeModelPdfParser(
             supplement = await prepareAdaptivePdfVisionSupplement({
               batch: prepared,
               docling: adaptiveDocling,
-              geometry: adaptiveGeometry
+              geometry: adaptiveGeometry,
+              includeFigures: input.parserProfileVersion >= MODEL_PDF_FIGURE_CROP_PROFILE_VERSION
             });
           } catch (error) {
             if (input.signal?.aborted) throw abortReason(input.signal);
@@ -647,6 +656,8 @@ export function createKnowledgeModelPdfParser(
               })
             : null;
           return mergeAdaptivePdfDocument({
+            deduplicateNativeProseRows: input.parserProfileVersion >=
+              MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION,
             docling: adaptiveDocling,
             geometry: adaptiveGeometry,
             maxBlocks: input.maxBlocks,
@@ -681,6 +692,8 @@ export function createKnowledgeModelPdfParser(
             return mergeModelPdfWithNativeText(document, geometry, {
               allowTextCorrections: input.parserProfileVersion >=
                 MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION,
+              deduplicateNativeProseRows: input.parserProfileVersion >=
+                MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION,
               maxBlocks: input.maxBlocks,
               maxCharacters: input.maxCharacters
             }).document;

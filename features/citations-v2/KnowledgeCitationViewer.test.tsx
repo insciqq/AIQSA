@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   KnowledgeCitationControl,
@@ -234,6 +234,33 @@ describe("Knowledge citation viewer", () => {
     expect(await screen.findByText(/Original page preview is unavailable/u)).toBeVisible();
     expect(screen.queryByText(/Stored highlight coordinates/u)).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /Highlighted regions on page/u })).not.toBeInTheDocument();
+  });
+
+  it.each(["pdf", null])("shows related excerpts on their own pages with original kind %s", async (originalKind) => {
+    const text = 'Retries require a fresh token. <a href="https://example.invalid">Source text</a>';
+    shellFetch.mockImplementation(async () => jsonResponse({ citation: {
+      ...citation(), originalKind,
+      relatedExcerpts: [{ text, headingPath: ["Policy", "Retries"], pageStart: 3, pageEnd: 4 }]
+    } }));
+    render(
+      <KnowledgeCitationViewerProvider>
+        <KnowledgeCitationControl reference={{ handle: "K1", messageId: "message-1", runId: "run-1" }} />
+      </KnowledgeCitationViewerProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
+    const related = within(await screen.findByRole("region", { name: "Related source excerpts" }));
+    expect(related.getByText(text)).toBeVisible();
+    expect(related.getByText("Policy › Retries")).toBeVisible();
+    expect(related.getByText("Pages 3–4")).toBeVisible();
+    expect(related.queryByRole("link", { name: "Source text" })).not.toBeInTheDocument();
+    if (originalKind === "pdf") {
+      expect(related.getByRole("link", { name: "Open page 3" })).toHaveAttribute(
+        "href", "/api/runs/run-1/messages/message-1/citations/K1?asset=original#page=3"
+      );
+      expect(screen.getByRole("link", { name: "Open page 18" })).toBeVisible();
+    } else {
+      expect(related.queryByRole("link")).not.toBeInTheDocument();
+    }
   });
 
   it("falls back to the exact PDF page when highlighted rendering is unavailable", async () => {
