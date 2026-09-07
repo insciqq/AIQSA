@@ -1658,6 +1658,34 @@ describe("run preparation", () => {
     ]);
   });
 
+  it("loads the edited branch's stored attachment for regeneration", async () => {
+    const attachment = runAttachment({
+      id: "edited-document", kind: "document", mimeType: "text/plain",
+      storageKey: "private/original-document", extractedText: "Original document evidence"
+    });
+    const edited = {
+      id: "edited-user-message", role: "user" as const,
+      content: { blocks: [
+        { type: "text", text: "Corrected question" },
+        { type: "file", attachmentId: attachment.id, fileName: attachment.fileName }
+      ] }
+    };
+    const harness = createHarness({ attachments: [attachment], regenerateContext: [priorMessage, edited] });
+
+    const prepared = preparedFrom(await prepareRun(harness.deps, regenerateInput(
+      successBody({ text: "Ignored client replacement" }), { userMessage: edited }
+    )));
+
+    expect(prepared.normalizedRequest.content).toEqual(edited.content);
+    expect(prepared.normalizedRequest.attachmentIds).toEqual([attachment.id]);
+    expect(prepared.providerRequest.attachments).toEqual([
+      expect.objectContaining({ id: attachment.id, extractedText: "Original document evidence" })
+    ]);
+    expect(harness.regenerateContextLoads).toEqual([{
+      chatId: "chat-1", leafMessageId: edited.id, userId: "user-1"
+    }]);
+  });
+
   it("merges catalog defaults while keeping OpenRouter routing and privacy policy server-authoritative", async () => {
     const policy = {
       allowFallbacks: false,

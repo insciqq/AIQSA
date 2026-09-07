@@ -2115,6 +2115,34 @@ describe("message run actions", () => {
     });
   });
 
+  it("retains inherited attachment blocks when edit detail refresh is unavailable", async () => {
+    const body = await editResponse("Edited question").json();
+    body.message.content.blocks.push(
+      { type: "file", attachmentId: "cloned-document", fileName: "document.pdf" },
+      { type: "image", attachmentId: "cloned-image", alt: "Diagram" }
+    );
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => Response.json(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [searchAttachment],
+      draft: "Edited question",
+      editingMessageId: "message-1"
+    });
+
+    await actions.submitMessageEdit();
+
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages[0]).toMatchObject({
+      id: "message-edited", content: body.message.content
+    });
+    const [, editInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(editInit.body))).toEqual({ text: "Edited question" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/messages/message-edited/regenerate", expect.objectContaining({ method: "POST" })
+    );
+  });
+
   it("allows only one same-source edit request until canonical refresh settles", async () => {
     let resolveEdit!: (response: Response) => void;
     const fetchMock = vi

@@ -37,7 +37,7 @@ export type PasswordAuthRepository = {
     passwordHash: string;
     tokenHash: string;
   }): Promise<{ userId: string } | null>;
-  createPasswordResetToken(input: PasswordResetTokenInput): Promise<void>;
+  createPasswordResetToken(input: PasswordResetTokenInput): Promise<boolean>;
   findPasswordIdentityByEmail(normalizedEmail: string): Promise<PasswordIdentityRecord | null>;
 };
 
@@ -178,7 +178,7 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
       });
     },
     async createPasswordResetToken(input) {
-      await prisma.$transaction(async (tx) => {
+      return prisma.$transaction(async (tx) => {
         await lockAuthIdentity(tx, input.identityId);
         const identity = await tx.authIdentity.findUnique({
           include: {
@@ -191,11 +191,12 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
 
         if (
           !identity ||
+          identity.provider !== "password" ||
           identity.userId !== input.userId ||
           identity.normalizedEmail !== input.normalizedEmail ||
           !isActiveVerifiedPasswordIdentity(identity)
         ) {
-          return;
+          return false;
         }
 
         await tx.authFlowToken.create({
@@ -209,6 +210,7 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
             userId: input.userId
           }
         });
+        return true;
       });
     },
     async findPasswordIdentityByEmail(normalizedEmail) {

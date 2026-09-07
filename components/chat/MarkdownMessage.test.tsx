@@ -513,6 +513,87 @@ describe("MarkdownMessage", () => {
   });
 });
 
+describe("MarkdownMessage fenced blocks", () => {
+  it.each([
+    ["~~~unknown", "~~~"],
+    ["```unknown title=example", "```"],
+    ["~~~ unknown title=example", "~~~~"],
+    ["```unknown", null]
+  ])("renders and copies literal code for %s", async (opening, closing) => {
+    const code = '<img src=x onerror=alert(1)>\n[K2]\n*literal*\n';
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const renderCitation = vi.fn((handle: string, key: string) => <button key={key}>[{handle}]</button>);
+    const { container } = render(<MarkdownMessage
+      content={`Before\n${opening}\n${code}${closing ?? ""}`}
+      renderCitation={renderCitation}
+    />);
+
+    expect(screen.getByRole("region", { name: "Scrollable code block" }).textContent).toBe(code);
+    expect(container.querySelector("img, script, em")).toBeNull();
+    expect(renderCitation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    expect(writeText).toHaveBeenCalledWith(code);
+    await waitFor(() => expect(screen.getAllByText("Copied").length).toBeGreaterThan(0));
+  });
+
+  it("uses only the first info word for highlighting", async () => {
+    const { container } = render(<MarkdownMessage
+      content={'``` ts title="example.ts"\nconst metadataExample = 1;\n```'}
+    />);
+
+    expect(screen.getByText("ts")).toBeVisible();
+    expect(container).not.toHaveTextContent('title="example.ts"');
+    await waitFor(() => expect(shikiMock.codeToHtml).toHaveBeenCalledWith(
+      "const metadataExample = 1;\n", expect.objectContaining({ lang: "typescript" })
+    ));
+  });
+
+  it("requires a matching fence of sufficient length with no closing info string", () => {
+    const code = "first\n~~~\n```\n~~~~ trailing\nlast\n";
+    render(<MarkdownMessage content={`~~~~unknown\n${code}~~~~~\nAfter`} />);
+
+    expect(screen.getAllByRole("button", { name: "Copy code" })).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Scrollable code block" }).textContent).toBe(code);
+    expect(screen.getByText("After")).toBeVisible();
+  });
+
+  it("normalizes line endings and removes only the opening fence indentation", () => {
+    render(<MarkdownMessage content={"  ~~~unknown\r\n    indented\r\n less\r\nnone\r\n ~~~\r\nAfter"} />);
+
+    expect(screen.getByRole("region", { name: "Scrollable code block" }).textContent).toBe("  indented\nless\nnone\n");
+    expect(screen.getByText("After")).toBeVisible();
+  });
+
+  it("renders fenced code inside nested blockquotes", () => {
+    const { container } = render(<MarkdownMessage
+      content={"> > ~~~unknown\n> > <tag>\n> > [K2]\n> > ~~~\n\nAfter quote"}
+    />);
+
+    expect(container.querySelector("blockquote blockquote pre code")?.textContent).toBe("<tag>\n[K2]\n");
+    expect(screen.getByText("After quote").closest("blockquote")).toBeNull();
+  });
+
+  it("ends an unclosed fence at the end of its blockquote", () => {
+    const { container } = render(<MarkdownMessage content={"> ```unknown\n> quoted code\n\nOutside"} />);
+
+    expect(container.querySelector("blockquote pre code")?.textContent).toBe("quoted code\n");
+    expect(screen.getByText("Outside").closest("blockquote")).toBeNull();
+  });
+
+  it("renders an unclosed fence as code when streaming finishes", async () => {
+    const content = "```ts title=partial\nconst unfinishedExample = 1;";
+    const { container, rerender } = render(<MarkdownMessage content={content} streaming />);
+    expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
+    expect(container).toHaveTextContent("```ts title=partial");
+
+    rerender(<MarkdownMessage content={content} />);
+
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeVisible();
+    await waitFor(() => expect(container.querySelector(".shiki code")?.textContent).toBe("const unfinishedExample = 1;\n"));
+  });
+});
+
 describe("MarkdownMessage link resolution", () => {
   it("turns resolved links into downloads, unresolved ones into inert code, and leaves web links alone", () => {
     render(
