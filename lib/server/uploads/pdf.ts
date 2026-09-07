@@ -1,5 +1,6 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
+import { withPdfWorkerAdmission } from "./pdfWorkerAdmission";
 import {
   DEFAULT_PDF_CHUNK_MAX_CHARS,
   DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS,
@@ -637,7 +638,7 @@ function parseWorkerMessage(message: unknown, config: PdfExtractionConfig): PdfE
 function runWorkerExtraction(buffer: Buffer, options: NormalizedPdfExtractionOptions): Promise<PdfExtractionResult> {
   if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
 
-  return new Promise((resolve, reject) => {
+  return withPdfWorkerAdmission(() => new Promise((resolve, reject) => {
     const bytes = Uint8Array.from(buffer);
     let worker: Worker;
 
@@ -714,7 +715,7 @@ function runWorkerExtraction(buffer: Buffer, options: NormalizedPdfExtractionOpt
     worker.once("message", onMessage);
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
-  });
+  }), options.signal);
 }
 
 export function extractPdfTextChunks(

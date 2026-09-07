@@ -24,7 +24,6 @@ import {
 } from "../../lib/server/knowledge/answerGroundingExecutionV5";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_PAIR_V21_V21_SCOPE_V6,
-  KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21,
   KNOWLEDGE_ANSWER_SCOPE_V6_REPAIR_RESERVED_MAX_OPERATION_COUNT_V2,
   knowledgeAnswerScopeV6CorrectionFitsV2,
   type KnowledgeAnswerOperationRequestSnapshotV21
@@ -83,6 +82,10 @@ const replayRouteInstructions = new Set([
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
 ]);
+
+// This replay executes accepted V39 work, whose engine identity remains frozen.
+const OPEN_RAG_ANSWER_PIPELINE_V39 =
+  "knowledge_answer_draft_v21_scope_v6_completeness_v1_selector_v21_targeted_delta_v4_repair_budget_v1_claim_surface_v1_target_groups_v1_claim_markup_boundaries_v1_selector_support_edges_v1_collective_target_support_v1_scope_repair_feedback_v1_target_closure_v1_verified_scope_patch_v1_scope_closure_v1_repair_reserved_correction_v2_source_ordered_context_v1_least_authority_delta_v1_fail_closed_local_provenance_v1_final_delta_repair_v1_supplement_atomization_v1_scope_multi_diagnostic_repair_v1_selector_repair_diagnostic_v1_fail_closed_selector_edges_v2_adaptive_atomic_supplement_budget_v1_query_intent_completeness_v1_query_granularity_epistemic_fidelity_v1_answer_level_compression_v1_request_anchor_ids_v1_scope_set_reduction_v1_scope_recall_map_v1_invalid_provenance_rejection_v2_unsupported_supersession_v1_supplement_exact_duplicate_reduction_v1_draft_coequal_facet_atomization_v1_target_accumulative_reduce_v1_global_scope_closure_v1_non_missing_closure_admission_v1_target_local_supplement_v1_qrep_v1_settlement_v6";
 
 function invalidReplaySnapshot(diagnostic: string): never {
   const error = new Error("open_rag_answer_replay_snapshot_invalid");
@@ -656,7 +659,7 @@ export function decodeOpenRagAnswerReplaySnapshot(
       engine.groundingEvidenceVersion !== 16) ||
     pipeline === "v21_scope_v6" &&
       (engine.groundingEvidenceVersion !== KNOWLEDGE_GROUNDING_EVIDENCE_VERSION_V55 ||
-      engine.pipelineVersion !== KNOWLEDGE_ANSWER_PIPELINE_VERSION_V21 ||
+      engine.pipelineVersion !== OPEN_RAG_ANSWER_PIPELINE_V39 ||
       !executionPolicy || value.reasoningEffort !== null) ||
     engine.coverageAuditorContractVersion !==
       contracts.coverageAuditorContractVersion ||
@@ -979,6 +982,9 @@ export async function replayOpenRagAnswerSnapshot(input: Readonly<{
       settlement = settleCapturedV20(snapshot, captured);
     } else {
       const result = await executeKnowledgeAnswerGroundingV21({
+        // This replay schema admits the frozen V39/Scope V6 contract. New-run
+        // defaults must not silently select a later contribution workflow.
+        snapshotVersion: 39,
         authorize,
         draft: snapshot.evidence,
         evidenceBindings,

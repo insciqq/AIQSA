@@ -7,6 +7,7 @@ import {
 import {
   groundKnowledgeRunAnswer,
   groundKnowledgeRunAnswerV21,
+  groundKnowledgeEvidenceRunAnswerV1,
   knowledgeEvidencePackageForGroundingDispatch,
   loadKnowledgeFullContextDispatchRecovery,
   loadKnowledgeEvidencePackage,
@@ -112,6 +113,12 @@ import {
   type KnowledgeRetrievalEvidence
 } from "./retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
+import { executeKnowledgeAnswerGroundingV21 } from "./answerGroundingExecutionV21ScopeV6";
+import type { KnowledgeProviderDispatchLifecycle, PreparedKnowledgeProviderDispatch } from "./providerDispatchLifecycle";
+import { aggregateKnowledgeGroundingMetrics } from "./groundingMetrics";
+import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "./evidenceAnswerExecutionV1";
+import { resolveKnowledgeGroundingExecutionPolicyV1 } from "./groundingExecutionPolicy";
+import type { KnowledgeEvidenceAnswerSnapshot, KnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -509,11 +516,11 @@ function settledDispatch(input: Readonly<{
 }
 
 function v21AttemptRow(input: Readonly<{
-  acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21;
+  acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21 | KnowledgeEvidenceAnswerSnapshot;
   acceptedResult: Readonly<Record<string, unknown>>;
   draft: ReturnType<typeof packKnowledgeEvidenceDispatchManifest>;
   ordinal: number;
-  purpose: KnowledgeAnswerOperationV21;
+  purpose: KnowledgeAnswerOperationV21 | KnowledgeEvidenceAnswerOperation;
 }>) {
   const createdAt = new Date("2026-08-31T00:00:00.000Z");
   const dispatchedAt = new Date("2026-08-31T00:00:01.000Z");
@@ -579,6 +586,7 @@ function v21AttemptRow(input: Readonly<{
       resultOrdinal: item.resultOrdinal
     })),
     root: {
+      ...(input.draft.coverageLimitations ? { coverageLimitations: input.draft.coverageLimitations } : {}),
       coverageStatement: input.draft.coverageStatement,
       footer: input.draft.footer,
       header: input.draft.header,
@@ -681,6 +689,156 @@ function fakeProviderExecutionSnapshot() {
 }
 
 describe("Knowledge Evidence v2 repository projection", () => {
+  it.each([false, true])("publishes evidence answer blocks from authorized settled receipts without repeating providers (V2: %s)", async modern => {
+    const evidenceRow = row().evidenceItems[0]!;
+    const draft = packKnowledgeEvidenceDispatchManifest({
+      candidates: [{ ambiguity: "none", evidenceId: "provider-call-1:result:1", exactExcerpt: evidenceRow.excerpt,
+        fileName: evidenceRow.fileName, handle: "K1", locator: "page=2; heading=Retention", operationOrdinal: 1,
+        resultOrdinal: 1, sourceAlias: "S1", sourceLabel: evidenceRow.sourceName, sourceTruncated: false,
+        sourceVersionNumber: 3, state: "available" }],
+      coverageStatement: "Coverage is limited to the supplied evidence.", header: "<private_knowledge_evidence>",
+      footer: "</private_knowledge_evidence>", maximumBytes: 32_000, maximumTokens: 8_000,
+      profileId: "fake:answer", promptFragmentVersion: 1, runtimeVersion: 1
+    });
+    const prepared = new Map<number, Parameters<KnowledgeProviderDispatchLifecycle["prepare"]>[0]>();
+    const attempts: ReturnType<typeof v21AttemptRow>[] = [];
+    const unavailable = async (): Promise<never> => { throw Error("unexpected_provider_replay"); };
+    const lifecycle: KnowledgeProviderDispatchLifecycle = {
+      inspect: async () => null,
+      prepare: async input => {
+        prepared.set(input.ordinal, input);
+        return { dispatch: { attempt: { ordinal: input.ordinal } } } as PreparedKnowledgeProviderDispatch;
+      },
+      dispatch: async () => undefined,
+      settle: async ({ dispatch }, result) => {
+        const saved = prepared.get(dispatch.attempt.ordinal)!;
+        attempts.push(v21AttemptRow({ acceptedRequest: saved.acceptedRequest as KnowledgeEvidenceAnswerSnapshot,
+          acceptedResult: result.acceptedResult!, draft: saved.draft, ordinal: saved.ordinal,
+          purpose: saved.purpose as KnowledgeEvidenceAnswerOperation }));
+      },
+      recover: unavailable, release: unavailable, markAmbiguous: unavailable
+    };
+    const outputs = [
+      { version: 1, blocks: [{ kind: "paragraph", text: evidenceRow.excerpt, evidenceHandles: ["K1"] }] },
+      modern ? { version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }],
+        analysisComplete: true, requirements: [
+          { requirement: "Explain retention.", status: "answered", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "" },
+          { requirement: "Explain its trend.", status: "missing_evidence", blockIds: [], correctionEvidenceHandles: [], gap: "Retention trend over time." }
+        ], followUps: [] } :
+      { version: 1, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"] }],
+        coverage: "partial", analysisComplete: true, missingInformation: ["Retention trend over time."], followUps: [] }
+    ];
+    let cursor = 0;
+    const execute = vi.fn(async () => ({ output: outputs[cursor++]!, providerResponseId: `response-${cursor}`,
+      usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 } }));
+    const executionInput = { authorize: async () => undefined, draft, execute, lifecycle,
+      executionPolicy: resolveKnowledgeGroundingExecutionPolicyV1({ modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false } }),
+      modelRunId: "run-1", request: "Explain retention and its trend.", shouldAbort: () => false, transport: "native_strict" as const };
+    if (modern) await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput, workflowVersion: 11, refineEvidence: async () => null });
+    else await executeKnowledgeEvidenceAnswerV1(executionInput);
+    const database = client(row(), { attempts, providerExecutionSnapshot: fakeProviderExecutionSnapshot() });
+    const result = await groundKnowledgeEvidenceRunAnswerV1(database, { runId: "run-1", userId: "user-1" });
+    expect(result.grounding).toMatchObject({ version: modern ? 60 : 59, requestCoverage: "partial", outcome: "answered",
+      draftBlockCount: 1, supportedBlockCount: 1, missingRequirementCount: 1, analysisComplete: true,
+      finalText: expect.stringContaining(`${evidenceRow.excerpt} [K1]`), operations: [{ ordinal: 1 }, { ordinal: 2 }] });
+    expect(await groundKnowledgeEvidenceRunAnswerV1(database, { runId: "run-1", userId: "user-1" })).toEqual(result);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.grounding.finalText).toContain(modern ? "Unanswered requirement:" : "Missing evidence:");
+    if (result.grounding.version !== 59 && result.grounding.version !== 60) throw Error("unexpected_grounding_version");
+    expect(aggregateKnowledgeGroundingMetrics([result.grounding])).toMatchObject({
+      answers: 1, modelOperations: 2, pipelineVersion21: 0, coverageScopeAccepted: 0, draftClaims: 0,
+      evidenceAnswers: { answers: 1, draftBlocks: 1, supportedBlocks: 1, missingRequirements: 1 },
+      stages: { compose: { calls: 1, totalInputTokens: 10 }, review: { calls: 1, totalInputTokens: 10 } }
+    });
+    const contentFree = JSON.stringify({ ...result.grounding, finalText: undefined });
+    expect(contentFree).not.toContain(evidenceRow.excerpt);
+    expect(contentFree).not.toContain("Retention trend over time.");
+    await expect(groundKnowledgeEvidenceRunAnswerV1(client(null, { attempts }), { runId: "run-1", userId: "other-owner" }))
+      .rejects.toThrow("knowledge_evidence_receipt_invalid");
+    await expect(groundKnowledgeEvidenceRunAnswerV1(client(row({ evidenceItems: [] }), { attempts }), { runId: "run-1", userId: "user-1" }))
+      .rejects.toThrow();
+    attempts[1]!.resultHash = "0".repeat(64);
+    await expect(groundKnowledgeEvidenceRunAnswerV1(database, { runId: "run-1", userId: "user-1" })).rejects.toThrow();
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([{ excludedResources: 0, workflowVersion: undefined }, { excludedResources: 1, workflowVersion: undefined },
+    { excludedResources: 0, workflowVersion: 3 as const }, { excludedResources: 0, workflowVersion: 5 as const }, { excludedResources: 0, workflowVersion: 7 as const }
+  ])("loads V40 partial publication with $excludedResources exclusions and workflow $workflowVersion", async ({ excludedResources, workflowVersion }) => {
+    const repairDraft = workflowVersion !== undefined;
+    const evidenceRow = row().evidenceItems[0]!;
+    const dispatchDraft = packKnowledgeEvidenceDispatchManifest({
+      coverageLimitations: { excludedResources, retrievalFailures: [], version: 1 },
+      candidates: [{ ambiguity: "none", evidenceId: "provider-call-1:result:1", exactExcerpt: evidenceRow.excerpt,
+        fileName: evidenceRow.fileName, handle: "K1", locator: "page=2; heading=Retention", operationOrdinal: 1,
+        resultOrdinal: 1, sourceAlias: "S1", sourceLabel: evidenceRow.sourceName, sourceTruncated: false,
+        sourceVersionNumber: 3, state: "available" }],
+      coverageStatement: "Coverage is limited to the supplied SOURCE blocks.",
+      footer: "</private_knowledge_evidence>", header: '<private_knowledge_evidence version="4">',
+      maximumBytes: 32_000, maximumTokens: 8_000, profileId: "fake:answer", promptFragmentVersion: 1, runtimeVersion: 1
+    });
+    const prepared = new Map<number, Parameters<KnowledgeProviderDispatchLifecycle["prepare"]>[0]>();
+    const attempts: ReturnType<typeof v21AttemptRow>[] = [];
+    const unavailable = async (): Promise<never> => { throw new Error("unexpected_lifecycle_action"); };
+    const lifecycle: KnowledgeProviderDispatchLifecycle = {
+      inspect: async () => null,
+      prepare: async (input) => {
+        prepared.set(input.ordinal, input);
+        return { dispatch: { attempt: { ordinal: input.ordinal } } } as PreparedKnowledgeProviderDispatch;
+      },
+      dispatch: async () => undefined,
+      settle: async ({ dispatch }, result) => {
+        const saved = prepared.get(dispatch.attempt.ordinal)!;
+        attempts.push(v21AttemptRow({ acceptedRequest: saved.acceptedRequest as KnowledgeAnswerOperationRequestSnapshotV21,
+          acceptedResult: result.acceptedResult!, draft: saved.draft, ordinal: saved.ordinal,
+          purpose: saved.purpose as KnowledgeAnswerOperationV21 }));
+      },
+      recover: unavailable, release: unavailable, markAmbiguous: unavailable
+    };
+    const outputs: Readonly<Record<string, unknown>>[] = [
+      ...(repairDraft ? [{ claims: [{ citationHints: ["K1"],
+        text: workflowVersion === 7 ? "A claim with an inline [K1] marker." : "A `formatted` claim." }], version: 1 }] : []),
+      { claims: Array.from({ length: 24 }, (_, index) => ({ citationHints: ["K1"],
+        text: index === 0 ? "Completed Atlas exports are retained for 30 days after completion." : `Unused candidate ${index + 1}.` })), version: 1 },
+      { evidenceUnits: [{ handle: "K1", findings: [{ description: "Explain retention.", evidenceAtomIds: ["A1"], requestAnchor: "retention" }] }],
+        jointFindings: [], unsupportedDimensions: [{ description: "Explain trend.", requestAnchor: "trend" }],
+        overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 7 },
+      { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 },
+      { claims: Array.from({ length: 24 }, (_, index) => ({ id: `C${index + 1}`,
+        supportHandles: index === 0 ? ["K1"] : [], verdict: index === 0 ? "supported" : "unsupported" })),
+        coverage: [{ id: "D1", status: "missing", contributionIds: ["C1"] }, { id: "D2", status: "missing", contributionIds: [] }],
+        insufficientReason: "not_applicable", version: 2 },
+      { claims: [], targets: { D1: { addContributionIds: ["C1"], status: "covered" } }, version: 2 }
+    ];
+    let next = 0;
+    const execute = vi.fn(async () => ({ output: outputs[next++]!, providerResponseId: `provider-${next}`,
+      usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 } }));
+    const result = await executeKnowledgeAnswerGroundingV21({
+      authorize: async () => undefined, draft: dispatchDraft, execute, lifecycle, modelRunId: "run-1",
+      ...(workflowVersion !== undefined ? { workflowVersion } : {}),
+      request: "Explain retention and trend.", routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+      shouldAbort: () => false, transport: "native_strict"
+    });
+    expect(execute).toHaveBeenCalledTimes(outputs.length);
+    const fakeClient = client(row(), { attempts, providerExecutionSnapshot: fakeProviderExecutionSnapshot() });
+    const envelope = await groundKnowledgeRunAnswerV21(fakeClient, { runId: "run-1", userId: "user-1" });
+    expect(envelope.grounding).toMatchObject({
+      finalText: result.settlement.finalText, supportedClaimCount: 1, requestCoverage: "partial", version: 58,
+      contracts: { coverageAuditorContractVersion: 7, draftContractVersion: 21, selectorContractVersion: 22, settlementVersion: 7 },
+      coverageScope: { pendingRequirementCount: 0, requestAnalysisIncomplete: false },
+      coverageLimitations: { excludedResources, retrievalFailures: [], version: 1 },
+      correctionAttempted: true, correctionSucceeded: true,
+      coverage: { coveredDimensionCount: 1, missingDimensionCount: 1 }
+    });
+    if (envelope.grounding.version !== 58) throw new Error("wrong_evidence_version");
+    expect(envelope.grounding.publicationPlanHash).toBe(result.contributionReceipt?.publicationPlanHash);
+    expect(aggregateKnowledgeGroundingMetrics([envelope.grounding])).toMatchObject({
+      answers: 1, selectorSupported: 1, totalMissingCoverageDimensions: 1, modelOperations: outputs.length
+    });
+    expect(await groundKnowledgeRunAnswerV21(fakeClient, { runId: "run-1", userId: "user-1" })).toEqual(envelope);
+    expect(execute).toHaveBeenCalledTimes(outputs.length);
+  });
+
   it("loads an exact bounded focused package with structural-only coverage", async () => {
     const evidence = await loadKnowledgeEvidencePackage(client(row()), {
       runId: "run-1",
@@ -751,7 +909,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     }).finalText).toBe("Atlas retains exports for 30 days [K1].");
   });
 
-  it("rebuilds the canonical full-context manifest only from persisted accepted evidence", async () => {
+  it.each([undefined, 2, 3, 4, 5] as const)("rebuilds full-context evidence with its accepted packing policy (%s)", async (knowledgeEvidencePackingVersion) => {
     const fixture = row();
     const evidenceRow = fixture.evidenceItems[0]!;
     const recovery = await loadKnowledgeFullContextDispatchRecovery(client(row({
@@ -768,6 +926,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       }
     }), {
       maximumTokens: 2_048,
+      ...(knowledgeEvidencePackingVersion !== undefined ? { knowledgeEvidencePackingVersion } : {}),
       modelId: "answer-model",
       provider: "test",
       runId: "run-1",
@@ -776,6 +935,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
 
     expect(recovery).toMatchObject({
       draft: {
+        packingVersion: knowledgeEvidencePackingVersion === 3 || knowledgeEvidencePackingVersion === 4 || knowledgeEvidencePackingVersion === 5 ? "whole_source_item_occurrences_v3" : "whole_source_item_v1",
         exclusions: [],
         profileId: "test:answer-model",
         promptFragmentVersion: 18,
@@ -1626,7 +1786,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
       executionPolicyFingerprint: knowledgeAnswerHash(executionPolicy)
     });
     expect("operations" in result.grounding &&
-      result.grounding.operations.map(({ role }) => role)).toEqual([
+      result.grounding.operations.map((operation) => "role" in operation ? operation.role : null)).toEqual([
       "primary",
       "scope",
       "scope_completeness",

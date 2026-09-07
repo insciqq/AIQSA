@@ -88,6 +88,18 @@ const embeddingConfiguration = {
   upstreamModelId: "memory-explicit-embedding-v1"
 } as const;
 
+const embeddingCredentialEvidence = {
+  embedding: {
+    dimensions: embeddingConfiguration.embedding.targetDimension,
+    document: true,
+    probeVersion: 1,
+    query: true
+  },
+  method: "tiny_generation",
+  selectedProviders: [],
+  upstreamModelId: embeddingConfiguration.upstreamModelId
+};
+
 const statementClassifierConfiguration = {
   adapterKind: "openai_responses_compatible",
   answerSelectable: true,
@@ -456,7 +468,7 @@ async function createFixture(
       connectionVersion: 1,
       credentialId,
       credentialVersionId,
-      evidence: { detail: "ok" },
+      evidence: embeddingCredentialEvidence,
       modelVersion: 1,
       providerModelId: modelId,
       status: "available"
@@ -1512,7 +1524,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
           connectionVersion: 1,
           credentialId: fixture.credentialId,
           credentialVersionId: replacementCredentialVersionId,
-          evidence: { detail: "ok" },
+          evidence: embeddingCredentialEvidence,
           modelVersion: 1,
           providerModelId: fixture.modelId,
           status: "available"

@@ -1370,6 +1370,7 @@ export function ReadingRoomShellV2({
     shortcutsRef.current = { createPersonalChat, revealList, toggleSidebar };
   });
   useEffect(() => {
+    let filterFocusTimeout: number | undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier || event.altKey || event.defaultPrevented || event.isComposing) return;
@@ -1384,13 +1385,18 @@ export function ReadingRoomShellV2({
       } else if (!event.shiftKey && key === "k") {
         event.preventDefault();
         shortcutsRef.current.revealList();
-        window.setTimeout(() => {
+        window.clearTimeout(filterFocusTimeout);
+        filterFocusTimeout = window.setTimeout(() => {
+          filterFocusTimeout = undefined;
           document.querySelector<HTMLInputElement>('input[aria-label="Filter chats"]')?.focus();
         }, 60);
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(filterFocusTimeout);
+    };
   }, []);
   // Projects owns the whole second column. The reading surface is mirrored to
   // the parent shell while a selected Project remains the contextual section.

@@ -6,28 +6,49 @@ import {
   type LegacyKnowledgeSummaryDispatchCandidate
 } from "./legacySummaryReceipt";
 import {
-  knowledgeCoverageEvidenceFitsAtomLimitV2
+  knowledgeCoverageEvidenceFitsAtomLimitV2,
+  knowledgeCoverageEvidenceFitsAtomLimitV3
 } from "./coverageScopeV4";
 import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion";
 import type { KnowledgeExpandedContextOrderV1 } from "./retrievalTypes";
+import { EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1, decodeKnowledgeCoverageLimitationsV1,
+  type KnowledgeCoverageLimitationsV1 } from "./searchFailure";
 
 export const KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 2 as const;
 export const LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 1 as const;
 export const KNOWLEDGE_EVIDENCE_PACKING_VERSION = "whole_source_item_v1" as const;
 export const KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION =
   "whole_source_item_rank_interleave_v2" as const;
+export const KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION =
+  "whole_source_item_occurrences_v3" as const;
+export const KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION =
+  "whole_source_item_rank_interleave_occurrences_v4" as const;
+export const KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION =
+  "whole_source_primary_rank_interleave_occurrences_v5" as const;
 export const KNOWLEDGE_EVIDENCE_SHORTENING_VERSION =
   "omit_expanded_context_v1" as const;
 
 export type KnowledgeEvidencePackingVersion =
   | typeof KNOWLEDGE_EVIDENCE_PACKING_VERSION
-  | typeof KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION;
+  | typeof KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION
+  | typeof KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION
+  | typeof KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION
+  | typeof KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION;
 
 export function isKnowledgeEvidencePackingVersion(
   value: unknown
 ): value is KnowledgeEvidencePackingVersion {
   return value === KNOWLEDGE_EVIDENCE_PACKING_VERSION ||
-    value === KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION;
+    value === KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION ||
+    value === KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION ||
+    value === KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION ||
+    value === KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION;
+}
+
+export function knowledgeEvidencePackingAtomVersion(version: KnowledgeEvidencePackingVersion): 2 | 3 {
+  return version === KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION ||
+    version === KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION ||
+    version === KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION ? 3 : 2;
 }
 
 export type KnowledgeEvidenceDispatchCandidate =
@@ -124,6 +145,7 @@ export type KnowledgeEvidenceDispatchManifestItem =
   | KnowledgeEvidenceDispatchManifestSummaryItem;
 
 type KnowledgeEvidenceDispatchManifestBody = Readonly<{
+  coverageLimitations?: KnowledgeCoverageLimitationsV1;
   coverageStatement: string;
   exclusions: readonly KnowledgeEvidenceDispatchManifestExclusion[];
   footer: string;
@@ -156,8 +178,12 @@ export type KnowledgeEvidenceDispatchManifestDraft =
     }>;
 
 export type PackKnowledgeEvidenceDispatchManifestInput = Readonly<{
+  coverageLimitations?: KnowledgeCoverageLimitationsV1;
   allowExpandedContextOmission?: boolean;
   candidates: readonly CurrentKnowledgeEvidenceDispatchCandidate[];
+  /** Exact previously delivered blocks required by a reviewed partial answer.
+   * This changes selection priority, never source identity or wire ordering. */
+  retainedItems?: readonly KnowledgeEvidenceDispatchManifestItem[];
   coverageStatement: string;
   footer: string;
   header: string;
@@ -308,7 +334,9 @@ function compareOrder(
   right: Pick<KnowledgeEvidenceDispatchCandidate, "evidenceId" | "operationOrdinal" | "resultOrdinal">,
   packingVersion: KnowledgeEvidencePackingVersion
 ): number {
-  if (packingVersion === KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION) {
+  if (packingVersion === KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION ||
+    packingVersion === KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION ||
+    packingVersion === KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION) {
     return left.resultOrdinal - right.resultOrdinal ||
       left.operationOrdinal - right.operationOrdinal ||
       compareStrings(left.evidenceId, right.evidenceId);
@@ -520,11 +548,13 @@ function renderMessage(
 function fitsLimits(
   message: string,
   items: readonly KnowledgeEvidenceDispatchManifestItem[],
-  limits: Readonly<{ maximumBytes: number; maximumTokens: number }>
+  limits: Readonly<{ maximumBytes: number; maximumTokens: number }>,
+  packingVersion: KnowledgeEvidencePackingVersion
 ): boolean {
   return utf8Bytes(message) <= limits.maximumBytes &&
     estimateApproxTokens(message) <= limits.maximumTokens &&
-    knowledgeCoverageEvidenceFitsAtomLimitV2(items.map((item) => ({
+    (knowledgeEvidencePackingAtomVersion(packingVersion) === 3
+      ? knowledgeCoverageEvidenceFitsAtomLimitV3 : knowledgeCoverageEvidenceFitsAtomLimitV2)(items.map((item) => ({
       exactExcerpt: item.exactExcerpt,
       expandedContext: item.expandedContext,
       ...(item.expandedContextOrder
@@ -560,22 +590,30 @@ export function packKnowledgeEvidenceDispatchManifest(
     maximumBytes: input.maximumBytes,
     maximumTokens: input.maximumTokens
   } as const;
-  const packingVersion = input.packingVersion ?? KNOWLEDGE_EVIDENCE_PACKING_VERSION;
+  const packingVersion = input.packingVersion ?? KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION;
   if (!isKnowledgeEvidencePackingVersion(packingVersion)) {
     throw new Error("knowledge_evidence_dispatch_config_invalid");
   }
+  const occurrencePacking = knowledgeEvidencePackingAtomVersion(packingVersion) === 3;
+  const coverageLimitations = decodeKnowledgeCoverageLimitationsV1(input.coverageLimitations ?? EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1);
+  if (!coverageLimitations) throw new Error("knowledge_evidence_dispatch_config_invalid");
   const emptyMessage = renderMessage(input.header, input.coverageStatement, [], input.footer);
-  if (!fitsLimits(emptyMessage, [], limits)) {
+  if (!fitsLimits(emptyMessage, [], limits, packingVersion)) {
     throw new Error("knowledge_evidence_dispatch_envelope_exceeds_budget");
   }
 
+  const retained = new Map((input.retainedItems ?? []).map(item => [item.evidenceId, item]));
+  if (retained.size !== (input.retainedItems?.length ?? 0) || [...retained.values()].some(item =>
+    !validDispatchItem(item, item.dispatchOrdinal) || "kind" in item)) throw Error("knowledge_evidence_retention_invalid");
   const candidates = [...input.candidates].sort((left, right) =>
-    compareOrder(left, right, packingVersion));
+    Number(retained.has(right.evidenceId)) - Number(retained.has(left.evidenceId)) || compareOrder(left, right, packingVersion));
   const evidenceIds = new Set<string>();
   const firstEvidenceIdByHandle = new Map<string, string>();
   const items: KnowledgeEvidenceDispatchManifestItem[] = [];
   const exclusions: KnowledgeEvidenceDispatchManifestExclusion[] = [];
   const allowExpandedContextOmission = input.allowExpandedContextOmission !== false;
+  const primaryFirst = allowExpandedContextOmission &&
+    packingVersion === KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION;
 
   for (const candidate of candidates) {
     if ("kind" in candidate) {
@@ -624,15 +662,23 @@ export function packKnowledgeEvidenceDispatchManifest(
       firstEvidenceIdByHandle.set(handle, candidate.evidenceId);
     }
 
-    let item = materializeItem(candidate, items.length + 1, false);
+    const retainedItem = retained.get(candidate.evidenceId);
+    let item = materializeItem(candidate, items.length + 1,
+      retainedItem?.expandedContextState === "omitted" || primaryFirst && !retainedItem && Boolean(candidate.expandedContext));
+    if (primaryFirst && !retainedItem && item.expandedContextState === "omitted") {
+      const full = materializeItem(candidate, items.length + 1, false);
+      // A tiny expansion can cost less than its omission notice.
+      if (full.itemBytes <= item.itemBytes && full.itemTokens <= item.itemTokens) item = full;
+    }
+    if (retainedItem && item.itemHash !== retainedItem.itemHash) throw Error("knowledge_evidence_retention_invalid");
     let message = renderMessage(
       input.header,
       input.coverageStatement,
       [...items.map(({ text }) => text), item.text],
       input.footer
     );
-    if (!fitsLimits(message, [...items, item], limits) &&
-      allowExpandedContextOmission &&
+    if (!fitsLimits(message, [...items, item], limits, packingVersion) &&
+      allowExpandedContextOmission && !retainedItem &&
       !("kind" in candidate) && Boolean(candidate.expandedContext)) {
       item = materializeItem(candidate, items.length + 1, true);
       message = renderMessage(
@@ -642,7 +688,7 @@ export function packKnowledgeEvidenceDispatchManifest(
         input.footer
       );
     }
-    if (!fitsLimits(message, [...items, item], limits)) {
+    if (!fitsLimits(message, [...items, item], limits, packingVersion)) {
       exclusions.push({
         duplicateOfEvidenceId: null,
         evidenceId: candidate.evidenceId,
@@ -656,18 +702,43 @@ export function packKnowledgeEvidenceDispatchManifest(
     items.push(item);
   }
 
+  if (primaryFirst) {
+    // Reserve complete ranked primary excerpts before spending spare capacity
+    // on optional neighbors. Previously reviewed blocks keep their exact text,
+    // including a previously included or omitted expansion.
+    const byId = new Map(candidates.flatMap(candidate =>
+      candidate.state === "available" ? [[candidate.evidenceId, candidate] as const] : []));
+    for (const [index, item] of items.entries()) {
+      if (retained.has(item.evidenceId) || item.expandedContextState !== "omitted") continue;
+      const candidate = byId.get(item.evidenceId)!;
+      const expanded = materializeItem(candidate, item.dispatchOrdinal, false);
+      const proposed = items.map((current, position) => position === index ? expanded : current);
+      const message = renderMessage(input.header, input.coverageStatement, proposed.map(current => current.text), input.footer);
+      if (fitsLimits(message, proposed, limits, packingVersion)) items[index] = expanded;
+    }
+  }
+
+  if ([...retained.keys()].some(id => !items.some(item => item.evidenceId === id))) {
+    throw Error("knowledge_evidence_retention_exceeds_budget");
+  }
+  // Selection reserves reviewed evidence first; serialization retains the
+  // existing canonical order and immutable evidence/source coordinates.
+  const orderedItems = retained.size ? items.sort((a, b) => compareOrder(a, b, packingVersion))
+    .map((item, index) => ({ ...item, dispatchOrdinal: index + 1 })) : items;
+  if (retained.size) exclusions.sort((a, b) => compareOrder(a, b, packingVersion));
   const message = renderMessage(
     input.header,
     input.coverageStatement,
-    items.map(({ text }) => text),
+    orderedItems.map(({ text }) => text),
     input.footer
   );
   const body = {
+    ...(occurrencePacking ? { coverageLimitations } : {}),
     coverageStatement: input.coverageStatement,
     exclusions,
     footer: input.footer,
     header: input.header,
-    items,
+    items: orderedItems,
     limits,
     message,
     messageBytes: utf8Bytes(message),
@@ -818,7 +889,9 @@ export function decodeKnowledgeEvidenceDispatchManifestDraft(
   const legacy = value.version === LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
   const versionField = current ? "runtimeVersion" : legacy ? "plannerVersion" : null;
   const packingVersion = value.packingVersion;
-  if (!versionField || !hasExactKeys(value, [...manifestBaseKeys, versionField]) ||
+  const occurrencePacking = isKnowledgeEvidencePackingVersion(packingVersion) && knowledgeEvidencePackingAtomVersion(packingVersion) === 3;
+  if (!versionField || !hasExactKeys(value, [...manifestBaseKeys, versionField, ...(occurrencePacking ? ["coverageLimitations"] : [])]) ||
+    occurrencePacking && !decodeKnowledgeCoverageLimitationsV1(value.coverageLimitations) ||
     !isKnowledgeEvidencePackingVersion(packingVersion) ||
     value.shorteningPolicy !== "disabled" &&
       value.shorteningPolicy !== KNOWLEDGE_EVIDENCE_SHORTENING_VERSION ||
@@ -875,5 +948,13 @@ export function decodeKnowledgeEvidenceDispatchManifestDraft(
 
   const { manifestHash, ...body } = value;
   if (manifestHash !== sha256Utf8(canonicalJson(body))) return null;
+  // Historical manifests retain their decoder. New manifests must satisfy
+  // the same occurrence projection budget as admission, including on replay.
+  if (knowledgeEvidencePackingAtomVersion(packingVersion) === 3) {
+    try {
+      if (!fitsLimits(message, items as unknown as KnowledgeEvidenceDispatchManifestItem[],
+        value.limits as { maximumBytes: number; maximumTokens: number }, packingVersion)) return null;
+    } catch { return null; }
+  }
   return deepFreeze(JSON.parse(JSON.stringify(value)) as KnowledgeEvidenceDispatchManifestDraft);
 }

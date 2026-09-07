@@ -42,6 +42,18 @@ const embeddingConfiguration = {
   upstreamModelId: "memory-test-embedding"
 } as const;
 
+const embeddingCredentialEvidence = {
+  embedding: {
+    dimensions: embeddingConfiguration.embedding.targetDimension,
+    document: true,
+    probeVersion: 1,
+    query: true
+  },
+  method: "tiny_generation",
+  selectedProviders: [],
+  upstreamModelId: embeddingConfiguration.upstreamModelId
+};
+
 function completeUsage(inputTokens: number): {
   cachedInputTokens: number;
   completeness: "COMPLETE";
@@ -163,7 +175,7 @@ async function createEmbeddingFixture() {
       connectionVersion: 1,
       credentialId,
       credentialVersionId,
-      evidence: { detail: "ok" },
+      evidence: embeddingCredentialEvidence,
       modelVersion: 1,
       providerModelId: modelId,
       status: "available"
@@ -379,7 +391,7 @@ describe("Prisma Memory execution", () => {
           connectionVersion: 1,
           credentialId: fixture.credentialId,
           credentialVersionId: replacementVersionId,
-          evidence: { detail: "ok" },
+          evidence: embeddingCredentialEvidence,
           modelVersion: 1,
           providerModelId: fixture.modelId,
           status: "available"
@@ -662,7 +674,7 @@ describe("Prisma Memory execution", () => {
           connectionVersion: 1,
           credentialId: fixture.credentialId,
           credentialVersionId: replacementVersionId,
-          evidence: { detail: "ok" },
+          evidence: embeddingCredentialEvidence,
           modelVersion: 1,
           providerModelId: fixture.modelId,
           status: "available"
@@ -789,7 +801,7 @@ describe("Prisma Memory execution", () => {
           connectionVersion: 2,
           credentialId: fixture.credentialId,
           credentialVersionId: fixture.credentialVersionId,
-          evidence: { detail: "ok" },
+          evidence: embeddingCredentialEvidence,
           modelVersion: 1,
           providerModelId: fixture.modelId,
           status: "available"

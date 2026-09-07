@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ProviderAttachment, ProviderRunRequest } from "../providers/types";
-import type { AdaptivePdfVisionSupplement } from "./adaptivePdfVision";
+import { adaptivePdfVisionCropAttachmentId, type AdaptivePdfVisionSupplement } from "./adaptivePdfVision";
 import type { PdfModelProcessingMode, PreparedPdfBatch } from "./pdfPreparation";
 
 export type PdfVisionDetail = "auto" | "original";
@@ -57,6 +57,7 @@ export function digestPreparedPdfBatch(input: Readonly<{
       hash.update(JSON.stringify({
         height: crop.height,
         index: crop.index,
+        ...(crop.kind === "figure" ? { kind: crop.kind } : {}),
         mimeType: crop.mimeType,
         nativeText: crop.nativeText,
         page: crop.page,
@@ -116,13 +117,13 @@ function attachments(
     };
   });
   const crops: ProviderAttachment[] = (supplement?.crops ?? []).map((crop) => {
-    const pageName = `page-${String(crop.page).padStart(6, "0")}-table-crop-${crop.index + 1}`;
+    const pageName = `page-${String(crop.page).padStart(6, "0")}-${crop.kind}-crop-${crop.index + 1}`;
     return {
       byteSize: crop.bytes.byteLength,
       dataUrl: `data:${crop.mimeType};base64,${crop.bytes.toString("base64")}`,
       extractedText: null,
       fileName: `${pageName}.${crop.mimeType === "image/png" ? "png" : "jpg"}`,
-      id: `knowledge-pdf-page-${crop.page}-table-crop-${crop.index + 1}`,
+      id: adaptivePdfVisionCropAttachmentId(crop),
       kind: "image",
       metadata: {
         image: {

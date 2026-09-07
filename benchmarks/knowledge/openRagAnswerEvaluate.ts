@@ -124,6 +124,37 @@ export function openRagJudgePrompt(input: Readonly<{
   ].join("\n");
 }
 
+export function boundedOpenRagCitedEvidence(
+  answer: string,
+  items: readonly Readonly<{ handle: string; text: string; locator: string | null; sourceLabel: string | null }>[]
+) {
+  const handles = [...new Set(
+    [...answer.matchAll(/\[(K[1-9][0-9]{0,3})\]/gu)].map((match) => match[1]!)
+  )];
+  if (handles.length > 96) throw new Error("open_rag_answer_citation_limit_invalid");
+  const byHandle = new Map(items.map((item) => [item.handle, item]));
+  const perItemLimit = Math.min(12_000, Math.floor(96_000 / Math.max(1, handles.length)));
+  return Object.freeze(handles.map((handle) => {
+    const item = byHandle.get(handle);
+    if (!item) throw new Error("open_rag_answer_cited_evidence_missing");
+    const original = item.text;
+    const marker = "\n...[middle omitted by benchmark judge budget]...\n";
+    const truncated = original.length > perItemLimit;
+    const available = perItemLimit - marker.length;
+    const providerEvidence = truncated
+      ? `${original.slice(0, Math.ceil(available / 2))}${marker}${
+          original.slice(-Math.floor(available / 2))}`
+      : original;
+    return Object.freeze({
+      handle,
+      locator: item.locator || null,
+      providerEvidence,
+      providerEvidenceTruncated: truncated,
+      sourceLabel: item.sourceLabel || null
+    });
+  }));
+}
+
 export function decodeOpenRagJudgment(value: unknown): OpenRagJudgment {
   const code = "open_rag_judge_contract_invalid";
   if (!isRecord(value) || !hasExactKeys(value, judgmentKeys) ||

@@ -7,7 +7,7 @@ import {
   KNOWLEDGE_COVERAGE_SCOPE_TASK_REMINDER_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
   KNOWLEDGE_COVERAGE_SCOPE_V6_PAYLOAD_VERSION,
-  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
+  knowledgeCoverageAtomContextContract,
   decodeKnowledgeCoverageScopeFailureV6,
   type KnowledgeCoverageEvidenceV6,
   type KnowledgeCoverageScopeFailureReasonV6,
@@ -394,9 +394,9 @@ export function knowledgeCoverageScopePromptV6VerifiedPatchV1(input: Readonly<{
   });
   const payload = JSON.parse(base.userPrompt) as Record<string, unknown>;
   return Object.freeze({
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
       ...payload,
@@ -422,9 +422,9 @@ export function decodeKnowledgeCoverageScopePromptV6VerifiedPatchV1(input: Reado
   repairReason: KnowledgeCoverageScopeValidationFailureReasonV6 | null;
   scopePass: "initial" | "repair";
 }> | null {
-  const expectedSystemPrompt = input.atomIndexVersion === 2
+  const expectedSystemPrompt = (input.atomIndexVersion ?? 1) !== 1
     ? `${KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_CONTRACT_V1}\n\n` +
-      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
     : KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_CONTRACT_V1;
   if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
@@ -452,9 +452,9 @@ export function decodeKnowledgeCoverageScopePromptV6VerifiedPatchV1(input: Reado
     evidence: input.evidence,
     evidenceManifest: input.evidenceManifest,
     request: input.request,
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_REPAIR_FEEDBACK_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson(basePayload)
   });

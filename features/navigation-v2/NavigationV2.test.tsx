@@ -926,6 +926,36 @@ describe("Navigation v2", () => {
     expect(screen.queryByRole("textbox", { name: "Search chats" })).toBeNull();
   });
 
+  it("cancels delayed chat-filter focus when navigation unmounts", () => {
+    vi.useFakeTimers();
+    const view = render(
+      <ReadingRoomShellV2
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        sidebar={<input aria-label="Filter chats" type="search" />}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByRole("searchbox", { name: "Filter chats" })).toHaveFocus();
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    view.unmount();
+    render(<>
+      <button type="button">Next conversation</button>
+      <input aria-label="Filter chats" type="search" />
+    </>);
+    const nextConversation = screen.getByRole("button", { name: "Next conversation" });
+    nextConversation.focus();
+    act(() => vi.runAllTimers());
+
+    expect(nextConversation).toHaveFocus();
+  });
+
   it("dismisses the chat-row menu on Escape, outside press, and focus-out", () => {
     sidebar();
     const trigger = screen.getByRole("button", { name: "Actions: Selected brief" });

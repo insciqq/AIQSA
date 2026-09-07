@@ -135,6 +135,18 @@ const embeddingConfiguration = {
   upstreamModelId: "memory-rebuild-embedding-v1"
 } as const;
 
+const embeddingCredentialEvidence = {
+  embedding: {
+    dimensions: embeddingConfiguration.embedding.targetDimension,
+    document: true,
+    probeVersion: 1,
+    query: true
+  },
+  method: "tiny_generation",
+  selectedProviders: [],
+  upstreamModelId: embeddingConfiguration.upstreamModelId
+};
+
 async function createClassifierProvider(): Promise<void> {
   const now = new Date();
   const connectionConfiguration = {
@@ -461,7 +473,7 @@ async function configureEmbeddingProvider(
       connectionVersion: 1,
       credentialId,
       credentialVersionId,
-      evidence: { detail: "ok" },
+      evidence: embeddingCredentialEvidence,
       modelVersion: 1,
       providerModelId: modelId,
       status: "available"
@@ -2361,6 +2373,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         chunkOrdinal
       }));
       const contentHash = memorySha256(text);
+      // Bulk fixture seeding can exceed Prisma's default timeout under container load.
       await prisma.$transaction(async (tx) => {
         await tx.memoryRecallChunk.createMany({
           data: chunks.map((chunk) => ({
@@ -2398,7 +2411,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             userId
           }))
         });
-      });
+      }, { timeout: 30_000 });
 
       provider = await configureEmbeddingProvider(userId, "hybrid-large-set");
       const before = await prisma.userMemorySettings.findUniqueOrThrow({

@@ -28,6 +28,7 @@ export type KnowledgeIngestionCoordinatorRepository = Readonly<{
 
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_INTERVAL_MS = 1_000;
+const DEFAULT_RECONCILE_INTERVAL_MS = 30_000;
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAX_ATTEMPTS = 6;
 const MAX_RETRY_AFTER_MS = 15 * 60_000;
@@ -73,6 +74,8 @@ export class KnowledgeIngestionCoordinator {
   readonly #process: (claim: KnowledgeWorkClaim, signal?: AbortSignal) => Promise<void>;
   readonly #repository: KnowledgeIngestionCoordinatorRepository;
   #pending: Promise<void> | null = null;
+  #nextReconcileAt = 0;
+  #reconcileRequested = false;
   #rerun = false;
   #timer: ReturnType<typeof setInterval> | null = null;
 
@@ -98,7 +101,11 @@ export class KnowledgeIngestionCoordinator {
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.kick(), this.#intervalMs);
+    this.#timer = setInterval(() => {
+      // A running drain already checks the queue until empty. Timer ticks
+      // must not queue another full sweep behind a slow idle reconciliation.
+      if (!this.#pending) this.#scheduleDrain();
+    }, this.#intervalMs);
     this.#timer.unref?.();
     this.kick();
   }
@@ -110,11 +117,16 @@ export class KnowledgeIngestionCoordinator {
   }
 
   kick(): void {
+    this.#reconcileRequested = true;
+    this.#scheduleDrain();
+  }
+
+  #scheduleDrain(): void {
     this.#rerun = true;
     if (this.#pending) return;
     this.#pending = this.#drain().finally(() => {
       this.#pending = null;
-      if (this.#rerun) this.kick();
+      if (this.#rerun) this.#scheduleDrain();
     });
   }
 
@@ -127,11 +139,22 @@ export class KnowledgeIngestionCoordinator {
     do {
       this.#rerun = false;
       const maxParallel = await this.#resolveMaxParallel();
-      await Promise.all(Array.from({ length: maxParallel }, () => this.#worker()));
+      const processed = await Promise.all(Array.from({ length: maxParallel }, () => this.#worker()));
+      // Queue admission remains fast. The corpus-wide repair scan runs on a
+      // separate cadence unless a mutation kick or processed work can have
+      // unblocked publication, migration, or another batch of missing work.
+      if (!this.#reconcileRequested && !processed.some(Boolean) &&
+        this.#now().getTime() < this.#nextReconcileAt) continue;
+      this.#reconcileRequested = false;
       try {
-        if (await this.#repository.reconcile({ now: this.#now() })) this.#rerun = true;
+        if (await this.#repository.reconcile({ now: this.#now() })) {
+          this.#reconcileRequested = true;
+          this.#rerun = true;
+        }
+        this.#nextReconcileAt = this.#now().getTime() + DEFAULT_RECONCILE_INTERVAL_MS;
       } catch {
         // A later interval owns durable reconciliation retry.
+        this.#nextReconcileAt = this.#now().getTime() + this.#intervalMs;
       }
     } while (this.#rerun);
   }
@@ -147,7 +170,8 @@ export class KnowledgeIngestionCoordinator {
     }
   }
 
-  async #worker(): Promise<void> {
+  async #worker(): Promise<boolean> {
+    let processed = false;
     while (true) {
       const now = this.#now();
       let claim: KnowledgeWorkClaim | null;
@@ -158,9 +182,10 @@ export class KnowledgeIngestionCoordinator {
           staleBefore: new Date(now.getTime() - this.#leaseMs)
         });
       } catch {
-        return;
+        return processed;
       }
-      if (!claim) return;
+      if (!claim) return processed;
+      processed = true;
       await this.#processClaim(claim);
     }
   }

@@ -14,7 +14,10 @@ type ProviderModelCapabilityResolution = Readonly<{
 }>;
 
 export function configuredModelParameterControls(
-  configuration: ProviderModelConfiguration,
+  configuration: Pick<ProviderModelConfiguration,
+    "capabilities" | "defaultParams" | "reasoningRequestMapping" | "upstreamModelId"> & {
+      adapterKind: ProviderModelConfiguration["adapterKind"] | "fake";
+    },
   providerFamily: string
 ) {
   const adapterKind = configuration.adapterKind as CatalogAdapterKind;

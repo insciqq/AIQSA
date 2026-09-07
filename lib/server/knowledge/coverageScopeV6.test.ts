@@ -216,7 +216,7 @@ describe("Knowledge Coverage Scope V6", () => {
       }]
     }, { evidence, request })).toMatchObject({
       kind: "rejected",
-      reason: "coverage_scope_description_invalid"
+      reason: "coverage_scope_description_duplicate"
     });
     expect(validateKnowledgeCoverageScopeV6({
       ...output,

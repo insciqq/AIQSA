@@ -24,7 +24,7 @@ export type KnowledgeLexicalBackendEvidenceV1 = Readonly<{
   physicalIndexVersion: typeof KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION;
   projectionCompleteness: "complete";
   queryVariantCount: number;
-  rankingProfileVersion: typeof KNOWLEDGE_RANKING_PROFILE_VERSION;
+  rankingProfileVersion: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | typeof KNOWLEDGE_RANKING_PROFILE_VERSION;
   requestId: string | null;
   status: "complete";
   timedOut: false;

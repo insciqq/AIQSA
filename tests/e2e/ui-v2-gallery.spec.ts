@@ -25,6 +25,8 @@ for (const theme of ["dark", "light"] as const) {
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await expect(page.getByRole("complementary", { name: "Chat navigation" }))
       .toBeVisible();
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("searchbox", { name: "Filter chats" })).toBeFocused();
   });
 
   test(`v2 conversation interaction and containment · ${theme}`, async ({ context, page }) => {
@@ -467,9 +469,13 @@ async function routeVisualCitation(
 }
 
 test("v2 answer outputs expose only Sources and direct user outputs", async ({ page }) => {
+  const relatedText = "Related evidence retains its own page and a long identifier " + "token".repeat(40);
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.route("**/api/runs/answer-outputs-run/messages/answer-outputs-answer/citations/K1.1", async (route) => {
-    await route.fulfill({ json: knowledgeCitationResponse });
+    await route.fulfill({ json: { citation: {
+      ...knowledgeCitationResponse.citation,
+      relatedExcerpts: [{ text: relatedText, headingPath: ["Additional policy"], pageStart: 3, pageEnd: 4 }]
+    } } });
   });
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=complete");
 
@@ -497,6 +503,10 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   await expect(viewer).toBeVisible();
   await expect(viewer).toContainText("retrieval-policy.pdf · Engineering handbook");
   await expect(viewer).toContainText("Original page preview is unavailable");
+  const related = viewer.getByRole("region", { name: "Related source excerpts" });
+  await expect(related).toContainText(relatedText);
+  await expect(related).toContainText("Pages 3–4");
+  await expect(related.getByRole("link", { name: "Open page 3" })).toHaveCount(0);
   await expect(viewer.getByText("Stored highlight coordinates")).toHaveCount(0);
   await expect(viewer.getByRole("button", { name: "Close document viewer" })).toBeFocused();
   await page.keyboard.press("Escape");
@@ -510,6 +520,9 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   expect(mobileBox).not.toBeNull();
   expect(mobileBox!.x).toBe(0);
   expect(mobileBox!.width).toBeLessThanOrEqual(390);
+  await related.scrollIntoViewIfNeeded();
+  await expectWithinViewport(page, related);
+  await expectNoHorizontalOverflow(page);
   await viewer.getByRole("button", { name: "Close document viewer" }).click();
   const text = await outputs.innerText();
   expect(text).not.toContain("fixture query never rendered");

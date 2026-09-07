@@ -4,13 +4,15 @@ import type { ParsedDocumentBlock } from "../parsing";
 import {
   approximateKnowledgeTokenCount,
   chunkKnowledgeDocument,
+  createKnowledgeEmbeddingBatchAccumulator,
   KNOWLEDGE_CHUNK_MAX_CHARS,
   KNOWLEDGE_CHUNK_MAX_TOKENS,
   KNOWLEDGE_CHUNK_MAX_UTF8_BYTES,
   KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS,
   KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES,
   KNOWLEDGE_EMBEDDING_BATCH_SIZE,
-  knowledgeEmbeddingBatches
+  knowledgeEmbeddingBatches,
+  knowledgeEmbeddingInputBatches
 } from "./chunking";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
 import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "./tokenizer/knowledgeTokenCounter";
@@ -18,6 +20,7 @@ import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import {
   decodeKnowledgeDocumentContext,
   isCompleteKnowledgeTableRowProjectionSequence,
+  knowledgeDocumentContextHasAssociationAmbiguity,
   KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS,
   KNOWLEDGE_TABLE_HEADER_LINEAGE_MAX_CHARS,
   KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS,
@@ -116,6 +119,51 @@ function fieldDocument(value: string) {
 }
 
 describe("Knowledge chunk profiles", () => {
+  it.each([
+    [["Name", "Alice"], ["Age", "30"], ["Height", "170 cm"]],
+    [["", "Unknown"], ["Age", "30"], ["Height", "170 cm"]],
+    [["Name", "Alice"], ["Age", "30"], ["Name", "Bob"], ["Age", "40"]]
+  ])("keeps headerless form rows and their uncertainty without promoting a text value to a metric", (...rows) => {
+    const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+      column, columnSpan: 1, row: rowIndex, rowSpan: 1, text
+    })));
+    const normalized = document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+      isTable: true, table: { cells, columnCount: 2, rowCount: rows.length }, type: "table"
+    })]);
+    const chunks = chunkKnowledgeDocument({ document: normalized, maxChunks: 20,
+      profileVersion: 12, tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER });
+    expect(chunks.map(({ text }) => text)).toEqual(rows.map((row) => row.join("\t")));
+    expect(chunks.every(({ documentContext }) => documentContext?.locator.kind === "table_row" &&
+      documentContext.locator.rowKind === "data" && documentContext.locator.headerLineage.length === 0)).toBe(true);
+    expect(chunks.every(({ documentContext }) => knowledgeDocumentContextHasAssociationAmbiguity(documentContext))).toBe(true);
+    const observations = chunks.flatMap(({ documentContext }) => documentContext?.observations ?? []);
+    expect(observations.every(({ metric }) => metric === null)).toBe(true);
+    const numeric = observations.filter(({ valueKind }) => valueKind === "number");
+    expect(numeric.length).toBe(2);
+    expect(numeric.every(({ ambiguityReasons }) => ambiguityReasons.includes("missing_header"))).toBe(true);
+    if (rows.some((row) => row[0] === "Height")) {
+      expect(numeric.find(({ rawValue }) => rawValue === "170 cm")?.unit).toBe("cm");
+    }
+    if (rows[0]![0] === "Name") {
+      const historical = chunkKnowledgeDocument({ document: normalized, maxChunks: 20,
+        profileVersion: 11, tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER });
+      expect(historical.flatMap(({ documentContext }) => documentContext?.observations ?? [])
+        .some(({ metric }) => metric === "Alice")).toBe(true);
+    }
+  });
+
+  it("keeps an explicit Metric/Value schema and a valid row's own metric", () => {
+    const rows = [["Metric", "Value"], ["Age", "30"]];
+    const chunks = chunkKnowledgeDocument({ document: document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+      isTable: true, table: { cells: rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+        column, columnSpan: 1, row: rowIndex, rowSpan: 1, text
+      }))), columnCount: 2, rowCount: 2 }, type: "table"
+    })]), maxChunks: 20, profileVersion: 12, tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER });
+    expect(chunks[1]?.documentContext?.observations.find(({ valueKind }) => valueKind === "number"))
+      .toMatchObject({ ambiguityReasons: [], metric: "Age", normalizedValue: "30" });
+    expect(chunks[1]?.text).toBe("Metric\tValue\nAge\t30");
+  });
+
   it("activates only bounded singleton or sparse inline form pairs in profile 11", () => {
     const cells = [{
       column: 0,
@@ -144,7 +192,7 @@ describe("Knowledge chunk profiles", () => {
     const previous = chunkKnowledgeDocument({
       document: normalized,
       maxChunks: 20,
-      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION - 1,
+      profileVersion: 10,
       tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
     });
 
@@ -863,7 +911,7 @@ describe("Knowledge chunk profiles", () => {
   });
 
   it("degrades instead of duplicating a merged header across incompatible cell boundaries", () => {
-    const header = "Merged header";
+    const header = "Metric";
     const value = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]
       .join(" ");
     const cells = [
@@ -938,7 +986,7 @@ describe("Knowledge chunk profiles", () => {
   it("keeps one bounded sparse projection when trailing header-only columns exceed the row budget", () => {
     const headers = Array.from(
       { length: 11 },
-      () => Array<string>(25).fill("heading").join(" ")
+      () => ["Value", ...Array<string>(24).fill("heading")].join(" ")
     );
     const values = [
       Array<string>(30).fill("value").join(" "),
@@ -1063,7 +1111,7 @@ describe("Knowledge chunk profiles", () => {
   });
 
   it("degrades a data row when its full source header cannot fit any bounded projection", () => {
-    const header = Array.from({ length: 401 }, (_, index) => `header${index}`).join(" ");
+    const header = "Value " + Array.from({ length: 401 }, (_, index) => `header${index}`).join(" ");
     const value = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]
       .join(" ");
     const cells = [header, value].map((text, row) => ({
@@ -1174,6 +1222,30 @@ describe("Knowledge chunk profiles", () => {
     expect(chunks.every((chunk) => chunk.documentContext === null)).toBe(true);
     expect(chunks.every((chunk) =>
       ["table_row", "table_row_projection"].includes(chunk.layoutKind))).toBe(true);
+  });
+
+  it.each([
+    ["table", "1.1e2", "110", "110.00000000000001"],
+    ["table", "9007199254740993e0", "9007199254740993", "9007199254740992"],
+    ["field", "1.1e2", "110", "110.00000000000001"],
+    ["field", "9007199254740993e0", "9007199254740993", "9007199254740992"]
+  ])("pins exact %s observation normalization to the new artifact profile (%s)", (shape, raw, exact, historical) => {
+    const normalized = shape === "field" ? fieldDocument(raw!) : document([block(0, `Metric\tValue\nCount\t${raw}`, {
+      isTable: true, type: "table", table: { columnCount: 2, rowCount: 2,
+        cells: [["Metric", "Value"], ["Count", raw!]].flatMap((row, rowIndex) => row.map((text, column) => ({
+          column, columnSpan: 1, row: rowIndex, rowSpan: 1, text
+        }))) }
+    })]);
+    for (const [profileVersion, expected] of [[11, historical], [12, exact]] as const) {
+      const chunks = chunkKnowledgeDocument({ document: normalized, maxChunks: 20, profileVersion,
+        tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER });
+      const context = chunks.map(({ documentContext }) => documentContext)
+        .find((item) => item?.observations.some(({ rawValue }) => rawValue === raw));
+      expect(context?.observations.find(({ rawValue }) => rawValue === raw)).toMatchObject({
+        normalizedValue: expected, rawValue: raw, ambiguityReasons: []
+      });
+      expect(decodeKnowledgeDocumentContext(JSON.parse(JSON.stringify(context)))).toEqual(context);
+    }
   });
 
   it("chunks only parser-linked field pairs atomically and isolates competing cells", () => {
@@ -1673,6 +1745,42 @@ describe("Knowledge chunk profiles", () => {
     ]);
   });
 
+  it("batches tagged inputs across Source boundaries with ordinary provider limits", () => {
+    const [entry] = chunkKnowledgeDocument({
+      document: document([block(0, "shared product batching")]),
+      maxChunks: 1,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+    const inputs = Array.from({ length: KNOWLEDGE_EMBEDDING_BATCH_SIZE + 1 },
+      (_value, index) => ({
+        embeddingText: entry!.embeddingText,
+        sourceId: `source-${index}`
+      }));
+
+    const batches = knowledgeEmbeddingInputBatches(
+      inputs,
+      KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    );
+
+    expect(batches.map((batch) => batch.inputs.length)).toEqual([
+      KNOWLEDGE_EMBEDDING_BATCH_SIZE,
+      1
+    ]);
+    expect(batches.flatMap((batch) => batch.inputs.map(({ sourceId }) => sourceId)))
+      .toEqual(inputs.map(({ sourceId }) => sourceId));
+
+    const accumulator = createKnowledgeEmbeddingBatchAccumulator(
+      KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    );
+    const streamed = inputs.flatMap((input) => accumulator.push(input) ?? []);
+    const remainder = accumulator.finish();
+    if (remainder) streamed.push(...remainder);
+    expect(streamed).toEqual(inputs);
+  });
+
   it("conservatively estimates hostile multilingual and no-space inputs", () => {
     expect(approximateKnowledgeTokenCount(`https://example.test/${"a".repeat(1_200)}`))
       .toBeGreaterThan(KNOWLEDGE_CHUNK_MAX_TOKENS);
@@ -1681,6 +1789,44 @@ describe("Knowledge chunk profiles", () => {
     expect(approximateKnowledgeTokenCount("Ж".repeat(900)))
       .toBeGreaterThan(KNOWLEDGE_CHUNK_MAX_TOKENS);
     expect(approximateKnowledgeTokenCount("слово ".repeat(100))).toBeGreaterThan(100);
+  });
+
+  it("keeps a measured BPE-safe endpoint when a shorter semantic break costs more", () => {
+    const nonMonotonicCounter = {
+      countTokens: (text: string) => text.endsWith("trigger")
+        ? KNOWLEDGE_CHUNK_MAX_TOKENS + 1
+        : Math.ceil(text.length / 2),
+      identity: { assetSha256: null, name: "test-non-monotonic", version: 1 }
+    };
+    const text = `${"a".repeat(690)} trigger ${"b".repeat(400)}`;
+
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, text)], "x"),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: nonMonotonicCounter
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) =>
+      nonMonotonicCounter.countTokens(chunk.embeddingText) <=
+        KNOWLEDGE_CHUNK_MAX_TOKENS
+    )).toBe(true);
+
+    const trimSensitiveCounter = {
+      ...nonMonotonicCounter,
+      countTokens: (value: string) => value.endsWith("trigger")
+        ? KNOWLEDGE_CHUNK_MAX_TOKENS + 1
+        : Math.ceil((value.length - 1) / 2)
+    };
+    const trimSensitiveText = `${"a".repeat(789)} trigger ${"b".repeat(400)}`;
+    expect(chunkKnowledgeDocument({
+      document: document([block(0, trimSensitiveText)], "x"),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: trimSensitiveCounter
+    }).every((chunk) => trimSensitiveCounter.countTokens(chunk.embeddingText) <=
+      KNOWLEDGE_CHUNK_MAX_TOKENS)).toBe(true);
   });
 
   it("splits indivisible hostile text against the full prefixed embedding input", () => {

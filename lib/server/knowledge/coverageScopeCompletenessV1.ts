@@ -4,8 +4,10 @@ import {
 } from "./answerGroundingV5";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
-  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
+  knowledgeCoverageAtomContextContract,
+  knowledgeCoverageAtomProjectionName,
   validateDecodedKnowledgeCoverageScopeV6,
+  knowledgeCoverageFindingIdentityV1,
   validateKnowledgeCoverageScopeV6,
   type KnowledgeCoverageEvidenceV6,
   type KnowledgeCoverageFindingOutputV1,
@@ -306,10 +308,10 @@ export function validateKnowledgeCoverageScopeCompletenessV1(
   if (merged.kind !== "accepted") {
     return rejected("coverage_scope_completeness_addition_invalid");
   }
-  const additionDescriptions = new Set(additions.map(({ description }) =>
-    description.normalize("NFC")));
-  const canonicalAdditions = merged.value.scope.filter(({ description }) =>
-    additionDescriptions.has(description.normalize("NFC")));
+  const additionIdentities = new Set(additions.map((item) =>
+    knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion)));
+  const canonicalAdditions = merged.value.scope.filter((item) =>
+    additionIdentities.has(knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion)));
   if (canonicalAdditions.length !== additions.length) {
     return rejected("coverage_scope_completeness_addition_invalid");
   }
@@ -414,13 +416,13 @@ export function validateDecodedKnowledgeCoverageScopeCompletenessUnionV1(
   if (canonical.kind !== "accepted" || canonical.value.scope.length !== value.scope.length) {
     return false;
   }
-  const canonicalByDescription = new Map(canonical.value.scope.map((item) => [
-    item.description.normalize("NFC"),
+  const canonicalByIdentity = new Map(canonical.value.scope.map((item) => [
+    knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion),
     item
   ] as const));
   return value.scope.every((candidate) => {
     const item = candidate as KnowledgeCoverageScopeV6["scope"][number];
-    const expected = canonicalByDescription.get(item.description.normalize("NFC"));
+    const expected = canonicalByIdentity.get(knowledgeCoverageFindingIdentityV1(item, input.atomIndexVersion));
     return Boolean(expected) && knowledgeAnswerCanonicalJson({
       description: item.description,
       evidenceAtomIds: item.evidenceAtomIds,
@@ -483,15 +485,15 @@ export function knowledgeCoverageScopeCompletenessPromptV1(input: Readonly<{
     throw new Error("knowledge_coverage_scope_completeness_v1_prompt_invalid");
   }
   return Object.freeze({
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
       acceptedScope: input.acceptedScope,
       acceptedScopePayloadHash: knowledgeAnswerHash(input.acceptedScope),
-      ...(input.atomIndexVersion === 2
-        ? { atomProjection: "source_ordered_context_v2" as const }
+      ...((input.atomIndexVersion ?? 1) !== 1
+        ? { atomProjection: knowledgeCoverageAtomProjectionName(input.atomIndexVersion ?? 1) }
         : {}),
       completenessPass: input.completenessPass,
       evidenceContext: knowledgeCoverageEvidenceContextV1(input.evidence),
@@ -525,9 +527,9 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
   repairReason: KnowledgeCoverageScopeCompletenessValidationFailureReasonV1 | null;
 }> | null {
   const atomIndexVersion = input.atomIndexVersion ?? 1;
-  const expectedSystemPrompt = atomIndexVersion === 2
+  const expectedSystemPrompt = atomIndexVersion !== 1
     ? `${KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1}\n\n` +
-      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      knowledgeCoverageAtomContextContract(atomIndexVersion)
     : KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_CONTRACT_V1;
   if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
@@ -539,7 +541,7 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
   if (!record(value) || !exactKeys(value, [
     "acceptedScope",
     "acceptedScopePayloadHash",
-    ...(atomIndexVersion === 2 ? ["atomProjection"] : []),
+    ...(atomIndexVersion !== 1 ? ["atomProjection"] : []),
     "completenessPass",
     "evidenceContext",
     "evidenceManifestHash",
@@ -551,8 +553,7 @@ export function decodeKnowledgeCoverageScopeCompletenessPromptV1(input: Readonly
     "version"
   ]) || knowledgeAnswerCanonicalJson(value.acceptedScope) !==
       knowledgeAnswerCanonicalJson(input.acceptedScope) ||
-    (atomIndexVersion === 2) !==
-      (value.atomProjection === "source_ordered_context_v2") ||
+    value.atomProjection !== knowledgeCoverageAtomProjectionName(atomIndexVersion) ||
     value.acceptedScopePayloadHash !== knowledgeAnswerHash(input.acceptedScope) ||
     value.evidenceManifestHash !== knowledgeAnswerHash(input.evidenceManifest) ||
     knowledgeAnswerCanonicalJson(value.evidenceContext) !==

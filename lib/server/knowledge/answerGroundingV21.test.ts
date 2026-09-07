@@ -187,7 +187,7 @@ const threeDimensions = Object.freeze([
 ]);
 
 describe("Knowledge grounding V21 contracts", () => {
-  it("keeps V37-V40 and current V41 snapshots protocol-isolated", () => {
+  it("keeps historical V37-V41 snapshots protocol-isolated", () => {
     const prompt = knowledgeAnswerDraftPromptV21GlobalReducerV1({
       draftPass: "primary",
       evidenceManifest,
@@ -251,7 +251,7 @@ describe("Knowledge grounding V21 contracts", () => {
     expect(isCurrentKnowledgeAnswerOperationSnapshotV21(targetLocal)).toBe(false);
     expect(isCurrentKnowledgeAnswerOperationSnapshotV21(qualityRepresentative)).toBe(false);
     expect(isCurrentKnowledgeAnswerOperationSnapshotV21(safeFallback)).toBe(false);
-    expect(isCurrentKnowledgeAnswerOperationSnapshotV21(current)).toBe(true);
+    expect(isCurrentKnowledgeAnswerOperationSnapshotV21(current)).toBe(false);
     expect(decodeKnowledgeAnswerOperationRequestSnapshotV21({
       ...historical,
       version: 38

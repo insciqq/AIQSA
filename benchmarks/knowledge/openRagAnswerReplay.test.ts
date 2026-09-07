@@ -71,6 +71,8 @@ function snapshot(): ProviderExecutionSnapshot {
 
 function evidence() {
   return packKnowledgeEvidenceDispatchManifest({
+    // Historical replay must not inherit the current write policy.
+    packingVersion: "whole_source_item_v1",
     candidates: [{
       ambiguity: "none",
       evidenceId: "knowledge-call-1:result:1",

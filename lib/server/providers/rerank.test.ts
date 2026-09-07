@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createOpenRouterRerankAdapter,
   MAX_RERANK_DOCUMENT_CHARACTERS,
-  MAX_RERANK_DOCUMENTS
+  MAX_RERANK_DOCUMENTS,
+  MAX_RERANK_QUERY_CHARACTERS
 } from "./rerank";
 import { normalizeProviderModelConfiguration } from "./providerConfiguration";
 
@@ -91,6 +92,27 @@ function strictAdapter(fetchFn: typeof fetch) {
 }
 
 describe("OpenRouter reranker adapter", () => {
+  it("preserves a 3000-code-point query through JSON transport", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response());
+    const constraint = "Keep the session open.";
+    const query = "🔎".repeat(3000 - [...constraint].length) + constraint;
+    await adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "Reset command." }, { handle: "c1", text: "Close command." }],
+      query
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)).query).toBe(query);
+  });
+
+  it("rejects a query above the transport bound before network I/O", async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "Reset command." }],
+      query: "x".repeat(MAX_RERANK_QUERY_CHARACTERS + 1)
+    })).rejects.toMatchObject({ code: "rerank_input_invalid" });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("sends one score-only request with exact routing and rejoins opaque handles", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response());
     const result = await adapter(fetchFn).rerank({

@@ -709,7 +709,7 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
     });
     const result = await executeKnowledgeRetrievalCore(prisma, {
       candidateLimit: 64,
-      excludedContentHashes: [],
+      excludedOccurrenceKeys: [],
       query: "retention evidence",
       rerank: { executor },
       resultLimit: 16,

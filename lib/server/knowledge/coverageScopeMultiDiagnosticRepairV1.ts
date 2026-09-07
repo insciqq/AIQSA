@@ -9,7 +9,7 @@ import { knowledgeCoverageEvidenceUnitIndex } from "./coverageScopeV5";
 import {
   KNOWLEDGE_COVERAGE_SCOPE_TASK_REMINDER_V6,
   KNOWLEDGE_COVERAGE_SCOPE_V6_LIMITS,
-  KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1,
+  knowledgeCoverageAtomContextContract,
   type KnowledgeCoverageEvidenceV6,
   type KnowledgeCoverageScopeValidationFailureReasonV6
 } from "./coverageScopeV6";
@@ -293,9 +293,9 @@ export function knowledgeCoverageScopePromptV6MultiDiagnosticRepairV1(
   if (input.scopePass === "initial") return base;
   const payload = JSON.parse(base.userPrompt) as Record<string, unknown>;
   return Object.freeze({
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson({
       ...payload,
@@ -333,9 +333,9 @@ export function decodeKnowledgeCoverageScopePromptV6MultiDiagnosticRepairV1(
       scopePass: initial.scopePass
     });
   }
-  const expectedSystemPrompt = input.atomIndexVersion === 2
+  const expectedSystemPrompt = (input.atomIndexVersion ?? 1) !== 1
     ? `${KNOWLEDGE_COVERAGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_CONTRACT_V1}\n\n` +
-      KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+      knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
     : KNOWLEDGE_COVERAGE_SCOPE_MULTI_DIAGNOSTIC_REPAIR_CONTRACT_V1;
   if (input.systemPrompt !== expectedSystemPrompt) return null;
   let value: unknown;
@@ -345,7 +345,7 @@ export function decodeKnowledgeCoverageScopePromptV6MultiDiagnosticRepairV1(
     return null;
   }
   if (!record(value) || !exactKeys(value, [
-    ...(input.atomIndexVersion === 2 ? ["atomProjection"] : []),
+    ...((input.atomIndexVersion ?? 1) !== 1 ? ["atomProjection"] : []),
     "evidenceContext",
     "evidenceManifestHash",
     "evidenceUnitIndex",
@@ -380,9 +380,9 @@ export function decodeKnowledgeCoverageScopePromptV6MultiDiagnosticRepairV1(
     evidence: input.evidence,
     evidenceManifest: input.evidenceManifest,
     request: input.request,
-    systemPrompt: input.atomIndexVersion === 2
+    systemPrompt: (input.atomIndexVersion ?? 1) !== 1
       ? `${KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_CONTRACT_V1}\n\n` +
-        KNOWLEDGE_COVERAGE_SOURCE_ORDERED_CONTEXT_CONTRACT_V1
+        knowledgeCoverageAtomContextContract(input.atomIndexVersion ?? 1)
       : KNOWLEDGE_COVERAGE_SCOPE_VERIFIED_PATCH_REPAIR_CONTRACT_V1,
     userPrompt: knowledgeAnswerCanonicalJson(basePayload)
   });

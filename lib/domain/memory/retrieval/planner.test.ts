@@ -26,15 +26,15 @@ describe("language-agnostic Memory retrieval planning", () => {
     expect(plan).toMatchObject({
       lexicalQuery: "Какие ответы 我喜欢",
       normalizedExactQuery: "какие ответы — 我喜欢؟",
-      normalizedQuery: "Какие ответы — 我喜欢؟",
-      originalSanitizedQuery: "Какие ответы — 我喜欢؟",
+      normalizedQuery: "Какие\tответы — 我喜欢؟",
+      originalSanitizedQuery: "Какие\tответы — 我喜欢؟",
       queryPresent: true
     });
     expect(plan.semanticQueryVariants).toEqual([
-      { kind: "ORIGINAL", text: "Какие ответы — 我喜欢؟" }
+      { kind: "ORIGINAL", text: "Какие\tответы — 我喜欢؟" }
     ]);
     expect(plan.temporalQueryVariants).toEqual([
-      { kind: "UNRESTRICTED", text: "Какие ответы — 我喜欢؟" }
+      { kind: "UNRESTRICTED", text: "Какие\tответы — 我喜欢؟" }
     ]);
   });
 

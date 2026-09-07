@@ -492,6 +492,44 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
       </section>
       )}
 
+      {value.relatedExcerpts && value.relatedExcerpts.length > 0 ? (
+        <section className="mt-8" aria-labelledby="knowledge-related-excerpts-heading">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted" id="knowledge-related-excerpts-heading">
+            Related source excerpts
+          </h3>
+          <div className="mt-3 space-y-6">
+            {value.relatedExcerpts.map((excerpt, index) => (
+              <div key={`${excerpt.pageStart}:${excerpt.pageEnd}:${index}`}>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                  <p className="min-w-0 break-words text-xs leading-5 text-ink-muted">
+                    {excerpt.headingPath.join(" › ")}
+                  </p>
+                  {originalPdfUrl ? (
+                    <a
+                      aria-label={`Open page ${excerpt.pageStart}`}
+                      className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-control px-2 font-mono text-[11px] text-proof outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus"
+                      href={`${loaded.originalUrl}#page=${excerpt.pageStart}`}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {pageLabel(excerpt.pageStart, excerpt.pageEnd)}
+                      <ExternalLink className="size-3.5" aria-hidden="true" />
+                    </a>
+                  ) : (
+                    <span className="font-mono text-[11px] text-ink-muted">
+                      {pageLabel(excerpt.pageStart, excerpt.pageEnd)}
+                    </span>
+                  )}
+                </div>
+                <blockquote className="mt-2 whitespace-pre-wrap border-l-2 border-proof pl-4 text-sm leading-6 text-ink [overflow-wrap:anywhere]">
+                  {excerpt.text}
+                </blockquote>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {!value.visual && originalPdfUrl ? (
         <section className="mt-8" aria-labelledby="knowledge-original-heading">
           <div className="flex items-center justify-between gap-3">

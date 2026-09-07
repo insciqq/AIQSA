@@ -70,7 +70,7 @@ describe("compact Personal Context sources", () => {
     fireEvent.click(within(group).getByRole("button", { name: "Memory actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Forget" }));
     await waitFor(() => expect(within(group).getByRole("status")).toHaveTextContent("forgotten"));
-    fireEvent.click(screen.getByRole("button", { name: "Show less", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
     expect(group).not.toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Show all 4" }));
     expect(group).toBeVisible();

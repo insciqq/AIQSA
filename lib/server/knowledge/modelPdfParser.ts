@@ -5,6 +5,9 @@ import { sumTokenUsage } from "../../domain/usage";
 import {
   decodeModelPdfBatchOutput,
   MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION,
+  MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
+  MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION,
+  MODEL_PDF_FIGURE_CROP_PROFILE_VERSION,
   modelPdfPagesToDocument,
   modelPdfTranscriptionPrompt
 } from "../parsing/modelPdfOutput";
@@ -36,6 +39,7 @@ import type { DoclingLayoutParser } from "../parsing/doclingLayout";
 import {
   enrichModelPdfGeometry,
   mergeModelPdfWithNativeText,
+  MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION,
   MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION,
   MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION
 } from "../parsing/pdfGeometry";
@@ -45,13 +49,13 @@ import {
   type ProviderExecutionSnapshot
 } from "../providers/runtimeFactory";
 import { isProviderDeadlineExceededError } from "../providers/network";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { openAIRetryableErrorPayload } from "../providers/openaiResponsesTransport";
 import {
   executeWithProviderRetry,
   isRetryableProviderNetworkError,
   type ProviderRetryOptions
 } from "../providers/providerRetry";
-import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "./knowledgeProfile";
 import type {
   ProviderRunResult
 } from "../providers/types";
@@ -98,7 +102,6 @@ type AcceptedExecutor = ReturnType<typeof createAcceptedProviderRequestExecutor>
 
 export const KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY = 4 as const;
 export const KNOWLEDGE_MODEL_PDF_PROVIDER_MAX_ATTEMPTS = 3 as const;
-export const KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS = 120_000 as const;
 
 class RetryableKnowledgeModelPdfOutputError extends Error {
   constructor() {
@@ -155,8 +158,10 @@ function abortReason(signal: AbortSignal): unknown {
 function validSnapshot(
   input: Parameters<KnowledgeModelPdfParser["parse"]>[0]
 ): ProviderExecutionSnapshot {
+  // Explicitly pinned supported profiles remain usable independently of the
+  // profile selected by default for new installation revisions.
   if (!Number.isSafeInteger(input.parserProfileVersion) || input.parserProfileVersion < 1 ||
-    input.parserProfileVersion > KNOWLEDGE_PDF_PARSER_PROFILE_VERSION ||
+    input.parserProfileVersion > MODEL_PDF_FIGURE_CROP_PROFILE_VERSION ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
     throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
@@ -323,6 +328,10 @@ export function createKnowledgeModelPdfParser(
           pageEnd,
           pageStart,
           promptVersion: input.parserProfileVersion >=
+            MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION ? 8
+            : input.parserProfileVersion >=
+            MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION ? 7
+            : input.parserProfileVersion >=
             MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION
             ? 6
             : input.parserProfileVersion >= 7
@@ -337,7 +346,8 @@ export function createKnowledgeModelPdfParser(
             supplement = await prepareAdaptivePdfVisionSupplement({
               batch: prepared,
               docling: adaptiveDocling,
-              geometry: adaptiveGeometry
+              geometry: adaptiveGeometry,
+              includeFigures: input.parserProfileVersion >= MODEL_PDF_FIGURE_CROP_PROFILE_VERSION
             });
           } catch (error) {
             if (input.signal?.aborted) throw abortReason(input.signal);
@@ -395,10 +405,14 @@ export function createKnowledgeModelPdfParser(
                 visionDetail
               }), {
                 signal,
-                timeoutMs: KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS
+                timeoutMs: effectiveProviderResponseTimeoutMs(
+                  snapshot.connection,
+                  snapshot.model.adapterKind === "fake" ? null : snapshot.model
+                )
               });
               try {
                 decodeModelPdfBatchOutput({
+                  preserveTableWhitespace: input.parserProfileVersion >= MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
                   mode: input.mode,
                   pageEnd,
                   pageStart,
@@ -443,6 +457,7 @@ export function createKnowledgeModelPdfParser(
       });
       try {
         const decodedPages = settled.flatMap((batch) => decodeModelPdfBatchOutput({
+          preserveTableWhitespace: input.parserProfileVersion >= MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
           mode: input.mode,
           pageEnd: batch.pageEnd,
           pageStart: batch.pageStart,
@@ -450,6 +465,9 @@ export function createKnowledgeModelPdfParser(
         }));
         if (adaptivePlan && adaptiveGeometry) {
           return assembleAdaptivePdfPages({
+            deduplicateNativeProseRows: input.parserProfileVersion >=
+              MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION,
+            legacyTableInference: input.parserProfileVersion < MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
             docling: adaptiveDocling,
             geometry: adaptiveGeometry,
             maxBlocks: input.maxBlocks,
@@ -460,6 +478,7 @@ export function createKnowledgeModelPdfParser(
         }
         const pages = decodedPages;
         const document = modelPdfPagesToDocument({
+          legacyTableInference: input.parserProfileVersion < MODEL_PDF_EXPLICIT_TABLE_STRUCTURE_PROFILE_VERSION,
           maxBlocks: input.maxBlocks,
           maxCharacters: input.maxCharacters,
           mode: input.mode,
@@ -483,6 +502,8 @@ export function createKnowledgeModelPdfParser(
             return mergeModelPdfWithNativeText(document, geometry, {
               allowTextCorrections: input.parserProfileVersion >=
                 MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION,
+              deduplicateNativeProseRows: input.parserProfileVersion >=
+                MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION,
               maxBlocks: input.maxBlocks,
               maxCharacters: input.maxCharacters
             }).document;

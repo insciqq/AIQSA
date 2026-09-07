@@ -675,6 +675,12 @@ type MutableAdmissionSource = {
   sourceVersionNumber: number;
 };
 
+/** Keep whole-Base admission below PostgreSQL's extended-query parameter
+ * ceiling. Prisma resolves nested relations through follow-up queries, so an
+ * unbounded membership list can otherwise turn one large Base into more than
+ * 65,535 bind parameters before the disclosed-binding path is selected. */
+const KNOWLEDGE_ADMISSION_SOURCE_PAGE_SIZE = 1_000;
+
 export async function loadKnowledgeRunAdmissionPlan(
   client: KnowledgeRunAdmissionStore,
   input: Readonly<{
@@ -873,6 +879,12 @@ export async function loadKnowledgeRunAdmissionPlan(
         contentRevision: true,
         id: true,
         sourceMemberships: {
+          ...(scope.selectedSourceIds === null
+            ? {
+                orderBy: { sourceId: "asc" as const },
+                take: KNOWLEDGE_ADMISSION_SOURCE_PAGE_SIZE
+              }
+            : {}),
           select: {
             sourceId: true,
             source: {
@@ -944,6 +956,60 @@ export async function loadKnowledgeRunAdmissionPlan(
       throw new KnowledgeRunAdmissionError();
     }
 
+    const sourceMemberships = [...(base.sourceMemberships ?? [])];
+    if (scope.selectedSourceIds === null &&
+      sourceMemberships.length === KNOWLEDGE_ADMISSION_SOURCE_PAGE_SIZE) {
+      let afterSourceId = sourceMemberships.at(-1)!.sourceId;
+      while (true) {
+        const page = await client.knowledgeSource.findMany({
+          orderBy: { id: "asc" },
+          select: {
+            currentVersion: {
+              select: {
+                artifacts: {
+                  orderBy: { createdAt: "desc" },
+                  select: {
+                    id: true,
+                    hierarchicalIndexes: {
+                      orderBy: { schemaVersion: "desc" },
+                      select: { passageCount: true, state: true },
+                      take: 1
+                    },
+                    normalizedTextByteSize: true,
+                    profileRevisionId: true,
+                    state: true
+                  }
+                },
+                byteSize: true,
+                fileName: true,
+                id: true,
+                versionNumber: true
+              }
+            },
+            id: true,
+            name: true,
+            ownerUserId: true
+          },
+          take: KNOWLEDGE_ADMISSION_SOURCE_PAGE_SIZE,
+          where: {
+            baseMemberships: {
+              some: { knowledgeBaseId, removedAt: null }
+            },
+            deletionRequestedAt: null,
+            id: { gt: afterSourceId },
+            trashedAt: null
+          }
+        });
+        sourceMemberships.push(...page.map((source) => ({
+          source,
+          sourceId: source.id
+        })));
+        if (page.length < KNOWLEDGE_ADMISSION_SOURCE_PAGE_SIZE) break;
+        afterSourceId = page.at(-1)!.id;
+      }
+    }
+    const resolvedBase = { ...base, sourceMemberships };
+
     try {
       if (!generation.profileRevisionId || !generation.profileRevision) {
         throw new KnowledgeRunAdmissionError();
@@ -958,7 +1024,10 @@ export async function loadKnowledgeRunAdmissionPlan(
         vectorSpaceFingerprint: generation.vectorSpaceFingerprint
       });
       const profile = profilesByKey.get(profileKey)!;
-      const sourceSummary = admittedSourceSummary(base, scope.selectedSourceIds);
+      const sourceSummary = admittedSourceSummary(
+        resolvedBase,
+        scope.selectedSourceIds
+      );
       bindings.push({
         ...sourceSummary,
         baseContentRevision: base.contentRevision,
@@ -975,7 +1044,7 @@ export async function loadKnowledgeRunAdmissionPlan(
         vectorSpaceFingerprint: profile.vectorSpaceFingerprint
       });
       bindingProfileKeys.set(base.id, profileKey);
-      for (const membership of base.sourceMemberships ?? []) {
+      for (const membership of sourceMemberships) {
         const version = membership.source.currentVersion;
         const artifact = version?.artifacts.find((candidate) =>
           candidate.profileRevisionId === generation.profileRevisionId &&

@@ -1,6 +1,7 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { PDF_WORKER_RESOURCE_LIMITS } from "../uploads/pdfConfig";
+import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
 import { DocumentParserError } from "./errors";
 import type { DocumentParserEngine } from "./types";
 
@@ -329,7 +330,7 @@ function runPreparationWorker(
   options: PreparationWorkerOptions
 ): Promise<unknown> {
   if (input.signal?.aborted) return Promise.reject(abortReason(input.signal));
-  return new Promise((resolve, reject) => {
+  return withPdfWorkerAdmission(() => new Promise((resolve, reject) => {
     const transferred = Uint8Array.from(input.bytes);
     const limits = visionLimits(options);
     let worker: Worker;
@@ -408,7 +409,7 @@ function runPreparationWorker(
     worker.once("message", onMessage);
     input.signal?.addEventListener("abort", onAbort, { once: true });
     if (input.signal?.aborted) onAbort();
-  });
+  }), input.signal);
 }
 
 export async function inspectPdfForModelProcessing(

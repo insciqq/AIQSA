@@ -12,6 +12,7 @@ const MAX_PARSER_ATTEMPTS = 4;
 const MAX_NATIVE_CORRECTION_TOKENS = 96;
 const MIN_NATIVE_CORRECTION_WORD_CHARACTERS = 8;
 const MIN_NATIVE_CORRECTION_WORDS = 2;
+const MIN_NATIVE_PROSE_SPAN_CHARACTERS = 12;
 /** First immutable model-PDF parser profile that may add visible native-text
  * rows omitted by System Model Vision. Earlier profiles remain geometry-only. */
 export const MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION = 10 as const;
@@ -19,6 +20,9 @@ export const MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION = 10 as const;
  * may replace one uniquely aligned Vision paragraph whose normalized token
  * sequence differs only in numeric tokens. */
 export const MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION = 11 as const;
+/** Earlier immutable profiles preserve unmatched native rows spanning prose
+ * columns even when Vision has already transcribed their complete text. */
+export const MODEL_PDF_NATIVE_PROSE_DEDUPLICATION_PROFILE_VERSION = 16 as const;
 
 export type ModelPdfNativeTextMergeResult = Readonly<{
   addedBlockCount: number;
@@ -29,6 +33,7 @@ export type ModelPdfNativeTextMergeResult = Readonly<{
 
 type ModelPdfNativeTextMergeOptions = Readonly<{
   allowTextCorrections: boolean;
+  deduplicateNativeProseRows?: boolean;
   maxBlocks: number;
   maxCharacters: number;
 }>;
@@ -173,15 +178,17 @@ function associationWindows(tokens: readonly string[]): readonly string[] {
 
 type PageTextEvidence = Readonly<{
   associations: ReadonlySet<string>;
+  prose: readonly string[];
   tokens: ReadonlySet<string>;
 }>;
 
 function modelPageEvidence(blocks: readonly ParsedDocumentBlock[]): ReadonlyMap<number, PageTextEvidence> {
-  const pages = new Map<number, { associations: Set<string>; tokens: Set<string> }>();
+  const pages = new Map<number, { associations: Set<string>; prose: string[]; tokens: Set<string> }>();
   for (const block of blocks) {
     for (let page = block.page; page <= block.pageEnd; page += 1) {
       const evidence = pages.get(page) ?? {
         associations: new Set<string>(),
+        prose: [],
         tokens: new Set<string>()
       };
       const sequence = normalizedTokenSequence(block.text);
@@ -189,10 +196,35 @@ function modelPageEvidence(blocks: readonly ParsedDocumentBlock[]): ReadonlyMap<
       for (const association of associationWindows(sequence)) {
         evidence.associations.add(association);
       }
+      if (block.type === "paragraph" && !block.isTable && block.table === null) {
+        evidence.prose.push(block.text.normalize("NFKC").replace(/\s+/gu, " ").trim());
+      }
       pages.set(page, evidence);
     }
   }
   return pages;
+}
+
+/** Native baseline/gap groups are not proof of table structure. Do not add a
+ * synthetic relationship between complete prose spans already read by Vision.
+ * Callers pass only normalized prose from the candidate's source page. */
+export function nativeRowAlreadyRepresentedInProse(
+  block: ParsedDocumentBlock,
+  prose: readonly string[]
+): boolean {
+  const table = block.table;
+  if (!table || table.rowCount !== 1 || table.columnCount < 2 ||
+    table.cells.length !== table.columnCount) return false;
+  // Short labels, missing text and model-authored tables cannot establish
+  // this proof: their row associations may be unique.
+  return table.cells.every((cell) => {
+    if (cell.row !== 0 || cell.rowSpan !== 1 || cell.columnSpan !== 1) return false;
+    const text = cell.text.normalize("NFKC").replace(/\s+/gu, " ").trim();
+    if (text.length < MIN_NATIVE_PROSE_SPAN_CHARACTERS) return false;
+    const escaped = text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const span = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escaped}(?![\\p{L}\\p{M}\\p{N}])`, "u");
+    return prose.some((paragraph) => span.test(paragraph));
+  });
 }
 
 function materiallyNovelNativeText(
@@ -426,6 +458,8 @@ export function mergeModelPdfWithNativeText(
   const additions = geometry.blocks.flatMap((candidate, geometryIndex) => {
     if (plan.consumedGeometryIndexes.has(geometryIndex) ||
       !safeNativePage(geometry, candidate.page) ||
+      options.deduplicateNativeProseRows && nativeRowAlreadyRepresentedInProse(
+        candidate, evidenceByPage.get(candidate.page)?.prose ?? []) ||
       !materiallyNovelNativeText(candidate, evidenceByPage) ||
       spatialConflict(candidate, plan.blocks) ||
       unlocatedConflict(candidate, plan.blocks)) return [];

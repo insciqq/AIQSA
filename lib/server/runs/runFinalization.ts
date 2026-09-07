@@ -4,22 +4,27 @@ import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 import type { KnowledgeAnswerV21ContractVersions } from "../knowledge/answerGroundingV21";
+import type { KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 } from "../knowledge/answerGroundingSnapshotV40";
+import type { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1 } from "../knowledge/evidenceAnswerSnapshotV1";
+import type { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAnswerSnapshotV2";
 
 type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
   Pick<
     RunRepository,
-    "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5" | "groundKnowledgeAnswerV21"
+    "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5" | "groundKnowledgeAnswerV21" | "groundKnowledgeEvidenceAnswer"
   >;
 
 export type KnowledgeAnswerFinalizationContracts = KnowledgeAnswerContractVersions |
-  KnowledgeAnswerV21ContractVersions;
+  KnowledgeAnswerV21ContractVersions | typeof KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 |
+  typeof KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1 | typeof KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2;
 
 function isKnowledgeAnswerV21Contracts(
   value: KnowledgeAnswerFinalizationContracts
-): value is KnowledgeAnswerV21ContractVersions {
+): value is KnowledgeAnswerV21ContractVersions | typeof KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 {
   return "coverageAuditorContractVersion" in value &&
-    value.coverageAuditorContractVersion === 6 && value.draftContractVersion === 21 &&
-    value.selectorContractVersion === 21 && value.settlementVersion === 6;
+    value.draftContractVersion === 21 &&
+    (value.coverageAuditorContractVersion === 6 && value.selectorContractVersion === 21 && value.settlementVersion === 6 ||
+      value.coverageAuditorContractVersion === 7 && value.selectorContractVersion === 22 && value.settlementVersion === 7);
 }
 
 export type RunCompletionFinalizationResult =
@@ -101,7 +106,16 @@ export async function finalizeRunCompletion(input: Readonly<{
   if (input.knowledgeZeroEvidence) {
     knowledgeFinalization = null;
   } else if (input.knowledgeAnswerContracts) {
-    if (isKnowledgeAnswerV21Contracts(input.knowledgeAnswerContracts)) {
+    if ("pipeline" in input.knowledgeAnswerContracts) {
+      const contract = input.knowledgeAnswerContracts;
+      if (!(contract.pipeline === "evidence_answer_review_v1" && contract.composeVersion === 1 && contract.reviewVersion === 1 ||
+        contract.pipeline === "evidence_answer_review_v2" && contract.composeVersion === 2 && contract.reviewVersion === 2) ||
+        input.knowledgeAnswerContracts.settlementVersion !== 1 || Object.keys(input.knowledgeAnswerContracts).length !== 4) {
+        throw new Error("knowledge_answer_finalization_snapshot_invalid");
+      }
+      if (!input.repository.groundKnowledgeEvidenceAnswer) throw new Error("knowledge_evidence_answer_finalizer_unavailable");
+      knowledgeFinalization = await input.repository.groundKnowledgeEvidenceAnswer({ runId: input.run.runId, userId: input.run.userId });
+    } else if (isKnowledgeAnswerV21Contracts(input.knowledgeAnswerContracts)) {
       if (!input.repository.groundKnowledgeAnswerV21) {
         throw new Error("knowledge_answer_v21_finalizer_unavailable");
       }

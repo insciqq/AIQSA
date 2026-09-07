@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { planMemoryRetrieval } from "../../domain/memory/retrieval";
+import { sanitizeMemoryUtilityText } from "../memory/retrieval/querySafety";
 import {
   MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS,
   MemoryPreparingRunConflictError,
@@ -43,6 +45,49 @@ function attemptItems(length: number) {
 }
 
 describe("Memory preparing context ceiling", () => {
+  it.each([
+    "x".repeat(2_001),
+    "🧠".repeat(1_001),
+    `${"x".repeat(1_999)}🧠tail`,
+    `${"x".repeat(1_996)}🧠🧠tail`
+  ])("bounds safe Unicode queries to the durable limit without splitting a character", (text) => {
+    const safe = sanitizeMemoryUtilityText(text);
+    expect(safe).toMatchObject({ eligible: true, redacted: false });
+    const plan = planMemoryRetrieval({
+      currentUserText: safe.safeText,
+      now: new Date("2026-09-01T00:00:00Z"),
+      semanticRewrite: safe.safeText,
+      semanticDecompositions: [safe.safeText]
+    });
+    expect(plan.originalSanitizedQuery.length).toBeGreaterThanOrEqual(1_999);
+    expect(plan.originalSanitizedQuery.length).toBeLessThanOrEqual(2_000);
+    expect(plan.originalSanitizedQuery).not.toMatch(/\p{Surrogate}/u);
+    expect(text.startsWith(plan.originalSanitizedQuery)).toBe(true);
+    for (const variant of [...plan.semanticQueryVariants, ...plan.temporalQueryVariants]) {
+      expect(variant.text.length).toBeLessThanOrEqual(2_000);
+      expect(variant.text).not.toMatch(/\p{Surrogate}/u);
+    }
+    expect(() => validateMemoryPreparingAttemptResult({
+      budgetSnapshot: {}, outcome: "EMPTY", querySnapshot: plan.originalSanitizedQuery
+    })).not.toThrow();
+  });
+
+  it.each(["\n", "\r\n", "\t", "  "])("preserves numeric field boundaries through safe query planning and persistence (%j)", (separator) => {
+    const text = ["Independent row counts:", "4111", "1111", "1111", "1111"].join(separator);
+    const safe = sanitizeMemoryUtilityText(text);
+    expect(safe).toMatchObject({ eligible: true, redacted: false, safeText: text });
+    const plan = planMemoryRetrieval({ currentUserText: safe.safeText, now: new Date("2026-09-01T00:00:00Z") });
+    expect(() => validateMemoryPreparingAttemptResult({
+      budgetSnapshot: {}, outcome: "EMPTY", querySnapshot: plan.originalSanitizedQuery
+    })).not.toThrow();
+    expect(plan.originalSanitizedQuery).toBe(text);
+    const card = "Example card 4111 1111 1111 1111";
+    expect(sanitizeMemoryUtilityText(card).redacted).toBe(true);
+    expect(() => validateMemoryPreparingAttemptResult({
+      budgetSnapshot: {}, outcome: "EMPTY", querySnapshot: card
+    })).toThrow(MemoryPreparingRunConflictError);
+  });
+
   it("admits each declared adaptive profile up to its bounded ceiling", () => {
     expect(() => validateMemoryPreparingAttemptResult(
       usedAttempt("SIMPLE", 10_000, 10_000)

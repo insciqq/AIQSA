@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import {
   assembleKnowledgeParentExpansions,
   decodeKnowledgeParentExpansionEvidence,
@@ -108,7 +109,7 @@ describe("parent context expansion assembly", () => {
     const hit = primary({ chunkId: "chunk-10", chunkIndex: 10 });
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", sectionWindow(10, 3)]])
     });
@@ -136,7 +137,7 @@ describe("parent context expansion assembly", () => {
     expect(usableKnowledgeParentContextWindow(crossSection, hit)).toBeNull();
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", crossSection]])
     });
@@ -157,7 +158,7 @@ describe("parent context expansion assembly", () => {
     ];
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", rows]])
     });
@@ -199,7 +200,7 @@ describe("parent context expansion assembly", () => {
 
     const expansion = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", rows]])
     }).get("chunk-10")!;
@@ -249,7 +250,7 @@ describe("parent context expansion assembly", () => {
     for (const testCase of cases) {
       const expansion = assembleKnowledgeParentExpansions({
         countTokens,
-        excludedContentHashes: new Set(),
+        excludedOccurrenceKeys: new Set(),
         primaries: [testCase.hit],
         windows: new Map([[testCase.hit.chunkId, testCase.rows]])
       }).get(testCase.hit.chunkId)!;
@@ -264,7 +265,7 @@ describe("parent context expansion assembly", () => {
       row.id === "chunk-10" ? row : { ...row, text: bigText });
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", rows]])
     });
@@ -278,7 +279,7 @@ describe("parent context expansion assembly", () => {
     const hit = primary({ chunkId: "chunk-10", chunkIndex: 10 });
     const expansions = assembleKnowledgeParentExpansions({
       countTokens: (text) => text.length,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       maxTokensPerGroup: 10,
       primaries: [hit],
       windows: new Map([["chunk-10", [
@@ -316,7 +317,7 @@ describe("parent context expansion assembly", () => {
     });
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map()
     });
@@ -335,7 +336,7 @@ describe("parent context expansion assembly", () => {
     ]);
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [first, second],
       windows
     });
@@ -407,7 +408,7 @@ describe("parent context expansion assembly", () => {
     ];
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", rows]])
     });
@@ -484,7 +485,7 @@ describe("parent context expansion assembly", () => {
     ];
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       primaries: [hit],
       windows: new Map([["chunk-10", rows]])
     });
@@ -499,7 +500,7 @@ describe("parent context expansion assembly", () => {
     const hit = primary({ chunkId: "chunk-10", chunkIndex: 10, legacyUnits: [legacy] });
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set(),
+      excludedOccurrenceKeys: new Set(),
       loadFailureCode: "parent_context_load_failed",
       primaries: [hit],
       windows: new Map()
@@ -510,13 +511,26 @@ describe("parent context expansion assembly", () => {
     expect(expansion.units).toEqual([legacy]);
   });
 
-  it("excludes prior-round content hashes from every new window unit", () => {
+  it("preserves equal-text neighboring rows for two independently admitted Sources", () => {
+    const alpha = primary({ chunkId: "alpha-0", chunkIndex: 0, sourceArtifactId: "artifact-alpha" });
+    const beta = { ...primary({ chunkId: "beta-0", chunkIndex: 0, sourceArtifactId: "artifact-beta" }),
+      documentId: "source-beta", documentVersionId: "version-beta" };
+    const windows = new Map([alpha, beta].map((hit) => [hit.chunkId,
+      [0, 1, 2].map((ordinal) => ({ ...windowRow({ id: hit.chunkId.replace("0", String(ordinal)), ordinal }),
+        contentHash: "a".repeat(64), text: "The approved value is 19." }))]));
+    const expansion = assembleKnowledgeParentExpansions({ countTokens, excludedOccurrenceKeys: new Set(),
+      primaries: [alpha, beta], windows });
+    expect(expansion.get(alpha.chunkId)?.units.map(({ chunkId }) => chunkId)).toEqual(["alpha-1", "alpha-2"]);
+    expect(expansion.get(beta.chunkId)?.units.map(({ chunkId }) => chunkId)).toEqual(["beta-1", "beta-2"]);
+  });
+
+  it("excludes prior-round occurrences from every new window unit", () => {
     const hit = primary({ chunkId: "chunk-10", chunkIndex: 10 });
     const rows = sectionWindow(10, 2);
-    const excluded = rows.find((row) => row.ordinal === 9)!.contentHash;
+    const excluded = knowledgeEvidenceOccurrenceKeyV1({ ...hit, chunkId: "chunk-9" });
     const expansions = assembleKnowledgeParentExpansions({
       countTokens,
-      excludedContentHashes: new Set([excluded]),
+      excludedOccurrenceKeys: new Set([excluded]),
       primaries: [hit],
       windows: new Map([["chunk-10", rows]])
     });

@@ -8,6 +8,8 @@ import {
   type KnowledgeDocumentContextV1
 } from "./documentContext";
 import {
+  KNOWLEDGE_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -144,7 +146,8 @@ function structuralAlias(
  * relationship.
  */
 function knowledgeFullContextDispatchCoordinates(
-  items: readonly KnowledgeFullContextDispatchPresentationInput[]
+  items: readonly KnowledgeFullContextDispatchPresentationInput[],
+  sourceOrdered = true
 ): readonly KnowledgeFullContextDispatchCoordinate[] {
   const fieldAliasesBySource = new Map<string, Map<string, string>>();
   const tableAliasesBySource = new Map<string, Map<string, string>>();
@@ -163,7 +166,7 @@ function knowledgeFullContextDispatchCoordinates(
     const parts = [
       `page=${item.page}`,
       `heading=${heading}`,
-      `source-passage=${sourcePassage}`
+      ...(sourceOrdered ? [`source-passage=${sourcePassage}`] : [])
     ];
     const locator = item.documentContext?.locator;
     if (!locator) return Object.freeze({ locator: parts.join("; ") });
@@ -217,6 +220,14 @@ function knowledgeFullContextDispatchCoordinates(
     );
     return Object.freeze({ locator: parts.join("; ") });
   }));
+}
+
+/** Retrieval order is ranking, so it never supplies a document-order ordinal.
+ * Only the existing immutable row/field coordinates are shared with Scope. */
+export function knowledgeRetrievalDispatchLocators(
+  items: readonly KnowledgeFullContextDispatchPresentationInput[]
+): readonly string[] {
+  return Object.freeze(knowledgeFullContextDispatchCoordinates(items, false).map(({ locator }) => locator));
 }
 
 type KnowledgeFullContextTableFragment = Readonly<{
@@ -475,6 +486,7 @@ function fullContextHeader(): string {
  * crash recovery. Recovery supplies only persisted immutable candidates; the
  * route framing, versions, and packing policy cannot drift independently. */
 export function packKnowledgeFullContextDispatchManifest(input: Readonly<{
+  atomIndexVersion?: 2 | 3;
   candidates: readonly CurrentKnowledgeEvidenceDispatchCandidate[];
   excludedResources: number;
   maximumTokens: number;
@@ -488,6 +500,7 @@ export function packKnowledgeFullContextDispatchManifest(input: Readonly<{
   return packKnowledgeEvidenceDispatchManifest({
     allowExpandedContextOmission: false,
     candidates: input.candidates,
+    coverageLimitations: { excludedResources: input.excludedResources, retrievalFailures: [], version: 1 },
     coverageStatement: input.excludedResources > 0
       ? `The full admitted ready corpus is included; ${input.excludedResources} selected resource(s) were unavailable at admission.`
       : "The full admitted corpus is included with no passage omitted.",
@@ -495,6 +508,8 @@ export function packKnowledgeFullContextDispatchManifest(input: Readonly<{
     header: fullContextHeader(),
     maximumBytes: input.maximumTokens * 4,
     maximumTokens: input.maximumTokens,
+    packingVersion: input.atomIndexVersion === 2
+      ? KNOWLEDGE_EVIDENCE_PACKING_VERSION : KNOWLEDGE_OCCURRENCE_EVIDENCE_PACKING_VERSION,
     profileId: input.profileId,
     promptFragmentVersion: 18,
     runtimeVersion: 2

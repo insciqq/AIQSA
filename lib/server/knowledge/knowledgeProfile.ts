@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION } from "../parsing/modelPdfOutput";
+import { MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION } from "../parsing/modelPdfOutput";
 import {
   loadEmbeddingProviderRole,
   loadProjectEmbeddingProviderRole,
@@ -20,8 +20,10 @@ import {
 export const KNOWLEDGE_INDEX_PROFILE_ID = "installation";
 export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v7";
 export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 5 as const;
+// Figure crops remain opt-in until independent checks establish category/value
+// fidelity; the newest supported parser is not automatically the default.
 export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION =
-  MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION;
+  MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION;
 
 export type KnowledgePdfProcessingMode =
   | "local"
