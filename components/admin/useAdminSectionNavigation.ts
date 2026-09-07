@@ -4,12 +4,15 @@ import {
   defaultAdminSection,
   normalizeAdminSectionPath,
   parseAdminSection,
+  parseAdminSectionResource,
   type AdminSection,
   type AdminSectionId
 } from "@/components/admin/adminSections";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type AdminSectionNavigation = Readonly<{
+  /** The resource opened inside the active section (`?resource=`), or null for the section's list. */
+  activeResource: string | null;
   activeSection: AdminSectionId;
   activeSectionConfig: AdminSection;
   closeSectionIndex(): void;
@@ -19,7 +22,9 @@ export type AdminSectionNavigation = Readonly<{
   restoreFocusAfterMutation(): void;
   requestExit(href: string, proceed: () => void): boolean;
   sectionIndexOpen: boolean;
-  selectSection(section: AdminSectionId): boolean;
+  /** Opens a resource page inside the active section, or its list with `null`. */
+  selectResource(resource: string | null): boolean;
+  selectSection(section: AdminSectionId, resource?: string | null): boolean;
 }>;
 
 export type AdminNavigationTarget =
@@ -30,6 +35,7 @@ export type AdminNavigationTarget =
   | Readonly<{
       href: string;
       kind: "section";
+      resource: string | null;
       section: AdminSectionId;
     }>
   | Readonly<{
@@ -196,8 +202,10 @@ export function useAdminSectionNavigation({
   onNavigationBlocked
 }: AdminSectionNavigationOptions = {}): AdminSectionNavigation {
   const [activeSection, setActiveSection] = useState<AdminSectionId>(defaultAdminSection);
+  const [activeResource, setActiveResource] = useState<string | null>(null);
   const [sectionIndexOpen, setSectionIndexOpen] = useState(false);
   const activeSectionRef = useRef(activeSection);
+  const activeResourceRef = useRef(activeResource);
   const sectionIndexOpenRef = useRef(sectionIndexOpen);
   const linkRefs = useRef(new Map<AdminSectionId, HTMLElement>());
   const adminPathnameRef = useRef<string | null>(null);
@@ -238,6 +246,10 @@ export function useAdminSectionNavigation({
   useEffect(() => {
     activeSectionRef.current = activeSection;
   }, [activeSection]);
+
+  useEffect(() => {
+    activeResourceRef.current = activeResource;
+  }, [activeResource]);
 
   useEffect(() => {
     sectionIndexOpenRef.current = sectionIndexOpen;
@@ -292,11 +304,15 @@ export function useAdminSectionNavigation({
     return view;
   }, []);
 
-  const commitSection = useCallback((section: AdminSectionId) => {
-    const changedSection = section !== activeSectionRef.current;
+  const commitSection = useCallback((section: AdminSectionId, resource: string | null) => {
+    const changedSection = section !== activeSectionRef.current ||
+      resource !== activeResourceRef.current;
     const selectedFromIndex = sectionIndexOpenRef.current;
 
     setActiveSection(section);
+    setActiveResource(resource);
+    activeSectionRef.current = section;
+    activeResourceRef.current = resource;
     setSectionIndexOpen(false);
 
     if (typeof window === "undefined") {
@@ -309,7 +325,7 @@ export function useAdminSectionNavigation({
 
     const baseView = ensureOwnedCurrentEntry();
     const position = baseView.position + 1;
-    const href = adminSectionPath(window.location.href, section);
+    const href = adminSectionPath(window.location.href, section, resource);
     const view: AdminHistoryView = {
       entryId: createHistoryEntryId(),
       position,
@@ -330,22 +346,28 @@ export function useAdminSectionNavigation({
     currentPathRef.current = href;
   }, [ensureOwnedCurrentEntry]);
 
-  const selectSection = useCallback((section: AdminSectionId) => {
-    const changedSection = section !== activeSectionRef.current;
+  const selectSection = useCallback((section: AdminSectionId, resource: string | null = null) => {
+    const changedSection = section !== activeSectionRef.current ||
+      resource !== activeResourceRef.current;
     if (changedSection && canSelectSectionRef.current?.(section) === false) {
       const href = typeof window === "undefined"
-        ? adminSectionPath("http://localhost/admin", section)
-        : adminSectionPath(window.location.href, section);
+        ? adminSectionPath("http://localhost/admin", section, resource)
+        : adminSectionPath(window.location.href, section, resource);
       onNavigationBlockedRef.current?.({
-        proceed: () => commitSection(section),
-        target: { href, kind: "section", section }
+        proceed: () => commitSection(section, resource),
+        target: { href, kind: "section", resource, section }
       });
       return false;
     }
 
-    commitSection(section);
+    commitSection(section, resource);
     return true;
   }, [commitSection]);
+
+  const selectResource = useCallback(
+    (resource: string | null) => selectSection(activeSectionRef.current, resource),
+    [selectSection]
+  );
 
   const requestExit = useCallback((href: string, proceed: () => void) => {
     if (canExitAdminRef.current?.(href) === false) {
@@ -467,7 +489,11 @@ export function useAdminSectionNavigation({
   useEffect(() => {
     const applyCurrentAdminEntry = (startNewSession = false) => {
       const nextSection = parseAdminSection(window.location.search);
+      const nextResource = parseAdminSectionResource(window.location.search);
       setActiveSection(nextSection);
+      setActiveResource(nextResource);
+      activeSectionRef.current = nextSection;
+      activeResourceRef.current = nextResource;
       setSectionIndexOpen(adminHistoryView(window.history.state)?.view === "section-index");
 
       const normalizedPath = normalizeAdminSectionPath(window.location.href);
@@ -586,18 +612,21 @@ export function useAdminSectionNavigation({
       }
 
       const nextSection = parseAdminSection(window.location.search);
+      const nextResource = parseAdminSectionResource(window.location.search);
+      const sectionChanged = nextSection !== activeSectionRef.current ||
+        nextResource !== activeResourceRef.current;
       const nextIndexOpen = current.adminView?.view === "section-index";
       const indexViewChanged = nextIndexOpen !== sectionIndexOpenRef.current;
       if (
-        ((nextSection !== activeSectionRef.current &&
+        ((sectionChanged &&
           canSelectSectionRef.current?.(nextSection) === false) ||
-          (nextSection === activeSectionRef.current && indexViewChanged &&
+          (!sectionChanged && indexViewChanged &&
             canToggleSectionIndexRef.current?.(nextIndexOpen) === false)) &&
         replayDelta !== null && replayDelta !== 0
       ) {
         rollbackBlockedTraversal(
-          nextSection !== activeSectionRef.current
-            ? { href: targetPath, kind: "section", section: nextSection }
+          sectionChanged
+            ? { href: targetPath, kind: "section", resource: nextResource, section: nextSection }
             : { href: targetPath, kind: "section-index", open: nextIndexOpen },
           origin,
           current,
@@ -622,6 +651,7 @@ export function useAdminSectionNavigation({
 
   return useMemo(
     () => ({
+      activeResource,
       activeSection,
       activeSectionConfig: adminSectionConfig(activeSection),
       closeSectionIndex,
@@ -631,9 +661,11 @@ export function useAdminSectionNavigation({
       requestExit,
       restoreFocusAfterMutation,
       sectionIndexOpen,
+      selectResource,
       selectSection
     }),
     [
+      activeResource,
       activeSection,
       closeSectionIndex,
       focusActiveSection,
@@ -642,6 +674,7 @@ export function useAdminSectionNavigation({
       requestExit,
       restoreFocusAfterMutation,
       sectionIndexOpen,
+      selectResource,
       selectSection
     ]
   );

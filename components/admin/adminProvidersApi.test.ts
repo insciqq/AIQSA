@@ -4,8 +4,7 @@ import {
   createAdminProviderCredential,
   discoverAdminCompatibleModels,
   getAdminProviderConnections,
-  runAdminProviderConnectionAction,
-  testAdminProviderCredential
+  runAdminProviderConnectionAction
 } from "./adminProvidersApi";
 
 const safeConnection = {
@@ -144,38 +143,6 @@ describe("admin provider browser API", () => {
     if (!result.ok) {
       expect(adminProviderErrorMessage(result.error)).toContain("Restart the development app");
     }
-  });
-
-  it("decodes only bounded safe credential-test metadata", async () => {
-    const fetcher = vi.fn(async () => Response.json({
-      test: {
-        checkedAt: "2026-07-24T00:00:00.000Z",
-        connectionDraftVersion: 2,
-        modelCount: 12,
-        status: "valid"
-      }
-    }));
-    await expect(testAdminProviderCredential(
-      "connection/one",
-      { expectedConnectionDraftVersion: 2, secret: "write-only-key" },
-      fetcher
-    )).resolves.toEqual({
-      data: {
-        checkedAt: "2026-07-24T00:00:00.000Z",
-        connectionDraftVersion: 2,
-        modelCount: 12,
-        status: "valid"
-      },
-      ok: true
-    });
-    expect(fetcher).toHaveBeenCalledWith(
-      "/api/admin/providers/connection%2Fone/credential-tests",
-      expect.objectContaining({
-        body: JSON.stringify({ expectedConnectionDraftVersion: 2, secret: "write-only-key" }),
-        credentials: "same-origin",
-        method: "POST"
-      })
-    );
   });
 
   it("decodes compatible discovery as bounded capability rows and rejects secret material", async () => {

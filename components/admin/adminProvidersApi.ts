@@ -3,7 +3,6 @@ import type {
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderConnection,
-  AdminProviderCredentialTestResult,
   AdminProviderDraftCheck
 } from "@/lib/contracts/adminProviders";
 import {
@@ -306,28 +305,6 @@ export function createAdminProviderCredential(
   );
 }
 
-export function testAdminProviderCredential(
-  connectionId: string,
-  body: unknown,
-  fetcher: Fetcher = fetch
-) {
-  return request(
-    `/api/admin/providers/${encoded(connectionId)}/credential-tests`,
-    json("POST", body),
-    (value) => {
-      if (!record(value) || !record(value.test) ||
-        value.test.status !== "valid" ||
-        typeof value.test.checkedAt !== "string" ||
-        typeof value.test.connectionDraftVersion !== "number" ||
-        typeof value.test.modelCount !== "number") {
-        return null;
-      }
-      return value.test as AdminProviderCredentialTestResult;
-    },
-    fetcher
-  );
-}
-
 export function updateAdminProviderCredential(
   connectionId: string,
   credentialId: string,
@@ -417,28 +394,29 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     json_required: "The provider request format was not accepted. Refresh and try again.",
     network_error: "Could not reach the provider administration API.",
     provider_activation_empty: "Add at least one enabled model and referenced credential before activation.",
-    provider_activation_evidence_missing: "Every default or group credential must be enabled and contain a usable key before activation.",
+    provider_activation_evidence_missing: "Every default or group key must be turned on and working before the change can be applied.",
     provider_activation_unavailable_confirmation_required: "A configured model ID is absent from one or more referenced key catalogs. Review the setup or confirm the override.",
-    provider_active_tuple_not_found: "This exact active model and credential tuple is no longer usable.",
+    provider_active_tuple_not_found: "This model and key pair is no longer usable.",
     provider_admin_action_failed: "The provider action could not be completed.",
     provider_admin_route_unavailable: "The provider action route is unavailable in this app process. Restart the development app and try again.",
     provider_admin_response_invalid: "The provider API returned an unexpected response. Refresh and try again.",
     provider_configuration_invalid: "Review the provider fields and try again.",
     provider_connection_not_found: "This provider connection no longer exists.",
-    provider_credential_not_found: "This credential no longer exists or has no usable key.",
-    provider_credential_test_failed: "The provider rejected the key or its account catalog could not be reached.",
+    provider_credential_label_taken: "A key with this name already exists on this provider.",
+    provider_credential_not_found: "This key no longer exists or has no usable value.",
+    provider_credential_test_failed: "The provider rejected this key. Check the key and try again.",
     provider_delete_conflict: "Remove the listed references or disable this resource instead.",
     provider_discovery_failed: "Model discovery failed. Check the credential, endpoint, and account access.",
     provider_discovery_unsupported: "Remote model discovery is available only for OpenRouter and Custom compatible connections.",
-    provider_draft_stale: "The draft changed in another request. Refresh and retry.",
-    provider_draft_test_failed: "The compatibility checks could not be completed. Existing evidence was not changed.",
+    provider_draft_stale: "This provider changed in another window. Refresh and try again.",
+    provider_draft_test_failed: "The check could not be completed. Earlier results were kept.",
     provider_family_adapter_mismatch: "The selected protocol does not match this provider family.",
     provider_group_not_found: "This group no longer exists.",
-    provider_model_not_found: "This model deployment no longer exists.",
-    provider_model_class_immutable: "A deployment cannot change between answer, embedding, and reranker classes; add a new deployment instead.",
-    provider_paid_test_confirmation_required: "Confirm the provider requests before running compatibility checks.",
-    provider_revoke_confirmation_required: "This destructive credential action requires confirmation.",
-    provider_refresh_failed: "The active compatibility checks hit a transient provider failure. Existing evidence was preserved.",
+    provider_model_not_found: "This model no longer exists.",
+    provider_model_class_immutable: "A model cannot change between chat, embedding and reranker classes; add a new model instead.",
+    provider_paid_test_confirmation_required: "Confirm the provider requests before running the check.",
+    provider_revoke_confirmation_required: "This key action requires confirmation.",
+    provider_refresh_failed: "The check hit a temporary provider failure. Earlier results were kept.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {

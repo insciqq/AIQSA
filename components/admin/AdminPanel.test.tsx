@@ -857,8 +857,7 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sections" }));
     fireEvent.click(screen.getByRole("link", { name: "Providers" }));
     const providers = await screen.findByTestId("admin-section-providers");
-    fireEvent.click(within(providers).getByRole("tab", { name: "Connections" }));
-    expect(await within(providers).findByRole("alert")).toHaveTextContent("Provider connections could not be loaded");
+    expect(await within(providers).findByRole("alert")).toHaveTextContent("Providers could not be loaded");
   });
 
   it("guards dirty section and drawer navigation while cancel preserves exact state and focus", async () => {
@@ -936,7 +935,9 @@ describe("AdminPanel", () => {
     await screen.findByTestId("admin-section-users");
     fireEvent.click(screen.getByRole("link", { name: "Providers" }));
     const providers = await screen.findByTestId("admin-section-providers");
-    fireEvent.click(within(providers).getByRole("button", { name: /OpenAI Not configured/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    fireEvent.click(await within(providers).findByRole("button", { name: /OpenAI Not configured/ }));
     const secret = within(providers).getByLabelText(/^API key/);
     fireEvent.change(secret, { target: { value: "provider-secret-draft" } });
 

@@ -5,7 +5,6 @@ import {
   inputClass,
   primaryButton
 } from "@/components/admin/adminPrimitives";
-import { providerCredentialUsable } from "@/components/admin/providerAdvancedView";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type {
@@ -206,7 +205,11 @@ export function AdminProviderCapabilities({
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>) {
   const headingId = useId();
-  const usableCredentials = connection.credentials.filter(providerCredentialUsable);
+  const usableCredentials = connection.credentials.filter((candidate) =>
+    candidate.enabled && (
+      candidate.draftSecretConfigured ||
+      (candidate.activeVersion !== null && candidate.activeVersion.revokedAt === null)
+    ));
   const [credentialId, setCredentialId] = useState(() => {
     const preferred = usableCredentials.find(({ id }) => id === connection.defaultCredentialId);
     return preferred?.id ?? usableCredentials[0]?.id ?? "";
