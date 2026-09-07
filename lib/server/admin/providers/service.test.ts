@@ -87,6 +87,7 @@ function repository(
   return {
     async activateConnectionCas() { return "updated"; },
     async activateCredentialCas() { return "updated"; },
+    async activateModelCas() { return "updated"; },
     async assignGroupCredential() { return "assigned"; },
     async createConnection() {},
     async createModel() { return "created"; },
@@ -100,6 +101,7 @@ function repository(
     async loadActiveRefreshCandidate() { return null; },
     async loadDiscoveryCandidate() { return null; },
     async loadDraftTestCandidate() { return null; },
+    async loadModelActivationCandidate() { return null; },
     async renameCredential() { return "updated"; },
     async recordActiveRefreshFailureCas() { return "stored"; },
     async revokeCredentialVersion() { return "revoked"; },

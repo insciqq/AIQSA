@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import {
   fixtureConnection,
@@ -62,7 +62,7 @@ function discovery(): AdminOpenRouterDiscoverySession {
   };
 }
 
-function controller(saveModel = vi.fn(async () => ({ ok: true as const }))) {
+function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const }))) {
   return {
     actions: { saveModel },
     state: { busy: false }

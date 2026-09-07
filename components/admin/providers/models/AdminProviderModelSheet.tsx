@@ -410,7 +410,8 @@ function SheetBody({
         }}
       >
         <div className="min-w-0">
-          <span className={fieldLabel} id={`${formId}-model-label`}>Model</span>
+          {/* The pickers render their own visible label; keep this one for the read-only id and aria-labelledby. */}
+          <span className={answer ? "sr-only" : fieldLabel} id={`${formId}-model-label`}>Model</span>
           {!answer ? (
             <p className="flex min-h-control items-center rounded-control border border-trace-subtle bg-control-surface/60 px-3 font-mono text-xs text-ink-secondary">
               {form.upstreamModelId}
