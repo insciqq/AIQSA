@@ -35,4 +35,29 @@ describe("AdminFeedbackHost", () => {
     render(<AdminFeedbackHost feedback={{ clearError: vi.fn(), clearNotice: vi.fn(), error: null, notice: null }} />);
     expect(screen.queryByTestId("admin-feedback")).not.toBeInTheDocument();
   });
+
+  it("offers the notice action, runs it once, and then clears the notice", () => {
+    const clearNotice = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <AdminFeedbackHost
+        feedback={{
+          clearError: vi.fn(),
+          clearNotice,
+          error: null,
+          notice: "Saved for future work",
+          noticeAction: { label: "Undo", onSelect }
+        }}
+      />
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(6_000);
+    });
+    expect(clearNotice).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(clearNotice).toHaveBeenCalledTimes(1);
+  });
 });

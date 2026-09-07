@@ -278,28 +278,20 @@ test.describe("system model policy", () => {
     await expect(resolver.resolve()).resolves.toEqual({ code: SYSTEM_MODEL_ABSENT, ok: false });
   });
 
-  test("sets and clears the exact role through the administrator Providers UI", async ({ page }) => {
+  test("checks and assigns the exact role through the Defaults & roles picker", async ({ page }) => {
     await signInWithLocalToken(page);
-    await page.goto("/admin");
-    await page.getByRole("tab", { name: "System Models" }).click();
-    const deployment = page.getByLabel("Internal utility model");
-    await expect(deployment).toBeVisible();
-    await deployment.selectOption(fixture.modelId);
-    await expect(page.getByLabel("Reasoning effort")).toHaveValue("xhigh");
-    await page.getByRole("button", { name: "Save system models" }).click();
-    await expect(page.getByText("System models updated.", { exact: true })).toBeVisible();
-    await expect(page.getByText("Status: Available.", { exact: true })).toBeVisible();
-    await expect(page.getByText("Structured output: Verification required.", { exact: true }))
-      .toBeVisible();
-    await expect(page.getByText("Memory control: Verification required.", { exact: true }))
-      .toBeVisible();
+    await page.goto("/admin?section=roles");
+    const trigger = page.getByRole("button", { name: "Memory & structured helpers deployment" });
+    await expect(trigger).toBeVisible();
+    await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Not assigned");
 
+    const fixtureLabel = "System Policy Fixture / System Policy Model";
     await page.route("**/api/admin/providers/system-model-policy", async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
         return;
       }
-      expect(route.request().postDataJSON()).toEqual({ providerModelId: fixture.modelId });
+      expect(route.request().postDataJSON()).toEqual({ providerModelId: fixture.modelId, role: "memory" });
       await prisma.providerModelCredentialCheck.update({
         data: {
           evidence: {
@@ -327,12 +319,21 @@ test.describe("system model policy", () => {
         status: 200
       });
     });
-    await page.getByRole("button", { name: "Run verification" }).click();
-    await expect(page.getByText("System Model strict utilities verified.", { exact: true }))
-      .toBeVisible();
-    await expect(page.getByText("Structured output: Ready.", { exact: true })).toBeVisible();
-    await expect(page.getByText("Memory control: Ready.", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Run verification" })).toHaveCount(0);
+
+    await trigger.click();
+    const picker = page.getByRole("dialog", { name: "Memory & structured helpers deployment" });
+    // Without role evidence the fixture is not selectable; it offers one Check instead.
+    await expect(picker.getByRole("option", { name: fixtureLabel })).toHaveCount(0);
+    await expect(picker.getByText("System roles always use the provider's default key")).toBeVisible();
+    await picker.getByRole("button", { name: `Check ${fixtureLabel}` }).click();
+    await expect(trigger).toHaveText(fixtureLabel);
+    await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Working");
+    await expect(page.getByTestId("admin-feedback")).toContainText("Saved for future work");
+    await expect(picker).toHaveCount(0);
+
+    const reasoning = page.getByRole("combobox", { name: "Memory reasoning" });
+    await reasoning.selectOption("xhigh");
+    await expect(reasoning).toHaveValue("xhigh");
 
     const response = await page.request.get("/api/admin/providers/system-model-policy");
     expect(response.status()).toBe(200);
@@ -345,8 +346,9 @@ test.describe("system model policy", () => {
       }
     });
 
-    await page.getByRole("button", { name: "Clear utility model" }).click();
-    await expect(page.getByText("System models updated.", { exact: true })).toBeVisible();
-    await expect(deployment).toHaveValue("");
+    await page.getByRole("button", { name: "Memory & structured helpers actions" }).click();
+    await page.getByRole("menuitem", { name: "Clear assignment" }).click();
+    await expect(trigger).toHaveText("Not assigned");
+    await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Not assigned");
   });
 });

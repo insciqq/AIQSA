@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminMemoryStatusResponse } from "../../lib/contracts/adminMemory";
+import { adminKnowledgeSettingsFixture } from "../support/knowledgeProfile";
 import {
   expectNoHorizontalOverflow,
   expectTouchSafe
@@ -70,7 +71,7 @@ function memoryResponse(input: Readonly<{
   };
 }
 
-test("administrator sees minimal Memory runtime status and starts a bounded rebuild", async ({ page }) => {
+test("administrator sees minimal Memory runtime status and starts a bounded rebuild after confirming", async ({ page }) => {
   let rebuilding = false;
   let timeoutSeconds = 15;
   let timeoutVersion = 4;
@@ -81,6 +82,9 @@ test("administrator sees minimal Memory runtime status and starts a bounded rebu
   });
   await page.route("**/api/admin/release", async (route) => {
     await route.fulfill({ contentType: "application/json", json: { state: "unavailable" } });
+  });
+  await page.route("**/api/admin/knowledge", async (route) => {
+    await route.fulfill({ contentType: "application/json", json: { knowledge: adminKnowledgeSettingsFixture() } });
   });
   await page.route("**/api/admin/memory", async (route) => {
     if (route.request().method() === "POST") {
@@ -102,37 +106,46 @@ test("administrator sees minimal Memory runtime status and starts a bounded rebu
   });
 
   await signInWithLocalToken(page);
+  // The retired `memory` section id still lands on Knowledge & Memory.
   await page.goto("/admin?section=memory");
+  await expect(page).toHaveURL(/section=retrieval/u);
 
-  const section = page.getByTestId("admin-section-memory");
-  await expect(section.getByRole("heading", { name: "Memory status" })).toBeVisible();
-  const configuredTargets = section.getByRole("list", {
-    name: "Configured models and providers"
-  });
+  const section = page.getByTestId("admin-retrieval-memory");
+  await expect(section.getByRole("heading", { name: "Memory" })).toBeVisible();
+  await expect(section.getByTestId("memory-state")).toHaveText("Rebuild required");
+  const configuredTargets = section.getByRole("list", { name: "Models in use" });
   await expect(configuredTargets.getByRole("listitem")
     .filter({ hasText: "System model · Primary provider" })).toBeVisible();
   await expect(configuredTargets.getByRole("listitem")
     .filter({ hasText: "Embedding model · Vector provider" })).toBeVisible();
   await expect(section.getByText("Running", { exact: true })).toBeVisible();
-  await expect(section.getByText("Generation 4 · Rebuild required")).toBeVisible();
   await expect(section.getByText("None", { exact: true })).toBeVisible();
-  await expect(section.getByText(/fingerprint|policy revision|destination matrix/iu)).toHaveCount(0);
-  const timeout = section.getByRole("spinbutton", {
-    name: "Memory admission timeout (seconds)"
-  });
+  await expect(section.getByText(/fingerprint|policy revision|destination matrix|Generation|System Models/iu)).toHaveCount(0);
+
+  const timeout = section.getByRole("spinbutton", { name: "Admission timeout (seconds)" });
   await expect(timeout).toHaveValue("15");
   await timeout.fill("30");
-  await section.getByRole("button", { name: "Save timeout" }).click();
+  await section.getByRole("button", { name: "Save" }).click();
   await expect(timeout).toHaveValue("30");
-  await expect(section.getByText(/timeout saved.*New messages/u)).toBeVisible();
+  await expect(page.getByTestId("admin-feedback")).toContainText(/timeout saved.*New messages/u);
   expect(timeoutBodies).toEqual([{ expectedVersion: 4, timeoutSeconds: 30 }]);
 
-  const rebuild = section.getByRole("button", { name: "Rebuild index" });
+  const rebuild = section.getByRole("button", { name: "Rebuild" });
   await expectTouchSafe(rebuild);
   await rebuild.click();
+  // Rebuilding is expensive work: it asks first and does nothing until confirmed.
+  const confirmation = page.getByTestId("admin-memory-rebuild-confirmation");
+  await expect(confirmation.getByRole("heading", { name: "Rebuild the Memory index?" })).toBeVisible();
+  expect(rebuildBodies).toEqual([]);
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirmation).toHaveCount(0);
+  expect(rebuildBodies).toEqual([]);
+  await rebuild.click();
+  await page.getByTestId("admin-memory-rebuild-confirmation").getByRole("button", { name: "Rebuild" }).click();
 
-  await expect(section.getByText(/bounded Memory index rebuild was queued/u)).toBeVisible();
-  await expect(section.getByText(/generation-safe rebuild is in progress/u)).toBeVisible();
+  await expect(page.getByTestId("admin-feedback")).toContainText(/bounded Memory index rebuild was queued/u);
+  await expect(section.getByText(/rebuild is in progress/u)).toBeVisible();
+  await expect(section.getByTestId("memory-state")).toHaveText("Rebuilding");
   await expect(rebuild).toHaveCount(0);
   expect(rebuildBodies).toEqual([{ action: "REBUILD_REQUIRED" }]);
   await expectNoHorizontalOverflow(page);

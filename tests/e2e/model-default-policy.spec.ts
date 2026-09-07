@@ -240,13 +240,13 @@ test.describe("installation model default policy", () => {
       expect.arrayContaining([expect.objectContaining({ id: fixture.modelId })])
     );
     await signInWithLocalToken(page);
-    await page.goto("/admin");
-    await page.getByRole("tab", { name: "Default model" }).click();
-    const installationDefault = page.getByLabel("Active answer model deployment");
+    await page.goto("/admin?section=roles");
+    // Chat defaults lists only models some group can reach; the fixture grants its connection.
+    const installationDefault = page.getByRole("combobox", { name: "Default chat model" });
     await expect(installationDefault).toBeVisible();
     await installationDefault.selectOption(fixture.modelId);
-    await page.getByRole("button", { name: "Save default" }).click();
-    await expect(page.getByText("Installation default updated.", { exact: true })).toBeVisible();
+    await page.getByTestId("admin-chat-defaults").getByRole("button", { name: "Save" }).click();
+    await expect(page.getByTestId("admin-feedback").getByText("Chat defaults saved for new chats")).toBeVisible();
 
     const policyResponse = await page.request.get("/api/admin/providers/model-policy");
     expect(policyResponse.status()).toBe(200);

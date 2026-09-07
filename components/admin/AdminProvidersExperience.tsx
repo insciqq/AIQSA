@@ -3,8 +3,6 @@
 import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSetup";
 import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustomSetup";
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
-import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
-import { AdminProviderRunLimitsTask } from "@/components/admin/AdminProviderRunLimitsTask";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import {
   useAdminDiscardAction,
@@ -21,7 +19,7 @@ import type {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { useState } from "react";
 
-type ProviderWorkspaceTask = "connections" | "defaults" | "limits" | "setup";
+type ProviderWorkspaceTask = "connections" | "setup";
 
 export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
@@ -132,9 +130,7 @@ export function AdminProvidersExperience({
       >
         {([
           ["setup", "Quick setup"],
-          ["connections", "Connections"],
-          ["defaults", "Default model"],
-          ["limits", "Tool limits"]
+          ["connections", "Connections"]
         ] as const).map(([task, label]) => (
           <button
             aria-selected={workspaceTask === task}
@@ -170,30 +166,16 @@ export function AdminProvidersExperience({
         />
       ) : null}
 
-      {workspaceTask !== "setup" ? (
+      {workspaceTask === "connections" ? (
         <div className="min-w-0">
-          <div hidden={workspaceTask !== "connections"}>
-            <AdminProvidersSection
-              active={active && workspaceTask === "connections"}
-              entryConnectionId={connectionEntryId}
-              entryProvider={connectionEntryProvider}
-              groups={groups}
-              onMutationCommitted={onMutationCommitted}
-              requestConfirmation={requestProviderConfirmation}
-            />
-          </div>
-          <div hidden={workspaceTask !== "defaults"}>
-            <AdminProviderModelDefaultTask
-              active={active && workspaceTask === "defaults"}
-              onMutationCommitted={onMutationCommitted}
-            />
-          </div>
-          <div hidden={workspaceTask !== "limits"}>
-            <AdminProviderRunLimitsTask
-              active={active && workspaceTask === "limits"}
-              onMutationCommitted={onMutationCommitted}
-            />
-          </div>
+          <AdminProvidersSection
+            active={active}
+            entryConnectionId={connectionEntryId}
+            entryProvider={connectionEntryProvider}
+            groups={groups}
+            onMutationCommitted={onMutationCommitted}
+            requestConfirmation={requestProviderConfirmation}
+          />
         </div>
       ) : null}
 

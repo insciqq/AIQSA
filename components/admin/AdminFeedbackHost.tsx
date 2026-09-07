@@ -5,6 +5,8 @@ import { UiV2Icon } from "@/components/ui-v2";
 import { useEffect } from "react";
 
 const NOTICE_DISMISS_MS = 6_000;
+/** A notice that offers a verb (Undo) stays a little longer. */
+const ACTIONABLE_NOTICE_DISMISS_MS = 10_000;
 
 /**
  * Toast host for the one Control Center feedback store. A notice disappears
@@ -14,15 +16,20 @@ const NOTICE_DISMISS_MS = 6_000;
 export function AdminFeedbackHost({
   feedback
 }: Readonly<{
-  feedback: Pick<AdminFeedbackController, "clearError" | "clearNotice" | "error" | "notice">;
+  feedback: Pick<AdminFeedbackController, "clearError" | "clearNotice" | "error" | "notice"> &
+    Partial<Pick<AdminFeedbackController, "noticeAction">>;
 }>) {
   const { clearNotice, notice } = feedback;
+  const action = feedback.noticeAction ?? null;
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(clearNotice, NOTICE_DISMISS_MS);
+    const timer = window.setTimeout(
+      clearNotice,
+      action ? ACTIONABLE_NOTICE_DISMISS_MS : NOTICE_DISMISS_MS
+    );
     return () => window.clearTimeout(timer);
-  }, [clearNotice, notice]);
+  }, [action, clearNotice, notice]);
 
   if (!feedback.error && !notice) return null;
 
@@ -35,6 +42,21 @@ export function AdminFeedbackHost({
         <div className="v2-toast pointer-events-auto" role="status">
           <UiV2Icon className="text-positive" name="check" />
           <span className="min-w-0 break-words [overflow-wrap:anywhere]">{notice}</span>
+          {action ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <button
+                className="v2-focusable"
+                onClick={() => {
+                  action.onSelect();
+                  clearNotice();
+                }}
+                type="button"
+              >
+                {action.label}
+              </button>
+            </>
+          ) : null}
           <button aria-label="Dismiss notice" className="v2-focusable ml-1" onClick={clearNotice} type="button">
             <UiV2Icon name="close" />
           </button>

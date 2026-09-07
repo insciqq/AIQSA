@@ -14,15 +14,12 @@ import {
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
-import { AdminKnowledgeSection } from "@/components/admin/AdminKnowledgeSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
-import { AdminMemorySection } from "@/components/admin/AdminMemorySection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
-import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
-import { AdminProviderRunLimitsTask } from "@/components/admin/AdminProviderRunLimitsTask";
-import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
+import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetrievalSection";
+import { AdminRolesSection } from "@/components/admin/roles/AdminRolesSection";
 import { AdminSearchSection } from "@/components/admin/AdminSearchSection";
 import {
   AdminReleaseUpdatePill,
@@ -44,7 +41,7 @@ import {
   type AdminConfirmationController
 } from "@/components/admin/useAdminConfirmationController";
 import { useAdminDashboardResource } from "@/components/admin/useAdminDashboardResource";
-import { useAdminFeedback } from "@/components/admin/useAdminFeedback";
+import { useAdminFeedback, type AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import { useAdminInvitesController, type AdminInvitesController } from "@/components/admin/useAdminInvitesController";
@@ -196,6 +193,8 @@ function AdminSectionContent({
   mcpSection,
   onJump,
   onMutationCommitted,
+  reportError,
+  reportNotice,
   requestConfirmation,
   users
 }: Readonly<{
@@ -209,6 +208,8 @@ function AdminSectionContent({
   mcpSection: AdminMcpSectionState;
   onJump(target: AdminAttentionTarget): void;
   onMutationCommitted(): void | Promise<unknown>;
+  reportError: AdminFeedbackController["reportError"];
+  reportNotice: AdminFeedbackController["reportNotice"];
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   users: AdminUsersController;
 }>) {
@@ -226,26 +227,24 @@ function AdminSectionContent({
       );
     case "roles":
       return (
-        <>
-          <AdminProviderSystemModelTask active onMutationCommitted={onMutationCommitted} />
-          <StackedBlock heading="Chat defaults" testId="admin-roles-defaults">
-            <AdminProviderModelDefaultTask active onMutationCommitted={onMutationCommitted} />
-          </StackedBlock>
-          <StackedBlock heading="Tool limits" testId="admin-roles-limits">
-            <AdminProviderRunLimitsTask active onMutationCommitted={onMutationCommitted} />
-          </StackedBlock>
-        </>
+        <AdminRolesSection
+          groups={dashboard.groups}
+          onMutationCommitted={onMutationCommitted}
+          reportError={reportError}
+          reportNotice={reportNotice}
+          requestConfirmation={requestConfirmation}
+        />
       );
     case "search":
       return <AdminSearchSection active onMutationCommitted={onMutationCommitted} />;
     case "retrieval":
       return (
-        <>
-          <AdminKnowledgeSection active onMutationCommitted={onMutationCommitted} />
-          <StackedBlock heading="Memory" testId="admin-retrieval-memory">
-            <AdminMemorySection active />
-          </StackedBlock>
-        </>
+        <AdminRetrievalSection
+          onMutationCommitted={onMutationCommitted}
+          onOpenRoles={() => onJump({ section: "roles" })}
+          reportNotice={reportNotice}
+          requestConfirmation={requestConfirmation}
+        />
       );
     case "users":
       return (
@@ -548,6 +547,8 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 mcpSection={mcpSection}
                 onJump={jumpToTarget}
                 onMutationCommitted={resource.refresh}
+                reportError={feedback.reportError}
+                reportNotice={feedback.reportNotice}
                 requestConfirmation={confirmation.requestConfirmation}
                 users={users}
               />
