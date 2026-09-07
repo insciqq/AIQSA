@@ -167,6 +167,21 @@ export type AdminDashboard = {
   users: AdminUserRecord[];
 };
 
+/**
+ * One grant change of `set_group_grants`: a provider-wide grant (`provider`
+ * only), one model (`provider` + `modelId`) or one Search source
+ * (`searchStrategy` only). `enabled: false` revokes the same grant.
+ */
+export type AdminGroupGrantChange = {
+  enabled: boolean;
+  modelId?: string | null;
+  provider?: string | null;
+  searchStrategy?: string | null;
+};
+
+/** Upper bound for one `set_group_grants` batch (a provider catalog rarely exceeds a few dozen models). */
+export const ADMIN_GROUP_GRANT_CHANGES_MAX = 200;
+
 export type AdminActionRequest =
   | {
       action: "approve_user";
@@ -226,12 +241,9 @@ export type AdminActionRequest =
       name: string;
     }
   | {
-      action: "set_group_grant";
-      enabled: boolean;
+      action: "set_group_grants";
+      changes: AdminGroupGrantChange[];
       groupId: string;
-      modelId?: string | null;
-      provider?: string | null;
-      searchStrategy?: string | null;
     }
   | {
       action: "set_user_groups";
@@ -255,7 +267,7 @@ export const adminActionNames = [
   "revoke_invite",
   "revoke_user_sessions",
   "rename_group",
-  "set_group_grant",
+  "set_group_grants",
   "set_user_groups"
 ] as const satisfies readonly AdminActionRequest["action"][];
 
@@ -269,6 +281,7 @@ type AdminActionDomainErrorCode =
   | "action_unknown"
   | "email_invalid"
   | "email_required"
+  | "group_archived"
   | "group_grant_invalid"
   | "group_grant_required"
   | "group_has_grants"
@@ -304,7 +317,10 @@ export type AdminActionSuccessResponse =
   | { rule: AdminAccessRuleRecord }
   | { emailDelivery: AdminInviteEmailDelivery; invite: AdminInviteRecord; inviteUrl: string };
 
-export type AdminActionErrorResponse = ErrorResponse<AdminActionServerErrorCode>;
+export type AdminActionErrorResponse = ErrorResponse<AdminActionServerErrorCode> & {
+  /** `set_group_grants`: index of the first change that could not be applied; nothing was changed. */
+  change?: number;
+};
 
 export type AdminActionResponse = AdminActionSuccessResponse | AdminActionErrorResponse;
 
@@ -318,6 +334,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function optionalIdField(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function parseAdminGroupGrantChange(value: unknown): AdminGroupGrantChange | null {
+  if (!isRecord(value) || typeof value.enabled !== "boolean") return null;
+  const provider = optionalIdField(value.provider);
+  const modelId = optionalIdField(value.modelId);
+  const searchStrategy = optionalIdField(value.searchStrategy);
+  if (provider === undefined || modelId === undefined || searchStrategy === undefined) return null;
+  if (searchStrategy) {
+    return provider || modelId ? null : { enabled: value.enabled, searchStrategy };
+  }
+  if (!provider) return null;
+  return modelId
+    ? { enabled: value.enabled, modelId, provider }
+    : { enabled: value.enabled, provider };
+}
+
+/**
+ * Decodes the `changes` of `set_group_grants`: a non-empty bounded list where
+ * every entry names exactly one grant target. Returns null for anything else
+ * so the batch is rejected as a whole before it reaches the repository.
+ */
+export function parseAdminGroupGrantChanges(value: unknown): AdminGroupGrantChange[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > ADMIN_GROUP_GRANT_CHANGES_MAX) {
+    return null;
+  }
+  const changes: AdminGroupGrantChange[] = [];
+  for (const entry of value) {
+    const change = parseAdminGroupGrantChange(entry);
+    if (!change) return null;
+    changes.push(change);
+  }
+  return changes;
 }
 
 export function isAdminDashboard(value: unknown): value is AdminDashboard {

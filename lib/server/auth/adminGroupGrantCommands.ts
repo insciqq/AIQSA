@@ -1,8 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import type { AdminGroupGrantChange } from "@/lib/contracts/admin";
 import { adminGroupDeletionBlock } from "./adminDeletionMetadata";
 import { FULL_ACCESS_GROUP_NAME } from "./fullAccessGroup";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
-import type { AdminRepository } from "./adminRepositoryContract";
+import type { AdminRepository, AdminSetGroupGrantsResult } from "./adminRepositoryContract";
 import { normalizeAdminGroupName } from "./adminRepositoryInputs";
 import { serializeAdminGroup } from "./adminRepositorySerializers";
 
@@ -12,23 +13,86 @@ export type AdminGroupGrantCommands = Pick<
   | "createGroup"
   | "deleteEmptyGroup"
   | "renameGroup"
-  | "setGroupGrant"
+  | "setGroupGrants"
   | "setUserGroups"
 >;
 
-function grantWhere(input: {
+type GrantWhere = {
   groupId: string;
-  modelId?: string | null;
-  provider?: string | null;
-  searchStrategy?: string | null;
-}) {
-  return {
-    groupId: input.groupId,
-    providerConnectionId: input.modelId ? null : input.provider ?? null,
-    providerModelId: input.modelId ?? null,
-    searchStrategy: input.searchStrategy ?? null,
-    userId: null
-  };
+  providerConnectionId: string | null;
+  providerModelId: string | null;
+  searchStrategy: string | null;
+  userId: null;
+};
+
+type GrantTransaction = Pick<Prisma.TransactionClient, "accessGrant" | "group" | "providerModel" | "searchOption">;
+
+/** Thrown inside the grant transaction so Prisma rolls every earlier change back. */
+class GroupGrantBatchRejected extends Error {
+  constructor(readonly result: Exclude<AdminSetGroupGrantsResult, { kind: "applied" }>) {
+    super(`group grant batch rejected: ${result.kind}`);
+  }
+}
+
+const activeProviderConnection = {
+  activeConfig: { not: Prisma.DbNull },
+  activeVersion: { gt: 0 },
+  enabled: true
+} as const;
+
+/**
+ * Resolves one change to the exact grant row it addresses, or null when the
+ * target is not grantable: an unknown or disabled Search option, a model that
+ * is not active on an active connection, or a provider without any such model.
+ */
+async function resolveGrantTarget(
+  tx: GrantTransaction,
+  groupId: string,
+  change: AdminGroupGrantChange
+): Promise<GrantWhere | null> {
+  const searchStrategy = change.searchStrategy?.trim() || null;
+  const provider = change.provider?.trim() || null;
+  const modelId = change.modelId?.trim() || null;
+
+  if (searchStrategy) {
+    if (searchStrategy === "search-disabled" || provider || modelId) return null;
+    const option = await tx.searchOption.findFirst({
+      select: { id: true },
+      where: { archivedAt: null, enabled: true, optionId: searchStrategy }
+    });
+    if (!option) return null;
+    return { groupId, providerConnectionId: null, providerModelId: null, searchStrategy, userId: null };
+  }
+
+  if (!provider) return null;
+
+  if (modelId) {
+    const model = await tx.providerModel.findFirst({
+      select: { id: true },
+      where: {
+        activeConfig: { not: Prisma.DbNull },
+        activeVersion: { gt: 0 },
+        connection: activeProviderConnection,
+        connectionId: provider,
+        enabled: true,
+        id: modelId
+      }
+    });
+    if (!model) return null;
+    return { groupId, providerConnectionId: null, providerModelId: modelId, searchStrategy: null, userId: null };
+  }
+
+  const providerModels = await tx.providerModel.count({
+    where: {
+      activeConfig: { not: Prisma.DbNull },
+      activeVersion: { gt: 0 },
+      connection: activeProviderConnection,
+      connectionId: provider,
+      enabled: true
+    }
+  });
+  if (providerModels === 0) return null;
+  return { groupId, providerConnectionId: provider, providerModelId: null, searchStrategy: null, userId: null };
 }
 
 function reservedFullAccessName(name: string): boolean {
@@ -188,105 +252,32 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
         return null;
       }
     },
-    async setGroupGrant(input) {
-      const group = await prisma.group.findUnique({
-        select: {
-          archivedAt: true,
-          id: true,
-          systemRole: true
-        },
-        where: {
-          id: input.groupId
-        }
-      });
+    async setGroupGrants(input) {
+      try {
+        return await prisma.$transaction(async (tx) => {
+          const group = await tx.group.findUnique({
+            select: { archivedAt: true, id: true, systemRole: true },
+            where: { id: input.groupId }
+          });
+          if (!group) throw new GroupGrantBatchRejected({ kind: "group_not_found" });
+          if (group.systemRole === "full_access") throw new GroupGrantBatchRejected({ kind: "system_group_forbidden" });
+          if (group.archivedAt) throw new GroupGrantBatchRejected({ kind: "group_archived" });
 
-      if (!group || group.archivedAt || group.systemRole === "full_access") {
-        return false;
-      }
-
-      const searchStrategy = input.searchStrategy?.trim() || null;
-      const provider = input.provider?.trim() || null;
-      const modelId = input.modelId?.trim() || null;
-
-      if (searchStrategy) {
-        if (searchStrategy === "search-disabled") {
-          return false;
-        }
-
-        const option = await prisma.searchOption.findFirst({
-          select: { id: true },
-          where: {
-            archivedAt: null,
-            enabled: true,
-            optionId: searchStrategy
-          }
-        });
-
-        if (!option || provider || modelId) {
-          return false;
-        }
-      } else if (provider && modelId) {
-        const model = await prisma.providerModel.findFirst({
-          where: {
-            activeConfig: { not: Prisma.DbNull },
-            activeVersion: { gt: 0 },
-            connectionId: provider,
-            enabled: true,
-            id: modelId,
-            connection: {
-              activeConfig: { not: Prisma.DbNull },
-              activeVersion: { gt: 0 },
-              enabled: true
+          for (const [index, change] of input.changes.entries()) {
+            const where = await resolveGrantTarget(tx, group.id, change);
+            if (!where) throw new GroupGrantBatchRejected({ change: index, kind: "invalid_change" });
+            await tx.accessGrant.deleteMany({ where });
+            if (change.enabled) {
+              await tx.accessGrant.create({ data: { enabled: true, ...where } });
             }
           }
-        });
 
-        if (!model) {
-          return false;
-        }
-      } else if (provider) {
-        const providerModels = await prisma.providerModel.count({
-          where: {
-            activeConfig: { not: Prisma.DbNull },
-            activeVersion: { gt: 0 },
-            connectionId: provider,
-            connection: {
-              activeConfig: { not: Prisma.DbNull },
-              activeVersion: { gt: 0 },
-              enabled: true
-            },
-            enabled: true,
-          }
+          return { kind: "applied" as const };
         });
-
-        if (providerModels === 0 || modelId) {
-          return false;
-        }
-      } else {
-        return false;
+      } catch (error) {
+        if (error instanceof GroupGrantBatchRejected) return error.result;
+        throw error;
       }
-
-      const where = grantWhere({
-        groupId: input.groupId,
-        modelId,
-        provider,
-        searchStrategy
-      });
-
-      await prisma.accessGrant.deleteMany({
-        where
-      });
-
-      if (input.enabled) {
-        await prisma.accessGrant.create({
-          data: {
-            enabled: true,
-            ...where
-          }
-        });
-      }
-
-      return true;
     },
     async setUserGroups(input) {
       const groupIds = [...new Set(input.groupIds)];

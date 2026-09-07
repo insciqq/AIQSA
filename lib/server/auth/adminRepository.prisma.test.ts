@@ -1066,20 +1066,14 @@ describe("Prisma-backed admin repository", () => {
         })
       ).resolves.toBe(true);
       await expect(
-        repository.setGroupGrant({
-          enabled: true,
-          groupId: group!.id,
-          modelId: fakeModel.id,
-          provider: fakeModel.connectionId
+        repository.setGroupGrants({
+          changes: [
+            { enabled: true, modelId: fakeModel.id, provider: fakeModel.connectionId },
+            { enabled: true, searchStrategy: searchOptionId }
+          ],
+          groupId: group!.id
         })
-      ).resolves.toBe(true);
-      await expect(
-        repository.setGroupGrant({
-          enabled: true,
-          groupId: group!.id,
-          searchStrategy: searchOptionId
-        })
-      ).resolves.toBe(true);
+      ).resolves.toEqual({ kind: "applied" });
 
       const entitled = await loadEntitlementsForUser(user.id);
       expect(entitled.modelKeys.has(`${fakeModel.connectionId}:${fakeModel.id}`)).toBe(true);
@@ -1098,12 +1092,11 @@ describe("Prisma-backed admin repository", () => {
       expect(afterArchive.modelKeys.has("openai:gpt-5.5")).toBe(false);
       expect(afterArchive.searchStrategies.has(searchOptionId)).toBe(false);
       await expect(
-        repository.setGroupGrant({
-          enabled: true,
-          groupId: group!.id,
-          provider: fakeModel.connectionId
+        repository.setGroupGrants({
+          changes: [{ enabled: true, provider: fakeModel.connectionId }],
+          groupId: group!.id
         })
-      ).resolves.toBe(false);
+      ).resolves.toEqual({ kind: "group_archived" });
     });
   });
 
@@ -1455,10 +1448,9 @@ describe("Prisma-backed admin repository", () => {
         groupIds: [withMember!.id],
         userId: user.id
       });
-      await repository.setGroupGrant({
-        enabled: true,
-        groupId: withGrant!.id,
-        provider: fakeConnection.id
+      await repository.setGroupGrants({
+        changes: [{ enabled: true, provider: fakeConnection.id }],
+        groupId: withGrant!.id
       });
       const mcpServer = await prisma.mcpServer.create({
         data: {
