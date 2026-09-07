@@ -104,6 +104,33 @@ describe("useAdminSectionNavigation", () => {
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Groups");
   });
 
+  it("opens a resource page inside a section, keeps section links resource-free, and returns with Back", async () => {
+    window.history.replaceState({ nextRouter: { marker: "keep" } }, "", "/admin?section=providers&resource=conn-1#top");
+    const view = renderNavigation();
+    await waitFor(() => expect(view.navigation.activeSection).toBe("providers"));
+    expect(view.navigation.activeResource).toBe("conn-1");
+    expect(screen.getByRole("link", { name: "Groups" })).toHaveAttribute("href", "/admin?section=groups#top");
+
+    act(() => { view.navigation.selectResource(null); });
+    expect(window.location.search).toBe("?section=providers");
+    expect(view.navigation.activeResource).toBeNull();
+    act(() => { view.navigation.selectResource("conn-2"); });
+    expect(window.location.search).toBe("?section=providers&resource=conn-2");
+    expect(window.location.hash).toBe("#top");
+    expect(window.history.state).toMatchObject({ nextRouter: { marker: "keep" } });
+    expect(view.navigation.activeResource).toBe("conn-2");
+
+    act(() => window.history.back());
+    await waitFor(() => expect(view.navigation.activeResource).toBeNull());
+    expect(window.location.search).toBe("?section=providers");
+
+    act(() => { view.navigation.selectSection("groups", "group-1"); });
+    expect(window.location.search).toBe("?section=groups&resource=group-1");
+    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
+    expect(window.location.search).toBe("?section=usage");
+    expect(view.navigation.activeResource).toBeNull();
+  });
+
   it("normalizes retired section ids in the address bar without a redirect", async () => {
     window.history.replaceState(null, "", "/admin?section=system-models");
     renderNavigation();

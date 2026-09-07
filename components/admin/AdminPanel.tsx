@@ -22,7 +22,7 @@ import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
 import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
 import { AdminProviderRunLimitsTask } from "@/components/admin/AdminProviderRunLimitsTask";
 import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
-import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
+import { AdminProvidersSection } from "@/components/admin/providers/AdminProvidersSection";
 import { AdminSearchSection } from "@/components/admin/AdminSearchSection";
 import {
   AdminReleaseUpdatePill,
@@ -44,7 +44,7 @@ import {
   type AdminConfirmationController
 } from "@/components/admin/useAdminConfirmationController";
 import { useAdminDashboardResource } from "@/components/admin/useAdminDashboardResource";
-import { useAdminFeedback } from "@/components/admin/useAdminFeedback";
+import { useAdminFeedback, type AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import { useAdminInvitesController, type AdminInvitesController } from "@/components/admin/useAdminInvitesController";
@@ -54,7 +54,8 @@ import { useAdminOperationalFocus } from "@/components/admin/useAdminOperational
 import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import {
   useAdminSectionNavigation,
-  type AdminBlockedNavigation
+  type AdminBlockedNavigation,
+  type AdminSectionNavigation
 } from "@/components/admin/useAdminSectionNavigation";
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
@@ -190,10 +191,12 @@ function AdminSectionContent({
   activeSection,
   attention,
   dashboard,
+  feedback,
   groups,
   invites,
   mcp,
   mcpSection,
+  navigation,
   onJump,
   onMutationCommitted,
   requestConfirmation,
@@ -203,10 +206,12 @@ function AdminSectionContent({
   activeSection: AdminSectionId;
   attention: ReturnType<typeof useAdminAttention>;
   dashboard: AdminDashboard;
+  feedback: Pick<AdminFeedbackController, "reportError" | "reportNotice">;
   groups: AdminGroupsController;
   invites: AdminInvitesController;
   mcp: AdminMcpController;
   mcpSection: AdminMcpSectionState;
+  navigation: Pick<AdminSectionNavigation, "activeResource" | "selectResource" | "selectSection">;
   onJump(target: AdminAttentionTarget): void;
   onMutationCommitted(): void | Promise<unknown>;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
@@ -217,11 +222,15 @@ function AdminSectionContent({
       return <AdminOverviewSection controller={attention} onJump={onJump} />;
     case "providers":
       return (
-        <AdminProvidersExperience
+        <AdminProvidersSection
           active
+          feedback={feedback}
           groups={dashboard.groups}
           onMutationCommitted={onMutationCommitted}
+          onNavigateSection={navigation.selectSection}
+          onSelectResource={navigation.selectResource}
           requestConfirmation={requestConfirmation}
+          resource={navigation.activeResource}
         />
       );
     case "roles":
@@ -466,7 +475,8 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   }, [requestConfirmedAction]);
   const { selectSection } = navigation;
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
-    selectSection(target.section);
+    // Only Providers has resource pages so far; later slices add theirs.
+    selectSection(target.section, target.section === "providers" ? target.resource ?? null : null);
   }, [selectSection]);
 
   const [sectionTopbar, setSectionTopbar] = useState<AdminShellTopbar | null>(null);
@@ -542,10 +552,12 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 activeSection={navigation.activeSection}
                 attention={attention}
                 dashboard={resource.dashboard}
+                feedback={feedback}
                 groups={groups}
                 invites={invites}
                 mcp={mcp}
                 mcpSection={mcpSection}
+                navigation={navigation}
                 onJump={jumpToTarget}
                 onMutationCommitted={resource.refresh}
                 requestConfirmation={confirmation.requestConfirmation}

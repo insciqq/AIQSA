@@ -83,6 +83,16 @@ export function parseAdminSection(search: string): AdminSectionId {
   return resolveAdminSectionId(new URLSearchParams(search).get("section"));
 }
 
+const MAX_RESOURCE_LENGTH = 256;
+
+/** The resource opened inside a section (`?resource=<id>`), e.g. one provider page. */
+export function parseAdminSectionResource(search: string): string | null {
+  const value = new URLSearchParams(search).get("resource");
+  return value && value.length <= MAX_RESOURCE_LENGTH && !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : null;
+}
+
 /** Rewrites a legacy or unknown `section` to its current id while keeping every other URL part. */
 export function normalizeAdminSectionPath(currentHref: string): string {
   const url = new URL(currentHref, "http://localhost");
@@ -95,13 +105,27 @@ export function normalizeAdminSectionPath(currentHref: string): string {
   return adminSectionPath(currentHref, resolveAdminSectionId(rawSection));
 }
 
-export function adminSectionPath(currentHref: string, section: AdminSectionId): string {
+/**
+ * Path for a section, optionally with one opened resource. A section change
+ * always leaves the previous resource behind; every other query part and the
+ * hash stay intact.
+ */
+export function adminSectionPath(
+  currentHref: string,
+  section: AdminSectionId,
+  resource: string | null = null
+): string {
   const url = new URL(currentHref, "http://localhost");
 
   if (section === defaultAdminSection) {
     url.searchParams.delete("section");
   } else {
     url.searchParams.set("section", section);
+  }
+  if (resource) {
+    url.searchParams.set("resource", resource);
+  } else {
+    url.searchParams.delete("resource");
   }
 
   return `${url.pathname}${url.search}${url.hash}`;

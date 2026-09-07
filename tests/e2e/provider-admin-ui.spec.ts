@@ -4,10 +4,7 @@ import type { AddressInfo } from "node:net";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type {
-  AdminOpenRouterDiscoveredEndpoint,
-  AdminOpenRouterDiscoveredModel,
   AdminProviderConnection,
-  AdminProviderDraftCheck,
   AdminProviderModelConfiguration
 } from "../../lib/contracts/adminProviders";
 import {
@@ -478,83 +475,6 @@ test.afterAll(async () => {
   await prisma.$disconnect();
 });
 
-const discoveredModels: AdminOpenRouterDiscoveredModel[] = [
-  ...Array.from({ length: 332 }, (_, offset) => {
-    const index = 332 - offset;
-    const suffix = String(index).padStart(3, "0");
-    return {
-      contextLength: 32_000,
-      id: `catalog/model-${suffix}`,
-      inputModalities: ["text"],
-      name: `Catalog Model ${suffix}`,
-      outputModalities: ["text"],
-      pricing: { prompt: "0.000001" },
-      supportedParameters: ["tools"]
-    };
-  }),
-  {
-    contextLength: 128_000,
-    id: "vendor/e2e-model",
-    inputModalities: ["text", "image"],
-    name: "E2E Model",
-    outputModalities: ["text"],
-    pricing: { prompt: "0.000001" },
-    supportedParameters: ["tools", "reasoning"]
-  }
-];
-
-const discoveredEndpoints: AdminOpenRouterDiscoveredEndpoint[] = [
-  {
-    name: "Zenith endpoint",
-    providerName: "Zenith AI",
-    supportedParameters: ["tools"],
-    tag: "zenith"
-  },
-  {
-    name: "Primary endpoint",
-    providerName: "Acme Inference",
-    quantization: "fp8",
-    supportedParameters: ["tools", "reasoning"],
-    tag: "acme-primary"
-  },
-  {
-    name: "Backup endpoint",
-    providerName: "Acme Inference",
-    quantization: "int8",
-    supportedParameters: ["tools"],
-    tag: "acme-backup"
-  }
-];
-
-function connectionDraft(configuration: {
-  allowPrivateNetwork: boolean;
-  apiRoot: string;
-  authenticationMode: "bearer" | "none";
-  responseTimeoutSeconds: number;
-}, displayName: string): AdminProviderConnection {
-  return {
-    activatedAt: null,
-    activeChecks: [],
-    activeConfig: null,
-    activeVersion: 0,
-    assignments: [],
-    createdAt: now,
-    credentials: [],
-    defaultCredentialId: null,
-    displayName,
-    draftChecks: [],
-    draftConfig: configuration,
-    draftVersion: 1,
-    enabled: false,
-    family: "openrouter",
-    id: "provider-e2e",
-    models: [],
-    unassignedPolicy: "use_default",
-    updatedAt: now,
-    userAssignments: []
-  };
-}
-
 async function signInOrdinaryUser(page: Page): Promise<void> {
   await page.goto("/login");
   await page.getByLabel("Email").fill(LOCAL_RESTRICTED_MEMBER.email);
@@ -620,7 +540,6 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   const trackedRunIds: string[] = [];
   let configured = false;
   const quickRequests: Array<{ body: Record<string, unknown>; method: string }> = [];
-  const undisclosedResourceRequests: string[] = [];
   const messageRequests: Record<string, unknown>[] = [];
   let releasePickerRetry!: () => void;
   let releaseReplacement!: () => void;
@@ -634,9 +553,6 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   try {
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (path === "/api/admin/providers") {
-      undisclosedResourceRequests.push(`${request.method()} ${path}`);
-    }
     if (request.method() === "POST" && /^\/api\/chats\/[^/]+\/messages$/u.test(path)) {
       messageRequests.push(request.postDataJSON() as Record<string, unknown>);
     }
@@ -755,15 +671,16 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
 
   await page.setViewportSize({ height: 844, width: 390 });
   await signInWithLocalToken(page);
-  await page.goto("/admin");
+  await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
+  await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers");
+  await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+  await page.getByRole("button", { name: "Add provider" }).click();
+  await expect(page.getByTestId("admin-topbar-title")).toContainText("Add provider");
   const quickFeedback = section.getByTestId("provider-quick-feedback");
-  await expect(section.getByRole("heading", { exact: true, name: "Providers" }).last()).toBeVisible();
   await expect(quickFeedback).toHaveAttribute("role", "status");
   await expect(quickFeedback).toHaveText("Provider Quick setup loaded.");
   await expect(section.getByLabel("API key")).toHaveCount(0);
-  await expect(section.getByRole("tab", { name: "Quick setup" })).toHaveAttribute("aria-selected", "true");
-  await expect(section.getByTestId("provider-connections-workspace")).toHaveCount(0);
 
   await section.getByRole("button", { name: /OpenAI Not configured/ }).click();
   await section.getByLabel("API key").fill("e2e-quick-write-only-key");
@@ -857,7 +774,6 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByLabel("API key")).toHaveValue("");
   await section.getByRole("button", { name: "Cancel replacement" }).click();
 
-  expect(undisclosedResourceRequests).toEqual([]);
   expect(quickRequests.filter(({ method }) => method === "POST")).toHaveLength(4);
   expect(quickRequests.filter(({ method }) => method === "GET").length).toBeGreaterThanOrEqual(2);
 
@@ -870,14 +786,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     await page.setViewportSize(viewport);
     await section.getByRole("link", { name: "Start chatting" }).scrollIntoViewIfNeeded();
     await expect(section.getByRole("link", { name: "Start chatting" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Run profiles" })).toHaveCount(0);
-    await expect
-      .poll(() => section.getByTestId("provider-workspace-tabs").evaluate((element) =>
-        getComputedStyle(element).scrollbarWidth
-      ))
-      .toBe("none");
+    await expect(page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers" })).toBeVisible();
     await expectNoPageOverflow(page);
     const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
@@ -1123,8 +1032,9 @@ test("administrator discovers and configures a Custom compatible provider on wid
   });
 
   await signInWithLocalToken(page);
-  await page.goto("/admin");
+  await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
+  await page.getByRole("button", { name: "Add provider" }).click();
   await expect(section.getByRole("button", { name: /Custom 1 configured/ })).toBeVisible();
   await expect(section.getByTestId("provider-configured-connection-existing-compatible"))
     .toContainText("OpenAI-compatible · 2 active models");
@@ -1134,9 +1044,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
     { height: 844, width: 390 }
   ]) {
     await page.setViewportSize(viewport);
-    await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Run profiles" })).toHaveCount(0);
+    await expect(page.getByTestId("admin-topbar-title")).toContainText("Add provider");
     // Five native providers plus the Custom (OpenAI-compatible) entry.
     await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
       .toHaveCount(6);
@@ -1230,7 +1138,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
   }
 });
 
-test("administrator activates a Custom replacement and deletes its complete configuration", async ({ page }) => {
+test("administrator rotates a Custom provider key in one step and deletes the provider", async ({ page }) => {
   const connectionConfiguration = {
     allowPrivateNetwork: false,
     apiRoot: "https://lifecycle.fixture.invalid/v1",
@@ -1286,15 +1194,15 @@ test("administrator activates a Custom replacement and deletes its complete conf
         version: 1
       },
       createdAt: now,
-      draftSecretConfigured: true,
-      draftVersion: 2,
+      draftSecretConfigured: false,
+      draftVersion: 1,
       enabled: true,
       id: "custom-lifecycle-credential",
       label: "Primary",
       testedAt: now,
       updatedAt: now
     }],
-    defaultCredentialId: null,
+    defaultCredentialId: "custom-lifecycle-credential",
     displayName: "Lifecycle Custom",
     draftChecks: [],
     draftConfig: connectionConfiguration,
@@ -1315,22 +1223,12 @@ test("administrator activates a Custom replacement and deletes its complete conf
       id: "custom-lifecycle-model",
       updatedAt: now
     }],
-    unassignedPolicy: "require_assignment",
+    unassignedPolicy: "use_default",
     updatedAt: now,
-    userAssignments: [{
-      connectionId: "custom-lifecycle",
-      credentialId: "custom-lifecycle-credential",
-      updatedAt: now,
-      user: {
-        displayName: "Administrator",
-        email: "admin@example.test",
-        id: DEFAULT_BOOTSTRAP_USER_ID,
-        status: "active"
-      }
-    }]
+    userAssignments: []
   };
-  const activationBodies: Record<string, unknown>[] = [];
-  const compatibleDiscoveryBodies: Record<string, unknown>[] = [];
+  const rotationBodies: Record<string, unknown>[] = [];
+  const actionBodies: Record<string, unknown>[] = [];
   const deletionBodies: Record<string, unknown>[] = [];
 
   await page.route("**/api/admin/providers**", async (route) => {
@@ -1339,23 +1237,6 @@ test("administrator activates a Custom replacement and deletes its complete conf
     const method = request.method();
     const body = method === "GET" ? {} : request.postDataJSON() as Record<string, unknown>;
 
-    if (method === "GET" && path === "/api/admin/providers/quick-setup") {
-      await route.fulfill({
-        contentType: "application/json",
-        json: {
-          configuredConnections: [],
-          providers: [
-            { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
-            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
-            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
-            { provider: "deepseek", providerDisplayName: "DeepSeek", quickSetupAssigned: false, state: "not_configured", stateToken: "state-deepseek" },
-            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
-          ],
-          suggestedProvider: null
-        }
-      });
-      return;
-    }
     if (method === "GET" && path === "/api/admin/providers") {
       await route.fulfill({
         contentType: "application/json",
@@ -1363,28 +1244,12 @@ test("administrator activates a Custom replacement and deletes its complete conf
       });
       return;
     }
-    if (method === "POST" && path === "/api/admin/providers/custom-lifecycle/actions") {
-      if (body.action === "discover_compatible_models") {
-        compatibleDiscoveryBodies.push(body);
-        await route.fulfill({
-          contentType: "application/json",
-          json: {
-            models: [
-              { capabilities: {}, id: "fixture/lifecycle-model" },
-              { capabilities: {}, id: "fixture/second-model" }
-            ]
-          }
-        });
-        return;
-      }
-      activationBodies.push(body);
+    if (method === "PATCH" && path === "/api/admin/providers/custom-lifecycle/credentials/custom-lifecycle-credential") {
+      rotationBodies.push(body);
       if (!connection) throw new Error("Custom lifecycle fixture was already deleted");
       connection = {
         ...connection,
-        activeChecks: connection.activeChecks.map((check) => ({
-          ...check,
-          credentialVersionId: "custom-lifecycle-version-2"
-        })),
+        activeChecks: [],
         credentials: connection.credentials.map((credential) => ({
           ...credential,
           activeVersion: {
@@ -1394,13 +1259,17 @@ test("administrator activates a Custom replacement and deletes its complete conf
             testedAt: now,
             version: 2
           },
-          draftSecretConfigured: false
+          draftVersion: 2
         }))
       };
-      await route.fulfill({
-        contentType: "application/json",
-        json: { connections: [connection] }
-      });
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
+      return;
+    }
+    if (method === "POST" && path === "/api/admin/providers/custom-lifecycle/actions") {
+      actionBodies.push(body);
+      if (!connection) throw new Error("Custom lifecycle fixture was already deleted");
+      if (body.action === "disable") connection = { ...connection, enabled: false };
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
       return;
     }
     if (method === "DELETE" && path === "/api/admin/providers/custom-lifecycle") {
@@ -1417,275 +1286,168 @@ test("administrator activates a Custom replacement and deletes its complete conf
   });
 
   await signInWithLocalToken(page);
-  await page.goto("/admin");
+  await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
-  await section.getByRole("tab", { name: "Connections" }).click();
-  await section.getByTestId("provider-connection-index")
-    .getByRole("button", { name: /Lifecycle Custom/ }).click();
-  // Exact: the workspace strip also has a "System Models" tab.
-  await section.getByRole("tab", { exact: true, name: "Models" }).click();
-  await section.getByTestId("provider-task-models")
-    .getByRole("button", { name: "Add model" }).click();
-  await expect.poll(() => compatibleDiscoveryBodies.length).toBe(1);
-  await section.getByRole("button", { name: "Endpoint model" }).click();
-  await section.getByRole("option", { name: /fixture\/second-model/ }).click();
-  await expect(section.getByRole("textbox", { name: "Upstream model ID" }))
-    .toHaveValue("fixture/second-model");
-  expect(compatibleDiscoveryBodies).toEqual([{
-    action: "discover_compatible_models",
-    credentialId: "custom-lifecycle-credential"
-  }]);
-  await section.getByRole("tab", { name: "Credentials" }).click();
-  await page.getByTestId("admin-discard-unsaved-confirmation")
-    .getByRole("button", { name: "Confirm discard changes" }).click();
-  await expect(section.getByText("Replacement pending", { exact: true })).toBeVisible();
-  await section.getByRole("button", {
-    name: "Activate replacement for Primary credential"
-  }).click();
-  await expect(section.getByText("Replacement key activated for new runs.")).toBeVisible();
-  await expect(section.getByRole("button", {
-    name: "Activate replacement for Primary credential"
-  })).toHaveCount(0);
-  expect(activationBodies).toEqual([{
-    action: "activate",
-    confirmUnavailable: false,
-    enableConnection: true
-  }]);
+  const row = section.getByTestId("provider-row-custom-lifecycle");
+  await expect(row).toContainText("Custom · lifecycle.fixture.invalid · Lifecycle Model");
+  await expect(row).not.toContainText("/v1");
+  await expect(row.getByTestId("provider-status")).toHaveText("Working");
+  await row.click();
+  await expect(page).toHaveURL(/section=providers&resource=custom-lifecycle/u);
+  await expect(page.getByTestId("admin-topbar-title")).toContainText("Lifecycle Custom");
+  await expect(section.getByTestId("provider-page-status")).toContainText("All keys working · 1 model on");
 
-  await section.getByLabel("More actions for Lifecycle Custom connection").click();
-  await section.getByRole("button", { name: "Delete Lifecycle Custom connection" }).click();
+  const key = section.getByTestId("provider-key-custom-lifecycle-credential");
+  await expect(key).toContainText("Default key");
+  await key.getByRole("button", { name: "Rotate Primary" }).click();
+  const form = section.getByTestId("provider-key-form");
+  await form.getByLabel("New API key for Primary").fill("e2e-rotated-write-only-key");
+  await form.getByRole("button", { name: "Test & Save" }).click();
+  await expect(form).toHaveCount(0);
+  expect(rotationBodies).toEqual([{
+    action: "rotate",
+    activate: true,
+    expectedDraftVersion: 1,
+    secret: "e2e-rotated-write-only-key"
+  }]);
+  await expect(section.getByText("e2e-rotated-write-only-key")).toHaveCount(0);
+  await expect(key.getByTestId("provider-key-detail")).toContainText("Working");
+
+  await page.getByRole("button", { name: "More actions for Lifecycle Custom" }).click();
+  await page.getByRole("menuitem", { name: "Delete provider" }).click();
   const confirmation = page.getByTestId("admin-confirm-delete-provider-connection");
-  await expect(confirmation).toContainText(
-    "encrypted credentials, assignments, model grants, personal, chat, or installation model defaults, and the system model role"
-  );
-  await confirmation.getByRole("button", { name: "Delete connection and configuration" }).click();
-  await expect(section.getByText("No provider connections")).toBeVisible();
+  await expect(confirmation).toContainText("turned off and removed with its keys, models, overrides and defaults");
+  await confirmation.getByRole("button", { name: "Delete provider" }).click();
+  await expect(section.getByText("No providers yet")).toBeVisible();
+  await expect(page).not.toHaveURL(/resource=/u);
+  expect(actionBodies).toEqual([{ action: "disable" }]);
   expect(deletionBodies).toEqual([{ confirmed: true }]);
 });
 
-test("administrator completes the OpenRouter key, model, route, check, and activation flow", async ({ page }) => {
-  let connections: AdminProviderConnection[] = [];
-  const discoveryActions: Array<Record<string, unknown>> = [];
-  let activationBody: Record<string, unknown> | null = null;
-  let submittedConnectionBody: Record<string, unknown> | null = null;
-  let submittedModelBody: Record<string, unknown> | null = null;
-  let submittedKey: string | null = null;
-  let testedKey: string | null = null;
+test("administrator saves a rejected and then a working OpenRouter key with one Test & Save, and edits connection settings", async ({ page }) => {
+  const configuration = {
+    allowPrivateNetwork: false,
+    apiRoot: "https://openrouter.ai/api/v1",
+    authenticationMode: "bearer" as const,
+    responseTimeoutSeconds: 300
+  };
+  const modelConfiguration: AdminProviderModelConfiguration = {
+    adapterKind: "openrouter_chat_completions",
+    answerSelectable: true,
+    capabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      vision: false
+    },
+    defaultParams: {},
+    modelClass: "answer",
+    openRouterRouting: { mode: "automatic", providers: [] },
+    upstreamModelId: "vendor/e2e-model"
+  };
+  let connection: AdminProviderConnection = {
+    activatedAt: now,
+    activeChecks: [],
+    activeConfig: configuration,
+    activeVersion: 1,
+    assignments: [],
+    createdAt: now,
+    credentials: [],
+    defaultCredentialId: null,
+    displayName: "OpenRouter",
+    draftChecks: [],
+    draftConfig: configuration,
+    draftVersion: 1,
+    enabled: true,
+    family: "openrouter",
+    id: "provider-e2e",
+    models: [{
+      activatedAt: now,
+      activeConfig: modelConfiguration,
+      activeVersion: 1,
+      connectionId: "provider-e2e",
+      createdAt: now,
+      displayName: "E2E Model",
+      draftConfig: modelConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      id: "model-e2e",
+      updatedAt: now
+    }],
+    unassignedPolicy: "use_default",
+    updatedAt: now,
+    userAssignments: []
+  };
+  const credentialBodies: Record<string, unknown>[] = [];
+  const settingsBodies: Array<{ body: Record<string, unknown>; method: string; path: string }> = [];
 
   await page.route("**/api/admin/providers**", async (route) => {
     const request = route.request();
-    const url = new URL(request.url());
-    const path = url.pathname;
+    const path = new URL(request.url()).pathname;
     const method = request.method();
     const body = method === "GET" ? {} : request.postDataJSON() as Record<string, unknown>;
 
-    if (method === "GET" && path === "/api/admin/providers/quick-setup") {
-      await route.fulfill({
-        contentType: "application/json",
-        json: {
-          configuredConnections: [],
-          providers: [
-            { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
-            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
-            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
-            { provider: "deepseek", providerDisplayName: "DeepSeek", quickSetupAssigned: false, state: "not_configured", stateToken: "state-deepseek" },
-            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
-          ],
-          suggestedProvider: null
-        }
-      });
-      return;
-    }
     if (method === "GET" && path === "/api/admin/providers") {
-      await route.fulfill({ contentType: "application/json", json: { connections } });
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
       return;
     }
-    if (method === "POST" && path === "/api/admin/providers") {
-      submittedConnectionBody = body;
-      const configuration = body.configuration as {
-        allowPrivateNetwork: boolean;
-        apiRoot: string;
-        authenticationMode: "bearer" | "none";
-        responseTimeoutSeconds: number;
-      };
-      connections = [connectionDraft(configuration, String(body.displayName))];
-      await route.fulfill({ contentType: "application/json", json: { connections }, status: 201 });
-      return;
-    }
-    if (method === "POST" && path.endsWith("/credential-tests")) {
-      testedKey = String(body.secret);
-      await route.fulfill({
-        contentType: "application/json",
-        json: {
-          test: {
-            checkedAt: now,
-            connectionDraftVersion: Number(body.expectedConnectionDraftVersion),
-            modelCount: discoveredModels.length,
-            status: "valid"
-          }
-        }
-      });
-      return;
-    }
-    if (method === "POST" && path.endsWith("/credentials")) {
-      submittedKey = String(body.secret);
-      const current = connections[0]!;
-      connections = [{
-        ...current,
+    if (method === "POST" && path === "/api/admin/providers/provider-e2e/credentials") {
+      credentialBodies.push(body);
+      if (body.secret === "e2e-rejected-key") {
+        await route.fulfill({
+          contentType: "application/json",
+          json: { error: "provider_credential_test_failed" },
+          status: 422
+        });
+        return;
+      }
+      connection = {
+        ...connection,
         credentials: [{
-          activatedAt: null,
-          activeVersion: null,
+          activatedAt: now,
+          activeVersion: {
+            activatedAt: now,
+            id: "credential-version-e2e",
+            revokedAt: null,
+            testedAt: now,
+            version: 1
+          },
           createdAt: now,
-          draftSecretConfigured: true,
+          draftSecretConfigured: false,
           draftVersion: 1,
           enabled: true,
           id: "credential-e2e",
           label: String(body.label),
-          testedAt: null,
+          testedAt: now,
           updatedAt: now
-        }]
-      }];
-      await route.fulfill({ contentType: "application/json", json: { connections }, status: 201 });
-      return;
-    }
-    if (method === "POST" && path.endsWith("/actions")) {
-      const action = String(body.action);
-      if (action === "discover_models") {
-        discoveryActions.push(body);
-        await route.fulfill({
-          contentType: "application/json",
-          json: { models: discoveredModels }
-        });
-        return;
-      }
-      if (action === "discover_endpoints") {
-        discoveryActions.push(body);
-        await route.fulfill({
-          contentType: "application/json",
-          json: { endpoints: discoveredEndpoints }
-        });
-        return;
-      }
-      if (action === "set_default_credential") {
-        connections = [{ ...connections[0]!, defaultCredentialId: String(body.credentialId) }];
-        await route.fulfill({ contentType: "application/json", json: { connections } });
-        return;
-      }
-      if (action === "activate") {
-        activationBody = body;
-        const current = connections[0]!;
-        const credential = current.credentials[0]!;
-        const model = current.models[0]!;
-        connections = [{
-          ...current,
-          activatedAt: now,
-          activeChecks: current.draftChecks.map((check) => ({
-            checkedAt: check.checkedAt,
-            connectionVersion: current.draftVersion,
-            credentialId: credential.id,
-            credentialVersionId: "credential-version-e2e",
-            evidence: check.evidence,
-            latestRefreshError: null,
-            modelVersion: model.draftVersion,
-            providerModelId: model.id,
-            refreshFailedAt: null,
-            status: check.status
-          })),
-          activeConfig: current.draftConfig,
-          activeVersion: current.draftVersion,
-          credentials: [{
-            ...credential,
-            activatedAt: now,
-            activeVersion: {
-              activatedAt: now,
-              id: "credential-version-e2e",
-              revokedAt: null,
-              testedAt: now,
-              version: 1
-            },
-            draftSecretConfigured: false
-          }],
-          enabled: true,
-          models: [{
-            ...model,
-            activatedAt: now,
-            activeConfig: model.draftConfig,
-            activeVersion: model.draftVersion
-          }]
-        }];
-        await route.fulfill({ contentType: "application/json", json: { connections } });
-        return;
-      }
-    }
-    if (method === "POST" && path.endsWith("/models")) {
-      submittedModelBody = body;
-      const current = connections[0]!;
-      connections = [{
-        ...current,
-        models: [{
-          activatedAt: null,
-          activeConfig: null,
-          activeVersion: 0,
-          connectionId: current.id,
-          createdAt: now,
-          displayName: String(body.displayName),
-          draftConfig: body.configuration as AdminProviderModelConfiguration,
-          draftVersion: 1,
-          enabled: true,
-          id: "model-e2e",
-          updatedAt: now
-        }]
-      }];
-      await route.fulfill({ contentType: "application/json", json: { connections }, status: 201 });
-      return;
-    }
-    if (method === "PATCH" && path.endsWith("/models/model-e2e")) {
-      const enabled = body.action === "enable";
-      const current = connections[0]!;
-      connections = [{
-        ...current,
-        models: current.models.map((candidate) => candidate.id === "model-e2e"
-          ? { ...candidate, enabled }
-          : candidate)
-      }];
-      await route.fulfill({ contentType: "application/json", json: { connections } });
-      return;
-    }
-    if (method === "POST" && path.endsWith("/tests")) {
-      const current = connections[0]!;
-      const check: AdminProviderDraftCheck = {
-        checkedAt: now,
-        connectionDraftVersion: current.draftVersion,
-        credentialDraftVersion: current.credentials[0]!.draftVersion,
-        credentialId: "credential-e2e",
-        credentialVersionId: null,
-        evidence: {
-          compatibility: {
-            directPdf: "not_supported",
-            modelAccess: "verified",
-            probeVersion: 1,
-            streaming: "verified",
-            structuredOutput: "verified",
-            usage: "verified"
-          },
-          detail: "ok",
-          method: "openrouter_account_catalog",
-          selectedProviders: ["acme-primary", "acme-backup"],
-          structuredOutput: {
-            adapterKind: "openrouter_chat_completions",
-            probeVersion: 2,
-            upstreamModelId: "vendor/e2e-model",
-            verified: true
-          },
-          upstreamModelId: "vendor/e2e-model"
-        },
-        fingerprint: "provider-e2e-check",
-        modelDraftVersion: 1,
-        providerModelId: "model-e2e",
-        status: "available"
+        }],
+        defaultCredentialId: "credential-e2e"
       };
-      connections = [{ ...current, draftChecks: [check] }];
-      await route.fulfill({ contentType: "application/json", json: { check } });
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] }, status: 201 });
+      return;
+    }
+    if (method === "PATCH" && path === "/api/admin/providers/provider-e2e") {
+      settingsBodies.push({ body, method, path });
+      connection = {
+        ...connection,
+        displayName: String(body.displayName),
+        draftConfig: body.configuration as typeof configuration,
+        draftVersion: connection.draftVersion + 1
+      };
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
+      return;
+    }
+    if (method === "POST" && path === "/api/admin/providers/provider-e2e/actions") {
+      settingsBodies.push({ body, method, path });
+      if (body.action === "activate") {
+        connection = {
+          ...connection,
+          activeConfig: connection.draftConfig,
+          activeVersion: connection.draftVersion
+        };
+      }
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
       return;
     }
     await route.fulfill({
@@ -1696,203 +1458,71 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   });
 
   await signInWithLocalToken(page);
-  await page.goto("/admin");
+  await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
-  await expect(section.getByRole("heading", { exact: true, name: "Providers" })).toBeVisible();
-  await section.getByRole("button", { name: /OpenRouter Not configured/ }).click();
-  await section.getByRole("button", { name: "Manage OpenRouter connection" }).click();
-  const connectionsWorkspace = section.getByTestId("provider-connections-workspace");
-  await expect(connectionsWorkspace).toBeVisible();
+  const row = section.getByTestId("provider-row-provider-e2e");
+  await expect(row.getByTestId("provider-status")).toHaveText("Not checked");
+  await row.click();
+  await expect(section.getByTestId("provider-page-status")).toHaveText("No keys yet · 1 model on");
 
-  const connectionIndex = section.getByTestId("provider-connection-index");
-  await expect(connectionIndex).toBeVisible();
-  await connectionIndex.getByRole("button", { name: "New" }).click();
-  await expect(section.getByRole("heading", { name: "New provider connection" })).toBeVisible();
-  await expect(section.getByLabel("Provider family")).toHaveValue("openrouter");
-  await section.getByLabel("Display name").fill("E2E OpenRouter");
-  const connectionTimeout = section.getByLabel("Response timeout (seconds)");
-  await expect(connectionTimeout).toHaveValue("300");
-  await page.setViewportSize({ height: 844, width: 390 });
-  await connectionTimeout.scrollIntoViewIfNeeded();
-  await expect(connectionTimeout).toBeInViewport();
-  await expectNoPageOverflow(page);
-  await connectionTimeout.fill("500");
-  await page.setViewportSize({ height: 900, width: 1440 });
-  await section.getByRole("button", { name: "Save connection" }).click();
-  expect(submittedConnectionBody).toMatchObject({
-    configuration: { responseTimeoutSeconds: 500 }
-  });
-  await expect(connectionIndex).toBeVisible();
-  await connectionIndex.getByRole("button", { name: /E2E OpenRouter/ }).click();
-  await expect(section.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
-  const activationReadiness = section.getByTestId("provider-activation-readiness");
-  await expect(activationReadiness).toHaveAttribute("data-readiness-tone", "setup");
-  await expect(activationReadiness.getByRole("heading", {
-    name: "Complete setup before activation."
-  })).toBeVisible();
-
-  await connectionsWorkspace.getByLabel("API key").fill("e2e-write-only-provider-key");
-  await expect(section.getByRole("button", { name: "Save key" })).toBeDisabled();
-  const credentialTestResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname.endsWith("/credential-tests")
-  );
-  await section.getByRole("button", { name: "Test new key" }).click();
-  const safeTestBody = await (await credentialTestResponse).text();
-  expect(JSON.parse(safeTestBody)).toEqual({
-    test: {
-      checkedAt: now,
-      connectionDraftVersion: 1,
-      modelCount: discoveredModels.length,
-      status: "valid"
-    }
-  });
-  expect(safeTestBody).not.toContain("e2e-write-only-provider-key");
-  expect(testedKey).toBe("e2e-write-only-provider-key");
-  expect(submittedKey).toBeNull();
-  await expect(section.getByText(`Key accepted. The account catalog exposes ${discoveredModels.length} models.`)).toBeVisible();
-  await expect(section.getByRole("button", { name: "Save key" })).toBeEnabled();
-  await section.getByRole("button", { name: "Save key" }).click();
-  await expect(connectionsWorkspace.getByLabel("API key")).toHaveCount(0);
   await section.getByRole("button", { name: "Add key" }).click();
-  await expect(connectionsWorkspace.getByLabel("API key")).toHaveValue("");
-  await section.getByRole("button", { name: "Close key form" }).click();
-  expect(submittedKey).toBe("e2e-write-only-provider-key");
-  await expect(section.getByText("e2e-write-only-provider-key")).toHaveCount(0);
+  const form = section.getByTestId("provider-key-form");
+  await form.getByLabel("Label").fill("Primary");
+  await form.getByLabel("API key").fill("e2e-rejected-key");
+  await expect(form).toContainText("Sends one small request to the provider");
+  await form.getByRole("button", { name: "Test & Save" }).click();
+  await expect(form.getByRole("alert")).toHaveText("The provider rejected this key. Check the key and try again.");
+  await expect(form.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");
+  await expect(form.getByLabel("API key")).toHaveValue("e2e-rejected-key");
+  await expect(section.getByTestId("provider-key-credential-e2e")).toHaveCount(0);
+  await expect(section.getByTestId("provider-page-status")).toHaveText("No keys yet · 1 model on");
 
-  await section.getByRole("tab", { exact: true, name: "Models" }).click();
-  const modelWorkflow = section.getByTestId("provider-task-models");
-  const modelCatalogResponse = page.waitForResponse((response) => {
-    const request = response.request();
-    return request.method() === "POST" &&
-      new URL(response.url()).pathname.endsWith("/actions") &&
-      (request.postDataJSON() as Record<string, unknown>).action === "discover_models";
-  });
-  await modelWorkflow.getByRole("button", { exact: true, name: "Add model" }).click();
-  await modelCatalogResponse;
-  expect(discoveryActions).toEqual([{
-    action: "discover_models",
-    credentialId: "credential-e2e"
-  }]);
-
-  const modelPicker = section.getByRole("button", { name: "OpenRouter model" });
-  await expect(modelPicker).toContainText("Choose a model");
-  await modelPicker.click();
-  const modelListbox = section.getByRole("listbox", { name: "OpenRouter model" });
-  await expect(section.getByText(`${discoveredModels.length} models`, { exact: true })).toBeVisible();
-  await expect(modelListbox.getByRole("option").first()).toContainText("Catalog Model 001");
-
-  await section.getByRole("combobox", { name: "Search models" }).fill("vendor reasoning");
-  await expect(section.getByText(`1 of ${discoveredModels.length} models`, { exact: true })).toBeVisible();
-  await modelListbox.getByRole("option", { name: /E2E Model/ }).click();
-  await expect(modelPicker).toContainText("E2E Model");
-  await expect(section.getByText("128,000 context tokens · tools, reasoning")).toBeVisible();
-  await expect(section.getByRole("checkbox", { name: /Available as answer model/ }))
-    .toBeChecked();
-  const modelTimeout = section.getByLabel("Response timeout override (seconds)");
-  await expect(modelTimeout).toHaveAttribute("placeholder", "Inherit 500");
-  await page.setViewportSize({ height: 844, width: 390 });
-  await modelTimeout.scrollIntoViewIfNeeded();
-  await expect(modelTimeout).toBeInViewport();
-  await expectNoPageOverflow(page);
-  await modelTimeout.fill("800");
-  await expect(section.getByText(/Effective deadline: 800 seconds/)).toBeVisible();
-  await page.setViewportSize({ height: 900, width: 1440 });
-
-  const endpointCatalogResponse = page.waitForResponse((response) => {
-    const request = response.request();
-    return request.method() === "POST" &&
-      new URL(response.url()).pathname.endsWith("/actions") &&
-      (request.postDataJSON() as Record<string, unknown>).action === "discover_endpoints";
-  });
-  await section.getByLabel("Only selected providers").check();
-  await endpointCatalogResponse;
-  expect(discoveryActions).toEqual([
-    { action: "discover_models", credentialId: "credential-e2e" },
-    {
-      action: "discover_endpoints",
-      credentialId: "credential-e2e",
-      modelId: "vendor/e2e-model"
-    }
+  const saveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname.endsWith("/credentials") &&
+    response.status() === 201
+  );
+  await form.getByLabel("API key").fill("e2e-write-only-provider-key");
+  await form.getByRole("button", { name: "Test & Save" }).click();
+  const saveBody = await (await saveResponse).text();
+  expect(saveBody).not.toContain("e2e-write-only-provider-key");
+  expect(saveBody).not.toContain("secretEnvelope");
+  expect(credentialBodies).toEqual([
+    { activate: true, label: "Primary", secret: "e2e-rejected-key" },
+    { activate: true, label: "Primary", secret: "e2e-write-only-provider-key" }
   ]);
+  await expect(form).toHaveCount(0);
+  const key = section.getByTestId("provider-key-credential-e2e");
+  await expect(key).toContainText("Primary");
+  await expect(key).toContainText("Default key");
+  await expect(key.getByTestId("provider-key-detail")).toContainText("Working");
+  await expect(section.getByTestId("provider-page-status")).toContainText("All keys working · 1 model on");
+  await expect(section.getByText("e2e-write-only-provider-key")).toHaveCount(0);
+  await expect(section.getByTestId("provider-default-key")).toHaveValue("credential-e2e");
+  await expect(section).not.toContainText(/\bdraft\b|\brevision\b|\bpending\b|\bevidence\b|\bprobe\b|\badapter\b|\bfingerprint\b/iu);
 
-  await section.getByRole("button", { name: "Add route Acme Inference (acme-backup)" }).click();
-  await section.getByRole("button", { name: "Add route Acme Inference (acme-primary)" }).click();
-  const routePriority = section.getByRole("list", { name: "Selected provider route priority" });
-  await routePriority.getByRole("button", { name: "Move acme-primary up" }).click();
-  await expect(routePriority.getByRole("listitem").nth(0)).toContainText("acme-primary");
-  await expect(routePriority.getByRole("listitem").nth(1)).toContainText("acme-backup");
-
-  await section.getByRole("button", { exact: true, name: "Save model" }).click();
-  await expect(section.getByRole("list", { name: "Configured models" }).getByText("E2E Model", { exact: true })).toBeVisible();
-  expect(submittedModelBody).toMatchObject({
-    configuration: {
-      adapterKind: "openrouter_chat_completions",
-      answerSelectable: true,
-      openRouterRouting: {
-        mode: "only_selected",
-        providers: ["acme-primary", "acme-backup"]
-      },
-      responseTimeoutSeconds: 800,
-      upstreamModelId: "vendor/e2e-model"
-    },
-    displayName: "E2E Model"
+  await section.getByRole("button", { name: "Connection settings" }).click();
+  const sheet = page.getByRole("dialog", { name: "Connection settings" });
+  await expect(sheet.getByLabel("Name")).toHaveValue("OpenRouter");
+  await expect(sheet.getByLabel(/^API key/)).toHaveCount(0);
+  await page.setViewportSize({ height: 844, width: 390 });
+  const timeout = sheet.getByLabel("Response timeout (seconds)");
+  await timeout.scrollIntoViewIfNeeded();
+  await expect(timeout).toBeInViewport();
+  await expectNoPageOverflow(page);
+  await timeout.fill("500");
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await sheet.getByRole("button", { name: "Test & Save" }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(settingsBodies.map(({ body, method }) => ({ action: body.action, method }))).toEqual([
+    { action: undefined, method: "PATCH" },
+    { action: "activate", method: "POST" }
+  ]);
+  expect(settingsBodies[0]?.body).toMatchObject({
+    configuration: { responseTimeoutSeconds: 500 },
+    expectedDraftVersion: 1
   });
 
-  const configuredModels = section.getByRole("list", { name: "Configured models" });
-  const modelRow = configuredModels.getByRole("listitem").filter({ hasText: "E2E Model" });
-  await expect(modelRow).toContainText("Answer model");
-  await expect(modelRow.getByText("Enabled", { exact: true })).toBeVisible();
-  await modelRow.getByRole("button", { name: "Disable E2E Model model" }).click();
-  await expect(modelRow.getByText("Disabled", { exact: true })).toBeVisible();
-  const enableModel = modelRow.getByRole("button", { name: "Enable E2E Model model" });
-  await expect(enableModel).toHaveClass(/text-proof/u);
-  await expectFullyHitTestable(enableModel);
-  await enableModel.click();
-  await expect(modelRow.getByText("Enabled", { exact: true })).toBeVisible();
-
-  const modelMore = section.getByLabel("More actions for E2E Model model");
-  await modelMore.click();
-  const modelActions = section.getByRole("button", { name: "Delete E2E Model model" }).locator("xpath=..");
-  await expectFullyHitTestable(modelActions);
-  await expect(section.getByText("vendor/e2e-model", { exact: true })).toHaveCount(0);
-  await modelMore.click();
-
-  await section.getByRole("tab", { name: "Authentication" }).click();
-  await section.locator("#provider-default-credential").selectOption("credential-e2e");
-  await expect(section.getByText("Ready to activate.")).toBeVisible();
-
-  await expect(section.getByRole("tab", { name: "Diagnostics" })).toHaveCount(0);
-  await section.getByRole("tab", { exact: true, name: "Models" }).click();
-  await section.getByRole("button", { name: "Open E2E Model capabilities" }).click();
-  const capabilities = section.getByTestId("provider-model-capabilities-model-e2e");
-  await capabilities.getByRole("button", { name: "Run compatibility checks" }).click();
-  const capabilityTest = page.getByTestId("admin-confirm-provider-capability-test");
-  await expect(capabilityTest).toBeVisible();
-  await capabilityTest.getByRole("button", { name: "Confirm run checks" }).click();
-  await expect(section.getByText("The exact model and credential draft is available.")).toBeVisible();
-  await expect(capabilities.getByLabel("Model access verified")).toBeVisible();
-  await expect(capabilities.getByLabel("Structured Output verified")).toBeVisible();
-  await expect(capabilities.getByLabel("Direct PDF not supported")).toBeVisible();
-  await expect(capabilities.getByLabel("Streaming protocol verified")).toBeVisible();
-  await expect(capabilities.getByLabel("Usage reporting verified")).toBeVisible();
-
-  await section.getByRole("button", { name: "Activate and enable" }).click();
-  await expect(section.getByText("Provider draft activated and enabled for new runs.")).toBeVisible();
-  expect(activationBody).toEqual({
-    action: "activate",
-    confirmUnavailable: false,
-    enableConnection: true
-  });
-  await expect(section.getByText("Provider is active and ready for new runs.")).toBeVisible();
-  const providerHeader = section.getByRole("heading", {
-    level: 2,
-    name: "E2E OpenRouter"
-  }).locator("..");
-  await expect(providerHeader.getByText("Enabled", { exact: true })).toBeVisible();
-  await expect(providerHeader.getByText("Active v1", { exact: true })).toBeVisible();
-
-  const connectionDetail = section.getByTestId("provider-connection-task-detail");
   for (const viewport of [
     { height: 900, width: 1440 },
     { height: 1024, width: 768 },
@@ -1900,23 +1530,15 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
     { height: 390, width: 844 }
   ]) {
     await page.setViewportSize(viewport);
-    const back = section.getByRole("button", { name: "Back to connections" });
-    await expect(connectionIndex).toBeHidden();
-    await expect(connectionDetail).toBeVisible();
-    await expect(back).toBeVisible();
-    await expectNoPageOverflow(page);
-
-    await back.click();
-    await expect(connectionIndex).toBeVisible();
-    await expect(connectionDetail).toBeHidden();
-    await expectNoPageOverflow(page);
-
-    await connectionIndex.getByRole("button", { name: /E2E OpenRouter/ }).click();
-    await expect(connectionIndex).toBeHidden();
-    await expect(connectionDetail).toBeVisible();
-    await expect(connectionDetail.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
+    await expect(section.getByTestId("provider-page")).toBeVisible();
+    await expect(page.getByRole("switch", { name: "OpenRouter enabled" })).toBeVisible();
     await expectNoPageOverflow(page);
   }
+  await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers" }).click();
+  await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+  await expect(page).not.toHaveURL(/resource=/u);
+  await expect(row.getByTestId("provider-status")).toHaveText("Working");
+  await expectNoPageOverflow(page);
 });
 
 test("administrator saves a versioned Search recommendation that grants no access", async ({ page }) => {
@@ -1999,8 +1621,7 @@ test("administrator saves a versioned Search recommendation that grants no acces
 
   await page.setViewportSize({ height: 800, width: 1280 });
   await signInWithLocalToken(page);
-  await page.goto("/admin");
-  await page.getByTestId("admin-tab-search").click();
+  await page.goto("/admin?section=search");
   const section = page.getByTestId("admin-search-section");
   const policy = section.getByRole("region", { name: "Recommended Search plan" });
   await expect(policy).toContainText("This recommendation never grants access.");
@@ -2106,5 +1727,5 @@ test("ordinary user receives real provider-admin denial without provider metadat
   expect(deniedBox).toBeTruthy();
   expect(viewport).toBeTruthy();
   expect(Math.abs(deniedBox!.y + deniedBox!.height / 2 - viewport!.height / 2)).toBeLessThanOrEqual(2);
-  await expect(page.getByRole("tab", { name: "Providers" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Providers" })).toHaveCount(0);
 });

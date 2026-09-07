@@ -6,6 +6,7 @@ import {
   adminSections,
   normalizeAdminSectionPath,
   parseAdminSection,
+  parseAdminSectionResource,
   resolveAdminSectionId
 } from "./adminSections";
 
@@ -60,6 +61,25 @@ describe("adminSections", () => {
     );
     expect(adminSectionPath("https://aiqsa.example/admin?mode=compact&section=users#current", "overview")).toBe(
       "/admin?mode=compact#current"
+    );
+  });
+
+  it("opens a resource inside a section and drops it when the section changes", () => {
+    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact#current", "providers", "conn-1")).toBe(
+      "/admin?mode=compact&section=providers&resource=conn-1#current"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?section=providers&resource=conn-1", "providers", null)).toBe(
+      "/admin?section=providers"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?section=providers&resource=conn-1", "groups")).toBe(
+      "/admin?section=groups"
+    );
+    expect(parseAdminSectionResource("?section=providers&resource=conn-1")).toBe("conn-1");
+    expect(parseAdminSectionResource("?section=providers")).toBeNull();
+    expect(parseAdminSectionResource("?resource=")).toBeNull();
+    expect(parseAdminSectionResource(`?resource=${"x".repeat(300)}`)).toBeNull();
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=providers&resource=conn-1")).toBe(
+      "/admin?section=providers&resource=conn-1"
     );
   });
 });

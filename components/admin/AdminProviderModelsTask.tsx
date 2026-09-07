@@ -17,7 +17,6 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
-import { presentProviderModel } from "@/components/admin/providerAdvancedView";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminOpenRouterDiscoverySession } from "@/components/admin/useAdminOpenRouterDiscovery";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
@@ -31,8 +30,19 @@ import {
   rerankerPresetsForFamily,
   type RerankerModelPreset
 } from "@/lib/domain/rerankerModels";
+import type { AdminProviderModel } from "@/lib/contracts/adminProviders";
 import { MoreHorizontal, Pencil, Plus, TestTube2, Trash2 } from "lucide-react";
 import { useState } from "react";
+
+// TODO(S2): the Models table replaces this task and its publication labels.
+function presentProviderModel(model: AdminProviderModel): Readonly<{
+  publication: "active" | "not_configured" | "pending";
+  publicationLabel: string;
+}> {
+  if (!model.activeConfig) return { publication: "not_configured", publicationLabel: "Not applied yet" };
+  if (model.activeVersion !== model.draftVersion) return { publication: "pending", publicationLabel: "Changes not applied" };
+  return { publication: "active", publicationLabel: "In use" };
+}
 
 export function AdminProviderModelsTask({
   connection,
