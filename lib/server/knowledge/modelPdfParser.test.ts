@@ -10,12 +10,14 @@ import {
 } from "../parsing/modelPdfOutput";
 import type { NativePdfGeometry } from "../parsing/nativePdf";
 import { ProviderRequestTimeoutError } from "../providers/network";
-import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import {
+  createProviderRuntimeBinding,
+  type ProviderExecutionSnapshot
+} from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
 import { KnowledgeModelPdfAttemptError } from "./modelPdfAttemptRepository";
 import {
   createKnowledgeModelPdfParser,
-  KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS,
   KNOWLEDGE_MODEL_PDF_PROVIDER_MAX_ATTEMPTS,
   KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY
 } from "./modelPdfParser";
@@ -853,6 +855,97 @@ describe("Knowledge System Model PDF parser", () => {
     ]);
   });
 
+  it.each([
+    { connectionMs: 300_000, modelMs: undefined, latencyMs: 150_000, succeeds: true },
+    { connectionMs: 90_000, modelMs: 300_000, latencyMs: 150_000, succeeds: true },
+    { connectionMs: 300_000, modelMs: 5_000, latencyMs: 6_000, succeeds: false }
+  ].flatMap(testCase => [
+    { ...testCase, adapterKind: "openai_responses_native" as const, providerFamily: "openai" as const },
+    { ...testCase, adapterKind: "openai_responses_compatible" as const, providerFamily: "openai_compatible" as const }
+  ]))("uses the pinned PDF response deadline ($adapterKind/$connectionMs/$modelMs)", async ({
+    connectionMs, modelMs, latencyMs, succeeds, adapterKind, providerFamily
+  }) => {
+    vi.useFakeTimers();
+    try {
+      const defaults = snapshot();
+      const pinned: ProviderExecutionSnapshot = {
+        ...defaults,
+        connection: { ...defaults.connection, responseTimeoutMs: connectionMs },
+        model: { ...defaults.model, adapterKind, ...(modelMs === undefined ? {} : { responseTimeoutMs: modelMs }) },
+        providerFamily
+      };
+      const text = [modelPdfPageStartMarker(1), "Visible page text", modelPdfPageEndMarker(1)].join("\n");
+      const fetchFn = vi.fn<typeof fetch>(async (_request, init) => new Promise((resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => { clearTimeout(timer); reject(signal?.reason); };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", abort);
+          resolve(new Response(JSON.stringify({
+            id: "response-pdf-deadline",
+            status: "completed",
+            output: [{
+              id: "message-pdf-deadline", type: "message", role: "assistant",
+              content: [{ type: "output_text", text, annotations: [] }]
+            }],
+            usage: { input_tokens: 5, output_tokens: 7, total_tokens: 12 }
+          }), { status: 200 }));
+        }, latencyMs);
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      }));
+      const markAmbiguous = vi.fn(async () => undefined);
+      const settle = vi.fn(async (input: Record<string, unknown>) => input);
+      const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+        attemptRepository: {
+          reserve: vi.fn(async () => ({ attemptId: "attempt-deadline", kind: "dispatch" })),
+          markDispatched: vi.fn(async () => true),
+          markAmbiguous,
+          settle
+        } as never,
+        execute: async (accepted, request, options) => {
+          const runtime = createProviderRuntimeBinding({
+            options: { allowFake: false, fetchFn }, secret: "test-only", snapshot: accepted
+          });
+          const stream = runtime.adapter.stream(request, options);
+          let next = await stream.next();
+          while (!next.done) next = await stream.next();
+          return next.value;
+        },
+        inspect: vi.fn(async () => ({ pageCount: 1 })),
+        prepare: vi.fn(async () => ({
+          kind: "images" as const, pageStart: 1, pageEnd: 1,
+          images: [{ bytes: Buffer.from("page"), height: 800, width: 600,
+            sourceHeight: 800, sourceWidth: 600, mimeType: "image/png" as const, page: 1 }]
+        })),
+        retry: { random: () => 0, sleep: async () => undefined }
+      });
+      const pending = parser.parse({
+        artifactId: "artifact-deadline", bytes: Buffer.from("%PDF-source"),
+        maxBlocks: 10, maxCharacters: 1_000, maxPages: 1, mode: "system_model_vision",
+        ownerUserId: "owner-1", parserProfileVersion: 7, processingGeneration: 0,
+        profileRevisionId: "profile-deadline", sourceVersionId: "version-deadline",
+        systemModelPolicyVersion: 3, systemModelSnapshot: pinned
+      }).then(document => ({ document, error: null }), (error: unknown) => ({ document: null, error }));
+      await vi.runAllTimersAsync();
+      const outcome = await pending;
+      if (succeeds) {
+        expect(outcome.error).toBeNull();
+        expect(outcome.document?.blocks.map(block => block.text)).toEqual(["Visible page text"]);
+        expect(fetchFn).toHaveBeenCalledTimes(1);
+        expect(settle).toHaveBeenCalledTimes(1);
+        expect(markAmbiguous).not.toHaveBeenCalled();
+      } else {
+        expect(outcome.error).toMatchObject({ code: "pdf_processing_ambiguous" });
+        expect(fetchFn).toHaveBeenCalledTimes(3);
+        expect(settle).not.toHaveBeenCalled();
+        expect(markAmbiguous).toHaveBeenCalledTimes(1);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries a page timeout and invalid output without repeating a settled sibling", async () => {
     const callsByPage = new Map<number, number>();
     const markAmbiguous = vi.fn(async () => undefined);
@@ -869,7 +962,7 @@ describe("Knowledge System Model PDF parser", () => {
       usage: input.usage as never
     }));
     const execute = vi.fn(async (_snapshot, request, options) => {
-      expect(options.timeoutMs).toBe(KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS);
+      expect(options.timeoutMs).toBe(300_000);
       const metadata = request.attachments[0]!.metadata as {
         image: { sourcePage: number };
       };
@@ -877,7 +970,7 @@ describe("Knowledge System Model PDF parser", () => {
       const attempt = (callsByPage.get(page) ?? 0) + 1;
       callsByPage.set(page, attempt);
       if (page === 2 && attempt === 1) {
-        throw new ProviderRequestTimeoutError(KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS);
+        throw new ProviderRequestTimeoutError(300_000);
       }
       if (page === 2 && attempt === 2) {
         return {

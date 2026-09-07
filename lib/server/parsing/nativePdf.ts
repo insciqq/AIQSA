@@ -1,6 +1,7 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { PDF_WORKER_RESOURCE_LIMITS } from "../uploads/pdfConfig";
+import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
 import {
   finalizeParsedDocument,
   parsedDocumentNeedsFallback,
@@ -769,7 +770,7 @@ function runWorker(
   signal?: AbortSignal
 ): Promise<NativePdfWorkerResult> {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
-  return new Promise((resolve, reject) => {
+  return withPdfWorkerAdmission(() => new Promise((resolve, reject) => {
     const transferred = Uint8Array.from(bytes);
     let worker: Worker;
     try {
@@ -838,7 +839,7 @@ function runWorker(
     worker.once("message", onMessage);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
-  });
+  }), signal);
 }
 
 export async function parseNativeTextPdf(
