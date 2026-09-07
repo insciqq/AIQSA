@@ -12,8 +12,8 @@ import {
 } from "@/components/admin/AdminDraftProtection";
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
-import { AdminMcpGroupAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
-import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
+import { AdminMcpGroupAccessPanel } from "@/components/admin/mcp/AdminMcpGrantPanels";
+import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
 import { AdminProvidersSection } from "@/components/admin/providers/AdminProvidersSection";
 import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetrievalSection";
@@ -43,7 +43,6 @@ import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import { useAdminInvitesController, type AdminInvitesController } from "@/components/admin/useAdminInvitesController";
 import { useAdminMcpController, type AdminMcpController } from "@/components/admin/useAdminMcpController";
-import { useAdminMcpSectionState, type AdminMcpSectionState } from "@/components/admin/useAdminMcpSectionState";
 import { useAdminOperationalFocus } from "@/components/admin/useAdminOperationalFocus";
 import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import {
@@ -134,7 +133,6 @@ function AdminSectionContent({
   groups,
   invites,
   mcp,
-  mcpSection,
   navigation,
   onJump,
   onMutationCommitted,
@@ -151,7 +149,6 @@ function AdminSectionContent({
   groups: AdminGroupsController;
   invites: AdminInvitesController;
   mcp: AdminMcpController;
-  mcpSection: AdminMcpSectionState;
   navigation: Pick<AdminSectionNavigation, "activeFilter" | "activeResource" | "selectFilter" | "selectResource" | "selectSection">;
   onJump(target: AdminAttentionTarget): void;
   onMutationCommitted(): void | Promise<unknown>;
@@ -233,7 +230,16 @@ function AdminSectionContent({
         />
       ) : null;
     case "mcp":
-      return <AdminMcpServersSection controller={mcp} section={mcpSection} />;
+      return (
+        <AdminMcpSection
+          controller={mcp}
+          dashboard={dashboard}
+          feedback={feedback}
+          onSelectResource={navigation.selectResource}
+          requestConfirmation={requestConfirmation}
+          resource={navigation.activeResource}
+        />
+      );
     case "workspace":
       return <AdminWorkspaceSection />;
     case "email":
@@ -386,14 +392,15 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   });
   const mcp = useAdminMcpController({
     active: Boolean(resource.dashboard) && ["mcp", "groups", "users"].includes(navigation.activeSection),
-    onMutationCommitted: resource.refresh
+    onError: feedback.reportError,
+    onMutationCommitted: resource.refresh,
+    onNotice: feedback.reportNotice
   });
-  const mcpSection = useAdminMcpSectionState();
   const { selectSection } = navigation;
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
-    // Providers, Search and Users have resource pages; Users also pre-selects a filter pill.
+    // Providers, Search, Users and MCP servers have resource pages; Users also pre-selects a filter pill.
     const hasResourcePages = target.section === "providers" || target.section === "search" ||
-      target.section === "users";
+      target.section === "users" || target.section === "mcp";
     selectSection(
       target.section,
       hasResourcePages ? target.resource ?? null : null,
@@ -459,7 +466,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 groups={groups}
                 invites={invites}
                 mcp={mcp}
-                mcpSection={mcpSection}
                 navigation={navigation}
                 onJump={jumpToTarget}
                 onMutationCommitted={resource.refresh}

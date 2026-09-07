@@ -111,21 +111,17 @@ const mcp: AdminMcpController = {
   actions: {
     activate: vi.fn(async () => false),
     checkUpdate: vi.fn(async () => false),
-    create: vi.fn(async () => null),
+    create: vi.fn(async () => ({ message: "unavailable", ok: false as const })),
     delete: vi.fn(async () => false),
     disconnectValidationOAuth: vi.fn(async () => false),
-    dismissError: vi.fn(),
-    dismissNotice: vi.fn(),
     grant: vi.fn(async () => false),
     rebuild: vi.fn(async () => false),
     refresh: vi.fn(async () => undefined),
     rollback: vi.fn(async () => false),
     save: vi.fn(async () => ({ applied: false })),
-    select: vi.fn(),
-    test: vi.fn(async () => false),
     update: vi.fn(async () => false)
   },
-  state: { busy: false, error: null, loaded: true, loading: false, notice: null, selectedServer: null, servers: [] }
+  state: { busy: false, error: null, loaded: true, loading: false, servers: [] }
 };
 
 type HarnessProps = Readonly<{

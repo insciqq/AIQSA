@@ -55,16 +55,16 @@ const STAGE_COPY: Record<TransientStage, Readonly<{
     label: "Preparing runtime"
   },
   publishing: {
-    detail: "Publishing the tested immutable revision for use by AIQSA.",
-    label: "Publishing revision"
+    detail: "Applying the checked configuration for use in chats.",
+    label: "Applying"
   },
   queued: {
     detail: "The activation request was accepted and setup is starting in the background.",
     label: "Starting"
   },
   resolving: {
-    detail: "Resolving the exact package or image artifact for this installation.",
-    label: "Resolving artifact"
+    detail: "Resolving the exact package or image for this installation.",
+    label: "Resolving package"
   }
 };
 
