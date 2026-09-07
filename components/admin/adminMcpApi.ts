@@ -269,12 +269,12 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
     json_required: "The MCP request format was not accepted. Refresh and try again.",
     mcp_admin_action_failed: "The MCP action could not be completed.",
     mcp_admin_response_invalid: "The MCP API returned an unexpected response. Refresh and try again.",
-    mcp_artifact_missing: "The exact local artifact is no longer cached. Rebuild and activate this revision instead.",
+    mcp_artifact_missing: "The saved build of this configuration is no longer cached. Rebuild and apply it instead.",
     mcp_draft_changed: "These settings changed during editing or checking. Reopen the server, review the latest settings, and use Test & Save again.",
-    mcp_draft_test_failed: "The MCP check failed. Your changes were not applied. Review the problem below and try Test & Save again.",
+    mcp_draft_test_failed: "The MCP check failed. Your changes were not applied; the current configuration keeps running.",
     mcp_encryption_unavailable: "Secret storage is unavailable. Check AIQSA_ENCRYPTION_KEY.",
     mcp_not_found: "This MCP server no longer exists. Refresh the catalog.",
-    mcp_revision_required: "Choose a tested revision before continuing.",
+    mcp_revision_required: "Choose a checked configuration before continuing.",
     mcp_storage_unavailable: "MCP storage is temporarily unavailable.",
     mcp_validation_unavailable: "The MCP validation runtime is unavailable. Check the runtime and try again.",
     network_error: "Could not reach the MCP administration API.",
@@ -284,10 +284,10 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
   if (!error.issues.length) return summary;
   const detail = error.issues.slice(0, 4).map((issue) => {
     if (issue.code === "mcp_oauth_validation_deferred") {
-      return "Connect your administrator account in this server's Connection & tools section, then use Test & Save. This connection is used to check settings.";
+      return "Connect your administrator account under Authorization on the server page, then use Test & Save. That account is used only to check settings.";
     }
     if (issue.code === "mcp_oauth_reauthorization_required") {
-      return "The authorization has expired or was revoked. Reconnect in Connection & tools, then use Test & Save.";
+      return "The authorization has expired or was revoked. Reconnect under Authorization on the server page, then use Test & Save.";
     }
     if (issue.code === "mcp_request_timeout") {
       return "The server did not respond in time. Check its availability and try again.";

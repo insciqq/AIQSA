@@ -36,6 +36,10 @@ function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status });
 }
 
+function feedback() {
+  return { onError: vi.fn(), onNotice: vi.fn() };
+}
+
 describe("useAdminMcpController", () => {
   it("refreshes connection problems when returning to the MCP section", async () => {
     const original = mcpServer();
@@ -67,6 +71,7 @@ describe("useAdminMcpController", () => {
     await act(async () => { finishRefresh(response({ servers: [original] })); await refresh; });
     expect(result.current.state.servers[0].enabled).toBe(true);
   });
+
   it("tests and publishes the exact candidate with secrets only in the validation request", async () => {
     const original = mcpServer();
     const candidate = mcpServer({ name: "Changed", updatedAt: "2026-07-22T01:00:00.000Z" });
@@ -75,7 +80,8 @@ describe("useAdminMcpController", () => {
       .mockResolvedValueOnce(response({ servers: [original] }))
       .mockResolvedValueOnce(response({ server: candidate }))
       .mockResolvedValueOnce(response({ server: applied }));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { onError, onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onError, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     await act(async () => {
       expect(await result.current.actions.save(original.id, {
@@ -90,27 +96,31 @@ describe("useAdminMcpController", () => {
       expectedUpdatedAt: candidate.updatedAt, publish: true, sharedValues: { key: "fixture-secret" }
     });
     expect(result.current.state.servers[0]).toEqual(applied);
-    expect(result.current.state.notice).toBe("MCP settings checked and applied.");
+    expect(onNotice).toHaveBeenCalledWith("Settings checked and applied.");
+    expect(onError).not.toHaveBeenCalled();
   });
 
-  it("retains a failed candidate for retry and never reports it as applied", async () => {
+  it("returns a failed check to the form, keeps the candidate for retry and never reports it as applied", async () => {
     const original = mcpServer();
     const candidate = mcpServer({ name: "Changed", updatedAt: "2026-07-22T01:00:00.000Z" });
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [original] }))
       .mockResolvedValueOnce(response({ server: candidate }))
       .mockResolvedValueOnce(response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_oauth_validation_deferred", path: "auth.mode" }] }, 400));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { onError, onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onError, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     await act(async () => {
-      expect(await result.current.actions.save(original.id, { name: candidate.name })).toEqual({
-        applied: false, updatedAt: candidate.updatedAt
-      });
+      const saved = await result.current.actions.save(original.id, { name: candidate.name });
+      expect(saved).toMatchObject({ applied: false, updatedAt: candidate.updatedAt });
+      expect(saved.message).toContain("Connect your administrator account");
     });
-    expect(result.current.state.notice).toBeNull();
-    expect(result.current.state.error).toContain("Connect your administrator account");
+    expect(onNotice).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
     expect(result.current.state.servers[0].activeRevision).toEqual(original.activeRevision);
+    expect(result.current.state.servers[0].name).toBe("Changed");
   });
+
   it("loads lazily only when an MCP-owning admin section becomes active", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ servers: [mcpServer()] }));
     const { rerender, result } = renderHook(
@@ -122,37 +132,61 @@ describe("useAdminMcpController", () => {
     rerender({ active: true });
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(result.current.state.selectedServer).toBeNull();
-
-    act(() => result.current.actions.select("server-1"));
-    expect(result.current.state.selectedServer?.name).toBe("Tools");
+    expect(result.current.state.servers[0]?.name).toBe("Tools");
   });
 
-  it("reconciles mutation responses without exposing stale success", async () => {
+  it("reconciles mutation responses, toasts the outcome and keeps a failed dashboard refresh private", async () => {
     const original = mcpServer();
     const enabled = mcpServer({ enabled: true, updatedAt: "2026-07-22T01:00:00.000Z" });
     const onMutationCommitted = vi.fn(() => Promise.reject(new Error("dashboard refresh failed")));
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [original] }))
-      .mockResolvedValueOnce(response({ server: enabled }));
+      .mockResolvedValueOnce(response({ server: enabled }))
+      .mockResolvedValueOnce(response({ error: "mcp_storage_unavailable" }, 503));
+    const { onError, onNotice } = feedback();
     const { result } = renderHook(() => useAdminMcpController({
       active: true,
       fetcher,
-      onMutationCommitted
+      onError,
+      onMutationCommitted,
+      onNotice
     }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
-    act(() => result.current.actions.select(original.id));
 
     await act(async () => {
       expect(await result.current.actions.update(original.id, { enabled: true })).toBe(true);
     });
-    expect(result.current.state.selectedServer?.enabled).toBe(true);
-    expect(result.current.state.notice).toBe("MCP settings updated.");
+    expect(result.current.state.servers[0].enabled).toBe(true);
+    expect(onNotice).toHaveBeenCalledWith("MCP server enabled.");
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(fetcher).toHaveBeenLastCalledWith("/api/admin/mcp/server-1", expect.objectContaining({
       body: JSON.stringify({ enabled: true }),
       method: "PATCH"
     }));
+
+    await act(async () => {
+      expect(await result.current.actions.update(original.id, { enabled: false })).toBe(false);
+    });
+    expect(onError).toHaveBeenCalledWith("MCP storage is temporarily unavailable.");
+    expect(result.current.state.servers[0].enabled).toBe(true);
+  });
+
+  it("stages a tool selection silently: the page state line says what is left to apply", async () => {
+    const original = mcpServer({ updatedAt: "2026-07-22T00:00:00.000Z" });
+    const staged = mcpServer({ draft: { ...original.draft, disabledToolNames: ["forget"] }, updatedAt: "2026-07-22T01:00:00.000Z" });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers: [original] }))
+      .mockResolvedValueOnce(response({ server: staged }));
+    const { onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onNotice }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => {
+      expect(await result.current.actions.update(original.id, { draft: staged.draft })).toBe(true);
+    });
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({
+      draft: staged.draft, expectedUpdatedAt: original.updatedAt
+    });
+    expect(onNotice).not.toHaveBeenCalled();
   });
 
   it("removes a successfully deleted server from local catalog state", async () => {
@@ -164,17 +198,16 @@ describe("useAdminMcpController", () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [original] }))
       .mockResolvedValueOnce(response({ server: tombstone }));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
-    act(() => result.current.actions.select(original.id));
 
     await act(async () => {
       expect(await result.current.actions.delete(original.id)).toBe(true);
     });
 
     expect(result.current.state.servers).toEqual([]);
-    expect(result.current.state.selectedServer).toBeNull();
-    expect(result.current.state.notice).toBe("MCP server deleted.");
+    expect(onNotice).toHaveBeenCalledWith("MCP server deleted.");
     expect(fetcher).toHaveBeenLastCalledWith("/api/admin/mcp/server-1", { method: "DELETE" });
   });
 
@@ -194,7 +227,8 @@ describe("useAdminMcpController", () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [] }))
       .mockResolvedValueOnce(response({ server: activating }, 202));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
 
     await act(async () => {
@@ -203,7 +237,7 @@ describe("useAdminMcpController", () => {
         description: activating.description,
         draft: activating.draft,
         name: activating.name
-      })).toEqual(activating);
+      })).toEqual({ ok: true, server: activating });
     });
 
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -216,8 +250,28 @@ describe("useAdminMcpController", () => {
       }),
       method: "POST"
     }));
-    expect(result.current.state.selectedServer?.activation?.stage).toBe("queued");
-    expect(result.current.state.notice).toMatch(/activation started/i);
+    expect(result.current.state.servers[0]?.activation?.stage).toBe("queued");
+    expect(onNotice).toHaveBeenCalledWith("Settings saved. Setup continues in the background.");
+  });
+
+  it("returns a rejected creation to the form without a toast", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers: [] }))
+      .mockResolvedValueOnce(response({ error: "invalid_draft" }, 400));
+    const { onError, onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onError, onNotice }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+
+    await act(async () => {
+      expect(await result.current.actions.create({
+        activate: true,
+        draft: mcpServer().draft,
+        name: "Broken"
+      })).toEqual({ message: "Review the MCP configuration fields and try again.", ok: false });
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(onNotice).not.toHaveBeenCalled();
+    expect(result.current.state.servers).toEqual([]);
   });
 
   it("polls a transient activation receipt until it reaches a terminal stage", async () => {
@@ -246,8 +300,7 @@ describe("useAdminMcpController", () => {
       .mockResolvedValueOnce(response({ servers: [ready] }));
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
-    act(() => result.current.actions.select(queued.id));
-    await waitFor(() => expect(result.current.state.selectedServer?.activation?.stage).toBe("ready"), {
+    await waitFor(() => expect(result.current.state.servers[0]?.activation?.stage).toBe("ready"), {
       timeout: 2_500
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -268,7 +321,8 @@ describe("useAdminMcpController", () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [] }))
       .mockResolvedValueOnce(response({ server: oauth }, 201));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
 
     await act(async () => {
@@ -276,11 +330,11 @@ describe("useAdminMcpController", () => {
         description: oauth.description,
         draft: oauth.draft,
         name: oauth.name
-      })).toEqual(oauth);
+      })).toEqual({ ok: true, server: oauth });
     });
 
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(result.current.state.notice).toMatch(/connect OAuth/i);
+    expect(onNotice).toHaveBeenCalledWith(expect.stringMatching(/connect your account/i));
   });
 
   it("refreshes the MCP catalog after validation OAuth disconnect", async () => {
@@ -296,9 +350,9 @@ describe("useAdminMcpController", () => {
       .mockResolvedValueOnce(response({ servers: [connected] }))
       .mockResolvedValueOnce(response({ status: "disconnecting" }))
       .mockResolvedValueOnce(response({ servers: [disconnected] }));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { onNotice } = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
-    act(() => result.current.actions.select(connected.id));
 
     await act(async () => {
       expect(await result.current.actions.disconnectValidationOAuth(connected.id)).toBe(true);
@@ -310,7 +364,7 @@ describe("useAdminMcpController", () => {
       expect.objectContaining({ body: "{}", method: "POST" })
     );
     expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/mcp", { method: "GET" });
-    expect(result.current.state.selectedServer?.validationOAuth).toBeNull();
-    expect(result.current.state.notice).toBe("Validation OAuth connection disconnected.");
+    expect(result.current.state.servers[0]?.validationOAuth).toBeNull();
+    expect(onNotice).toHaveBeenCalledWith("Your authorization was disconnected.");
   });
 });
