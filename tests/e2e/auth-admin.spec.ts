@@ -147,7 +147,7 @@ function userRow(page: Page, email: string) {
 }
 
 function groupRow(section: Locator, name: string) {
-  return section.getByTestId("admin-access-group-row").filter({ hasText: name });
+  return section.getByTestId("admin-group-row").filter({ hasText: name });
 }
 
 function inviteRow(section: Locator, email: string) {
@@ -263,16 +263,14 @@ test("admin edits group membership from the group detail without dropping unrela
     await bootstrapAdmin(page);
     await openAdminSection(page, adminSection("groups"));
     const access = page.getByTestId("admin-section-groups");
-    const search = access.getByLabel("Search access groups");
+    const search = access.getByLabel("Search groups");
 
     await search.fill(targetGroupName);
-    await groupRow(access, targetGroupName).click();
-    const detail = access.getByTestId("admin-access-group-detail");
-    await detail.getByRole("button", { name: "Members" }).click();
-    const candidate = detail.getByLabel("Add member");
-    await expect(candidate).toContainText(memberEmail);
-    await candidate.selectOption(member.id);
-    await detail.getByRole("button", { name: "Add member" }).click();
+    await groupRow(access, targetGroupName).getByRole("link").click();
+    const detail = access.getByTestId("admin-group-page");
+    await detail.getByRole("button", { name: "Add a person" }).click();
+    await page.getByRole("combobox", { name: "Search people" }).fill(memberEmail);
+    await page.getByRole("option").filter({ hasText: memberEmail }).click();
 
     await expect
       .poll(async () =>
@@ -303,18 +301,16 @@ test("admin edits group membership from the group detail without dropping unrela
       .toEqual([archivedGroup.id, preservedGroup.id].sort());
     await expect(detail.getByRole("button", { name: "Remove" })).toHaveCount(0);
 
-    await detail.getByRole("button", { name: "Back to access groups" }).click();
+    await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Groups" }).click();
     await expect(search).toHaveValue(targetGroupName);
     await expect(groupRow(access, targetGroupName)).toBeVisible();
 
     await search.fill(archivedGroupName);
-    await access.getByRole("button", { name: "archived" }).click();
-    await groupRow(access, archivedGroupName).click();
-    const archivedDetail = access.getByTestId("admin-access-group-detail");
-    await archivedDetail.getByRole("button", { name: "Members" }).click();
+    await access.getByRole("button", { name: /^Archived · / }).click();
+    await groupRow(access, archivedGroupName).getByRole("link").click();
+    const archivedDetail = access.getByTestId("admin-group-page");
     await expect(archivedDetail.getByText(memberEmail, { exact: false })).toBeVisible();
-    await expect(archivedDetail.getByLabel("Add member")).toHaveCount(0);
-    await expect(archivedDetail.getByRole("button", { name: "Add member" })).toHaveCount(0);
+    await expect(archivedDetail.getByRole("button", { name: "Add a person" })).toHaveCount(0);
     await expect(archivedDetail.getByRole("button", { name: "Remove" })).toHaveCount(0);
     await expect(
       prisma.userGroup.findUnique({
@@ -343,18 +339,18 @@ test("admin sees the built-in Full access group with automatic resource coverage
   await openAdminSection(page, adminSection("groups"));
 
   const access = page.getByTestId("admin-section-groups");
-  await access.getByLabel("Search access groups").fill("Full access");
+  await access.getByLabel("Search groups").fill("Full access");
   const row = groupRow(access, "Full access");
   await expect(row).toBeVisible();
   await expect(row.getByText("Built-in", { exact: true })).toBeVisible();
-  await row.click();
+  await row.getByRole("link").click();
 
-  const detail = access.getByTestId("admin-access-group-detail");
+  const detail = access.getByTestId("admin-group-page");
   await expect(detail.getByRole("heading", { name: "Full access" })).toBeVisible();
-  await expect(detail.getByText(/cannot be renamed, archived, or deleted/i)).toBeVisible();
-  await expect(detail.getByRole("button", { name: "Rename group" })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: "Archive group" })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: "Delete group" })).toHaveCount(0);
+  await expect(detail.getByText(/cannot be renamed, archived or deleted/i)).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Rename" })).toHaveCount(0);
+  await expect(detail.getByRole("switch")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "More actions for Full access" })).toHaveCount(0);
   const systemGroup = await prisma.group.findUnique({
     select: {
       id: true,
@@ -371,31 +367,14 @@ test("admin sees the built-in Full access group with automatic resource coverage
     { role: "owner", user: { email: "operator@aiqsa.local" } }
   ]);
 
-  await detail.getByRole("button", { name: "Members" }).click();
   await expect(detail.getByText("operator@aiqsa.local", { exact: false })).toBeVisible();
-  await expect(detail.getByLabel("Add member")).toBeVisible();
-
-  await detail.getByRole("button", { name: "Models & search" }).click();
-  await expect(detail.getByRole("heading", { name: "Automatic full access" })).toBeVisible();
-  await expect(
-    detail.getByText(
-      /independently selected provider credential and its current availability check are valid/i
-    )
-  ).toBeVisible();
-  await expect(detail.getByRole("button", { name: /Grant provider/i })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: /Grant model/i })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: /Grant search/i })).toHaveCount(0);
-
-  await detail.getByRole("button", { name: "Tools" }).click();
-  await expect(detail.getByText(/included automatically/i).first()).toBeVisible();
-  await expect(detail.getByText(/personal fields remain direct-user permissions/i)).toBeVisible();
-  await expect(detail.getByRole("button", { name: /for group Full access/i })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Add a person" })).toBeVisible();
+  await expect(detail.getByTestId("admin-group-full-access")).toBeVisible();
+  await expect(detail.getByRole("checkbox")).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: /Grant all/i })).toHaveCount(0);
 
   await page.setViewportSize({ height: 844, width: 390 });
-  await detail.getByRole("button", { name: "Overview" }).click();
-  await expect(
-    detail.getByText(/provider credentials and personal MCP setup remain separate/i)
-  ).toBeVisible();
+  await expect(detail.getByText(/Provider keys and personal MCP values stay separate/i)).toBeVisible();
   await expectNoPageOverflow(page);
 });
 
@@ -602,11 +581,10 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
 
     await openAdminSection(page, adminSection("groups"));
     const access = page.getByTestId("admin-section-groups");
-    await access.getByLabel("Search access groups").fill(group.name);
-    await groupRow(access, group.name).click();
-    const groupDetail = access.getByTestId("admin-access-group-detail");
-    await groupDetail.getByRole("button", { name: "Models & search" }).click();
-    await groupDetail.getByLabel("Grant model Fake QSA / Fake QSA").click();
+    await access.getByLabel("Search groups").fill(group.name);
+    await groupRow(access, group.name).getByRole("link").click();
+    const groupDetail = access.getByTestId("admin-group-page");
+    await groupDetail.getByRole("checkbox", { name: "Fake QSA" }).click();
     await expect
       .poll(async () => {
         const grant = await prisma.accessGrant.findFirst({
@@ -863,9 +841,11 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(page.getByTestId("admin-section-groups")).toBeVisible();
     const access = page.getByTestId("admin-section-groups");
     await page.getByRole("button", { name: "New group" }).click();
-    await access.getByLabel("Group name").fill(groupName);
-    await access.getByRole("button", { name: "Create" }).click();
-    await expect(groupRow(access, groupName)).toBeVisible();
+    const nameSheet = page.getByTestId("admin-group-name-sheet");
+    await nameSheet.getByLabel("Group name").fill(groupName);
+    await nameSheet.getByRole("button", { name: "Create" }).click();
+    const groupDetail = access.getByTestId("admin-group-page");
+    await expect(groupDetail.getByRole("heading", { name: groupName })).toBeVisible();
     groupId =
       (
         await prisma.group.findUnique({
@@ -879,32 +859,12 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )?.id ?? null;
     expect(groupId).not.toBeNull();
 
-    await access.getByLabel("Search access groups").fill(groupName);
-    const createdGroupRow = groupRow(access, groupName);
-    await expect(createdGroupRow).toBeVisible();
-    await createdGroupRow.click();
-
-    const groupDetail = access.getByTestId("admin-access-group-detail");
-    await groupDetail.getByRole("button", { name: "Rename group" }).click();
-    await groupDetail.getByLabel("Rename group").fill(renamedGroupName);
-    await groupDetail.getByRole("button", { name: "Save" }).click();
+    await groupDetail.getByRole("button", { name: "Rename" }).click();
+    const renameSheet = page.getByTestId("admin-group-name-sheet");
+    await renameSheet.getByLabel("Group name").fill(renamedGroupName);
+    await renameSheet.getByRole("button", { name: "Save" }).click();
+    await expect(renameSheet).toHaveCount(0);
     await expect(groupDetail.getByRole("heading", { name: renamedGroupName })).toBeVisible();
-
-    await groupDetail.getByRole("button", { name: "Models & search" }).click();
-    await groupDetail.getByLabel("Grant provider Fake QSA").click();
-    await expect
-      .poll(async () =>
-        prisma.accessGrant.findFirst({
-          where: {
-            enabled: true,
-            groupId: groupId!,
-            providerConnectionId: providerTemplateIds.fakeConnection,
-            providerModelId: null,
-            searchStrategy: null
-          }
-        })
-      )
-      .not.toBeNull();
 
     await groupDetail.getByRole("button", { name: `Grant all Fake QSA models to ${renamedGroupName}` }).click();
     await expect
@@ -924,7 +884,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .toBeGreaterThan(0);
 
-    await groupDetail.getByRole("button", { name: "Grant search Anthropic Search" }).click();
+    await groupDetail.getByRole("switch", { name: `Anthropic Search for ${renamedGroupName}` }).click();
     await expect
       .poll(async () =>
         prisma.accessGrant.findFirst({
@@ -939,7 +899,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .not.toBeNull();
 
-    await groupDetail.getByRole("button", { name: `Clear Fake QSA models from ${renamedGroupName}` }).click();
+    await groupDetail.getByRole("button", { name: `Revoke all Fake QSA models from ${renamedGroupName}` }).click();
     await expect
       .poll(() =>
         prisma.accessGrant.count({
@@ -956,6 +916,22 @@ test("admin console keeps all redesigned sections operable end to end", async ({
         })
       )
       .toBe(0);
+
+    await groupDetail.getByRole("switch", { name: "All Fake QSA models, including ones added later" }).click();
+    await expect
+      .poll(async () =>
+        prisma.accessGrant.findFirst({
+          where: {
+            enabled: true,
+            groupId: groupId!,
+            providerConnectionId: providerTemplateIds.fakeConnection,
+            providerModelId: null,
+            searchStrategy: null
+          }
+        })
+      )
+      .not.toBeNull();
+    await expect(groupDetail.getByRole("button", { name: `Grant all Fake QSA models to ${renamedGroupName}` })).toHaveCount(0);
 
     await openUsersList(page);
     await page.getByRole("button", { name: "Sign-up rules" }).click();
@@ -1033,42 +1009,44 @@ test("admin console keeps all redesigned sections operable end to end", async ({
 
     await openAdminSection(page, adminSection("groups"));
     const accessAfterDelete = page.getByTestId("admin-section-groups");
-    await accessAfterDelete.getByRole("button", { name: "Back to access groups" }).click();
-    await accessAfterDelete.getByLabel("Search access groups").fill(renamedGroupName);
+    const groupsCrumb = page.getByTestId("admin-topbar-title").getByRole("link", { name: "Groups" });
+    await accessAfterDelete.getByLabel("Search groups").fill(renamedGroupName);
     const renamedGroupRow = groupRow(accessAfterDelete, renamedGroupName);
     await expect(renamedGroupRow).toBeVisible();
-    await renamedGroupRow.click();
-    const blockedGroupDetail = accessAfterDelete.getByTestId("admin-access-group-detail");
+    await renamedGroupRow.getByRole("link").click();
+    const blockedGroupDetail = accessAfterDelete.getByTestId("admin-group-page");
     await expect(blockedGroupDetail.getByText(/Remove [0-9]+ active grants? before deleting this group\./)).toBeVisible();
-    await blockedGroupDetail.getByRole("button", { name: "Back to access groups" }).click();
+    await page.getByRole("button", { name: `More actions for ${renamedGroupName}` }).click();
+    await expect(page.getByRole("menuitem", { name: "Delete" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await groupsCrumb.click();
 
-    await accessAfterDelete.getByLabel("Search access groups").fill(emptyGroupName);
+    await accessAfterDelete.getByLabel("Search groups").fill(emptyGroupName);
     const emptyGroupRow = groupRow(accessAfterDelete, emptyGroupName);
     await expect(emptyGroupRow).toBeVisible();
-    await emptyGroupRow.click();
-    const emptyGroupDetail = accessAfterDelete.getByTestId("admin-access-group-detail");
-    await emptyGroupDetail.getByRole("button", { name: "Delete group" }).click();
+    await emptyGroupRow.getByRole("link").click();
+    await expect(accessAfterDelete.getByTestId("admin-group-page")).toBeVisible();
+    await page.getByRole("button", { name: `More actions for ${emptyGroupName}` }).click();
+    await page.getByRole("menuitem", { name: "Delete" }).click();
     await confirmAdminDialog(page, "admin-confirm-delete-group", /confirm delete group/i);
+    await expect(accessAfterDelete.getByTestId("admin-groups-index")).toBeVisible();
     await expect(emptyGroupRow).toHaveCount(0);
     emptyGroupId = null;
 
-    await accessAfterDelete.getByLabel("Search access groups").fill(renamedGroupName);
+    await accessAfterDelete.getByLabel("Search groups").fill(renamedGroupName);
     await expect(renamedGroupRow).toBeVisible();
-    await renamedGroupRow.click();
-    const groupToArchiveDetail = accessAfterDelete.getByTestId("admin-access-group-detail");
-    await groupToArchiveDetail.getByRole("button", { name: "Archive group" }).click();
+    await renamedGroupRow.getByRole("link").click();
+    const groupToArchiveDetail = accessAfterDelete.getByTestId("admin-group-page");
+    await page.getByRole("button", { name: `More actions for ${renamedGroupName}` }).click();
+    await page.getByRole("menuitem", { name: "Archive" }).click();
     await confirmAdminDialog(page, "admin-confirm-archive-group", /confirm archive group/i);
-    await expect(groupToArchiveDetail.getByText(/Archived groups remain visible/)).toBeVisible();
-    await groupToArchiveDetail.getByRole("button", { name: "Back to access groups" }).click();
-    await expect(accessAfterDelete.getByRole("button", { name: "archived" })).toHaveAttribute("aria-pressed", "true");
+    await expect(groupToArchiveDetail.getByText(/This group is archived/)).toBeVisible();
+    await expect(groupToArchiveDetail.getByRole("switch", { name: "All Fake QSA models, including ones added later" })).toBeDisabled();
+    await groupsCrumb.click();
+    await expect(groupRow(accessAfterDelete, renamedGroupName)).toHaveCount(0);
+    await accessAfterDelete.getByRole("button", { name: /^Archived · / }).click();
     await expect(groupRow(accessAfterDelete, renamedGroupName)).toBeVisible();
-    await groupRow(accessAfterDelete, renamedGroupName).click();
-    const archivedAccessDetail = accessAfterDelete.getByTestId("admin-access-group-detail");
-    await archivedAccessDetail.getByRole("button", { name: "Models & search" }).click();
-    await expect(
-      archivedAccessDetail.getByText("Archived groups do not apply grants. Access editing is disabled for this group.")
-    ).toBeVisible();
-    await expect(archivedAccessDetail.getByLabel("Grant provider Fake QSA")).toBeDisabled();
+    await expect(groupRow(accessAfterDelete, renamedGroupName).getByText(/^Archived /)).toBeVisible();
 
     await page.setViewportSize({
       height: 844,
@@ -1202,32 +1180,29 @@ test("admin console keeps every section touch-operable in the documented compact
 
     await openAdminSection(page, adminSection("groups"));
     const access = page.getByTestId("admin-section-groups");
-    await access.getByLabel("Search access groups").fill(compactGroupName);
+    const accessGroupSearch = access.getByLabel("Search groups");
+    await accessGroupSearch.fill(compactGroupName);
     const newGroup = page.getByRole("button", { exact: true, name: "New group" });
     await expectTouchTarget(newGroup);
     await newGroup.click();
-    await expectTouchTarget(access.getByLabel("Group name"));
-    await expectTouchTarget(access.getByRole("button", { exact: true, name: "Create" }));
+    const groupNameSheet = page.getByTestId("admin-group-name-sheet");
+    await expectTouchTarget(groupNameSheet.getByLabel("Group name"));
+    await expectTouchTarget(groupNameSheet.getByRole("button", { exact: true, name: "Create" }));
     await expectNoPageOverflow(page);
-    const backToGroupsFromCreate = access.getByRole("button", { name: "Back to access groups" });
-    await expectTouchTarget(backToGroupsFromCreate);
-    await backToGroupsFromCreate.click();
-    const accessGroupSearch = access.getByLabel("Search access groups");
+    await groupNameSheet.getByRole("button", { exact: true, name: "Cancel" }).click();
+    await expect(groupNameSheet).toHaveCount(0);
     await expect(accessGroupSearch).toHaveValue(compactGroupName);
     const accessGroupRow = groupRow(access, compactGroupName);
     await expectTouchTarget(accessGroupRow);
     await accessGroupRow.scrollIntoViewIfNeeded();
-    await accessGroupRow.click();
-    const accessDetail = access.getByTestId("admin-access-group-detail");
+    await accessGroupRow.getByRole("link").click();
+    const accessDetail = access.getByTestId("admin-group-page");
     await expect(accessDetail).toBeVisible();
-    const modelsAndSearch = accessDetail.getByRole("button", { name: "Models & search" });
-    await expectTouchTarget(modelsAndSearch);
-    await modelsAndSearch.click();
-    await expectTouchTarget(accessDetail.getByRole("button", { name: /Grant provider / }).first());
+    await expectTouchTarget(accessDetail.getByRole("switch").first());
+    await expectTouchTarget(accessDetail.getByRole("button", { name: "Add a person" }));
     await expectNoPageOverflow(page);
-    const backToAccessGroups = accessDetail.getByRole("button", { name: "Back to access groups" });
-    await expectTouchTarget(backToAccessGroups);
-    await backToAccessGroups.click();
+    const groupsCrumbLink = page.getByTestId("admin-topbar-title").getByRole("link", { name: "Groups" });
+    await groupsCrumbLink.click();
     await expect(accessGroupSearch).toHaveValue(compactGroupName);
     await expect(accessGroupRow).toBeVisible();
 

@@ -82,16 +82,37 @@ function controller(selectedServer: AdminMcpServer = server) {
 }
 
 describe("Admin MCP grant ownership", () => {
-  it("edits whole-server group grants in Access & groups without personal slots", () => {
+  it("edits whole-server group grants on the group page with a switch and no personal slots", () => {
     const view = controller();
     render(<AdminMcpGroupAccessPanel controller={view.controller} group={group} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Grant Memory for group operators" }));
+    const grantSwitch = screen.getByRole("switch", { name: "Memory for operators" });
+    expect(grantSwitch).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Needs personal values from each member")).toBeInTheDocument();
+    fireEvent.click(grantSwitch);
     expect(view.grant).toHaveBeenCalledWith("server-1", {
       canUse: true,
       groupId: "group-1"
     });
     expect(screen.queryByText("API key")).not.toBeInTheDocument();
+  });
+
+  it("keeps the group page's server list short and expands it on request", () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({
+      ...server,
+      activePersonalSlots: [],
+      id: `server-${index}`,
+      name: `Server ${index}`
+    }));
+    const view = controller();
+    render(<AdminMcpGroupAccessPanel
+      controller={{ ...view.controller, state: { ...view.controller.state, servers: many } }}
+      group={group}
+    />);
+
+    expect(screen.getAllByRole("switch")).toHaveLength(8);
+    fireEvent.click(screen.getByRole("button", { name: "2 more" }));
+    expect(screen.getAllByRole("switch")).toHaveLength(10);
   });
 
   it("renders full-access MCP coverage as automatic and never offers a grant mutation", () => {
@@ -112,9 +133,8 @@ describe("Admin MCP grant ownership", () => {
       group={{ ...group, id: "group-full-access", name: "full-access", systemRole: "full_access" }}
     />);
 
-    expect(screen.getByText("Included automatically")).toBeInTheDocument();
-    expect(screen.getByText(/every current and future MCP server/u)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Memory for group full-access/u })).not.toBeInTheDocument();
+    expect(screen.getByTestId("system-mcp-grant-server-1")).toHaveTextContent("Included");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(view.grant).not.toHaveBeenCalled();
   });
 
@@ -122,8 +142,8 @@ describe("Admin MCP grant ownership", () => {
     const view = controller({ ...server, enabled: false });
     render(<AdminMcpGroupAccessPanel controller={view.controller} group={group} />);
 
-    expect(screen.getByText("Disabled")).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
-    expect(screen.getByRole("button", { name: "Grant Memory for group operators" })).toBeEnabled();
+    expect(screen.getByText("Disabled · Needs personal values from each member")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Memory for operators" })).toBeEnabled();
   });
 
   it("keeps direct use and exact personal-field grants in selected user details", () => {

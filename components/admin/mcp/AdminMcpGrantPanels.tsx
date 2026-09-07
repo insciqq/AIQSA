@@ -71,35 +71,6 @@ function EffectiveAccessFact({ accountActive, direct, inheritedGroups }: Readonl
   );
 }
 
-function GrantToggle({
-  checked,
-  disabled,
-  label,
-  onClick
-}: Readonly<{
-  checked: boolean;
-  disabled: boolean;
-  label: string;
-  onClick(): void;
-}>) {
-  return (
-    <button
-      aria-label={label}
-      aria-pressed={checked}
-      className={[
-        `inline-flex min-h-control-sm min-w-20 items-center justify-center gap-1.5 rounded-control px-3 text-xs font-medium ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:opacity-50`,
-        checked ? "bg-proof text-proof-contrast hover:bg-proof-hover" : "bg-control-surface text-ink-secondary hover:bg-control-hover"
-      ].join(" ")}
-      disabled={disabled}
-      onClick={onClick}
-      type="button"
-    >
-      {checked ? <Check aria-hidden="true" className="size-3.5" /> : null}
-      {checked ? "Granted" : "Not granted"}
-    </button>
-  );
-}
-
 function DirectGrantAction({
   direct,
   disabled,
@@ -218,7 +189,11 @@ function CatalogState({ controller }: { controller: AdminMcpController }) {
   return null;
 }
 
-/** One group's MCP grants across every server (Groups page). */
+/**
+ * One group's MCP grants across every server (Group page): the card with one
+ * switch per server, the personal-values note where members still fill their
+ * own fields, and `N more` past the first page. Full access is read-only.
+ */
 export function AdminMcpGroupAccessPanel({
   controller,
   group
@@ -226,59 +201,63 @@ export function AdminMcpGroupAccessPanel({
   controller: AdminMcpController;
   group: AdminGroup;
 }>) {
+  const [expanded, setExpanded] = useState(false);
   const servers = controller.state.servers.filter((server) => !server.archivedAt);
   const systemFullAccess = group.systemRole === "full_access";
   const disabled = controller.state.busy || Boolean(group.archivedAt);
+  const shown = expanded ? servers : servers.slice(0, MCP_ACCESS_PAGE_SIZE);
+  const hidden = servers.length - shown.length;
   return (
-    <section className="border-b border-trace-subtle py-5" data-testid="admin-group-mcp-access">
-      <div>
-        <div className="text-sm font-semibold text-ink">MCP server grants</div>
-        <p className="mt-1 text-xs leading-5 text-ink-muted">
-          {systemFullAccess
-            ? "Full access automatically includes every current and future MCP server. Personal fields remain direct-user permissions."
-            : "A grant unlocks every valid current and future tool from that installation-owned server. Personal fields are never granted through a group."}
-        </p>
-      </div>
-      <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
-        <CatalogState controller={controller} />
-        {controller.state.loaded && !servers.length ? (
-          <p className="py-4 text-xs text-ink-muted">No non-archived MCP servers.</p>
-        ) : null}
-        {servers.map((server) => {
-          const grant = grantForGroup(server, group.id);
-          return (
-            <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={server.id}>
-              <div className="min-w-0">
-                <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <span className="text-metadata text-ink-muted">Installation-wide</span>
-                  <AdminAvailabilityStatus enabled={server.enabled} />
-                </div>
-              </div>
-              {systemFullAccess ? (
-                <span
-                  className="inline-flex min-h-control-sm items-center gap-1.5 rounded-control bg-proof/[0.08] px-3 text-xs font-medium text-proof"
-                  data-testid={`system-mcp-grant-${server.id}`}
-                >
-                  <Check aria-hidden="true" className="size-3.5" />
-                  Included automatically
-                </span>
-              ) : (
-                <GrantToggle
-                  checked={grant?.canUse === true}
-                  disabled={disabled}
-                  label={`${grant?.canUse ? "Revoke" : "Grant"} ${server.name} for group ${group.name}`}
-                  onClick={() => void controller.actions.grant(server.id, {
-                    canUse: grant?.canUse !== true,
-                    groupId: group.id
-                  })}
-                />
-              )}
+    <div className={cardClass} data-testid="admin-group-mcp-access">
+      {!controller.state.loaded ? (
+        <div className="px-5 py-6"><CatalogState controller={controller} /></div>
+      ) : !servers.length ? (
+        <p className="px-5 py-6 text-sm text-ink-muted" role="status">No MCP servers yet. Set one up in MCP servers.</p>
+      ) : (
+        <>
+          <ul aria-label={`MCP servers for ${group.name}`} className="divide-y divide-trace-subtle">
+            {shown.map((server) => {
+              const grant = grantForGroup(server, group.id);
+              const note = [
+                server.enabled ? null : "Disabled",
+                server.activePersonalSlots.length ? "Needs personal values from each member" : null
+              ].filter((part): part is string => part !== null).join(" · ");
+              return (
+                <li className="flex min-h-14 min-w-0 items-center gap-3 px-4 py-2.5 sm:px-5" key={server.id}>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium text-ink">{server.name}</p>
+                    {note ? <p className="truncate text-xs text-ink-muted">{note}</p> : null}
+                  </div>
+                  {systemFullAccess ? (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-proof"
+                      data-testid={`system-mcp-grant-${server.id}`}
+                    >
+                      <Check aria-hidden="true" className="size-3.5" />
+                      Included
+                    </span>
+                  ) : (
+                    <UiV2Switch
+                      checked={grant?.canUse === true}
+                      disabled={disabled}
+                      label={`${server.name} for ${group.name}`}
+                      onChange={(next) => void controller.actions.grant(server.id, { canUse: next, groupId: group.id })}
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          {hidden > 0 ? (
+            <div className="flex justify-center border-t border-trace-subtle px-4 py-2.5">
+              <UiV2Button onClick={() => setExpanded(true)} tone="ghost" type="button">
+                {hidden} more
+              </UiV2Button>
             </div>
-          );
-        })}
-      </div>
-    </section>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }
 
