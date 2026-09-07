@@ -11,7 +11,7 @@ import {
   type AdminGrantTarget,
   type AdminGroupStatusFilter
 } from "@/components/admin/adminGroupView";
-import { activeGroupIdsForUser } from "@/components/admin/adminUserView";
+import { activeGroupIdsForUser } from "@/components/admin/users/usersView";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminDashboardRefresh } from "@/components/admin/useAdminDashboardResource";
