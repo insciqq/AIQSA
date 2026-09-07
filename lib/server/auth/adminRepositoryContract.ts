@@ -4,6 +4,7 @@ import type {
   AdminDashboard as AdminDashboardWire,
   AdminDeletionInfo,
   AdminGroup as AdminGroupWire,
+  AdminGroupGrantChange,
   AdminInviteRecord as AdminInviteWire,
   AdminUserRecord as AdminUserWire
 } from "@/lib/contracts/admin";
@@ -106,13 +107,22 @@ export type AdminRenameGroupInput = {
   name: string;
 };
 
-export type AdminSetGroupGrantInput = {
-  enabled: boolean;
+export type AdminSetGroupGrantsInput = {
+  changes: readonly AdminGroupGrantChange[];
   groupId: string;
-  modelId?: string | null;
-  provider?: string | null;
-  searchStrategy?: string | null;
 };
+
+/**
+ * Outcome of one grant batch. Anything but `applied` means the transaction
+ * was rolled back and no grant changed; `invalid_change` names the first
+ * change that could not be applied.
+ */
+export type AdminSetGroupGrantsResult =
+  | { kind: "applied" }
+  | { kind: "group_archived" }
+  | { kind: "group_not_found" }
+  | { kind: "system_group_forbidden" }
+  | { change: number; kind: "invalid_change" };
 
 export type AdminSetUserGroupsInput = {
   groupIds: string[];
@@ -143,6 +153,7 @@ export type AdminRepository = {
   revokeAllSessions(input: AdminRevokeAllSessionsInput): Promise<number>;
   revokeInvite(inviteId: string): Promise<boolean>;
   revokeUserSessions(input: AdminRevokeUserSessionsInput): Promise<number>;
-  setGroupGrant(input: AdminSetGroupGrantInput): Promise<boolean>;
+  /** Applies every change in one transaction; a rejected change rolls the whole batch back. */
+  setGroupGrants(input: AdminSetGroupGrantsInput): Promise<AdminSetGroupGrantsResult>;
   setUserGroups(input: AdminSetUserGroupsInput): Promise<boolean>;
 };

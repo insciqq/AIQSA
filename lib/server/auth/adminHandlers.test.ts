@@ -148,7 +148,7 @@ function createRepository(
     revokeAllSessions: async () => 3,
     revokeInvite: async () => true,
     revokeUserSessions: async () => 2,
-    setGroupGrant: async () => true,
+    setGroupGrants: async () => ({ kind: "applied" }),
     setUserGroups: async () => true,
     ...overrides
   };
@@ -258,9 +258,31 @@ describe("admin route handlers", () => {
       { body: { action: "approve_user" }, error: "user_required", name: "user required", status: 400 },
       { body: { action: "create_group" }, error: "group_required", name: "group required", status: 400 },
       {
-        body: { action: "set_group_grant", groupId: "group-1" },
+        body: { action: "set_group_grants", groupId: "group-1" },
         error: "group_grant_required",
-        name: "grant required",
+        name: "grant changes required",
+        status: 400
+      },
+      {
+        body: { action: "set_group_grants", changes: [], groupId: "group-1" },
+        error: "group_grant_required",
+        name: "grant changes must not be empty",
+        status: 400
+      },
+      {
+        body: { action: "set_group_grants", changes: [{ enabled: true }], groupId: "group-1" },
+        error: "group_grant_required",
+        name: "grant change needs one target",
+        status: 400
+      },
+      {
+        body: {
+          action: "set_group_grants",
+          changes: [{ enabled: true, provider: "openai", searchStrategy: "web" }],
+          groupId: "group-1"
+        },
+        error: "group_grant_required",
+        name: "grant change cannot mix targets",
         status: 400
       },
       {
@@ -334,10 +356,24 @@ describe("admin route handlers", () => {
         status: 404
       },
       {
-        body: { action: "set_group_grant", enabled: true, groupId: "group-1" },
-        error: "group_grant_invalid",
-        name: "invalid grant",
-        overrides: { setGroupGrant: async () => false },
+        body: { action: "set_group_grants", changes: [{ enabled: true, provider: "openai" }], groupId: "group-1" },
+        error: "group_not_found",
+        name: "grant batch for a missing group",
+        overrides: { setGroupGrants: async () => ({ kind: "group_not_found" }) },
+        status: 404
+      },
+      {
+        body: { action: "set_group_grants", changes: [{ enabled: true, provider: "openai" }], groupId: "group-1" },
+        error: "group_archived",
+        name: "grant batch for an archived group",
+        overrides: { setGroupGrants: async () => ({ kind: "group_archived" }) },
+        status: 400
+      },
+      {
+        body: { action: "set_group_grants", changes: [{ enabled: true, provider: "openai" }], groupId: "group-1" },
+        error: "system_group_forbidden",
+        name: "grant batch for Full access",
+        overrides: { setGroupGrants: async () => ({ kind: "system_group_forbidden" }) },
         status: 400
       },
       {
@@ -431,6 +467,65 @@ describe("admin route handlers", () => {
       expect(response.status, failureCase.name).toBe(failureCase.status);
       expect(await response.json(), failureCase.name).toEqual({ error: failureCase.error });
     }
+  });
+
+  it("hands a whole grant batch to one repository call and reports the rejected change", async () => {
+    const batches: unknown[] = [];
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({
+        setGroupGrants: async (input) => {
+          batches.push(input);
+          return input.changes.length > 2 ? { change: 2, kind: "invalid_change" } : { kind: "applied" };
+        }
+      }),
+      resolveAuth: admin.resolveAuth
+    });
+
+    const applied = await POST(
+      jsonRequest({
+        action: "set_group_grants",
+        changes: [
+          { enabled: true, provider: " openai " },
+          { enabled: false, modelId: "gpt-mini", provider: "openai", searchStrategy: null }
+        ],
+        groupId: "group-1"
+      })
+    );
+    const rejected = await POST(
+      jsonRequest({
+        action: "set_group_grants",
+        changes: [
+          { enabled: true, provider: "openai" },
+          { enabled: true, searchStrategy: "web" },
+          { enabled: true, modelId: "missing", provider: "openai" }
+        ],
+        groupId: "group-1"
+      })
+    );
+
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toEqual({ ok: true });
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toEqual({ change: 2, error: "group_grant_invalid" });
+    expect(batches).toEqual([
+      {
+        changes: [
+          { enabled: true, provider: "openai" },
+          { enabled: false, modelId: "gpt-mini", provider: "openai" }
+        ],
+        groupId: "group-1"
+      },
+      {
+        changes: [
+          { enabled: true, provider: "openai" },
+          { enabled: true, searchStrategy: "web" },
+          { enabled: true, modelId: "missing", provider: "openai" }
+        ],
+        groupId: "group-1"
+      }
+    ]);
   });
 
   it("acknowledges durable account deletion while private cleanup is pending", async () => {
@@ -597,9 +692,9 @@ describe("admin route handlers", () => {
             userCount: 0
           };
         },
-        setGroupGrant: async (input) => {
-          calls.push({ input, type: "grant" });
-          return true;
+        setGroupGrants: async (input) => {
+          calls.push({ input, type: "grants" });
+          return { kind: "applied" };
         },
         setUserGroups: async (input) => {
           calls.push({ input, type: "membership" });
@@ -631,11 +726,9 @@ describe("admin route handlers", () => {
     );
     await POST(
       jsonRequest({
-        action: "set_group_grant",
-        enabled: true,
-        groupId: "group-1",
-        modelId: "gpt-5.5",
-        provider: "openai"
+        action: "set_group_grants",
+        changes: [{ enabled: true, modelId: "gpt-5.5", provider: "openai" }],
+        groupId: "group-1"
       })
     );
     await POST(
@@ -668,13 +761,10 @@ describe("admin route handlers", () => {
       },
       {
         input: {
-          enabled: true,
-          groupId: "group-1",
-          modelId: "gpt-5.5",
-          provider: "openai",
-          searchStrategy: null
+          changes: [{ enabled: true, modelId: "gpt-5.5", provider: "openai" }],
+          groupId: "group-1"
         },
-        type: "grant"
+        type: "grants"
       },
       {
         groupId: "group-1",

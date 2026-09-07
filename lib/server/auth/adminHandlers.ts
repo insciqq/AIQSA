@@ -1,4 +1,4 @@
-import { adminActionNames } from "@/lib/contracts/admin";
+import { adminActionNames, parseAdminGroupGrantChanges } from "@/lib/contracts/admin";
 import type {
   AdminAccessRuleKind,
   AdminActionName,
@@ -358,23 +358,27 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
         : json({ error: "user_not_found" }, { status: 404 });
     }
 
-    if (action.action === "set_group_grant") {
-      const enabled = booleanField(action.enabled);
+    if (action.action === "set_group_grants") {
       const groupId = stringField(action.groupId);
+      const changes = parseAdminGroupGrantChanges(action.changes);
 
-      if (enabled === null || !groupId) {
+      if (!groupId || !changes) {
         return json({ error: "group_grant_required" }, { status: 400 });
       }
 
-      return (await deps.repository.setGroupGrant({
-        enabled,
-        groupId,
-        modelId: typeof action.modelId === "string" ? action.modelId : null,
-        provider: typeof action.provider === "string" ? action.provider : null,
-        searchStrategy: typeof action.searchStrategy === "string" ? action.searchStrategy : null
-      }))
-        ? json({ ok: true })
-        : json({ error: "group_grant_invalid" }, { status: 400 });
+      const result = await deps.repository.setGroupGrants({ changes, groupId });
+
+      switch (result.kind) {
+        case "applied":
+          return json({ ok: true });
+        case "group_not_found":
+          return json({ error: "group_not_found" }, { status: 404 });
+        case "group_archived":
+        case "system_group_forbidden":
+          return json({ error: result.kind }, { status: 400 });
+        case "invalid_change":
+          return json({ change: result.change, error: "group_grant_invalid" }, { status: 400 });
+      }
     }
 
     if (action.action === "create_access_rule") {
