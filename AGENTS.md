@@ -17,6 +17,7 @@ Stop only for missing secrets, unrequested destructive work, an unavailable requ
 Do not preload the whole harness. Start with `agent_docs/CRITICAL_INVARIANTS.md`, then use `agent_docs/INDEX.md` to read only the owner crossed by the change.
 
 - Before changing a scoped directory, read its nearest `AGENTS.md`; adjacent `CLAUDE.md` files import it for Claude-compatible agents.
+- Before local Docker Compose commands, read `agent_docs/ENV_VARIABLES.md` and preserve the checkout's environment selection.
 - When the operator leaves a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
 - Before changing behavior or tests, read the verification map, applicable lane, and test-authoring rules in `agent_docs/TESTING.md`.
 
